@@ -68,10 +68,14 @@ The constraints:
      - it is deterministic.
    - The rewrite has `escape_cost` 0 and widens nothing, so it is a candidate of `una fix` (ADR 0084), and `una check` counts it in `fixable` (ADR 0096 rule 6). One `una fix` run migrates a package.
    - No other code is added. The keyword is a construct of the wrong edition, which is what U0103 reports.
+   - **Recovery.** After the U0103, the parser reads `example` at the start of a declaration as `test_decl`. Today a reserved word that reaches the parser is only read as a name or skipped, so without this rule the declaration would also get a U0101, and its body would be skipped. With it, the body is parsed, type-checked, flow-checked and verified as a test's, including the obligations of its `do` and `expect` lines (`spec/12 §3`). The U0103 is then the only diagnostic the keyword gets, and an error in the body is reported beside it.
+   - **What the rewrite leaves.** It replaces one token, so the doc comments, comments and attributes attached to the declaration stay as they are. The canonical form survives it: the body's indentation is one fixed level, not aligned to the keyword, and a text literal never wraps, so a header three characters shorter cannot change the layout. Other edits on the same line in the same round are taken by ADR 0084 rule 3, as for any edit: they do not overlap the keyword and are applied by offset, so the shorter keyword moves none of them.
+   - **Rounds of `una fix`.** The U0103 is a tier-0 diagnostic, so a round that takes it does not check tier 1 (ADR 0084, amendment of 2026-10-14). A test whose `do` line needs a callee's condition (ADR 0092's amendment of the same date) is therefore repaired in two rounds of one run: the keyword first, then the condition once tier 0 is clean.
 
 4. **`test` as a name in edition `0.3`.** A local, a parameter, a function, a field, a variant's field, a handler or a predicate named `test` is the U0101 of a keyword used as a name, as `result` or `error` is today.
    - ADR 0096's row for `result`, `error`, `unit` and `it` gains `test` in edition `0.3`. A local or a parameter named `test` gets the exact rename to `test_value`, or the first of `test_value2`, `test_value3`, … that ADR 0096 rule 3a allows, in its scope.
    - A function, a field, a handler, a predicate or a module segment named `test` gets the rename as a description, with `edit: null`. Renaming those reaches every caller, every constructor or every import, and a field's name is part of the data a program shows, so the change is the author's.
+   - **Modules.** A module path segment comes from a file or directory name (`src/test.una`, `src/test/…`), so in edition `0.3` its `module` header and every `use` that names it are U0101. The repair is a description, "rename the file or directory", which `una fix` cannot apply, since it writes only module texts (ADR 0084 rule 2). A directory named `test` for a package's own tests is a common habit, so the guide's page on packages says it. The standard library has no member named `test` (`spec/14`), so no prelude or `std` name changes.
    - The corpus has no such name in an edition `0.3` package (Context).
 
 5. **The erasure, and the preview rule** (`spec/13 §7`).
@@ -83,7 +87,11 @@ The constraints:
    - **Human output.** For a package of edition `0.3`, each line reads `test <module> "<name>" ... ok` or `... FAILED`, and the summary `<n> tests: <p> passed, <f> failed`. Editions `0.1` and `0.2` keep `example` and `examples`. Diagnostic messages that name the declaration say "test" in an edition `0.3` package and "example" in the others, with the same codes.
    - **JSON.** A package of edition `0.3` prints the schema `una.test/2`: the document of `una.test/1`, with the key `examples` renamed `tests`, holding the same objects in the same order with the same keys. Renaming a key changes the document's meaning for a consumer, so the version changes (ADR 0076 rule 2).
    - Packages of edition `0.1` and `0.2` keep `una.test/1`, byte for byte. So the harness of the Gate 1 benchmark, which reads `una.test/1` from edition `0.1` packages, does not change.
-   - A consumer that reads both editions dispatches on `schema`, as ADR 0076 asks.
+   - A consumer that reads both editions dispatches on `schema`, as ADR 0076 asks. The known consumers of the key `examples`:
+     - in this repository: the conformance runner (`tests/conformance/main.rs`, behind its test-pass and test-fail directives, which edition `0.3` cases reach), `crates/una-cli/tests/runtime.rs` with its snapshot of the JSON events, and `scripts/demo/checkpoint-3.sh`;
+     - in `una-bench`: `harness/bench/oracle.py`, which reads edition `0.1` packages for Gate 1 and is unaffected, and `scripts/build_primer.py` and `scripts/native-dogfood/dogfood.py`, which must dispatch on `schema` before an edition `0.3` package goes through them.
+
+     The implementation updates the first group, and the second group is updated in `una-bench` before it ships.
 
 7. **What keeps the word "example".** These are not renamed:
    - **Core IR and its export.** The Core node of a test, and the key `examples` of a module in `una.core/1` (`spec/13 §8`), keep their names. The export already carries `edition`, and the node is the same in every edition. Renaming the key would change `una.core/1` and the importer of the formal track for no gain in meaning.
@@ -98,7 +106,7 @@ The constraints:
    - the outline lists a test declaration by its name, with the symbol kind it has today;
    - the U0103 and its repair appear as any diagnostic and code action does.
 
-   The server reads the package's edition as the checker does. Editions `0.1` and `0.2` see no change.
+   The server takes each file's edition from its own package root, as package discovery does: the keyword tables are chosen per file's package, never per session. So in a session with an edition `0.2` and an edition `0.3` package open, each gets its own keywords. A single file is its own package with the default settings, and so of edition `0.1` (ADR 0021 rule 1, `spec/20`), so a lone file keeps `example`. Editions `0.1` and `0.2` see no change. The outline is unaffected: it lists a test by its name, with the symbol kind it has today.
 
 10. **The documents.**
     - `spec/08 §2` is titled "Tests", writes its sample with `test`, and states that editions `0.1` and `0.2` write `example`. The chapter's title becomes "Requirements and tests".
@@ -124,8 +132,12 @@ Nothing grows with the program beyond what the existing passes cost.
 - A local, a parameter and a function named `test` in edition `0.3`: U0101. The first two get the exact rename, and the third gets a description with `edit: null`.
 - `example` as a name in edition `0.3`: still an error, as in earlier editions.
 - U3014 and U3015 in an edition `0.3` test, with messages that say "test".
-- The language server: completion, semantic tokens and the outline in an edition `0.3` and an edition `0.2` package.
-- The formatter: a canonical `test` declaration is a fixed point of `una fmt`, and `una fmt` leaves an `example` declaration in edition `0.3` as it is.
+- The language server: completion, semantic tokens and the outline in an edition `0.3` and an edition `0.2` package open in one session, and in a single file.
+- The formatter: a canonical `test` declaration is a fixed point of `una fmt`, and `una fmt` leaves an `example` declaration in edition `0.3` as it is. The result of `una fix` on a canonical `example` declaration is a fixed point of `una fmt`.
+- Recovery: an `example` in edition `0.3` whose body has an error reports the U0103 and the body's error, and no U0101.
+- Rounds: an edition `0.3` package with an `example` whose `do` call needs a callee's condition. One `una fix` run gives a package that checks.
+- Modules: a file `src/test.una` in edition `0.3` gives U0101 at its `module` header and at each `use` of it, with the description "rename the file or directory".
+- Consumers: the conformance runner reads `una.test/2` for edition `0.3` cases and `una.test/1` otherwise, by `schema`. The guide's `una` blocks on edition `0.3` pages are checked as edition `0.3` (`crates/una-cli/tests/guide.rs`).
 
 ## Consequences
 
