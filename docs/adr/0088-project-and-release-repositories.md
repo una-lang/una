@@ -139,3 +139,34 @@ These steps are tracked as issues once this ADR is accepted:
 ## Alternatives considered
 
 The options of §2, §4, §5 and §7 are given in their sections, each with the reason for the recommendation. Making the project repository itself public was ruled out: its history and old assets stay private.
+
+## Amendment of 2026-10-14: this repository becomes the public repository
+
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-14)
+- Refs: #717
+
+**Context.** The decision above keeps this repository private and launches a separate release repository, kept in step with it by a mirror. Its alternatives rule out making this repository public, because of its history and its old assets. On 2026-10-14 the project decided otherwise: this repository itself becomes the public repository.
+
+**Decision.**
+1. **One repository.** This repository is the public repository when it is opened. No separate release repository is created, and nothing is mirrored.
+2. **No personal data.** The repository holds no personal data, in its files, its commit metadata or its release assets:
+   - no personal e-mail address;
+   - no local account name;
+   - no home directory path;
+   - no personal name.
+
+   New commits are authored with a noreply address. A check that blocks new personal data in the tree is added under #717, with its patterns kept outside the repository, as the lists of §3 are.
+3. **A one-time history rewrite.** Past content is cleaned by one rewrite of the history, run once, when the repository is opened. It covers author and committer identities, commit messages, and file contents across history, and it is tested on a clone before it runs.
+4. **The exception to immutability.** The rewrite changes the text of accepted ADRs and of other immutable records where they hold personal data, and it changes every commit id. This is an exception to the immutability of accepted text and of history, and it covers personal data only. No other change to an accepted text or to history is made under it.
+5. **References stay resolvable.** Commit ids and issue references in the repository's texts, such as validation records, release notes and ADRs, stay resolvable. Each rewritten commit id maps to its new one in a map committed to the repository. The rewrite keeps every commit, even one it leaves empty, so the map is one to one and every tag keeps its commit. Issues keep their numbers, so the map of issue references is the identity. Release assets that are repacked to remove personal data are recorded with their old and new digests, so validation records stay checkable.
+6. **What stays unpublished.** The paths that §1 never mirrors stay unpublished: `docs/reviews/`, `docs/plan/`, `docs/history/`, `docs/fixes/`, `docs/releases/`, `coordination/`, `CLAUDE.md`, and `images/` except the logo. Before the repository is opened, they are removed from its tree. The one-time rewrite drops them from the history of the opened repository, and they remain only in a private archive. Every other path is published: the list of private paths is explicit, and publishing is the default.
+7. **Neutral text.** The rewrite also applies the projection of §2 to the ADRs: their attributions to persons and roles are removed. It works inside lines, replacing each attribution, and deletes no line. Release-facing text stays neutral and institutional, as the decision above requires.
+
+**Consequences.**
+- The separate release repository, its mirror map (§1), the sync of §4 and §5, and the cutting of releases in another repository (§7) are no longer needed. Releases are cut, validated and signed in this repository.
+- The rule that release-facing text is neutral and institutional is unchanged.
+- The release validation records, `docs/releases/validation.md` among them, move out of the published tree to a private location before the repository is opened.
+- Any link from a published document into a path of rule 6 is removed or redirected before the repository is opened. Examples are the references of `README.md` and `CONTRIBUTING.md` to the validation records, and the reference of the `CHANGELOG.md` header to `docs/plan/`. Plain mentions of such a path in released sections of `CHANGELOG.md`, such as their closing "Validation:" lines, stay as they are: those sections are frozen, and a mention publishes no content. Once those paths are gone from the tree, the documentation link check (`scripts/doc-links.py`) enforces it.
+- The check of personal data runs on this repository's tree, with its lists outside the repository.
+- Every commit id changes once, at the rewrite. Tags, releases and validation records are carried over through the maps of rule 5.
