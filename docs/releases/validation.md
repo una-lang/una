@@ -44,6 +44,17 @@ The pinned Z3 comes from `UNA_GATES_Z3`, else this checkout's `target/z3`, else 
 
 At the end, the script removes the Docker volumes that `--linux` and `--linux-arm64` made for the clone's target directory, so volumes do not pile up.
 
+**The job count in the containers** (#701). By default, Cargo inside a container runs one job per CPU of the Docker VM. On a VM with 8 GB and 10 CPUs, ten rustc and linker processes at once have run it out of memory: the kernel killed the linker with signal 9, the test binaries did not link, and no test ran.
+
+`scripts/local-ci.sh --linux` and `--linux-arm64` therefore pass a job count into the container, which `scripts/container-jobs.sh` computes:
+- The build runs one job per 2 GiB of the VM's memory (`docker info`'s `MemTotal`), at most one per CPU and at least one. That is 3 jobs on the VM above.
+- A `CARGO_BUILD_JOBS` set on the host can lower that count, never raise it. A higher value, such as one meant for the host's own builds, is capped, and the run says so.
+- `RUST_TEST_THREADS`, when set on the host, goes in too.
+
+The run prints the job count before the container starts, and the container's peak memory (`memory.peak` of its cgroup) at the end. The job count changes only the build's peak memory and its time, never what is built or tested.
+
+Why 2 GiB: a measured run of `--linux-arm64`, cold, on that VM (7834 MiB, 10 CPUs) with 5 jobs (one per 1.5 GiB) passed with a peak of 6841 MiB, 87% of the VM. That figure includes page cache, which the kernel reclaims before it kills a process, but the margin is narrow. These runs are evidence: a linker killed for memory costs a full rerun and leaves a failed run in the record, which outweighs the slower build of 3 jobs. A lower `CARGO_BUILD_JOBS` set on the host is passed in as it is, for a one-off run that wants even less memory. The VM's memory is the host's setting, and the script does not change it.
+
 **Reproducible archives** (#679). The binaries were already reproducible: `scripts/release.sh` remaps the build's paths (#382), and the linkers derive the macOS binary's `LC_UUID` and the Linux binary's build ID from its content, so both are equal when the inputs are. Two builds of one commit, from fresh clones at different paths and cold target directories, gave byte-identical binaries on `aarch64-apple-darwin` and, in Docker, on `aarch64-unknown-linux-gnu`. Three things made two archives of one commit differ, and `scripts/release.sh` now fixes each:
 
 - each tar entry had the time the files were copied, so every entry now takes the commit's time, `SOURCE_DATE_EPOCH` when it is set, else `git log -1 --format=%ct`. A build that finds neither stops;
