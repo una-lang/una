@@ -6,6 +6,12 @@
 //! - every published release whose `CHANGELOG.md` section says it fixes a security issue, on
 //!   `main` and on the v0.1 line, is the "Fixed in" release of an entry, or is named under
 //!   "Not advisories".
+//!
+//! The last two read the repository's tags and history. Inside the container of
+//! `scripts/local-ci.sh`, a worktree's `.git` links outside the mounted checkout, so git reads no
+//! tags there: the script runs this test on the host first, with the tags, and only when it
+//! passes sets `UNA_LOCAL_CI_ADVISORIES_ON_HOST` for the container, whose run then checks the
+//! page alone and says so (#715). Anywhere else, no tags is a failure.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -86,8 +92,8 @@ fn security_releases(changelog: &str) -> Vec<String> {
 }
 
 /// What is wrong with `page`, given the repository's tags and the releases that fixed a
-/// security issue.
-fn problems(page: &str, tags: &BTreeSet<String>, security: &[String]) -> Vec<String> {
+/// security issue. Without tags, only the page's own format is checked.
+fn problems(page: &str, tags: Option<&BTreeSet<String>>, security: &[String]) -> Vec<String> {
     let mut problems = Vec::new();
     let (advisories, excluded) = page.split_once("\n## Not advisories").unwrap_or((page, ""));
     let entries: Vec<&str> = advisories.split("\n### UNA-SA-").skip(1).collect();
@@ -128,7 +134,7 @@ fn problems(page: &str, tags: &BTreeSet<String>, security: &[String]) -> Vec<Str
                         problems.push(format!("UNA-SA-{number}: \"Fixed in\" names no release"));
                     }
                     for release in named {
-                        if !tags.contains(&release) {
+                        if tags.is_some_and(|tags| !tags.contains(&release)) {
                             problems.push(format!(
                                 "UNA-SA-{number}: fixed in {release}, which is not a tag"
                             ));
@@ -140,6 +146,9 @@ fn problems(page: &str, tags: &BTreeSet<String>, security: &[String]) -> Vec<Str
             }
         }
     }
+    let Some(tags) = tags else {
+        return problems;
+    };
     let excluded: BTreeSet<String> = releases(excluded).into_iter().collect();
     for release in security {
         if tags.contains(release) && !fixed.contains(release) && !excluded.contains(release) {
@@ -151,23 +160,27 @@ fn problems(page: &str, tags: &BTreeSet<String>, security: &[String]) -> Vec<Str
     problems
 }
 
-/// The repository's tags.
+/// The repository's tags, none when git cannot read the repository.
 fn tags() -> BTreeSet<String> {
     let out = Command::new("git")
         .args(["tag", "--list", "v*"])
         .current_dir(root())
         .output()
         .unwrap();
-    let tags: BTreeSet<String> = String::from_utf8(out.stdout)
+    String::from_utf8(out.stdout)
         .unwrap()
         .lines()
         .map(str::to_owned)
-        .collect();
-    assert!(
-        !tags.is_empty(),
-        "the repository has no release tags: fetch them, as scripts/check-released-sections.sh asks"
-    );
-    tags
+        .collect()
+}
+
+/// Whether this runs in the container of `scripts/local-ci.sh`, after the host ran this test
+/// with the repository's tags and it passed.
+fn checked_on_the_host() -> bool {
+    // A test, not a library crate: scripts/local-ci.sh sets the variable for the container.
+    #[allow(clippy::disallowed_methods)]
+    let set = std::env::var_os("UNA_LOCAL_CI_ADVISORIES_ON_HOST").is_some_and(|v| !v.is_empty());
+    set && Path::new("/.dockerenv").exists()
 }
 
 /// The `CHANGELOG.md` of the newest tag of the v0.1 line, which carries that line's sections.
@@ -195,11 +208,23 @@ fn v0_1_changelog(tags: &BTreeSet<String>) -> String {
 fn the_advisories_match_the_releases() {
     let page = std::fs::read_to_string(root().join("docs/security/advisories.md")).unwrap();
     let tags = tags();
+    if tags.is_empty() && checked_on_the_host() {
+        let problems = problems(&page, None, &[]);
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+        eprintln!(
+            "skipped: the advisories' releases, without tags here; scripts/local-ci.sh checked them on the host"
+        );
+        return;
+    }
+    assert!(
+        !tags.is_empty(),
+        "the repository has no release tags: fetch them, as scripts/check-released-sections.sh asks"
+    );
     let main = std::fs::read_to_string(root().join("CHANGELOG.md")).unwrap();
     let mut security = security_releases(&main);
     security.extend(security_releases(&v0_1_changelog(&tags)));
     assert!(security.contains(&"v0.3.13".to_owned()) && security.contains(&"v0.1.10".to_owned()));
-    let problems = problems(&page, &tags, &security);
+    let problems = problems(&page, Some(&tags), &security);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -222,9 +247,9 @@ fn the_check_refuses_each_kind_of_gap() {
         entry("001", "Low", "v0.3.1")
     );
     assert!(
-        problems(&good, &tags, &security).is_empty(),
+        problems(&good, Some(&tags), &security).is_empty(),
         "{:?}",
-        problems(&good, &tags, &security)
+        problems(&good, Some(&tags), &security)
     );
     let bad = [
         // A release that is not a tag.
@@ -260,12 +285,18 @@ fn the_check_refuses_each_kind_of_gap() {
             entry("001", "Low", "v0.3.1")
         ),
     ];
-    for page in bad {
+    for page in &bad {
         let page = format!("{page}\n## Not advisories\n\n- x (v0.1.5): reason\n");
         assert!(
-            !problems(&page, &tags, &security).is_empty(),
+            !problems(&page, Some(&tags), &security).is_empty(),
             "accepted:\n{page}"
         );
+    }
+    // Without tags, as in the container after the host's check, the page's own format is still
+    // checked: every gap but the two about releases.
+    assert!(problems(&good, None, &[]).is_empty());
+    for page in &bad[2..] {
+        assert!(!problems(page, None, &[]).is_empty(), "accepted:\n{page}");
     }
 }
 

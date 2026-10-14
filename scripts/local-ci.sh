@@ -34,6 +34,12 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     echo "== Released sections of CHANGELOG.md (on the host)"
     env -u UNA_SKIP_RELEASED_SECTIONS scripts/check-released-sections.sh \
         || fail "Released sections of CHANGELOG.md"
+    # The security advisories' releases (#649) need the same tags and history: their test runs
+    # here, on the host, and only once it passes is the container told so, in
+    # UNA_LOCAL_CI_ADVISORIES_ON_HOST; the container's run then checks the page alone (#715).
+    echo "== Security advisories' releases (on the host)"
+    cargo test --locked -p una-cli --test advisories the_advisories_match_the_releases -- --exact \
+        || fail "Security advisories' releases (on the host)"
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
     image="una-local-ci:$toolchain$suffix"
     echo "== building the image $image (linux/$arch)"
@@ -75,6 +81,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env "CARGO_BUILD_JOBS=$jobs" \
         --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
+        --env UNA_LOCAL_CI_ADVISORIES_ON_HOST=1 \
         --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
     echo "local CI: PASS ($target, in the container)"
@@ -113,6 +120,13 @@ if [ -n "${UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST:-}" ] && [ -f /.dockerenv ]; t
 else
     step "Released sections of CHANGELOG.md" \
         env -u UNA_SKIP_RELEASED_SECTIONS scripts/check-released-sections.sh
+fi
+# Likewise the security advisories' releases (#715): the host ran their test with the tags
+# before starting the container, which checks the page alone. Said here, since a passing test's
+# own output is not shown.
+if [ -n "${UNA_LOCAL_CI_ADVISORIES_ON_HOST:-}" ] && [ -f /.dockerenv ]; then
+    echo "== Security advisories' releases"
+    echo "skipped where git reads no tags: checked on the host before the container"
 fi
 step "Format" cargo fmt --all --check
 step "Clippy" cargo clippy --workspace --all-targets --locked -- -D warnings

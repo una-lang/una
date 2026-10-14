@@ -77,8 +77,9 @@ export PATH="$Z3/bin:$PATH"
 # A gated commit may be a past release's, older than tags that exist now: its released sections
 # of CHANGELOG.md are checked against the tags it contains only (#645).
 export UNA_RELEASED_SECTIONS_SCOPE=ancestors
-# A gate's evidence never skips that check, whatever the caller's shell exports.
-unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST
+# A gate's evidence never skips that check, nor the advisories' releases (#715), whatever the
+# caller's shell exports.
+unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
