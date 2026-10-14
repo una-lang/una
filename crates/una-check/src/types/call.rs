@@ -806,7 +806,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.call_fails.insert(span, fails.clone());
             // A prelude function that declares its own failure and whose result carries its
             // arguments' labels fails depending on their values too, as `parse_json` does: its
-            // failure is labeled like its result (`spec/23 §5`, `spec/22 §5` rule 2, N-27). The
+            // failure is labeled like its result (`spec/23 §5`, `spec/22 §5` rule 2). The
             // failure of a function value given for `fails of` follows ADR 0067 instead.
             if def.fails.is_some() && prelude_labeled(self.env.prelude, &def) {
                 let label = self.labeled(&result).top_label();
@@ -816,7 +816,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.decided_failures.insert(span, label);
             }
             // Edition 0.1 (#350): whether the call fails, and how, may reveal a decision given
-            // to its function values, as an operation's failure reveals its arguments (N-39).
+            // to its function values, as an operation's failure reveals its arguments.
             if !decided.is_public() {
                 let payload = self.call_fails.get(&span).cloned().unwrap_or(fails.clone());
                 self.call_fails.insert(span, payload.raise_deep(&decided));
@@ -929,7 +929,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// own or the function value's. So the result is raised at every position, the callee's
     /// effects and the function values' run under the raised program counter (T-Call, T-App,
     /// as #253 does for a call written in the body), and its failure is labeled by it, as
-    /// N-39 labels a host operation's. A lambda whose parameter types are inferred takes
+    /// a host operation's is. A lambda whose parameter types are inferred takes
     /// `ℓ*_T` in them, and its own flows carry it. Edition 0.2 tells `ℓ*_T` from `ℓ_T` at
     /// the function argument's flow (S-Fun) instead. S-Fun does not subsume this rule in
     /// edition 0.1 (#356): when the decided argument goes to a parameter that no function value
@@ -1274,7 +1274,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // the carried ones, which accept every label and raise the result (ADR 0039).
         let mut carried = Label::public();
         // The join of the labels of the arguments that decide whether a host operation fails,
-        // and how (N-39).
+        // and how.
         let mut decided = Label::public();
         let host = capability.module == self.env.prelude;
         // S-14 (ADR 0085): what a `Files.write` writes, and where, decides the outcome of every
@@ -1355,7 +1355,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if let Some(fails) = &def.fails {
             // Whether a host operation fails, and how, is labeled like the arguments that
-            // decide it, as a prelude function's failure is (`spec/07 §7`, N-27, N-39): its
+            // decide it, as a prelude function's failure is (`spec/07 §7`): its
             // payload too, and a handling clause branches on that label.
             if decided.is_public() {
                 self.call_fails.insert(span, fails.clone());
@@ -2215,7 +2215,7 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
 }
 
 /// Whether the parameter `param` of the host operation `capability.op` decides whether it
-/// fails, and how (`spec/07 §7`, N-39, N-40, S-15): every argument of `Http`, since the server
+/// fails, and how (`spec/07 §7`, S-15): every argument of `Http`, since the server
 /// receives them all;
 /// the path of `Files`, not the content, besides the file-state label of every `Files` operation
 /// (ADR 0085); the key name of `Keys`, not the data.

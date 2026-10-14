@@ -1231,7 +1231,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
     }
 
     /// [`Lowerer::give`] for the parameters `owned` says are owned, of a function or of a
-    /// lambda (N-42).
+    /// lambda.
     #[allow(clippy::too_many_arguments)]
     fn hand_over(
         &mut self,
@@ -1447,7 +1447,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             );
             let value = if sited {
                 // The call's site, where a header value with a control character aborts with
-                // U6004 (N-40), and host text that is not valid UTF-8 with U6005 (S-16, ADR
+                // U6004, and host text that is not valid UTF-8 with U6005 (S-16, ADR
                 // 0086); a task stopped by it stops here.
                 let site = self.site(*span);
                 let mut operands = vec![site];
@@ -1765,7 +1765,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         }
                         return self.call(owned, &values);
                     }
-                    // `fold` hands its state to the step as owned (N-42): an initial value at
+                    // `fold` hands its state to the step as owned: an initial value at
                     // its last use moves in, unless it is the list folded over, which the loop
                     // still reads.
                     if function.name == "fold" {
@@ -1804,7 +1804,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 for arg in args {
                     values.push(self.atom(arg, env)?.0);
                 }
-                // A lambda owns every parameter (N-42): each argument moves at its last use,
+                // A lambda owns every parameter: each argument moves at its last use,
                 // and is retained otherwise.
                 let owned = vec![true; args.len()];
                 self.hand_over(&owned, args, &values, env, scope, catch, rest)?;
@@ -2298,7 +2298,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "empty_map" => "una_rt_map_empty",
             // JSON (`spec/23`): `parse_json` reports its failure as a host operation does.
             // Both check the memory budget at this call's site as they go: over it, the run
-            // aborts with U6003 there, or the task stops (N-41).
+            // aborts with U6003 there, or the task stops.
             "parse_json" => {
                 let site = self.site(span);
                 let value = self.call("una_rt_parse_json", &[arg(0)?, site])?;
@@ -2326,7 +2326,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// function to each, in order.
     /// In edition 0.2 the function may fail (ADR 0062): its failure stops the loop, releases what
     /// the loop made, and goes to `catch`, after the effects already performed.
-    /// Every call of the function gives it its arguments as owned (N-42): an item is retained
+    /// Every call of the function gives it its arguments as owned: an item is retained
     /// for it, and `fold`'s state moves into it, which returns the next state; `initial_owned`
     /// says that the initial state moved into the loop already.
     fn higher_order(

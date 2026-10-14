@@ -53,8 +53,8 @@ impl Checker<'_, '_, '_> {
 
     /// Whether integer arithmetic is exact where the expression being checked is: in a clause,
     /// and in the body of a `reflect` predicate, which is typed as code but computes exactly,
-    /// as the verifier reads it, so it has no `overflow` obligation and no U2022 (Leonardo,
-    /// 2026-10-06; `spec/18 §2`, `§3`, ADR 0057 amendment).
+    /// as the verifier reads it, so it has no `overflow` obligation and no U2022
+    /// (2026-10-06; `spec/18 §2`, `§3`, ADR 0057 amendment).
     pub(crate) fn exact_integers(&self) -> bool {
         matches!(self.ctx.rl, Rl::Clause | Rl::Reflect)
     }

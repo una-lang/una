@@ -69,7 +69,7 @@ enum Object {
     Map(BTreeMap<MapKey, (i64, i64)>),
 }
 
-/// A map's key, copied out of the heap at insert (N-15): an integer, or a text. A variant
+/// A map's key, copied out of the heap at insert: an integer, or a text. A variant
 /// without fields is an immediate `index << 1 | 1`, which reads as the integer `index`, in the
 /// order of its declaration. A map holds keys of one type, so no other order applies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1044,7 +1044,7 @@ fn text_list(parts: impl IntoIterator<Item = String>) -> i64 {
 }
 
 /// The first occurrence of `part` in `t`, as a byte offset: the one search that `find` and
-/// `contains_text` share (N-19), Rust's linear Two-Way search (`spec/22 §2` rule 8).
+/// `contains_text` share, Rust's linear Two-Way search (`spec/22 §2` rule 8).
 fn search(t: &str, part: &str) -> Option<usize> {
     t.find(part)
 }
@@ -1578,7 +1578,7 @@ mod tests {
 
     #[test]
     fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
-        // N-19: the verifier gives both one uninterpreted symbol, which holds because both
+        // The verifier gives both one uninterpreted symbol, which holds because both
         // run over one search. Texts and parts over a small alphabet, with a non-ASCII
         // scalar, so that occurrences are frequent; a fixed seed keeps the run reproducible.
         let alphabet = ['a', 'b', ' ', 'é'];
@@ -1599,7 +1599,7 @@ mod tests {
                 contains_text(t_word, part_word) == 1,
                 "{t:?} {part:?}"
             );
-            // N-21: the position starts a match that lies in the text.
+            // The position starts a match that lies in the text.
             if found != NONE {
                 let at = usize::try_from(&int_value(field(found, 0))).unwrap_or(usize::MAX);
                 let rest: String = t.chars().skip(at).collect();

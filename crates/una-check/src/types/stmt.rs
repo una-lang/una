@@ -593,7 +593,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.ctx.handled = false;
         self.ctx.top = false;
         let error = self.fails_of(&handled.expr).unwrap_or(Ty::error());
-        // The label that decides whether the call fails, when its arguments' values do (N-27):
+        // The label that decides whether the call fails, when its arguments' values do:
         // a handling clause branches on it.
         let decided = self
             .decided_of(&handled.expr)
@@ -787,7 +787,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The label that decides the failure of the call that `expr` is, when its arguments'
-    /// values decide it (N-27).
+    /// values decide it.
     fn decided_of(&self, expr: &Expr) -> Option<Label> {
         let mut inner = expr;
         while let una_syntax::ast::ExprKind::Paren(next) = &inner.kind {

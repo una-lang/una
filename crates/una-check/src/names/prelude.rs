@@ -66,7 +66,7 @@ pub(crate) const STD_TESTING: &str = "std.testing";
 pub(crate) const STD_HOST: &str = "std.host";
 
 /// What `std.host` exports to an import in edition 0.1: the host capabilities and their
-/// failure kinds (`spec/10 §11` rule 10, N-33). The prelude puts the same declarations in scope.
+/// failure kinds (`spec/10 §11` rule 10). The prelude puts the same declarations in scope.
 const STD_HOST_NAMES: [&str; 7] = [
     "Console",
     "Clock",

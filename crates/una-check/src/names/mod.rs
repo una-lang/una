@@ -765,7 +765,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             {
                 table.edges.push((target, import.module.span));
             }
-            // The importable standard modules (`spec/10 §11` rule 10, N-33).
+            // The importable standard modules (`spec/10 §11` rule 10).
             let standard: &[&str] = match path.as_str() {
                 prelude::STD_TESTING => &prelude::STD_TESTING_NAMES,
                 prelude::STD_HOST => prelude::std_host_names(self.package.settings.edition),

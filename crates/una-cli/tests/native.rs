@@ -796,7 +796,7 @@ fn an_executable_loop_over_its_memory_budget_is_u6003() {
 
 #[test]
 fn a_json_parse_over_its_memory_budget_is_u6003_in_both_engines() {
-    // N-41 (#314, review finding H-2): `parse_json` checks the budget as it reads, so a large
+    // #314 (review finding H-2): `parse_json` checks the budget as it reads, so a large
     // input ends with U6003 at the call, in the interpreter and natively, rather than with an
     // allocation the process cannot make. The text itself, about 13 MB, fits the budget; the
     // values it parses into do not.
@@ -846,7 +846,7 @@ fn a_json_parse_over_its_memory_budget_is_u6003_in_both_engines() {
 
 #[test]
 fn a_json_parse_over_its_memory_budget_in_a_task_is_u6003_in_both_engines() {
-    // N-41 (#314): in a task of `together`, the parse that finds the run over its budget stops
+    // #314: in a task of `together`, the parse that finds the run over its budget stops
     // the task, natively through `una_rt_json_stopped`, and the block ends the run with U6003
     // at that call, as the interpreter does; the line after the block never prints.
     let program = "module hog\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"[0\"\n  for i in 0..<1000000\n    t = \"{t},\\\"abcdefghij\\\"\"\n  together\n    let doc = parse_json(\"{t}]\")\n      if error use Null\n    let other = t.len\n  @console.print(\"{doc.to_json().len} {other}\")\n";
@@ -1692,7 +1692,7 @@ fn run_closed(executable: &Path, fd: u8) -> Output {
 
 #[test]
 fn a_closed_stream_discards_the_output_and_a_broken_pipe_fails_natively() {
-    // `spec/13 §5`, `spec/16 §3` (#259, N-17): natively as in the interpreter, a closed stdout
+    // `spec/13 §5`, `spec/16 §3` (#259): natively as in the interpreter, a closed stdout
     // or stderr discards what is written to it, while a reader that went away (EPIPE) is a
     // failure to write output, exit code 2.
     let (prints_dir, prints) = closed_package(
@@ -2166,7 +2166,7 @@ fn native_text_len_and_slice_take_constant_time_on_any_text() {
 
 /// A program that appends `steps` items to a list through a function value, by `shape`: a
 /// named function passed as a value (`named`), a lambda (`lambda`), two layers of lambdas over
-/// a function value (`layers`), or `fold` over a list (`fold`) or into a text (`text`) (N-42).
+/// a function value (`layers`), or `fold` over a list (`fold`) or into a text (`text`).
 fn appends_through_function_values(shape: &str, steps: usize) -> String {
     let body = match shape {
         "named" => format!("  let a = run_with(r1, n: {steps})\n  @console.print(\"{{a.len}}\")\n"),
@@ -2188,7 +2188,7 @@ fn appends_through_function_values(shape: &str, steps: usize) -> String {
     )
 }
 
-/// Function values that a list goes through twice, or that capture it, never change it (N-42).
+/// Function values that a list goes through twice, or that capture it, never change it.
 const ALIASED: &str = "module aliased\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let base = [1, 2]\n  let f = fn(acc: List[Int], i: Int) -> acc.append(item: i)\n  let a = f(base, 3)\n  let b = f(base, 4)\n  let g = fn(i: Int) -> base.append(item: i)\n  let c = g(5)\n  let d = g(6)\n  let folded = [7, 8].fold(initial: base, step: fn(acc, x) -> acc.append(item: x))\n  @console.print(\"{base} {a} {b} {c} {d} {folded} {base}\")\n";
 
 /// What [`ALIASED`] prints.
@@ -2196,7 +2196,7 @@ const ALIASED_OUTPUT: &str = "[1, 2] [1, 2, 3] [1, 2, 4] [1, 2, 5] [1, 2, 6] [1,
 
 #[test]
 fn a_list_built_through_function_values_grows_in_linear_time() {
-    // N-42 (#312, IP-1, IP-2): a call through a function value moves its arguments into the
+    // #312 (IP-1, IP-2): a call through a function value moves its arguments into the
     // lambda, which owns them, so a list or a text appended through function values and `fold`
     // grows in place: the debug runtime's count of copies is the same at every size, 0, or 1
     // for the literal a text starts from: the copy count is the primary check. The timing is
@@ -2287,7 +2287,7 @@ fn copied(output: &std::process::Output) -> u64 {
 
 #[test]
 fn function_values_never_change_a_list_another_name_holds() {
-    // N-42: a function value called twice with one list, a closure that captures it, and a
+    // A function value called twice with one list, a closure that captures it, and a
     // `fold` that starts from it each see it unchanged.
     let dir = package(
         "aliased",
@@ -2313,7 +2313,7 @@ fn function_values_never_change_a_list_another_name_holds() {
 
 #[test]
 fn a_native_executable_carries_no_explain_text_413() {
-    // #413 (N-66): the explain texts live in `una-explain`, which only the command line links;
+    // #413: the explain texts live in `una-explain`, which only the command line links;
     // the runtime links `una-diag` for codes and rendering, so an executable holds none of them.
     // They were 75,708 bytes, about 5.3 % of `examples/hello`'s 1,430,424.
     let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-explain-text");

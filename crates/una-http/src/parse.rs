@@ -91,7 +91,7 @@ pub struct Parser {
     body: Vec<u8>,
 }
 
-/// The most 1xx responses before the final one (N-30); a server that sends more is stalling.
+/// The most 1xx responses before the final one; a server that sends more is stalling.
 const MAX_INTERIM: usize = 10;
 
 impl Parser {
@@ -371,7 +371,7 @@ fn content_length(value: &str) -> Result<usize, Error> {
 /// The size of a chunk-size line: hex digits, then an optional extension after `;`, which is
 /// ignored.
 fn chunk_size(line: &[u8]) -> Result<usize, Error> {
-    // Hex digits alone, with no whitespace around them (RFC 9112 §7.1, N-30).
+    // Hex digits alone, with no whitespace around them (RFC 9112 §7.1).
     let digits = line.split(|&b| b == b';').next().unwrap_or_default();
     if digits.is_empty() || digits.len() > 15 || !digits.iter().all(u8::is_ascii_hexdigit) {
         return Err(Error::Protocol);
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn the_details_of_rfc_9112_hold() {
-        // N-30 #7. A 204 or 304 has no body, whatever its headers say.
+        // A 204 or 304 has no body, whatever its headers say.
         for head in [
             "HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n",
             "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n",
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn every_split_parses_as_the_whole() {
-        // N-26: a response split at every byte boundary, and at random sets of them, parses as
+        // A response split at every byte boundary, and at random sets of them, parses as
         // in one piece, valid or not.
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
         for _ in 0..300 {
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn mutated_responses_never_panic_and_split_alike() {
-        // N-26: random mutations of valid responses (bytes replaced, inserted or removed, and
+        // Random mutations of valid responses (bytes replaced, inserted or removed, and
         // truncations) give a response or an error, the same whatever the splits.
         let mut rng = Rng(0x2545_f491_4f6c_dd1d);
         for _ in 0..2000 {

@@ -74,7 +74,7 @@ impl Checker<'_, '_, '_> {
                 // position of that type has a variable of its own (ADR 0075 rule 1).
                 match self.env.edit_shapes.get(&name).cloned() {
                     // ADR 0075 rule 1: a position whose labels cannot all be variables is
-                    // rejected, never decided by the order unification sees its uses in (N-45).
+                    // rejected, never decided by the order unification sees its uses in.
                     Some(Ty::Error(_)) => {
                         if self.pass == Pass::Check {
                             let shown = self.report.text(span).to_owned();
@@ -183,7 +183,7 @@ impl Checker<'_, '_, '_> {
             // that stays empty, and a type with an unsolved variable inside is already U2001,
             // which names the type parameter that cannot be inferred: neither has a shape. A
             // type with a function inside has label positions a shape cannot name: it is
-            // recorded as such, and pass 2 rejects it (N-45, E-2).
+            // recorded as such, and pass 2 rejects it (E-2).
             if !closed(&resolved) && !holds_function(&resolved) {
                 continue;
             }

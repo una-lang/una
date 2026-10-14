@@ -16,7 +16,7 @@ pub enum Error {
     Denied,
     /// The URL is not an absolute `http` or `https` URL, or it has user info.
     BadUrl,
-    /// A header of the request is malformed, or names one the client sets itself (N-28).
+    /// A header of the request is malformed, or names one the client sets itself.
     BadRequest,
     /// Name resolution or the connection failed.
     Unreachable,
@@ -29,7 +29,7 @@ pub enum Error {
     /// The response is not valid HTTP/1.1, or its body is not UTF-8.
     Protocol,
     /// A header value has a control character other than a tab. It is not an `HttpError`: the
-    /// value may be `internal`, so the engines abort the run with U6004 instead (N-40).
+    /// value may be `internal`, so the engines abort the run with U6004 instead.
     HeaderValue,
 }
 
@@ -77,7 +77,7 @@ impl Default for Settings {
     }
 }
 
-/// The longest `--http-timeout`, a day, in seconds (`spec/24 §4`, N-30).
+/// The longest `--http-timeout`, a day, in seconds (`spec/24 §4`).
 pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 
 /// The most redirects followed in a row (`spec/24 §2` rule 3).
@@ -92,7 +92,7 @@ pub fn send(
     // Capped at a day, as the flags are, so the deadline never overflows the clock.
     let timeout = settings.timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
     let deadline = Instant::now().checked_add(timeout).ok_or(Error::TimedOut)?;
-    // First, so that the abort it leads to depends on the header values alone (N-40).
+    // First, so that the abort it leads to depends on the header values alone.
     if request
         .headers
         .iter()
@@ -116,7 +116,7 @@ pub fn send(
         .cloned()
         .collect();
     // Whether the chain has left the first origin: the credentials then stay dropped to its
-    // end, even back at that origin, whose path the other origin chose (N-35).
+    // end, even back at that origin, whose path the other origin chose.
     let mut left_first = false;
     for redirects in 0..=MAX_REDIRECTS {
         // The credentials go only to the origin they were given for.
@@ -172,12 +172,12 @@ fn control(b: &u8) -> bool {
     *b < 0x20 && *b != b'\t' || *b == 0x7f
 }
 
-/// The headers that carry a credential, which a redirect to another origin drops (N-30).
+/// The headers that carry a credential, which a redirect to another origin drops.
 const CREDENTIALS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
 /// The headers the program may send: tokens, none that the client sets itself, and no
-/// `Authorization` beside a key; the key, free of control characters (`BadRequest`, N-28,
-/// N-30). [`send`] checks the values first ([`Error::HeaderValue`], N-40).
+/// `Authorization` beside a key; the key, free of control characters (`BadRequest`).
+/// [`send`] checks the values first ([`Error::HeaderValue`]).
 fn check_headers(headers: &[(String, String)], bearer: Option<&[u8]>) -> Result<(), Error> {
     let token = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b);
     if bearer.is_some_and(|key| key.iter().any(control)) {

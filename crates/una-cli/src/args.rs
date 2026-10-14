@@ -232,7 +232,7 @@ fn at_least_one(text: &str) -> Result<u64, String> {
     }
 }
 
-/// A value of `--http-timeout`: a whole number of seconds, from 1 to a day (`spec/24 §4`, N-30).
+/// A value of `--http-timeout`: a whole number of seconds, from 1 to a day (`spec/24 §4`).
 fn http_timeout(text: &str) -> Result<u64, String> {
     let n = at_least_one(text)?;
     if n > una_http::client::MAX_TIMEOUT_SECS {

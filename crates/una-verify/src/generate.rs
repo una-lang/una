@@ -814,7 +814,7 @@ struct Ctx {
     types: std::rc::Rc<BTreeMap<Name, Type>>,
     /// In a loop body, the equalities that put every enclosing loop at its first iteration:
     /// each state binding at its value on entry, and a range's variable at its lower bound
-    /// (ADR 0071 D3, decision N-13). Shared until changed, as `types`.
+    /// (ADR 0071 D3). Shared until changed, as `types`.
     entry: std::rc::Rc<Vec<F>>,
     /// The divisions by a value that is not a literal evaluated on this path, with their
     /// divisors (ADR 0054, amendment of 2026-10-08). Shared until changed, as `types`.
@@ -2860,10 +2860,10 @@ impl<'p, 'i> Walker<'p, 'i> {
         })
     }
 
-    /// `find` and `contains_text` share an uninterpreted `i!contains!Text` (N-19): one is `Some`
+    /// `find` and `contains_text` share an uninterpreted `i!contains!Text`: one is `Some`
     /// exactly when the other holds (`spec/22 §2` rule 2). Both engines run them over one
     /// search, so the symbol stands for the same relation. A position `find` returns lies in
-    /// the text with its match after it (N-21).
+    /// the text with its match after it.
     fn text_facts(&mut self, name: &str, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
         let (Some(t), Some(part)) = (values.first(), values.get(1)) else {
             return;
@@ -2888,7 +2888,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 };
                 let some = F::eq(tag, F::Int("0".to_owned()));
                 ctx.assume(F::eq(some.clone(), contains));
-                // N-21: the position of a match lies in the text, with the match after it.
+                // The position of a match lies in the text, with the match after it.
                 if let (Some(at), Some(t_len), Some(part_len)) =
                     (self.field(x, 0, 0), self.len(t), self.len(part))
                     && at.f.sort() == "Int"

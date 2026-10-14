@@ -1160,7 +1160,7 @@ fn core_with_rejected_exports_flow_rejections_apart_and_leaves_core_unchanged() 
     assert_eq!(entries.len(), 1, "{rejected}");
     assert_eq!(entries[0]["module"], "m");
     assert_eq!(entries[0]["decl"]["value"]["name"], "leak");
-    // A rejected function carries the keys an accepted one does (#514, N-99): the re-check
+    // A rejected function carries the keys an accepted one does (#514): the re-check
     // reads a missing one as not re-checked, never as a default.
     for key in ["uses_of", "fails_of", "result_labels", "of_raises"] {
         assert!(

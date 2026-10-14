@@ -1,6 +1,6 @@
 //! The client over TLS against a local `rustls` server (`spec/24 §3` rule 4, ADR 0074 H8): a
 //! test certificate authority, made at test time, is trusted through the debug-only hook, never
-//! in release builds. The repository holds no private key (N-31).
+//! in release builds. The repository holds no private key.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -190,7 +190,7 @@ fn a_handshake_that_never_comes_meets_the_deadline() {
 }
 
 /// In a release build there is no hook: the test authority is never trusted, so a server it
-/// signed fails with `Tls`, as any unknown one does (N-28). `scripts/local-ci.sh` runs this file
+/// signed fails with `Tls`, as any unknown one does. `scripts/local-ci.sh` runs this file
 /// in release too.
 #[cfg(not(debug_assertions))]
 #[test]

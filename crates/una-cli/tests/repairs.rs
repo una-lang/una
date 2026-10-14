@@ -607,7 +607,7 @@ fn repairs_of(root: &Path) -> Vec<Repairs> {
 
 #[test]
 fn an_unknown_name_close_to_one_name_in_scope_is_offered_it_as_advice_419() {
-    // #419 (N-64): U1001 offers the closest name in scope, for a value and for a type, as
+    // #419: U1001 offers the closest name in scope, for a value and for a type, as
     // advice without an edit, even when it is the only close one: a typo's fix is a guess, and
     // an edit applied unread could bind another name that checks (R-1, #125).
     let root = package(
@@ -664,7 +664,7 @@ fn an_unknown_name_far_from_every_name_in_scope_has_no_repair_419() {
 
 #[test]
 fn una_fix_never_widens_authority_or_visibility_0084() {
-    // ADR 0084 (Leonardo, 2026-10-08: "Never apply, no flag"): the edit that adds `flush` to
+    // ADR 0084 (2026-10-08: "Never apply, no flag"): the edit that adds `flush` to
     // the `uses` clause and the one that makes `helper` public are reported as skipped, and
     // the files keep their `uses` clause and their private declaration.
     for edition in ["0.1", "0.2"] {

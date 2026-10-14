@@ -767,7 +767,7 @@ pub fn poll() -> i64 {
     with_state(|state| i64::from(state.cancelled())).unwrap_or(0)
 }
 
-/// 1 when an operation stopped the task the thread runs, as U6004 (N-40) and U6005 (S-16) do in
+/// 1 when an operation stopped the task the thread runs, as U6004 and U6005 (S-16) do in
 /// a task: its caller stops it before using the operation's value.
 pub fn stopped() -> i64 {
     with_state(|state| i64::from(state.stopped.is_some())).unwrap_or(0)
@@ -823,7 +823,7 @@ pub(crate) fn abort_from_task(code: Code, location: Location, message: String) -
 }
 
 /// Aborts the run, or the task the thread runs, with `code` at the call `site`, as a call
-/// over the depth does: U6004 for a header value with a control character (N-40), U6005 for host
+/// over the depth does: U6004 for a header value with a control character, U6005 for host
 /// text that is not valid UTF-8 (S-16, ADR 0086). Returns 0, the value the caller drops: a task
 /// stops, and its block reports the abort.
 pub(crate) fn abort_at(site: usize, code: Code, message: String) -> i64 {

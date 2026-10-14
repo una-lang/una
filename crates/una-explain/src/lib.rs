@@ -2,7 +2,7 @@
 //!
 //! They live apart from `una-diag`, whose codes, titles and rendering the runtime links into
 //! every native executable: only the command line depends on this crate, so no executable
-//! carries the texts (#413, N-66).
+//! carries the texts (#413).
 
 use una_diag::Code;
 

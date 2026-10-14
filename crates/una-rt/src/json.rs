@@ -37,7 +37,7 @@ enum Building {
 
 /// The `Json` word of `tree`, owned by the caller, asking `within` every
 /// [`json::CHECK_EVERY`] values whether the run is within its memory budget: `None` when it is
-/// not, with what was built so far released (N-41).
+/// not, with what was built so far released.
 fn word(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<i64> {
     let mut stack: Vec<Building> = Vec::new();
     let mut pending = Some(tree);
@@ -139,7 +139,7 @@ enum Walking {
 
 /// The tree of a `Json` word, which stays borrowed, asking `within` every
 /// [`json::CHECK_EVERY`] values whether the run is within its memory budget: `None` when it is
-/// not (N-41).
+/// not.
 fn tree(word: i64, within: &mut dyn FnMut() -> bool) -> Option<Tree> {
     let mut stack: Vec<Walking> = Vec::new();
     let mut pending = Some(word);
@@ -227,7 +227,7 @@ fn error(error: json::Error) -> i64 {
 
 /// `parse_json(t)` at `site`: the `Json` of `t`, or a `JsonError` failure, which
 /// `una_rt_host_failed` then reports (`spec/23 §3`). Over the memory budget it aborts at
-/// `site` with U6003, as a loop iteration does, and [`json_stopped`] says so (N-41).
+/// `site` with U6003, as a loop iteration does, and [`json_stopped`] says so.
 pub fn parse_json(t: i64, site: i64) -> i64 {
     let mut within = || runtime::budget(usize::try_from(site).unwrap_or(usize::MAX)) == 0;
     let built = match json::parse_within(&text_value(t), &mut within) {

@@ -386,7 +386,7 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
         Error::TooLarge => 5,
         Error::Tls => 6,
         Error::Protocol => 7,
-        // Not a failure: `http` aborts before (N-40).
+        // Not a failure: `http` aborts before.
         Error::HeaderValue => 2,
     }
 }
@@ -466,7 +466,7 @@ fn http(
             }
             record
         }
-        // The run, or the task, aborts with U6004 at the operation (N-40); a task's caller
+        // The run, or the task, aborts with U6004 at the operation; a task's caller
         // stops it ([`crate::runtime::stopped`]).
         Err(Error::HeaderValue) => crate::runtime::abort_at(
             usize::try_from(site).unwrap_or(usize::MAX),
