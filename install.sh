@@ -8,9 +8,11 @@
 #   UNA_HOME/docs/guide/*.md        (the guides, from releases that ship them, #410)
 #
 # Every download is checked before anything is installed:
-# - the release archive, against the SHA-256 that the release's validation record lists
-#   (docs/releases/<version>-validation.md, docs/releases/validation.md), whose verdict must
-#   be PASS;
+# - the release archive, against the SHA-256 that the release's validation summary lists
+#   (docs/validation/<version>.md, docs/release-gates.md), whose verdict must be PASS. The
+#   summary is read from the release's tag and, for a release tagged before summaries were
+#   committed, from the main branch. A macOS archive that was packed again after its release is
+#   accepted only as docs/validation/repacked.md pairs it with the summary's digest;
 # - Z3, against the SHA-256 that the Z3 project publishes for its release, pinned below as in
 #   scripts/install-z3.sh.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
@@ -30,7 +32,8 @@
 #   UNA_HOME          where to install (default: ~/.una)
 #   UNA_RELEASES      where release archives are, as <base>/v<version>/<archive>
 #                     (default: https://github.com/una-lang/una/releases/download)
-#   UNA_RECORDS       where validation records are, as <base>/v<version>/docs/releases/<record>
+#   UNA_RECORDS       where validation summaries are, as <base>/<ref>/docs/validation/<version>.md
+#                     with <ref> the tag v<version>, then main
 #                     (default: https://raw.githubusercontent.com/una-lang/una)
 #   UNA_Z3_RELEASES   where Z3 archives are, as <base>/z3-<version>/<asset>.zip
 #                     (default: https://github.com/Z3Prover/z3/releases/download)
@@ -134,22 +137,47 @@ done
 work=$(mktemp -d "${TMPDIR:-/tmp}/una-install.XXXXXX")
 trap 'rm -rf "${work:?}"' EXIT
 
-# The validation record of the release: its verdict, and the archive's digest.
-record=$version-validation.md
-say "reading the validation record of $version"
-fetch "$records/v$version/docs/releases/$record" "$work/$record" \
-    || fail "cannot download the validation record $record"
+# The validation summary of the release: its verdict, and the archive's digest. It comes from
+# the repository's tree, never from the release's own assets, so that the archive is checked
+# against a digest the release cannot replace (#717).
+record=$version.md
+say "reading the validation summary of $version"
+fetch "$records/v$version/docs/validation/$record" "$work/$record" \
+    || fetch "$records/main/docs/validation/$record" "$work/$record" \
+    || fail "no validation summary for $version (docs/validation/$record), so this script does not install it; a release without one, such as 0.1.x, can be installed by hand from its release assets"
 grep -qx 'Verdict: PASS (every gate)' "$work/$record" \
-    || fail "the validation record of $version is not a PASS of every gate"
+    || fail "the validation summary of $version is not a PASS of every gate"
 archive=una-$version-$target.tar.gz
 expected=$(sed -n "s/^| \`$archive\` | \`\([0-9a-f]\{64\}\)\` |\$/\1/p" "$work/$record")
-[ -n "$expected" ] || fail "the validation record of $version lists no $archive"
+[ -n "$expected" ] || fail "the validation summary of $version lists no $archive"
+
+# docs/validation/repacked.md, read like the summary (the tag, then main), only when it is needed:
+# the macOS archives that were packed again after their release, each paired with its gated
+# digest, and the ones that were withdrawn.
+repacked() {
+    [ -f "$work/repacked.md" ] \
+        || fetch "$records/v$version/docs/validation/repacked.md" "$work/repacked.md" \
+        || fetch "$records/main/docs/validation/repacked.md" "$work/repacked.md" \
+        || : > "$work/repacked.md"
+}
 
 say "downloading $archive"
-fetch "$releases/v$version/$archive" "$work/$archive" || fail "cannot download $archive"
+if ! fetch "$releases/v$version/$archive" "$work/$archive"; then
+    repacked
+    awk -F'`' -v a="$archive" '$1 == "| " && $2 == a && NF == 3 { found = 1 } END { exit !found }' "$work/repacked.md" \
+        && fail "$archive was withdrawn (docs/validation/repacked.md); on this platform, install another version"
+    fail "cannot download $archive"
+fi
 actual=$(digest "$work/$archive")
-[ "$actual" = "$expected" ] \
-    || fail "SHA-256 mismatch for $archive: the validation record says $expected, the download is $actual"
+if [ "$actual" != "$expected" ]; then
+    # A repacked archive: accepted only when repacked.md pairs exactly this archive's name and
+    # exactly the summary's digest with the digest of the download.
+    repacked
+    published=$(awk -F'`' -v a="$archive" -v g="$expected" '$1 == "| " && $2 == a && $4 == g { print $6 }' "$work/repacked.md")
+    [ -n "$published" ] && [ "$actual" = "$published" ] \
+        || fail "SHA-256 mismatch for $archive: the validation summary says $expected, the download is $actual"
+    say "$archive is the repacked archive of the gated $expected (docs/validation/repacked.md)"
+fi
 
 say "downloading Z3 $Z3_VERSION"
 fetch "$z3_releases/z3-$Z3_VERSION/$z3_asset.zip" "$work/$z3_asset.zip" \
@@ -211,7 +239,7 @@ fi
     for file in $files; do echo "file $file"; done
 } > "$marker"
 
-# The version is the one the validation record vouched for. From 0.3.0 `una --version` also
+# The version is the one the validation summary vouched for. From 0.3.0 `una --version` also
 # names the editions it serves (#305); an older `una` has no such flag, and prints nothing here.
 say "installed una $version and Z3 $Z3_VERSION in $home"
 "$home/bin/una" --version 2>/dev/null | sed 's/^/    /' || true

@@ -32,7 +32,7 @@ scripts/local-ci.sh           # solver check, formatting, clippy, every test, th
 scripts/local-ci.sh --linux   # the same steps in a Linux container
 ```
 
-A pull request that changes `scripts/local-ci.sh`, its Docker image under `scripts/local-ci/`, or a script that one of its steps calls also needs `scripts/local-ci.sh --linux-arm64` to pass on its final commit, since a tool the image lacks fails only there (`docs/releases/validation.md` §1). Each run ends with `PASS`, or with `FAIL` and the step that failed. One step, `scripts/doc-links.py`, checks that every link of the repository's documents names a tracked file and every `#fragment` a heading of its document; it needs Python 3. The website is built from the repository's documents by the release gate `site` (`docs/releases/validation.md`). During development, the usual commands are:
+A pull request that changes `scripts/local-ci.sh`, its Docker image under `scripts/local-ci/`, or a script that one of its steps calls also needs `scripts/local-ci.sh --linux-arm64` to pass on its final commit, since a tool the image lacks fails only there (`docs/release-gates.md` §1). Each run ends with `PASS`, or with `FAIL` and the step that failed. One step, `scripts/doc-links.py`, checks that every link of the repository's documents names a tracked file and every `#fragment` a heading of its document; it needs Python 3. The website is built from the repository's documents by the release gate `site` (`docs/release-gates.md`). During development, the usual commands are:
 
 ```bash
 cargo fmt --all
@@ -43,7 +43,7 @@ cargo insta review   # review each snapshot change; never accept one blindly
 
 Tests that reach the solver need Z3 at the exact version pinned in `verification.lock`. Without it they fail with U5003 rather than skip.
 
-Releases are checked the same way: `scripts/release-gates.sh` runs every gate on one commit from a fresh clone, and each release's record is in [`docs/releases/`](docs/releases/).
+Releases are checked the same way: `scripts/release-gates.sh` runs every gate on one commit from a fresh clone, and each release's summary is in [`docs/validation/`](docs/validation/), as [`docs/release-gates.md`](docs/release-gates.md) describes.
 
 ## Rules for the code
 

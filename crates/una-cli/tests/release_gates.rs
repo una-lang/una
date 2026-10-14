@@ -1,7 +1,7 @@
-//! `scripts/release-gates.sh` (#232, `docs/releases/validation.md`): the clone gate checks
+//! `scripts/release-gates.sh` (#232, `docs/release-gates.md`): the clone gate checks
 //! that its fresh clone is exactly the requested commit, a failing gate does not stop the next
 //! one, and the results and the record have their documented format. The other gates build
-//! and run everything, so `docs/releases/validation.md` runs them, not this test.
+//! and run everything, so `docs/release-gates.md` runs them, not this test.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -143,4 +143,61 @@ fn usage_errors_exit_with_2() {
         Some(2),
         "an unknown gate"
     );
+}
+
+/// Runs `scripts/release-summary.py` on `record`, with `pattern` as UNA_PRIVACY_PATTERN when
+/// given, and returns its exit code and the summary it wrote.
+fn summary(dir: &Path, record: &str, pattern: Option<&str>) -> (Option<i32>, String) {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("record.md"), record).unwrap();
+    let mut command = Command::new("python3");
+    command
+        .arg("-B")
+        .arg(root().join("scripts/release-summary.py"))
+        .arg("9.9.9")
+        .arg(dir.join("record.md"))
+        .arg(dir.join("summary.md"))
+        .env_remove("UNA_PRIVACY_PATTERN");
+    if let Some(pattern) = pattern {
+        command.env("UNA_PRIVACY_PATTERN", pattern);
+    }
+    let output = command.output().unwrap();
+    let written = std::fs::read_to_string(dir.join("summary.md")).unwrap_or_default();
+    (output.status.code(), written)
+}
+
+#[test]
+fn the_summary_is_the_template_of_the_record_and_nothing_else() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-summary");
+    let digest = "a".repeat(64);
+    let log = "b".repeat(64);
+    let record = format!(
+        "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
+        commit = "c".repeat(40),
+    );
+    let (code, written) = summary(&dir, &record, Some("not-in-the-summary"));
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        written,
+        format!(
+            "# Una v9.9.9: release validation\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64\n- Toolchain: rustc 1.98.1 (48a229cea 2026-09-01); Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds |\n| --- | --- | --- |\n| clone | PASS | 2 |\n| build | PASS | 398 |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\nThe gates are defined in `docs/release-gates.md` at the commit above.\n",
+            commit = "c".repeat(40),
+        )
+    );
+    // A summary that matches the privacy pattern is not written.
+    let (code, written) = summary(&dir, &record, Some("darwin"));
+    assert_eq!(code, Some(1));
+    assert!(written.is_empty());
+    // A field out of its shape stops the summary: free text in the run line, or a gate the
+    // script does not run.
+    for (from, to) in [
+        ("Darwin arm64", "Darwin arm64 on a named host"),
+        ("| build | PASS |", "| deploy | PASS |"),
+    ] {
+        let (code, written) = summary(&dir, &record.replace(from, to), None);
+        assert_eq!(code, Some(1), "{to}");
+        assert!(written.is_empty(), "{to}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

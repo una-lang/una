@@ -1,4 +1,4 @@
-//! `scripts/container-jobs.sh` (#701, `docs/releases/validation.md`): the job count of the build
+//! `scripts/container-jobs.sh` (#701, `docs/release-gates.md`): the job count of the build
 //! inside a Linux container of `scripts/local-ci.sh`. It is one job per 2 GiB of the Docker VM's
 //! memory, at most one per CPU and at least one, and a host value can lower it but never raise it.
 
@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The VM of the measurement in `docs/releases/validation.md`: 7834 MiB, 10 CPUs.
+/// The VM of the measurement in `docs/release-gates.md`: 7834 MiB, 10 CPUs.
 const MEMORY: &str = "8214851584";
 const GIB: u64 = 1 << 30;
 

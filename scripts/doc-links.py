@@ -49,8 +49,9 @@ ROOT_DOCUMENTS = [
     "CHANGELOG.md",
     "docs/00-charter.md",
     "docs/README.md",
+    "docs/release-gates.md",
 ]
-DIRECTORIES = ["docs/guide", "docs/spec", "docs/releases", "docs/adr", "docs/security"]
+DIRECTORIES = ["docs/guide", "docs/spec", "docs/releases", "docs/validation", "docs/adr", "docs/security"]
 
 
 def documents(files):

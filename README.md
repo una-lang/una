@@ -61,7 +61,7 @@ una explain U5001   # check that it works
 ```
 
 What the installer checks:
-- It installs only an archive whose SHA-256 digest is listed in that release's validation record, and only when the record's verdict is PASS. The records are listed in [`docs/releases/validation.md`](docs/releases/validation.md).
+- It installs only an archive whose SHA-256 digest is listed in that release's validation summary, and only when the summary's verdict is PASS. The summaries are in [`docs/validation/`](docs/validation/), and [`docs/release-gates.md`](docs/release-gates.md) says how they are made.
 - Z3 must match the digest its project publishes.
 - On any mismatch it installs nothing.
 
@@ -216,7 +216,7 @@ Every command takes `--json` and prints exactly one JSON document, with a `schem
 | [Specification](docs/spec/) | The normative definition of the language |
 | [Charter](docs/00-charter.md) | What Una is for, what it proves and what it assumes |
 | [Design decisions](docs/adr/) | Why each key decision was made |
-| [Validation records](docs/releases/validation.md) | How each release was checked, with the digests of its archives |
+| [Release gates](docs/release-gates.md) and [validation summaries](docs/validation/) | How each release was checked, with the digests of its archives |
 | [Changelog](CHANGELOG.md) | The changes of each release |
 | [Documentation map](docs/README.md) | Every document, in reading order |
 
