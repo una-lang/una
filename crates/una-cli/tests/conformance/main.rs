@@ -334,6 +334,19 @@ fn replaced_text(edit: &Value, path: &Path) -> Option<String> {
     text.get(from..to.max(from)).map(str::to_owned)
 }
 
+/// The solver's errors in place of values, in any outcome of tier 1, by obligation (ADR 0101).
+fn solver_errors(checked: &una_cli::Checked) -> Vec<String> {
+    checked
+        .verification
+        .iter()
+        .flat_map(|verification| verification.obligations.iter().zip(&verification.outcomes))
+        .filter_map(|(obligation, outcome)| {
+            let error = outcome.values_error.as_ref()?;
+            Some(format!("{} ({}): {error}", obligation.id, obligation.goal))
+        })
+        .collect()
+}
+
 #[test]
 fn conformance_suite() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -360,8 +373,11 @@ fn conformance_suite() {
             _ => Tier::One,
         };
         let path = root.join(&location.path);
-        let diagnostics = match una_cli::check(&path, tier) {
-            Ok(checked) => checked.diagnostics,
+        let (diagnostics, solver_errors) = match una_cli::check(&path, tier) {
+            Ok(checked) => {
+                let errors = solver_errors(&checked);
+                (checked.diagnostics, errors)
+            }
             Err(error) => {
                 failures.push(format!("{}: {error}", location.path));
                 continue;
@@ -378,6 +394,16 @@ fn conformance_suite() {
         let ranking = escape_ranking(&diagnostics, &package_root);
         if !ranking.is_empty() {
             failures.push(format!("{}: {}", location.path, ranking.join("; ")));
+            continue;
+        }
+        // ADR 0101: an error of the solver after `sat` means the generated script asks for
+        // something it cannot answer. No case may have one, whatever its outcome (#668).
+        if !solver_errors.is_empty() {
+            failures.push(format!(
+                "{}: the solver gave no values: {}",
+                location.path,
+                solver_errors.join("; ")
+            ));
             continue;
         }
         // `una run` and `una test` report the errors of the checks again, and their own.

@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use una_diag::{Binding, ObligationKind, ObligationStatus};
 
 use crate::cache;
-use crate::generate::{Collection, Obligation, Show};
+use crate::generate::{Collection, Obligation, Show, Shown};
 use crate::smt::{Const, ConstRole, F, path_selector};
 use crate::solver::{self, Answer, Status};
 
@@ -63,6 +63,10 @@ pub struct Outcome {
     /// model is no run, since a run fails there, and the division's own obligation reports it,
     /// so the outcome shows no counterexample (ADR 0054, amendment of 2026-10-08).
     pub division: Option<una_syntax::Span>,
+    /// What the solver said instead of values, in the first query or the second of ADR 0054,
+    /// whatever the status: a wrong script (ADR 0101). A refutation without bindings shows it
+    /// as its counterexample (#668).
+    pub values_error: Option<String>,
 }
 
 /// Why obligations could not be discharged at all.
@@ -534,10 +538,18 @@ fn outcome(
     second: Option<&Answer>,
     cached: bool,
 ) -> Outcome {
-    // ADR 0054: the second query's refutation, when its model agrees, replaces the first.
+    // ADR 0101: what the solver said instead of values, in either query, kept whatever the
+    // outcome, so that a wrong script is never silent (#668).
+    let values_error = std::iter::once(answer)
+        .chain(second)
+        .filter_map(|answer| answer.values_error.clone())
+        .reduce(|first, second| format!("{first}; {second}"));
+    // ADR 0054: the second query's refutation, when its model agrees, replaces the first; one
+    // without values has no model to agree (#668).
     let answer = match second {
         Some(second)
             if second.status == Status::Refuted
+                && second.values_error.is_none()
                 && agrees(obligation, &values(requested, second)) =>
         {
             second
@@ -566,13 +578,22 @@ fn outcome(
             let path = (1..=obligation.paths.len())
                 .find(|number| value(&path_selector(*number)) == "true")
                 .map(|number| number - 1);
+            // A model without values cannot be checked against real arithmetic: the reason
+            // names the solver's error, not the arithmetic (#668).
+            let reason = match &answer.values_error {
+                Some(error) => {
+                    format!("the solver gave no values to check against real arithmetic: {error}")
+                }
+                None => UNINTERPRETED.to_owned(),
+            };
             return Outcome {
                 status: ObligationStatus::Unknown,
-                reason: Some(UNINTERPRETED.to_owned()),
+                reason: Some(reason),
                 cached,
                 path,
                 bindings: Vec::new(),
                 division: None,
+                values_error,
             };
         }
     }
@@ -586,54 +607,14 @@ fn outcome(
             path: None,
             bindings: Vec::new(),
             division: None,
+            values_error,
         };
     }
     let mut bindings = Vec::new();
     let mut path = None;
     if answer.status == Status::Refuted {
-        let value = |term: &F| {
-            requested
-                .iter()
-                .position(|r| r == term)
-                .and_then(|i| answer.values.get(i))
-                .cloned()
-                .unwrap_or_default()
-        };
-        let texts: Vec<(String, String)> = requested
-            .iter()
-            .filter_map(|term| match term {
-                F::Const(Const {
-                    role: ConstRole::Text(text),
-                    ..
-                }) => Some((value(term), text.clone())),
-                _ => None,
-            })
-            .collect();
-        for shown in &obligation.shown {
-            let json = match &shown.show {
-                Show::Value => number_or_bool(&value(&shown.term)),
-                Show::Variant { tag, names } => {
-                    let tag = value(tag);
-                    match tag.parse::<usize>().ok().and_then(|i| names.get(i)) {
-                        Some(name) => serde_json::Value::String(name.clone()),
-                        None => serde_json::Value::String(tag),
-                    }
-                }
-                Show::Opaque(kind) => {
-                    let raw = value(&shown.term);
-                    match texts.iter().find(|(v, _)| *v == raw) {
-                        Some((_, text)) => serde_json::Value::String(una_core::quote(text)),
-                        None => serde_json::Value::String(identity(kind, &raw)),
-                    }
-                }
-            };
-            bindings.push(Binding {
-                name: shown.name.clone(),
-                value: json,
-                // A label of inference variables only prints as `public`.
-                label: Some(shown.label.to_string()).filter(|text| text != "public"),
-            });
-        }
+        let value = values(requested, answer);
+        bindings = shown_bindings(&obligation.shown, requested, answer);
         for number in 1..=obligation.paths.len() {
             let selector = path_selector(number);
             if value(&selector) == "true" {
@@ -670,7 +651,65 @@ fn outcome(
         path,
         bindings,
         division,
+        values_error,
     }
+}
+
+/// The counterexample of a refuted `answer`: each shown term with its value. A term the
+/// solver gave no value, or an empty one, is left out, never shown empty (#668).
+fn shown_bindings(shown: &[Shown], requested: &[F], answer: &Answer) -> Vec<Binding> {
+    let value = |term: &F| {
+        requested
+            .iter()
+            .position(|r| r == term)
+            .and_then(|i| answer.values.get(i))
+            .filter(|value| !value.is_empty())
+            .cloned()
+    };
+    let texts: Vec<(String, String)> = requested
+        .iter()
+        .filter_map(|term| match term {
+            F::Const(Const {
+                role: ConstRole::Text(text),
+                ..
+            }) => Some((value(term)?, text.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut bindings = Vec::new();
+    for shown in shown {
+        let json = match &shown.show {
+            Show::Value => match value(&shown.term) {
+                Some(raw) => number_or_bool(&raw),
+                None => continue,
+            },
+            Show::Variant { tag, names } => {
+                let Some(tag) = value(tag) else {
+                    continue;
+                };
+                match tag.parse::<usize>().ok().and_then(|i| names.get(i)) {
+                    Some(name) => serde_json::Value::String(name.clone()),
+                    None => serde_json::Value::String(tag),
+                }
+            }
+            Show::Opaque(kind) => {
+                let Some(raw) = value(&shown.term) else {
+                    continue;
+                };
+                match texts.iter().find(|(v, _)| *v == raw) {
+                    Some((_, text)) => serde_json::Value::String(una_core::quote(text)),
+                    None => serde_json::Value::String(identity(kind, &raw)),
+                }
+            }
+        };
+        bindings.push(Binding {
+            name: shown.name.clone(),
+            value: json,
+            // A label of inference variables only prints as `public`.
+            label: Some(shown.label.to_string()).filter(|text| text != "public"),
+        });
+    }
+    bindings
 }
 
 /// An `Int` or `Bool` value as JSON: `(- 3)` is `-3`; an integer beyond 64 bits stays text.
@@ -756,5 +795,162 @@ mod forgotten_tests {
             "the loop forgets every fact about the map `counts` but the refinements of its type, so the counterexample sets `counts` freely; state what one iteration does as the `ensures` of a helper with an `edit` parameter, and call the helper in the loop"
         );
         assert!(!reason.contains("spec/") && !reason.contains("length"));
+    }
+}
+
+#[cfg(test)]
+mod missing_values_tests {
+    use una_diag::{ObligationKind, ObligationStatus};
+    use una_syntax::{SourceDb, Span};
+
+    use super::{Answer, Status, outcome, shown_bindings};
+    use crate::generate::{Obligation, Show, Shown, Site, Within};
+    use crate::smt::{Const, ConstRole, F, Fun, FunRole, Query};
+
+    fn constant(name: &str, sort: &str) -> F {
+        F::Const(Const {
+            name: name.to_owned(),
+            sort: sort.to_owned(),
+            role: ConstRole::Plain,
+        })
+    }
+
+    fn shown(name: &str, term: &F, show: Show) -> Shown {
+        Shown {
+            name: name.to_owned(),
+            term: term.clone(),
+            show,
+            label: una_core::Label::public(),
+        }
+    }
+
+    fn refuted(values: &[&str], values_error: Option<&str>) -> Answer {
+        Answer {
+            status: Status::Refuted,
+            reason: None,
+            values: values.iter().map(|v| (*v).to_owned()).collect(),
+            values_error: values_error.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_term_without_a_value_is_left_out_of_the_counterexample() {
+        // #668: no binding shows an empty value or a `Kind#` placeholder. Missing values come
+        // from an answer the parser cleared, and empty ones from a proof cache entry of a
+        // version that padded them.
+        let flag = constant("flag", "Bool");
+        let tag = constant("tag", "Int");
+        let s = constant("s", "u!Kind_m_S");
+        let terms = vec![flag.clone(), tag.clone(), s.clone()];
+        let shown = vec![
+            shown("flag", &flag, Show::Value),
+            shown(
+                "r",
+                &constant("r", "u!Kind_m_R"),
+                Show::Variant {
+                    tag: tag.clone(),
+                    names: vec!["A".to_owned(), "B".to_owned()],
+                },
+            ),
+            shown("s", &s, Show::Opaque("S".to_owned())),
+        ];
+        let names = |answer: &Answer| -> Vec<(String, serde_json::Value)> {
+            shown_bindings(&shown, &terms, answer)
+                .into_iter()
+                .map(|b| (b.name, b.value))
+                .collect()
+        };
+        assert_eq!(
+            names(&refuted(&["true", "1", "u!Kind_m_S!val!0"], None)),
+            [
+                ("flag".to_owned(), serde_json::json!(true)),
+                ("r".to_owned(), serde_json::json!("B")),
+                ("s".to_owned(), serde_json::json!("S#0")),
+            ]
+        );
+        assert_eq!(names(&refuted(&[], Some("unknown constant"))), []);
+        assert_eq!(names(&refuted(&["", "", ""], None)), []);
+        assert_eq!(
+            names(&refuted(&["true", "", ""], None)),
+            [("flag".to_owned(), serde_json::json!(true))]
+        );
+    }
+
+    #[test]
+    fn a_refutation_without_values_stays_refuted_and_names_the_error() {
+        // #668: missing values never make an obligation proven. With uninterpreted
+        // arithmetic, a model that cannot be checked against real arithmetic is unknown;
+        // without it, the refutation stands, with no counterexample but the solver's error.
+        let mut sources = SourceDb::new();
+        let file = sources.add("src/main.una", b"");
+        let x = constant("x", "Int");
+        let product = F::App {
+            fun: Fun {
+                name: "i!mul!Int".to_owned(),
+                args: vec!["Int".to_owned(), "Int".to_owned()],
+                result: "Int".to_owned(),
+                role: FunRole::Other,
+            },
+            args: vec![x.clone(), x.clone()],
+        };
+        let obligation = |assertions: Vec<F>| Obligation {
+            id: "ob-test".to_owned(),
+            kind: ObligationKind::Refinement,
+            module: "main".to_owned(),
+            declaration: "main.f".to_owned(),
+            goal: "x > 0".to_owned(),
+            source: Span::new(file, 0, 0),
+            related: None,
+            paths: Vec::new(),
+            hypotheses: Vec::new(),
+            query: Query {
+                assertions,
+                ..Query::default()
+            },
+            shown: vec![shown("x", &x, Show::Value)],
+            site: Site {
+                within: Within::Other,
+                parameter: None,
+                over_parameters: false,
+                ground: false,
+                flow: None,
+                function_value: None,
+                guard: None,
+                effect: None,
+            },
+            forgotten: Vec::new(),
+            entry: Vec::new(),
+            divisions: Vec::new(),
+        };
+        let error = refuted(&[], Some("unknown constant"));
+        let plain = outcome(
+            &obligation(Vec::new()),
+            std::slice::from_ref(&x),
+            &error,
+            None,
+            false,
+        );
+        assert_eq!(plain.status, ObligationStatus::Refuted);
+        assert_eq!(plain.bindings, []);
+        assert_eq!(plain.values_error.as_deref(), Some("unknown constant"));
+        let requested = vec![x.clone(), product.clone()];
+        let arithmetic = outcome(&obligation(vec![product]), &requested, &error, None, false);
+        assert_eq!(arithmetic.status, ObligationStatus::Unknown);
+        assert_eq!(arithmetic.bindings, []);
+        assert_eq!(arithmetic.values_error.as_deref(), Some("unknown constant"));
+        assert!(
+            arithmetic
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("unknown constant")),
+            "{arithmetic:?}"
+        );
+        // A second query whose model has no values does not replace a first one.
+        let first = refuted(&["2"], None);
+        let second = outcome(&obligation(Vec::new()), &[x], &first, Some(&error), false);
+        assert_eq!(second.status, ObligationStatus::Refuted);
+        assert_eq!(second.values_error.as_deref(), Some("unknown constant"));
+        let values: Vec<&serde_json::Value> = second.bindings.iter().map(|b| &b.value).collect();
+        assert_eq!(values, [&serde_json::json!(2)]);
     }
 }

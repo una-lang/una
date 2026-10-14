@@ -171,6 +171,7 @@ mod tests {
             status: Status::Proven,
             reason: None,
             values: Vec::new(),
+            values_error: None,
         }
     }
 
@@ -199,6 +200,41 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_written_before_values_error_is_solved_again() {
+        // #668 (ADR 0101 rule 6): an entry of the format before `values_error`, tagged under
+        // this key over that format's JSON, as a refutation with padded empty values was
+        // stored, reads as no answer, since the tag covers the answer as serialized now.
+        let dir = std::env::temp_dir().join(format!("una-cache-format-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mine = cache(&dir, b"0123456789abcdef0123456789abcdef");
+        let query = key("lock", "(check-sat)");
+        let write = |answer: &str| {
+            let mut message = query.as_bytes().to_vec();
+            message.push(0);
+            message.extend_from_slice(answer.as_bytes());
+            let tag = hex(&hmac_sha256(&mine.key, &message));
+            std::fs::write(
+                entry(&dir, &query),
+                format!(r#"{{"answer":{answer},"tag":"{tag}"}}"#),
+            )
+            .unwrap();
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        write(r#"{"status":"refuted","reason":null,"values":["",""]}"#);
+        assert_eq!(get(&mine, &query), None);
+        // The same entry in the current format, tagged the same way, is an answer.
+        let current = Answer {
+            status: Status::Refuted,
+            reason: None,
+            values: vec!["0".to_owned()],
+            values_error: None,
+        };
+        write(&serde_json::to_string(&current).unwrap());
+        assert_eq!(get(&mine, &query), Some(current));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_damaged_entry_is_never_an_answer_11() {
         // #11 (R-037, cache robustness): an entry whose answer changed under its tag, a
         // truncated file, bytes that are not JSON or not UTF-8, an empty file, and the entry of
@@ -211,6 +247,7 @@ mod tests {
             status: Status::Refuted,
             reason: None,
             values: vec!["0".to_owned()],
+            values_error: None,
         };
         let query = key("lock", "(check-sat)");
         put(&mine, &query, &refuted);

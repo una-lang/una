@@ -160,6 +160,11 @@ pub struct ObligationRef {
 pub struct Counterexample {
     /// The values of source names in the model.
     pub bindings: Vec<Binding>,
+    /// Why the model has no values to show, when the solver refuted the obligation but gave
+    /// none: what it said instead. The bindings are then empty. An added key, omitted
+    /// otherwise, so the schema stays `una.diagnostic/1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 /// The value of one source name in a counterexample.
