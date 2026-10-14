@@ -228,6 +228,6 @@ def progFunOk (cond : List String) (p : Program) (fn : Fun) : Bool :=
 
 /-- **The whole-program check.** -/
 def progOk (cond : List String) (p : Program) : Bool :=
-  progDocOk p && p.funs.all (progFunOk cond p)
+  progDocOk p && p.funs.all (progFunOk cond p) && p.funs.all Fun.markersOk
 
 end Una.F1.Check

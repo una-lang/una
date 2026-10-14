@@ -203,15 +203,16 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
     (hA3 : ∀ fn ∈ p.funs, fn.name ∈ cond → ¬ p.IsVia fn.name → p.FunOk fn) :
     p.LWellFormed ∧ p.B1WellFormed ∧ p.HostWF := by
   simp only [progOk, progDocOk, recordOk, sumOk, policyOk, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hops⟩, hhand⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hops⟩, hhand⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩, hmarks⟩ := h
   have hfun := fun fn hfn => by
     have := hfuns fn hfn
     simp only [progFunOk, Bool.and_eq_true, List.all_eq_true] at this
     exact this
   -- The fields of `Program.LWellFormed`, in order: funs, records, recordDeep, policies,
-  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, ops, handlers, inPlace.
-  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
-    b1Ok_sound hb1, hostWfB_sound hhost⟩
+  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, ops, handlers, inPlace,
+  -- markers.
+  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩,
+    fun fn hfn => Fun.markersOk_sound (hmarks fn hfn)⟩, b1Ok_sound hb1, hostWfB_sound hhost⟩
   · intro fn hfn
     obtain ⟨_, hv⟩ := hfun fn hfn
     by_cases hvia : isVia p fn.name = true

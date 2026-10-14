@@ -96,6 +96,8 @@ theorem prog_wf : prog.LWellFormed where
   inPlace := by
     refine ⟨?_, ?_, ?_⟩ <;> simp [prog, pick, lT, LTy.InPlace, LExpr.bot, LExpr.ofLabel]
     rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.InPlace]
+  markers fn h := Fun.markersOk_sound
+    (List.all_eq_true.mp (by rfl : prog.funs.all Fun.markersOk = true) fn h)
 
 /-- The type of `pick[Int](...)`: `Int`, with `ℓ_T` replaced in place by the argument's labels. -/
 def pickInt : LTy := prog.lsub [("T", .int .bot)] pick.result

@@ -846,5 +846,8 @@ structure Program.LWellFormed (p : Program) : Prop where
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧
     (∀ po ∈ p.policies, po.src.InPlace ∧ po.dst.InPlace)
+  /-- Only markers are named with `@` (#676): a function's marker parameters are those of the
+  operations it invokes, and no other binder is named so. -/
+  markers : ∀ fn ∈ p.funs, fn.MarkersNamed
 
 end Una.F1

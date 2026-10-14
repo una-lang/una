@@ -136,8 +136,10 @@ installed for it. `@` is not an identifier character in Una (`spec/01 §4`), and
 temporaries start with `%`, so no binding of a program is named so. -/
 def markerName (o : String) : String := "@" ++ o
 
-/-- Whether a name is a marker's. -/
-def isMarker (x : String) : Bool := x.startsWith "@"
+/-- Whether a name is a marker's: it starts with `@`. Written with `String.front`, which the
+kernel evaluates, so that a check over names closes by `rfl` (#676); the front of the empty
+string is not `@`. -/
+def isMarker (x : String) : Bool := x.front == '@'
 
 mutual
   /-- What a `let` binds. -/
@@ -311,6 +313,61 @@ structure Fun where
   `"Console.print"`, `"Files.read"`, `"Files.write"`, `"Http.<method>"`, a handler's function
   (`Rhs.invoke`) or an operation (`Rhs.invokeOp`). -/
   conds : List (String × Cond) := []
+
+mutual
+  /-- Whether a right-hand side binds a marker's name (#676): a lambda's parameter, which is never
+  a marker, or a binder of its body. -/
+  def Rhs.bindsMarker : Rhs → Bool
+    | .lambda params body => params.any (fun q => isMarker q.1) || body.bindsMarker
+    | _ => false
+
+  /-- Whether a body binds a marker's name (#676) other than by `withH`, the one construct that
+  binds a marker: by a `let`, a case's binder, an error's binder, a tuple's or a loop's binder,
+  or a lambda's parameter. -/
+  def Expr.bindsMarker : Expr → Bool
+    | .atom _ => false
+    | .letR x _ v b => isMarker x || v.bindsMarker || b.bindsMarker
+    | .letE x _ v b => isMarker x || v.bindsMarker || b.bindsMarker
+    | .ite _ a b => a.bindsMarker || b.bindsMarker
+    | .caseOption _ n x sm => n.bindsMarker || isMarker x || sm.bindsMarker
+    | .caseResult _ x ok y er => isMarker x || ok.bindsMarker || isMarker y || er.bindsMarker
+    | .fail _ => false
+    | .raise _ _ _ => false
+    | .caseSum _ _ xs a b => xs.any isMarker || a.bindsMarker || b.bindsMarker
+    | .attempt b => b.bindsMarker
+    | .handle b x h => b.bindsMarker || isMarker x || h.bindsMarker
+    | .attemptK _ b => b.bindsMarker
+    | .handleK _ b x h => b.bindsMarker || isMarker x || h.bindsMarker
+    | .unreachable => false
+    | .withH _ _ b => b.bindsMarker
+    | .letTuple bs _ b => bs.any (fun q => isMarker q.1) || b.bindsMarker
+    | .loop _ x _ st _ b => isMarker x || st.any (fun q => isMarker q.1) || b.bindsMarker
+end
+
+/-- **Only markers are named with `@`** (#676), checked: every parameter of `fn` whose name is a
+marker's is the marker of an operation `fn` invokes, which the importer appends for it, and its
+body binds no marker's name. -/
+def Fun.markersOk (fn : Fun) : Bool :=
+  fn.params.all (fun q => !isMarker q.1 || fn.invokes.any (markerName · == q.1)) &&
+    !fn.body.bindsMarker
+
+/-- **Only markers are named with `@`** (#676): every parameter of `fn` whose name is a marker's
+is the marker `markerName o` of an operation `o` it invokes, and its body binds no marker's name.
+`@` is not an identifier character in Una (`spec/01 §4`), so no program has another; the
+importer refuses a document that names one (`Import.namesMarker`), and the well-formedness that
+every certificate requires states it again. -/
+structure Fun.MarkersNamed (fn : Fun) : Prop where
+  params : ∀ q ∈ fn.params, isMarker q.1 = true → ∃ o ∈ fn.invokes, q.1 = markerName o
+  body : fn.body.bindsMarker = false
+
+theorem Fun.markersOk_sound {fn : Fun} (h : fn.markersOk = true) : fn.MarkersNamed := by
+  simp only [Fun.markersOk, Bool.and_eq_true, List.all_eq_true, Bool.or_eq_true,
+    Bool.not_eq_true', List.any_eq_true, beq_iff_eq] at h
+  obtain ⟨hp, hb⟩ := h
+  refine ⟨fun q hq hm => ?_, by simpa using hb⟩
+  rcases hp q hq with h | ⟨o, ho, he⟩
+  · simp [hm] at h
+  · exact ⟨o, ho, he.symm⟩
 
 /-- A record kind of the program: its field types, with their declared labels, in order, and
 the join of every label they declare, which the checker computes over nested records (the
