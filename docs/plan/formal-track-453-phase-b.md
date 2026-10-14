@@ -2,7 +2,6 @@
 
 - **Issue:** #453 (Phase A merged as #494).
 - **Status:** statement approved (2026-10-10), with the decisions of §5. The language side is S-18 (#496, ADR 0090).
-- **Author:** the builder session.
 
 ## 1. Why the statement changes
 
