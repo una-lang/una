@@ -113,7 +113,7 @@ pub enum Abort {
         limit: usize,
     },
     /// The operation of `Http` at this span is given a header value with a control character
-    /// (U6004, `spec/24 §1`, N-40).
+    /// (U6004, `spec/24 §1`).
     HeaderValue {
         /// The operation.
         span: Span,
@@ -769,10 +769,10 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// twice keeps it too, and a value something else holds is still copied, so no value ever
     /// changes under another name.
     /// A map's `set` and `remove`, `With` and `Without`, give up the map the same way
-    /// (`spec/21 §5` rule 2), and so does a call through a function value (N-42).
+    /// (`spec/21 §5` rule 2), and so does a call through a function value.
     fn updates_in_place(&mut self, rhs: &'p Rhs, rest: &'p Expr) -> Option<Vec<&'p str>> {
         let args = match rhs {
-            // A call through a function value too, whose lambda owns its arguments (N-42).
+            // A call through a function value too, whose lambda owns its arguments.
             Rhs::Call { args, .. } | Rhs::Apply { args, .. } => args.as_slice(),
             Rhs::Prim {
                 prim: Prim::Map(MapOp::With | MapOp::Without),
@@ -1521,7 +1521,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
-                // Not a failure: the run aborts (N-40).
+                // Not a failure: the run aborts.
                 Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
             Stop::Fail(Value::data(
@@ -1732,7 +1732,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             "empty_map" => Value::Map(Rc::default()),
             // JSON (`spec/23`), by the parser and writer that the native runtime shares.
-            // Both check the memory budget as they go, and stop at this call over it (N-41).
+            // Both check the memory budget as they go, and stop at this call over it.
             "parse_json" => {
                 let source = text(0)?;
                 let (held, baseline) = (self.held, self.baseline);
@@ -2232,7 +2232,7 @@ fn map_apply<'p>(op: MapOp, args: Vec<Value<'p>>) -> Flow<'p> {
 }
 
 /// The first occurrence of `part` in `t`, as a byte offset: the one search that `find` and
-/// `contains_text` share, so that one is `Some` exactly when the other holds (N-19). Rust's
+/// `contains_text` share, so that one is `Some` exactly when the other holds. Rust's
 /// search is linear in the worst case (`spec/22 §2` rule 8).
 fn search(t: &str, part: &str) -> Option<usize> {
     t.find(part)

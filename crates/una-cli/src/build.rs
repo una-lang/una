@@ -272,7 +272,7 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     // ld64 and GNU ld.
     command.arg("-Wl,-S");
     // Only the runtime functions the program calls are kept: an executable that never uses
-    // `Http` carries no TLS stack (ADR 0074 H7, N-26).
+    // `Http` carries no TLS stack (ADR 0074 H7).
     if cfg!(target_os = "macos") {
         command.arg("-Wl,-dead_strip");
     } else if cfg!(target_os = "linux") {

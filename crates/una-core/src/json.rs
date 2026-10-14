@@ -8,20 +8,20 @@
 //!
 //! Both read the text in place and check the run's memory budget as they go, every
 //! [`CHECK_EVERY`] values and every [`CHECK_EVERY`] scalar values of a string, through a hook
-//! each engine supplies (`spec/11 §7`, N-41), so a large input ends with U6003 at the call
+//! each engine supplies (`spec/11 §7`), so a large input ends with U6003 at the call
 //! rather than with an allocation the process cannot make.
 
 use std::collections::HashSet;
 use std::convert::Infallible;
 
 /// How often [`parse_within`] and [`write_within`] call their budget hook: every this many
-/// values, and every this many scalar values inside one string (N-41).
+/// values, and every this many scalar values inside one string.
 pub const CHECK_EVERY: usize = 4096;
 
 /// The deepest nesting of arrays and objects that [`parse`] accepts (`spec/23 §3` rule 4).
 pub const MAX_DEPTH: usize = 512;
 
-/// The most digits of an integer that [`parse`] accepts (`spec/23 §3`, N-27): converting
+/// The most digits of an integer that [`parse`] accepts (`spec/23 §3`): converting
 /// d decimal digits to an exact integer takes O(d²), so a longer literal is a failure, as in
 /// CPython.
 pub const MAX_INT_DIGITS: usize = 4300;
@@ -356,7 +356,7 @@ fn number_error(chars: &[u8], start: usize) -> usize {
 }
 
 /// Whether `text` is exactly one JSON number (RFC 8259 §6) with a fraction or an exponent, as
-/// `is_json_number` says: the numbers that `Decimal` holds, never those of `Number` (N-27).
+/// `is_json_number` says: the numbers that `Decimal` holds, never those of `Number`.
 pub fn is_json_number(text: &str) -> bool {
     number_end(text.as_bytes(), 0) == Some(text.len()) && text.contains(['.', 'e', 'E'])
 }
@@ -373,7 +373,7 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
 
 /// [`parse`], asking `within` every [`CHECK_EVERY`] values and string characters whether the
 /// run is still within its memory budget, and stopping with [`Halt::OverBudget`] when it is
-/// not (`spec/11 §7`, N-41).
+/// not (`spec/11 §7`).
 pub fn parse_within(text: &str, within: &mut dyn FnMut() -> bool) -> Result<Tree, Halt> {
     let mut hook = || if within() { Ok(()) } else { Err(()) };
     match parse_hooked(text, &mut hook) {
@@ -556,7 +556,7 @@ pub fn write(tree: &Tree) -> String {
 }
 
 /// [`write`], asking `within` every [`CHECK_EVERY`] values whether the run is still within its
-/// memory budget, and stopping with `None` when it is not (`spec/11 §7`, N-41).
+/// memory budget, and stopping with `None` when it is not (`spec/11 §7`).
 pub fn write_within(tree: &Tree, within: &mut dyn FnMut() -> bool) -> Option<String> {
     let mut hook = || if within() { Ok(()) } else { Err(()) };
     write_hooked(tree, &mut hook).ok()
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(parse("\"a\u{1}\""), Err(Error::Syntax(2)));
         assert_eq!(parse(r#""\x""#), Err(Error::Syntax(2)));
         // Lone surrogates, at their escape.
-        // Surrogates, at the first character that cannot continue a valid escape (N-27 F5).
+        // Surrogates, at the first character that cannot continue a valid escape.
         assert_eq!(parse(r#""ab\udc00""#), Err(Error::Syntax(6)));
         assert_eq!(parse(r#""\ud800x""#), Err(Error::Syntax(7)));
         assert_eq!(parse(r#""\ud800\u0041""#), Err(Error::Syntax(9)));
@@ -732,7 +732,7 @@ mod tests {
         for good in ["-1.5", "1e9", "1E-9", "0.0e+0", "5.0"] {
             assert!(is_json_number(good), "{good}");
         }
-        // Integers are `Number`, never `Decimal` (N-27 F2).
+        // Integers are `Number`, never `Decimal`.
         for bad in [
             "0", "-0", "12", "", "-", "01", "+1", "1.", ".5", "1e", "1e+", "0x1", " 1", "1 ",
         ] {

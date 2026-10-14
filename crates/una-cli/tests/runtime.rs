@@ -468,7 +468,7 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
     // of the locals around a branch in proportion to the taken ones, so a body of n bindings,
     // read again under `if`s, and of editable bindings updated in loops, checks in linear
     // time. The fixed cost of a check is measured on 10 bindings, the best of three, and taken
-    // out of both sizes (N-29): 8x the bindings took about 7x as long measured, and about 60x
+    // out of both sizes: 8x the bindings took about 7x as long measured, and about 60x
     // when each lookup scanned every local; the bound of 24x is between them. A miss is
     // measured twice more before it fails (#341).
     let root = package("many-locals", "", &[]);
@@ -516,7 +516,7 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
 
 #[test]
 fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
-    // #331 (N-47): unification and resolution follow solved variables by reference instead of
+    // #331: unification and resolution follow solved variables by reference instead of
     // copying their whole value at each node, where checking was cubic in d. ADR 0077 (#335)
     // shares the checker's type nodes, keeps unchanged ones, erases each labeled node once per
     // declaration and resolves each variable once at its end, so the checker makes nodes in
@@ -524,8 +524,8 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
     // quadratic is outside the checker's types: Core IR gives each binder its own owned type
     // (ADR 0080 keeps it); the editor index keeps each expression's type as a shared copy and
     // prints it only when a hover asks (ADR 0080, option B). The
-    // fixed cost is measured at depth 10, the best of three, and taken out of both sizes
-    // (N-29): 4x the depth took about 14x as long measured alone (20x before ADR 0077), and up
+    // fixed cost is measured at depth 10, the best of three, and taken out of both sizes:
+    // 4x the depth took about 14x as long measured alone (20x before ADR 0077), and up
     // to about 25x under the load of the whole test suite; quadratic is 16x, and it was about
     // 64x when it was cubic. The bound of 40x keeps the margin that load needs and still fails
     // on cubic growth; the scaling test of `una-check` counts the checker's nodes exactly. A
@@ -571,7 +571,7 @@ fn checking_many_generic_functions_is_linear_in_their_number() {
     // functions. They are now one pass over the edges, a map from function to declaration
     // and a binary search: O((n + E) log n). A chain of n generic functions, each calling the
     // previous one, is checked at two sizes; the fixed cost is measured on 50 functions, the
-    // best of three, and taken out of both (N-29). 4x the functions took about 4x as long
+    // best of three, and taken out of both. 4x the functions took about 4x as long
     // measured, and about 8.6x before the fix; the bound of 6.5x is between them. A miss is
     // measured twice more before it fails (#341).
     let root = package("many-generics", "", &[]);
@@ -619,7 +619,7 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // interpreter counts no copies, so the check is timing. The fixed cost of a run (checking,
     // starting) is measured on 10 appends, once the proof cache is warm, the best of three, and
     // taken out of both sizes, so the ratio is the growth of the appends alone: about 11x
-    // measured, about 490x when every append copies, with a bound of 30x between them (N-29).
+    // measured, about 490x when every append copies, with a bound of 30x between them.
     // A miss is measured twice more before it fails (#341).
     let root = package("text-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
@@ -1679,7 +1679,7 @@ const FAILS: &str = "module closed\n\npub kind Stop = | Stopped\n\npub main() ->
 
 #[test]
 fn a_closed_stdout_discards_the_output() {
-    // `spec/13 §5` (#259, N-17): writing to a closed stdout counts as discarded output, as
+    // `spec/13 §5` (#259): writing to a closed stdout counts as discarded output, as
     // `/dev/null` does, so the run, its `--json` document and `una test` exit as they would
     // with stdout open.
     let prints = package(
@@ -1699,7 +1699,7 @@ fn a_closed_stdout_discards_the_output() {
 
 #[test]
 fn a_closed_stderr_discards_the_diagnostics() {
-    // #259, N-17: with stderr closed, the U6001 of a failing `main` is discarded, and the run
+    // #259: with stderr closed, the U6001 of a failing `main` is discarded, and the run
     // still exits with 1, as it does with stderr open.
     let fails = package(
         "closed-stderr",
@@ -1720,7 +1720,7 @@ const FLOODS: &str = "module closed\n\npub main() -> Unit\n  uses @console: Cons
 #[test]
 fn a_reader_that_went_away_is_a_failed_write() {
     // `spec/13 §5`: unlike a closed stdout, a broken pipe (EPIPE) is a failure to write
-    // output, which exits with code 2 (#259, N-17).
+    // output, which exits with code 2 (#259).
     let floods = package(
         "broken-pipe",
         "\n[run]\nentry = \"closed\"\n",
@@ -2088,7 +2088,7 @@ fn text_len_and_slice_take_constant_time_on_any_text() {
 
 /// A program that appends `steps` items to a list through a function value, by `shape`: a
 /// named function passed as a value (`named`), a lambda (`lambda`), two layers of lambdas over
-/// a function value (`layers`), or `fold` over a list (`fold`) or into a text (`text`) (N-42).
+/// a function value (`layers`), or `fold` over a list (`fold`) or into a text (`text`).
 fn appends_through_function_values(shape: &str, steps: usize) -> String {
     let body = match shape {
         "named" => format!("  let a = run_with(r1, n: {steps})\n  @console.print(\"{{a.len}}\")\n"),
@@ -2110,7 +2110,7 @@ fn appends_through_function_values(shape: &str, steps: usize) -> String {
     )
 }
 
-/// Function values that a list goes through twice, or that capture it, never change it (N-42).
+/// Function values that a list goes through twice, or that capture it, never change it.
 const ALIASED: &str = "module aliased\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let base = [1, 2]\n  let f = fn(acc: List[Int], i: Int) -> acc.append(item: i)\n  let a = f(base, 3)\n  let b = f(base, 4)\n  let g = fn(i: Int) -> base.append(item: i)\n  let c = g(5)\n  let d = g(6)\n  let folded = [7, 8].fold(initial: base, step: fn(acc, x) -> acc.append(item: x))\n  @console.print(\"{base} {a} {b} {c} {d} {folded} {base}\")\n";
 
 /// What [`ALIASED`] prints.
@@ -2118,7 +2118,7 @@ const ALIASED_OUTPUT: &str = "[1, 2] [1, 2, 3] [1, 2, 4] [1, 2, 5] [1, 2, 6] [1,
 
 #[test]
 fn a_list_built_through_function_values_grows_in_linear_time() {
-    // N-42 (#312): in the interpreter too, a binding at its last use moves into a call through
+    // #312: in the interpreter too, a binding at its last use moves into a call through
     // a function value, so appends through function values and `fold` stay in place. Each
     // tenfold step stays under 30x, against about 100x when every call copies. A miss is
     // measured twice more before it fails (#341).
@@ -2151,7 +2151,7 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
 
 #[test]
 fn function_values_never_change_a_list_another_name_holds() {
-    // N-42: as natively.
+    // As natively.
     let root = package("value-aliased", "\n[run]\nentry = \"aliased\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(

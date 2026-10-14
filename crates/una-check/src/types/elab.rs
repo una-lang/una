@@ -537,7 +537,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let scope = std::mem::take(&mut self.scope);
                 let module = std::mem::replace(&mut self.module, alias.module);
                 // The clause is resolved in the alias's module, whose records are those of the
-                // standard modules for a kind of the prelude, as `JsonNumber` (N-27 F4).
+                // standard modules for a kind of the prelude, as `JsonNumber`.
                 let records = std::mem::replace(
                     &mut self.records,
                     records_of(self.env, self.findings, alias.module),

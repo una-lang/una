@@ -666,7 +666,7 @@ pub(crate) fn generic_constraints(
         )
         .to_string();
         let message = match (key.key.unlabeled(), key.owner) {
-            // `spec/20 §2` rule 1: kinds cannot carry constraints (N-15).
+            // `spec/20 §2` rule 1: kinds cannot carry constraints.
             (Ty::Param(_), None) => "a map's key type must satisfy `Ord`, and a type parameter of a kind or alias cannot be constrained; use a concrete key type".to_owned(),
             _ => format!("a map's key type must satisfy `Ord`, and `{shown}` does not"),
         };

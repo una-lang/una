@@ -1,4 +1,4 @@
-//! The client against local servers, plain and hostile (`spec/24`, ADR 0074, N-26): every test
+//! The client against local servers, plain and hostile (`spec/24`, ADR 0074): every test
 //! serves on `127.0.0.1`, so none needs the network.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -203,7 +203,7 @@ fn requests_outside_the_grants_or_malformed_never_connect() {
         );
     }
     // A control character in a header value, but a tab, is `HeaderValue`, which the engines
-    // turn into the abort U6004 (N-40). It is checked first, so it does not depend on the URL,
+    // turn into the abort U6004. It is checked first, so it does not depend on the URL,
     // the grants or the other headers.
     for value in ["a\r\nInjected: 1", "a\n", "a\0", "a\x7f", "a\x01"] {
         let headers = vec![
@@ -326,7 +326,7 @@ fn the_credential_never_follows_a_redirect_to_another_origin() {
     assert!(first.requests()[0].contains("Authorization: Bearer secret-token"));
     assert!(!target.requests()[0].contains("Authorization"));
 
-    // N-30 #2: the program's own credentials stay with the first origin too. `Authorization`,
+    // The program's own credentials stay with the first origin too. `Authorization`,
     // `Cookie` and `Proxy-Authorization`, in any case, are dropped on a redirect to another
     // origin; the other headers follow.
     let headers: Vec<(String, String)> = [
@@ -357,7 +357,7 @@ fn the_credential_never_follows_a_redirect_to_another_origin() {
 
 #[test]
 fn a_credential_given_twice_or_malformed_is_a_bad_request() {
-    // N-30 #2 and #4: the program's `Authorization` with a key is ambiguous, and a key with a
+    // The program's `Authorization` with a key is ambiguous, and a key with a
     // control character would inject a header; both are `BadRequest`, before any connection.
     let server = Server::start(reply("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
     let url = server.url("/");
@@ -509,7 +509,7 @@ fn an_unreachable_origin_is_unreachable() {
 
 #[test]
 fn the_longest_timeout_never_overflows_the_deadline() {
-    // N-30 #3: a timeout past the end of time is a day at most; the request still completes.
+    // A timeout past the end of time is a day at most; the request still completes.
     let server = Server::start(reply("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
     let url = server.url("/");
     let endless = Settings {
@@ -522,7 +522,7 @@ fn the_longest_timeout_never_overflows_the_deadline() {
 
 #[test]
 fn an_ipv6_origin_is_granted_and_reached_in_brackets() {
-    // N-30 #5. A host without IPv6 loopback (some containers) has nothing to reach.
+    // A host without IPv6 loopback (some containers) has nothing to reach.
     let Ok(listener) = TcpListener::bind("[::1]:0") else {
         eprintln!("no IPv6 loopback here; the grant's parsing is tested in una-core");
         return;
@@ -542,7 +542,7 @@ fn an_ipv6_origin_is_granted_and_reached_in_brackets() {
 
 #[test]
 fn credentials_left_behind_never_return_in_the_chain() {
-    // N-35: once a redirect leaves the first origin, the key and the program's credentials
+    // Once a redirect leaves the first origin, the key and the program's credentials
     // stay dropped for the rest of the chain, even back at that origin (as `fetch` does), so
     // the other origin cannot choose where on the first one they go.
     let b_port = Arc::new(Mutex::new(0u16));

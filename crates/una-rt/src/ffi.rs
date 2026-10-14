@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn a_refused_task_aborts_the_run() {
-        // #424 (Una-1's read): a refused call is an internal error, not a quiet cancellation:
+        // #424 (from its review): a refused call is an internal error, not a quiet cancellation:
         // the run ends with U8001 at the block and exit code 3, and the lambda never ran.
         let output = Command::new(std::env::current_exe().unwrap())
             .args([

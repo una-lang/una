@@ -6,7 +6,7 @@
 //! counting at the call, as before. A function consumes a name that reaches:
 //! - the list of `append` or `set` of the prelude, or the text a concatenation begins with;
 //! - an owned parameter of a function of the package, or any parameter of a function value,
-//!   which a lambda owns (N-42), or the initial state of `fold`;
+//!   which a lambda owns, or the initial state of `fold`;
 //! - the initial state of a loop whose body consumes that state;
 //! - a binding that aliases it (`let b = a`, or the text of `a` as text), which is consumed.
 //!
@@ -118,7 +118,7 @@ impl<'e> Facts<'e> {
                     if matches!(function.name.as_str(), "append" | "set") {
                         self.consume(args.first());
                     }
-                    // `fold` hands its initial state to the step as owned (N-42).
+                    // `fold` hands its initial state to the step as owned.
                     if function.name == "fold" {
                         self.consume(args.get(1));
                     }
@@ -133,7 +133,7 @@ impl<'e> Facts<'e> {
                 }
             }
             // A lambda owns every parameter, so a call through a function value consumes
-            // every argument (N-42).
+            // every argument.
             Rhs::Apply { args, .. } => args.iter().for_each(|arg| self.consume(Some(arg))),
             Rhs::Lambda { body, .. } => self.expr(body, owned),
             Rhs::Checked { predicate, .. } => self.expr(predicate, owned),

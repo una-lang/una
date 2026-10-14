@@ -247,7 +247,7 @@ fn trace_of(document: &str) -> serde_json::Value {
 
 #[test]
 fn traces_redact_labeled_prelude_fields_and_agree_in_both_engines() {
-    // N-30 #1: `Header.value` is `internal` (`spec/24 §1`): a trace shows
+    // `Header.value` is `internal` (`spec/24 §1`): a trace shows
     // `<redacted:internal>` for it, in the request's arguments and in the response, and
     // both engines write the same trace.
     let server = Server::start();
@@ -294,7 +294,7 @@ pub main() -> Unit
 
 #[test]
 fn a_control_character_in_a_header_value_aborts_in_both_engines() {
-    // N-40: whether a header value has a control character is not a failure the program can
+    // Whether a header value has a control character is not a failure the program can
     // branch on, since the value may be `internal`: the run aborts with U6004 at the operation,
     // as for U6003, in both engines, after the output so far, with the same trace.
     let server = Server::start();
@@ -384,7 +384,7 @@ pub main() -> Unit
 
 #[test]
 fn a_header_value_abort_in_a_task_ends_the_run_in_both_engines() {
-    // N-40 under `together` (`spec/19`): the task's abort ends the run with U6004, as U6003 in a
+    // Under `together` (`spec/19`): a bad header value's abort ends the run with U6004, as U6003 in a
     // task does, in both engines.
     let program = "module web\n\npub main() -> Unit\n  uses @http: Http[get]\n  uses @console: Console[print]\n=\n  @console.print(\"before\")\n  together\n    let a = attempt @http.get(\"http://127.0.0.1:9/\", headers: [Header(name: \"X-A\", value: \"a\\nb\")], key_name: None)\n    let b = attempt @http.get(\"http://127.0.0.1:9/\", headers: [], key_name: None)\n  @console.print(\"after\")\n";
     let dir = package(
@@ -440,7 +440,7 @@ fn http_grants_are_checked_before_main_in_both_engines() {
         vec!["run", ".", "--grant", "http:ftp://h"],
         vec!["run", ".", "--max-response", "0"],
         vec!["run", ".", "--http-timeout", "x"],
-        // N-30 #3: at most a day.
+        // At most a day.
         vec!["run", ".", "--http-timeout", "86401"],
         vec!["run", ".", "--http-timeout", "18446744073709551615"],
     ] {
@@ -481,7 +481,7 @@ fn http_grants_are_checked_before_main_in_both_engines() {
 
 #[test]
 fn an_executable_that_never_uses_http_carries_no_tls_stack() {
-    // ADR 0074 H7 (N-26): the linker keeps only the runtime functions a program calls, so
+    // ADR 0074 H7: the linker keeps only the runtime functions a program calls, so
     // `hello` carries no TLS code: no function of a client connection, a handshake or a root
     // store. A few small generic functions of the standard library may keep a TLS crate's name
     // in their symbols, deduplicated from its object file; they hold no TLS code.
@@ -507,7 +507,7 @@ fn an_executable_that_never_uses_http_carries_no_tls_stack() {
             "{needle} found in a program that never uses Http"
         );
     }
-    // N-30 #6: no `ring` code either, with one residual on macOS. `ld64` does not dead-strip
+    // No `ring` code either, with one residual on macOS. `ld64` does not dead-strip
     // an object file assembled without `.subsections_via_symbols`, as `ring`'s assembly
     // kernels (SHA-2, AES, ChaCha20, P-256) are, once the transitive loading of the runtime
     // archive has pulled them in: about 39 KB, which no call reaches. `--gc-sections` drops

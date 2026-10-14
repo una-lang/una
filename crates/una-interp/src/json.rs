@@ -52,7 +52,7 @@ enum Building<'p> {
 }
 
 /// The `Json` value of `tree`, asking `within` every [`json::CHECK_EVERY`] values whether the
-/// run is within its memory budget: `None` when it is not (N-41).
+/// run is within its memory budget: `None` when it is not.
 pub(crate) fn value<'p>(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<Value<'p>> {
     let mut stack: Vec<Building<'p>> = Vec::new();
     let mut pending = Some(tree);
@@ -156,7 +156,7 @@ enum Walking<'v, 'p> {
 pub(crate) enum NoTree {
     /// The value is not a `Json`.
     NotJson,
-    /// The run is over its memory budget (N-41).
+    /// The run is over its memory budget.
     OverBudget,
 }
 

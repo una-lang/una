@@ -176,7 +176,7 @@ impl Grant {
             Some(rest) => (true, rest),
             None => (false, rest.strip_prefix("http://")?),
         };
-        // The host, in brackets for IPv6, whose colons are its own (N-30); then `:<port>` when
+        // The host, in brackets for IPv6, whose colons are its own; then `:<port>` when
         // digits follow, then `:<methods>`.
         let end = if rest.starts_with('[') {
             rest.find(']')? + 1
@@ -315,7 +315,7 @@ mod tests {
         assert!(wild.allows(&url("https://a.example.com/"), Method::Get));
         assert!(!wild.allows(&url("https://example.com/"), Method::Get));
         assert!(!wild.allows(&url("https://a.b.example.com/"), Method::Get));
-        // N-30 #5: an IPv6 host in brackets, with and without a port and methods.
+        // An IPv6 host in brackets, with and without a port and methods.
         let six = Grant::parse("http:http://[::1]:18083").unwrap();
         assert!(six.allows(&url("http://[::1]:18083/"), Method::Get));
         assert!(!six.allows(&url("http://[::1]/"), Method::Get));

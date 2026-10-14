@@ -237,7 +237,7 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_fails: BTreeMap<Span, Ty>,
     /// The labels that decide the failures of calls of prelude functions whose failure depends
     /// on their arguments' values, as `parse_json` (`spec/23 §5`, `spec/07 §3`), by the span of
-    /// the call: handling such a failure branches on them (N-27).
+    /// the call: handling such a failure branches on them.
     pub(crate) decided_failures: BTreeMap<Span, Label>,
     /// For each lambda, by its span, which of its parameters are annotated: the body assumes
     /// the annotation, whatever the lambda's type unifies with (#350).
@@ -1804,7 +1804,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail,
     /// `expect fails V` never holds, and it is U1001 too (ADR 0044). `action` is the type of
     /// the `do` expression: one that failed to type reports nothing more.
-    /// D-170 (option B, the owner's answer of 2026-10-01): `fails` is the error kind of the
+    /// D-170 (option B, decided on 2026-10-01): `fails` is the error kind of the
     /// `do` expression itself, so a call whose failure `attempt` absorbs, or a call inside a
     /// lambda, does not count.
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {

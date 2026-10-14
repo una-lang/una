@@ -12,7 +12,7 @@ use una_syntax::{Interner, SourceDb, lex, parse};
 const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n";
 
 /// How a value nests: lists and options in turn, as #331 wrote it, lists only, or options only
-/// (Una-1's review of #391: each nesting reaches the checker's types by its own path).
+/// (the review of #391: each nesting reaches the checker's types by its own path).
 #[derive(Clone, Copy, Debug)]
 enum Shape {
     Alternating,

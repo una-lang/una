@@ -216,7 +216,7 @@ fn task(
     if status != 2 {
         values::release(value);
         values::release(closure);
-        // The task's argument went to the lambda, which owns its parameters (N-42). A debug
+        // The task's argument went to the lambda, which owns its parameters. A debug
         // build checks that nothing stays referenced, as for `main` (`runtime::start`); a task
         // that stopped ended in the middle of its body, so what it held is not counted.
         if cfg!(debug_assertions) {

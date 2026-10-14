@@ -427,7 +427,7 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             cached,
         ));
     }
-    // ADR 0071 D3 (decision N-13): a refutation that sets loop-fresh values in a loop body is
+    // ADR 0071 D3: a refutation that sets loop-fresh values in a loop body is
     // solved once more with every enclosing loop at its first iteration. A model there is a
     // run, so the obligation stays refuted with it; otherwise it is unknown.
     let retries: Vec<Option<Obligation>> = obligations

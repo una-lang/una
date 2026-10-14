@@ -545,7 +545,7 @@ impl<'p> Emitter<'p> {
                 this: Some((captures, caps)),
                 constraints: Vec::new(),
                 // A lambda owns its parameters, as every call through a function value gives
-                // them (N-42): its body moves them at their last use, or releases them.
+                // them: its body moves them at their last use, or releases them.
                 owned: vec![true; params.len()],
                 // A lambda's refinements are not proven of its arguments (`range`).
                 params: params

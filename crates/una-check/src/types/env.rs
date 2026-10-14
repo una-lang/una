@@ -743,7 +743,7 @@ impl<'a> Env<'a> {
             paths.entry(module.path.clone()).or_insert(index);
         }
         paths.insert("std.testing".to_owned(), count + 1);
-        // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10, N-33).
+        // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10).
         paths.insert(prelude::STD_HOST.to_owned(), count);
         for index in 0..count {
             let Some(module) = self.modules.get(index) else {
