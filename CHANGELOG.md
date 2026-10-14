@@ -4,6 +4,16 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **`spec/14` states what the prelude's functions compute** (#692). Beyond their contracts, `spec/14 §1` now gives:
+  - the element that `first` and `at` return, and where `append` puts the item;
+  - the order of `map` and `filter`, and that `first_where` returns the first accepted element and calls `keep` no further;
+  - the accumulator of `fold`, from first to last;
+  - that `sum` is exact and `0` on the empty list in every edition;
+  - `or_else`, whose `default` is evaluated before the call;
+  - the texts for which `to_int` is `None`, and that it never overflows;
+  - the meaning of `Nat`, `Option` and `Result`.
+
+  These are what both backends already do. New runtime cases pin them in both backends; `or_else`'s `default` needs no pin, since an argument with effects is bound with `let` first (U3013).
 - **Reproducible release archives** (#679). Two builds of one commit gave archives with different digests, so a published archive could not be rebuilt and checked against its validation record. The binaries were already reproducible. The archive differed by the time of each tar entry, the account and group that owned each entry, and the gzip header's time. Each entry now takes the commit's time (`SOURCE_DATE_EPOCH`, else the commit's own), is owned by `0:0` with no user or group name, and has a fixed mode; the entries go in byte order, and gzip stores no time. `scripts/check-release.sh` checks the owners, and a new `reproducible` release gate builds the archives a second time from cold and compares their digests (`docs/releases/validation.md`).
 - **A handler granted on by name to a call into a boundary is charged where it is installed** (#669, ADR 0093 rule 15, `spec/05 §4` rule 5, `spec/07 §6`). In edition `0.3`, a handler installed outside a call into a boundary and granted on to it by name, through header bindings, rebindings and calls, counted at the call as its capability and operations only: its own `uses` were not counted against the ceiling, and the releases it reaches were not counted for U3024. Such a handler is now checked where it is installed, by `with` or by an example's `given`: U3021 when its `uses`, or what its installation's arguments grant, exceed the ceiling, and U3024 when it reaches a release, each with the call as the related span. The handlers that its own `uses` resolve to are granted on as well. This closes the known limitation of v0.3.13.
 - **`spec/11` states that a closure keeps the capabilities where it is made** (#674). A closure value is ⟨λ, ρ, H⟩, and two rules join §4: E-Lam makes it with the capability environment in scope, and E-App runs its body under that environment, whoever calls it. This is the semantics the interpreter and the native backend already implement, and the one that `spec/04 §6` rule 3 and the reference check of `spec/05 §6` rule 7 rely on. The citations in the checker and the native backend name the rules.

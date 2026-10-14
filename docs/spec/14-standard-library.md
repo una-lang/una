@@ -68,6 +68,26 @@ The native implementations declare these labels explicitly.
 
 Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when every character is an ASCII digit, so it holds of the empty text; `trim` removes Unicode whitespace at both ends; `to_int` reads an optional `-` followed by ASCII digits; `starts_with` compares scalar values; `contains` and `==` are structural; `Text` orders by scalar values (ADR 0032).
 
+**What the functions compute** (#692). Beyond their contracts, the prelude's functions compute the following, in the interpreter and in the native backend alike (`spec/16 §5`). Positions in a list count from 0.
+
+- `first(xs)` is `Some` of the element at position 0, and `None` when `xs` is empty.
+- `at(xs, index)` is `Some` of the element at position `index`, and `None` when `index` is negative or at least `xs.len`. It never fails.
+- `append(xs, item)` is `xs` with `item` added after its last element.
+- `map(xs, each)` is the list of `each(x)` for each element `x` of `xs`, in the order of `xs`.
+- `filter(xs, keep)` is the list of the elements `x` of `xs` for which `keep(x)` is `true`, in the order of `xs`.
+- `first_where(xs, keep)` is `Some` of the first element `x` of `xs` for which `keep(x)` is `true`, and `None` when there is none. `keep` is not called on the elements after that one.
+- `fold(xs, initial, step)` starts from `initial` and, for each element `x` of `xs` from first to last, replaces the accumulator `acc` by `step(acc, x)`. The result is the last accumulator, so `initial` when `xs` is empty.
+- `map`, `filter`, `first_where` and `fold` call their function parameter on the elements from first to last, at most once per element: `first_where` stops after the first element it accepts, and in edition `0.2` and later each stops at the first failure of its function (§1).
+- `sum(xs)` is the exact sum of the elements as an `Int`, and `0` when `xs` is empty. `Int` has no bound, so the sum never overflows. Edition `0.2` keeps this meaning for its generic `sum` (`spec/20 §6` rule 1).
+- `or_else(o, default)` is the value `v` when `o` is `Some(v)`, and `default` when `o` is `None`. `default` is an argument like any other, a value by the time of the call whatever `o` is (`spec/11 §4`); a call with effects is bound with `let` before it is given (U3013).
+- `to_int(t)` is `Some(n)` when `t` is an optional `-` followed by one or more ASCII digits, leading zeros allowed, where `n` is the integer they write (`"-0"` is `0`). It is `None` for any other text, among them the empty text, `"-"`, a leading `+`, whitespace and digits outside ASCII. `Int` has no bound, so a text of many digits is never `None` for its length.
+
+The prelude's types mean:
+
+- `Nat` is `Int where it >= 0` (`spec/03 §1`): an `Int` flows into `Nat` where the bound is proved (`spec/03 §2` rule 2).
+- `Option[T]` is either `Some(value)`, which holds one value of `T`, or `None`, which holds none.
+- `Result[T, E]` is either `Ok(value)`, which holds the success value of `T`, or `Err(failure)`, which holds the failure of `E`.
+
 ## 2. Built-in operations
 
 `.len` on `Text` and `List`, arithmetic, comparisons, equality and text interpolation are built in (`spec/09 §2`). `Hashed` supports only `==` and `!=`; it cannot be interpolated or converted to `Text` (U2001).
