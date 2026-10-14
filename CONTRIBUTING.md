@@ -20,7 +20,7 @@ Include the smallest program that shows the problem, the command you ran, what y
 4. **Implement**, following [`docs/compiler/conventions.md`](docs/compiler/conventions.md).
 5. **Validate locally**, then open the pull request.
 
-Branches are named `dev/<issue>-<topic>`, for example `dev/6-integration-rule`. Every commit references its issue (`Refs #6`), and the pull request closes it (`Closes #6`, one keyword per issue). Each pull request adds a line to the `## Unreleased` section of [`CHANGELOG.md`](CHANGELOG.md).
+Branches are named `dev/<issue>-<topic>`, for example `dev/6-integration-rule`. Every commit references its issue (`Refs #6`), and the pull request closes it (`Closes #6`, one keyword per issue). Each pull request adds one changelog fragment, `changelog.d/<issue>-<slug>.md`: a single line that is one bullet, `- **What changed** (#<issue>, …). Details.`, and never edits [`CHANGELOG.md`](CHANGELOG.md) itself (#744). Two pull requests then never change the same lines. The release assembles the fragments (`scripts/changelog-assemble.sh`), and the tests check every fragment's shape and that `## Unreleased` stays empty.
 
 ## Validation
 
