@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): leak (U4002 expected): an annotated lambda drops `T*`, so `k(x)` inside it is not raised
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): leak (U4002 expected): an annotated lambda drops `T*`, so `k(x)` inside it is not raised
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:22:3
 -- expect: error U4001 at src/sw.una:22:47

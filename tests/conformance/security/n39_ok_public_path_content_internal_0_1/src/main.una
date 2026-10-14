@@ -1,4 +1,4 @@
--- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): ok (no U4xxx): a public path and internal content keep `if error pass`, and the branch is public
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (review of #343): ok (no U4xxx): a public path and internal content keep `if error pass`, and the branch is public
 -- spec: spec/07 §7
 -- expect: ok
 module main

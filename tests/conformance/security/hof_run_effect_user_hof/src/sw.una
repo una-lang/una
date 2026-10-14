@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): leak (U4002 expected): run form, the printed number differs with the secret; a decision on T values reaches an effectful callback through a user generic function
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): leak (U4002 expected): run form, the printed number differs with the secret; a decision on T values reaches an effectful callback through a user generic function
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:22:3
 -- expect: error U4001 at src/sw.una:22:41

@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): rule: precision: the argument's lambda ignores the decision, but holds an unrelated annotated lambda
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): rule: precision: the argument's lambda ignores the decision, but holds an unrelated annotated lambda
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:30:3
 module sw

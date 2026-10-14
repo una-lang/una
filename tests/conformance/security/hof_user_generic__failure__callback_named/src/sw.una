@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: apply_f(decided, f: k), the callback's failure
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: apply_f(decided, f: k), the callback's failure
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:35:11
 -- expect: error U4001 at src/sw.una:35:47

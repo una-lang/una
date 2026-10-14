@@ -1,4 +1,4 @@
--- test: a read in a module checked before the module that writes still carries the file-state label (S-14, from Una-2's review)
+-- test: a read in a module checked before the module that writes still carries the file-state label (S-14, from a review)
 -- spec: spec/07 §7
 -- expect: error U4001 at src/a_reader.una:10:3
 module a_reader

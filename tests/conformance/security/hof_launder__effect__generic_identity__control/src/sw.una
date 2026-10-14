@@ -1,4 +1,4 @@
--- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, Una-2's matrix): rule: control: an inferred lambda that passes its parameter through a generic identity; D-137 labels `ident(x)` with `T`, so the lambda's public result is U4001 with or without the decision: the identity raises, it does not launder
+-- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, the review matrix): rule: control: an inferred lambda that passes its parameter through a generic identity; D-137 labels `ident(x)` with `T`, so the lambda's public result is U4001 with or without the decision: the identity raises, it does not launder
 -- spec: spec/07 §7
 -- expect: error U4001 at src/sw.una:33:25
 -- expect: error U4001 at src/sw.una:33:27

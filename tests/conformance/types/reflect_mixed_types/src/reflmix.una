@@ -1,4 +1,4 @@
--- test: the body of a `reflect` predicate is typed as code, so operands of different integer types are still U2001 there, although its arithmetic is exact (Leonardo, 2026-10-06; spec/18 §2)
+-- test: the body of a `reflect` predicate is typed as code, so operands of different integer types are still U2001 there, although its arithmetic is exact (2026-10-06; spec/18 §2)
 -- spec: spec/18 §2
 -- expect: error U2001 at src/reflmix.una:6:58
 module reflmix

@@ -1,4 +1,4 @@
--- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, Una-2's matrix): accept: control: let y: T = decided; k(y) with an effectful k
+-- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, the review matrix): accept: control: let y: T = decided; k(y) with an effectful k
 -- spec: spec/07 §7
 -- expect: ok
 module sw

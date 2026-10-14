@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): rule: control: the callee calls an annotated lambda from a list argument and writes it
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): rule: control: the callee calls an annotated lambda from a list argument and writes it
 -- spec: spec/07 §7
 -- expect: error U4001 at src/sw.una:33:22
 module sw

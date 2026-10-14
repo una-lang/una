@@ -1,4 +1,4 @@
--- test: label order shape `option-of-list-accepted` (#323, N-45, review #330): public flows into open positions check
+-- test: label order shape `option-of-list-accepted` (#323, review #330): public flows into open positions check
 -- spec: spec/17 §6
 -- expect: ok
 module main

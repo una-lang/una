@@ -1,4 +1,4 @@
--- test: a map's key type must satisfy Ord where the type is written: Int, fixed-width, Text and payload-less sums do, others are U2025; a public generic function writes T: Ord, a private one infers it, and a kind's parameter cannot be a key (spec/21 §1 rule 2, N-15)
+-- test: a map's key type must satisfy Ord where the type is written: Int, fixed-width, Text and payload-less sums do, others are U2025; a public generic function writes T: Ord, a private one infers it, and a kind's parameter cannot be a key (spec/21 §1 rule 2)
 -- spec: spec/21 §1
 -- expect: error U2025 at src/maps.una:24:16
 -- expect: error U2025 at src/maps.una:26:16

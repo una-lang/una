@@ -1,9 +1,9 @@
--- test: label order shape `loop-nested-list-of-options` (#323, N-45, review #330): the read sees the solved label, whatever the order
+-- test: label order shape `loop-nested-list-of-options` (#323, review #330): the read sees the solved label, whatever the order
 -- spec: spec/17 §6
 -- expect: error U4003 at src/main.una:17:20
 module main
 
--- review: rejected (U4003) once N-44 opens nested positions: an Option's payload inside a list
+-- review: rejected (U4003) once nested positions are checked: an Option's payload inside a list
 pub main() -> Unit
   uses @console: Console[print]
   uses @env: Env[get]

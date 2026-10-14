@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: control shape: an inferred lambda after the decided argument
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: control shape: an inferred lambda after the decided argument
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:31:50
 -- expect: error U4001 at src/sw.una:31:52

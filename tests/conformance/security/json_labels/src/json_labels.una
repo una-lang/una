@@ -1,4 +1,4 @@
--- test: JSON keeps labels: a value parsed from a secret text, a text quoted or written from a secret, and a value bound from a secret Json are secret; a secret cannot enter a Json constructor, whose positions are public; and whether a parse of a secret text fails, and where, is secret too, so attempt gives a secret Result and if error pass and if error fail are U4002 (spec/23 §5, ADR 0073 J5, N-27)
+-- test: JSON keeps labels: a value parsed from a secret text, a text quoted or written from a secret, and a value bound from a secret Json are secret; a secret cannot enter a Json constructor, whose positions are public; and whether a parse of a secret text fails, and where, is secret too, so attempt gives a secret Result and if error pass and if error fail are U4002 (spec/23 §5, ADR 0073 J5)
 -- spec: spec/23 §5
 -- expect: error U4001 at src/json_labels.una:22:3
 -- expect: error U4002 at src/json_labels.una:23:5

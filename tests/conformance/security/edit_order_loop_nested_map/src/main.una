@@ -1,4 +1,4 @@
--- test: label order shape `loop-nested-map` (#323, N-45, review #330): the read sees the solved label, whatever the order
+-- test: label order shape `loop-nested-map` (#323, review #330): the read sees the solved label, whatever the order
 -- spec: spec/17 §6
 -- expect: error U4003 at src/main.una:18:20
 module main

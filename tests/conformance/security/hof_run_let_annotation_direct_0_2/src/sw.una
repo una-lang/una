@@ -1,4 +1,4 @@
--- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, Una-2's matrix): U4001 expected: edition 0.2 form of let-annotation-direct
+-- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, the review matrix): U4001 expected: edition 0.2 form of let-annotation-direct
 -- spec: spec/07 §7
 -- expect: error U4001 at src/sw.una:16:14
 module sw

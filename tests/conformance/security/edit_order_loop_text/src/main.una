@@ -1,4 +1,4 @@
--- test: label order shape `loop-text` (#323, N-45, review #330): a determined position stays fixed
+-- test: label order shape `loop-text` (#323, review #330): a determined position stays fixed
 -- spec: spec/17 §6
 -- expect: error U4001 at src/main.una:16:9
 module main
