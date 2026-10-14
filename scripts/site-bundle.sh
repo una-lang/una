@@ -73,7 +73,8 @@ for command in $commands; do
 done
 
 # --- The documents: what scripts/site.sh publishes, the explain pages, the examples and the
-# standard library listing (docs/std/, #648), each with its kind. Only files that git tracks.
+# standard library listing (docs/std/, #648), and the security advisories (#649), each with its
+# kind. Only files that git tracks.
 files=$(
     {
         for f in README.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md CHANGELOG.md docs/00-charter.md; do
@@ -83,6 +84,7 @@ files=$(
         git ls-files 'docs/spec/*.md' | sed 's/^/spec /'
         git ls-files 'docs/adr/*.md' | grep -v '/0000-template\.md$' | sed 's/^/adr /'
         git ls-files "docs/releases/$version-validation.md" | sed 's/^/release /'
+        git ls-files docs/security/advisories.md | sed 's/^/security /'
         git ls-files 'crates/una-explain/explain/U*.md' | sed 's/^/explain /'
         git ls-files examples | sed 's/^/example /'
         git ls-files 'docs/std/*' | sed 's/^/std /'
