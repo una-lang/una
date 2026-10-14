@@ -206,6 +206,31 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// A function value at `span` whose code is not known here, of one of `types`: if that type
+    /// has `uses`, the value runs on bindings captured where it was made, which the check does
+    /// not follow, so what they hold is not bounded either (rule 5, fail closed). A type without
+    /// `uses` runs nothing that a ceiling bounds.
+    pub(crate) fn effectful_value(&mut self, span: Span, types: &[&Ty]) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        let name = types.iter().find_map(|ty| self.fn_uses_name(ty));
+        if let Some(name) = name
+            && let Some(granting) = self.granting.last_mut()
+        {
+            granting.unseen.get_or_insert((span, name));
+        }
+    }
+
+    /// The first `uses` binding of the function type that `ty` is, if any.
+    fn fn_uses_name(&self, ty: &Ty) -> Option<String> {
+        match self.resolve(ty) {
+            Ty::Fn(function) => function.uses.first().map(|need| need.name.clone()),
+            Ty::Labeled(_, inner) => self.fn_uses_name(&inner),
+            _ => None,
+        }
+    }
+
     /// Inside a lambda given to a boundary, a use of local `name` at `span` bound outside the
     /// lambda: if its type may hold a function value, the boundary may run code that is not
     /// known here (rule 8, fail closed). A local bound inside the lambda takes its value from
@@ -228,6 +253,9 @@ impl Checker<'_, '_, '_> {
             .is_some_and(|g| depth > g.depth && bound <= g.depth);
         if captured && self.holds_function(&ty) {
             let of_param = self.of_param(name).map(|_| name.to_owned());
+            if of_param.is_none() {
+                self.effectful_value(span, &[&ty]);
+            }
             self.opaque_value(span, of_param);
         }
     }
