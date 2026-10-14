@@ -17,6 +17,7 @@ mod proof_key;
 mod recovery;
 mod report;
 mod runtime;
+mod std_builtins;
 mod std_listing;
 mod trace;
 mod verification;
@@ -37,6 +38,9 @@ use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, Span, lex_in, pa
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
+pub use crate::std_builtins::{
+    Builtin, STD_BUILTINS_SCHEMA, builtin_docs, builtins, std_builtin_items, std_builtins,
+};
 pub use crate::std_listing::{Item, STD_LISTING_SCHEMA, Variant, std_items, std_listing};
 pub use crate::verification::{DEFAULT_WALLCLOCK, Solving, Verification};
 

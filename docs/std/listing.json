@@ -1,6 +1,6 @@
 {
   "schema": "una.std-listing/1",
-  "note": "Unstable, not part of the specification: see docs/std/README.md. Built-in operations are in spec/14 §2.",
+  "note": "Unstable, not part of the specification: see docs/std/README.md. Built-in methods are in docs/std/builtins.json, operators in spec/14 §2.",
   "items": [
     {
       "name": "Nat",
