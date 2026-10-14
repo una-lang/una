@@ -102,7 +102,11 @@ def main():
                 fail(f"{m.group(1)} is not an archive of {version}")
             archives.append(m.groups())
 
+    pattern = os.environ.get("UNA_PRIVACY_PATTERN", "")
     text = [f"# Una v{version}: release validation", ""]
+    if not pattern:
+        # An unchecked summary says so in its own text, so that it cannot pass for a published one.
+        text += ["**Unchecked: written without the privacy pattern; not for publication.**", ""]
     text += [f"- Commit: `{commit}`", f"- Run: {run.group(1)}, {run.group(2)}",
              f"- Toolchain: {run.group(3)}; {run.group(4)}", ""]
     text += ["| Gate | Result | Seconds |", "| --- | --- | --- |"]
@@ -117,10 +121,16 @@ def main():
              "The gates are defined in `docs/release-gates.md` at the commit above.", ""]
     summary = "\n".join(text)
 
-    pattern = os.environ.get("UNA_PRIVACY_PATTERN", "")
     if pattern:
-        # grep -E, so the pattern means what it means in the other checks (site-bundle.sh).
-        found = subprocess.run(["grep", "-E", "-i", "-q", "--", pattern], input=summary.encode())
+        # grep -E, so the pattern means what it means in the other checks (site-bundle.sh). The
+        # pattern goes to grep through a pipe (-f), never on a command line, where any process
+        # of the machine could read it.
+        read, write = os.pipe()
+        os.write(write, pattern.encode() + b"\n")
+        os.close(write)
+        found = subprocess.run(["grep", "-E", "-i", "-q", "-f", f"/dev/fd/{read}"],
+                               input=summary.encode(), pass_fds=(read,))
+        os.close(read)
         if found.returncode == 0:
             fail("the summary matches UNA_PRIVACY_PATTERN")
         if found.returncode != 1:

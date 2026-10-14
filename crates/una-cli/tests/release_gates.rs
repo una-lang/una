@@ -22,6 +22,8 @@ fn gates(sha: &str, out: &Path, gates: &[&str]) -> Output {
         .arg(out)
         .args(gates)
         .env("UNA_GATES_SOURCE", root())
+        .env_remove("UNA_PRIVACY_PATTERN")
+        .env("UNA_GATES_UNCHECKED", "1")
         .output()
         .unwrap()
 }
@@ -228,6 +230,12 @@ fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
         written.starts_with("# Una v0.4.0-alpha.1: release validation\n"),
         "{written}"
     );
+    // Written without the privacy pattern: it says so.
+    assert!(
+        written
+            .contains("**Unchecked: written without the privacy pattern; not for publication.**"),
+        "{written}"
+    );
     assert!(
         written.contains(&format!(
             "| `una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz` | `{digest}` |"
@@ -289,4 +297,163 @@ fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
         "{command}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs the clone gate on `sha` into a fresh `out`, with a fake `security` first on PATH that
+/// answers the Keychain query with `answer` (and exit code `code`), UNA_PRIVACY_PATTERN set to
+/// `exported` or unset, and UNA_GATES_UNCHECKED unset. A fake `git` first on PATH appends the
+/// environment it was started with to `out`.env and then runs the real git, so the test sees
+/// what a gate's child inherits.
+fn gates_with_keychain(
+    sha: &str,
+    out: &Path,
+    answer: &str,
+    code: i32,
+    exported: Option<&str>,
+) -> Output {
+    let _ = std::fs::remove_dir_all(out);
+    let bin = out.with_extension("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("security");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"find-generic-password -s una-privacy-pattern\" ] || exit 9\nprintf '%s\\n' '{answer}'\nexit {code}\n"
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(&fake)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real_git = String::from_utf8(real_git.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let dump = out.with_extension("env");
+    let _ = std::fs::remove_file(&dump);
+    let git = bin.join("git");
+    std::fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\nenv >> '{}'\nexec '{real_git}' \"$@\"\n",
+            dump.display()
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod").arg("755").arg(&git).status().unwrap();
+    assert!(status.success());
+    // The test's own PATH, with the fakes in front: a test may read its environment, which the
+    // library rule (compiler/conventions.md §1) does not cover.
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    let path = format!("{}:{inherited}", bin.display());
+    let mut command = Command::new("bash");
+    command
+        .arg(root().join("scripts/release-gates.sh"))
+        .arg(sha)
+        .arg(out)
+        .arg("clone")
+        .env("UNA_GATES_SOURCE", root())
+        .env("PATH", path)
+        .env_remove("UNA_PRIVACY_PATTERN")
+        .env_remove("UNA_GATES_UNCHECKED");
+    if let Some(pattern) = exported {
+        command.env("UNA_PRIVACY_PATTERN", pattern);
+    }
+    command.output().unwrap()
+}
+
+/// Every file under `dir`, read as bytes, except the clone of the repository, whose sources
+/// (this test among them) are not the run's output.
+fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path != dir.join("clone") {
+                    stack.push(path);
+                }
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.push((path, bytes));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-keychain");
+    // A sentinel that appears nowhere else: if the script printed, logged or wrote the pattern,
+    // it would show up below.
+    let sentinel = "sentinel-7f3a9c1e-una-privacy";
+    let output = gates_with_keychain(&sha, &out, sentinel, 0, None);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    assert!(
+        !String::from_utf8_lossy(&printed).contains(sentinel),
+        "the pattern was printed"
+    );
+    for (path, bytes) in contents(&out) {
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(sentinel),
+            "the pattern was written to {}",
+            path.display()
+        );
+    }
+    // No gate's child inherits it: the environment of every git the gates ran lacks it.
+    let dump = std::fs::read_to_string(out.with_extension("env")).unwrap();
+    assert!(dump.contains("PATH="), "the fake git did not run");
+    assert!(
+        !dump.contains(sentinel),
+        "a gate's child inherited the pattern"
+    );
+    // A pattern the caller exported is read, then unset for every gate.
+    let exported = "sentinel-41b8d2f0-exported";
+    let output = gates_with_keychain(&sha, &out, "", 44, Some(exported));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump = std::fs::read_to_string(out.with_extension("env")).unwrap();
+    assert!(dump.contains("PATH="), "the fake git did not run");
+    assert!(
+        !dump.contains(exported),
+        "a gate's child inherited the exported pattern"
+    );
+    let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    assert!(!String::from_utf8_lossy(&printed).contains(exported));
+    // No Keychain item and no UNA_GATES_UNCHECKED: the run stops before any gate.
+    let output = gates_with_keychain(&sha, &out, "", 44, None);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("create the Keychain item una-privacy-pattern"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.join("results.tsv").exists());
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(out.with_extension("bin"));
+    let _ = std::fs::remove_file(out.with_extension("env"));
 }

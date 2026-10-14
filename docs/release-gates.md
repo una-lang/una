@@ -83,7 +83,7 @@ The script writes into `OUT`:
   - the archives with their SHA-256;
   - the verdict, as in the record.
 
-  Nothing else of the record is copied: no subject, no notes, no log digest. Each field is checked against its shape before it is written, and a field out of shape stops the summary, so no free text reaches it. When `UNA_PRIVACY_PATTERN` is set, the summary must not match it; when it is unset, the summary is marked unchecked.
+  Nothing else of the record is copied: no subject, no notes, no log digest. Each field is checked against its shape before it is written, and a field out of shape stops the summary, so no free text reaches it. The summary must not match the privacy pattern: `UNA_PRIVACY_PATTERN` when it is set, else the macOS Keychain item `una-privacy-pattern`, which `scripts/release-gates.sh` reads into a shell variable that it never exports, unsetting the caller's variable, so that no gate inherits it, and hands only to the summary step; it never prints, logs or writes it. Without either, the script stops before any gate; `UNA_GATES_UNCHECKED=1` runs the gates without the pattern: such a run's summary opens with "Unchecked: written without the privacy pattern; not for publication", and no publish command is printed.
 - `release-notes.md`: the summary, then the version's `CHANGELOG.md` section that `scripts/local-release.sh` wrote.
 
 For a tag, `summary.md` is committed as `docs/validation/<version>.md`, unchanged. The full record and the logs stay private. `docs/validation/repacked.md` lists the macOS archives of v0.3.3 to v0.3.13, which were packed again after their release, each with its gated and its published digest and the check that paired them, and the withdrawn macOS archives of v0.3.0 to v0.3.2.
