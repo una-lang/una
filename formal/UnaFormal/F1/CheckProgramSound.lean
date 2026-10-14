@@ -261,15 +261,16 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
     · rename_i fn hfn
       simp only [Bool.and_eq_true, List.isEmpty_iff, Bool.not_eq_true', List.all_eq_true,
         Bool.or_eq_true, HostFx.isNone] at h
-      obtain ⟨⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨hrd, hwr⟩, hrq⟩⟩, hop⟩, hsc⟩, hnv⟩, hinv⟩ := h
+      obtain ⟨⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨⟨hrd, hwr⟩, hrq⟩, hky⟩⟩, hop⟩, hsc⟩, hnv⟩, hinv⟩ := h
       refine ⟨fn, hfn, htp, hrels, ?_, fun ho => ?_, fun r hr => isScalar_sound (hsc r hr),
         isVia_false hnv, hinv⟩
-      · have hn : ∀ g : HostFx, g.rd = false → g.wr = false → g.rq = false → g = HostFx.none := by
-          rintro ⟨_, _, _⟩ h1 h2 h3
-          simp only at h1 h2 h3
-          subst h1 h2 h3
+      · have hn : ∀ g : HostFx, g.rd = false → g.wr = false → g.rq = false → g.ky = false →
+            g = HostFx.none := by
+          rintro ⟨_, _, _, _⟩ h1 h2 h3 h4
+          simp only at h1 h2 h3 h4
+          subst h1 h2 h3 h4
           rfl
-        exact hn _ hrd hwr hrq
+        exact hn _ hrd hwr hrq hky
       · rcases hop with h | h
         · simp [ho] at h
         · exact leB_sound h
@@ -356,7 +357,7 @@ mutual
     | .variant _ _ _, _, _, _, _, _, _, hg
     | .atom _, _, _, _, _, _, _, hg | .prim _ _, _, _, _, _, _, _, hg
     | .apply _ _, _, _, _, _, _, _, hg | .op _, _, _, _, _, _, _, hg
-    | .read _, _, _, _, _, _, _, hg | .write _ _, _, _, _, _, _, _, hg
+    | .read _, _, _, _, _, _, _, hg | .write _ _, _, _, _, _, _, _, hg | .hmac _ _, _, _, _, _, _, _, hg
     | .req _ _, _, _, _, _, _, _, hg | .construct _ _, _, _, _, _, _, _, hg
     | .field _ _, _, _, _, _, _, _, hg | .list _, _, _, _, _, _, _, hg
     | .none, _, _, _, _, _, _, hg | .some _, _, _, _, _, _, _, hg

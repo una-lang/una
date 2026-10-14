@@ -23,6 +23,8 @@ structure Auth where
   wr : Bool := false
   rq : Bool := false
   env : Bool := false
+  /-- `Keys` (#587): the ceiling admits `Keys.hmac`. -/
+  keys : Bool := false
   ops : List String := []
   /-- The operation each static handler function implements (#572), the program's
   `staticOps`: a `Rhs.invoke` of the function performs that operation. -/
@@ -42,6 +44,8 @@ def Auth.allows (a : Auth) : Event → Prop
   -- The ghost of a #524 invocation, by the handler's function: granted when the ceiling names
   -- the operation the handler implements (#572, closing R11).
   | .perfFn f => ∃ o, a.staticOps.lookup f = some o ∧ o ∈ a.ops
+  -- A `Keys.hmac` call (#587): granted when the ceiling grants `Keys`.
+  | .keyUse _ => a.keys = true
 
 mutual
   /-- A right-hand side that performs only what `a` grants, in its lambdas included. -/
@@ -49,6 +53,7 @@ mutual
     | .op _ => a.out
     | .read _ => a.rd
     | .write _ _ => a.wr
+    | .hmac _ _ => a.keys
     | .req _ _ => a.rq
     | .envGet _ => a.env
     | .invokeOp o _ => a.ops.contains o
@@ -501,6 +506,31 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
             | some c => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
             | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
           | _ => exact Conf.stuck w
+      | hmac key data =>
+        simp only [Rhs.within] at hr
+        simp only [evalRhs]
+        cases evalAtom env key with
+        | none => cases evalAtom env data <;> exact Conf.stuck w
+        | some v =>
+          cases evalAtom env data with
+          | none => cases v <;> exact Conf.stuck w
+          | some d =>
+            cases v with
+            | text k =>
+              dsimp only
+              have hev : ∀ ev ∈ [Event.keyUse k], a.allows ev := by
+                intro ev hev
+                simp only [List.mem_singleton] at hev
+                subst hev
+                exact hr
+              cases d.line with
+              | none => exact Conf.stuck w
+              | some s =>
+                dsimp only
+                cases H.key k with
+                | some m => exact ⟨hev, (fun _ h => by cases h; simp [Val.WithinIn]), (fun _ _ _ h => nomatch h)⟩
+                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            | _ => exact Conf.stuck w
       | write path content =>
         simp only [Rhs.within] at hr
         simp only [evalRhs]

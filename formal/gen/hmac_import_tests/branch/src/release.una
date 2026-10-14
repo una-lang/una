@@ -1,0 +1,19 @@
+trusted module release
+
+pub policy key_of
+  from secret Text
+  to internal Hashed
+  via hmac_it
+  purpose "a keyed hash of the text"
+  owner privacy
+
+hmac_it(t: secret Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  if t.len > 3
+    @keys.hmac(key_name: "pepper", data: t)
+      if error pass
+  else
+    @keys.hmac(key_name: "salt", data: t)
+      if error pass

@@ -409,6 +409,14 @@ import UnaFormal
 #print axioms Una.F1.BoundaryExample.static_rejected
 #print axioms Una.F1.BoundaryExample.static_accepted
 #print axioms Una.F1.BoundaryExample.static_names_op
+#print axioms Una.F1.hmacOnly_ghostly
+#print axioms Una.F1.hmacOnly_failCode
+#print axioms Una.F1.Fun.hmacVia_sound
+#print axioms Una.F1.hmacOnly_noRaise
+#print axioms Una.F1.HmacViaExample.progH_certified
+#print axioms Una.F1.HmacViaExample.ungranted_alike
+#print axioms Una.F1.HmacViaExample.granted_alike
+#print axioms Una.F1.HmacViaExample.sign_failCode
 #print axioms Una.F1.implies_sound
 #print axioms Una.F1.callee_good
 #print axioms Una.F1.eval_good

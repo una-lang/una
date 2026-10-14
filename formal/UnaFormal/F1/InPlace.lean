@@ -370,6 +370,9 @@ mutual
       simp only [LTy.InPlace] at h
       exact ⟨LTy.raise_inPlace (LExpr.plainFree_join h.2.2 rfl) h.2.1, Eff.plainFree_ofFn _ _ _⟩
     | _, _, _, _, _, _, _, _, .op _ _ _ _ => ⟨rfl, fun _ h => by simp at h, LExpr.plainFree_bot⟩
+    | _, _, _, _, _, _, hΓ, hpc, .hmac _ _ hd _ _ _ =>
+      ⟨by simp only [LTy.InPlace]; exact LExpr.plainFree_join rfl (LTy.deep_plainFree _ (latom_inPlace hΓ hd)),
+        fun _ h => by simp at h; subst h; exact hpc, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, hΓ, hpc, .read hu _ _ _ =>
       ⟨rfl, fun _ h => by
         simp at h; subst h
@@ -432,15 +435,21 @@ mutual
           rw [h] at hcl
           have hc := hcl [(a, .int)]
           simp [LTy.erase, Ty.subst] at hc)
+      -- ADR 0098 (#587): the failure is released up to `to`, or up to nothing.
+      have htop' : ∀ f : Fun, (f.failTop _).PlainFree := fun f => by
+        unfold Fun.failTop
+        split
+        · exact LExpr.plainFree_bot
+        · exact htop
       refine ⟨hd, fun l hl => ?_, ?_⟩
       · simp only [Eff.ofPolicy] at hl
         split at hl
         · cases hl
-          exact LExpr.plainFree_join hpc htop
+          exact LExpr.plainFree_join hpc (htop' _)
         · cases hl
       · simp only [Eff.ofPolicy]
         split
-        · exact htop
+        · exact htop' _
         · exact LExpr.plainFree_bot
     | _, _, _, _, _, _, hΓ, _, .map hxs hf _ _ => by
       have hx := latom_inPlace hΓ hxs

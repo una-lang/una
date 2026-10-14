@@ -33,30 +33,37 @@ inductive Ty where
   a loop's state and an `edit` call's results (`spec/17 §4`). -/
   | tuple (items : List Ty)
 
-/-- The host effects a code may perform: read a file, write a file, send a request. -/
+/-- The host effects a code may perform: read a file, write a file, send a request, and compute
+an HMAC under a granted key (`Keys.hmac`, #587). -/
 structure HostFx where
   rd : Bool := false
   wr : Bool := false
   rq : Bool := false
+  ky : Bool := false
 
 /-- No host effect. -/
 def HostFx.none : HostFx := {}
 
 /-- Both codes' host effects. -/
-def HostFx.or (a b : HostFx) : HostFx := ⟨a.rd || b.rd, a.wr || b.wr, a.rq || b.rq⟩
+def HostFx.or (a b : HostFx) : HostFx :=
+  ⟨a.rd || b.rd, a.wr || b.wr, a.rq || b.rq, a.ky || b.ky⟩
 
 /-- `a`'s host effects are among `b`'s. -/
 def HostFx.Le (a b : HostFx) : Prop :=
-  (a.rd = true → b.rd = true) ∧ (a.wr = true → b.wr = true) ∧ (a.rq = true → b.rq = true)
+  (a.rd = true → b.rd = true) ∧ (a.wr = true → b.wr = true) ∧ (a.rq = true → b.rq = true) ∧
+    (a.ky = true → b.ky = true)
 
-theorem HostFx.Le.refl (a : HostFx) : HostFx.Le a a := ⟨id, id, id⟩
+theorem HostFx.Le.refl (a : HostFx) : HostFx.Le a a := ⟨id, id, id, id⟩
 
 theorem HostFx.Le.trans {a b c : HostFx} (h₁ : HostFx.Le a b) (h₂ : HostFx.Le b c) :
     HostFx.Le a c :=
-  ⟨h₂.1 ∘ h₁.1, h₂.2.1 ∘ h₁.2.1, h₂.2.2 ∘ h₁.2.2⟩
+  ⟨h₂.1 ∘ h₁.1, h₂.2.1 ∘ h₁.2.1, h₂.2.2.1 ∘ h₁.2.2.1, h₂.2.2.2 ∘ h₁.2.2.2⟩
 
 /-- No host effect, as a Boolean. -/
-def HostFx.isNone (a : HostFx) : Bool := !a.rd && !a.wr && !a.rq
+def HostFx.isNone (a : HostFx) : Bool := !a.rd && !a.wr && !a.rq && !a.ky
+
+/-- `Keys` only: the host effect of a `via` function of ADR 0098's shape (#587). -/
+def HostFx.keys : HostFx := { ky := true }
 
 /-- A type labeled at every position (`spec/07 §7` rule 1). A function type says which
 effects its function may perform, the operation `op` of the one capability and the host
@@ -154,6 +161,10 @@ mutual
     /-- `Files.read(path)`: a sink at its `accepts`, whose failure the path and the file system's
     shape decide, and whose result is the file's content (`spec/14 §3`). -/
     | read (path : Atom)
+    /-- `Keys.hmac(key_name, data)` (#587, ADR 0098): the HMAC of `data` under the granted key
+    `key_name`. It fails exactly when the key is not granted, which the host fixes, and records
+    only a ghost event. -/
+    | hmac (key data : Atom)
     /-- `Files.write(path, content)`: a sink at its `accepts`, which changes the file system;
     whether it fails, and the shape it leaves, depend on the path and the shape, not the
     content (ADR 0085 decision 3). -/
@@ -409,5 +420,47 @@ def httpParams : String → Option (List Ty)
   | "get" | "delete" => some [.text, .list (.record "prelude.Header"), .option .text]
   | "post" | "put" => some [.text, .list (.record "prelude.Header"), .text, .option .text]
   | _ => none
+
+/-! ### ADR 0098's shape of a `via` function, as a test (#587) -/
+
+mutual
+  /-- `Rhs.Pure`, as a test. -/
+  def Rhs.pureB : Rhs → Bool
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _
+    | .elemAt _ _ | .orElse _ _ | .isOk _ | .mkOk _ | .mkErr _ | .eq _ _ | .variant _ _ _
+    | .lambda _ _ | .funRef _ _ => true
+    | _ => false
+
+  /-- `Expr.Pure`, as a test. -/
+  def Expr.pureB : Expr → Bool
+    | .atom _ => true
+    | .letR _ _ v b => v.pureB && b.pureB
+    | .letE _ _ v b => v.pureB && b.pureB
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e => t.pureB && e.pureB
+    | .attempt b | .attemptK _ b => b.pureB
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
+end
+
+/-- `@k.hmac("literal", d)` (ADR 0098 rule 2), as a test. -/
+def Rhs.hmacLitB : Rhs → Bool
+  | .hmac (.text _) _ => true
+  | _ => false
+
+/-- ADR 0098's shape (`Expr.HmacOnly`), as a test. -/
+def Expr.hmacOnlyB : Expr → Bool
+  | .atom _ => true
+  | .letR _ _ v b => (v.pureB || v.hmacLitB) && b.hmacOnlyB
+  | .letE _ _ v b => v.pureB && b.hmacOnlyB
+  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .caseSum _ _ _ t e => t.pureB && e.pureB
+  | .attempt b => b.pureB
+  | _ => false
+
+/-- A `via` function of ADR 0098's shape (#587): no output, `Keys` only, no payload failure, and
+a body whose only failure points are top-level hmac calls with a literal key name. The failure
+of a call of its policy is the call's own, at `pc`. -/
+def Fun.hmacVia (fn : Fun) : Bool :=
+  !fn.op && !fn.host.rd && !fn.host.wr && !fn.host.rq && fn.host.ky && fn.fails &&
+    fn.raises.isEmpty && fn.body.hmacOnlyB
 
 end Una.F1

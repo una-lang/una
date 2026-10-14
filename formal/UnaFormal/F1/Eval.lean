@@ -57,6 +57,9 @@ inductive Event where
   | perf (o : String)
   /-- The same ghost for `Rhs.invoke`, by the handler's function, which erasure renames. -/
   | perfFn (f : String)
+  /-- A ghost (#587): a `Keys.hmac` call with the key name `key`. No observer sees it (`EvVis`);
+  confinement reads it (`Auth.allows`). -/
+  | keyUse (key : String)
 
 abbrev Trace := List Event
 
@@ -96,6 +99,11 @@ structure Host where
   read : String → FS → Option String
   write : String → String → FS → Option FS
   request : String → List Val → Srv → Except Nat Val × Srv
+  /-- The keys the run was granted, by name (`keys:` grants, #587): run configuration, fixed for
+  a host, so the two runs T6 compares share it. -/
+  key : String → Option String := fun _ => Option.none
+  /-- HMAC-SHA-256 of a text under a key, as a text. -/
+  mac : String → String → String := fun _ _ => ""
 
 /-- The host's state. -/
 structure World (H : Host) where
@@ -451,6 +459,18 @@ mutual
           | some s => ([.out s], .ok .unit, w)
           | none => stuck w
         | none => stuck w
+      | .hmac key data =>
+        -- `Keys.hmac` (#587): it fails exactly when the key is not granted; the data decides
+        -- only the value.
+        match evalAtom env key, evalAtom env data with
+        | some (.text k), some d =>
+          match d.line with
+          | some s =>
+            match H.key k with
+            | some m => ([.keyUse k], .ok (.text (H.mac m s)), w)
+            | none => ([.keyUse k], .failed hostFailure, w)
+          | none => stuck w
+        | _, _ => stuck w
       | .read path =>
         match evalAtom env path with
         | some (.text s) =>

@@ -76,6 +76,8 @@ def EvVis : Event → Prop
   -- A ghost of a performance (#561): seen by no observer.
   | .perf _ => False
   | .perfFn _ => False
+  -- A `Keys.hmac` call (#587): a ghost, seen by no observer.
+  | .keyUse _ => False
 
 open Classical in
 /-- The events the observer sees, in order. -/
@@ -365,6 +367,7 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
       exact hpc (Vis.of_le hle hv)
     | perf _ => exact hvis
     | perfFn _ => exact hvis
+    | keyUse _ => exact hvis
   · have hf : Fails p pc ε := by
       have h2 := h.2.1
       simp only at hc h2

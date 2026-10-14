@@ -149,6 +149,8 @@ mutual
     | _, _, _, _, _, _, .apply _ _ _ hb =>
       Eff.dlOk_ofFn fun hf => LExpr.le_trans (LExpr.le_join_left _ _) (hb.fails_bot hf)
     | _, _, _, _, _, _, .op _ _ _ _ => ⟨fun _ h => by simp at h, LExpr.bot_le _⟩
+    | _, _, _, _, _, _, .hmac _ _ _ _ _ _ =>
+      ⟨fun _ h => by simp at h; subst h; exact LExpr.le_refl _, LExpr.bot_le _⟩
     | _, _, _, _, _, _, .read _ _ _ _ =>
       Eff.dlOk_leaf (LExpr.le_trans (LExpr.le_join_left _ _) (Program.le_fsFail _))
         (Program.fsFail_mono (LExpr.le_join_right _ _))

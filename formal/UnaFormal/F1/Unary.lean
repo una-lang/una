@@ -360,6 +360,7 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   -- A ghost of a performance (#561): no event of an observer, allowed everywhere.
   | .perf _ => True
   | .perfFn _ => True
+  | .keyUse _ => True
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
@@ -384,10 +385,11 @@ theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
   | .out _, ⟨h1, h2⟩ => ⟨ho h1, LExpr.le_trans hpc h2⟩
   | .read _, ⟨h1, h2⟩ => ⟨hg.1 h1, LExpr.le_trans hpc h2⟩
   | .write _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.1 h1, LExpr.le_trans hpc h2, fun h => LExpr.le_trans hpc (h3 h)⟩
-  | .req _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.2 h1, LExpr.le_trans hpc h2, h3⟩
+  | .req _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.2.1 h1, LExpr.le_trans hpc h2, h3⟩
   | .release _ _, ⟨h1, po, hpo, h2, h3⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2, h3⟩
   | .perf _, _ => trivial
   | .perfFn _, _ => trivial
+  | .keyUse _, _ => trivial
 
 theorem Fails.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (hf : ∀ l, ε'.fails = some l → ∃ l', ε.fails = some l' ∧ p.le l l') :
@@ -404,10 +406,10 @@ theorem union_op_right {ε₁ ε₂ : Eff} (h : ε₂.emits p = true) : (ε₁.u
   rcases h with h | h <;> simp [h]
 theorem union_host_left {ε₁ ε₂ : Eff} : HostFx.Le ε₁.host (ε₁.union ε₂).host :=
   ⟨fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h],
-    fun h => by simp [Eff.union, HostFx.or, h]⟩
+    fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h]⟩
 theorem union_host_right {ε₁ ε₂ : Eff} : HostFx.Le ε₂.host (ε₁.union ε₂).host :=
   ⟨fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h],
-    fun h => by simp [Eff.union, HostFx.or, h]⟩
+    fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h]⟩
 
 theorem union_fails_left {ε₁ ε₂ : Eff} :
     ∀ l, ε₁.fails = some l → ∃ l', (ε₁.union ε₂).fails = some l' ∧ p.le l l' := by
@@ -453,6 +455,7 @@ def FnAllowed (o : Bool) (g : HostFx) : Event → Prop
   | .release _ _ => False
   | .perf _ => True
   | .perfFn _ => True
+  | .keyUse _ => True
 
 /-- At a call whose program counter `pc'` the function's bound allows (`pc ⊑ pc'`), its events
 are allowed, and so is its failure. -/
@@ -465,6 +468,7 @@ theorem bound_allowed {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : 
   | .release _ _, h => h.elim
   | .perf _, _ => trivial
   | .perfFn _, _ => trivial
+  | .keyUse _, _ => trivial
 
 theorem bound_fails {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') (hf : f = true) : Fails p pc (Eff.ofFn o g f) :=
@@ -514,10 +518,11 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       | out _ => exact ho hev.1
       | read _ => exact hg.1 hev.1
       | write _ _ => exact hg.2.1 hev.1
-      | req _ _ => exact ⟨hg.2.2 hev.1, hev.2.2⟩
+      | req _ _ => exact ⟨hg.2.2.1 hev.1, hev.2.2⟩
       | release _ _ => have h := hev.1; simp [Eff.inst, hrl] at h
       | perf _ => trivial
       | perfFn _ => trivial
+      | keyUse _ => trivial
     · -- A function value fails with a code only (#512): its body raises no payload.
       refine ⟨fun ⟨⟨l, hl, _⟩, _⟩ => hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl']),
         fun _ _ _ ⟨_, hk, _⟩ => ?_⟩

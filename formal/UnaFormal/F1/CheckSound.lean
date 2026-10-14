@@ -71,11 +71,12 @@ theorem httpRecordsB_sound {p : Program} (h : httpRecordsB p = true) : p.HttpRec
 
 theorem hostLeB_sound {a b : HostFx} (h : hostLeB a b = true) : HostFx.Le a b := by
   simp only [hostLeB, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨h₁, h₂⟩, h₃⟩ := h
-  refine ⟨fun h => ?_, fun h => ?_, fun h => ?_⟩
+  obtain ⟨⟨⟨h₁, h₂⟩, h₃⟩, h₄⟩ := h
+  refine ⟨fun h => ?_, fun h => ?_, fun h => ?_, fun h => ?_⟩
   · rcases h₁ with h' | h' <;> simp_all
   · rcases h₂ with h' | h' <;> simp_all
   · rcases h₃ with h' | h' <;> simp_all
+  · rcases h₄ with h' | h' <;> simp_all
 
 mutual
   theorem flowB_sound {top : Label} (a b : LTy) (h : flowB top a b = true) : Flow top a b := by

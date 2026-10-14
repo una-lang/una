@@ -172,6 +172,12 @@ def ofInvokeOp (pc : LExpr) (fn : Fun) (o : String) : Eff :=
 def withOf (o : String) (fn : Fun) (ε : Eff) : Eff :=
   { ε with op := ε.op || fn.op, invokes := ε.invokes.filter (· != o) }
 
+/-- The label up to which a policy call's failure is released (ADR 0098 rule 3): the `to`
+label, or nothing for a `via` function of ADR 0098's shape, whose failure reveals nothing, so
+that the failure is labeled `pc` alone. -/
+def _root_.Una.F1.Fun.failTop (fn : Fun) (top : LExpr) : LExpr :=
+  if fn.hmacVia then LExpr.bot else top
+
 /-- The effects of a call of the policy `pol`, whose `via` function has these `uses` and `fails`
 and whose `to` has the top label `dst` (T-Declassify): the release, and a failure the `via`
 function decides from the `from` value, so labeled where the release is visible, `pc ⊔ dst`
@@ -416,6 +422,14 @@ mutual
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsRead) → pc.SymFree →
         LRhsTy p E Γ pc (.read path) (.text (.ofLabel p.readResult))
           ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
+    /-- `Keys.hmac` (#587, ADR 0039, ADR 0098): its key name is a sink that accepts `public`, and
+    with the program counter it decides the failure, which is labeled `pc`; its data accepts every
+    label and decides only the value, labeled `internal ⊔ ℓ*(data)`. It records a ghost. -/
+    | hmac {Γ pc key data k d} :
+        LAtomTy Γ key k → k.erase = .text → LAtomTy Γ data d → d.erase.Scalar →
+        p.le (pc.join (p.deep k)) LExpr.bot → pc.SymFree →
+        LRhsTy p E Γ pc (.hmac key data) (.text ((LExpr.ofLabel ⟨.internal, []⟩).join (p.deep d)))
+          ⟨false, { ky := true }, some pc, [], true, [], LExpr.bot, []⟩
     /-- `Files.write`: its path and content are sinks; where it lands, and whether it runs, are
     below the file-state label (decision 1); its failure is labeled as a read's. -/
     | write {Γ pc path content t c} :
@@ -492,7 +506,7 @@ mutual
     | declassify {Γ pc pol a po fn t} :
         p.policy pol = some po → p.find po.via = some fn → LAtomTy Γ a t → Flow p.top t po.src →
         p.le pc po.dst.top → pc.SymFree →
-        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol)
+        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofPolicy fn.op fn.host fn.fails pc (fn.failTop po.dst.top) pol)
     /-- `map` (`spec/14 §1`, ADR 0051): the function runs under the top labels of `xs` and of
     itself (`spec/07 §7` rule 9); the result's top label is theirs, and each element is the
     function's result raised by its label (T-App). -/

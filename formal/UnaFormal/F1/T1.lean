@@ -243,6 +243,13 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
       | op hl hs =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv hl
         cases hvt <;> simp_all [evalRhs, Good, ValTy.unit, Val.line, Ty.Scalar]
+      | hmac hk hd hs =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv hk
+        obtain ⟨u, hu, hut⟩ := atom_typed henv hd
+        cases hvt with
+        | @text k =>
+          cases hut <;> simp only [Ty.Scalar] at hs <;>
+            simp only [evalRhs, hv, hu, Val.line] <;> cases H.key k <;> first | trivial | exact .text
       | read hu =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv hu
         cases hvt with

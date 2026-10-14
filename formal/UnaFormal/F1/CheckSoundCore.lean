@@ -66,6 +66,11 @@ mutual
       obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
       exact ⟨_, .read (atomTy_sound ht) (isText_sound hs) (le_ok hle) (symFree_sound hsf),
         flowTo_ok hf⟩
+    | .hmac key data, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨k, hk, _, hks, d, hd, _, hds, _, hle, _, hsf, _, hf, rfl⟩ := h
+      exact ⟨_, .hmac (atomTy_sound hk) (isText_sound hks) (atomTy_sound hd) (isScalar_sound hds)
+        (le_ok hle) (symFree_sound hsf), flowTo_ok hf⟩
     | .write path content, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
       obtain ⟨t, ht, _, hs, c, hc, _, hcs, _, hle, _, hfs, _, hsf, _, hf, rfl⟩ := h
@@ -574,11 +579,14 @@ theorem b1Ok_sound (h : b1Ok p = true) : p.B1WellFormed := by
     split at hv
     · rename_i fn hfn
       simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.isEmpty_iff] at hv
-      obtain ⟨⟨⟨⟨ho, hh⟩, hpf⟩, hfp⟩, hre⟩ := hv
-      refine ⟨fn, hfn, ho, hh, exprPureOrFails_sound _ hpf, fun hf => ?_, hre⟩
-      rcases hfp with h | h
-      · rw [hf] at h; exact absurd h (by simp)
-      · exact exprPure_sound _ h
+      obtain ⟨⟨ho, hcase⟩, hre⟩ := hv
+      refine ⟨fn, hfn, ho, ?_, hre⟩
+      rcases hcase with ⟨⟨hh, hpf⟩, hfp⟩ | hhv
+      · refine .inl ⟨hh, exprPureOrFails_sound _ hpf, fun hf => ?_⟩
+        rcases hfp with h | h
+        · rw [hf] at h; exact absurd h (by simp)
+        · exact exprPure_sound _ h
+      · exact .inr hhv
     · exact absurd hv (by simp)
 
 theorem checkB1_sound (h : checkB1 p = .ok ()) : p.B1WellFormed := by

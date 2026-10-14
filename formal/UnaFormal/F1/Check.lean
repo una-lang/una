@@ -82,7 +82,8 @@ def httpRecordsB (p : Program) : Bool :=
   | _, _ => false
 
 /-- `HostFx.Le`. -/
-def hostLeB (a b : HostFx) : Bool := (!a.rd || b.rd) && (!a.wr || b.wr) && (!a.rq || b.rq)
+def hostLeB (a b : HostFx) : Bool :=
+  (!a.rd || b.rd) && (!a.wr || b.wr) && (!a.rq || b.rq) && (!a.ky || b.ky)
 
 mutual
   /-- `Flow`. -/
@@ -387,6 +388,17 @@ mutual
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.text (.ofLabel p.readResult)) ann "`Files.read`'s result"
       pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
+    -- `Keys.hmac` (#587): T-Hmac.
+    | .hmac key data => do
+      let k ← atomTy Γ key
+      need (isText k) "`Keys.hmac`'s key name is not a text"
+      let d ← atomTy Γ data
+      need (isScalar d) "`Keys.hmac`'s data is not a scalar"
+      le p (pc.join (p.deep k)) LExpr.bot
+        "`Keys.hmac`'s key name or program counter is above `public`, which it accepts"
+      need (symFree pc) "a host operation under a symbolic program counter"
+      flowTo p (.text ((LExpr.ofLabel ⟨.internal, []⟩).join (p.deep d))) ann "`Keys.hmac`'s result"
+      pure ⟨false, { ky := true }, some pc, [], true, [], LExpr.bot, []⟩
     | .write path content => do
       let t ← atomTy Γ path
       need (isText t) "`Files.write`'s path is not a text"
@@ -527,7 +539,7 @@ mutual
       le p pc po.dst.top s!"`{pol}` is called under a program counter above its `to`"
       need (symFree pc) s!"`{pol}` is called under a symbolic program counter"
       flowTo p po.dst ann s!"the result of `{pol}`"
-      pure (.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol)
+      pure (.ofPolicy fn.op fn.host fn.fails pc (fn.failTop po.dst.top) pol)
     | .map xs f => do
       match ← atomTy Γ xs, ← atomTy Γ f with
       | .list te lx, .fn [tp] tr o g fl lf =>
@@ -905,7 +917,9 @@ def exprPureOrFails : Expr → Bool
 def b1Ok (p : Program) : Bool :=
   p.policies.all fun po => isScalar po.src && ground po.dst && isScalar po.dst &&
     match p.find po.via with
-    | some fn => !fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body) &&
+    | some fn => !fn.op &&
+        ((fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body)) ||
+          fn.hmacVia) &&
         fn.raises.isEmpty
     | none => false
 
@@ -918,7 +932,8 @@ def checkB1 (p : Program) : Result Unit := do
       (.restriction s!"B1 restriction (non-scalar to): `{po.name}`")
     match p.find po.via with
     | some fn =>
-      need (!fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body))
+      need (!fn.op && ((fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body)) ||
+          fn.hmacVia))
         (.restriction s!"B1 restriction (impure via): `{po.via}`")
       need fn.raises.isEmpty
         (.restriction s!"B1 restriction (via fails with a payload kind): `{po.via}`")
