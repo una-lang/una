@@ -170,3 +170,21 @@ The options of §2, §4, §5 and §7 are given in their sections, each with the 
 - Any link from a published document into a path of rule 6 is removed or redirected before the repository is opened. Examples are the references of `README.md` and `CONTRIBUTING.md` to the validation records, and the reference of the `CHANGELOG.md` header to `docs/plan/`. Plain mentions of such a path in released sections of `CHANGELOG.md`, such as their closing "Validation:" lines, stay as they are: those sections are frozen, and a mention publishes no content. Once those paths are gone from the tree, the documentation link check (`scripts/doc-links.py`) enforces it.
 - The check of personal data runs on this repository's tree, with its lists outside the repository.
 - Every commit id changes once, at the rewrite. Tags, releases and validation records are carried over through the maps of rule 5.
+
+## Amendment of 2026-10-14, second: changelog projection and release validation
+
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-14)
+- Refs: #717
+
+**Context.** The first amendment of 2026-10-14 makes this repository the public repository and moves the release validation records to a private location. It leaves three points open: whether the projection of its rule 7 covers `CHANGELOG.md`, what a published release says about its validation once the records are private, and where the gates are defined, since their definitions are in `docs/releases/validation.md`, a path of its rule 6.
+
+**Decision.**
+1. **The projection covers `CHANGELOG.md`.** Rule 7 of the first amendment applies to `CHANGELOG.md` as it does to the ADRs, since §1 classes both as one-way, projected. Its attributions to persons and roles are replaced inside lines, and no line is deleted. The released sections are projected with the history, so they still match the text their tags published.
+2. **Each release publishes a neutral validation summary.** The summary is generated from a template and names the commit, the toolchains, the table of gates with each result, and the digest of every release asset. It is the release's notes and is also attached to the release as an asset. It is neutral and institutional, as all release-facing text is. The full validation record stays private.
+3. **The gate definitions are published.** The definitions of the gates move from `docs/releases/validation.md` to a published document, written as neutral text. The pattern that the personal-data gate checks reaches the gates through an environment variable, set from an item of the system keychain when the gates run. It is never kept in a file of the repository.
+
+**Consequences.**
+- A reader of a published release can see what was validated, on which commit, and with which result, without the private record.
+- The release gates, and their tests, refer to the published document of the gate definitions in place of `docs/releases/validation.md`.
+- The gates fail closed when the personal-data pattern is not set, as they do for any gate that cannot run.
