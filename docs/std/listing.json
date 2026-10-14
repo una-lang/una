@@ -1,0 +1,1363 @@
+{
+  "schema": "una.std-listing/1",
+  "note": "Unstable, not part of the specification: see docs/std/README.md. Built-in operations are in spec/14 §2.",
+  "items": [
+    {
+      "name": "Nat",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Nat = Int where it >= 0",
+          "docs": [
+            "An `Int` that is at least zero (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Option",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Option[T] = Some(value: T) | None",
+          "docs": [
+            "`Some(value)` or `None` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Result",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Result[T, E] = Ok(value: T) | Err(failure: E)",
+          "docs": [
+            "`Ok(value)` or `Err(failure)` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "FileError",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/14 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind FileError = NotFound | Denied | Io",
+          "docs": [
+            "Why an operation of `Files` fails (`spec/14 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "KeyError",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/14 §3",
+        "spec/13 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind KeyError = | UnknownKey",
+          "docs": [
+            "Why `Keys.hmac` fails: `UnknownKey`, a key name that the key file of the grant does not",
+            "hold (`spec/14 §3`, `spec/13 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Console",
+      "module": "prelude",
+      "kind": "capability",
+      "spec": [
+        "spec/14 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub capability Console\n  op print(line: Text) -> Unit\n    accepts public",
+          "docs": [
+            "Writes lines to standard output: `print` writes the line and a newline. It accepts",
+            "`public` data (`spec/14 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Clock",
+      "module": "prelude",
+      "kind": "capability",
+      "spec": [
+        "spec/14 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub capability Clock\n  op now() -> Int\n    accepts public",
+          "docs": [
+            "Reads the time: `now` gives the milliseconds since the Unix epoch. It accepts `public`",
+            "data (`spec/14 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Env",
+      "module": "prelude",
+      "kind": "capability",
+      "spec": [
+        "spec/14 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub capability Env\n  op get(name: Text) -> Option[internal Text]\n    accepts public",
+          "docs": [
+            "Reads a process environment variable, as `internal` text. It accepts `public` data",
+            "(`spec/14 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "module": "prelude",
+      "kind": "capability",
+      "spec": [
+        "spec/14 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub capability Files\n  op read(path: Text) -> internal Text\n    fails FileError\n    accepts public\n  op write(path: Text, content: Text) -> Unit\n    fails FileError\n    accepts internal",
+          "docs": [
+            "Reads and writes files, with paths relative to the prefix the grant fixes; each operation",
+            "can fail with `FileError` (`spec/14 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Keys",
+      "module": "prelude",
+      "kind": "capability",
+      "spec": [
+        "spec/14 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub capability Keys\n  op hmac(key_name: Text, data: Text) -> internal Hashed\n    fails KeyError",
+          "docs": [
+            "Computes an HMAC-SHA-256 with a named key of the grant's key file, as `internal` `Hashed`.",
+            "It accepts `public` for `key_name` and any label for `data`, whose label its result carries",
+            "(`spec/14 §3`, ADR 0039)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "abs",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub abs(x: Int) -> Int\n  ensures result >= 0 and (result == x or result == -x)",
+          "docs": [
+            "The absolute value of `x` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "min",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1",
+        "spec/20 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub min(a: Int, b: Int) -> Int\n  ensures result <= a and result <= b and (result == a or result == b)",
+          "docs": [
+            "The smaller of `a` and `b`; in edition 0.2 and later, of any type with `Ord` (`spec/14 §1`,",
+            "`spec/20 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub min[T: Ord](a: T, b: T) -> T\n  ensures result <= a and result <= b and (result == a or result == b)",
+          "docs": [
+            "The smaller of `a` and `b`; in edition 0.2 and later, of any type with `Ord` (`spec/14 §1`,",
+            "`spec/20 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1",
+        "spec/20 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub max(a: Int, b: Int) -> Int\n  ensures result >= a and result >= b and (result == a or result == b)",
+          "docs": [
+            "The larger of `a` and `b`; in edition 0.2 and later, of any type with `Ord` (`spec/14 §1`,",
+            "`spec/20 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub max[T: Ord](a: T, b: T) -> T\n  ensures result >= a and result >= b and (result == a or result == b)",
+          "docs": [
+            "The larger of `a` and `b`; in edition 0.2 and later, of any type with `Ord` (`spec/14 §1`,",
+            "`spec/20 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_digits",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub is_digits(t: Text) -> Bool",
+          "docs": [
+            "Whether every character of `t` is an ASCII digit, so it holds of the empty text",
+            "(`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "starts_with",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub starts_with(t: Text, prefix: Text) -> Bool",
+          "docs": [
+            "Whether `t` starts with `prefix`, comparing Unicode scalar values (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "trim",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub trim(t: Text) -> Text\n  ensures result.len <= t.len",
+          "docs": [
+            "`t` without the Unicode whitespace at both ends (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_int",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub to_int(t: Text) -> Option[Int]",
+          "docs": [
+            "Reads `t` as an optional `-` followed by ASCII digits (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_empty",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub is_empty[T](xs: List[T]) -> Bool\n  ensures result == (xs.len == 0)",
+          "docs": [
+            "Whether `xs` has no elements (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "first",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub first[T](xs: List[T]) -> Option[T]\n  ensures (result is None) == (xs.len == 0)",
+          "docs": [
+            "`None` exactly when `xs` is empty (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "at",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub at[T](xs: List[T], index: Int) -> Option[T]\n  ensures (result is None) == (index < 0 or index >= xs.len)",
+          "docs": [
+            "`None` exactly when `index` is below `0` or at least `xs.len` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "append",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub append[T](xs: List[T], item: T) -> List[T]\n  ensures result.len == xs.len + 1",
+          "docs": [
+            "The result has one element more than `xs` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "contains",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1",
+        "spec/20 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub contains[T](xs: List[T], item: T) -> Bool",
+          "docs": [
+            "Compares structurally; in edition 0.2 and later, over any type with `Eq` (`spec/14 §1`,",
+            "`spec/20 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub contains[T: Eq](xs: List[T], item: T) -> Bool",
+          "docs": [
+            "Compares structurally; in edition 0.2 and later, over any type with `Eq` (`spec/14 §1`,",
+            "`spec/20 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "map",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]\n  ensures result.len == xs.len",
+          "docs": [
+            "The result has as many elements as `xs`. In edition 0.2 and later it takes an effectful and",
+            "failing `each`, which it calls left to right, once per element, and stops at the first",
+            "failure (`spec/14 §1`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]\n  ensures result.len == xs.len\n  uses of each\n  fails of each",
+          "docs": [
+            "The result has as many elements as `xs`. In edition 0.2 and later it takes an effectful and",
+            "failing `each`, which it calls left to right, once per element, and stops at the first",
+            "failure (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "filter",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]\n  ensures result.len <= xs.len",
+          "docs": [
+            "The result has no more elements than `xs`. In edition 0.2 and later it takes an effectful",
+            "and failing `keep`, which it calls left to right, once per element, and stops at the first",
+            "failure (`spec/14 §1`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]\n  ensures result.len <= xs.len\n  uses of keep\n  fails of keep",
+          "docs": [
+            "The result has no more elements than `xs`. In edition 0.2 and later it takes an effectful",
+            "and failing `keep`, which it calls left to right, once per element, and stops at the first",
+            "failure (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "first_where",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]",
+          "docs": [
+            "In edition 0.2 and later it takes an effectful and failing `keep`, which it calls left to",
+            "right up to the first element it accepts, and stops at the first failure (`spec/14 §1`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep",
+          "docs": [
+            "In edition 0.2 and later it takes an effectful and failing `keep`, which it calls left to",
+            "right up to the first element it accepts, and stops at the first failure (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fold",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U",
+          "docs": [
+            "In edition 0.2 and later it takes an effectful and failing `step`, which it calls left to",
+            "right, once per element, and stops at the first failure (`spec/14 §1`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step",
+          "docs": [
+            "In edition 0.2 and later it takes an effectful and failing `step`, which it calls left to",
+            "right, once per element, and stops at the first failure (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sum",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1",
+        "spec/20 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "pub sum(xs: List[Int]) -> Int",
+          "docs": [
+            "In edition 0.2 and later, over any integer type: it adds the values of the elements as",
+            "`Int`, so it never overflows (`spec/14 §1`, `spec/20 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub sum[T: Integer](xs: List[T]) -> Int",
+          "docs": [
+            "In edition 0.2 and later, over any integer type: it adds the values of the elements as",
+            "`Int`, so it never overflows (`spec/14 §1`, `spec/20 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_some",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub is_some[T](o: Option[T]) -> Bool\n  ensures result == (o is Some)",
+          "docs": [
+            "Whether `o` is `Some` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "or_else",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub or_else[T](o: Option[T], default: T) -> T",
+          "docs": [
+            "Pure and cannot fail, with no contract (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_ok",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub is_ok[T, E](r: Result[T, E]) -> Bool\n  ensures result == (r is Ok)",
+          "docs": [
+            "Whether `r` is `Ok` (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/17 §8"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub set[T](edit xs: List[T], index: Int, item: T) -> Unit\n  requires 0 <= index and index < xs.len\n  ensures xs.len == old(xs).len",
+          "docs": [
+            "Replaces the element at `index` of `xs` with `item` (`spec/17 §8`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sort",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/20 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub sort[T: Ord](xs: List[T]) -> List[T]\n  ensures result.len == xs.len",
+          "docs": [
+            "The elements of `xs` in ascending order, equal ones in their order in `xs` (`spec/20 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Entry",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/21 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Entry[K, V]\n  key: K\n  value: V",
+          "docs": [
+            "An entry of a map, as `entries()` lists them (`spec/21 §1` rule 4)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "empty_map",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub empty_map[K: Ord, V]() -> Map[K, V]\n  ensures result.len == 0",
+          "docs": [
+            "The map with no entries, of the type its context expects (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_json_number",
+      "module": "prelude",
+      "kind": "predicate",
+      "spec": [
+        "spec/23 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub predicate opaque is_json_number(t: Text) -> Bool",
+          "docs": [
+            "Whether `t` is one JSON number of RFC 8259 §6 (`spec/23 §1`). Opaque: both engines",
+            "evaluate it."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "JsonNumber",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/23 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind JsonNumber = Text where is_json_number(it)",
+          "docs": [
+            "The text of a JSON number with a fraction or an exponent, which `Decimal` holds (`spec/23 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Json",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/23 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Json = Null | Boolean(value: Bool) | Number(value: Int) | Decimal(text: JsonNumber) | Str(value: Text) | Array(items: List[Json]) | Object(fields: Map[Text, Json])",
+          "docs": [
+            "A JSON value (`spec/23 §1`). `Number` is an exact integer, a JSON number with neither a",
+            "fraction nor an exponent; other numbers are `Decimal`, as written."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "JsonError",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/23 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int) | NumberTooLong(at: Int)",
+          "docs": [
+            "Why a text is not one JSON value, at the first error in reading order (`spec/23 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_json",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/23 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub parse_json(t: Text) -> Json\n  fails JsonError",
+          "docs": [
+            "The one JSON value of `t` (`spec/23 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_json",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/23 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub to_json(j: Json) -> Text",
+          "docs": [
+            "The canonical JSON text of `j` (`spec/23 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "quote_json",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/23 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub quote_json(t: Text) -> Text",
+          "docs": [
+            "`t` as a JSON string literal (`spec/23 §4` rule 2)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ParseError",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/22 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits",
+          "docs": [
+            "Why `parse_int` fails (`spec/22 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "split",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub split(t: Text, on: Text) -> List[Text]\n  requires on.len > 0\n  ensures result.len >= 1",
+          "docs": [
+            "The parts of `t` between the non-overlapping occurrences of `on`, left to right",
+            "(`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "join",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub join(parts: List[Text], separator: Text) -> Text",
+          "docs": [
+            "The parts joined, with `separator` between each two (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ends_with",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub ends_with(t: Text, suffix: Text) -> Bool",
+          "docs": [
+            "Whether `t` ends with `suffix` (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "contains_text",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub contains_text(t: Text, part: Text) -> Bool",
+          "docs": [
+            "Whether `part` occurs in `t` (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "find",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub find(t: Text, text: Text) -> Option[Int]",
+          "docs": [
+            "The position of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`; it",
+            "is `Some` exactly when `contains_text(t, part: text)` (`spec/22 §2` rule 2)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "replace",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub replace(t: Text, pattern: Text, by: Text) -> Text\n  requires pattern.len > 0",
+          "docs": [
+            "`t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right",
+            "(`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "slice",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub slice(t: Text, start: Int, end: Int) -> Text\n  requires 0 <= start and start <= end and end <= t.len\n  ensures result.len == end - start",
+          "docs": [
+            "The scalar values of `t` from position `start` up to, not including, `end`",
+            "(`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_upper",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub to_upper(t: Text) -> Text\n  ensures result.len == t.len",
+          "docs": [
+            "`t` with the ASCII letters `a` to `z` in upper case (`spec/22 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_lower",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub to_lower(t: Text) -> Text\n  ensures result.len == t.len",
+          "docs": [
+            "`t` with the ASCII letters `A` to `Z` in lower case (`spec/22 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "chars",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub chars(t: Text) -> List[Text]\n  ensures result.len == t.len",
+          "docs": [
+            "One text of length 1 per scalar value of `t`, in order (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_int",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub parse_int(t: Text) -> Int\n  fails ParseError",
+          "docs": [
+            "The integer that `t` writes, an optional `-` and one or more ASCII digits (`spec/22 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "trim_start",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub trim_start(t: Text) -> Text\n  ensures result.len <= t.len",
+          "docs": [
+            "`t` without Unicode white space at its start (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "trim_end",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub trim_end(t: Text) -> Text\n  ensures result.len <= t.len",
+          "docs": [
+            "`t` without Unicode white space at its end (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bytes",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/22 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub bytes(t: Text) -> List[U8]\n  ensures result.len >= t.len",
+          "docs": [
+            "The UTF-8 encoding of `t` (`spec/22 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Header",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/24 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Header\n  name: Text\n  value: internal Text",
+          "docs": [
+            "A header of an HTTP request or response (`spec/24 §1`). Its value may hold `internal` data,",
+            "which a request accepts; a `secret` needs a policy first."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Response",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/24 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind Response\n  status: Int\n  headers: List[Header]\n  body: Text",
+          "docs": [
+            "An HTTP response, whatever its status (`spec/24 §1` rule 3)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "HttpError",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/24 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol",
+          "docs": [
+            "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Http",
+      "module": "prelude",
+      "kind": "capability",
+      "spec": [
+        "spec/24 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub capability Http\n  op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal",
+          "docs": [
+            "HTTP/1.1 to the origins that `http:` grants allow (`spec/24 §1`). `key_name` sends the key of",
+            "that name from the `keys:` grants as a bearer token, which the program never sees."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fake_hash",
+      "module": "std.testing",
+      "kind": "function",
+      "spec": [
+        "spec/14 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1",
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "pub fake_hash(seed: Int) -> internal Hashed",
+          "docs": [
+            "A deterministic `Hashed` value for tests: equal seeds give equal values. Usable only in",
+            "examples and in handlers that only examples install (`spec/14 §4`)."
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -12,6 +12,6 @@ pub use names::{
     check_names_indexed, check_names_poisoned,
 };
 pub use types::{
-    Header, HeaderUse, Index, PendingObligation, Rejected, TypeCheck, check_types,
-    check_types_with_rejected,
+    Header, HeaderUse, Index, PendingObligation, Rejected, StandardSource, TypeCheck, check_types,
+    check_types_with_rejected, standard_source,
 };

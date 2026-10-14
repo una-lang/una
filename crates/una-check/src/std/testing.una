@@ -2,4 +2,6 @@
 -- The body is a placeholder that type-checks; the interpreter implements it (M7).
 module std.testing
 
+--- A deterministic `Hashed` value for tests: equal seeds give equal values. Usable only in
+--- examples and in handlers that only examples install (`spec/14 §4`).
 pub fake_hash(seed: Int) -> internal Hashed = fake_hash(seed)
