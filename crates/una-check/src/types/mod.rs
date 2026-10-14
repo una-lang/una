@@ -642,6 +642,9 @@ pub(crate) struct Findings {
     pub(crate) releases: Vec<(crossing::Node, Span)>,
     /// The handlers given a function value whose code is not known where they are installed.
     pub(crate) opaque: Vec<(crossing::Node, Span)>,
+    /// What the arguments of each installation of a handler outside every boundary grant it,
+    /// by the span that its binding records: a boundary that runs the handler runs them too.
+    pub(crate) installed: std::collections::BTreeMap<Span, crossing::Installed>,
     /// The calls into boundary modules.
     pub(crate) crossings: Vec<crossing::Crossing>,
     /// Instantiations of generic functions: the caller when it is a function, the callee, its

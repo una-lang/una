@@ -580,6 +580,7 @@ impl<'a> Checker<'_, 'a, '_> {
         &mut self,
         span: Span,
         found: &Ty,
+        named: bool,
         uses: bool,
         fails: bool,
         kind: Option<&Ty>,
@@ -605,7 +606,8 @@ impl<'a> Checker<'_, 'a, '_> {
             effects: !function.uses.is_empty(),
             fails: function.fails.clone(),
         };
-        if uses && !function.uses.is_empty() {
+        // A named function's `uses` were needed where it is named, which is here.
+        if uses && !named && !function.uses.is_empty() {
             let level = self.frames.len();
             self.needs_site("this function", &function.uses, span, level);
         }
