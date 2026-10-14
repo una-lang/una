@@ -58,6 +58,12 @@ pub struct Obligation {
     /// divisor and the division. A model that sets one of them to zero is no run (ADR 0054,
     /// amendment of 2026-10-08).
     pub(crate) divisions: Vec<Vec<(F, Span)>>,
+    /// For a `contract_lock` whose locked condition is outside the encoding, that condition:
+    /// the obligation is then unknown at the lock, never proven by the missing goal (#638).
+    /// The checker rejects such a lock as U7002 first, so the conformance suite and the
+    /// corpus cross-check fail on any obligation that sets it: it means the checker admitted
+    /// a condition that the encoding does not cover.
+    pub unencodable: Option<String>,
 }
 
 /// What a binding that a loop updates holds, for the reason of an obligation the loop leaves
@@ -3694,6 +3700,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         // A lock condition outside the encoding is no goal that holds: the query keeps `not
         // false` and is refuted, never silently proven. A header condition outside it is
         // dropped, which only strengthens the goal.
+        let unencodable = locked.is_none();
         let goal = match header {
             Some(premise) => locked.map(|c| F::op("=>", vec![premise, c])),
             None => locked,
@@ -3719,6 +3726,9 @@ impl<'p, 'i> Walker<'p, 'i> {
             place,
             vec![ctx.divisions.to_vec()],
         );
+        if unencodable && let Some(obligation) = self.obligations.last_mut() {
+            obligation.unencodable = Some(lock.lock.text.clone());
+        }
     }
 
     /// Every condition of the declaration walked, charged at `span` with no premise: for a
@@ -3959,6 +3969,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             forgotten,
             entry,
             divisions,
+            unencodable: None,
         });
     }
 
