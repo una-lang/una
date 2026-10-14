@@ -1,5 +1,5 @@
 #!/bin/bash
-# The release gates (#232, docs/releases/validation.md): the local, recorded run that replaces
+# The release gates (#232, docs/release-gates.md): the local, recorded run that replaces
 # hosted CI for merges, tags and releases. It runs each gate on exactly one commit, in a fresh
 # clone made for this run, and checks before every gate that the clone is still that commit
 # with no change. A failing gate does not stop the next one.
@@ -29,8 +29,10 @@
 #                toolchain, and no stated theorem depends on `sorry` (#46)
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
-# logs/<gate>.log, and record.md, the validation record that docs/releases/validation.md
-# describes. The clone is OUT/clone.
+# logs/<gate>.log, record.md, the full validation record, and, when the record names its
+# version, summary.md, its public summary (scripts/release-summary.py, #717), and
+# release-notes.md, the summary followed by the notes that the release gate wrote. All are
+# described in docs/release-gates.md. The clone is OUT/clone.
 #
 # UNA_GATES_SOURCE overrides where the clone comes from (default: the remote `origin`), and
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
@@ -304,5 +306,26 @@ fi
 } > "$OUT/record.md"
 
 echo "record: $OUT/record.md"
+
+# The public summary and the release notes (#717): the summary, then the version's CHANGELOG
+# section that scripts/local-release.sh wrote. The publish command is printed only for a PASS
+# whose summary passed the privacy check (docs/release-gates.md §4).
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
+rm -f "$OUT/summary.md" "$OUT/release-notes.md" "$OUT"/una-*-validation.md
+if [ -n "$version" ] && python3 -B "$REPO/scripts/release-summary.py" "$version" "$OUT/record.md" "$OUT/summary.md"; then
+    built=$CLONE/target/local-release/v$version
+    if [ -f "$built/notes.md" ]; then
+        { cat "$OUT/summary.md"; echo; cat "$built/notes.md"; } > "$OUT/release-notes.md"
+        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "${UNA_PRIVACY_PATTERN:-}" ]; then
+            cp "$OUT/summary.md" "$OUT/una-$version-validation.md"
+            echo "publish, once the record commit is tagged v$version (docs/release-gates.md §4):"
+            echo "  gh release create v$version --verify-tag --title \"Una v$version\" --notes-file $OUT/release-notes.md \\"
+            for archive in "$built"/*.tar.gz; do
+                echo "    $archive $archive.sha256 \\"
+            done
+            echo "    $OUT/una-$version-validation.md"
+        fi
+    fi
+fi
 grep -q $'\tFAIL\t' "$RESULTS" && exit 1
 exit 0

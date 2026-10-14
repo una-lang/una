@@ -1,4 +1,4 @@
-# Validation
+# Release gates
 
 Status: Normative for the project's workflow (#232). GitHub Actions is not used. Merges, tags and releases rest on local runs whose results are recorded, so anyone can see what was checked, on which commit, and with which outcome.
 
@@ -8,14 +8,14 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
    - Linux is not checked per pull request. The next gate run confirms it on `main` (`scripts/local-ci.sh --linux`, in Docker), and a Linux FAIL there is reported at once and fixed before anything else merges.
    - Except when the pull request changes what the Linux run runs: `scripts/local-ci.sh`, `scripts/local-ci/` (its Docker image), or a script that a step of it calls, such as `scripts/formal.sh` or `docs/reviews/formal-m2-replay/check.sh`, or makes a step need a tool it did not need before. Such a pull request also needs a `scripts/local-ci.sh --linux-arm64` PASS (native, a few minutes) on its exact tip, written into its body with the SHA (#605). A step that needs a tool the image lacks passes on macOS, which has it, and fails only in the container: #528's replay needed `python3`, and the first gate run of v0.3.8 failed on it (#606).
 2. **A tag** `v<version>` needs a run of `scripts/release-gates.sh` in which every gate is PASS, on the gated SHA: the commit of `main` after the release pull request.
-   - Its record is committed as `docs/releases/<version>-validation.md` before the tag is made.
-   - **The tagged commit is the record commit**, not the gated SHA, since `install.sh` reads the record from the tag's tree, and gating the record commit again would be circular. So:
-     - The tagged commit's own change, against its first parent, is exactly the record file.
+   - Its public summary (§3) is committed as `docs/validation/<version>.md` before the tag is made.
+   - **The tagged commit is the record commit**, not the gated SHA, since `install.sh` reads the summary from the tag's tree, and gating the record commit again would be circular. So:
+     - The tagged commit's own change, against its first parent, is exactly the summary file and, until the repository is public, the full record as `docs/releases/<version>-validation.md`.
      - Between the gated SHA and the tagged commit, only files under `docs/` change: `git diff --name-only <gated> <tag>` lists nothing else. The code, build files, scripts and `install.sh` of the tag are then those of the gated SHA.
      - Anything else that merges in between, such as a change of code, needs a new gate run, and the gated SHA becomes that commit.
-   - A tag whose record has a FAIL or is INCOMPLETE is not made.
+   - A tag whose summary has a FAIL or is INCOMPLETE is not made.
    - Every tag and release also needs an explicit approval, recorded in the release issue before the tag.
-3. **A release** publishes the archives that the `release` gate built (`OUT/clone/target/local-release/v<version>/`), whose digests the record lists. The archives are reproducible (#679): two builds of one commit give the same bytes for each target, which the `reproducible` gate checks with a second build from cold. A published archive can therefore be rebuilt from its commit and checked against the record's digest. The record and the published `.sha256` files MUST agree.
+3. **A release** publishes the archives that the `release` gate built (`OUT/clone/target/local-release/v<version>/`), whose digests the summary lists. The archives are reproducible (#679): two builds of one commit give the same bytes for each target, which the `reproducible` gate checks with a second build from cold. A published archive can therefore be rebuilt from its commit and checked against the summary's digest. The summary and the published `.sha256` files MUST agree.
 4. **`.github/workflows` is not a gate.** The files stay in the repository, but no merge, tag or release waits for them or reads their results.
 
 ## 2. The gates
@@ -69,7 +69,7 @@ The script writes into `OUT`:
 
 - `results.tsv`: a header line, then one line per gate run, tab-separated: `gate`, `sha`, `result` (`PASS` or `FAIL`), `seconds`, `log_sha256`.
 - `logs/<gate>.log`: each gate's full output. Its SHA-256 is in `results.tsv` and in the record.
-- `record.md`, the validation record:
+- `record.md`, the full validation record:
   - the commit, its subject, the run's date, platform, `rustc` and Docker, and the SHA of the script that ran;
   - a table of the gates, with result, seconds and log digest;
   - the archives that the `release` gate packed, with their SHA-256;
@@ -77,15 +77,23 @@ The script writes into `OUT`:
     - `PASS (every gate)`;
     - `FAIL (<gates>)`;
     - `INCOMPLETE (not run: <gates>)`.
+- `summary.md`, the public summary, which `scripts/release-summary.py` writes from `record.md` by a fixed template (#717):
+  - the commit, the run's date, operating system and architecture, and the `rustc` and Docker versions;
+  - the table of the gates, with result and seconds;
+  - the archives with their SHA-256;
+  - the verdict, as in the record.
 
-For a tag, `record.md` is committed as `docs/releases/<version>-validation.md`, unchanged. The logs stay with the person who ran the gates. Their digests in the record identify them.
+  Nothing else of the record is copied: no subject, no notes, no log digest. Each field is checked against its shape before it is written, and a field out of shape stops the summary, so no free text reaches it. When `UNA_PRIVACY_PATTERN` is set, the summary must not match it; when it is unset, the summary is marked unchecked.
+- `release-notes.md`: the summary, then the version's `CHANGELOG.md` section that `scripts/local-release.sh` wrote.
+
+For a tag, `summary.md` is committed as `docs/validation/<version>.md`, unchanged. The full record and the logs stay private. `docs/validation/repacked.md` lists the macOS archives of v0.3.3 to v0.3.13, which were packed again after their release, each with its gated and its published digest and the check that paired them, and the withdrawn macOS archives of v0.3.0 to v0.3.2.
 
 ## 4. The procedure for a release
 
 1. Merge the release pull request (version and `CHANGELOG.md`) under rule 1, and note the SHA of `main`.
 2. Run `scripts/release-gates.sh <sha> <out>` on that SHA, with Docker running and nothing else using it.
-3. If the verdict is PASS, commit `<out>/record.md` as `docs/releases/<version>-validation.md` in a pull request that changes nothing else, under rule 1.
-4. Check rule 2 on the merged record commit: its own change is the record, and `git diff --name-only <gated> <record commit>` lists only files under `docs/`. Once the release is approved, tag `v<version>` on the record commit and push the tag.
-5. Publish the archives from `<out>/clone/target/local-release/v<version>/`, checking that their digests match the record's, with the `gh release create` command that `logs/release.log` prints.
+3. If the verdict is PASS and the summary was written with `UNA_PRIVACY_PATTERN` set, commit `<out>/summary.md` as `docs/validation/<version>.md` (and, until the repository is public, `<out>/record.md` as `docs/releases/<version>-validation.md`) in a pull request that changes nothing else, under rule 1.
+4. Check rule 2 on the merged record commit: its own change is the summary, and `git diff --name-only <gated> <record commit>` lists only files under `docs/`. Once the release is approved, tag `v<version>` on the record commit and push the tag.
+5. Publish the archives from `<out>/clone/target/local-release/v<version>/`, checking that their digests match the summary's, with the `gh release create` command that `scripts/release-gates.sh` prints at its end. The summary is the release's notes, followed by the `CHANGELOG.md` section, and is attached as `una-<version>-validation.md`. No command is printed for an unchecked summary, and an unchecked summary is not published.
 
 Once tagged, a release's `## v<version>` section of `CHANGELOG.md` is frozen: its release notes were published from the tag, and `scripts/check-released-sections.sh` fails when the section on a branch differs from the tag's (#645). A correction to a released version, a security advisory included, goes under `## Unreleased` as `Errata for v<version>: …`, and ships with the next release's notes. Changing a released section needs a decision recorded as an ADR, which also changes the check.

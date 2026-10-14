@@ -1,6 +1,6 @@
 #!/bin/sh
 # The job count of the build inside a Linux container of scripts/local-ci.sh (#701,
-# docs/releases/validation.md): one job per 2 GiB of the Docker VM's memory, at most one per CPU
+# docs/release-gates.md): one job per 2 GiB of the Docker VM's memory, at most one per CPU
 # and at least one. A CARGO_BUILD_JOBS set on the host can lower it and never raise it, so a
 # setting meant for the host does not run the VM out of memory (fail closed).
 #

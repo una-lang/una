@@ -1,6 +1,6 @@
-//! `install.sh` (#240): it installs only what the release's validation record vouches for, and
+//! `install.sh` (#240): it installs only what the release's validation summary vouches for, and
 //! its pins follow the repository. The full installation, which downloads Z3, is tested by hand
-//! in a clean container and a clean `HOME` (docs/releases/validation.md).
+//! in a clean container and a clean `HOME` (docs/release-gates.md).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -82,9 +82,9 @@ fn sha256(path: &Path) -> String {
     String::from_utf8(output.stdout).unwrap()[..64].to_owned()
 }
 
-/// A release of `version` under `dir`: an archive holding a stub `una` and runtime, and a
-/// validation record whose verdict is `verdict` and that lists `listed` as the archive's digest
-/// (its own digest when `None`).
+/// A release of `version` under `dir`: an archive holding a stub `una` and runtime, and, in the
+/// tree of its tag, a validation summary (#717) whose verdict is `verdict` and that lists
+/// `listed` as the archive's digest (its own digest when `None`).
 fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Option<&str>) {
     let _ = std::fs::remove_dir_all(dir);
     let name = format!("una-{version}-{target}");
@@ -108,12 +108,12 @@ fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Optio
     let records = dir
         .join("records")
         .join(format!("v{version}"))
-        .join("docs/releases");
+        .join("docs/validation");
     std::fs::create_dir_all(&records).unwrap();
     std::fs::write(
-        records.join(format!("{version}-validation.md")),
+        records.join(format!("{version}.md")),
         format!(
-            "# Validation record\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `{name}.tar.gz` | `{digest}` |\n\nVerdict: {verdict}\n"
+            "# Una v{version}: release validation\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `{name}.tar.gz` | `{digest}` |\n\nVerdict: {verdict}\n"
         ),
     )
     .unwrap();
@@ -152,7 +152,7 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for() {
+fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for() {
     // The installer has no release for another platform.
     let Some(target) = target() else {
         return;
@@ -176,7 +176,7 @@ fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for(
         stderr(&output)
     );
     assert!(!home.exists());
-    // A record whose verdict is not PASS: refused.
+    // A summary whose verdict is not PASS: refused.
     release(&dir, target, version, "FAIL (linux)", None);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(1));
@@ -186,13 +186,35 @@ fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for(
         stderr(&output)
     );
     assert!(!home.exists());
-    // A record that vouches for the archive: the installer goes on, to Z3, which this test
+    // A summary that vouches for the archive: the installer goes on, to Z3, which this test
     // does not serve, and still installs nothing.
     release(&dir, target, version, "PASS (every gate)", None);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output).contains("cannot download z3-"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!home.exists());
+    // A release tagged before summaries were committed: its summary is read from main.
+    let tag = dir.join("records").join(format!("v{version}"));
+    let main = dir.join("records/main");
+    std::fs::rename(&tag, &main).unwrap();
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("cannot download z3-"),
+        "{}",
+        stderr(&output)
+    );
+    // No summary anywhere, as for 0.1.x: refused on every platform, with a message that says
+    // why and what to do instead.
+    std::fs::remove_dir_all(&main).unwrap();
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("no validation summary for 9.9.9"),
         "{}",
         stderr(&output)
     );
@@ -239,5 +261,90 @@ fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for(
     assert_eq!(output.status.code(), Some(1));
     assert!(dir.join("home/escape").exists() && home.join("README.md").exists());
     assert_eq!(install(&dir, version, &["--bogus"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_repacked_archive_is_accepted_only_as_repacked_md_pairs_it() {
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-repacked");
+    let version = "9.9.8";
+    let home = dir.join("home/.una");
+    let name = format!("una-{version}-{target}.tar.gz");
+    let gated = "1".repeat(64);
+    // The summary lists the gated digest, which is not the published archive's.
+    release(&dir, target, version, "PASS (every gate)", Some(&gated));
+    let published = sha256(&dir.join("releases").join(format!("v{version}")).join(&name));
+    let repacked = dir
+        .join("records")
+        .join(format!("v{version}"))
+        .join("docs/validation/repacked.md");
+    let table = |rows: &[(&str, &str, &str)]| {
+        let mut text = String::from(
+            "# Repacked\n\n| Archive | Gated sha256 | Published sha256 | Check |\n| --- | --- | --- | --- |\n",
+        );
+        for (archive, from, to) in rows {
+            text.push_str(&format!(
+                "| `{archive}` | `{from}` | `{to}` | identical |\n"
+            ));
+        }
+        std::fs::write(&repacked, text).unwrap();
+    };
+    // A pair for this archive and this summary digest: accepted, and the installer goes on
+    // to Z3, which this test does not serve.
+    table(&[(&name, &gated, &published)]);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("cannot download z3-"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!home.exists());
+    // A pair whose published digest is not the download's: refused.
+    table(&[(&name, &gated, &"2".repeat(64))]);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("SHA-256 mismatch"),
+        "{}",
+        stderr(&output)
+    );
+    // A pair for another archive: refused.
+    let other = format!("una-{version}-another-target.tar.gz");
+    table(&[(&other, &gated, &published)]);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("SHA-256 mismatch"),
+        "{}",
+        stderr(&output)
+    );
+    // A pair for another summary digest: refused.
+    table(&[(&name, &"3".repeat(64), &published)]);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("SHA-256 mismatch"),
+        "{}",
+        stderr(&output)
+    );
+    // A withdrawn archive, which the release does not publish: said so.
+    std::fs::remove_file(dir.join("releases").join(format!("v{version}")).join(&name)).unwrap();
+    std::fs::write(
+        &repacked,
+        format!("## Withdrawn\n\n| Archive |\n| --- |\n| `{name}` |\n"),
+    )
+    .unwrap();
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("was withdrawn"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!home.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }

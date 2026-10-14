@@ -55,7 +55,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # its kernel kills the linker (signal 9) and no test runs. The build runs one job per 2 GiB
     # of the VM's memory, at most one per CPU and at least one, and a CARGO_BUILD_JOBS set here
     # can lower that and never raise it (scripts/container-jobs.sh,
-    # docs/releases/validation.md). RUST_TEST_THREADS, when set here, is passed in too. Neither
+    # docs/release-gates.md). RUST_TEST_THREADS, when set here, is passed in too. Neither
     # changes what is built or tested, only the peak memory and the time.
     memory=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
     cpus=$(docker info --format '{{.NCPU}}' 2>/dev/null)

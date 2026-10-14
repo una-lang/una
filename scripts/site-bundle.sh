@@ -73,7 +73,7 @@ for command in $commands; do
 done
 
 # --- The documents: the root documents, the guides, the specification, the ADRs, the release's
-# validation record, the security advisories (#649), the explain pages, the examples and the
+# validation summary (#717), the security advisories (#649), the explain pages, the examples and the
 # standard library listing (docs/std/, #648), each with its kind. Only files that git tracks.
 files=$(
     {
@@ -83,7 +83,7 @@ files=$(
         git ls-files 'docs/guide/*.md' | sed 's/^/guide /'
         git ls-files 'docs/spec/*.md' | sed 's/^/spec /'
         git ls-files 'docs/adr/*.md' | grep -v '/0000-template\.md$' | sed 's/^/adr /'
-        git ls-files "docs/releases/$version-validation.md" | sed 's/^/release /'
+        git ls-files "docs/validation/$version.md" | sed 's/^/release /'
         git ls-files docs/security/advisories.md | sed 's/^/security /'
         git ls-files 'crates/una-explain/explain/U*.md' | sed 's/^/explain /'
         git ls-files examples | sed 's/^/example /'

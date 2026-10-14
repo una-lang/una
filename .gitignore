@@ -1,3 +1,6 @@
 /target/
 .una/
 .DS_Store
+
+# Python bytecode
+__pycache__/
