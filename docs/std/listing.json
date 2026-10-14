@@ -7,7 +7,8 @@
       "module": "prelude",
       "kind": "kind",
       "spec": [
-        "spec/14 §1"
+        "spec/14 §1",
+        "spec/03 §2"
       ],
       "variants": [
         {
@@ -18,7 +19,8 @@
           ],
           "declaration": "pub kind Nat = Int where it >= 0",
           "docs": [
-            "An `Int` that is at least zero (`spec/14 §1`)."
+            "An `Int` that is at least zero: an `Int` flows into `Nat` where the bound is proved",
+            "(`spec/14 §1`, `spec/03 §2`)."
           ]
         }
       ]
@@ -39,7 +41,8 @@
           ],
           "declaration": "pub kind Option[T] = Some(value: T) | None",
           "docs": [
-            "`Some(value)` or `None` (`spec/14 §1`)."
+            "Either `Some(value)`, which holds one value of `T`, or `None`, which holds none",
+            "(`spec/14 §1`)."
           ]
         }
       ]
@@ -60,7 +63,8 @@
           ],
           "declaration": "pub kind Result[T, E] = Ok(value: T) | Err(failure: E)",
           "docs": [
-            "`Ok(value)` or `Err(failure)` (`spec/14 §1`)."
+            "Either `Ok(value)`, which holds the success value of `T`, or `Err(failure)`, which holds the",
+            "failure of `E` (`spec/14 §1`)."
           ]
         }
       ]
@@ -385,7 +389,10 @@
           ],
           "declaration": "pub to_int(t: Text) -> Option[Int]",
           "docs": [
-            "Reads `t` as an optional `-` followed by ASCII digits (`spec/14 §1`)."
+            "`Some` of the integer that `t` writes when `t` is an optional `-` followed by one or more",
+            "ASCII digits, leading zeros allowed, and `None` for any other text: the empty text, `\"-\"`, a",
+            "leading `+`, whitespace or digits outside ASCII. `Int` has no bound, so a long text of digits",
+            "is never `None` for its length (`spec/14 §1`)."
           ]
         }
       ]
@@ -427,7 +434,7 @@
           ],
           "declaration": "pub first[T](xs: List[T]) -> Option[T]\n  ensures (result is None) == (xs.len == 0)",
           "docs": [
-            "`None` exactly when `xs` is empty (`spec/14 §1`)."
+            "`Some` of the element at position 0, and `None` exactly when `xs` is empty (`spec/14 §1`)."
           ]
         }
       ]
@@ -448,7 +455,8 @@
           ],
           "declaration": "pub at[T](xs: List[T], index: Int) -> Option[T]\n  ensures (result is None) == (index < 0 or index >= xs.len)",
           "docs": [
-            "`None` exactly when `index` is below `0` or at least `xs.len` (`spec/14 §1`)."
+            "`Some` of the element at position `index`, counted from 0, and `None` exactly when `index`",
+            "is below `0` or at least `xs.len`; it never fails (`spec/14 §1`)."
           ]
         }
       ]
@@ -469,7 +477,7 @@
           ],
           "declaration": "pub append[T](xs: List[T], item: T) -> List[T]\n  ensures result.len == xs.len + 1",
           "docs": [
-            "The result has one element more than `xs` (`spec/14 §1`)."
+            "`xs` with `item` added after its last element (`spec/14 §1`)."
           ]
         }
       ]
@@ -520,9 +528,9 @@
           ],
           "declaration": "pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]\n  ensures result.len == xs.len",
           "docs": [
-            "The result has as many elements as `xs`. In edition 0.2 and later it takes an effectful and",
-            "failing `each`, which it calls left to right, once per element, and stops at the first",
-            "failure (`spec/14 §1`)."
+            "The list of `each(x)` for each element `x` of `xs`, in the order of `xs`; `each` is called",
+            "from the first element to the last, at most once per element. In edition 0.2 and later it",
+            "takes an effectful and failing `each`, and stops at the first failure (`spec/14 §1`)."
           ]
         },
         {
@@ -532,9 +540,9 @@
           ],
           "declaration": "pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]\n  ensures result.len == xs.len\n  uses of each\n  fails of each",
           "docs": [
-            "The result has as many elements as `xs`. In edition 0.2 and later it takes an effectful and",
-            "failing `each`, which it calls left to right, once per element, and stops at the first",
-            "failure (`spec/14 §1`)."
+            "The list of `each(x)` for each element `x` of `xs`, in the order of `xs`; `each` is called",
+            "from the first element to the last, at most once per element. In edition 0.2 and later it",
+            "takes an effectful and failing `each`, and stops at the first failure (`spec/14 §1`)."
           ]
         }
       ]
@@ -553,9 +561,10 @@
           ],
           "declaration": "pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]\n  ensures result.len <= xs.len",
           "docs": [
-            "The result has no more elements than `xs`. In edition 0.2 and later it takes an effectful",
-            "and failing `keep`, which it calls left to right, once per element, and stops at the first",
-            "failure (`spec/14 §1`)."
+            "The elements `x` of `xs` for which `keep(x)` is `true`, in the order of `xs`; `keep` is",
+            "called from the first element to the last, at most once per element. In edition 0.2 and",
+            "later it takes an effectful and failing `keep`, and stops at the first failure",
+            "(`spec/14 §1`)."
           ]
         },
         {
@@ -565,9 +574,10 @@
           ],
           "declaration": "pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]\n  ensures result.len <= xs.len\n  uses of keep\n  fails of keep",
           "docs": [
-            "The result has no more elements than `xs`. In edition 0.2 and later it takes an effectful",
-            "and failing `keep`, which it calls left to right, once per element, and stops at the first",
-            "failure (`spec/14 §1`)."
+            "The elements `x` of `xs` for which `keep(x)` is `true`, in the order of `xs`; `keep` is",
+            "called from the first element to the last, at most once per element. In edition 0.2 and",
+            "later it takes an effectful and failing `keep`, and stops at the first failure",
+            "(`spec/14 §1`)."
           ]
         }
       ]
@@ -586,8 +596,11 @@
           ],
           "declaration": "pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]",
           "docs": [
-            "In edition 0.2 and later it takes an effectful and failing `keep`, which it calls left to",
-            "right up to the first element it accepts, and stops at the first failure (`spec/14 §1`)."
+            "`Some` of the first element `x` of `xs` for which `keep(x)` is `true`, and `None` when there",
+            "is none; `keep` is called from the first element up to that one, at most once per element,",
+            "and not after it. In",
+            "edition 0.2 and later it takes an effectful and failing `keep`, and stops at the first",
+            "failure (`spec/14 §1`)."
           ]
         },
         {
@@ -597,8 +610,11 @@
           ],
           "declaration": "pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep",
           "docs": [
-            "In edition 0.2 and later it takes an effectful and failing `keep`, which it calls left to",
-            "right up to the first element it accepts, and stops at the first failure (`spec/14 §1`)."
+            "`Some` of the first element `x` of `xs` for which `keep(x)` is `true`, and `None` when there",
+            "is none; `keep` is called from the first element up to that one, at most once per element,",
+            "and not after it. In",
+            "edition 0.2 and later it takes an effectful and failing `keep`, and stops at the first",
+            "failure (`spec/14 §1`)."
           ]
         }
       ]
@@ -617,8 +633,10 @@
           ],
           "declaration": "pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U",
           "docs": [
-            "In edition 0.2 and later it takes an effectful and failing `step`, which it calls left to",
-            "right, once per element, and stops at the first failure (`spec/14 §1`)."
+            "Starts from `initial` and, for each element `x` of `xs` from the first to the last, replaces",
+            "the accumulator `acc` by `step(acc, x)`, calling `step` at most once per element; the result",
+            "is the last accumulator, `initial` when `xs` is empty. In edition 0.2 and later it takes an",
+            "effectful and failing `step`, and stops at the first failure (`spec/14 §1`)."
           ]
         },
         {
@@ -628,8 +646,10 @@
           ],
           "declaration": "pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step",
           "docs": [
-            "In edition 0.2 and later it takes an effectful and failing `step`, which it calls left to",
-            "right, once per element, and stops at the first failure (`spec/14 §1`)."
+            "Starts from `initial` and, for each element `x` of `xs` from the first to the last, replaces",
+            "the accumulator `acc` by `step(acc, x)`, calling `step` at most once per element; the result",
+            "is the last accumulator, `initial` when `xs` is empty. In edition 0.2 and later it takes an",
+            "effectful and failing `step`, and stops at the first failure (`spec/14 §1`)."
           ]
         }
       ]
@@ -649,8 +669,9 @@
           ],
           "declaration": "pub sum(xs: List[Int]) -> Int",
           "docs": [
-            "In edition 0.2 and later, over any integer type: it adds the values of the elements as",
-            "`Int`, so it never overflows (`spec/14 §1`, `spec/20 §6`)."
+            "The exact sum of the elements as an `Int`, `0` when `xs` is empty; `Int` has no bound, so it",
+            "never overflows. In edition 0.2 and later it takes any integer type and adds the values as",
+            "`Int` (`spec/14 §1`, `spec/20 §6`)."
           ]
         },
         {
@@ -660,8 +681,9 @@
           ],
           "declaration": "pub sum[T: Integer](xs: List[T]) -> Int",
           "docs": [
-            "In edition 0.2 and later, over any integer type: it adds the values of the elements as",
-            "`Int`, so it never overflows (`spec/14 §1`, `spec/20 §6`)."
+            "The exact sum of the elements as an `Int`, `0` when `xs` is empty; `Int` has no bound, so it",
+            "never overflows. In edition 0.2 and later it takes any integer type and adds the values as",
+            "`Int` (`spec/14 §1`, `spec/20 §6`)."
           ]
         }
       ]
@@ -703,7 +725,8 @@
           ],
           "declaration": "pub or_else[T](o: Option[T], default: T) -> T",
           "docs": [
-            "Pure and cannot fail, with no contract (`spec/14 §1`)."
+            "The value `v` when `o` is `Some(v)`, and `default` when `o` is `None`; `default` is an",
+            "argument like any other, evaluated before the call (`spec/14 §1`)."
           ]
         }
       ]

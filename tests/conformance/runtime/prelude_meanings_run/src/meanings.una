@@ -1,0 +1,41 @@
+-- test: in edition 0.2, where effects make it visible, `first_where` calls `keep` on the elements from the first up to the first accepted one, and not after it, and `fold` calls `step` from the first element and stops at its first failure (spec/14 §1, #692)
+-- spec: spec/14 §1
+-- grant: console
+-- expect: run-output "keep 1"
+-- expect: run-output "keep 5"
+-- expect: run-output "found 5"
+-- expect: run-output "step 1"
+-- expect: run-output "step 2"
+-- expect: run-output "fold stopped"
+module meanings
+
+pub kind Stop = | AtTwo
+
+--- Prints `x`, and fails at `2`.
+step_at(acc: Int, x: Int) -> Int
+  uses @console: Console[print]
+  fails Stop
+=
+  @console.print("step {x}")
+  if x == 2
+    fail AtTwo
+  acc + x
+
+seen(x: Int) -> Bool
+  uses @console: Console[print]
+=
+  @console.print("keep {x}")
+  x > 4
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let found = first_where([1, 5, 7], keep: seen)
+  let value = or_else(found, default: 0)
+  @console.print("found {value}")
+  let total = fold([1, 2, 3], initial: 0, step: step_at)
+    if error use -1
+  if total == -1
+    @console.print("fold stopped")
+  else
+    @console.print("fold {total}")
