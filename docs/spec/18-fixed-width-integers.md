@@ -38,7 +38,7 @@ Status: Normative, v0.2 (ADR 0057).
 
    So `ensures result <= 300` on a `U8` result is valid and proven. The rule against mixed integer types (U2001) applies to code that runs, including the body of a `reflect` predicate. This follows from the encoding of FW-4, which is `Int` with range bounds (ADR 0057).
 
-   **`reflect` predicate bodies** (Leonardo, 2026-10-06; ADR 0057 amendment). The body of a `reflect` predicate is typed as code that runs: its integer types do not mix (U2001), and a literal takes the fixed-width type its context expects. Its arithmetic is exact, as the verifier reads the body and as every engine computes it: there is no `overflow` obligation (§3) and no U2022. So `predicate reflect large(x: U32) -> Bool = x * 4294967295 > 4294967295` holds for `x = 4294967295`.
+   **`reflect` predicate bodies** (2026-10-06; ADR 0057 amendment). The body of a `reflect` predicate is typed as code that runs: its integer types do not mix (U2001), and a literal takes the fixed-width type its context expects. Its arithmetic is exact, as the verifier reads the body and as every engine computes it: there is no `overflow` obligation (§3) and no U2022. So `predicate reflect large(x: U32) -> Bool = x * 4294967295 > 4294967295` holds for `x = 4294967295`.
 
 ## 3. Overflow (FW-2)
 
