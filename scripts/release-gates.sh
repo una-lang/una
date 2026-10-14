@@ -23,8 +23,11 @@
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
 #                clone's release `una`, and scripts/site-website.sh compares the heading ids with
 #                the website's and builds the website that site/website.lock pins from the
-#                bundle, with its budget and its code samples checked; a missing Python 3,
-#                Node.js or npm, or no access to the website's repository, is a FAIL
+#                bundle, with its budget and its code samples checked. When that website pins
+#                una-lang/una-by-example (learn.lock, una#733), every example, its Try it
+#                changes and its download archives are checked with the clone's `una`, and the
+#                website must build its Learn pages from them. A missing Python 3, Node.js or
+#                npm, or no access to the website's or the examples' repository, is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
 #
