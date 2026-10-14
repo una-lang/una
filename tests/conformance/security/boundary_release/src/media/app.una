@@ -1,0 +1,10 @@
+-- test: a call into a boundary module from which a release is reachable, through its private helpers, is U3024; a call that reaches none is accepted (ADR 0093 rule 8)
+-- spec: spec/07 §6
+-- expect: error U3024 at src/media/app.una:8:34
+module media.app
+
+import media.render (plain, show)
+
+pub leak(n: secret Int) -> Int = show(n)
+
+pub fine(n: Int) -> Int = plain(n)

@@ -1,0 +1,13 @@
+module media.cache
+
+import media.store (Files, Net)
+
+pub stamp(size: Int) -> Unit
+  uses @files: Files[write]
+=
+  @files.write("size", data: "{size}")
+
+pub handler mirrored() for Files
+  uses @net: Net[post]
+  op read(path) = path
+  op write(path, data) = @net.post(data)

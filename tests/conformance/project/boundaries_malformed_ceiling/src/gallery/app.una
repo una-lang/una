@@ -1,10 +1,11 @@
--- test: a ceiling is names-only `C[ops]`, at least one operation, each once; a bare capability, a condition, a lower-case name and an empty list are U7002 (ADR 0093 rule 1, N-307)
+-- test: a ceiling is names-only `C[ops]`, at least one operation, each once; a bare capability, a condition, a lower-case name and an empty list are U7002, and a malformed entry permits nothing, so the grant is U3021 (ADR 0093 rules 1 and 3)
 -- spec: spec/13 §7
 -- expect: error U7002 at una.toml:7:26
 -- expect: error U7002 at una.toml:7:35
 -- expect: error U7002 at una.toml:7:61
 -- expect: error U7002 at una.toml:7:76
 -- expect: error U7002 at una.toml:7:97
+-- expect: error U3021 at src/gallery/app.una:17:3
 module gallery.app
 
 import gallery.store (Files)

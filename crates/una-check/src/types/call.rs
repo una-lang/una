@@ -10,7 +10,8 @@ use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
 use super::Report;
 use super::check::{Checker, Role, Site};
 use super::closest;
-use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
+use super::crossing::{Granting, Node};
+use super::env::{Entity, FieldDef, FnAst, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
 use super::records::Res;
@@ -245,6 +246,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let name = self.name(ident);
                 if let Some(ty) = self.local(name) {
                     self.outside_rl(span, || format!("call of local function `{name}`"));
+                    self.captured_value(name, ident.span);
                     // A parameter that an `of` clause names runs the effects of its argument
                     // (ADR 0062).
                     let own = self.labeled(&ty).top_label();
@@ -622,7 +624,35 @@ impl<'a> Checker<'_, 'a, '_> {
         self.testing_site(def.module, def.name, span);
         let needs: Vec<FnUse> = def.uses.iter().map(|need| need.usage.clone()).collect();
         let level = self.frames.len();
-        self.needs_site(&callee, &needs, span, level);
+        // ADR 0093 rules 3 and 12: a call into a boundary takes nothing by name. A policy call
+        // is a call of its `via` too, and crosses when either is in a boundary.
+        let via_module = match def.ast {
+            FnAst::Policy(policy) => {
+                let via = self.env.text(def.module, policy.via.name);
+                match self.env.lower(def.module, via) {
+                    Some(Entity::Function(via)) => self.env.functions.get(via).map(|f| f.module),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let crossing = self
+            .crossing(def.module)
+            .or_else(|| via_module.and_then(|module| self.crossing(module)));
+        let granted = match crossing {
+            Some(boundary) => self.crossing_needs(
+                boundary,
+                &callee,
+                &needs,
+                &def.uses,
+                self.env.in_package(def.module),
+                span,
+                level,
+            ),
+            None => needs.clone(),
+        };
+        self.needs_site(&callee, &granted, span, level);
+        self.reach(Node::Function(id));
         self.call_fact(id, span);
         self.via_site(id, span);
         self.call_under_pc(
@@ -654,7 +684,25 @@ impl<'a> Checker<'_, 'a, '_> {
                     type_args: Vec::new(),
                 },
             );
-            return self.call_policy(&def, &callee, receiver, args, span);
+            // A policy call is a release (`spec/07 §5`); into a boundary it is U3024 itself.
+            self.release_site(span);
+            let result = self.call_policy(&def, &callee, receiver, args, span);
+            if let Some(boundary) = crossing {
+                let granting = Granting {
+                    release: Some(span),
+                    ..Granting::default()
+                };
+                self.cross(
+                    boundary,
+                    &format!("the call of {callee}"),
+                    Node::Function(id),
+                    &granted,
+                    level,
+                    granting,
+                    span,
+                );
+            }
+            return result;
         }
         let subst = self.instantiate(&def.type_params, def.name, span);
         if !subst.is_empty() {
@@ -688,6 +736,11 @@ impl<'a> Checker<'_, 'a, '_> {
             });
             self.of_found.push(super::effects::OfFound::default());
         }
+        // ADR 0093 rule 5: what the arguments of a call into a boundary grant it.
+        if crossing.is_some() {
+            let granting = self.granting_here(span);
+            self.granting.push(granting);
+        }
         let checked = self.arguments(
             &callee,
             &def.params,
@@ -697,6 +750,18 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
+        if let Some(boundary) = crossing {
+            let granting = self.granting.pop().unwrap_or_default();
+            self.cross(
+                boundary,
+                &format!("the call of {callee}"),
+                Node::Function(id),
+                &granted,
+                level,
+                granting,
+                span,
+            );
+        }
         let mut call_fails = def.fails.clone();
         if of_clauses {
             let found = self.of_found.pop().unwrap_or_default();
@@ -1438,6 +1503,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             }
             self.fn_flow(*receiver_span, &expected, receiver_ty);
+            // A function value as the receiver of a call into a boundary: fail closed (ADR 0093
+            // rule 8), as for any argument whose code is not known here.
+            if self.crossing_arguments(span)
+                && (self.holds_function(&expected) || self.holds_function(receiver_ty))
+            {
+                self.opaque_value(*receiver_span, None);
+            }
             checked.push((*receiver_span, receiver_ty.clone(), expected, first.name));
             if first.ty.is_refined() {
                 let origin = self.origin(module, first.span);
@@ -1557,6 +1629,12 @@ impl<'a> Checker<'_, 'a, '_> {
             let by_result = slot.as_ref().is_some_and(|slot| slot.by_result);
             let is_slot = slot.is_some();
             self.of_argument = slot;
+            // ADR 0093 rules 5 and 8: an argument of a call into a boundary that is a named
+            // function grants the boundary what the function uses and runs; a lambda grants
+            // what its body does, collected as it is checked.
+            let crossing = self.crossing_arguments(span);
+            let named = crossing && self.named_function(&arg.value);
+            self.granting_direct = named;
             let mut found = self.expr_as(&arg.value, Some(&expected), role);
             self.prelude_argument = false;
             if is_slot {
@@ -1573,6 +1651,23 @@ impl<'a> Checker<'_, 'a, '_> {
                         by_result,
                     );
                 }
+            }
+            self.granting_direct = false;
+            // Any other function value given to the boundary, from a parameter, a local or a
+            // computed value, has code that is not known here: fail closed (rule 8).
+            if crossing
+                && !named
+                && !matches!(arg.value.kind, ExprKind::Lambda { .. })
+                && (self.holds_function(&expected) || self.holds_function(&found))
+            {
+                let of_param = match &arg.value.kind {
+                    ExprKind::Name(ident) => {
+                        let name = self.name(ident);
+                        self.of_param(name).map(|_| name.to_owned())
+                    }
+                    _ => None,
+                };
+                self.opaque_value(arg.value.span, of_param);
             }
             flow_backs.extend(self.convention_arg(callee, param, arg, &found, &expected));
             self.fn_flow(arg.value.span, &expected, &found);

@@ -194,8 +194,15 @@ pub enum Code {
     U3018,
     /// An `of` clause that names a function type with its own `uses` or `fails`.
     U3019,
+    /// A call into a boundary module whose capability is not granted with `with` (edition 0.3,
+    /// ADR 0093).
+    U3020,
+    /// A call that grants a boundary module more than its ceiling (edition 0.3, ADR 0093).
+    U3021,
     /// A locked function's header grants more than its lock.
     U3023,
+    /// A call into a boundary module from which a release is reachable (edition 0.3, ADR 0093).
+    U3024,
     /// An `if error` clause on an expression that cannot fail (edition 0.3, ADR 0100).
     U3025,
     /// `attempt` of a call that cannot fail (edition 0.3, ADR 0100).
@@ -242,7 +249,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 87] = [
+    pub const ALL: [Code; 90] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -308,7 +315,10 @@ impl Code {
         Code::U3017,
         Code::U3018,
         Code::U3019,
+        Code::U3020,
+        Code::U3021,
         Code::U3023,
+        Code::U3024,
         Code::U3025,
         Code::U3026,
         Code::U4001,
@@ -674,10 +684,25 @@ impl Code {
                 domain: Domain::Authority,
                 meaning: "`of` clause that names a function type with its own `uses` or `fails`",
             },
+            Code::U3020 => &Entry {
+                code: "U3020",
+                domain: Domain::Authority,
+                meaning: "Call into a boundary module whose capability is not granted with `with`",
+            },
+            Code::U3021 => &Entry {
+                code: "U3021",
+                domain: Domain::Authority,
+                meaning: "Call that grants a boundary module more than its ceiling",
+            },
             Code::U3023 => &Entry {
                 code: "U3023",
                 domain: Domain::Authority,
                 meaning: "Header that grants more than its lock in `una.toml`",
+            },
+            Code::U3024 => &Entry {
+                code: "U3024",
+                domain: Domain::Authority,
+                meaning: "Call into a boundary module from which a release is reachable",
             },
             Code::U3025 => &Entry {
                 code: "U3025",

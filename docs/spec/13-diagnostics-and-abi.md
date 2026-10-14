@@ -188,7 +188,10 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3017 | authority | `of` clause that names no parameter |
 | U3018 | authority | `of` clause that names a parameter not of function type |
 | U3019 | authority | `of` clause that names a function type with its own `uses` or `fails` |
+| U3020 | authority | Call into a boundary module whose capability is not granted with `with` |
+| U3021 | authority | Call that grants a boundary module more than its ceiling |
 | U3023 | authority | Header that grants more than its lock in `una.toml` |
+| U3024 | authority | Call into a boundary module from which a release is reachable |
 | U3025 | authority | `if error` clause on an expression that cannot fail |
 | U3026 | authority | `attempt` of a call that cannot fail |
 | U4001 | security | Flow to a lower label |
@@ -371,7 +374,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 - `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).
 - `[run]`: `entry`, the path of a module of the package, and `grants`, an array of the grant specs of §5.
 - (v0.3, ADR 0092 rule 8 and its third amendment.) `[contracts]`, in edition `0.3` only: each key the qualified name of a public function of the package, each value an array of `uses` clauses written as a header writes them, operations listed in brackets, with `spec/05 §3` rule 4's conditions: `"pricing.update.update_prices" = ["@catalog: Catalog[price, set_price where not dry_run]"]`. A key that names no public function, an entry that does not parse or lists no operations, a binding locked twice, a capability that its name does not resolve to in the function's module, an operation the capability does not declare, and a condition that is not a `Bool` of the refinement language over the function's parameters are U7002 at the entry. `spec/05 §3` rule 5 checks the header against it. In editions `0.1` and `0.2`, `[contracts]` is an unknown table.
-- (v0.3, ADR 0093.) `[boundaries]`, in edition `"0.3"` only; in editions `"0.1"` and `"0.2"` it is an unknown table (U7002). Each key is the path of a module of the package, and covers that module and every module below it by whole path segments: `a.b` covers `a.b.c`, not `a.bc`. Each value is the module's ceiling: an array of names-only strings `C[op, ...]`, with at least one operation, each once, and no condition or label, where `C` is a capability that the key's module sees and each `op` one it declares. Each of these is U7002: a key that is not a module of the package, a key inside another key's extent, a malformed ceiling string, a capability named twice in one ceiling, an unknown capability or operation, a module of `[trusted] modules` inside a boundary, and a `[run] entry` inside a boundary. What a boundary means for calls into it is ADR 0093's.
+- (v0.3, ADR 0093.) `[boundaries]`, in edition `"0.3"` only; in editions `"0.1"` and `"0.2"` it is an unknown table (U7002). Each key is the path of a module of the package, and covers that module and every module below it by whole path segments: `a.b` covers `a.b.c`, not `a.bc`. Each value is the module's ceiling: an array of names-only strings `C[op, ...]`, with at least one operation, each once, and no condition or label, where `C` is a capability that the key's module sees and each `op` one it declares. Each of these is U7002: a key that is not a module of the package, a key inside another key's extent, a malformed ceiling string, a capability named twice in one ceiling, an unknown capability or operation, a module of `[trusted] modules` inside a boundary, and a `[run] entry` inside a boundary. Calls into a boundary are checked as `spec/05 §4` rule 5 states (U3020, U3021, U3024).
 
 A TOML syntax error, a missing required key, and a value of the wrong type or outside its range are U7002. The default settings are empty `[labels]`, `[trusted]` and `[run]` tables and a budget of 0.
 

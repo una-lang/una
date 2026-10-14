@@ -486,6 +486,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // The `with` bindings of a statement form one frame over its expression (`spec/10 §6`);
         // their right-hand sides resolve outside it.
         let mut frame = Frame::default();
+        let mut installs: Vec<(String, super::crossing::Install)> = Vec::new();
         for binding in &handled.with {
             let bound = match &binding.value {
                 CapBindingValue::Cap(other) => {
@@ -510,9 +511,14 @@ impl<'a> Checker<'_, 'a, '_> {
                     {
                         self.findings.with_installs.push((id, binding.span));
                     }
+                    let (capability, handler, install) = self.install(call);
+                    if let Some(install) = install {
+                        installs.push((self.name(&binding.cap).to_owned(), install));
+                    }
                     Bound::Handler {
-                        capability: self.install(call),
+                        capability,
                         span: call.name.span,
+                        handler,
                     }
                 }
             };
@@ -529,6 +535,19 @@ impl<'a> Checker<'_, 'a, '_> {
                 .map(|binding| (self.name(&binding.cap), binding.cap.span))
                 .collect();
             super::authority::duplicate_refs(self.report, &names);
+        }
+        // ADR 0093 rule 3: a handler of a boundary installed here takes its `uses` from the
+        // other bindings of this clause, now complete.
+        for (own, install) in installs {
+            let clause = Frame {
+                bindings: frame
+                    .bindings
+                    .iter()
+                    .filter(|(name, _)| *name != own)
+                    .cloned()
+                    .collect(),
+            };
+            self.finish_install(install, clause);
         }
         let framed = !frame.bindings.is_empty();
         if framed {

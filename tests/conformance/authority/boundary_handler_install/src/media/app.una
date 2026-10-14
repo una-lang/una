@@ -1,0 +1,29 @@
+-- test: installing a handler of a boundary is a call into it: its `uses` are granted by another binding of the same `with`, never by the installer's header by name (U3020); a handler outside every boundary keeps taking them from the context outside the statement (ADR 0093 rule 3, spec/05 §9 rule 4)
+-- spec: spec/05 §9
+-- expect: error U3020 at src/media/app.una:24:28
+module media.app
+
+import media.cache (mirrored, stamp)
+import media.plain (plain_mirrored)
+import media.resize (notify, shrink, size_of)
+import media.store (Files, Net)
+
+save(path: Text) -> Unit
+  uses @files: Files[write]
+=
+  @files.write(path, data: path)
+
+pub sibling(path: Text) -> Unit
+  uses @user_net: Net[post]
+=
+  save(path) with @files = mirrored(), @net = @user_net
+
+pub header_only(path: Text) -> Unit
+  uses @net: Net[post]
+=
+  save(path) with @files = mirrored()
+
+pub control(path: Text) -> Unit
+  uses @net: Net[post]
+=
+  save(path) with @files = plain_mirrored()

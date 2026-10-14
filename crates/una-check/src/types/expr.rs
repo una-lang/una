@@ -15,6 +15,7 @@ use una_syntax::ast::{
 use super::authority::{Base, Bound, Frame, Pass};
 use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
+use super::crossing::{Granting, Node};
 use super::env::{Constraint, Entity, FnKind, KindDef};
 use super::fixed;
 use super::label::Label;
@@ -399,6 +400,7 @@ impl<'a> Checker<'_, 'a, '_> {
     fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
         self.use_after_take(name, ident.span);
+        self.captured_value(name, ident.span);
         // A parameter that an `of` clause names is only called or passed on for another `of`
         // parameter (ADR 0062, `spec/05 §9` rule 9).
         if let (Some(index), Some(ty)) = (self.of_param(name), self.local(name)) {
@@ -448,6 +450,33 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
                 self.testing_value_site(module, name, ident.span);
                 self.via_site(id, ident.span);
+                // ADR 0093 rule 3: a function of a boundary used as a value outside it is a
+                // call into the boundary here, granted by this statement's `with` bindings.
+                self.reach_value(id);
+                if let Some(boundary) = self.crossing(module) {
+                    let declared = self
+                        .env
+                        .functions
+                        .get(id)
+                        .map(|f| f.uses.clone())
+                        .unwrap_or_default();
+                    let needs: Vec<FnUse> = declared.iter().map(|n| n.usage.clone()).collect();
+                    let level = self.frames.len();
+                    let callee = format!("`{name}`");
+                    let in_package = self.env.in_package(module);
+                    let granted = self.crossing_needs(
+                        boundary, &callee, &needs, &declared, in_package, ident.span, level,
+                    );
+                    self.cross(
+                        boundary,
+                        &format!("the reference to {callee}"),
+                        Node::Function(id),
+                        &granted,
+                        level,
+                        Granting::default(),
+                        ident.span,
+                    );
+                }
                 // A function with conventions is not a value (`spec/17 §3` rule 7).
                 let conventions = self
                     .env

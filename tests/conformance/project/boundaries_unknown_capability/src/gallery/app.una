@@ -1,6 +1,7 @@
--- test: a ceiling's capability that the boundary module does not see is U7002 (ADR 0093 rule 1)
+-- test: a ceiling's capability that the boundary module does not see is U7002, and the entry permits nothing, so the grant is U3021 (ADR 0093 rules 1 and 3)
 -- spec: spec/13 §7
 -- expect: error U7002 at una.toml:7:26
+-- expect: error U3021 at src/gallery/app.una:13:3
 module gallery.app
 
 import gallery.store (Files)

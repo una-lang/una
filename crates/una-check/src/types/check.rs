@@ -13,11 +13,12 @@ use una_syntax::ast::{
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
 use super::closest;
+use super::crossing::{Install, Node};
 use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
 use super::records::{Records, Res};
-use super::ty::{CapId, Declared, KindId, Names, Refinement, Show, Ty};
+use super::ty::{CapId, Declared, FnUse, KindId, Names, Refinement, Show, Ty};
 use super::unify::{Origin, Vars};
 use super::{Findings, Report};
 
@@ -253,6 +254,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
     pub(crate) handler: Option<usize>,
+    /// What the arguments of the calls into boundaries being checked grant them, innermost
+    /// last (ADR 0093 rule 5).
+    pub(crate) granting: Vec<super::crossing::Granting>,
+    /// While a named function given as an argument of a call into a boundary is checked: what
+    /// it uses and runs is granted to the boundary (ADR 0093 rule 5).
+    pub(crate) granting_direct: bool,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// What the operators on values of type parameters need: the operand type, the
@@ -442,6 +449,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             edit_outer: String::new(),
             current: None,
             handler: None,
+            granting: Vec::new(),
+            granting_direct: false,
             instances: Vec::new(),
             needs: Vec::new(),
             interpolations: Vec::new(),
@@ -657,35 +666,61 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.env.in_package(module).then_some(span)
     }
 
-    /// Checks the arguments of a handler instance and returns the capability it implements.
-    pub(crate) fn install(&mut self, call: &HandlerCall) -> Option<CapId> {
+    /// Checks the arguments of a handler instance. Returns the capability it implements, the
+    /// handler, and, for a handler of a boundary installed outside it, its installation: its
+    /// `uses` are then checked by the caller against the installation's own clause (ADR 0093
+    /// rule 3), not here.
+    pub(crate) fn install(
+        &mut self,
+        call: &HandlerCall,
+    ) -> (Option<CapId>, Option<usize>, Option<Install>) {
         let name = self.name(&call.name);
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
                 self.resolved(call.span, Res::Handler { id });
-                let (params, capability, module, uses) = match self.env.handlers.get(id) {
+                let (params, capability, module, needs) = match self.env.handlers.get(id) {
                     Some(handler) => (
                         handler.params.clone(),
                         handler.capability,
                         handler.module,
-                        handler
-                            .uses
-                            .iter()
-                            .map(|n| n.usage.clone())
-                            .collect::<Vec<_>>(),
+                        handler.uses.clone(),
                     ),
                     None => (Vec::new(), None, self.module, Vec::new()),
                 };
+                let uses: Vec<FnUse> = needs.iter().map(|n| n.usage.clone()).collect();
                 let callee = format!("handler `{name}`");
+                self.reach(Node::Handler(id));
+                // What the arguments give a handler, it may run wherever it is installed (ADR
+                // 0093 rule 8). Installing a handler of a boundary is a call into it (rule 3):
+                // what its arguments grant also counts against the ceiling.
+                let crossing = self.crossing(module);
+                let granting = self.granting_here(call.span);
+                self.granting.push(granting);
                 let checked =
                     self.arguments(&callee, &params, &[], None, &call.args, call.span, module);
                 self.argument_flows(&callee, checked);
-                // The handler's own `uses` are held where it is installed.
-                let level = self.frames.len();
-                self.needs_site(&callee, &uses, call.span, level);
+                let given = self.granting.pop().unwrap_or_default();
+                let install = match crossing {
+                    Some(boundary) => Some(Install {
+                        boundary,
+                        handler: id,
+                        module,
+                        callee: callee.clone(),
+                        uses: needs,
+                        span: call.span,
+                        granting: given,
+                    }),
+                    None => {
+                        self.handler_arguments(id, given);
+                        // The handler's own `uses` are held where it is installed.
+                        let level = self.frames.len();
+                        self.needs_site(&callee, &uses, call.span, level);
+                        None
+                    }
+                };
                 // Its effects run under the program counter of the statement.
                 self.call_under_pc(call.span, &callee, &uses, false, true, &Label::public());
-                capability
+                (capability, Some(id), install)
             }
             other => {
                 // An unknown name is U1001 (M3); another name is U3010.
@@ -702,7 +737,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 for arg in &call.args {
                     self.expr(&arg.value, None);
                 }
-                None
+                (None, None, None)
             }
         }
     }
@@ -1505,7 +1540,30 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             super::authority::duplicate_refs(self.report, &names);
         }
         for given in &example.givens {
-            let capability = self.install(&given.handler);
+            let (capability, handler, install) = self.install(&given.handler);
+            if let Some(install) = install {
+                // ADR 0093 rule 3: the `given` lines before it are the clause that grants a
+                // boundary handler's `uses`, as they hold any handler's (`spec/05 §9` rule 4).
+                let level = self.frames.len();
+                let needs: Vec<FnUse> = install.uses.iter().map(|n| n.usage.clone()).collect();
+                self.needs_site(&install.callee, &needs, install.span, level);
+                let (boundary, callee, span) =
+                    (install.boundary, install.callee.clone(), install.span);
+                self.cross(
+                    boundary,
+                    &format!("the installation of {callee}"),
+                    Node::Handler(install.handler),
+                    &needs,
+                    level,
+                    install.granting,
+                    span,
+                );
+            }
+            if let Some(handler) = handler {
+                // ADR 0093 rule 10: an example of a boundary module grants it its `given`s.
+                let handler_name = self.name(&given.handler.name);
+                self.given_in_boundary(handler, handler_name, given.handler.span);
+            }
             let name = self.name(&given.cap);
             // The first `given` of a name wins.
             if let Some(frame) = self.frames.first_mut()
@@ -1516,6 +1574,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     Bound::Handler {
                         capability,
                         span: given.handler.name.span,
+                        handler,
                     },
                 ));
             }

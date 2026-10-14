@@ -1,0 +1,25 @@
+-- test: an example of a boundary module grants the module its `given` handlers, each with its own `uses`, within the ceiling: U3021 at a `given` whose handler posts (ADR 0093 rule 10)
+-- spec: spec/05 §9
+-- expect: error U3021 at src/media/thumbs.una:23:18
+module media.thumbs
+
+import media.store (Files, Net)
+
+pub handler quiet_net() for Net
+  op post(body) = unit
+
+handler posting_files() for Files
+  uses @net: Net[post]
+  op read(path) = path
+  op write(path, data) = @net.post(data)
+
+pub look(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+
+example "a look through a handler that posts"
+  given @net = quiet_net()
+  given @files = posting_files()
+  do look("a")
+  expect result == "a"
