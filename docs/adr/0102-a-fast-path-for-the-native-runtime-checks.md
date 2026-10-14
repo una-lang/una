@@ -1,8 +1,8 @@
 # 0102. A fast path for the native runtime's per-call checks
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-14
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-14)
 - Resolves: issue #598
 - Target: every edition with a native backend. No check is removed, weakened or sampled. Each check fires at the same point, with the same diagnostic and exit status, with the one bound of rule 7: the exact byte at which the stack budget binds follows the runtime's frame layout, as it does across any rebuild today. The Gate 1 pin does not move.
 - Amends: nothing. `spec/16 §4`, ADR 0032 (call depth and stack), ADR 0061 (memory budget) and `spec/19 §6` (cancellation) are unchanged.
@@ -65,7 +65,7 @@ The checks are part of the language's guarantees: a run never exceeds its limits
 
 6. **Complexity.** The fast path of `enter`, `budget` and `poll` is O(1) on `main`'s thread, which has no flag, and O(k) in a task k blocks deep, one flag load per enclosing task behind one shared borrow. The slow path is as today. `leave` is O(1). Nothing allocates. The gain is mostly on `main`'s thread; in a task, the borrow stays and only the budget arithmetic is saved. The PR states the measured per-call cost against `main`.
 
-7. **The stack check's exact byte.** The stack position is the address of a local in `enter`'s frame, today and after this change. Splitting `enter` into a fast and a slow path changes the size of that frame, so the position can move by some bytes. Where the stack budget, not `--max-depth`, binds, as with large native frames, the depth at which U6003 fires can move by one. That is the case today across any rebuild of the runtime that changes `enter`'s frame: the stack limit is a safety margin, exact only to the runtime's frame layout, while `--max-depth` is exact. This decision keeps both paths on one position read once, so they agree with each other, and does not claim more.
+7. **The stack check's exact byte.** The stack position is the address of a local in `enter`'s frame, today and after this change. Splitting `enter` into a fast and a slow path changes the size of that frame, so the position can move by some bytes. Where the stack budget, not `--max-depth`, binds, as with large native frames, the depth at which U6003 fires can move by at most the shift divided by the size of one frame, rounded up: a few calls at most. That is the case today across any rebuild of the runtime that changes `enter`'s frame: the stack limit is a safety margin, exact only to the runtime's frame layout, while `--max-depth` is exact. This decision keeps both paths on one position read once, so they agree with each other, and does not claim more.
 
 8. **Tests.** Each check still fires at its exact limit, in both directions, natively and, where it applies, in a task:
    - depth: under `--max-depth N`, a recursion to depth N - 1 runs and one to depth N aborts with U6003, with the same message and location as before;
@@ -86,7 +86,7 @@ The checks are part of the language's guarantees: a run never exceeds its limits
 ## Alternatives considered
 
 - **Removing, sampling or batching checks**, such as checking the budget every n-th call: rejected. It changes where a limit fires, and soundness is never traded for speed.
-- **Caching whether a cancellation flag is set**: rejected. Another thread sets a flag at any time, so a cached value goes stale between computing it and using it. Only the list of flags is cached, and the flags are loaded on every check.
+- **Caching whether a cancellation flag is set**: rejected. Another thread sets a flag at any time, so a cached value goes stale between computing it and using it. Only where the unshielded flags start and their count are cached; the flags are loaded on every check.
 - **Inlining the checks into generated code**, the limits passed as globals: deferred. It would save the call into the runtime as well, but it moves the checks' logic into the code generator, where each change would need a second implementation. The runtime fast path is measured first.
 - **A shared slice of the unshielded flags in `Hot`**, rebuilt when `shielded` moves: rejected. Building it allocates at every operation, and a `Hot` that holds an `Arc` has a destructor whose registration can allocate. Either moves the point where the memory limit fires, since the limit counts every byte the process holds.
 - **A grep-based test that no other code writes the mirrored fields**: not chosen. A single `install`/`uninstall` pair keeps the writes in one place by construction, which a reader and the compiler can check.
