@@ -16,6 +16,7 @@ mod authority;
 mod boundary;
 mod call;
 mod check;
+mod conditions;
 mod crossing;
 mod dead;
 mod edit_labels;
@@ -542,6 +543,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     findings
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
+    // A span may be charged an `effect_condition` by more than one route, such as a call's
+    // callee and a value it is passed (#615): one pending entry each.
+    findings
+        .obligations
+        .dedup_by(|a, b| a.0 == ObligationKind::EffectCondition && a == b);
     let headers = headers(&env);
     let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never

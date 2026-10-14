@@ -502,13 +502,9 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
             })
             .collect();
         let mut generated: Vec<String> = Vec::new();
-        // The checker does not record `effect_condition` sites yet (#615), so the conformance
-        // cases of ADR 0092 pin them exactly instead:
-        // `effect_condition_sites_are_exactly_the_pinned_ones`.
-        for obligation in obligations
-            .iter()
-            .filter(|o| o.kind != una_diag::ObligationKind::EffectCondition)
-        {
+        // Every kind is compared, `effect_condition` included (#615): a site that tier 1
+        // generates and the checker does not record fails here, and the reverse too.
+        for obligation in &obligations {
             let spans = if obligation.paths.is_empty() {
                 vec![obligation.source]
             } else {
@@ -525,6 +521,16 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
             }
         }
         pending.sort();
+        // One pending entry per `effect_condition` site, however many routes charge it (#615).
+        let sites: Vec<&String> = pending
+            .iter()
+            .filter(|k| k.starts_with("effect_condition "))
+            .collect();
+        assert!(
+            sites.windows(2).all(|pair| pair[0] != pair[1]),
+            "{}: {sites:?}",
+            target.display()
+        );
         pending.dedup();
         generated.sort();
         generated.dedup();
@@ -2081,6 +2087,8 @@ const EFFECT_SITES: &[(&str, &[&str])] = &[
             "src/main.una:29:12 @log.write",
             "src/main.una:35:12 @log.write",
             "src/main.una:44:36 @log.write",
+            "src/main.una:63:5 @log.write",
+            "src/main.una:63:5 @log.write",
         ],
     ),
     (
@@ -2094,8 +2102,9 @@ const EFFECT_SITES: &[(&str, &[&str])] = &[
 
 #[test]
 fn effect_condition_sites_are_exactly_the_pinned_ones() {
-    // Until the checker records these sites (#615), this pins the verifier's list, so a site
-    // that goes missing fails here rather than proving nothing.
+    // This pins the verifier's list with each site's operation, so a site that goes missing
+    // from both tiers at once fails here; the corpus cross-check compares the checker's sites
+    // with these (#615).
     for (case, expected) in EFFECT_SITES {
         let (checked, obligations) = generated(&repository().join("tests/conformance").join(case));
         assert_eq!(checked.diagnostics, [], "{case}");

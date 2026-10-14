@@ -3,7 +3,10 @@
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
 ## Unreleased
+
 - **Security advisories** (#649). `docs/security/advisories.md` lists every security fix of a published release that affected an earlier published release, newest first: its severity on a stated scale, the releases affected as `CHANGELOG.md` names them, the release of each line that fixed it, a summary and its references, and the cases left out with their reasons. `crates/una-cli/tests/advisories.rs` checks that every entry has its fields and a severity of the scale, that every release in "Fixed in" is a tag, and that every published release whose `CHANGELOG.md` section fixes a security issue, on `main` and on the v0.1 line, has an advisory or is named under "Not advisories". `scripts/site-bundle.sh` adds the page to the docs bundle, with the kind `security`, so the website can publish it.
+
+- **The checker records `effect_condition` sites** (#615, ADR 0092 rule 3). Tier 0 now lists the `effect_condition` obligations that tier 1 generates, so the editor shows a hint at each one: an operation, a call, a call of a function value, a function value passed to a standard function or a `uses of` parameter, a `with` that installs a handler, and an operation in a lambda. The cross-check that compares the checker's obligation sites with the verifier's over the conformance corpus no longer leaves this kind out. The obligations themselves are unchanged.
 
 ## v0.3.14
 

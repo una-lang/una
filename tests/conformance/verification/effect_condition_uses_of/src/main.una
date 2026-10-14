@@ -1,4 +1,4 @@
--- test: the argument of a `uses of` parameter runs through the function's own bindings, so a call of the parameter, and a function value passed to a standard function such as `map`, must be under every condition the function writes (ADR 0092 rule 3, as amended; ADR 0062)
+-- test: the argument of a `uses of` parameter runs through the function's own bindings, so a call of the parameter, and a function value passed to a standard function such as `map`, must be under every condition the function writes (ADR 0092 rule 3, as amended; ADR 0062); a call that is charged both for its callee and for a value it is passed has one pending site
 -- spec: spec/05 §3
 -- expect: error U5001 at src/main.una:15:3
 -- expect: error U5001 at src/main.una:29:12
@@ -48,3 +48,17 @@ pub h() -> Unit
   uses @log: Log[write]
 =
   g(fn(n) -> @log.write(n), dry: true)
+
+pub apply(f: fn(Int) -> Unit, x: Int) -> Unit
+  uses @log: Log[write]
+  uses of f
+=
+  @log.write(x)
+  f(x)
+
+pub both(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  if not dry
+    apply(f, x: 1)
+  unit

@@ -254,6 +254,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.run_of_param(name, index, ident.span, &Label::public(), &own)
                     });
                     let index = self.of_param(name);
+                    // A `uses of` parameter's argument may run any binding (ADR 0092 rule 3, as
+                    // amended; #615).
+                    if self.uses_of_param(name) {
+                        self.every_condition(span);
+                    }
                     return self.call_value(&ty, args, span, &format!("`{name}`"), site, of, index);
                 }
                 match self.env.lower(self.module, name) {
@@ -405,6 +410,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
+        // ADR 0092 rule 3: the value performs its type's `uses` through the caller's bindings
+        // (#615).
+        self.condition_needs(&function.uses, span, level);
         // T-App (ADR 0038 D1): which function runs depends on the value, so its label raises
         // the program counter of the call and its result.
         self.call_under_pc(
@@ -652,6 +660,8 @@ impl<'a> Checker<'_, 'a, '_> {
             None => needs.clone(),
         };
         self.needs_site(&callee, &granted, span, level);
+        // ADR 0092 rule 3: the callee's bindings receive the caller's (#615).
+        self.condition_needs(&granted, span, level);
         // ADR 0093 rule 15: what the callee grants on by name, from its own bindings, reaches
         // the bindings its `uses` resolve to here.
         self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
@@ -744,6 +754,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let granting = self.granting_here(span);
             self.granting.push(granting);
         }
+        let has_receiver = receiver.is_some();
         let checked = self.arguments(
             &callee,
             &def.params,
@@ -753,6 +764,9 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
+        // ADR 0092 rule 3: the function values the callee may run through the caller's
+        // bindings, charged once the arguments are typed (#615).
+        self.passed_conditions(id, has_receiver, args, span, level);
         if let Some(boundary) = crossing {
             let granting = self.granting.pop().unwrap_or_default();
             self.cross(
@@ -1288,6 +1302,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 },
             );
         }
+        // ADR 0092 rule 3: the operation runs where its binding's condition holds (#615).
+        let level = self.frames.len();
+        self.condition_site(cap_name, &[op_name.to_owned()], span, level);
         let callee = format!(
             "operation `{}.{op_name}`",
             self.env.cap_def_name(&capability)
