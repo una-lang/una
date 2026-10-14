@@ -277,6 +277,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The bindings of the declaration being checked whose operations its `uses` condition, by
     /// binding and operation (ADR 0092 rule 1, #615).
     pub(crate) conditioned: std::collections::BTreeSet<(String, String)>,
+    /// The condition written on each of those operations, by binding and operation (ADR 0092,
+    /// amendment of 2026-10-14).
+    pub(crate) condition_exprs: std::collections::BTreeMap<(String, String), &'a Expr>,
+    /// The function whose `uses` wrote those conditions; `None` in a handler or an example,
+    /// where no edit of a callee's condition is computed.
+    pub(crate) condition_owner: Option<usize>,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// What the operators on values of type parameters need: the operand type, the
@@ -473,6 +479,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             frames_lambda: None,
             outer_frames: Vec::new(),
             conditioned: std::collections::BTreeSet::new(),
+            condition_exprs: std::collections::BTreeMap::new(),
+            condition_owner: None,
             instances: Vec::new(),
             needs: Vec::new(),
             interpolations: Vec::new(),
@@ -742,6 +750,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         // ADR 0092 rule 3: the handler's bindings receive the context's, and
                         // it is charged where it is installed (#615).
                         self.condition_needs(&uses, call.span, level);
+                        // ADR 0092, amendment of 2026-10-14: the edit that writes the
+                        // context's condition on the handler.
+                        self.condition_edits(
+                            super::conditions::EditTarget::Handler(id),
+                            &call.args,
+                            false,
+                            call.span,
+                            level,
+                        );
                         // ADR 0093 rule 15: the handler runs on those bindings wherever it is
                         // run, a boundary it reaches included.
                         let at = call.name.span;
@@ -1125,7 +1142,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 _ => None,
             })
             .collect();
-        self.enter_conditions(&written);
+        self.enter_conditions(&written, Some(id));
         if self.pass == Pass::Check {
             let names: Vec<(&str, Span)> = function
                 .clauses
@@ -1486,7 +1503,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }];
         self.handler_rules(handler, &def);
         let written: Vec<&'a UsesClause> = handler.uses.iter().collect();
-        self.enter_conditions(&written);
+        self.enter_conditions(&written, None);
         if self.pass == Pass::Check {
             let names: Vec<(&str, Span)> = handler
                 .uses
@@ -1579,7 +1596,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     fn example(&mut self, example: &'a ExampleDecl) {
         self.base = Base::Example;
         // An example has no `uses` of its own, so nothing it does is conditioned (#615).
-        self.enter_conditions(&[]);
+        self.enter_conditions(&[], None);
         self.ctx.testing = true;
         self.frames = vec![Frame::default()];
         if self.pass == Pass::Check {

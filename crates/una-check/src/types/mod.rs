@@ -693,6 +693,12 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
 pub(crate) struct Findings {
     /// Pending obligations: kind, primary span and the span of the declared type.
     pub(crate) obligations: Vec<(ObligationKind, Span, Option<Span>)>,
+    /// The edits of a callee's condition that the sites of `effect_condition` obligations ask
+    /// for, each with its callee, before condition (d)'s function values are known (ADR 0092,
+    /// amendment of 2026-10-14).
+    pub(crate) condition_edits: Vec<(conditions::EditTarget, una_core::ConditionEdit)>,
+    /// The functions named as values anywhere in the package (ADR 0092 rule 1).
+    pub(crate) function_values: std::collections::BTreeSet<usize>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// Calls of, and references to, functions and predicates, from the body of a function or

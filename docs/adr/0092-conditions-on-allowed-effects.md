@@ -390,3 +390,7 @@ Conformance cases, with the source before and after and a check of the fixed sou
 - a diagnostic that moves into the callee and is repaired one call further down in the next round;
 - two sites asking the same callee for different conditions;
 - `--tier 0`, which applies nothing.
+
+## Note (2026-10-14): condition (g) as implemented
+
+The amendment of 2026-10-14 states (g) as "`C″` is not already a conjunct of the target's condition". The implementation (#639) withholds the edit when every conjunct of `C″`, its operands once its own top-level `and` is flattened, is already a conjunct of the target's condition. A `C″` that is itself one conjunct is the case the amendment states. A `C″` with several is withheld in more cases, never fewer, so `una fix` writes nothing the amendment would not, and never writes the same conjunct twice. `spec/05 §3` states this form.

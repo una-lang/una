@@ -3,13 +3,17 @@
 //! `spec/13 §1, §3`).
 
 use una_diag::{
-    Code, Counterexample, Diagnostic, Escape, ObligationKind, ObligationRef, ObligationStatus,
-    Related, Repair,
+    Code, Counterexample, Diagnostic, Edit, Escape, ObligationKind, ObligationRef,
+    ObligationStatus, Related, Repair,
 };
 use una_syntax::SourceDb;
 
 use crate::generate::{Effect, EffectAt, Obligation, Within};
 use crate::run::Outcome;
+
+/// What the first repair at a call or a `with` says when condition (h) withholds its edit (ADR
+/// 0092, amendment of 2026-10-14).
+const WITHHELD: &str = "; not applied while an obligation of this package is unknown (U5002)";
 
 /// The diagnostics of the obligations that are not proven.
 pub fn diagnostics(
@@ -17,6 +21,11 @@ pub fn diagnostics(
     outcomes: &[Outcome],
     sources: &SourceDb,
 ) -> Vec<Diagnostic> {
+    // ADR 0092, amendment of 2026-10-14, condition (h): while any obligation of the package is
+    // unknown, which can depend on the solver's time, no edit of a callee's condition is given.
+    let unknown = outcomes
+        .iter()
+        .any(|outcome| outcome.status == ObligationStatus::Unknown);
     let mut out = Vec::new();
     for (obligation, outcome) in obligations.iter().zip(outcomes) {
         let code = match outcome.status {
@@ -101,6 +110,15 @@ pub fn diagnostics(
             }];
         } else {
             diagnostic.repairs = repairs(obligation);
+            if let Some(effect) = &obligation.site.effect {
+                condition_edit(
+                    &mut diagnostic.repairs,
+                    effect,
+                    outcome.status,
+                    unknown,
+                    sources,
+                );
+            }
         }
         out.push(diagnostic);
     }
@@ -119,6 +137,7 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         operation,
         condition,
         at: EffectAt::Lock(function),
+        ..
     }) = &obligation.site.effect
     {
         // #638: "the condition `C` that `una.toml` locks on `@b.op` in `f` is outside what the
@@ -309,12 +328,37 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
         .collect()
 }
 
+/// ADR 0092, amendment of 2026-10-14: the first repair at a call or a `with` whose callee's
+/// condition the checker could write carries that edit when the obligation is refuted (U5001)
+/// and no obligation of the package is unknown, condition (h). While one is, its description
+/// says why it carries none.
+fn condition_edit(
+    repairs: &mut [Repair],
+    effect: &Effect,
+    status: ObligationStatus,
+    unknown: bool,
+    sources: &SourceDb,
+) {
+    let (Some((range, replacement)), Some(first)) = (&effect.edit, repairs.first_mut()) else {
+        return;
+    };
+    if unknown {
+        first.description.push_str(WITHHELD);
+    } else if status == ObligationStatus::Refuted {
+        first.edit = Some(Edit {
+            location: sources.location(*range),
+            replacement: replacement.clone(),
+        });
+    }
+}
+
 /// The repairs of an `effect_condition` obligation, ranked (ADR 0092 rule 5).
 fn effect_repairs(effect: &Effect) -> Vec<String> {
     let Effect {
         operation,
         condition,
         at,
+        ..
     } = effect;
     let op = operation
         .rsplit_once('.')

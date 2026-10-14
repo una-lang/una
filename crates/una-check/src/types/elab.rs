@@ -94,9 +94,36 @@ pub(crate) fn program(
             modules,
             library,
             host,
+            condition_edits: condition_edits(findings),
         },
         lost,
     )
+}
+
+/// The edits of callees' conditions that the package's sites ask for (ADR 0092, amendment of
+/// 2026-10-14), in site order: those of a function named as a value anywhere are dropped, by
+/// condition (d), and so are the edits of a site, binding and operation that ask for more than
+/// one, which the verifier could not tell apart. O(e log e) in the e edits.
+fn condition_edits(findings: &Findings) -> Vec<una_core::ConditionEdit> {
+    let mut by_site: BTreeMap<(Span, &str, &str), Vec<&una_core::ConditionEdit>> = BTreeMap::new();
+    for (target, edit) in &findings.condition_edits {
+        if let super::conditions::EditTarget::Function(id) = *target
+            && findings.function_values.contains(&id)
+        {
+            continue;
+        }
+        by_site
+            .entry((edit.site, edit.binding.as_str(), edit.op.as_str()))
+            .or_default()
+            .push(edit);
+    }
+    by_site
+        .into_values()
+        .filter_map(|edits| match edits.as_slice() {
+            [first, rest @ ..] if rest.iter().all(|edit| edit == first) => Some((*first).clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The Core IR of the package's declarations that a diagnostic left out of [`program`], each

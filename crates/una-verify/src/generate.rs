@@ -134,6 +134,10 @@ pub struct Effect {
     pub condition: String,
     /// Where the obligation is charged.
     pub at: EffectAt,
+    /// At a call or a `with`, the edit that writes the condition on the callee or handler:
+    /// its range and replacement, kept when condition (f) holds (ADR 0092, amendment of
+    /// 2026-10-14). The report applies (h).
+    pub edit: Option<(Span, String)>,
 }
 
 /// Where an `effect_condition` obligation is charged.
@@ -360,6 +364,9 @@ pub(crate) struct Index<'p> {
     vias: BTreeMap<(&'p str, &'p str), Vec<&'p Type>>,
     /// The kinds looked up that resolve to nothing (#407): [`obligations`] stops on them.
     unresolved: RefCell<BTreeSet<(String, String)>>,
+    /// The edits of callees' conditions, by site, caller's binding and operation (ADR 0092,
+    /// amendment of 2026-10-14).
+    condition_edits: BTreeMap<(Span, &'p str, &'p str), &'p una_core::ConditionEdit>,
 }
 
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
@@ -398,6 +405,11 @@ impl<'p> Index<'p> {
             policies: BTreeMap::new(),
             vias: BTreeMap::new(),
             unresolved: RefCell::new(BTreeSet::new()),
+            condition_edits: program
+                .condition_edits
+                .iter()
+                .map(|edit| ((edit.site, edit.binding.as_str(), edit.op.as_str()), edit))
+                .collect(),
         };
         for signature in &program.library {
             index
@@ -3649,6 +3661,21 @@ impl<'p, 'i> Walker<'p, 'i> {
             };
             self.term(&clause.term, &env).map(|tv| tv.f)
         };
+        // ADR 0092, amendment of 2026-10-14: the edit that the checker computed for this site
+        // is kept under condition (f), when the caller's condition and the callee's, if it
+        // writes one, are both within the encoding.
+        let edit = match at {
+            EffectAt::Call(callee) | EffectAt::With(callee)
+                if condition.is_some() && !matches!(premise, Some(None)) =>
+            {
+                self.index
+                    .condition_edits
+                    .get(&(span, binding, op))
+                    .filter(|edit| edit.callee == *callee)
+                    .map(|edit| (edit.range, edit.replacement.clone()))
+            }
+            _ => None,
+        };
         // A caller's condition outside the encoding is no goal that holds: the query keeps
         // `not false` and is refuted, never silently proven. A callee's outside it is
         // dropped, which only strengthens the goal.
@@ -3662,6 +3689,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             operation: format!("@{binding}.{op}"),
             condition: clause.text.clone(),
             at: at.clone(),
+            edit,
         });
         assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
         let hypotheses = self.shown_hypotheses(&ctx.hyps);
@@ -3711,6 +3739,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             operation: format!("@{}.{}", lock.cap, lock.op),
             condition: lock.lock.text.clone(),
             at: EffectAt::Lock(name.to_owned()),
+            edit: None,
         });
         assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
         let hypotheses = self.shown_hypotheses(&ctx.hyps);
@@ -5671,6 +5700,7 @@ mod tests {
             ],
             library: Vec::new(),
             host: vec![files(Vec::new())],
+            condition_edits: Vec::new(),
         };
         let index = Index::new(&program);
         let ensures = |module: &str| {

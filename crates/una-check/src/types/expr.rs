@@ -453,6 +453,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 // ADR 0093 rule 3: a function of a boundary used as a value outside it is a
                 // call into the boundary here, granted by this statement's `with` bindings.
                 self.reach_value(id);
+                // ADR 0092, amendment of 2026-10-14, condition (d): no edit writes a condition
+                // on a function named as a value.
+                if self.pass == super::authority::Pass::Check {
+                    self.findings.function_values.insert(id);
+                }
                 // A function whose `uses` carry a condition is not a value: the higher-order
                 // callee that would call it could not prove the condition (ADR 0092 rule 1).
                 let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {

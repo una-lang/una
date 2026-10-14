@@ -1234,6 +1234,30 @@ pub struct Program {
     pub library: Vec<Signature>,
     /// The capability declarations of [`HOST_MODULE`], with their `spec/14 §3` signatures.
     pub host: Vec<Decl>,
+    /// The edits that `una fix` may apply for `effect_condition` obligations at calls and
+    /// `with`s, in site order (ADR 0092, amendment of 2026-10-14). Not exported: `una core`
+    /// derives nothing from them.
+    pub condition_edits: Vec<ConditionEdit>,
+}
+
+/// The condition that a call or a `with` asks of its callee or handler, written on the callee's
+/// operation: the first repair of the site's `effect_condition` obligation, as an edit (ADR
+/// 0092, amendment of 2026-10-14). The checker computes it from the source when conditions (a)
+/// to (e) and (g) hold; the verifier keeps it only under (f), and the report only under (h).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionEdit {
+    /// The site: the call, or the handler call of the `with`.
+    pub site: Span,
+    /// The caller's own binding that the site passes, without `@`.
+    pub binding: String,
+    /// The conditioned operation.
+    pub op: String,
+    /// The callee or handler, by the name the verifier gives the site.
+    pub callee: String,
+    /// The range of the callee's header that the edit replaces.
+    pub range: Span,
+    /// The replacement.
+    pub replacement: String,
 }
 
 /// The module that declares the host capabilities (`spec/14 §3`, `spec/10 §11` rule 8).

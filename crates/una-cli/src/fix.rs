@@ -1,7 +1,9 @@
 //! `una fix [path]`: applies the mechanical repairs that `una check` reports (ADR 0084).
 //!
 //! Edits are applied in memory, in rounds that each check the package again at tier 0, where
-//! every mechanical edit comes from. Then every module that parses is formatted, each changed
+//! every mechanical edit but one comes from. A round whose tier-0 check is clean also checks
+//! tier 1, when the requested tier is 1, for the edits of callees' conditions (ADR 0084 and ADR
+//! 0092, amendments of 2026-10-14). Then every module that parses is formatted, each changed
 //! file is written once, and the package is checked at the requested tier for what remains.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,7 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use una_diag::{Code, Diagnostic, Edit, Position, Repair, in_output_order};
+use una_diag::{Code, Diagnostic, Edit, ObligationKind, Position, Repair, in_output_order};
 use una_syntax::{Interner, SourceDb};
 
 use crate::package::{self, Package, load_with};
@@ -114,12 +116,36 @@ pub(crate) fn fix_command(
     let mut applied = Vec::new();
     let mut seen = BTreeSet::from([texts(&modules)]);
     let mut rounds = 0;
+    // What the last round's tier 1 checked, every file of the package, and its diagnostics:
+    // the final check reuses them when every file is the same, rather than solve again.
+    let mut checked: Option<(Files, Vec<Diagnostic>)> = None;
     let stopped = loop {
         let Some(package) = reload(path, &modules, stderr)? else {
             return Ok(ExitStatus::Usage);
         };
-        let diagnostics = on_large_stack(|| analyze(&package, None).diagnostics);
-        let taken = take_round(&diagnostics, &package.sources, &modules);
+        let (diagnostics, program) = on_large_stack(|| {
+            let analysis = analyze(&package, None);
+            (analysis.diagnostics, analysis.program)
+        });
+        let mut taken = take_round(&diagnostics, &package.sources, &modules);
+        // ADR 0084, amendment of 2026-10-14: a clean tier 0 checks tier 1, whose only
+        // candidates are the edits of refuted `effect_condition` obligations. The report gives
+        // none while an obligation is unknown (ADR 0092's condition (h)), so such a round takes
+        // no edit and the rounds stop. A program for which the checker computed no such edit
+        // has no candidate there, so its tier 1 is left to the final check.
+        if diagnostics.is_empty()
+            && options.tier == Tier::One
+            && !program.condition_edits.is_empty()
+        {
+            let found = verification::tier_one(&package, &program, &options.solving).diagnostics;
+            let candidates: Vec<Diagnostic> = found
+                .iter()
+                .filter(|diagnostic| tier_one_candidate(diagnostic))
+                .cloned()
+                .collect();
+            taken = take_round(&candidates, &package.sources, &modules);
+            checked = snapshot(&package.sources).map(|files| (files, found));
+        }
         if taken.is_empty() {
             break Stopped::Done;
         }
@@ -183,10 +209,13 @@ pub(crate) fn fix_command(
         let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program)
     });
-    let skipped = skipped_repairs(&diagnostics, &modules, stopped);
     if options.tier == Tier::One && diagnostics.is_empty() {
-        diagnostics = verification::tier_one(&package, &program, &options.solving).diagnostics;
+        diagnostics = match snapshot(&package.sources).and_then(|now| reused(checked, &now)) {
+            Some(found) => found,
+            None => verification::tier_one(&package, &program, &options.solving).diagnostics,
+        };
     }
+    let skipped = skipped_repairs(&diagnostics, &modules, stopped);
     if options.json {
         let document = FixDocument {
             schema: FIX_SCHEMA,
@@ -289,6 +318,44 @@ fn reload(
             Ok(None)
         }
     }
+}
+
+/// Every file of a package as it was loaded, by path: the modules, `una.toml` and
+/// `verification.lock`.
+type Files = BTreeMap<String, String>;
+
+/// Every file of the package by its content, when its decoded text is its bytes: no file holds
+/// invalid UTF-8 or a `\r\n`, the two things decoding changes (ADR 0015 D2). `None` otherwise,
+/// and then no tier-1 result is reused.
+fn snapshot(sources: &SourceDb) -> Option<Files> {
+    sources
+        .files()
+        .map(|(_, file)| {
+            let invalid = file.text().char_indices().any(|(offset, c)| {
+                c == char::REPLACEMENT_CHARACTER && file.is_invalid_sequence(offset)
+            });
+            (!invalid && file.first_crlf().is_none())
+                .then(|| (file.path().to_owned(), file.text().to_owned()))
+        })
+        .collect()
+}
+
+/// The diagnostics of a round's tier 1, when the final check is of the same package: every file
+/// byte for byte the same, `una.toml` and `verification.lock` included (ADR 0084, amendment of
+/// 2026-10-14). Otherwise the final check solves again.
+fn reused(checked: Option<(Files, Vec<Diagnostic>)>, now: &Files) -> Option<Vec<Diagnostic>> {
+    checked.and_then(|(files, found)| (&files == now).then_some(found))
+}
+
+/// Whether a diagnostic of tier 1 may give `una fix` an edit: a refuted `effect_condition`
+/// obligation, the only kind of tier 1 whose repair carries one (ADR 0084, amendment of
+/// 2026-10-14). Another kind needs its own amendment first.
+fn tier_one_candidate(diagnostic: &Diagnostic) -> bool {
+    diagnostic.code == Code::U5001
+        && diagnostic
+            .obligation
+            .as_ref()
+            .is_some_and(|obligation| obligation.kind == ObligationKind::EffectCondition)
 }
 
 /// The first repair of `diagnostic`, in the order `spec/13 §1` prints them: by escape cost,
@@ -496,5 +563,50 @@ fn status(diagnostics: &[Diagnostic]) -> ExitStatus {
         ExitStatus::Success
     } else {
         ExitStatus::Errors
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Files, reused};
+    use una_diag::{Code, Diagnostic, Location, Position};
+
+    fn files(lock: &str) -> Files {
+        [
+            ("src/m.una", "module m\n"),
+            ("una.toml", "[package]\nname = \"c\"\n"),
+            ("verification.lock", lock),
+        ]
+        .into_iter()
+        .map(|(path, text)| (path.to_owned(), text.to_owned()))
+        .collect()
+    }
+
+    fn found() -> Vec<Diagnostic> {
+        let at = Position { line: 1, col: 1 };
+        vec![Diagnostic::error(
+            Code::U5001,
+            "refuted".to_owned(),
+            Location {
+                file: "src/m.una".to_owned(),
+                start: at,
+                end: at,
+            },
+        )]
+    }
+
+    #[test]
+    fn a_round_s_tier_one_is_reused_only_for_the_same_files() {
+        let round = files("step_budget = 5000000\n");
+        assert_eq!(
+            reused(Some((round.clone(), found())), &round),
+            Some(found())
+        );
+        // Only `verification.lock` changed since the round: the final check solves again.
+        assert_eq!(
+            reused(Some((round, found())), &files("step_budget = 1\n")),
+            None
+        );
+        assert_eq!(reused(None, &files("step_budget = 1\n")), None);
     }
 }

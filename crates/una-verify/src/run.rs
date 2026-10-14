@@ -1009,6 +1009,7 @@ mod missing_values_tests {
                     operation: "@catalog.set_price".to_owned(),
                     condition: "mode == unit".to_owned(),
                     at: EffectAt::Lock("update".to_owned()),
+                    edit: None,
                 }),
             },
             forgotten: Vec::new(),
