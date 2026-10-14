@@ -4,6 +4,12 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **`slice` and `replace` abort outside their preconditions in both backends** (#693, `spec/22 §2`). A checked program cannot call them there, but if one did, the two backends behaved differently:
+  - the interpreter stopped only on a negative `slice` position;
+  - native code mapped such a position to 0;
+  - both clamped an end past the text, and replaced an empty `replace` pattern.
+
+  Now `slice` outside `0 <= start <= end <= t.len`, and `replace` with an empty pattern, abort at the call with U8001 and exit code 3, with the same message in both backends, as `set` does (#480).
 - **`spec/14` states what the prelude's functions compute** (#692). Beyond their contracts, `spec/14 §1` now gives:
   - the element that `first` and `at` return, and where `append` puts the item;
   - the order of `map` and `filter`, and that `first_where` returns the first accepted element and calls `keep` no further;

@@ -2138,7 +2138,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// `set` of the prelude, by `function` (`una_rt_set` or `una_rt_set_owned`), at the call's
     /// site: an index outside the list aborts there with U8001, as the interpreter's fault does
-    /// (#480, `spec/17 §7.3`), and a task stopped by it stops here.
+    /// (#480, `spec/17 §7.3`), and a task stopped by it stops here. `slice` and `replace` call
+    /// their runtime functions the same way, for their own `requires` (#693).
     fn set(
         &mut self,
         function: &'static str,
@@ -2270,8 +2271,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "ends_with" => "una_rt_ends_with",
             "contains_text" => "una_rt_contains_text",
             "find" => "una_rt_find",
-            "replace" => "una_rt_replace",
-            "slice" => "una_rt_slice",
+            // Outside their `requires`, they abort at the call's site as `set` does (#693).
+            "replace" => return self.set("una_rt_replace", args, span),
+            "slice" => return self.set("una_rt_slice", args, span),
             "to_upper" => "una_rt_to_upper",
             "to_lower" => "una_rt_to_lower",
             "chars" => "una_rt_chars",

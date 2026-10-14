@@ -34,8 +34,10 @@ They are prelude functions, called with method syntax, as `line.split(on: ",")` 
 
 1. **`split`** returns the parts between non-overlapping occurrences of `on`, left to right, including empty parts: `"a,,b".split(on: ",")` is `["a", "", "b"]`, and a text without `on` is a list of itself. `join` is its inverse: `t.split(on: s).join(separator: s) == t`.
 2. **`find`** returns the position of the first occurrence of `text`, and `Some(0)` for an empty `text`. When it is `Some(p)`, `0 <= p` and `p + text.len <= t.len`, which the verifier assumes after each call.
-3. **`replace`** replaces every non-overlapping occurrence of `pattern` by `by`, left to right.
+3. **`replace`** replaces every non-overlapping occurrence of `pattern` by `by`, left to right. Its precondition, `pattern.len > 0`, is an obligation at each call (`spec/12 §3`).
 4. **`slice`** returns the scalar values at positions `start` up to, not including, `end`. Its precondition is an obligation at each call (`spec/12 §3`).
+
+   A checked program never calls `replace` or `slice` outside its precondition, since `una run`, `una test` and `una build` refuse a package whose obligations are not proved. If such a call happens anyway, the run aborts at the call with U8001 and exit code 3, in the interpreter and in a native executable alike, as for any fault a checked program cannot reach (`spec/11 §4`). Neither backend clamps the positions or replaces an empty pattern (#693).
 5. **`chars`** returns one text of length 1 per scalar value, in order.
 6. **`trim_start`** and **`trim_end`** remove Unicode `White_Space` at one end, as `trim` does at both (`spec/14 §1`).
 7. **`bytes`** returns the UTF-8 encoding.

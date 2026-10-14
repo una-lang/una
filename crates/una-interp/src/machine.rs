@@ -147,6 +147,18 @@ pub(crate) enum Stop<'p> {
 /// The result of evaluating an expression.
 pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
 
+/// The fault of a `slice` outside the text (#693).
+const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
+
+/// The fault of a prelude call whose `requires` does not hold, at the call `span`, where native
+/// code aborts too (#480, #693).
+fn precondition<'p>(message: &str, span: Span) -> Stop<'p> {
+    Stop::Abort(Abort::Fault {
+        message: message.to_owned(),
+        span: Some(span),
+    })
+}
+
 fn fault<'p>(message: impl Into<String>) -> Stop<'p> {
     Stop::Abort(Abort::Fault {
         message: message.into(),
@@ -1801,16 +1813,30 @@ impl<'p, 'w> Machine<'p, 'w> {
                     None => none(),
                 }
             }
-            "replace" => Value::text(&text(0)?.replace(text(1)?.as_str(), &text(2)?)),
+            "replace" => {
+                let (t, pattern, by) = (text(0)?, text(1)?, text(2)?);
+                // Its `requires` excludes an empty pattern: at the call, as native code aborts
+                // (#693, `spec/22 §2` rule 3).
+                if pattern.is_empty() {
+                    return Err(precondition(
+                        "`replace` with an empty pattern, which its precondition excludes",
+                        span,
+                    ));
+                }
+                Value::text(&t.replace(pattern.as_str(), &by))
+            }
             "slice" => {
                 let t = text(0)?;
                 let (start, end) = (int(1)?, int(2)?);
                 let position = |n: &BigInt| usize::try_from(n).ok();
+                // Its `requires` keeps `0 <= start <= end <= t.len`: outside it, at the call, as
+                // native code aborts (#693, `spec/22 §2` rule 4).
                 let (Some(start), Some(end)) = (position(&start), position(&end)) else {
-                    return Err(fault(
-                        "`slice` outside the text, which its precondition excludes",
-                    ));
+                    return Err(precondition(SLICE_OUTSIDE, span));
                 };
+                if start > end || end > t.scalars() {
+                    return Err(precondition(SLICE_OUTSIDE, span));
+                }
                 // O(result) once the text's index is built (`spec/22 §6` rule 1).
                 Value::text(t.slice(start, end))
             }
@@ -2322,6 +2348,63 @@ mod tests {
             span,
         );
         assert!(inside.is_ok());
+    }
+
+    #[test]
+    fn slice_and_replace_outside_their_preconditions_fault_at_the_call() {
+        // #693: `slice` outside `0 <= start <= end <= t.len` and `replace` with an empty
+        // pattern stop at the call, as native code's abort does; inside, they compute.
+        let program = Program::default();
+        let index = Index::new(&program);
+        let mut world = crate::host::NoWorld;
+        let keys = BTreeMap::new();
+        let mut sources = una_syntax::SourceDb::new();
+        let span = Span::at(sources.add("src/t.una", b"slice"), 0);
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(8));
+        let slice =
+            |start: i64, end: i64| vec![Value::text("abc"), Value::int(start), Value::int(end)];
+        for (name, args, expected) in [
+            ("slice", slice(-1, 1), "`slice` outside the text"),
+            ("slice", slice(0, 4), "`slice` outside the text"),
+            ("slice", slice(2, 1), "`slice` outside the text"),
+            (
+                "replace",
+                vec![Value::text("abc"), Value::text(""), Value::text("x")],
+                "`replace` with an empty pattern",
+            ),
+        ] {
+            match machine.prelude(name, args, span) {
+                Err(Stop::Abort(Abort::Fault { message, span: at })) => {
+                    assert_eq!(at, Some(span), "{name}");
+                    assert!(message.contains(expected), "{message}");
+                }
+                _ => panic!("`{name}` outside its precondition did not fault"),
+            }
+        }
+        // The boundaries `0 == start == end`, `start == end == t.len`, and a scalar of two bytes
+        // at the end, counted in scalars.
+        fn text_of(flow: Flow<'_>) -> String {
+            match flow {
+                Ok(Value::Text(t)) => t.as_str().to_owned(),
+                _ => panic!("`slice` inside its precondition did not compute"),
+            }
+        }
+        assert_eq!(text_of(machine.prelude("slice", slice(0, 3), span)), "abc");
+        assert_eq!(text_of(machine.prelude("slice", slice(3, 3), span)), "");
+        assert_eq!(text_of(machine.prelude("slice", slice(0, 0), span)), "");
+        let accented = vec![Value::text("a\u{e9}"), Value::int(1), Value::int(2)];
+        assert_eq!(text_of(machine.prelude("slice", accented, span)), "\u{e9}");
+        let past = vec![Value::text("a\u{e9}"), Value::int(0), Value::int(3)];
+        assert!(matches!(
+            machine.prelude("slice", past, span),
+            Err(Stop::Abort(Abort::Fault { .. }))
+        ));
+        let replaced = machine.prelude(
+            "replace",
+            vec![Value::text("abc"), Value::text("b"), Value::text("x")],
+            span,
+        );
+        assert!(matches!(replaced, Ok(Value::Text(t)) if t.as_str() == "axc"));
     }
 
     #[test]
