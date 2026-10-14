@@ -42,6 +42,7 @@ mod stmt;
 mod summary;
 mod ty;
 mod unify;
+mod via;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
@@ -338,6 +339,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             .any(|f| matches!(f.ast, env::FnAst::Policy(_)));
         env.boundaries.function_kinds = crossing::function_kinds(&env);
     }
+    let vias = via::plain_vias(&env, &report);
+    env.plain_vias = vias.plain;
+    env.blocked_vias = vias.blocked;
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
     authority::stored_effects(&env, &mut report);

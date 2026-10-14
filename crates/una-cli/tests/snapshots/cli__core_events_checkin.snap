@@ -4,12 +4,11 @@ expression: stdout(&output)
 ---
 module events.checkin
 
-data CheckInError = NotRegistered | UnknownEvent | Unavailable(reason: Text)
+data CheckInError = NotRegistered | Unavailable(reason: Text)
 
 data StoreError = Timeout | Corrupted
 
 cap Registrations {
-  op event(name: Text) : Option[Event] fails StoreError accepts public
   op find(key: internal Hashed) : Option[Registration] fails StoreError accepts internal
 }
 
@@ -17,107 +16,49 @@ cap Audit {
   op record(key: internal Hashed, status: Availability) : Unit fails StoreError accepts internal
 }
 
-fun check_in(phone: secret[PII] {Text | Phone}, event: Text) : internal Result[Availability, CheckInError] uses {registrations ↦ Registrations[event, find], audit ↦ Audit[record], keys ↦ Keys[hmac]} fails CheckInError =
-  let %t1: Option[Event] =
+fun check_in(phone: secret[PII] {Text | Phone}) : Availability uses {registrations ↦ Registrations[find], audit ↦ Audit[record], keys ↦ Keys[hmac]} fails CheckInError =
+  let key: internal Hashed =
     handle
-      let %t0: Option[Event] = registrations.event(event) in
+      let %t0: internal Hashed = declassify[events.keys.attendee_key](phone) in
       %t0
     with error ⇒
+      fail Unavailable("keys")
+  in
+  let %t2: Option[Registration] =
+    handle
+      let %t1: Option[Registration] = registrations.find(key) in
+      %t1
+    with error%2 ⇒
       fail Unavailable("registrations")
   in
-  let found: Event =
-    case %t1 of
-      Some(%t2) ⇒
-        %t2
+  let registration: Registration =
+    case %t2 of
+      Some(%t3) ⇒
+        %t3
       else ⇒
-        fail UnknownEvent
+        fail NotRegistered
   in
-  let key: internal Result[internal Hashed, internal KeyError] =
-    attempt
-      let %t3: internal Hashed = declassify[events.keys.attendee_key](phone) in
-      %t3
-  in
-  case key of
-    Ok(hashed) ⇒
-      let %t4: Result[Availability, CheckInError] = events.checkin.check_in_key(hashed, found) in
-      %t4
-    Err(_) ⇒
-      let %t5: CheckInError = Unavailable("keys") in
-      let %t6: Result[Availability, CheckInError] = Err(%t5) in
+  let %t4: Event = registration.event in
+  let status: Availability = events.seating.availability(%t4) in
+  let _: Unit =
+    handle
+      let %t6: Unit = audit.record(key, status) in
       %t6
-
-fun check_in_key(key: internal Hashed, event: Event) : Result[Availability, CheckInError] uses {registrations ↦ Registrations[find], audit ↦ Audit[record]} =
-  let registration: Result[Option[Registration], StoreError] =
-    attempt
-      let %t0: Option[Registration] = registrations.find(key) in
-      %t0
+    with error%3 ⇒
+      fail Unavailable("audit")
   in
-  case registration of
-    Err(_) ⇒
-      let %t1: CheckInError = Unavailable("registrations") in
-      let %t2: Result[Availability, CheckInError] = Err(%t1) in
-      %t2
-    Ok(maybe) ⇒
-      case maybe of
-        None ⇒
-          let %t3: CheckInError = NotRegistered in
-          let %t4: Result[Availability, CheckInError] = Err(%t3) in
-          %t4
-        Some(r) ⇒
-          let %t5: Event = r.event in
-          let %t6: Text = %t5.name in
-          let %t7: Text = event.name in
-          let %t8: Bool = ==(%t6, %t7) in
-          if %t8 then
-            let %t9: Availability = events.seating.availability(event) in
-            let outcome: Result[Availability, CheckInError] = events.checkin.record_check_in(key, %t9) in
-            outcome
-          else
-            let %t11: CheckInError = NotRegistered in
-            let %t12: Result[Availability, CheckInError] = Err(%t11) in
-            %t12
-
-fun record_check_in(key: internal Hashed, status: Availability) : Result[Availability, CheckInError] uses {audit ↦ Audit[record]} =
-  let recorded: Result[Unit, StoreError] =
-    attempt
-      let %t0: Unit = audit.record(key, status) in
-      %t0
-  in
-  case recorded of
-    Ok(_) ⇒
-      let %t1: Result[Availability, CheckInError] = Ok(status) in
-      %t1
-    Err(_) ⇒
-      let %t2: CheckInError = Unavailable("audit") in
-      let %t3: Result[Availability, CheckInError] = Err(%t2) in
-      %t3
+  status
 
 handler one_registration(r: Registration) for Registrations {
-  op event(name) =
-    let %t0: Event = r.event in
-    let %t1: Option[Event] = Some(%t0) in
-    %t1
   op find(key) =
-    let %t2: Option[Registration] = Some(r) in
-    %t2
+    let %t0: Option[Registration] = Some(r) in
+    %t0
 }
 
-handler no_registrations(e: Event) for Registrations {
-  op event(name) =
-    let %t0: Option[Event] = Some(e) in
-    %t0
+handler no_registrations() for Registrations {
   op find(key) =
-    let %t1: Option[Registration] = None in
-    %t1
-}
-
-handler no_events() for Registrations {
-  op event(name) =
-    let %t0: Option[Event] = None in
+    let %t0: Option[Registration] = None in
     %t0
-  op find(key) =
-    let %t1: Option[Registration] = None in
-    %t1
 }
 
 handler audit_log() for Audit {

@@ -403,6 +403,13 @@ pub(crate) struct Env<'a> {
     /// The boundaries of `una.toml`, and the boundary whose extent holds each package module
     /// (ADR 0093 rules 1 and 9); empty before edition 0.3.
     pub(crate) boundaries: super::boundary::Boundaries,
+    /// The `via` functions whose failure reveals nothing, by function id (ADR 0098): a call of
+    /// their policy fails at the program counter, not at `pc ⊔ ℓ(to)`.
+    pub(crate) plain_vias: BTreeSet<usize>,
+    /// The `via` functions of ADR 0098's shape that a `Keys` handler named outside its
+    /// declaration and examples keeps from it, by function id: the handler's name and the first
+    /// place it is named, which the U4002 at a call of their policy shows.
+    pub(crate) blocked_vias: BTreeMap<usize, (String, Span)>,
 }
 
 /// The key type of a written `Map[K, V]`, where it is written, and the function whose type
@@ -493,6 +500,8 @@ impl<'a> Env<'a> {
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
             boundaries: super::boundary::Boundaries::default(),
+            plain_vias: BTreeSet::new(),
+            blocked_vias: BTreeMap::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);

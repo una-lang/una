@@ -1,0 +1,34 @@
+-- test: a Keys handler that forwards the same key name to the host's Keys still counts as a handler of Keys, so a with that installs it keeps the policy failure at the to label (ADR 0098)
+-- spec: spec/07 §5
+-- expect: error U4002 at src/main.una:13:5
+module main
+
+import release (key_of)
+
+pub passes(t: secret Text) -> Unit
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let k = key_of(t)
+    if error pass
+  unit
+
+handler relay_keys() for Keys
+  uses @keys: Keys[hmac]
+  op hmac(key_name, data) =
+    relayed(key_name, data: data)
+      if error pass
+
+relayed(name: Text, data: restricted Text) -> restricted Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: name, data: data)
+    if error pass
+
+pub relaying(t: secret Text) -> Unit
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  passes(t) with @keys = relay_keys()
+    if error pass

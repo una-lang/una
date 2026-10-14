@@ -1,6 +1,6 @@
--- test: the declassification tour's lookup before S-18: a policy call with an `internal` `to`, followed by `if error fail`, fails publicly on what the `via` decided (ADR 0090)
+-- test: the declassification tour's lookup: a policy whose `via` only calls Keys.hmac with a literal key name, its failure passed on, fails at the program counter, so `if error fail` in public code is accepted (ADR 0098); a `via` that decides its failure on the secret stays rejected (s18_via_failure_internal_to)
 -- spec: spec/07 §5
--- expect: error U4002 at src/app/lookup.una:21:5
+-- expect: ok
 module app.lookup
 
 import app.keys (phone_key)
