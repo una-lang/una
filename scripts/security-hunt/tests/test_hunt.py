@@ -954,7 +954,14 @@ class Gate(unittest.TestCase):
             "reject": sum(1 for p in a if p.cls != "must-keep"),
             "keep": gate.expected_keep(a),
             "oracle": sum(1 for p in a if p.vary),
+            "differ": len(a),
         })
+        # The pinned unknowns are programs of the fixed run, and the planted Core document is in
+        # the repository.
+        names = {p.name for p in a}
+        self.assertTrue(set(gate.PINNED_UNKNOWN) <= names, set(gate.PINNED_UNKNOWN) - names)
+        repo = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        self.assertTrue(os.path.isfile(os.path.join(repo, gate.DIFFER_CANARY)))
 
     def test_the_canaries_are_what_they_claim(self):
         rej = gate.canary_reject()
@@ -997,7 +1004,7 @@ class Gate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             open(os.path.join(tmp, "old"), "w").close()
             with self.assertRaises(SystemExit):
-                gate.run("una", tmp, "0" * 40)
+                gate.run("una", tmp, "0" * 40, "una-core-check", "z3")
 
     def test_shards_keep_row_order(self):
         rows = [{"n": i} for i in range(10)]

@@ -1,11 +1,15 @@
 """The `hunt` release gate (docs/release-gates.md): a fixed, seeded run of the generators through
-the must-reject and must-keep drivers and the two-run oracle, with four canaries.
+the must-reject and must-keep drivers, the two-run oracle and the comparison with the model's
+re-check (`differ`), with five canaries.
 
 It fails closed. The gate passes only when all of these hold:
 - no must-reject program is accepted, no refactor turns a rejected program into an accepted one,
   and the oracle sees no difference an observer below the varied literal could see;
 - every check and every run ends in a known way (no timeout of `una check`, no internal error,
   no unreadable output, no nondeterministic run);
+- the re-check rejects no declaration the checks accept; its `unknown` outcomes are exactly the
+  pinned ones (`PINNED_UNKNOWN`), its residual comparisons the pinned count, and the programs it
+  reads clean meet their floor;
 - each driver judged exactly the cases the fixed run generates, and none of those counts is zero;
   the oracle's complete-against-complete comparisons, the programs that have one, and the programs
   whose variants differ at the literal's own level (liveness) meet their floors;
@@ -13,7 +17,7 @@ It fails closed. The gate passes only when all of these hold:
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; and an
   operation planted as accepting `public`, sent a secret, whose redacted argument the oracle must
-  report by itself.
+  report by itself; and a planted Core document the re-check must reject (`DIFFER_CANARY`).
 """
 
 import io
@@ -23,7 +27,7 @@ import subprocess
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-from . import drivers, oracle
+from . import drivers, oracle, sandbox
 from .families import OPERATORS
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
@@ -37,7 +41,23 @@ EDITIONS = ("0.1", "0.2")
 REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
-PINNED = {"programs": 5000, "reject": 5000, "keep": 8594, "oracle": 434}
+PINNED = {"programs": 5000, "reject": 5000, "keep": 8594, "oracle": 434, "differ": 5000}
+# The re-check comparison's expected `unknown` outcomes, by program, each with its reason: any
+# other `unknown` is an error, and so is a pinned one that is no longer unknown (#791).
+PINNED_UNKNOWN = {
+    "F8-0.2-17ae8812afd2af8b-wrapping-secret-result": "out of F1 (expected): the primitive `fixed`",
+    "F8-0.2-7c392c87affef562-saturating-secret-result": "out of F1 (expected): the primitive `fixed`",
+    "F8-0.2-8fcd886c54b655f1-saturating-secret-result": "out of F1 (expected): the primitive `fixed`",
+    "F8-0.2-f3c36fb985e9ab24-bit-secret-branch": "out of F1 (expected): the primitive `fixed`",
+}
+# The residual programs the re-check compares (a step a secret may abort, which the full check's
+# obligations guard): their count is pinned, so a silent drop fails.
+PINNED_RESIDUAL = 9
+# A floor on the programs the re-check reads clean: about 90% of the measured run's 1,198.
+MIN_DIFFER_CLEAN = 1078
+# The planted Core document the re-check must reject: v0.3.14's export of a program whose
+# `to_text` temporary it labeled `public` (S-27, docs/reviews/formal-m2-replay).
+DIFFER_CANARY = "docs/reviews/formal-m2-replay/core-s27/S-27.interpolated_record.v0.3.14.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
 # literals that decide nothing: about 90% of the measured run's 334 programs and 1,202
 # complete-against-complete comparisons, and of its 100 live programs (docs/release-gates.md).
@@ -183,6 +203,22 @@ def _sharded(fn, rows, workers):
     return tally, lines
 
 
+def differ_canary(core_check, work):
+    """Whether the re-check comparison sees a planted fault: v0.3.14's Core export of a program
+    whose `to_text` temporary it labeled `public` while it held a `secret[PII]` field (S-27). Read
+    through `judge_differ` as a program's export, it must be a finding."""
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    path = os.path.join(repo, DIFFER_CANARY)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return False
+    exported = sandbox.Run(0, text, "", False, 0.0)
+    rec = sandbox.run([core_check, path], cwd=work, writable=work, timeout=CHECK_TIMEOUT)
+    return drivers.judge_differ(exported, text, rec)["kind"] == "finding"
+
+
 def _version(una):
     try:
         p = subprocess.run([una, "--version"], capture_output=True, text=True, timeout=30)
@@ -191,7 +227,7 @@ def _version(una):
         return f"unknown ({e})"
 
 
-def run(una, out_dir, tip):
+def run(una, out_dir, tip, core_check, z3):
     """Runs the gate. Writes OUT/manifest.jsonl, reject.jsonl, keep.jsonl, oracle.jsonl,
     canaries.jsonl and summary.json, prints the summary, and returns 0 (PASS) or 1 (FAIL)."""
     if os.path.exists(out_dir) and os.listdir(out_dir):
@@ -264,8 +300,48 @@ def run(una, out_dir, tip):
     programs_compared = sum(1 for r in oracle_rows if r.get("compared", 0) > 0)
     live = sum(1 for r in oracle_rows if r.get("live"))
 
+    # The re-check comparison (part (b) of docs/plan/security-hunt.md, #791): every program the
+    # checks accept is exported and re-checked by the model's checker.
+    differ_tally, differ_rows = _sharded(
+        lambda part, buf, k: drivers.differ(part, una, core_check, shard(k), CHECK_TIMEOUT, buf,
+                                            z3=z3),
+        rows, WORKERS)
+    unknown_seen = {}
+    for r in differ_rows:
+        if r["verdict"] not in ("accepted", "rejected"):
+            errors.append(f"differ {r['name']}: {r['verdict']} {str(r.get('detail', ''))[:200]}")
+        if r.get("finding"):
+            findings.append(f"differ {r['name']}: {r.get('differ_detail') or 'the re-check rejects'}")
+        if r.get("differ") == "unknown":
+            unknown_seen[r["name"]] = r.get("differ_detail") or ""
+        if r["class"] == RESIDUAL and r["verdict"] == "accepted":
+            if r.get("invalid"):
+                errors.append(f"differ {r['name']}: residual row invalid ({r.get('full_kind')})")
+            if r.get("triage"):
+                findings.append(f"differ {r['name']}: the full check accepts a public print after "
+                                "the step")
+            if r.get("triage_tier0"):
+                notes.append(f"differ {r['name']}: tier 0 accepts a public print after the step, "
+                             "and the full check decides it")
+    for name in sorted(set(unknown_seen) - set(PINNED_UNKNOWN)):
+        errors.append(f"differ {name}: an unknown that is not pinned: {unknown_seen[name]}")
+    for name in sorted(set(PINNED_UNKNOWN) - set(unknown_seen)):
+        errors.append(f"differ {name}: a pinned unknown is no longer unknown")
+    for name in sorted(set(PINNED_UNKNOWN) & set(unknown_seen)):
+        if unknown_seen[name] != PINNED_UNKNOWN[name]:
+            errors.append(f"differ {name}: unknown for another reason: {unknown_seen[name]}")
+    differ_clean = sum(1 for r in differ_rows if r.get("differ") == "clean")
+    differ_residual = sum(1 for r in differ_rows if r.get("differ") == "residual")
+    if differ_clean < MIN_DIFFER_CLEAN:
+        errors.append(f"differ: {differ_clean} programs read clean, under the floor of "
+                      f"{MIN_DIFFER_CLEAN}")
+    if differ_residual != PINNED_RESIDUAL:
+        errors.append(f"differ: {differ_residual} residual programs compared, and the gate pins "
+                      f"{PINNED_RESIDUAL}")
+
     # Canaries.
     canaries = {}
+    canaries["differ"] = differ_canary(core_check, work)
     crej = canary_reject()
     buf = io.StringIO()
     drivers.must_reject([dict(crej.manifest(), digest=crej.digest())], una, work, CHECK_TIMEOUT,
@@ -281,7 +357,8 @@ def run(una, out_dir, tip):
     with open(os.path.join(root, "canaries.jsonl"), "w", encoding="utf-8") as f:
         f.write(json.dumps({"caught": canaries, "rows": canary_rows}, sort_keys=True) + "\n")
 
-    for name, lines in (("reject", reject_rows), ("keep", keep_rows), ("oracle", oracle_rows)):
+    for name, lines in (("reject", reject_rows), ("keep", keep_rows), ("oracle", oracle_rows),
+                        ("differ", differ_rows)):
         with open(os.path.join(root, f"{name}.jsonl"), "w", encoding="utf-8") as f:
             for line in lines:
                 f.write(json.dumps(line, sort_keys=True) + "\n")
@@ -294,8 +371,10 @@ def run(una, out_dir, tip):
                    "set_aside": sum(1 for r in oracle_rows if r.get("set_aside")),
                    "programs_compared": programs_compared, "variants_compared": compared,
                    "live": live},
+        "differ": {"expected": len(rows), "judged": len(differ_rows), "clean": differ_clean,
+                   "unknown": len(unknown_seen), "residual": differ_residual},
     }
-    for key in ("reject", "keep", "oracle"):
+    for key in ("reject", "keep", "oracle", "differ"):
         s = sizes[key]
         if s["judged"] != s["expected"]:
             errors.append(f"{key}: judged {s['judged']} of {s['expected']} cases")
@@ -332,13 +411,14 @@ def run(una, out_dir, tip):
             "reject": {" ".join(map(str, k)): n for k, n in sorted(reject_tally.items())},
             "keep": {" ".join(map(str, k)): n for k, n in sorted(keep_tally.items())},
             "oracle": dict(sorted(oracle_tally.items())),
+            "differ": {" ".join(map(str, k)): n for k, n in sorted(differ_tally.items())},
         },
     }
     with open(os.path.join(root, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=1, sort_keys=True)
         f.write("\n")
     print(f"hunt gate: seed {SEED}, {len(progs)} programs, una tip {tip}")
-    for key in ("reject", "keep", "oracle"):
+    for key in ("reject", "keep", "oracle", "differ"):
         print(f"  {key}: {sizes[key]['judged']} of {sizes[key]['expected']} cases judged")
     print(f"  oracle: {programs_compared} programs and {compared} variants compared (complete "
           f"against complete), {live} live, {sizes['oracle']['set_aside']} programs set aside")
