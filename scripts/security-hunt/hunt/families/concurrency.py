@@ -8,10 +8,13 @@ only on failures under a public program counter. The model has no `together`
 
 In edition 0.1, `together` is reserved: every program of this family is U0103 there, which checks
 the edition gate (`spec/19`, Editions).
+
+C6 is the two-run oracle's (#807): accepted programs with a `main`, whose one secret literal the
+oracle varies where `together` could let it decide what an observer sees.
 """
 
 from ..program import MUST_REJECT, OPEN, Program, rng_for
-from ..una import header, join_decls, package
+from ..una import Varied, header, join_decls, package
 
 MOD = "app.main"
 RULE = "spec/19 §3"
@@ -22,12 +25,23 @@ SHUT = "pub kind Shut = | Closed"
 LOG_ONE = 'log_one() -> Int\n  uses @log: Log[write]\n=\n  @log.write("branch")\n  1'
 
 
-def _make(op, edition, seed, cls, text, expect=(), variant="", note=""):
+def _make(op, edition, seed, cls, text, expect=(), variant="", note="", varied=None):
+    """A program of the family. With `varied`, a runnable one (its `main` granted the console)
+    whose literals the oracle varies, in edition 0.2 only: edition 0.1 reserves `together`, so
+    there the program is U0103 and has nothing to run."""
+    entry = varied is not None
     if edition == "0.1":
         cls, expect, note = MUST_REJECT, ["U0103"], "edition 0.1 reserves `together`"
-    files = package("hunt", edition, {MOD: text})
+        entry = False
+    files = package("hunt", edition, {MOD: text}, entry=MOD if entry else None,
+                    grants=["console"] if entry else ())
+    vary = []
+    if varied is not None:
+        files, vary = varied.place(files)
+        if edition == "0.1":
+            vary = []
     return Program(op=op, rule=RULE, edition=edition, seed=seed, cls=cls, files=files,
-                   expect=list(expect), note=note, variant=variant)
+                   expect=list(expect), note=note, variant=variant, vary=vary)
 
 
 # C1. The number of tasks decided by a secret: a `together for` over a secret list or a range with
@@ -191,4 +205,78 @@ def c5(seed, edition):
                  note="a leak candidate if accepted: probes C4's triage")
 
 
-OPERATORS = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5}
+# C6. The oracle's programs (#807): accepted, with a `main`, and one secret literal that `together`
+# could let decide what an observer sees. The oracle varies the literal; public output, and the
+# events an observer at `public` or `internal` sees, must not move with it.
+VAULT = ("capability Vault\n  op note(x: Int) -> Unit\n    accepts secret\n\n"
+         "handler quiet() for Vault\n  op note(x) = unit")
+C6_MAIN = "pub main() -> Unit\n  uses @console: Console[print]\n=\n"
+
+
+def c6(seed, edition):
+    rng = rng_for(seed)
+    form = rng.choice(["for-elements", "branch-value", "attempt-sibling", "secret-sink",
+                       "under-public-pc", "secret-fan-out"])
+    v = Varied()
+    lit = v.lit("Int", "secret", str(rng.choice([2, 5, 7])))
+    secret = f"  let s: secret Int = {lit}\n"
+    decls = [header(MOD)]
+    if form == "for-elements":
+        # A public list of secret elements: the number of tasks is public, their values secret.
+        decls.append("work(p: secret Int) -> secret Int = p * 2")
+        main = (secret + "  let pins: List[secret Int] = [s, s + 1, 3]\n"
+                "  let doubled = together for p in pins\n    work(p)\n"
+                '  @console.print("{doubled.len} done")')
+    elif form == "branch-value":
+        # A secret computed in one branch, a public value in the other, printed after the block.
+        main = (secret + "  together\n    let x = s + 1\n    let y = 2 + 3\n"
+                '  @console.print("{y}")')
+    elif form == "attempt-sibling":
+        # A failure the secret decides, kept in its task by `attempt`, beside a sibling whose
+        # value is printed. The checks reject it before `together` matters: a `fail` under a
+        # secret condition is U4002 (spec/07 §7 rule 4), `attempt` or not, so a failure that
+        # cancels nothing still may not depend on a secret. A must-reject probe, with nothing to
+        # vary (measured, #807).
+        decls += [OOPS, "risky(n: secret Int) -> Int\n  fails Oops\n=\n"
+                     "  if n > 3\n    fail Bad\n  1"]
+        main = (secret + "  together\n    let a = attempt risky(s)\n    let b = 7\n"
+                '  @console.print("{b}")')
+    elif form == "secret-sink":
+        # Each task sends the secret to an operation that accepts `secret`: events no observer
+        # below the literal sees.
+        decls += [VAULT, "both(n: secret Int) -> Unit\n  uses @vault: Vault[note]\n=\n"
+                         "  together\n    let a = @vault.note(n)\n    let b = @vault.note(n + 1)\n"
+                         "  unit"]
+        main = (secret + "  both(s) with @vault = quiet()\n"
+                '  @console.print("done")')
+    elif form == "under-public-pc":
+        # A block under a public condition, a secret computed in a branch.
+        main = (secret + "  let flag = true\n  if flag\n"
+                "    together\n      let x = s * 3\n      let y = 4\n"
+                '    @console.print("{y}")\n  else\n    @console.print("no")')
+    else:
+        # Secret-sized fan-out: the secret decides how many tasks run, each doing only work no
+        # observer below the literal sees. Their number, and their events, must not show.
+        decls += [VAULT, "fan(n: secret Int) -> Unit\n  uses @vault: Vault[note]\n=\n"
+                         "  let k = if n > 4 then 4 else n\n"
+                         "  let notes = together for p in 0..<k\n    @vault.note(p)\n"
+                         "  unit"]
+        main = (secret + "  fan(s) with @vault = quiet()\n"
+                '  @console.print("done")')
+    decls.append(C6_MAIN + main)
+    if form == "attempt-sibling":
+        text = join_decls(*decls)
+        for item in v.items:
+            text = text.replace(item["marker"], item["literal"])
+        prog = _make("C6", edition, seed, MUST_REJECT, text, ["U4002"], variant=form,
+                     note="a secret-decided failure, even kept in its task")
+        if edition == "0.1":
+            # Edition 0.1 also refuses this `fail` block's form, U0101, besides `together`.
+            prog.expect.append("U0101")
+        return prog
+    return _make("C6", edition, seed, OPEN, join_decls(*decls), variant=form,
+                 note="expected accepted; the oracle checks that what an observer below the "
+                      "secret sees does not depend on it", varied=v)
+
+
+OPERATORS = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5, "C6": c6}

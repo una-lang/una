@@ -18,7 +18,8 @@ It fails closed. The gate passes only when all of these hold:
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; an
   operation planted as accepting `public`, sent a secret, whose redacted argument the oracle must
-  report by itself; planted Core documents the re-check must reject for their reason, with a
+  report by itself; the same leak through a `together` branch; a must-reject program that does not
+  parse, which must be a generator's error; planted Core documents the re-check must reject for their reason, with a
   control it must read clean (`DIFFER_CANARIES`, `DIFFER_CONTROL`); a native executable built
   from another variant than the one the interpreter ran, which the native comparison must report
   as a divergence; and three pairs of a program and a changed copy (an event's argument,
@@ -50,7 +51,7 @@ EDITIONS = ("0.1", "0.2")
 REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
-PINNED = {"programs": 5000, "reject": 5000, "keep": 8594, "oracle": 434, "differ": 5000}
+PINNED = {"programs": 5100, "reject": 5100, "keep": 8726, "oracle": 473, "differ": 5100}
 # The re-check comparison's expected `unknown` outcomes, by program, each with its reason: any
 # other `unknown` is an error, and so is a pinned one that is no longer unknown (#791).
 PINNED_UNKNOWN = {
@@ -65,8 +66,8 @@ PINNED_RESIDUAL = 9
 # What the re-check compares, as the measured run found it. A program is compared when at least
 # one of its own (`app.*`) functions is accepted by the re-check; the floors are about 90% of the
 # measured run's 868 compared programs and 1,358 accepted declarations.
-MIN_DIFFER_COMPARED = 781
-MIN_ACCEPTED_DECLARATIONS = 1222
+MIN_DIFFER_COMPARED = 801
+MIN_ACCEPTED_DECLARATIONS = 1242
 # Documents the re-check reads as a whole fallback (every line `not re-checked` for one reason):
 # nothing in them is compared, so their count is pinned per reason, exactly.
 PINNED_FALLBACK = {
@@ -84,14 +85,16 @@ PINNED_NOT_RECHECKED = {
     "F1 restriction (`div` on operands of mixed or unknown integer types)": 1,
     "a `case` on `app.main.Either`": 4,
     "a `case` on `app.main.Maybe`": 3,
-    "a `handler` declaration": 192,
+    "a `handler` declaration": 202,
     "a `via` function, which no label rule checks": 436,
     "a call of `prelude.sort`": 10,
     "reaches `app.main.block`, which is not re-checked (the form `together`)": 4,
+    "reaches `app.main.both`, which is not re-checked (the form `together`)": 7,
+    "reaches `app.main.fan`, which is not re-checked (the form `together_for`)": 3,
     "the constraint `integer`": 14,
     "the constraint `ord`": 4,
-    "the form `together_for`": 75,
-    "the form `together`": 83,
+    "the form `together_for`": 90,
+    "the form `together`": 107,
     "the type `app.main.Bad`": 16,
     "the type `app.main.Box` with type arguments": 46,
     "the type `app.main.Chain` with type arguments": 14,
@@ -114,15 +117,15 @@ DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
 # literals that decide nothing: about 90% of the measured run's 334 programs and 1,202
 # complete-against-complete comparisons, and of its 100 live programs (docs/release-gates.md).
-MIN_ORACLE_COMPARED = 300
-MIN_VARIANTS_COMPARED = 1000
-MIN_LIVE = 90
+MIN_ORACLE_COMPARED = 335
+MIN_VARIANTS_COMPARED = 1257
+MIN_LIVE = 92
 # The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
 # programs it compares, about 90% of the measured run's (docs/release-gates.md).
-NATIVE_SAMPLE = 30
-NATIVE_FAMILIES = ("H", "K", "P", "T")
-MIN_NATIVE_COMPARED = 25
-MIN_NATIVE_VARIANTS = 102
+NATIVE_SAMPLE = 34
+NATIVE_FAMILIES = ("C", "H", "K", "P", "T")
+MIN_NATIVE_COMPARED = 28
+MIN_NATIVE_VARIANTS = 124
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -160,6 +163,20 @@ def canary_oracle():
                       '  @console.print("{x}")')
     files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
     return Program(op="canary-oracle", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+def canary_oracle_tasks():
+    """An accepted program whose `together` branch computes from a public literal that its
+    manifest marks as secret, and prints it after the block: its variants differ in public output
+    through a task, and the oracle must call it a leak (#807)."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    text = join_decls(header(MOD), CONSOLE_MAIN + f"  let x: Int = {lit}\n"
+                      "  together\n    let a = x + 1\n    let b = 2\n"
+                      '  @console.print("{a} {b}")')
+    files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
+    return Program(op="canary-oracle-tasks", rule="the gate's own canary", edition="0.2", seed=0,
                    cls=OPEN, files=files, vary=vary)
 
 
@@ -218,6 +235,33 @@ def oracle_canary(prog, una, work, plant=None):
     return json.loads(buf.getvalue())
 
 
+def generator_errors(rows):
+    """The must-reject driver's rows that show a generator's error rather than a verdict on the
+    program: a lexical or syntax code (U0xxx) the program does not expect, which no generated
+    program should have, or a must-reject program rejected without any of its expected codes."""
+    out = []
+    for r in rows:
+        codes = {c[0] for c in r.get("codes", [])}
+        unexpected = sorted(c for c in codes if c.startswith("U0") and c not in r.get("expect", []))
+        if unexpected:
+            out.append(f"reject {r['name']}: a generator error, {', '.join(unexpected)} on a "
+                       "generated program")
+        elif r.get("class") == MUST_REJECT and r.get("verdict") == "rejected" \
+                and r.get("expect_seen") is False:
+            out.append(f"reject {r['name']}: rejected, but by {', '.join(sorted(codes))}, not its "
+                       f"expected {', '.join(r.get('expect', []))}")
+    return out
+
+
+def canary_syntax():
+    """A must-reject row whose program does not parse: the gate must call it a generator error,
+    never a rejection that counts."""
+    text = join_decls(header(MOD), CONSOLE_MAIN + "  let x = = 1\n  @console.print(\"x\")")
+    files = package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"])
+    return Program(op="canary-syntax", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=MUST_REJECT, files=files, expect=["U4001"])
+
+
 def caught(name, row):
     """Whether a canary's result is the fault it plants, and only that."""
     if row.get("error") or row.get("set_aside") or not row.get("finding"):
@@ -230,7 +274,7 @@ def caught(name, row):
         return (bool(diverged) and not record.get("not_compiled")
                 and not any(v.endswith("-base") for v in diverged))
     leaks = sorted({o for v in row["variants"] for o in v.get("observers", [])})
-    if name == "oracle":
+    if name in ("oracle", "oracle-tasks"):
         return "public" in leaks
     if name == "internal":
         return leaks == ["internal"] and not row["violations"]
@@ -396,6 +440,7 @@ def run(una, out_dir, tip, core_check, z3):
     reject_tally, reject_rows = _sharded(
         lambda part, buf, k: drivers.must_reject(part, una, shard(k), CHECK_TIMEOUT, buf), judged,
         WORKERS)
+    errors.extend(generator_errors(reject_rows))
     for r in reject_rows:
         if r["verdict"] not in ("accepted", "rejected"):
             errors.append(f"reject {r['name']}: {r['verdict']} {r.get('detail', '')[:200]}")
@@ -570,6 +615,11 @@ def run(una, out_dir, tip, core_check, z3):
     drivers.must_reject([dict(crej.manifest(), digest=crej.digest())], una, work, CHECK_TIMEOUT,
                         buf, build=lambda row: crej)
     canaries["reject"] = bool(json.loads(buf.getvalue()).get("finding"))
+    csyn = canary_syntax()
+    buf = io.StringIO()
+    drivers.must_reject([dict(csyn.manifest(), digest=csyn.digest())], una, work, CHECK_TIMEOUT,
+                        buf, build=lambda row: csyn)
+    canaries["syntax"] = bool(generator_errors([json.loads(buf.getvalue())]))
     for name, (a, b) in native_pairs().items():
         same = native.pair(una, work, RUN_TIMEOUT, oracle.RUN_LIMITS, a, a, f"{name}-same")
         other = native.pair(una, work, RUN_TIMEOUT, oracle.RUN_LIMITS, a, b, f"{name}-other")
@@ -582,6 +632,7 @@ def run(una, out_dir, tip, core_check, z3):
     canary_rows = {
         "native": json.loads(buf.getvalue()),
         "oracle": oracle_canary(canary_oracle(), una, work),
+        "oracle-tasks": oracle_canary(canary_oracle_tasks(), una, work),
         "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
         "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
     }
