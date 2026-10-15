@@ -56,30 +56,50 @@ The representation at the boundary between Core IR and a backend (value words, h
 **Option 2, C through the system C compiler, under a fixed subset of C with no reliance on undefined behavior.** The measurement supports it: the optimizing backends run the same checked kernels 6x to 27x faster than Cranelift, which is the gap Gate 2's parity needs closed, and the C route reaches that optimizer with no new tool for users.
 
 1. **Two build profiles (RB-1).** `una build` keeps Cranelift (ADR 0055), fast to compile, for tests and local work. `una build --release` emits C for the package and compiles it with the system C compiler, which `una build` already needs as its linker. The two produce executables with the same meaning (rule RB-4).
-2. **No undefined behavior (RB-2).** The emitted C is a subset that never relies on undefined behavior, so the C compiler has no license to delete a check:
-   - every integer operation is done with the checked builtins (`__builtin_add_overflow` and the others) or on unsigned types, and the program is compiled with `-fwrapv`, so that no signed overflow is undefined either way;
-   - shifts are masked to the width; division and remainder check the divisor and the `MIN / -1` case before the operation;
-   - no pointer arithmetic outside `una-rt`, except one form: indexing a runtime-exported array of slot structs (`table[i].field`) after an explicit `i < len` and layout check, through struct types from one generated header that matches `una-rt`'s `#[repr(C)]` slot layout, with static assertions of size and offsets on both sides (ADR 0107 rule 7). The program is compiled with `-fno-strict-aliasing` and `-fno-delete-null-pointer-checks`;
-   - no uninitialized read: every local is initialized where it is declared.
-   - The flags are fixed in `una-codegen`, not left to the user's environment (`CFLAGS` is ignored for release builds).
-3. **Checks are never removed by the optimizer (RB-3).** Every check that Cranelift's code makes is in the C program as code with an observable effect (a call into `una-rt` that fails the program). A check leaves the program only when the verifier proved it unneeded (check elision, the last item of the performance track: #522, then data layout #736 / ADR 0107, then records inline in lists #751, then elision; each its own ADR), and then it leaves before C is emitted, recorded in the build report.
+2. **No undefined behavior (RB-2).** The emitted C is a subset that never relies on undefined behavior, so the C compiler has no license to delete a check. The subset, rule by rule:
+   - **Arithmetic.** Every signed integer operation uses the checked builtins (`__builtin_add_overflow` and the others) or is done on unsigned types and converted back. The program is compiled with `-fwrapv` as a second line, not the first.
+   - **Promotions.** Operands of 8- and 16-bit types are converted to `uint32_t` or `int32_t` before any arithmetic, so no result depends on the promotion to `int` or on `-fwrapv`.
+   - **Shifts** are done on unsigned types only, with the count masked to the width, and converted back. A left shift of a negative signed value is never emitted.
+   - **Conversions** to a narrower signed type go through the unsigned type of that width, with the range check of ADR 0057 before; the subset does not rely on implementation-defined signed narrowing.
+   - **Division and remainder** check the divisor for zero and the `MIN / -1` and `MIN % -1` cases before the operation.
+   - **Memory.** No pointer arithmetic outside `una-rt`, except exactly the three forms ADR 0107 needs, each after its checks and through types from one generated header that matches `una-rt`'s `#[repr(C)]` layout, with `_Static_assert` of size, offsets and alignment on the C side and const assertions on the Rust side:
+     1. the slot table, `table[i].field`, after `i < len` (unsigned), the layout check and the generation check (ADR 0107 rule 2);
+     2. an object's cells, at a constant offset from the slot's storage pointer, after the layout and generation checks, with the offset below the layout's cell count (ADR 0107 rule 3);
+     3. a packed list's elements, at `header + i * width`, after an unsigned `i < length` check (ADR 0107 rule 5).
+
+     Each access is a `memcpy`, or a load through a type of the element's width whose alignment the allocator guarantees and both sides assert. The program is compiled with `-fno-strict-aliasing` and `-fno-delete-null-pointer-checks`.
+   - **Evaluation order.** The emitted C keeps Core IR's A-normal form: at most one call or side effect per C statement, every intermediate value in a local, the statements in Core's order. No function call takes another call as an argument, and no operand of an operator with unspecified order has an effect. Una's order of effects (failures, the trace, capabilities) is then the C program's, whatever the compiler.
+   - **Initialization.** Every local is initialized where it is declared, and every aggregate, the result struct of ADR 0107 rule 7 on a failure path included, is fully initialized (zero) before it is copied or returned. No member is ever read indeterminate.
+   - **Termination.** Every emitted loop is finite by construction (a `for` over a list or a range) or carries a depth or fuel check whose failure is an observable effect, so no loop falls under C11 6.8.5p6, where a loop without side effects may be assumed to terminate. Recursion carries the depth check of ADR 0102.
+   - **Flags** are fixed in `una-codegen`, not left to the user's environment: `CFLAGS` is ignored for release builds.
+3. **Checks are never removed by the optimizer (RB-3).** Every check that Cranelift's code makes is in the C program, and its failure path is a call into `una-rt` with an observable effect that the C compiler cannot remove or reason past:
+   - the runtime's failure entry points never carry `pure` or `const`, and carry `noreturn` only where they truly never return;
+   - they are opaque to the optimizer: compiled into a separate object without bitcode, so link-time optimization (cross-language or not) cannot see their bodies, and marked `noinline`, and each failure path ends in an effect the program always shows (the failure's output and exit, or `abort`);
+   - a stated fact (RB-7) never feeds a check's operand in a way that weakens it.
+
+   A check leaves the program only when the verifier proved it unneeded (check elision, the last item of the performance track: #522, then data layout #736 / ADR 0107, then records inline in lists #751, then elision; each its own ADR), and then it leaves before C is emitted, recorded in the build report.
 4. **Equivalence (RB-4).** The release backend joins the differential suite of ADR 0055 NB-4: every runnable program runs in the interpreter, as a Cranelift executable and as a release executable, with identical output, failures and trace. A divergence fails CI.
-5. **The C compiler joins the trusted computing base for release builds (RB-5).** The build report's `native` section names the compiler and its version (`cc --version`'s first line) for a release build. The project's own gates pin it: the Linux images of `scripts/local-ci/` install a fixed clang, and the macOS gate records Apple clang's version in the validation record; a different version fails the reproducible gate's comparison only through the digests, never silently.
+5. **The C compiler joins the trusted computing base for release builds (RB-5).** A release build depends on the user's C compiler, so the support is explicit and fails closed:
+   - **A matrix of supported compilers**, with minimum versions at which every flag of RB-2 and RB-6 exists (for example `-ffile-prefix-map` needs gcc 8 and clang 10): Apple clang from a stated Xcode version, clang and gcc from stated versions, on the two targets.
+   - **Fail closed.** `una build --release` identifies the compiler (`cc --version`, plus a probe that each required flag is accepted). It refuses, with a clear diagnostic, a compiler outside the matrix or one that rejects a flag, and it never drops a flag or degrades silently.
+   - **Recorded.** The build report's `native` section names the compiler and its version.
+   - **Gated.** The project's gates build and test with the oldest and the newest compiler of the matrix on each target (the Linux images of `scripts/local-ci/` install them; the macOS gate records Apple clang's version).
 6. **Reproducible (RB-6).** The emitted C has no path, time or account; the compile uses `-ffile-prefix-map` for the package root and the cargo home as `scripts/release.sh` does (#382), and no `__DATE__` or `__TIME__`. Two release builds of one commit on one compiler version give the same bytes.
 
 7. **Proven facts are stated only in forms whose failure is defined behavior (RB-7).** Where the verifier proved a range or a sign for a value (a refinement, a fixed width, a discharged obligation), the emitted C may use that fact, but only in a form that stays defined behavior if the fact were wrong:
    - an unsigned operation on a value proven non-negative: a wrong proof gives a wrong value, which the equivalence suite catches, never undefined behavior;
    - a narrower fixed-width type for a value proven to fit, with the conversion checked as for any fixed-width value.
 
-   Forms whose false premise is undefined behavior are excluded: `__builtin_assume`, `__builtin_unreachable`, `restrict`, and any other construct that lets the C compiler treat a wrong fact as license to delete checks or read out of bounds. A verifier or encoding bug must stay a wrong answer, never become a memory-safety bug. A stated fact never replaces a check (RB-3); each carries the obligation that proved it, recorded in the build report; and the `sanitize` gate also builds without the statements and compares outputs.
-
-   *Option for the owner, not the default:* a UB-premised assumption (`__builtin_assume`) where a measured kernel shows the defined forms cannot reach the Gate 2 margin. The risk: any verifier or encoding bug at that site becomes undefined behavior in a release build. No such case is known.
+   Forms whose false premise is undefined behavior are excluded: `__builtin_assume`, `__builtin_unreachable`, `restrict`, and any other construct that lets the C compiler treat a wrong fact as license to delete checks or read out of bounds. A verifier or encoding bug must stay a wrong answer, never become a memory-safety bug. A stated fact never replaces a check and never weakens one: an index stated unsigned keeps its unsigned `i < len` comparison, which still catches a wrong proof, and a narrowing keeps its checked conversion. Each stated fact carries the obligation that proved it, recorded in the build report, and the `sanitize` gate also builds without the statements and compares outputs. Any use of a UB-premised assumption would need its own ADR, with evidence that the defined forms cannot reach the Gate 2 margin; no such case is known, and variant 5 shows the defined form gives the whole measured gain.
 
 ### Release gates added
 
 - **`native-release`:** NB-4's equivalence run with the release backend, on every runnable program of the repository.
-- **`sanitize`:** the release backend's C compiled with `-fsanitize=undefined,address` (and the runtime with its own checks) over the conformance suite and the examples, with zero reports. A report is a release blocker: it means the emitted C relied on something rule RB-2 forbids.
-- **`reproducible`** extends to a release build of the examples: two builds, the same digests.
+- **`check-survival`:** for each kind of check (overflow at the minimum and maximum of every width, a zero divisor, `MIN / -1` and `MIN % -1`, an index or a length out of bounds, a stale handle, depth and stack, and each label or capability check), a program that triggers it, built with exactly the shipped flags and configuration (`-O2`, and link-time optimization where release builds use it), must fail with the interpreter's failure.
+  - **Its canary:** a test build of the emitted C with one check removed, for each kind, must make `check-survival` fail. That proves the gate detects a removed check, not only that checks happened to survive.
+- **`opt-levels`:** the emitted C of the suite compiled at `-O0` and at the shipped level, with identical outputs. Code that depends on undefined behavior usually diverges between levels, so this is a cheap detector.
+- **`sanitize`:** the emitted C compiled with `-fsanitize=undefined,address` (and the runtime with its own checks) over the conformance suite and the examples, with zero reports, and once more without the RB-7 statements, with the same outputs. A sanitizer build is not the shipped binary, so this gate finds undefined behavior the emitted C relies on; `check-survival` covers the shipped configuration.
+- **`reproducible`** extends to a release build of the examples: two builds, the same digests. It detects nondeterminism, not a miscompile.
 
 ## Consequences
 
@@ -87,6 +107,7 @@ The representation at the boundary between Core IR and a backend (value words, h
 - The emitted C is a second compilation target to keep equal to Cranelift's; the differential suite and the sanitizer gate carry that weight.
 - The C compiler is trusted for release builds; its version is recorded and pinned in the gates.
 - Compile time of release builds is the C compiler's, slower than Cranelift; debug builds are unchanged.
+- **Stack depth can differ between the two backends.** A C frame's size depends on the compiler and the optimization level, so a program at the edge of the stack budget (U6003, ADR 0102 rule 7) can pass with Cranelift and fail in a release build, or the reverse. This is a known risk, as ADR 0108 states for its own case, until the stack budget is counted independently of frame sizes (a later item of the performance track).
 
 ## Alternatives considered
 
