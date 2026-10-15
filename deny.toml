@@ -1,0 +1,51 @@
+# The dependency audit of the `deps` release gate (#770, docs/release-gates.md): known
+# advisories, licenses and sources of every crate in Cargo.lock, checked by cargo-deny at the
+# version that supply-chain/tools.lock pins. An ignore entry needs a recorded ruling, a reason
+# and an expiry date, written next to it.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Every advisory of the RustSec database fails the gate: vulnerabilities, unmaintained and
+# unsound crates, and yanked versions.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# The licenses found in the tree when this file was written, all permissive. A new license
+# needs a change here, reviewed like any other.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# The workspace's own crates are not published.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# The workspace's own crates depend on each other by path with no version. cargo-deny accepts
+# such a path dependency only from an unpublished crate (`publish = false`), and every
+# workspace crate is unpublished; a registry dependency with a wildcard is still denied.
+allow-wildcard-paths = true
+
+[sources]
+# crates.io only. A git source or another registry fails the gate unless listed here.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -7,6 +7,9 @@
 # Gates, in order (all of them when none is named):
 #   clone        a fresh clone of the commit, from the repository's remote
 #   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold
+#   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
+#                advisory database fetched now (advisories, licenses, bans, crates.io only), and
+#                the supply-chain review record; the database's commit goes into the record
 #   mac          scripts/local-ci.sh
 #   linux        scripts/local-ci.sh --linux (Docker, linux/amd64)
 #   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
@@ -47,7 +50,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build mac linux linux-arm64 release reproducible determinism native sanitize site formal)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -165,6 +168,8 @@ gate_build() {
             && cargo build --locked --release -p una-cli -p una-rt \
             && cargo test --workspace --locked'
 }
+
+gate_deps() { run deps scripts/deps-audit.sh; }
 
 gate_mac() { run mac scripts/local-ci.sh; }
 
@@ -306,6 +311,17 @@ fi
         for archive in $archives; do
             echo "| \`$(basename "$archive")\` | \`$(digest "$archive")\` |"
         done
+    fi
+    echo
+    echo "## Dependency audit"
+    echo
+    tool=$(sed -n 's/^tool: \(cargo-deny [0-9.]*\), sha256 [0-9a-f]*$/\1/p' "$OUT/logs/deps.log" 2>/dev/null)
+    database=$(sed -n 's/^advisory-db: \([0-9a-f]\{40\}\) \(.*\)$/`\1` (\2)/p' "$OUT/logs/deps.log" 2>/dev/null)
+    if [ -z "$tool" ] || [ -z "$database" ]; then
+        echo "None: the deps gate did not run or did not fetch the advisory database."
+    else
+        echo "- Tool: $tool"
+        echo "- Advisory database: $database"
     fi
     echo
     echo "## Docs bundle"

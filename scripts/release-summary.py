@@ -3,7 +3,8 @@
 
 Reads a validation record that scripts/release-gates.sh wrote (record.md) and writes its
 summary from a fixed template: the commit, the run's date, OS and architecture, the toolchain,
-the gate table without log digests, the archives with their SHA-256 and the verdict. Nothing
+the gate table without log digests, the archives with their SHA-256, the dependency audit's
+tool and advisory database (#770) and the verdict. Nothing
 else of the record is copied: no subject, no notes, no log digest, no docs bundle.
 
 Every field is checked against its shape before it is written, and a field that does not match
@@ -30,12 +31,20 @@ RUN = re.compile(
     r"(rustc [0-9]+\.[0-9]+\.[0-9]+ \([0-9a-f]+ [0-9]{4}-[0-9]{2}-[0-9]{2}\)|rustc unknown), "
     r"(Docker version [0-9]+\.[0-9]+\.[0-9]+, build [0-9a-f]+|Docker unavailable)"
 )
-GATES = ["clone", "build", "mac", "linux", "linux-arm64", "release", "reproducible",
+GATES = ["clone", "build", "deps", "mac", "linux", "linux-arm64", "release", "reproducible",
          "determinism", "native", "sanitize", "site", "formal"]
 GATE_ROW = re.compile(r"\| ([a-z0-9-]+) \| (PASS|FAIL) \| ([0-9]+) \| `[0-9a-f]{64}` \|")
 ARCHIVE_ROW = re.compile(r"\| `(una-[0-9A-Za-z._-]+\.tar\.gz)` \| `([0-9a-f]{64})` \|")
 # The target part of an archive's name, after `una-<version>-`.
 TARGET = re.compile(r"[a-z0-9_]+(?:-[a-z0-9_]+)*")
+# The dependency audit's lines (#770): cargo-deny's version, and the advisory database's commit
+# and its date as git prints it (%cI).
+DEPS_TOOL = re.compile(r"- Tool: (cargo-deny [0-9]+\.[0-9]+\.[0-9]+)")
+DEPS_DB = re.compile(
+    r"- Advisory database: `([0-9a-f]{40})` "
+    r"\(([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2}))\)"
+)
+DEPS_NONE = "None: the deps gate did not run or did not fetch the advisory database."
 VERDICT = re.compile(r"Verdict: (PASS \(every gate\)|FAIL \([a-z0-9, -]+\)|INCOMPLETE \(not run: [a-z0-9, -]+\))")
 
 
@@ -102,6 +111,15 @@ def main():
                 fail(f"{m.group(1)} is not an archive of {version}")
             archives.append(m.groups())
 
+    # The dependency audit: its two lines in shape, or none when the gate did not reach them.
+    deps = [line for line in section(lines, "## Dependency audit")
+            if line.startswith("- ") or line.startswith("None")]
+    if deps and deps != [DEPS_NONE]:
+        if len(deps) != 2 or not DEPS_TOOL.fullmatch(deps[0]) or not DEPS_DB.fullmatch(deps[1]):
+            fail("the dependency audit is out of shape")
+    else:
+        deps = []
+
     pattern = os.environ.get("UNA_PRIVACY_PATTERN", "")
     text = [f"# Una v{version}: release validation", ""]
     if not pattern:
@@ -117,6 +135,8 @@ def main():
         text += [f"| `{name}` | `{digest}` |" for name, digest in archives]
     else:
         text += ["None: the release gate did not run or did not pack them."]
+    text += ["", "## Dependency audit", ""]
+    text += deps if deps else [DEPS_NONE]
     text += ["", f"Verdict: {verdict}", "",
              "The gates are defined in `docs/release-gates.md` at the commit above.", ""]
     summary = "\n".join(text)
