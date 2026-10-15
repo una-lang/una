@@ -698,10 +698,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// their labels.
     pub(crate) fn constant_pattern(&mut self, literal: &Literal) {
         if let Literal::Text(text) = literal
-            && text
-                .parts
-                .iter()
-                .any(|part| matches!(part, TextPart::Interpolation(_)))
+            && interpolates(literal)
         {
             self.report.error(
                 Code::U4008,
@@ -1502,4 +1499,11 @@ fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut Vec<String>)
         | ExprKind::It
         | ExprKind::Error => {}
     }
+}
+
+/// Whether `literal` is a text literal with interpolation, which a pattern may not hold: its text
+/// is computed from what it interpolates (U4008, `spec/07 §7` rule 3, S-28).
+pub(crate) fn interpolates(literal: &Literal) -> bool {
+    matches!(literal, Literal::Text(text)
+        if text.parts.iter().any(|part| matches!(part, TextPart::Interpolation(_))))
 }

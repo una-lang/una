@@ -144,7 +144,7 @@ block_expr      = when_expr | if_block ;
 when_expr       = "when" line_expr NEWLINE INDENT arm { arm } DEDENT ;
 arm             = pattern "->" ( line_expr NEWLINE | NEWLINE INDENT block DEDENT ) ;
 pattern         = "is" upper_ident [ "(" bind { "," bind } ")" ]
-                | "is" literal
+                | "is" literal                             (* U4008: no interpolation, spec/07 §7 rule 3 *)
                 | "in" range
                 | "else" ;
 bind            = lower_ident [ ":" lower_ident ] ;       (* field, or field: local name *)
@@ -168,6 +168,7 @@ or_expr         = and_expr { "or" and_expr } ;
 and_expr        = not_expr { "and" not_expr } ;
 not_expr        = "not" not_expr | cmp_expr ;
 cmp_expr        = add_expr [ cmp_op add_expr | "is" ( upper_ident | literal ) | "in" range ] ;
+                                                         (* the literal: U4008, no interpolation, spec/07 §7 rule 3 *)
 cmp_op          = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 add_expr        = mul_expr { ( "+" | "-" ) mul_expr } ;
 mul_expr        = unary { ( "*" | "/" | "mod" ) unary } ;
