@@ -66,7 +66,7 @@ A heap value is still a handle into the thread's slot table, an even nonzero wor
 - **An object's storage does not move while its slot is live**, except inside a runtime call that grows it (a packed list's `append`, rule 5).
 - **Addresses are recomputed after every runtime call.** This is a rule of the lowering in both backends: the code they emit never uses an object's or a slot's address computed before a runtime call after that call. It recomputes the address from the handle, with the checks below. A backend's own optimizer may then reuse a value only where the language it compiles to allows it (Cranelift's IR, or C without undefined behavior), whatever it inlines, so the rule holds with or without link-time optimization across `una-rt`. It does not rest on the call being opaque. The lowering never marks a load of the directory, a slot or an object's storage as invariant: in Cranelift, these loads carry no `readonly` or `can_move` flag, so the e-graph cannot reuse or hoist them across a call. Release builds do not link `una-rt` with cross-language link-time optimization, and the rule above would hold if they did.
 - Generated code reads a record's field inline, with no runtime call:
-  1. check `index < length`, the length read from the table header;
+  1. check that bit 0 of the handle is 0, then `index < length`, unsigned, the length read from the table header;
   2. find the slot through the directory, and check `slot.layout == expected` and `slot.generation == handle's generation`;
   3. load the field at its constant offset from `slot.address`.
   A bit test, three compares and three or four loads. Two reads of the same handle with no runtime call between them share one check and one address.
