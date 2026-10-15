@@ -35,7 +35,18 @@ Three kernels, each written once in Una (built with `una build`, Cranelift) and 
 
 The kit is `docs/adr/evidence/0106/` (the Una packages, `c/kernels.c`, `rs/kernels.rs`, and `measure.py`, which builds, checks the outputs and times), with this run's raw result in `result-2026-10-15.json`; `python3 measure.py <kit> <una> 15` repeats it. Medians of 15 interleaved rounds after a warm-up, in a quiet window on 2026-10-15 (03:40 to 03:43 UTC), on aarch64-apple-darwin, with `una` 0.3.14 built in release from `main` at `f3d20412`; every variant's output was checked identical before timing. The spread was small (K2 Cranelift 6.06 to 6.59 s; every other row within 10% of its median). Compile time of one kernel file: `una build` 0.07 to 0.13 s, `clang` 0.08 s, `rustc` 0.63 s.
 
-What the numbers can and cannot say. They show the gap between Cranelift and an optimizing backend on checked code, 6x on calls and 27x on an arithmetic loop, which is the reason for this ADR. They do not rank options 1 to 3 by speed: options 1 and 3 and clang all run LLVM's optimizer, so the emitted program decides the result, not the route. K2 shows it: Rust ran 1.5x faster than C on the same algorithm, and the two programs differ in how they write the Euclidean `mod` (a branch in C, `rem_euclid` in Rust) and the checked multiply. That difference is not yet explained; before this ADR is accepted, a C variant written like the Rust one is measured, to confirm that the C route reaches the same code. The choice between the routes rests on the other constraints.
+What the numbers can and cannot say. They show the gap between Cranelift and an optimizing backend on checked code, 6x on calls and 27x on an arithmetic loop, which is the reason for this ADR. They do not rank options 1 to 3 by speed: options 1 and 3 and clang all run LLVM's optimizer, so the emitted program decides the result, not the route. K2 shows it. Rust ran 1.5x faster than C on the same algorithm, and a second quiet run (2026-10-15, 04:58 UTC; `c-variants/mix_variants.c`, `result-k2-variants-2026-10-15.json`) explains it. Rust's optimizer proves that the dividend of the Euclidean `mod` is non-negative and divides unsigned (`umulh`); the C variants divide signed (`smulh`) and correct the sign:
+
+| K2 variant | Median | Against the kit's C |
+| --- | --- | --- |
+| C, a branch after `%` (the kit) | 0.248 s | 1.00 |
+| C, Rust's `rem_euclid` shape, branch-free | 0.259 s | 1.05 |
+| C, the divisor stated positive | 0.247 s | 1.00 |
+| C, `-O3` / without `-fwrapv` | 0.247 s / 0.248 s | 1.00 |
+| **C, the dividend stated non-negative, unsigned remainder** | **0.180 s** | **0.73** |
+| Rust `rem_euclid` | 0.164 s | 0.66 |
+
+The gap is not the route, the optimization level or `-fwrapv`. It is a fact about the value that the C program did not state. Stated, C comes within 10% of Rust. Una's verifier knows such facts: refinements and proven ranges. So the release backend states them in the emitted C, which is rule RB-7. The choice between the routes rests on the other constraints.
 
 ## Decision
 
@@ -54,6 +65,8 @@ The representation at the boundary between Core IR and a backend (value words, h
 4. **Equivalence (RB-4).** The release backend joins the differential suite of ADR 0055 NB-4: every runnable program runs in the interpreter, as a Cranelift executable and as a release executable, with identical output, failures and trace. A divergence fails CI.
 5. **The C compiler joins the trusted computing base for release builds (RB-5).** The build report's `native` section names the compiler and its version (`cc --version`'s first line) for a release build. The project's own gates pin it: the Linux images of `scripts/local-ci/` install a fixed clang, and the macOS gate records Apple clang's version in the validation record; a different version fails the reproducible gate's comparison only through the digests, never silently.
 6. **Reproducible (RB-6).** The emitted C has no path, time or account; the compile uses `-ffile-prefix-map` for the package root and the cargo home as `scripts/release.sh` does (#382), and no `__DATE__` or `__TIME__`. Two release builds of one commit on one compiler version give the same bytes.
+
+7. **Proven facts are stated, never assumed (RB-7).** Where the verifier proved a range or a sign for a value (a refinement, a fixed width, a discharged obligation), the emitted C may state it to the C compiler, as an unsigned operation on a value proven non-negative or as a `__builtin_assume` of a proven predicate. Only facts the verifier proved are stated. A stated fact is a hint to the optimizer, never a check removed: rule RB-3 holds. A false statement would be undefined behavior, so each statement carries the obligation that proved it, recorded in the build report, and the `sanitize` gate builds without the statements, to compare outputs.
 
 ### Release gates added
 
