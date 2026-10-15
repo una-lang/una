@@ -1179,6 +1179,20 @@ class Edition03(unittest.TestCase):
         r = drivers.judge_residual("accepted", V("accepted", [], 0.1), "guarded-dry")
         self.assertEqual((r["invalid"], r["missed"]), (False, False))
 
+    def test_a_run_the_solver_did_not_decide_is_an_error(self):
+        # The oracle's runs do the full check with the pinned solver (#813): an obligation
+        # `unknown` (U5002, `unknown: wallclock` among them) or no solver (U5003) is a gate error,
+        # never a program the checks reject and the oracle sets aside.
+        table = {("Console", "print"): {"public"}}
+        for code in ("U5002", "U5003"):
+            doc = run_doc("rejected", diagnostics=[diag(code)])
+            end = oracle.observe(Run(1, doc, "", False, 0.1), ["public"], table, "secret")
+            self.assertEqual(end[0], "error", code)
+            self.assertIn(code, end[1])
+        doc = run_doc("rejected", diagnostics=[diag("U5001")])
+        end = oracle.observe(Run(1, doc, "", False, 0.1), ["public"], table, "secret")
+        self.assertEqual(end, ("rejected", ["U5001"]))
+
     def test_the_edition_0_3_canaries(self):
         rej = gate.canary_reject_boundary()
         self.assertEqual((rej.cls, rej.expect, rej.edition), (MUST_REJECT, ["U3021"], "0.3"))

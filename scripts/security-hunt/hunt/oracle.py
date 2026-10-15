@@ -18,6 +18,10 @@ It fails closed. Every end other than the ones below is an error, and an error f
   completes and whose other side aborts is a `termination` pair: recorded and counted, never a
   finding, and never an error.
 Two runs of one variant that differ are an error (nondeterminism), never averaged away.
+A run, or a native build, in which the solver did not decide an obligation (U5002, `unknown:
+wallclock` among them) or was missing (U5003) is an error too, never a program set aside: the
+runs do the full check with the pinned solver (#813), whose answers are deterministic under its
+rlimit (`spec/12 §10`).
 """
 
 import json
@@ -28,6 +32,11 @@ from . import native, sandbox
 from .program import Program
 
 ABORT_CODES = {"U6003", "U6004", "U6005"}
+# The solver's own ends in a run: an obligation `unknown` (U5002, `unknown: wallclock` among them)
+# or no solver at the pinned version (U5003). The oracle's runs and the native builds do the full
+# check, with the pinned solver since #813, so the two-run determinism check rests on its answers
+# (rlimit, `spec/12 §10`); either code in a run is a gate error, never a program set aside.
+SOLVER_CODES = {"U5002", "U5003"}
 # How many values replace one varied literal: a fixed cap, so the gate's size is fixed.
 VALUES_PER_POSITION = 5
 # The limits of one run (docs/plan/security-hunt-oracle.md §6).
@@ -243,6 +252,9 @@ def observe(run, observers, table, live_level):
     status = doc.get("status")
     diags = doc.get("diagnostics", [])
     codes = sorted({d.get("code") for d in diags if d.get("severity") == "error"})
+    solver = sorted({d.get("code") for d in diags} & SOLVER_CODES)
+    if solver:
+        return ("error", f"status {status!r}, the solver did not decide: {', '.join(solver)}")
     if status == "rejected" and run.code == 1:
         return ("rejected", codes)
     if status == "ok" and run.code == 0 and diags:
