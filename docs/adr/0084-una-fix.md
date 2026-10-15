@@ -101,3 +101,35 @@ A conformance case pins each point:
 - an obligation made unknown by `step_budget = 1`, with no applied edit, no skipped entry, `stopped` `done`, the source unchanged, and the repair's description saying why (ADR 0092's amendment, (h));
 - the run-twice comparison of ADR 0092's amendment;
 - the `fixable` count of two sites asking one callee.
+
+## Amendment (2026-10-15): a restored locked condition is a tier-1 candidate
+
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-15)
+
+The amendment of 2026-10-14 admits one kind of tier-1 edit, and says that "a future kind that does needs its own amendment, which states its determinism as (h) does, before `una fix` applies it". ADR 0092's amendment of 2026-10-15 is that kind: the first repair of a refuted `contract_lock` obligation restores the locked condition in the header, and its determinism is stated there, under its condition (e), as (h) states it.
+
+**Which tier-1 edits.** A tier-1 diagnostic is a candidate when its obligation is refuted and its first repair carries an edit, for these two kinds only:
+- an `effect_condition` obligation, reported as U5001, as the amendment of 2026-10-14 says;
+- a `contract_lock` obligation, reported as U3023 (ADR 0092 rule 8), whose repair is ADR 0092's amendment of 2026-10-15.
+
+An unknown obligation (U5002) is never a candidate. A U3023 of tier 0, for a binding or an operation that the lock does not grant, has no obligation and no edit, so it is never one either. The rest of rule 2 holds unchanged.
+
+**Rounds.** The rounds of the amendment of 2026-10-14 are unchanged: a round checks tier 1 only when its tier-0 check reports no diagnostic and the requested tier is 1. With `--tier 0` no tier-1 edit is ever applied. While an obligation is unknown, no tier-1 repair carries an edit, so the round takes none, and when it has no tier-0 edit either, the rounds stop as `done`. A program for which the checker computed neither a condition edit nor a lock restoration has no tier-1 candidate, so its tier 1 is left to the final check, as before.
+
+**An edit inside the reported declaration.** Unlike the condition on a callee, this edit changes the declaration its diagnostic is reported in: the header of the locked function. Its effect on the function's body and callers is stated in ADR 0092's amendment, and the next round's check sees it.
+
+**The count** (ADR 0096 rule 6). `"fixable"` counts these diagnostics too, when their first repair carries an edit.
+
+**The output schema is unchanged.** No `reason` of `skipped` and no value of `stopped` is added (ADR 0076 rule 3).
+
+**Complexity** (rule 8). Unchanged: a round whose tier-0 check is clean costs T0 + T1, and `una fix` at most 16 × (T0 + T1) + (T0 + T1). The lock restorations are computed with the check, linear in the locked conditions' text.
+
+**Stricter only.** No rule of acceptance changes, and the new kind of edit only adds a condition back.
+
+Conformance cases:
+- a package with a refuted `contract_lock` and nothing else, restored in the first round, with `stopped` `done` and the final check clean;
+- a package with a tier-0 diagnostic and a refuted `contract_lock`, where the tier-0 edit is applied in the first round and the lock restoration in a later one;
+- `--tier 0`, which applies no restoration;
+- an obligation made unknown by `step_budget = 1`, with no applied edit, no skipped entry, `stopped` `done` and the source unchanged;
+- the `fixable` count of a package with one restorable lock.
