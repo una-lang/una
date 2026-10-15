@@ -209,6 +209,8 @@ Gate 2's performance bar is parity with Rust on the benchmark set: a geometric m
 
 So, plainly: with this ADR, #737, #738 and #522, parity is plausible for loops over fixed-width and refined integers, packed lists and loop state, which is what k2 and k3 exercise. It is **not** plausible for programs that build many small records, or keep large lists of small records, or run hot higher-order functions over closures: they need escape analysis or regions, records inline in lists, and per-call-site specialization of the prelude's higher-order functions. Those three are design work of their own, each with safety arguments as long as this one's: #750, #751 and #752.
 
+**Known gap that blocks the memory bar.** Under this ADR alone, every record element of a list is its own object, so a `List[Point]` costs about 4x a Rust `Vec<Point>`, and any list-heavy program of the benchmark set fails the 1.2x memory margin. This is not left to the Gate 2 measurement to discover: #751 (records stored inline and contiguous in a list's elements, accessed by the list's handle and an index with no per-element slot, as a packed list of rule 5 stores raw elements) is the item that meets it, at about N × 16 bytes plus one header for N `Point`s. Until #751 is decided and implemented, Gate 2's memory criterion cannot pass on such programs.
+
 ## Consequences
 
 - Record-heavy and fixed-width code no longer pays a runtime call per access, and the C backend of ADR 0106 can compile field access, fixed-width arithmetic and loop state into plain C.
