@@ -66,14 +66,15 @@ def rebuild(row):
     return prog
 
 
-def must_reject(rows, una, root, timeout, out):
+def must_reject(rows, una, root, timeout, out, build=None):
     """Checks every must-reject program; an accepted one is a finding. Open programs are
-    checked too, and their verdict is recorded for triage."""
+    checked too, and their verdict is recorded for triage. `build` turns a row into its program
+    (`rebuild` by default; the gate's canaries pass their own)."""
     tally = Counter()
     for row in rows:
         if row["class"] not in (MUST_REJECT, MUST_ACCEPT, OPEN, RESIDUAL):
             continue
-        prog = rebuild(row)
+        prog = (build or rebuild)(row)
         v = check(una, prog.write(root), root, timeout)
         result = dict(row, **v.row())
         if row["class"] == MUST_REJECT:

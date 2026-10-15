@@ -4,9 +4,10 @@
     python3 -m hunt reject --manifest DIR/manifest.jsonl --una PATH --root DIR
     python3 -m hunt keep --manifest DIR/manifest.jsonl --una PATH --root DIR
     python3 -m hunt repro --op T4 --seed SEED --edition 0.2 --out DIR
+    python3 -m hunt gate --una PATH --out DIR --tip SHA
 
-`gen` and `repro` only write files. `reject` and `keep` run the compiler, which is heavy
-work: only in a machine slot (the coordinator's condition 3).
+`gen` and `repro` only write files. `reject`, `keep` and `gate` run the compiler, which is
+heavy work: only in a machine slot. `gate` is the release gate's fixed run (`hunt/gate.py`).
 """
 
 import argparse
@@ -14,7 +15,7 @@ import os
 import sys
 from collections import Counter
 
-from . import drivers
+from . import drivers, gate
 from .families import OPERATORS, family_of
 from .program import derive_seed, write_manifest
 
@@ -106,7 +107,13 @@ def main(argv=None):
                            help="the una-core-check executable (formal/.lake/build/bin)")
             c.add_argument("--z3", help="the solver for the residual class's full check "
                            "(N-138); without it those rows are invalid")
+    gt = sub.add_parser("gate")
+    gt.add_argument("--una", required=True)
+    gt.add_argument("--out", required=True)
+    gt.add_argument("--tip", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "gate":
+        return gate.run(os.path.realpath(a.una), a.out, a.tip)
     if a.cmd == "gen":
         cmd_gen(a)
     elif a.cmd == "repro":

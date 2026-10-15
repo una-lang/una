@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hunt import drivers, sandbox  # noqa: E402
+from hunt import drivers, gate, oracle, sandbox  # noqa: E402
 from hunt.families import OPERATORS  # noqa: E402
 from hunt.program import CLASSES, MUST_REJECT, OPEN, derive_seed, rng_for  # noqa: E402
 from hunt.refactor import _blocks, r6_rename, r9_reorder  # noqa: E402
@@ -630,6 +630,136 @@ class Checks(unittest.TestCase):
         row["digest"] = "0" * 64
         with self.assertRaises(ValueError):
             drivers.rebuild(row)
+
+
+def run_doc(status, output=(), failure=None, diagnostics=(), trace=()):
+    return json.dumps({"schema": "una.run/1", "tier": 0, "status": status, "output": list(output),
+                       "failure": failure, "diagnostics": list(diagnostics),
+                       "trace": list(trace)})
+
+
+def diag(code, severity="error"):
+    return {"severity": severity, "code": code, "message": "m",
+            "primary": {"file": "src/a.una", "start": {"line": 1, "col": 1}}}
+
+
+EVENT = {"seq": 0, "instance": "console", "capability": "Console", "op": "print",
+         "args": {"message": "hi"}, "outcome": {"ok": {"value": "unit"}}}
+
+
+class Oracle(unittest.TestCase):
+    def test_values_are_fixed_capped_and_never_the_original(self):
+        files = {"src/a.una": 'let s: secret Int = 4242\nlet t = "abc"\n'}
+        ints = oracle.values("Int", "4242", files)
+        self.assertEqual(ints, oracle.values("Int", "4242", files))
+        self.assertEqual(len(ints), oracle.VALUES_PER_POSITION)
+        self.assertNotIn("4242", ints)
+        self.assertEqual(oracle.values("Bool", "true", files), ["false"])
+        texts = oracle.values("Text", '"abc"', files)
+        self.assertIn('""', texts)
+        self.assertNotIn('"abc"', texts)
+        for t in texts:
+            self.assertNotIn("{", t)
+            self.assertNotIn("\\", t)
+        with self.assertRaises(ValueError):
+            oracle.values("Float", "1.0", files)
+
+    def test_substitute_replaces_only_the_literal_at_its_place(self):
+        files = {"src/a.una": "x\n  let s: secret Int = 5 + 5\n"}
+        pos = {"file": "src/a.una", "line": 2, "col": 23, "literal": "5"}
+        out = oracle.substitute(files, pos, "-1")
+        self.assertEqual(out["src/a.una"], "x\n  let s: secret Int = -1 + 5\n")
+        self.assertEqual(files["src/a.una"], "x\n  let s: secret Int = 5 + 5\n")
+        with self.assertRaises(ValueError):
+            oracle.substitute(files, dict(pos, col=3), "0")
+
+    def test_a_policy_to_public_sets_the_program_aside(self):
+        to_public = {"src/k.una": "pub policy p\n  from secret Int\n  to Int\n  via v\n"}
+        to_internal = {"src/k.una": "pub policy p\n  from secret Int\n  to internal Int\n"}
+        self.assertTrue(oracle.releases_to_public(to_public))
+        self.assertFalse(oracle.releases_to_public(to_internal))
+        self.assertFalse(oracle.releases_to_public({"src/a.una": "module a\n"}))
+
+    def test_the_projection_drops_only_the_outcome(self):
+        doc = json.loads(run_doc("ok", ["a"], trace=[EVENT]))
+        view = oracle.project(doc)
+        self.assertEqual(view["trace"], [{k: v for k, v in EVENT.items() if k != "outcome"}])
+        other = dict(EVENT, outcome={"fail": {"variant": "X", "value": None}})
+        self.assertEqual(view, oracle.project(json.loads(run_doc("ok", ["a"], trace=[other]))))
+        moved = dict(EVENT, args={"message": "<redacted:secret>"})
+        self.assertNotEqual(view, oracle.project(json.loads(run_doc("ok", ["a"], trace=[moved]))))
+
+    def test_observe_fails_closed(self):
+        def end(code, text, timed_out=False):
+            return oracle.observe(Run(code, text, "", timed_out, 0.1))[0]
+        self.assertEqual(end(0, run_doc("ok", ["a"])), "complete")
+        self.assertEqual(end(1, run_doc("failed", failure={"variant": "Halt", "fields": {}},
+                                        diagnostics=[diag("U6001")])), "complete")
+        self.assertEqual(end(1, run_doc("aborted", diagnostics=[diag("U6003")])), "abort")
+        self.assertEqual(end(None, "", timed_out=True), "abort")
+        self.assertEqual(end(1, run_doc("rejected", diagnostics=[diag("U4001")])), "rejected")
+        # Anything else is an error: an internal error, another abort, an ok run with
+        # diagnostics, an exit code that disagrees, unreadable output, a signal.
+        self.assertEqual(end(3, run_doc("aborted", diagnostics=[diag("U8001")])), "error")
+        self.assertEqual(end(1, run_doc("aborted", diagnostics=[diag("U6003"), diag("U8001")])),
+                         "error")
+        self.assertEqual(end(0, run_doc("ok", diagnostics=[diag("U0001", "warning")])), "error")
+        self.assertEqual(end(1, run_doc("ok")), "error")
+        self.assertEqual(end(1, run_doc("failed")), "error")
+        self.assertEqual(end(0, "not json"), "error")
+        self.assertEqual(end(-6, ""), "error")
+        self.assertEqual(end(0, json.dumps({"schema": "una.check/1"})), "error")
+
+    def test_judge(self):
+        a = ("complete", {"output": ["1"]})
+        b = ("complete", {"output": ["2"]})
+        abort = ("abort", ["U6003"])
+        self.assertEqual(oracle.judge(a, a), "same")
+        self.assertEqual(oracle.judge(a, b), "leak")
+        self.assertEqual(oracle.judge(a, abort), "termination")
+        self.assertEqual(oracle.judge(abort, a), "termination")
+        self.assertEqual(oracle.judge(abort, ("abort", ["timeout"])), "same")
+        self.assertEqual(oracle.judge(a, ("error", "x")), "error")
+        self.assertEqual(oracle.judge(a, ("rejected", [])), "error")
+        # ok against failed is a difference in what is public, so a leak.
+        ok = oracle.project(json.loads(run_doc("ok")))
+        failed = oracle.project(json.loads(run_doc("failed", failure={"variant": "H",
+                                                                       "fields": {}})))
+        self.assertEqual(oracle.judge(("complete", ok), ("complete", failed)), "leak")
+
+
+class Gate(unittest.TestCase):
+    def test_the_fixed_run_is_fixed_and_not_empty(self):
+        a, b = gate.programs(), gate.programs()
+        self.assertEqual([p.digest() for p in a], [p.digest() for p in b])
+        self.assertEqual(len({p.name for p in a}), len(a))
+        self.assertTrue(any(p.vary for p in a))
+        self.assertTrue(any(p.cls == MUST_REJECT for p in a))
+        self.assertGreater(gate.expected_keep(a), 0)
+
+    def test_the_canaries_are_what_they_claim(self):
+        rej = gate.canary_reject()
+        self.assertEqual(rej.cls, MUST_REJECT)
+        self.assertNotIn("secret", "".join(rej.files.values()))
+        orc = gate.canary_oracle()
+        self.assertEqual(len(orc.vary), 1)
+        pos = orc.vary[0]
+        self.assertEqual(pos["label"], "secret")
+        line = orc.files[pos["file"]].split("\n")[pos["line"] - 1]
+        # The literal is public in Una: no label on its binding.
+        self.assertEqual(line.strip(), "let x: Int = 5")
+        self.assertTrue(oracle.values(pos["type"], pos["literal"], orc.files))
+
+    def test_shards_keep_row_order(self):
+        rows = [{"n": i} for i in range(10)]
+
+        def fn(part, buf, k):
+            for r in part:
+                buf.write(json.dumps(r) + "\n")
+            return {("n",): len(part)}
+        tally, lines = gate._sharded(fn, rows, 4)
+        self.assertEqual(lines, rows)
+        self.assertEqual(tally[("n",)], 10)
 
 
 if __name__ == "__main__":

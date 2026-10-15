@@ -24,6 +24,10 @@
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
+#   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
+#                gate`): its generators through the must-reject and must-keep drivers and the
+#                two-run oracle, with two canaries, failing closed (#767). macOS only: every
+#                compiler run is under sandbox-exec. Its summary is OUT/hunt/summary.json
 #   site         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
@@ -50,7 +54,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize hunt site formal)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -257,6 +261,19 @@ gate_native() {
     run native sh -c 'cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter -- --exact --nocapture'
 }
 
+gate_hunt() {
+    # The security hunt's fixed run (#767, docs/release-gates.md): the clone's release `una`,
+    # every compiler run under sandbox-exec, the evidence in OUT/hunt, outside the clone. Python
+    # runs with -B, so the clone gets no bytecode files and stays exact.
+    local hunt=$OUT/hunt
+    rm -rf "${hunt:?}"
+    run hunt sh -c '
+        [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
+        una=$(pwd)/target/release/una
+        cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \
+            --una "$una" --out "'"$hunt"'" --tip "'"$SHA"'"'
+}
+
 gate_site() {
     run site sh -c '
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
@@ -322,6 +339,24 @@ fi
     else
         echo "- Tool: $tool"
         echo "- Advisory database: $database"
+    fi
+    echo
+    echo "## Hunt"
+    echo
+    if [ -f "$OUT/hunt/summary.json" ]; then
+        python3 -B -c '
+import json, sys
+s = json.load(open(sys.argv[1]))
+print("- Verdict: %s; seed %s, %s programs, una tip `%s`" % (s["verdict"], s["seed"], s["sizes"]["programs"], s["tip"]))
+for key in ("reject", "keep", "oracle"):
+    print("- %s: %s of %s cases judged" % (key, s["sizes"][key]["judged"], s["sizes"][key]["expected"]))
+print("- Oracle variants compared: %s; programs set aside: %s" % (s["sizes"]["oracle"]["variants_compared"], s["sizes"]["oracle"]["set_aside"]))
+print("- Termination pairs (outside the noninterference guarantee, recorded): %s" % s["termination_pairs"]["count"])
+print("- Canaries: " + ", ".join("%s %s" % (k, "caught" if v else "missed") for k, v in sorted(s["canaries"].items())))
+print("- Findings: %s; errors: %s" % (len(s["findings"]), len(s["errors"])))
+' "$OUT/hunt/summary.json" || echo "The hunt summary could not be read."
+    else
+        echo "None: the hunt gate did not run or did not write its summary."
     fi
     echo
     echo "## Docs bundle"
