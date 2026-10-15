@@ -808,7 +808,10 @@ enum Node {
 
 /// The value of `word` and everything it holds, copied out of this heap. The walk uses a stack
 /// of its own, never the native stack, since a value can nest deeper than any call (ADR 0060).
-pub fn export(word: i64) -> Portable {
+/// The memory budget is checked before each object is copied, at the block's `site` (#775):
+/// `None` when it stops the run or the task, so no copy grows past the allocator's ceiling in
+/// one step where the interpreter, which shares the value, would not.
+pub fn export(word: i64, site: usize) -> Option<Portable> {
     let mut nodes = Vec::new();
     let mut index: BTreeMap<i64, usize> = BTreeMap::new();
     let mut pending = vec![(word, false)];
@@ -821,6 +824,9 @@ pub fn export(word: i64) -> Portable {
             let children = with(word, Object::children).unwrap_or_default();
             pending.extend(children.into_iter().map(|child| (child, false)));
             continue;
+        }
+        if !crate::runtime::within_budget(site) {
+            return None;
         }
         let cell = |child: &i64| match index.get(child) {
             Some(&node) => Cell::Node(node),
@@ -866,17 +872,25 @@ pub fn export(word: i64) -> Portable {
         Some(&node) => Cell::Node(node),
         None => Cell::Word(word),
     };
-    Portable { nodes, root }
+    Some(Portable { nodes, root })
 }
 
-/// A portable value made into this heap: a word the caller owns.
-pub fn import(portable: &Portable) -> i64 {
+/// A portable value made into this heap: a word the caller owns. The memory budget is checked
+/// before each object is made, at the block's `site` (#775): `None` when it stops the run or
+/// the task, with what was made released.
+pub fn import(portable: &Portable, site: usize) -> Option<i64> {
     let mut words: Vec<i64> = Vec::with_capacity(portable.nodes.len());
     let word_of = |cell: &Cell, words: &[i64]| match *cell {
         Cell::Word(word) => word,
         Cell::Node(node) => words.get(node).copied().unwrap_or(0),
     };
     for node in &portable.nodes {
+        if !crate::runtime::within_budget(site) {
+            for &word in &words {
+                release(word);
+            }
+            return None;
+        }
         let made = match node {
             Node::Int(value) => alloc(Object::Int(value.clone())),
             Node::Text(text) => alloc(Object::Text(Text::new(text.clone()))),
@@ -929,7 +943,7 @@ pub fn import(portable: &Portable) -> i64 {
     for &word in &words {
         release(word);
     }
-    root
+    Some(root)
 }
 
 /// The list of the integers from `low` to `high`, with `high` when `inclusive` is 1: the
@@ -1808,10 +1822,10 @@ mod tests {
         push(items, NONE);
         release(record);
         release(shared);
-        let portable = export(items);
+        let portable = export(items, 0).unwrap();
         // Across threads, as a task's heap is (`spec/19 §8`).
         let copied = std::thread::spawn(move || {
-            let word = import(&portable);
+            let word = import(&portable, 0).unwrap();
             let shown = (
                 count(word),
                 tag(field(word, 0)),
@@ -1848,8 +1862,8 @@ mod tests {
             release(chain);
             chain = cell;
         }
-        let portable = export(chain);
-        let back = import(&portable);
+        let portable = export(chain, 0).unwrap();
+        let back = import(&portable, 0).unwrap();
         assert_eq!(equal(back, chain), 1);
         release(back);
         release(chain);

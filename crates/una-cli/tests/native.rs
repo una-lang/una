@@ -763,6 +763,81 @@ fn a_wide_range_in_a_task_stops_it_with_u6003_in_both_backends() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A program of edition 0.2 named `name` whose module `src/<name>.una` is `body` after its
+/// header, with `make(n)`, a list of the integers below `n` built by a loop.
+fn copies_program(name: &str, body: &str) -> PathBuf {
+    let program = format!(
+        "module {name}\n\nmake(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<400000\n    if i < n\n      xs = xs.append(item: i)\n  xs\n\ncount(xs: List[Int]) -> Int = xs.len\n\ntwo() -> Int = 2\n\n{body}"
+    );
+    let file = format!("src/{name}.una");
+    let dir = package(name, "", &[(file.as_str(), program.as_str())]);
+    std::fs::write(
+        dir.join("una.toml"),
+        format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"{name}\"\ngrants = [\"console\"]\n"
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_copy_between_tasks_over_the_budget_is_u6003_in_both_backends() {
+    // #775: native code copies a value between the heaps of a block's tasks (`spec/16 §4`
+    // rule 6) where the interpreter shares it, and the copy made a whole value in one step: under
+    // `--max-memory`, it grew past the allocator's hard ceiling and the executable aborted on a
+    // signal where `una run` reported U6003. Each copy now checks the budget as it grows. Where
+    // each backend runs out is not exact (ADR 0061), so the two may report U6003 at different
+    // places; both end the run with it, and neither on a signal.
+    let main = "pub main() -> Unit\n  uses @console: Console[print]\n=\n";
+    let cases = [
+        // The value a task returns, copied at the join.
+        (
+            "join_result",
+            format!(
+                "{main}  together\n    let a = make(400000)\n    let b = two()\n  @console.print(\"{{a.len}} {{b}}\")\n"
+            ),
+        ),
+        // A value a task's closure holds, copied at the fork.
+        (
+            "fork_argument",
+            format!(
+                "{main}  let xs = make(400000)\n  together\n    let a = count(xs)\n    let b = count(xs)\n  @console.print(\"{{a}} {{b}}\")\n"
+            ),
+        ),
+        // The values of a `together for`, copied at the join. The same join copy as the first
+        // case; this one checks the ending, since the released runtime aborted on it only in a
+        // narrow band of sizes, which a test cannot hold steadily.
+        (
+            "for_results",
+            format!(
+                "{main}  let lists = together for i in 0..<4\n    make(150000 + i)\n  @console.print(\"{{lists.len}}\")\n"
+            ),
+        ),
+    ];
+    let expected = "[U6003] Error: this call exceeds the memory limit of 8 MiB\n";
+    for (name, body) in &cases {
+        let dir = copies_program(name, body);
+        let run = una(&dir, &["run", "--max-memory", "8"]);
+        let run_stderr = String::from_utf8_lossy(&run.stderr);
+        assert_eq!(run.status.code(), Some(1), "{name}: {run_stderr}");
+        assert!(run_stderr.starts_with(expected), "{name}: {run_stderr}");
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
+        let native = Command::new(dir.join(format!("target/una/{name}")))
+            .args(["--max-memory", "8"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&native.stderr);
+        assert_eq!(native.status.code(), Some(1), "{name}: {stderr}");
+        assert!(stderr.starts_with(expected), "{name}: {stderr}");
+        assert!(!stderr.contains("memory allocation"), "{name}: {stderr}");
+        assert_eq!(native.stdout, run.stdout, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn an_executable_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: the executable takes `--max-memory` as `una run` does, and the call that
@@ -947,12 +1022,17 @@ fn a_json_parse_over_its_memory_budget_in_a_task_is_u6003_in_both_engines() {
     assert_eq!(native.status.code(), Some(1), "{native:?}");
     assert_eq!(String::from_utf8_lossy(&native.stdout), "");
     let stderr = String::from_utf8_lossy(&native.stderr);
-    assert!(
-        stderr.starts_with(
-            "[U6003] Error: this call exceeds the memory limit of 64 MiB\n  at src/hog.una:10:15"
-        ),
-        "{stderr}"
-    );
+    // Native code copies `t` into the tasks at the fork, where the interpreter shares it, and
+    // since #775 the copy checks the budget as it grows. Where the run first finds itself over
+    // its budget is not exact (ADR 0061 rule 3), so natively the U6003 is at the parse or at
+    // the block's copy, and nowhere else. #777 makes the copy's charge the same on every
+    // platform, after which this is one site again.
+    let at = |site: &str| {
+        stderr.starts_with(&format!(
+            "[U6003] Error: this call exceeds the memory limit of 64 MiB\n  at src/hog.una:{site}"
+        ))
+    };
+    assert!(at("10:15") || at("9:3"), "{stderr}");
     let interpreted = una(&dir, &["run", "--max-memory", "64"]);
     assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "");

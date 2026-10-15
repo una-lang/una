@@ -113,10 +113,20 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
     let Some(template) = with_state(|state| state.for_tasks(site)) else {
         return (0, 2);
     };
-    let exported: Vec<(Portable, Option<Portable>)> = tasks
-        .iter()
-        .map(|&(closure, arg)| (values::export(closure), arg.map(values::export)))
-        .collect();
+    // #775: the copies out of this heap check the budget as they grow; a stop there stops the
+    // block before any task runs.
+    let mut exported: Vec<(Portable, Option<Portable>)> = Vec::with_capacity(tasks.len());
+    for &(closure, arg) in tasks {
+        let Some(closure) = values::export(closure, site) else {
+            return (0, 2);
+        };
+        let arg = match arg.map(|arg| values::export(arg, site)) {
+            Some(None) => return (0, 2),
+            Some(Some(arg)) => Some(arg),
+            None => None,
+        };
+        exported.push((closure, arg));
+    }
     let flags: Vec<Arc<AtomicBool>> = (0..tasks.len())
         .map(|_| Arc::new(AtomicBool::new(false)))
         .collect();
@@ -168,7 +178,7 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
         });
         outcomes.extend(ended);
     }
-    join(outcomes, tuple, &template)
+    join(outcomes, tuple, &template, site)
 }
 
 fn stopped_message() -> String {
@@ -201,13 +211,43 @@ fn task(
         format!("{}.{}", template.path, index + 1)
     };
     runtime::enter_task(template, path, flag);
-    let closure = values::import(closure);
-    let arg = arg.map(values::import);
-    let (value, status) = invoke(closure, arg, site);
-    let ended = match status {
-        0 => Ended::Returned(values::export(value)),
-        1 => Ended::Failed(values::export(value)),
-        _ => Ended::Stopped,
+    // #775: the copies into and out of the task's heap check the budget as they grow, at the
+    // block; a stop there stops the task, which its block reports.
+    let started = values::import(closure, site).and_then(|closure| match arg {
+        None => Some((closure, None)),
+        Some(arg) => match values::import(arg, site) {
+            Some(arg) => Some((closure, Some(arg))),
+            None => {
+                values::release(closure);
+                None
+            }
+        },
+    });
+    let ended = match started {
+        None => Ended::Stopped,
+        Some((closure, arg)) => {
+            let (value, status) = invoke(closure, arg, site);
+            let ended = match status {
+                0 | 1 => match values::export(value, site) {
+                    Some(portable) if status == 0 => Ended::Returned(portable),
+                    Some(portable) => Ended::Failed(portable),
+                    None => Ended::Stopped,
+                },
+                _ => Ended::Stopped,
+            };
+            if status != 2 {
+                values::release(value);
+                values::release(closure);
+                // The task's argument went to the lambda, which owns its parameters. A debug
+                // build checks that nothing stays referenced, as for `main`
+                // (`runtime::start`); a task that stopped ended in the middle of its body, so
+                // what it held is not counted.
+                if cfg!(debug_assertions) {
+                    TASK_LEAKS.fetch_add(values::live(), Ordering::SeqCst);
+                }
+            }
+            ended
+        }
     };
     let state = runtime::leave_task();
     let aborted = state.as_ref().is_some_and(|state| state.stopped.is_some());
@@ -216,16 +256,6 @@ fn task(
         // task after one that aborts the run.
         for later in flags.iter().skip(index + 1) {
             later.store(true, Ordering::SeqCst);
-        }
-    }
-    if status != 2 {
-        values::release(value);
-        values::release(closure);
-        // The task's argument went to the lambda, which owns its parameters. A debug
-        // build checks that nothing stays referenced, as for `main` (`runtime::start`); a task
-        // that stopped ended in the middle of its body, so what it held is not counted.
-        if cfg!(debug_assertions) {
-            TASK_LEAKS.fetch_add(values::live(), Ordering::SeqCst);
         }
     }
     // Faults, copies and reuse fallbacks count whatever the task's end, a stop included, so
@@ -255,7 +285,7 @@ fn task(
 
 /// The join (`spec/19 §6` rule 5, `§7`): the tasks' events in task order, the outcome of the
 /// lowest-indexed task that failed or aborted, else the values of all.
-fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate) -> (i64, i64) {
+fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate, site: usize) -> (i64, i64) {
     let mut decided: Option<(usize, bool)> = None;
     for (index, outcome) in outcomes.iter().enumerate() {
         let decides = match outcome.ended {
@@ -312,7 +342,11 @@ fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate) -> (i64, i
         return (runtime::abort_from_task(code, location, message), 2);
     }
     if let Some(failure) = failure {
-        return (values::import(&failure), 1);
+        // #775: the copies into this heap check the budget as they grow.
+        return match values::import(&failure, site) {
+            Some(word) => (word, 1),
+            None => (0, 2),
+        };
     }
     if stopped {
         return (0, 2);
@@ -323,7 +357,10 @@ fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate) -> (i64, i
         values::list()
     };
     for value in &values_out {
-        let word = values::import(value);
+        let Some(word) = values::import(value, site) else {
+            values::release(block);
+            return (0, 2);
+        };
         values::push(block, word);
         values::release(word);
     }
