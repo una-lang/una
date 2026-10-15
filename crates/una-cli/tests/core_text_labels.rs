@@ -147,7 +147,8 @@ fn an_interpolated_value_text_carries_its_fields_labels_in_the_core_export() {
     }
 }
 
-/// The labels of every `Bool` temporary of the export (`%`-named), as `level[categories]`: the
+/// The labels of every `Bool` temporary of the program's module in the export (`%`-named), as
+/// `level[categories]`: the
 /// comparisons of a `when` test or a range test, and the `if` that combines a range's two.
 fn bool_temporary_labels(dir: &PathBuf) -> Vec<String> {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
@@ -159,7 +160,12 @@ fn bool_temporary_labels(dir: &PathBuf) -> Vec<String> {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
     let mut out = Vec::new();
-    walk_bools(&document, &mut out);
+    // The program's own module only: the prelude's declarations have temporaries of their own.
+    for module in document["modules"].as_array().unwrap() {
+        if module["path"] == "app.main" {
+            walk_bools(module, &mut out);
+        }
+    }
     out
 }
 
@@ -208,8 +214,8 @@ fn a_test_on_a_labeled_value_carries_its_label_in_the_core_export() {
         let dir = package("when", edition, &source);
         let got = bool_temporary_labels(&dir);
         // The literal arm's `==`; the range arm's `<=`, `<=` and their `if`; the `in`
-        // expression's `<=`, `<` and their `if`.
-        assert!(got.len() >= 7, "edition {edition}: {got:?}");
+        // expression's `<=` and `<` (its `if` is bound to `inside`, not to a temporary).
+        assert_eq!(got.len(), 6, "edition {edition}: {got:?}");
         assert!(
             got.iter().all(|label| label == "secret[PII]"),
             "edition {edition}: {got:?}"
