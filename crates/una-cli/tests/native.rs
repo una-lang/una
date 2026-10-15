@@ -688,6 +688,82 @@ fn a_failure_of_main_is_described_by_the_kind_the_checker_resolved() {
 }
 
 #[test]
+fn a_wide_range_over_the_budget_is_u6003_in_both_backends() {
+    // #773: a `together for` over a range makes its list before its tasks, and the
+    // interpreter checks the memory budget at each element. Native code did not, so a wide
+    // range grew past the allocator's hard ceiling and the executable aborted on a signal where
+    // `una run` reported U6003. Both now end the same way, at the loop.
+    let program = "module wide\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n: I64 = 5000000\n  let xs = together for i in 0..<n\n    i\n  @console.print(\"{xs.len}\")\n";
+    let dir = package(
+        "wide",
+        "\n[run]\nentry = \"wide\"\ngrants = [\"console\"]\n",
+        &[("src/wide.una", program)],
+    );
+    // `together` is a construct of edition 0.2.
+    std::fs::write(
+        dir.join("una.toml"),
+        "[package]\nname = \"wide\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"wide\"\ngrants = [\"console\"]\n",
+    )
+    .unwrap();
+    let expected = "[U6003] Error: this call exceeds the memory limit of 8 MiB\n";
+    let run = una(&dir, &["run", "--max-memory", "8"]);
+    let run_stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{run_stderr}");
+    assert!(run_stderr.starts_with(expected), "{run_stderr}");
+    assert!(run_stderr.contains("src/wide.una:7:12"), "{run_stderr}");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/wide"))
+        .args(["--max-memory", "8"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert_eq!(native.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with(expected), "{stderr}");
+    assert!(stderr.contains("src/wide.una:7:12"), "{stderr}");
+    assert_eq!(native.stdout, run.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_wide_range_in_a_task_stops_it_with_u6003_in_both_backends() {
+    // #773, in a task: the range is made by a branch of a `together`, so the abort stops that
+    // task, and its block reports it. Both backends end the run the same way, after the output
+    // made before the block.
+    let program = "module wide_task\n\nwide() -> Int\n=\n  let n: I64 = 5000000\n  let xs = together for i in 0..<n\n    i\n  xs.len\n\ntwo() -> Int = 2\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"before\")\n  together\n    let a = wide()\n    let b = two()\n  @console.print(\"{a} {b}\")\n";
+    let dir = package("wide_task", "", &[("src/wide_task.una", program)]);
+    std::fs::write(
+        dir.join("una.toml"),
+        "[package]\nname = \"wide_task\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"wide_task\"\ngrants = [\"console\"]\n",
+    )
+    .unwrap();
+    let expected = "[U6003] Error: this call exceeds the memory limit of 8 MiB\n";
+    let run = una(&dir, &["run", "--max-memory", "8"]);
+    let run_stderr = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{run_stderr}");
+    assert!(run_stderr.starts_with(expected), "{run_stderr}");
+    assert!(
+        run_stderr.contains("src/wide_task.una:6:12"),
+        "{run_stderr}"
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "before\n");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/wide_task"))
+        .args(["--max-memory", "8"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert_eq!(native.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with(expected), "{stderr}");
+    assert!(stderr.contains("src/wide_task.una:6:12"), "{stderr}");
+    assert_eq!(native.stdout, run.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_executable_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: the executable takes `--max-memory` as `una run` does, and the call that
     // finds the run over its budget is U6003.
