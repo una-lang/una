@@ -477,7 +477,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.lookup(&policy.via, Space::Lower, "function");
                 self.text(&policy.purpose);
             }
-            DeclKind::Requirement(_) => {}
+            // Unit expressions resolve in the type check, which reports an unknown unit as
+            // U2029 (ADR 0104 rule 1).
+            DeclKind::Requirement(_) | DeclKind::Measure(_) => {}
             DeclKind::Example(example) => {
                 self.enter();
                 for given in &example.givens {

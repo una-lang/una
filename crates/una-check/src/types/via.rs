@@ -313,7 +313,8 @@ mod tests {
             | DeclKind::Capability(_)
             | DeclKind::Handler(_)
             | DeclKind::Policy(_)
-            | DeclKind::Requirement(_) => false,
+            | DeclKind::Requirement(_)
+            | DeclKind::Measure(_) => false,
         };
         let binding = match binding {
             CapBindingValue::Handler(_) => true,

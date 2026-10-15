@@ -90,6 +90,52 @@ pub enum DeclKind {
     Requirement(RequirementDecl),
     /// `example`.
     Example(ExampleDecl),
+    /// `measure`, edition 0.3 (ADR 0104 rule 1).
+    Measure(MeasureDecl),
+}
+
+/// `[ "pub" ] "measure" upper_ident [ "=" unit_expr ]`, edition 0.3 (ADR 0104 rule 1): a base
+/// unit without a body, a derived unit with one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeasureDecl {
+    /// Whether the unit is `pub`.
+    pub public: bool,
+    /// The unit's name.
+    pub name: Ident,
+    /// The unit expression of a derived unit.
+    pub unit: Option<UnitExpr>,
+}
+
+/// A unit expression (ADR 0104 rule 2): `unit_term { ( "*" | "/" ) unit_term }`, left to right.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnitExpr {
+    /// A declared unit, by name.
+    Name(Ident),
+    /// An integer factor, as written.
+    Factor {
+        /// Its decimal digits.
+        digits: String,
+        /// Where it is written.
+        span: Span,
+    },
+    /// A product.
+    Mul(Box<UnitExpr>, Box<UnitExpr>),
+    /// A quotient.
+    Div(Box<UnitExpr>, Box<UnitExpr>),
+    /// A parenthesized unit expression.
+    Paren(Box<UnitExpr>, Span),
+}
+
+impl UnitExpr {
+    /// From its first token to its last.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            UnitExpr::Name(name) => name.span,
+            UnitExpr::Factor { span, .. } | UnitExpr::Paren(_, span) => *span,
+            UnitExpr::Mul(a, b) | UnitExpr::Div(a, b) => a.span().to(b.span()),
+        }
+    }
 }
 
 /// `[ "pub" ] "kind" upper_ident [ type_params ] kind_body` (`spec/02 §2`).
@@ -150,6 +196,8 @@ pub struct Type {
     pub label: Option<Label>,
     /// The type itself.
     pub core: TypeCore,
+    /// The unit of a measured type, after `of` (ADR 0104 rule 2), edition 0.3.
+    pub unit: Option<UnitExpr>,
     /// The range sugar (`spec/03 §3`).
     pub range: Option<Range>,
     /// The whole type.

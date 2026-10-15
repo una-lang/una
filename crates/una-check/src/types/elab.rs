@@ -419,6 +419,8 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn convert(&self, ty: &Ty) -> Type {
         match ty {
             Ty::Labeled(label, inner) => with_label(self.convert(inner), label),
+            // ADR 0104 rule 5: a unit is erased; Core holds the magnitude type.
+            Ty::Measured(_, inner) => self.convert(inner),
             // ADR 0037 rule 1: the parameters and the result keep their refinements.
             Ty::Fn(function) => Type::Fn {
                 params: function
@@ -446,6 +448,7 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     fn base(&self, ty: &Ty) -> Base {
         match ty {
+            Ty::Measured(_, inner) => self.base(inner),
             Ty::Int => Base::Int,
             Ty::Fixed(int) => Base::Fixed(*int),
             Ty::Bool => Base::Bool,
@@ -937,6 +940,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => self.outside(),
             },
             ExprKind::MethodCall { target, args, .. } => match self.res(expr.span) {
+                // ADR 0104 rule 4: `magnitude()` and `measured()` are the identity on the
+                // magnitude, `convert()` the multiplication by its literal ratio.
+                Some(Res::UnitMethod { ratio: 1 }) => self.term(target),
+                Some(Res::UnitMethod { ratio }) => Term::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(self.term(target)),
+                    right: Box::new(Term::Int(ratio.to_string())),
+                },
                 // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
                 Some(Res::MapMethod(MapOp::Has)) => match args.first() {
                     Some(key) => Term::Has {
@@ -3117,6 +3128,23 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => Atom::Unit,
             },
             ExprKind::MethodCall { target, args, .. } => match self.res(span) {
+                // ADR 0104 rule 5: `E(x.measured())` and `E(x.magnitude())` are `E(x)`, and
+                // `E(x.convert())` is `E(x) * k`, the receiver first, as `x * k` elaborates.
+                Some(Res::UnitMethod { ratio: 1 }) => self.atom(lets, target),
+                Some(Res::UnitMethod { ratio }) => {
+                    let arg_spans = vec![target.span, span];
+                    let left = self.atom(lets, target);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim: Prim::Mul,
+                            args: vec![left, Atom::Int(ratio.to_string())],
+                            arg_spans,
+                            span,
+                        },
+                    )
+                }
                 // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map
                 // that reads it (`spec/21 §2`).
                 Some(res @ (Res::IntMethod(_) | Res::MapMethod(_))) => {
@@ -3728,6 +3756,15 @@ fn bin_op(op: BinaryOp) -> BinOp {
 /// `uses` or `fails` of a function type, or a type argument, at any position (ADR 0038 D1).
 /// Unification variables, `Never` and the error type have no Core IR form and are skipped.
 fn lost(ty: &Ty, core: &Type) -> Option<String> {
+    // Units are erased by design (ADR 0104 rule 5), so a unit is never a lost component. A
+    // type without one is not rebuilt.
+    let erased;
+    let ty = if ty.has_units() {
+        erased = ty.without_units();
+        &erased
+    } else {
+        ty
+    };
     let label = match core {
         Type::Base { label, .. } | Type::Fn { label, .. } => label,
     };

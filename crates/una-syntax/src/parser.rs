@@ -10,10 +10,10 @@ use crate::ast::{
     ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
     ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
-    Label, LambdaParam, LetStmt, LetValue, Level, Literal, ModuleHeader, ModulePath, OpClause,
-    OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
+    Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
+    OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
     RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
+    TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
@@ -995,6 +995,15 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Policy) => self.policy_decl(public)?,
             TokenKind::Keyword(Keyword::Requirement) if !public => self.requirement_decl()?,
             TokenKind::Keyword(Keyword::Example) if !public => self.example_decl()?,
+            // ADR 0104 rule 1: `measure` is the keyword only at a declaration's start, before
+            // an upper identifier, in edition 0.3; `measure(x)` stays a function.
+            TokenKind::LowerIdent(_)
+                if self.v0_3
+                    && self.at_word("measure")
+                    && matches!(self.peek_at(1), TokenKind::UpperIdent(_)) =>
+            {
+                self.measure_decl(public)?
+            }
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_) => self.function_decl(public)?,
             _ if public => {
                 return Err(self.unexpected(
@@ -1185,6 +1194,14 @@ impl<'a> Parser<'a> {
             None => None,
         };
         let core = self.type_core(label.as_ref())?;
+        // ADR 0104 rule 2: a unit after `of`, in edition 0.3. The checker refuses it on a type
+        // that is not an integer (U2029).
+        let unit = if self.v0_3 && self.at_word("of") {
+            self.advance();
+            Some(self.unit_expr()?)
+        } else {
+            None
+        };
         let range = if self.eat_keyword(Keyword::In) {
             Some(self.range()?)
         } else {
@@ -1193,6 +1210,7 @@ impl<'a> Parser<'a> {
         Ok(Type {
             label,
             core,
+            unit,
             range,
             span: self.since(start),
         })
@@ -1756,6 +1774,56 @@ impl<'a> Parser<'a> {
             active,
             status,
         }))
+    }
+
+    /// `[ "pub" ] "measure" upper_ident [ "=" unit_expr ]` (ADR 0104 rule 1).
+    fn measure_decl(&mut self, public: bool) -> Parse<DeclKind> {
+        self.advance();
+        let name = self.upper_name("a unit's name")?;
+        let unit = if self.eat(&TokenKind::Eq) {
+            Some(self.unit_expr()?)
+        } else {
+            None
+        };
+        self.expect_line_end()?;
+        Ok(DeclKind::Measure(MeasureDecl { public, name, unit }))
+    }
+
+    /// `unit_expr = unit_term { ( "*" | "/" ) unit_term }`, left to right (ADR 0104 rule 2).
+    fn unit_expr(&mut self) -> Parse<UnitExpr> {
+        let mut left = self.unit_term()?;
+        loop {
+            if self.eat(&TokenKind::Star) {
+                left = UnitExpr::Mul(Box::new(left), Box::new(self.unit_term()?));
+            } else if self.eat(&TokenKind::Slash) {
+                left = UnitExpr::Div(Box::new(left), Box::new(self.unit_term()?));
+            } else {
+                return Ok(left);
+            }
+        }
+    }
+
+    /// `unit_term = upper_ident | "(" unit_expr ")" | integer_literal`.
+    fn unit_term(&mut self) -> Parse<UnitExpr> {
+        match self.peek() {
+            TokenKind::UpperIdent(_) => Ok(UnitExpr::Name(self.upper_name("a unit")?)),
+            TokenKind::Int(digits) => {
+                let digits = digits.clone();
+                let span = self.advance();
+                Ok(UnitExpr::Factor { digits, span })
+            }
+            TokenKind::LParen => {
+                let start = self.advance();
+                let outer = self.nesting;
+                self.deeper()?;
+                let inner = self.unit_expr();
+                self.nesting = outer;
+                let inner = inner?;
+                self.expect(&TokenKind::RParen, "`)`")?;
+                Ok(UnitExpr::Paren(Box::new(inner), self.since(start)))
+            }
+            _ => Err(self.unexpected("a unit, a factor or `(`")),
+        }
     }
 
     fn example_decl(&mut self) -> Parse<DeclKind> {

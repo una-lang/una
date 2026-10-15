@@ -1,0 +1,6 @@
+-- test: a unit named as a built-in type is U1002
+-- spec: spec/25 §1
+-- expect: error U1002 at src/m.una:6:13
+module m
+
+pub measure Int

@@ -94,6 +94,18 @@ impl Vars {
         current
     }
 
+    /// The top node of `ty` through solved variables and labels, without rebuilding the type:
+    /// what an arithmetic operator reads of its operands, unit included (ADR 0104), in O(1)
+    /// nodes whatever the operand's size.
+    pub(crate) fn peel(&self, ty: &Ty) -> Ty {
+        let mut current = self.shallow(ty);
+        while let Ty::Labeled(_, inner) = &current {
+            let next = self.shallow(inner);
+            current = next;
+        }
+        current
+    }
+
     /// `ty` with its outermost variables replaced by their values.
     fn shallow(&self, ty: &Ty) -> Ty {
         let mut current = ty.clone();
@@ -475,6 +487,8 @@ impl Vars {
                 true
             }
             (Ty::Fixed(x), Ty::Fixed(y)) => x == y,
+            // ADR 0104 rule 2: one unit, and one magnitude type.
+            (Ty::Measured(u, x), Ty::Measured(v, y)) => u == v && self.unify_in(x, y, fixed),
             (Ty::Int, Ty::Int)
             | (Ty::Bool, Ty::Bool)
             | (Ty::Text, Ty::Text)

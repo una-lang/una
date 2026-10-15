@@ -544,6 +544,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         if self.vars.unify(expected, found) {
             return true;
         }
+        // ADR 0104: two types that differ only in their units are U2028.
+        let (resolved_expected, resolved_found) = (self.resolve(expected), self.resolve(found));
+        let code = if (resolved_expected.has_units() || resolved_found.has_units())
+            && resolved_expected.without_units() == resolved_found.without_units()
+        {
+            Code::U2028
+        } else {
+            Code::U2001
+        };
         let (expected, found) = (self.show(expected), self.show(found));
         let message = match role {
             Role::Plain => format!("expected `{expected}`, found `{found}`"),
@@ -562,7 +571,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 format!("`{name}` is declared as `{expected}`, found `{found}`")
             }
         };
-        self.report.error(Code::U2001, span, message);
+        self.report.error(code, span, message);
         false
     }
 

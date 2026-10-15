@@ -171,3 +171,5 @@ F1 imports Core through `una.core/1`, which keeps magnitudes only: the `unit` fi
 - **Rational or decimal magnitudes**: out of scope. Una has no such type, and units do not add one.
 - **Unit variables now**: deferred. They need unit unification in the checker and a syntax for unit parameters; the monomorphic design covers the cases of the examples and leaves room for them.
 - **Rendering the unit in `to_text`**: rejected for this design. It changes a program's output when units are added, which the preview rule forbids, and a unit name in output is a presentation choice that a program can make itself.
+
+Note (2026-10-15): the Core export carries the erased program E, with no `unit` field; units never reach Core or the verifier.

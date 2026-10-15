@@ -1,0 +1,14 @@
+-- test: adding a unitless value that is not a constant to a measured one is U2028
+-- spec: spec/25 §3
+-- expect: error U2028 at src/m.una:14:52
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub bad(a: Int of Meter, n: Int) -> Int of Meter = a + n

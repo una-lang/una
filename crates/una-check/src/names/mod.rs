@@ -180,6 +180,9 @@ enum What {
     Predicate,
     Handler,
     Policy,
+    /// A unit of measure, edition 0.3 (ADR 0104 rule 1): in the upper namespace with kinds,
+    /// so a unit and a kind of the same name clash (U1002).
+    Measure,
 }
 
 impl What {
@@ -192,6 +195,7 @@ impl What {
             What::Predicate => "predicate",
             What::Handler => "handler",
             What::Policy => "policy",
+            What::Measure => "unit",
         }
     }
 }
@@ -447,6 +451,16 @@ impl<'p, 'a> Checker<'p, 'a> {
                     self.lower_convention(&policy.owner, "owner");
                 }
                 DeclKind::Requirement(_) => {}
+                DeclKind::Measure(measure) => {
+                    self.declare(
+                        &mut table,
+                        &measure.name,
+                        What::Measure,
+                        measure.public,
+                        start,
+                        Vec::new(),
+                    );
+                }
                 DeclKind::Example(example) => {
                     let text = text_of(&example.name);
                     match examples.get(&text) {
@@ -475,7 +489,10 @@ impl<'p, 'a> Checker<'p, 'a> {
         variants: Vec<&'a str>,
     ) {
         let name = self.name(ident);
-        let upper = matches!(what, What::Kind | What::Variant | What::Capability);
+        let upper = matches!(
+            what,
+            What::Kind | What::Variant | What::Capability | What::Measure
+        );
         if upper {
             self.upper_convention(ident, what.word());
         } else {

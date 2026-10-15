@@ -222,6 +222,7 @@ impl Normalizer<'_> {
                     }
                 }
             }
+            DeclKind::Measure(_) => {}
         }
     }
 

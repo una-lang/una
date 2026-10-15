@@ -6,7 +6,7 @@ use crate::ast::{
     Decl, DeclKind, ElseBranch, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
     ForSource, Handled, HandlerCall, HandlingKind, Ident, IfBlock, IsTarget, KindBody, Label,
     LetValue, Level, Literal, OpClauseKind, Param, PatternKind, Range, RequirementSource,
-    SignedInt, Stmt, TextLit, TextPart, Type, TypeCore, UnaryOp, UsesClause, VariantExpr,
+    SignedInt, Stmt, TextLit, TextPart, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, VariantExpr,
 };
 use crate::intern::Interner;
 
@@ -316,6 +316,16 @@ impl Dumper<'_> {
                 }
                 items
             }
+            DeclKind::Measure(measure) => {
+                let mut items = vec![atom("measure"), atom(self.name(&measure.name))];
+                if measure.public {
+                    items.insert(1, atom("pub"));
+                }
+                if let Some(unit) = &measure.unit {
+                    items.push(atom(format!("{{{}}}", self.unit_text(unit))));
+                }
+                items
+            }
         };
         let docs = decl.docs.iter().map(|comment| {
             let text = self
@@ -442,10 +452,24 @@ impl Dumper<'_> {
                 text
             }
         });
+        if let Some(unit) = &ty.unit {
+            text.push_str(&format!(" of {}", self.unit_text(unit)));
+        }
         if let Some(range) = &ty.range {
             text.push_str(&format!(" in {}", range_text(range)));
         }
         text
+    }
+
+    /// A unit expression as written, fully parenthesized (ADR 0104 rule 2).
+    fn unit_text(&self, unit: &UnitExpr) -> String {
+        match unit {
+            UnitExpr::Name(name) => self.name(name),
+            UnitExpr::Factor { digits, .. } => digits.clone(),
+            UnitExpr::Mul(a, b) => format!("({} * {})", self.unit_text(a), self.unit_text(b)),
+            UnitExpr::Div(a, b) => format!("({} / {})", self.unit_text(a), self.unit_text(b)),
+            UnitExpr::Paren(inner, _) => self.unit_text(inner),
+        }
     }
 
     fn label(&self, label: &Label) -> String {

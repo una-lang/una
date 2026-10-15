@@ -54,6 +54,8 @@ pub(crate) enum Entity {
     Function(usize),
     Handler(usize),
     Builtin(Builtin),
+    /// A unit of measure, edition 0.3 (ADR 0104 rule 1).
+    Unit(usize),
 }
 
 /// The built-in types (`spec/03 §1`).
@@ -113,6 +115,15 @@ impl KindDef<'_> {
     pub(crate) fn is_sum(&self) -> bool {
         self.record.is_none()
     }
+}
+
+/// A unit of measure a module declares (ADR 0104 rule 1), with its normal form once
+/// [`Env::lower_units`] has computed it: `None` until then, and for a unit whose declaration
+/// is refused (U2029).
+pub(crate) struct UnitDef<'a> {
+    pub(crate) module: usize,
+    pub(crate) ast: &'a una_syntax::ast::MeasureDecl,
+    pub(crate) norm: Option<Rc<super::units::Unit>>,
 }
 
 /// An alias or refinement kind, structural over its base (`spec/03 §2` rule 2).
@@ -327,6 +338,8 @@ pub(crate) struct Env<'a> {
     pub(crate) modules: Vec<Module<'a>>,
     pub(crate) kinds: Vec<KindDef<'a>>,
     pub(crate) aliases: Vec<AliasDef<'a>>,
+    /// The units of measure of every module (ADR 0104).
+    pub(crate) units: Vec<UnitDef<'a>>,
     pub(crate) functions: Vec<FnDef<'a>>,
     pub(crate) capabilities: Vec<CapDef<'a>>,
     pub(crate) handlers: Vec<HandlerDef<'a>>,
@@ -470,6 +483,7 @@ impl<'a> Env<'a> {
             shared_cap_names: Vec::new(),
             kinds: Vec::new(),
             aliases: Vec::new(),
+            units: Vec::new(),
             functions: Vec::new(),
             capabilities: Vec::new(),
             handlers: Vec::new(),
@@ -696,6 +710,14 @@ impl<'a> Env<'a> {
                     let id = self.handlers.len() - 1;
                     Some((name(&handler.name), Entity::Handler(id)))
                 }
+                DeclKind::Measure(measure) => {
+                    self.units.push(UnitDef {
+                        module: index,
+                        ast: measure,
+                        norm: None,
+                    });
+                    Some((name(&measure.name), Entity::Unit(self.units.len() - 1)))
+                }
                 DeclKind::Requirement(_) | DeclKind::Example(_) => None,
             };
             if let Some((text, entity)) = entity {
@@ -911,9 +933,151 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// Computes the normal form of every declared unit (ADR 0104 rule 1), in declaration
+    /// order, following references depth first. A cycle, an unknown unit, a factor that is not
+    /// a positive integer, a scale past `u128` and a derived unit with no dimension and scale 1
+    /// are U2029 at the declaration.
+    fn lower_units(&mut self, report: &mut Report<'_>) {
+        let mut state = vec![0u8; self.units.len()];
+        for id in 0..self.units.len() {
+            self.lower_unit(id, &mut state, report);
+        }
+    }
+
+    /// `state`: 0 not visited, 1 being computed (a cycle when met again), 2 done.
+    fn lower_unit(&mut self, id: usize, state: &mut [u8], report: &mut Report<'_>) {
+        match state.get(id) {
+            Some(0) => {}
+            Some(1) => {
+                if let Some(def) = self.units.get(id)
+                    && self.reports(def.module)
+                {
+                    let name = self.text(def.module, def.ast.name.name).to_owned();
+                    report.error(
+                        Code::U2029,
+                        def.ast.name.span,
+                        format!("unit `{name}` is defined in terms of itself"),
+                    );
+                }
+                return;
+            }
+            _ => return,
+        }
+        if let Some(slot) = state.get_mut(id) {
+            *slot = 1;
+        }
+        let Some((module, ast)) = self.units.get(id).map(|def| (def.module, def.ast)) else {
+            return;
+        };
+        let name = self.text(module, ast.name.name).to_owned();
+        let norm = match &ast.unit {
+            None => Some(super::units::Unit::base(super::units::BaseUnit {
+                module: self.modules.get(module).map(|m| m.path.clone()).unwrap_or_default(),
+                name: name.clone(),
+            })),
+            Some(expr) => self.unit_expr(module, expr, Some(state), report).and_then(|unit| {
+                if unit.is_one() {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2029,
+                            ast.name.span,
+                            format!(
+                                "unit `{name}` has no dimension and scale 1, so `Int of {name}` would be `Int`; declare a base unit with `measure {name}`"
+                            ),
+                        );
+                    }
+                    None
+                } else {
+                    Some(unit)
+                }
+            }),
+        };
+        if let Some(def) = self.units.get_mut(id) {
+            def.norm = norm.map(Rc::new);
+        }
+        if let Some(slot) = state.get_mut(id) {
+            *slot = 2;
+        }
+    }
+
+    /// The normal form of the unit expression `expr` in `module` (ADR 0104 rule 2), or `None`
+    /// after a U2029. `state` is given while declarations are being lowered, so that a
+    /// reference is lowered first and a cycle is found.
+    pub(crate) fn unit_expr(
+        &mut self,
+        module: usize,
+        expr: &una_syntax::ast::UnitExpr,
+        mut state: Option<&mut [u8]>,
+        report: &mut Report<'_>,
+    ) -> Option<super::units::Unit> {
+        use una_syntax::ast::UnitExpr;
+        let reports = self.reports(module);
+        match expr {
+            UnitExpr::Name(ident) => {
+                let name = self.text(module, ident.name).to_owned();
+                match self.upper(module, &name).first().copied() {
+                    Some(Entity::Unit(id)) => {
+                        if let Some(state) = state.as_deref_mut() {
+                            self.lower_unit(id, state, report);
+                        }
+                        let norm = self.units.get(id).and_then(|def| def.norm.clone());
+                        norm.map(|norm| (*norm).clone())
+                    }
+                    found => {
+                        if reports {
+                            let message = if found.is_some() {
+                                format!("`{name}` is not a unit; a unit is declared with `measure`")
+                            } else {
+                                format!("unknown unit `{name}`")
+                            };
+                            report.error(Code::U2029, ident.span, message);
+                        }
+                        None
+                    }
+                }
+            }
+            UnitExpr::Factor { digits, span } => {
+                let factor = digits
+                    .parse::<u128>()
+                    .ok()
+                    .and_then(super::units::Unit::factor);
+                if factor.is_none() && reports {
+                    report.error(
+                        Code::U2029,
+                        *span,
+                        format!(
+                            "the factor `{digits}` is not a positive integer that a unit can take"
+                        ),
+                    );
+                }
+                factor
+            }
+            UnitExpr::Paren(inner, _) => self.unit_expr(module, inner, state, report),
+            UnitExpr::Mul(a, b) | UnitExpr::Div(a, b) => {
+                let left = self.unit_expr(module, a, state.as_deref_mut(), report);
+                let right = self.unit_expr(module, b, state, report);
+                let (left, right) = (left?, right?);
+                let result = if matches!(expr, UnitExpr::Mul(..)) {
+                    left.mul(&right)
+                } else {
+                    left.div(&right)
+                };
+                if result.is_none() && reports {
+                    report.error(
+                        Code::U2029,
+                        expr.span(),
+                        "the unit's scale is too large".to_owned(),
+                    );
+                }
+                result
+            }
+        }
+    }
+
     /// Lowers every signature: aliases, capabilities, kinds, functions and handlers. Capabilities
     /// come before kinds, whose fields may have function types with `uses`.
     fn signatures(&mut self, report: &mut Report<'_>) {
+        self.lower_units(report);
         for id in 0..self.aliases.len() {
             self.lower_alias(id, report);
         }
@@ -1574,9 +1738,38 @@ impl<'a> Env<'a> {
                 })))
             }
         };
+        // ADR 0104 rule 2: a unit after `of`, on an integer type only.
+        if let Some(unit) = &ty.unit {
+            match declared.base.unlabeled() {
+                Ty::Int | Ty::Fixed(_) => match self.unit_expr(module, unit, None, report) {
+                    Some(unit) if unit.is_one() => {}
+                    Some(unit) => {
+                        // The label of an alias's base stays outside the unit, where the label
+                        // operations see it (ADR 0077); the magnitude holds none.
+                        let label = declared.base.top_label();
+                        declared.base = Ty::measured(unit, declared.base.unlabeled().clone())
+                            .with_label(&label);
+                    }
+                    // A unit that does not resolve, after its U2029, makes the type an error,
+                    // so that the uses of the value report nothing more.
+                    None => declared.base = Ty::error(),
+                },
+                Ty::Error(_) => {}
+                _ => {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2029,
+                            unit.span(),
+                            "a unit follows only an integer type, `Int` or a fixed-width one"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+        }
         if let Some(range) = &ty.range {
             // Range sugar on a fixed-width type: its bounds fit the type (`spec/18 §1`).
-            if let Ty::Fixed(int) = declared.base.unlabeled()
+            if let Ty::Fixed(int) = declared.base.magnitude()
                 && self.reports(module)
             {
                 for bound in [&range.low, &range.high] {
@@ -1597,7 +1790,7 @@ impl<'a> Env<'a> {
                 }
             }
             if matches!(
-                declared.base.unlabeled(),
+                declared.base.magnitude(),
                 Ty::Int | Ty::Fixed(_) | Ty::Error(_)
             ) {
                 let bound = |i: &una_syntax::ast::SignedInt| {
@@ -1835,6 +2028,10 @@ impl<'a> Env<'a> {
             }
             Some(Entity::Capability(_)) => {
                 format!("`{name}` is a capability, not a type; capabilities are not values")
+            }
+            // ADR 0104: a unit follows `of` after an integer type.
+            Some(Entity::Unit(_)) => {
+                format!("`{name}` is a unit, not a type; write `Int of {name}`")
             }
             // Unknown names are U1001, reported by M3.
             None => return Declared::unknown(),

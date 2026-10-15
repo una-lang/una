@@ -135,6 +135,8 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// `e.f(args)`: a call of field `f` when it has a function type, otherwise `f(e, args)` with
     /// `f` declared in scope (`spec/04 §3`).
+    // The expected type reaches the built-in unit methods (ADR 0104 rule 4).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn method(
         &mut self,
         target: &Expr,
@@ -143,6 +145,7 @@ impl<'a> Checker<'_, 'a, '_> {
         span: Span,
         site: Site,
         marker: Option<Convention>,
+        expected: Option<&Ty>,
     ) -> Ty {
         // `edit total.record(e)`: the receiver is a place rooted at an editable binding
         // (`spec/17 §3` rule 2).
@@ -179,7 +182,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             return ty;
         }
-        if let Some(ty) = self.int_method(&target_ty, method, args, span) {
+        if let Some(ty) = self.int_method(&target_ty, method, args, span, expected) {
             return ty;
         }
         if let Some(ty) = self.map_method(
@@ -1909,6 +1912,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 format!("`{name}` is a type, not a constructor")
             }
             Some(Entity::Capability(_)) => format!("capability `{name}` is not a value"),
+            Some(Entity::Unit(_)) => {
+                format!("`{name}` is a unit, not a constructor; a value takes it with `measured()`")
+            }
             Some(Entity::Function(_) | Entity::Handler(_)) => {
                 self.unchecked(args);
                 return Ty::error();
