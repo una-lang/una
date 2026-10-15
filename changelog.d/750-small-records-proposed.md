@@ -1,0 +1,1 @@
+- **Small records off the heap proposed** (#750, ADR 0108, Proposed). Small non-generic records live unboxed in registers, parameters and results, boxed at most once per value where a uniform word is needed; no lifetime analysis is required, since values have no identity.
