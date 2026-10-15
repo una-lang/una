@@ -137,7 +137,8 @@ pub struct Effect {
     pub at: EffectAt,
     /// At a call or a `with`, the edit that writes the condition on the callee or handler:
     /// its range and replacement, kept when condition (f) holds (ADR 0092, amendment of
-    /// 2026-10-14). The report applies (h).
+    /// 2026-10-14). At a lock, the edit that restores the locked condition in the header, kept
+    /// when condition (c) holds (amendment of 2026-10-15). The report applies (h), or (e).
     pub edit: Option<(Span, String)>,
 }
 
@@ -4142,6 +4143,14 @@ impl<'p, 'i> Walker<'p, 'i> {
         // false` and is refuted, never silently proven. A header condition outside it is
         // dropped, which only strengthens the goal.
         let unencodable = locked.is_none();
+        // ADR 0092, amendment of 2026-10-15, condition (c): the edit that restores the lock is
+        // kept when the lock's condition, and the header's if it writes one, are both within
+        // the encoding; a header condition outside it is dropped from the premise, and a
+        // conjunction with it would be dropped too.
+        let edit = lock
+            .edit
+            .clone()
+            .filter(|_| restorable(!unencodable, lock.header.as_ref().map(|_| header.is_some())));
         let goal = match header {
             Some(premise) => locked.map(|c| F::op("=>", vec![premise, c])),
             None => locked,
@@ -4152,7 +4161,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             operation: format!("@{}.{}", lock.cap, lock.op),
             condition: lock.lock.text.clone(),
             at: EffectAt::Lock(name.to_owned()),
-            edit: None,
+            edit,
         });
         assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
         let hypotheses = self.shown_hypotheses(&ctx.hyps);
@@ -5558,6 +5567,14 @@ fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &s
     format!("ob-{}", hex.get(..12).unwrap_or(&hex))
 }
 
+/// ADR 0092, amendment of 2026-10-15, condition (c): whether the edit that restores a lock is
+/// kept, given whether the lock's condition is within the encoding and, when the header
+/// writes a condition, whether that one is. A header condition outside it is dropped from the
+/// premise, so a conjunction with it would be dropped too, and the obligation stay refuted.
+fn restorable(locked: bool, header: Option<bool>) -> bool {
+    locked && header.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6219,5 +6236,17 @@ mod tests {
         for (formula, shown) in cases {
             assert_eq!(walker.show_formula(&formula), shown);
         }
+    }
+
+    #[test]
+    fn c_a_restoration_needs_both_conditions_within_the_encoding() {
+        // ADR 0092, amendment of 2026-10-15, condition (c). The checker rejects a condition
+        // outside the encoding first (U2014 in a header, U7002 in a lock), so this is pinned
+        // here rather than by a program.
+        assert!(restorable(true, None));
+        assert!(restorable(true, Some(true)));
+        assert!(!restorable(true, Some(false)));
+        assert!(!restorable(false, None));
+        assert!(!restorable(false, Some(true)));
     }
 }

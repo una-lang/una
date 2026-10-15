@@ -257,7 +257,7 @@ In human mode, the lines the program prints go to stdout as it prints them, and 
   - it does not widen authority or visibility (§3), with no flag to change that;
   - its file is a module of the package, never `una.toml` or `verification.lock`, and holds valid UTF-8;
   - it is not U7001.
-  - (ADR 0084, amendment of 2026-10-14.) Of tier 1, only the first repair of a refuted `effect_condition` obligation (U5001) can be a candidate (`spec/05 §3`); never an unknown one (U5002).
+  - (ADR 0084, amendments of 2026-10-14 and 2026-10-15.) Of tier 1, only the first repair of a refuted `effect_condition` obligation (U5001) or of a refuted `contract_lock` obligation (U3023) can be a candidate (`spec/05 §3`); never an unknown one (U5002), and never a U3023 of tier 0.
 - **Rounds.** Each round checks the package at tier 0, in memory. (ADR 0084, amendment of 2026-10-14.) When that check reports nothing and the requested tier is 1, the round also checks tier 1 and takes its candidates; with `--tier 0`, no round does. Within a file it takes candidates in order of start, end and diagnostic. An edit that overlaps one already taken, or touches it at a point where either inserts, waits for the next round; an identical edit is merged. Rounds stop when one takes no edit (`done`), when the texts return to an earlier state (`cycle`), or after 16 rounds (`limit`).
 - **Format and write.** Every module that parses is then formatted, as `una fmt` does. Each changed file is written once, through a temporary file and a rename; `--dry-run` writes nothing.
 - **Final check.** The package is checked at the requested tier, 1 by default, and its diagnostics are those that remain.

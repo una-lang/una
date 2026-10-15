@@ -162,14 +162,15 @@ fn function(env: &Env<'_>, modules: &BTreeMap<String, usize>, qualified: &str) -
 }
 
 /// Where the header of the function `def` grants `op` of the binding that `entry` locks: the
-/// operation as it is written, or the whole clause when it lists no operations, and the
-/// condition the header writes on it. `None` when the header leaves the operation out.
+/// operation as it is written, or the whole clause when it lists no operations; the condition
+/// the header writes on it; and whether the header lists it by name. `None` when the header
+/// leaves the operation out.
 pub(crate) fn header_site<'a>(
     env: &Env<'a>,
     def: &super::env::FnDef<'a>,
     entry: &Entry<'a>,
     op: &str,
-) -> Option<(Span, Option<&'a una_syntax::ast::Expr>)> {
+) -> Option<(Span, Option<&'a una_syntax::ast::Expr>, bool)> {
     let FnAst::Function(decl) = def.ast else {
         return None;
     };
@@ -192,8 +193,8 @@ pub(crate) fn header_site<'a>(
         .zip(&clause.cap_type.conditions)
         .find(|(ident, _)| env.text(def.module, ident.name) == op);
     Some(match written {
-        Some((ident, condition)) => (ident.span, condition.as_ref()),
-        None => (clause.span, None),
+        Some((ident, condition)) => (ident.span, condition.as_ref(), true),
+        None => (clause.span, None, false),
     })
 }
 
@@ -270,5 +271,96 @@ pub(crate) fn drift(env: &Env<'_>, report: &mut Report<'_>) {
                 report.push(diagnostic);
             }
         }
+    }
+}
+
+/// ADR 0092, amendment of 2026-10-15: the text that restores the lock's condition `locked`,
+/// whose conjuncts are `wanted`, on a header operation: ` where C_lock` after an operation with
+/// no condition, or `(C_src) and (C_lock)` in place of the header's condition `C_src`, given
+/// with its conjuncts. `None` under (b), a condition holding a line feed, the only line break
+/// of the lexer, and under (d), every conjunct of `locked` already one of the header's, token
+/// for token.
+pub(crate) fn restoration(
+    locked: &str,
+    wanted: &[&str],
+    header: Option<(&str, &[&str])>,
+) -> Option<String> {
+    if locked.contains('\n') {
+        return None;
+    }
+    let Some((written, have)) = header else {
+        return Some(format!(" where {locked}"));
+    };
+    let have: Vec<Vec<String>> = have
+        .iter()
+        .map(|text| super::conditions::tokens(text))
+        .collect();
+    if wanted
+        .iter()
+        .all(|text| have.contains(&super::conditions::tokens(text)))
+    {
+        return None;
+    }
+    Some(format!("({written}) and ({locked})"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restoration;
+
+    #[test]
+    fn a_restoration_conjoins_and_keeps_what_is_written() {
+        assert_eq!(
+            restoration("not dry_run", &["not dry_run"], None).as_deref(),
+            Some(" where not dry_run")
+        );
+        assert_eq!(
+            restoration(
+                "not dry_run",
+                &["not dry_run"],
+                Some(("cents > 0 or sku > 0", &["cents > 0 or sku > 0"]))
+            )
+            .as_deref(),
+            Some("(cents > 0 or sku > 0) and (not dry_run)")
+        );
+    }
+
+    #[test]
+    fn b_a_condition_with_a_line_feed_gets_no_restoration() {
+        assert_eq!(
+            restoration("(not\n dry_run)", &["(not\n dry_run)"], None),
+            None
+        );
+        // U+2028 is not a line break to the lexer.
+        assert_eq!(
+            restoration("r == \"a\u{2028}b\"", &["r == \"a\u{2028}b\""], None).as_deref(),
+            Some(" where r == \"a\u{2028}b\"")
+        );
+    }
+
+    #[test]
+    fn d_a_condition_already_written_gets_no_restoration() {
+        // Every conjunct of the lock's condition is one of the header's, with other layout.
+        assert_eq!(
+            restoration(
+                "not dry_run and cents>0",
+                &["not dry_run", "cents>0"],
+                Some((
+                    "(cents > 0) and (not  dry_run) and sku > 0",
+                    &["cents > 0", "not  dry_run", "sku > 0"]
+                ))
+            ),
+            None
+        );
+        // One conjunct missing: the whole condition is conjoined.
+        assert_eq!(
+            restoration(
+                "not dry_run and cents > 0",
+                &["not dry_run", "cents > 0"],
+                Some(("not dry_run", &["not dry_run"]))
+            )
+            .as_deref(),
+            Some("(not dry_run) and (not dry_run and cents > 0)")
+        );
     }
 }

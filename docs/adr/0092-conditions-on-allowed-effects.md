@@ -447,3 +447,11 @@ Conformance cases, with the source before and after, a check of the fixed source
 - an edit after which an operation in the body is refuted, reported at that operation in the next round;
 - `--tier 0`, which applies nothing;
 - `una fix` run twice, the outputs and the written sources compared byte for byte.
+
+## Note (2026-10-15): the restoration as implemented
+
+Two points of the amendment of 2026-10-15 read differently once implemented (#725):
+
+- **The example.** `region` is a reserved word (U0103, `spec/01`), so `region == "eu"` is no condition a program can write. Read the example with another name, such as `zone == "eu"`, which the lock writes `zone == \"eu\"`.
+- **Condition (c).** The checker rejects a condition outside the encoding before tier 1 runs: in a header, as outside the refinement language (U2014); in a lock, as U7002 at its entry (#638). So no program that reaches a `contract_lock` obligation fails (c), and (c) is a backstop, as (d) is. Unit tests pin both, and the conformance case for (c) that the amendment lists has no program to hold it.
+
