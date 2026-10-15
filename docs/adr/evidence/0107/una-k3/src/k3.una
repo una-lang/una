@@ -1,0 +1,11 @@
+module k3
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit a = 0
+  let edit c = 1
+  for i in 0..<10000000
+    a = c
+    c = i - a
+  @console.print("{a} {c}")

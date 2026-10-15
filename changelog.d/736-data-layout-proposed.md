@@ -1,0 +1,1 @@
+- **Data layout proposed** (#736, ADR 0107, Proposed). Raw fixed-width values, records as one object with inline fields behind checked handles, packed lists of raw elements, and loop state in registers, with the uniform word kept at generic boundaries; regions deferred.
