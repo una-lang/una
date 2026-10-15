@@ -1602,7 +1602,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg_attr(miri, ignore = "does not finish under Miri within 15 minutes (#778)")]
     fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
         // The verifier gives both one uninterpreted symbol, which holds because both
         // run over one search. Texts and parts over a small alphabet, with a non-ASCII
@@ -1615,7 +1614,9 @@ mod tests {
             seed ^= seed << 17;
             usize::try_from(seed % bound as u64).unwrap_or(0)
         };
-        for _ in 0..10_000 {
+        // Under Miri (#778), where each allocation is slow, 200 rounds rather than 10,000.
+        let rounds = if cfg!(miri) { 200 } else { 10_000 };
+        for _ in 0..rounds {
             let t: String = (0..next(9)).map(|_| alphabet[next(4)]).collect();
             let part: String = (0..next(4)).map(|_| alphabet[next(4)]).collect();
             let (t_word, part_word) = (text_word(t.clone()), text_word(part.clone()));
@@ -1811,7 +1812,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "does not finish under Miri within 15 minutes (#778)")]
     fn a_value_copied_between_heaps_keeps_its_contents_and_sharing() {
         let before = live();
         let shared = text_word("shared".to_owned());
@@ -1861,7 +1861,11 @@ mod tests {
         assert_eq!(live(), before);
         // A chain deeper than any call copies without recursion.
         let mut chain = NONE;
-        for _ in 0..200_000 {
+        // Under Miri (#778), where each allocation is slow, the same code at depth 1,000. Miri
+        // emulates no native stack limit, so that run checks the walk for undefined behavior,
+        // not that it uses no recursion: the native run at 200,000 checks that.
+        let depth = if cfg!(miri) { 1_000 } else { 200_000 };
+        for _ in 0..depth {
             let cell = some(chain);
             release(chain);
             chain = cell;

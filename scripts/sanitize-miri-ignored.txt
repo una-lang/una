@@ -1,8 +1,7 @@
 # The unit tests of una-rt that Miri does not run (#766), by the name the test harness prints,
 # sorted. scripts/sanitize.sh fails when the tests Miri ignores differ from this list, so a
 # skip is never added silently. Each is ignored in the code with its reason: a scenario run in
-# a process of its own, a test that starts such a process, or a test that does not finish
-# under Miri (#778).
+# a process of its own, or a test that starts such a process.
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -14,7 +13,6 @@ ffi::tests::a_slice_ending_before_it_starts_scenario
 ffi::tests::a_slice_past_the_text_scenario
 ffi::tests::a_text_call_outside_its_precondition_aborts_the_run
 ffi::tests::every_entry_point_takes_any_word_in_a_run
-ffi::tests::every_entry_point_takes_any_word_without_a_panic
 ffi::tests::words_in_a_run_scenario
 runtime::tests::a_cancellation_from_another_thread_scenario
 runtime::tests::a_cancellation_from_another_thread_stops_the_next_check
@@ -27,5 +25,3 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
-values::tests::a_value_copied_between_heaps_keeps_its_contents_and_sharing
-values::tests::find_is_some_exactly_when_contains_text_holds_at_a_match

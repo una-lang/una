@@ -73,16 +73,44 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 [ "$ignored_count" = "$expected_ignored" ] && [ $((passed + ignored_count)) = "$total" ] \
     || fail "Miri passed $passed and ignored $ignored_count of $total tests, where $expected_ignored are to be ignored"
 # Code that behaves differently under Miri does so only where counted here: every mention of
-# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today the
-# two deep-value tests, which run at depth 1,000 under Miri rather than 1,000,000.
+# `miri` in una-rt, any module and any form, but the ignore attributes checked above. Today five
+# tests that run smaller under Miri, where each allocation is slow (#778): two deep values at
+# depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than 200,000,
+# 200 rounds of `find` rather than 10,000, and the entry points with a pool of one word of each
+# kind and 20 drawn tuples. Their full sizes run in the ordinary tests.
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 2 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 2"
+[ "$reduced" = 5 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 5"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
 step "una-rt with AddressSanitizer" \
     env RUSTFLAGS="-Zsanitizer=address" cargo +"$channel" build -p una-rt \
     --target "$host" --target-dir target/sanitize
+
+# Cargo's own links (build scripts, procedural macros, the test binaries) name the system `cc`,
+# never the shim below: an instrumented procedural macro would abort the compiler. CC as well:
+# a build script that compiles C through the `cc` crate never resolves the shim.
+linker_var=CARGO_TARGET_$(echo "$host" | tr '[:lower:]-' '[:upper:]_')_LINKER
+
+# The unit tests of una-rt at their full sizes, under AddressSanitizer (#778): Miri runs some of
+# them smaller, and the deep ones prove here, as natively, that their walks use no recursion.
+# The test binary must call AddressSanitizer's checks, or this step proves nothing.
+asan_tests_binary=$(env RUSTFLAGS="-Zsanitizer=address" "$linker_var=/usr/bin/cc" CC=/usr/bin/cc \
+    cargo +"$channel" test -p una-rt --lib --target "$host" --target-dir target/sanitize \
+    --no-run --message-format=json 2>/dev/null \
+    | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)
+[ -n "$asan_tests_binary" ] && [ -x "$asan_tests_binary" ] \
+    || fail "the unit tests of una-rt did not build with AddressSanitizer"
+nm -u "$asan_tests_binary" | grep -q '___asan_report' \
+    || fail "the unit tests of una-rt are not instrumented with AddressSanitizer"
+ASAN_OPTIONS="verbosity=1" "$asan_tests_binary" --list 2>&1 \
+    | grep -q "AddressSanitizer: libc interceptors initialized" \
+    || fail "AddressSanitizer is not active in the unit tests of una-rt"
+# The scenarios that run in a process of their own are run by their parent tests through this
+# same binary (`current_exe`), so they run instrumented too, with these options; an
+# AddressSanitizer report there ends the scenario with a code its parent test refuses.
+step "The unit tests of una-rt with AddressSanitizer" \
+    env ASAN_OPTIONS="abort_on_error=1:detect_leaks=0" "$asan_tests_binary"
 # The shim lives in this checkout's target directory and is on the PATH of one command only.
 shim=$root/target/sanitize/shim
 mkdir -p "$shim"
@@ -95,10 +123,6 @@ EOF
 chmod +x "$shim/cc"
 runtime=$root/target/sanitize/$host/debug/libuna_rt.a
 
-# Cargo's own links (build scripts, procedural macros, the test binaries) name the system `cc`,
-# never the shim: an instrumented procedural macro would abort the compiler.
-linker_var=CARGO_TARGET_$(echo "$host" | tr '[:lower:]-' '[:upper:]_')_LINKER
-# CC as well: a build script that compiles C through the `cc` crate never resolves the shim.
 step "una and its tests, linked by the system linker" \
     env "$linker_var=/usr/bin/cc" CC=/usr/bin/cc cargo build -p una-cli --tests
 
