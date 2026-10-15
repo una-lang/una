@@ -34,7 +34,7 @@ Elision happens in release builds only, in the C that ADR 0106 emits, before it 
 
 ### 2. Which checks (EL-2)
 
-A check may be elided only when, should the proof that elides it be wrong, the operation that remains is defined at every input and its effect is a wrong value: never undefined behavior, never a read or write out of bounds, never a lost failure of a resource or a capability. Two kinds meet it:
+A check may be elided only when, should the proof that elides it be wrong, the operation that remains is defined at every input and its effect is a wrong value: never undefined behavior, never a read or write out of bounds, never a lost failure of a resource or a capability. This is ADR 0106's rule RB-3a: a false proof of a bounds, handle or stack check would be a memory-safety bug, not a wrong answer, so those checks are never elided on the solver's word alone (§9). Two kinds meet it:
 
 - **The `Int` promotion path.** For `+`, `-`, `*` and unary `-` on `Int` (and on a measured `Int`, ADR 0104), when the exact result is proven in the tagged range, -2^62 to 2^62 - 1, **and** each operand is proven in that range. The operand condition matters: an operand that came in large from an entry point (ADR 0109 rule 3) is held promoted, and a result proven small, as `x - x`, says nothing about it. The operation then becomes the machine operation on 64-bit words, in the unsigned form of RB-7, with the result retagged.
 - **The fixed-width overflow test.** For an operation or a narrowing conversion on a fixed-width type whose `overflow` obligation is proven (`spec/18 §3`). The operation becomes the wrapping operation of its width, in the unsigned form of RB-7.
@@ -93,7 +93,19 @@ The cost of a wrong proof is bounded by EL-2: a wrong value, the value a wrappin
 - **Determinism:** two release builds of one commit with a warm cache give the same `elided` and the same bytes.
 - **Scaling:** a module with 10, 100 and 1,000 `Int` operations: the number of elision queries is linear, and a rebuild with a warm cache solves none.
 
-### 9. Complexity
+### 9. What would unlock bounds elision later (#66)
+
+Bounds checks are the next candidates: an index proven below a length. RB-3a keeps them until a proof carries an unsat certificate that a small kernel checks (#66, "proof certificates checked by a small kernel"). That decision is not taken here. For bounds elision, it would need at least:
+
+- **A certificate per elided bounds check.** The solver produces a proof object for the unsat answer of the exact query, in a format a small checker can read (Alethe or LFSC, as cvc5 emits them, or Z3's proof terms after a translation). The release build stores it next to the record entry of EL-5.
+- **A small, separate kernel.** A checker of the certificate format, small enough to review in full and with no dependency on the solver, in the trusted base in place of the solver. Without a certificate, or with one it rejects, the check stays.
+- **A trusted link from the site to the query.** The certificate proves the query unsat; something must also show that the query states the site's check, `0 <= i and i < length(xs)` under the path's facts. That link is the encoding of `spec/12 §2`. Either it stays trusted, and is named so, or the kernel re-derives the bounds goal from the Core IR site in a form small enough to review.
+- **Handles stay.** A handle check (ADR 0107 rule 2) guards against bugs of the code generator and the runtime, which a proof about the source cannot cover. A certificate does not unlock it.
+- **Stack and resource checks stay.** Their limits are run-time values, not facts of the program.
+
+Each of these would be its own amendment of this record, after #66's decision.
+
+### 10. Complexity
 
 One elision query per `Int` operation of an `app` package and one per operand, in release builds only: linear in the size of the program, each a quantifier-free query of the size of a fixed-width `overflow` query. The proof cache makes a rebuild cost one lookup per query. The record's comparison is linear in the number of checks. No pass becomes quadratic.
 
@@ -117,3 +129,5 @@ One elision query per `Int` operation of an `app` package and one per operand, i
 **E. Hoist resource checks out of loops.** Not chosen: it moves the point where a run aborts on a limit, which is observable, and the limits are run-time values.
 
 **F. Elide the division tests where the divisor is proven nonzero.** Not chosen: in C, a zero divisor or `MIN / -1` is undefined behavior, so a wrong proof would not stay a wrong value; the test is one predictable branch.
+
+**G. Elide bounds checks on a proven index now.** Not chosen: under RB-3a, a false unsat for a bounds goal is a read or write out of bounds, and nothing checks the solver's answer today. §9 states what #66 would need.
