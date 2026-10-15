@@ -15,7 +15,10 @@
 #
 # It needs git access to the website's repository (and to una-by-example when the website pins it), Node.js (>= 20.19) with npm, and Python 3. It installs
 # the website's packages with `npm ci --ignore-scripts`, from its package-lock.json, so no
-# install script runs. It writes only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the
+# install script runs. Before that, the website's scripts/deps-audit.mjs audits the lockfile
+# against the npm registry's advisories with npm at the website's pinned version, failing closed
+# on any advisory or an audit that does not answer, and the website's tests, which its build
+# runs, check the lockfile against its supply-chain review record (#783). It writes only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the
 # website is cloned from, UNA_SITE_LEARN_SOURCE where una-by-example is cloned from, and UNA_BIN which `una` checks the samples (default:
 # target/release/una).
 #
@@ -89,6 +92,10 @@ cd "$website"
 # Supply chain: only the exact packages of the pinned lockfile, under its integrity hashes,
 # and no package's install script runs on the release machine.
 [ -f package-lock.json ] || fail "the website has no package-lock.json at $commit"
+# The dependency audit (#783), before anything is installed, so a package with a known advisory
+# never reaches the machine. It needs the network; offline, it fails.
+[ -f scripts/deps-audit.mjs ] || fail "the website at $commit has no scripts/deps-audit.mjs (#783)"
+node scripts/deps-audit.mjs || fail "the website's dependency audit"
 npm ci --ignore-scripts --no-audit --no-fund --loglevel=error || fail "npm ci"
 node "$root/scripts/doc-links/website-anchors.mjs" "$out/anchors/ids.json" "$root" \
     || fail "the heading ids of scripts/doc-links.py are not the website's"
