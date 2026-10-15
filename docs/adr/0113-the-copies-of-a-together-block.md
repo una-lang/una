@@ -8,6 +8,7 @@
   - ADR 0061 (rule 2, where the budget is checked), by an appended, dated Amendment, and `spec/11 §7`, whose texts are below;
   - `spec/16 §3` rule 3 and `spec/16 §5` (the engines' equivalence, with a stated exemption for memory), whose texts are below;
   - `spec/19 §8` (how native code schedules a block's tasks, rule 4 included).
+  - `spec/13 §5` (the U6003 of a reference count at its limit has no position), whose text is below.
   The interpreter does not change, and neither does ADR 0102: the checks of `spec/11 §7`, on both of its paths, read `held()` alone, as before.
 
 ## Context
@@ -88,8 +89,9 @@ Native code copies a block's values in sequential phases, while none of the bloc
      - **Which code.** Every reference is a word the run holds: in the heap, counted in `held()`, or on the stack of one of the run's threads; a value in a register or in flight between two words is covered by the stacks' slack, since a stack's size is its full reservation, not its use. So 2^32 − 1 references to one object need (2^32 − 1) × 8 bytes. A `--max-memory` of any size is accepted, so a run may legitimately get there. The runtime keeps the sum of the stack sizes of the run's live threads (the thread that runs `main`'s code included, and every task's) in an atomic count, added as a thread starts and subtracted as it ends:
        - if `held()` plus that sum is at least (2^32 − 1) × 8 bytes at that retain, the code is U6003, with the message "the native runtime's reference count of a value reached its limit (4294967295)". The exemption below names this case;
        - otherwise the count cannot be legitimate, and the code is U8001, a defect of the runtime or of the generated code (for example, a retain without its release, which raises a count with no memory behind it), with the runtime's internal-error wording.
-       - `held()` and the stacks are process-wide figures. A run that holds 32 GiB elsewhere and has such a defect is therefore reported as U6003, not U8001; the stop itself is the same.
-     - **The stop never returns.** A retain at the limit does not return to its caller on any thread, `main`'s or a task's, inside a copy or not, since a retain that returned without incrementing would leave the count one short, and a later release would free a value still referenced. It ends the borrow of the heap it holds, writes one line to stderr (the code and the message, with no source location: a retain has no site, and many of the runtime's own retains are made inside its operations), and ends the process at once, with exit code 1 for U6003 and 3 for U8001. No trace file is written, no other thread is joined, and nothing else runs. The output the program printed is already written, since each print flushes its line.
+       - `held()` and the stacks are process-wide figures. A run that holds (2^32 − 1) × 8 bytes elsewhere and has such a defect is therefore reported as U6003, not U8001; the stop itself is the same.
+     - **The stop never returns.** A retain at the limit does not return to its caller on any thread, `main`'s or a task's, inside a copy or not, since a retain that returned without incrementing would leave the count one short, and a later release would free a value still referenced. It ends the borrow of the heap it holds, writes one line to stderr (the code and the message, with no source location: a retain has no site, and many of the runtime's own retains are made inside its operations), and ends the process, with exit code 1 for U6003 and 3 for U8001. A failure to write that line to stderr exits with code 2 instead, as `spec/13 §5` gives for any failure to write. No trace file is written and no other thread is joined.
+       - **One stop at a time.** A process-wide once-flag decides which stop ends the process: the first thread to set it writes its line and exits; any other thread that reaches a stop afterwards, at a retain or at any other abort, parks and never returns. Other threads keep running until the process ends, as at a kill, so their output or effects in flight may or may not appear. The lines the program printed before the stop are written, since each print flushes its line.
      - **An export of more than 2^32 − 1 objects stops** with U6003 at the block, before it allocates the form, "this copy holds more objects than the native runtime copies at once (4294967295)". Marks are 32 bits, the node index plus 1, with 0 for unmarked, so 2^32 − 1 objects is the most an export can mark; its portable form alone would take 64 GiB. The exemption below names this case.
      - **Later layouts are bound by this.** ADR 0107's slot layout, ADR 0106's C backend, and any code that inlines a retain or a release keep it: the count and the mark are 32 bits each, every increment compares with 2^32 − 1 and stops as above, and no decrement goes below 0 or above the maximum.
    - **Each object's cells** are one exact allocation, of the object's own size.
@@ -147,6 +149,10 @@ The Amendment appended to ADR 0061, dated the day this decision is accepted:
 The text added to `spec/11 §7`, at the end of **Checks**:
 
 > (v0.2, ADR 0113.) A native executable also checks the budget before each allocation of the copies a `together` block makes of its tasks' inputs and results, of the block's bookkeeping and of its tasks' starts (`spec/16 §3` rule 3, `spec/19 §8`). Over the budget, it aborts with U6003 at the block, with the message above.
+
+The text added to `spec/13 §5`, after the rule on U6003's position:
+
+> (v0.2, ADR 0113.) A native executable's U6003 for a reference count at its limit has no position: its one line on stderr names the code and the message, and no trace file is written. The interpreter never reports it, so `una run --json` has no shape for it.
 
 The text added to `spec/16 §3` rule 3:
 
@@ -260,7 +266,7 @@ Each test names the invariant it checks.
 - **Slot-table growth (I1):** for 10^3, 10^4 and 10^5 transfers into one heap, a debug counter of the table's reallocations grows as log N, and a refused geometric step that an exact one fits still completes.
 - **Copy fidelity (I9):** a debug comparison after each copy, run over the cases of the bound and over a value with shared sublists, a map whose values share one record, and a value whose levels each hold the level below twice, at depth 40.
 - **Packed marks (I2):**
-  - a count driven to 2^32 − 1 under a test hook, in three places: in `main`'s code, in a task's code, and during an import into a task's heap. In each, the next retain ends the process: with U8001 and exit code 3 when `held()` and the stacks are under (2^32 − 1) × 8 bytes, and with U6003, exit code 1 and the message above when a test hook lowers that threshold. Stderr holds that one line, no trace file is written, nothing is printed after it, and the count is never seen wrapped;
+  - a count driven to 2^32 − 1 under a test hook, in three places: in `main`'s code, in a task's code, and during an import into a task's heap. In each, the next retain ends the process: with U8001 and exit code 3 when `held()` and the stacks are under (2^32 − 1) × 8 bytes, and with U6003, exit code 1 and the message above when a test hook lowers that threshold. Stderr holds that one line, no trace file is written, and the count is never seen wrapped. In test programs whose other tasks do not print, nothing is printed after the line. A fourth test makes two tasks reach the limit together and checks that exactly one line is written;
   - with the export limit lowered under a test hook, an export over it stops with U6003 at the block, with its message, before it allocates the form;
   - `size_of::<Slot>()` is the same as on main, checked by a test.
 - **The reservation (I1):** a panic between a reservation and its allocation, under a test hook, leaves `reserved` at 0 afterwards.
