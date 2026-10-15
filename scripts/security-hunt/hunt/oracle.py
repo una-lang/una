@@ -7,8 +7,9 @@ interpreter, `una run --json`, twice. What an observer below the literal's label
 An observer sees an event when it sees its operation's `accepts` (`EvVis`,
 formal/UnaFormal/F1/Binary.lean): the host's from the prelude's declarations, the program's own
 from its Core export. Scope: V-secret only (source literals behind a label above the observer),
-the interpreter. V-host, the Http mock, the final tree of `Files.write` and the native sample
-are not part of it.
+the interpreter. V-host, the Http mock and the final tree of `Files.write` are not part of it.
+A fixed sample of the programs, about 5%, also runs natively, every variant, and must agree with
+the interpreter on everything a run shows (`native.py`, #792).
 
 It fails closed. Every end other than the ones below is an error, and an error fails the gate:
 - `complete`: `ok` (exit 0, no diagnostics) or `failed` (exit 1, a failure of `main`);
@@ -23,7 +24,7 @@ import json
 import re
 from collections import Counter
 
-from . import sandbox
+from . import native, sandbox
 from .program import Program
 
 ABORT_CODES = {"U6003", "U6004", "U6005"}
@@ -338,6 +339,11 @@ def raw(run):
 def run_twice(una, files, name, root, timeout, observers, table, live_level):
     """Runs the variant twice, each run in a fresh directory of its own (its package, home and
     temporary files), and returns its end; an error when the two runs' documents differ."""
+    return run_twice_kept(una, files, name, root, timeout, observers, table, live_level)[0]
+
+
+def run_twice_kept(una, files, name, root, timeout, observers, table, live_level):
+    """`run_twice`, and the first of the two runs, for the native comparison."""
     runs = []
     for k in range(2):
         rundir = sandbox.fresh_dir(root, f"{name}-r{k}-")
@@ -347,14 +353,79 @@ def run_twice(una, files, name, root, timeout, observers, table, live_level):
         runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg,
                                 writable=rundir, timeout=timeout))
     if raw(runs[0]) != raw(runs[1]):
-        return ("error", "nondeterministic: two runs of one variant differ")
-    return observe(runs[0], observers, table, live_level)
+        return ("error", "nondeterministic: two runs of one variant differ"), runs[0]
+    return observe(runs[0], observers, table, live_level), runs[0]
 
 
-def oracle(rows, una, root, timeout, out, rebuild, plant=None):
+def native_check(result, una, files, name, root, timeout, end, run, native_files=None):
+    """Runs the variant natively when its program is in the sample, and records the comparison in
+    `result["native"]`: a backend divergence makes the result a finding, a build that fails other
+    than "not compiled" an error. `native_files`, for the gate's canary only, builds other files
+    than the ones the interpreter ran."""
+    record = result["native"]
+    if not record["sampled"] or record["not_compiled"] or result["error"] or run is None:
+        return
+    if end[0] not in ("complete", "abort"):
+        return
+    if run.timed_out:
+        record["skipped"].append({"variant": name, "why": "the interpreter's run timed out"})
+        return
+    try:
+        doc = json.loads(run.stdout)
+    except ValueError:
+        result["error"] = f"native {name}: the interpreter's run is not a document"
+        return
+    kind, got = native.build_and_run(una, native_files or files, name, root, timeout, RUN_LIMITS)
+    if kind == "not compiled":
+        record["not_compiled"] = got
+        return
+    if kind == "build failed":
+        result["error"] = f"native {name}: una build failed: {got}"
+        return
+    nrun, ntrace = got
+    differences = native.compare(run, doc, nrun, ntrace)
+    record["compared"] += 1
+    if differences:
+        record["divergences"].append({"variant": name, "differences": differences})
+        result["finding"] = True
+
+
+def native_pass(prog, una, root, timeout, result):
+    """The native comparison of a sampled program outside the oracle's own runs: the stratum of
+    its family (`native.py`), which the oracle has run, or a program the oracle set aside because
+    a policy releases to public. Each variant, the base first, runs once on the interpreter and
+    natively, and the two are compared as `native_check` does. Updates `result["native"]`."""
+    result["native"].update(sampled=True, stratum=True)
+    variants = [(prog.name + "-base", prog.files)]
+    for i, pos in enumerate(prog.vary):
+        for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
+            variants.append((f"{prog.name}-v{i}-{j}", substitute(prog.files, pos, text)))
+    for name, files in variants:
+        rundir = sandbox.fresh_dir(root, f"{name}-i-")
+        p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
+                    variant=name)
+        pkg = p.write(rundir)
+        run = sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg, writable=rundir,
+                          timeout=timeout)
+        try:
+            status = json.loads(run.stdout).get("status")
+        except (ValueError, AttributeError):
+            status = None
+        if status in ("ok", "failed"):
+            end = ("complete", None)
+        elif status == "aborted":
+            end = ("abort", None)
+        else:
+            continue
+        native_check(result, una, files, name, root, timeout, end, run)
+
+
+def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None):
     """Runs the oracle on every manifest row with varied literals. `rebuild` turns a row into its
     program (`drivers.rebuild`); `plant`, for the gate's canaries only, rewrites the table of
-    `accepts`. Writes one result per program to `out` and returns the tally.
+    `accepts`; `native_plant`, for the native canary only, puts the program in the native sample and
+    gives the files its executables are built from. Writes one result per program to `out` and
+    returns the tally.
 
     A program's result counts `compared`, its complete-against-complete comparisons, and says
     whether it is `live`: whether two of its complete ends differ at the literal's own level, where
@@ -369,12 +440,20 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None):
         result = {"name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
                   "class": prog.cls, "observers": observers, "variants": [], "finding": False,
                   "error": None, "termination": [], "violations": [], "compared": 0,
-                  "live": False}
+                  "live": False,
+                  "native": {"sampled": native_plant is not None or native.sampled(prog.name),
+                             "stratum": False, "compared": 0, "divergences": [], "skipped": [],
+                             "not_compiled": None}}
         if not observers:
             result["set_aside"] = "no observer below the varied literal"
         elif releases_to_public(prog.files):
             result["set_aside"] = "a policy releases to public"
         if result.get("set_aside"):
+            # A program whose policy releases to public still runs natively when sampled: a
+            # declassification is where redaction could differ between the engines.
+            if result["native"]["sampled"] and releases_to_public(prog.files) and observers:
+                native_pass(prog, una, root, timeout, result)
+                result["native"]["stratum"] = False
             tally["set aside"] += 1
             out.write(json.dumps(result, sort_keys=True) + "\n")
             continue
@@ -396,12 +475,14 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None):
         table = accepts_table(core)
         if plant is not None:
             table = plant(table)
-        base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers, table,
-                         live_level)
+        base, base_run = run_twice_kept(una, prog.files, prog.name + "-base", root, timeout,
+                                        observers, table, live_level)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
             result["error"] = "base: " + base[1]
+        native_check(result, una, prog.files, prog.name + "-base", root, timeout, base, base_run,
+                     native_plant(prog.files) if native_plant else None)
         ref = base if base[0] == "complete" else None
         completes = [base] if base[0] == "complete" else []
         for i, pos in enumerate(prog.vary):
@@ -409,8 +490,10 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None):
                 break
             for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
                 files = substitute(prog.files, pos, text)
-                end = run_twice(una, files, f"{prog.name}-v{i}-{j}", root, timeout, observers,
-                                table, live_level)
+                end, end_run = run_twice_kept(una, files, f"{prog.name}-v{i}-{j}", root, timeout,
+                                              observers, table, live_level)
+                native_check(result, una, files, f"{prog.name}-v{i}-{j}", root, timeout, end,
+                             end_run, native_plant(files) if native_plant else None)
                 if end[0] == "rejected":
                     end = ("error", "a variant is rejected by the checks: " + ", ".join(end[1]))
                 verdict = judge(ref, end)
@@ -445,6 +528,10 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None):
             result["finding"] = True
         lives = [e[1]["live"] for e in completes]
         result["live"] = any(x != lives[0] for x in lives[1:])
+        if result["native"]["sampled"]:
+            tally["native program"] += 1
+            tally["native variants compared"] += result["native"]["compared"]
+            tally["native divergence"] += len(result["native"]["divergences"])
         tally["program " + ("error" if result["error"] else
                             "finding" if result["finding"] else "compared")] += 1
         out.write(json.dumps(result, sort_keys=True) + "\n")

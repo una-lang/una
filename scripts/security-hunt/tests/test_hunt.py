@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hunt import drivers, gate, oracle, sandbox  # noqa: E402
+from hunt import drivers, gate, native, oracle, sandbox  # noqa: E402
 from hunt.families import OPERATORS  # noqa: E402
 from hunt.program import CLASSES, MUST_REJECT, OPEN, derive_seed, rng_for  # noqa: E402
 from hunt.refactor import _blocks, r6_rename, r9_reorder  # noqa: E402
@@ -870,16 +870,17 @@ class Oracle(unittest.TestCase):
         `ends` says (in order), with no compiler: run_twice and export_core are replaced."""
         prog = gate.canary_oracle()
         calls = iter(ends)
-        saved = oracle.run_twice, oracle.export_core
+        saved = oracle.run_twice_kept, oracle.export_core
         oracle.export_core = lambda *a: ({"complete": True, "modules": []}, None)
-        oracle.run_twice = lambda *a: next(calls)
+        # No run to build natively: the native sample is not exercised here (class Native is).
+        oracle.run_twice_kept = lambda *a: (next(calls), None)
         try:
             buf = io.StringIO()
             with tempfile.TemporaryDirectory() as tmp:
                 oracle.oracle([dict(prog.manifest(), digest=prog.digest())], "una", tmp, 1, buf,
                               lambda row: prog)
         finally:
-            oracle.run_twice, oracle.export_core = saved
+            oracle.run_twice_kept, oracle.export_core = saved
         return json.loads(buf.getvalue())
 
     def test_two_complete_variants_are_compared_whatever_the_base_did(self):
@@ -1035,6 +1036,148 @@ class Gate(unittest.TestCase):
         tally, lines = gate._sharded(fn, rows, 4)
         self.assertEqual(lines, rows)
         self.assertEqual(tally[("n",)], 10)
+
+
+class Native(unittest.TestCase):
+    """The native sample's comparison (`native.compare`, #792), on run documents and traces in
+    the format the engines write: printed lines quoted by `una_core::quote`, the root's `task`
+    null, outcomes `{kind, value}`."""
+
+    @staticmethod
+    def print_event(seq, line, task=None):
+        return {"seq": seq, "task": task, "instance": "host:Console", "capability": "Console",
+                "op": "print", "args": {"line": native.quote(line)},
+                "outcome": {"kind": "ok", "value": "unit"}}
+
+    def doc(self, status="ok", output=("hi",), trace=None, diagnostics=()):
+        return {"schema": "una.run/1", "status": status, "output": list(output),
+                "trace": trace if trace is not None else [self.print_event(1, "hi")],
+                "diagnostics": list(diagnostics)}
+
+    def runs(self, doc, code=0, stdout="hi\n", stderr="", ntrace="same", ncode=None):
+        interp = Run(code, json.dumps(doc), "", False, 0.1)
+        nrun = Run(code if ncode is None else ncode, stdout, stderr, False, 0.1)
+        return interp, nrun, doc["trace"] if ntrace == "same" else ntrace
+
+    def compare(self, doc, **kw):
+        interp, nrun, trace = self.runs(doc, **kw)
+        return native.compare(interp, doc, nrun, trace)
+
+    def test_quote_is_una_cores(self):
+        self.assertEqual(native.quote('a"b\\c{d}\ne\tf\x01g\x7fh\u202ai'),
+                         '"a\\"b\\\\c\\{d\\}\\ne\\tf\\u{1}g\\u{7f}h\\u{202a}i"')
+
+    def test_the_same_run_agrees(self):
+        self.assertEqual(self.compare(self.doc()), [])
+
+    def test_each_difference_is_reported(self):
+        doc = self.doc()
+        self.assertIn("exit code", self.compare(doc, ncode=1)[0])
+        self.assertEqual(self.compare(doc, stdout="ho\n"), ["standard output differs"])
+        self.assertEqual(self.compare(doc, ntrace=[self.print_event(1, "ho")]),
+                         ["the trace differs"])
+
+    def test_a_redacted_label_is_a_divergence(self):
+        # A trace that differs only in the label of a redacted argument is a divergence, never
+        # normalized away.
+        ev = {"seq": 1, "task": None, "instance": "with:quiet#1", "capability": "Vault",
+              "op": "note", "args": {"x": "<redacted:secret>"},
+              "outcome": {"kind": "ok", "value": "unit"}}
+        doc = self.doc(output=(), trace=[ev])
+        other = [dict(ev, args={"x": "<redacted:internal>"})]
+        self.assertEqual(self.compare(doc, stdout="", ntrace=other), ["the trace differs"])
+
+    def test_the_clock_is_the_only_field_set_aside(self):
+        ev = {"seq": 1, "task": None, "instance": "host:Clock", "capability": "Clock", "op": "now",
+              "args": {}, "outcome": {"kind": "ok", "value": "1700000000000"}}
+        doc = self.doc(output=(), trace=[ev])
+        later = [dict(ev, outcome={"kind": "ok", "value": "1700000000999"})]
+        self.assertEqual(self.compare(doc, stdout="", ntrace=later), [])
+        # Only its value: another kind is a difference.
+        failed = [dict(ev, outcome={"kind": "failed", "value": "1700000000999"})]
+        self.assertEqual(self.compare(doc, stdout="", ntrace=failed), ["the trace differs"])
+
+    def test_standard_error(self):
+        # Empty on ok.
+        self.assertEqual(self.compare(self.doc(), stderr="warning\n"),
+                         ["standard error is not empty on a run that ends ok"])
+        diag = {"severity": "error", "code": "U6001", "message": "main failed: Boom"}
+        doc = self.doc(status="failed", output=(), trace=[], diagnostics=[diag])
+        ok = ("[U6001] Error: main failed: Boom\n  at src/app/main.una:9:5\n"
+              "  note: run `una explain U6001` for an explanation\n")
+        self.assertEqual(self.compare(doc, code=1, stdout="", stderr=ok), [])
+        # The error must be the first line, and only places may follow it.
+        self.assertIn("the error", self.compare(doc, code=1, stdout="",
+                                                stderr="noise\n" + ok)[0])
+        self.assertIn("more than the error", self.compare(doc, code=1, stdout="",
+                                                         stderr=ok + "extra\n")[0])
+        # The note of another code is not the error's.
+        self.assertIn("more than the error", self.compare(
+            doc, code=1, stdout="",
+            stderr=ok + "  note: run `una explain U6003` for an explanation\n")[0])
+        self.assertIn("the error", self.compare(
+            doc, code=1, stdout="", stderr="[U6001] Error: main failed: Bang\n")[0])
+
+    def test_a_resource_abort_follows_the_native_test_and_its_trace_prefix(self):
+        # ADR 0061: where each engine runs out is not exact; as the native test checks, the same
+        # exit code, error and output; and one trace, without `seq`, a prefix of the other.
+        diag = {"severity": "error", "code": "U6004",
+                "message": "this call exceeds the maximum depth of 2000"}
+        trace = [self.print_event(1, "a")]
+        doc = self.doc(status="aborted", output=("a",), trace=trace, diagnostics=[diag])
+        err = "[U6004] Error: this call exceeds the maximum depth of 2000\n  at src/a.una:3:1\n"
+        self.assertEqual(self.compare(doc, code=1, stdout="a\n", stderr=err,
+                                      ntrace=[self.print_event(7, "a")]), [])
+        extra = [self.print_event(1, "a"), {"seq": 2, "task": None, "capability": "Files",
+                                            "op": "write", "args": {}, "outcome": {"kind": "ok"}}]
+        self.assertEqual(self.compare(doc, code=1, stdout="a\n", stderr=err, ntrace=extra), [])
+        other = [{"seq": 1, "task": None, "capability": "Files", "op": "write", "args": {},
+                  "outcome": {"kind": "ok"}}]
+        self.assertEqual(self.compare(doc, code=1, stdout="a\n", stderr=err, ntrace=other),
+                         ["neither trace is a prefix of the other"])
+        self.assertIn("the error", self.compare(
+            doc, code=1, stdout="a\n",
+            stderr="[U6003] Error: this call exceeds the memory limit of 256 MiB\n")[0])
+        self.assertEqual(self.compare(doc, code=1, stdout="", stderr=err),
+                         ["standard output differs"])
+
+    def test_tasks_with_quoted_lines_and_a_null_root(self):
+        trace = [self.print_event(1, 'left {1} "q"', "0"), self.print_event(2, "right", "1"),
+                 self.print_event(3, "2")]
+        doc = self.doc(output=('left {1} "q"', "right", "2"), trace=trace)
+        # The tasks' lines in another order: agreed.
+        self.assertEqual(self.compare(doc, stdout='right\nleft {1} "q"\n2\n'), [])
+        # Another line: not what the trace printed, nor the document's.
+        self.assertTrue(self.compare(doc, stdout='left {1} "q"\nother\n2\n'))
+        # A line the native trace printed but the document did not hold: a divergence, unless an
+        # extra task event of the native trace printed it.
+        extra = trace + [self.print_event(4, "late", "2")]
+        self.assertEqual(self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n',
+                                      ntrace=extra), [])
+        self.assertTrue(self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n'))
+
+    def test_the_sample_is_a_fixed_function_of_the_name(self):
+        names = [f"p{i}" for i in range(2000)]
+        picked = [n for n in names if native.sampled(n)]
+        self.assertEqual(picked, [n for n in names if native.sampled(n)])
+        self.assertTrue(0.06 < len(picked) / len(names) < 0.10, len(picked))
+
+    def test_the_pinned_list_is_read_by_name(self):
+        self.assertIsInstance(native.unsupported(), dict)
+
+    def test_every_compared_family_has_its_lowest_hash_program_in_the_sample(self):
+        def row(name, op, compared, sampled=False, error=None):
+            return {"name": name, "op": op, "compared": compared, "error": error,
+                    "native": {"sampled": sampled}}
+        rows = [row(f"a{i}", "C2", 1) for i in range(5)] + [row("b", "H3", 0),
+                                                            row("e", "K4", 2, error="x")]
+        picked = gate.native_strata(rows)
+        self.assertEqual([r["op"] for r in picked], ["C2"])
+        lowest = min((r for r in rows[:5]), key=lambda r: native.key(r["name"]))
+        self.assertIs(picked[0], lowest)
+        # A family whose lowest program is already in the hashed sample adds nothing.
+        lowest["native"]["sampled"] = True
+        self.assertEqual(gate.native_strata(rows), [])
 
 
 if __name__ == "__main__":
