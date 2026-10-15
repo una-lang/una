@@ -61,6 +61,48 @@ pub(crate) fn requirement(name: &str) -> bool {
         && parts.all(|part| !part.is_empty() && part.chars().all(upper_digit))
 }
 
+/// A requirement identifier that keeps the convention, derived from `name` (#743): upper case,
+/// `_` between its words, and a number at the end. Trailing digits become the number
+/// (`SOLD_OUT2` gives `SOLD_OUT_2`), and a name without one gets `_1` (`SOLD_OUT_1`).
+pub(crate) fn requirement_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_uppercase());
+        } else if !out.is_empty() && !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let mut out = out.trim_end_matches('_').to_owned();
+    if !out.starts_with(|c: char| c.is_ascii_uppercase()) {
+        out.insert_str(0, if out.is_empty() { "REQ" } else { "REQ_" });
+    }
+    let digits = out.chars().rev().take_while(char::is_ascii_digit).count();
+    let split = out.len() - digits;
+    if digits > 0 && split > 0 && !out[..split].ends_with('_') {
+        out.insert(split, '_');
+    }
+    if !requirement(&out) {
+        out.push_str("_1");
+    }
+    out
+}
+
+/// `candidate`, or the first of it with its number raised that no name of `taken` holds.
+pub(crate) fn unused_requirement(candidate: String, taken: &dyn Fn(&str) -> bool) -> String {
+    if !taken(&candidate) {
+        return candidate;
+    }
+    let (head, number) = candidate
+        .rsplit_once('_')
+        .unwrap_or((candidate.as_str(), "1"));
+    let start: u64 = number.parse().unwrap_or(1);
+    (start + 1..)
+        .map(|n| format!("{head}_{n}"))
+        .find(|name| !taken(name))
+        .unwrap_or(candidate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +146,25 @@ mod tests {
         ] {
             assert!(!requirement(invalid), "{invalid}");
         }
+    }
+
+    #[test]
+    fn requirement_names_derived_from_the_one_written() {
+        for (written, derived) in [
+            ("SOLD_OUT", "SOLD_OUT_1"),
+            ("SOLD_OUT2", "SOLD_OUT_2"),
+            ("Events_3", "EVENTS_3"),
+            ("EVENTS__3", "EVENTS_3"),
+            ("EVENTS_1A", "EVENTS_1A_1"),
+        ] {
+            let name = requirement_name(written);
+            assert_eq!(name, derived, "{written}");
+            assert!(requirement(&name), "{name}");
+        }
+        let taken = |name: &str| name == "SOLD_OUT_1" || name == "SOLD_OUT_2";
+        assert_eq!(
+            unused_requirement("SOLD_OUT_1".to_owned(), &taken),
+            "SOLD_OUT_3"
+        );
     }
 }
