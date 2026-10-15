@@ -5,10 +5,10 @@
 - Deciders: Una project (pending)
 - Resolves: issue #777
 - Amends, once accepted:
-  - ADR 0061 (rule 2, where the budget is checked) and `spec/11 §7`, by an appended, dated Amendment whose text is below;
-  - `spec/16 §3` rule 3 and `spec/16 §5` (the engines' equivalence, with a stated exemption for memory);
+  - ADR 0061 (rule 2, where the budget is checked), by an appended, dated Amendment, and `spec/11 §7`, whose texts are below;
+  - `spec/16 §3` rule 3 and `spec/16 §5` (the engines' equivalence, with a stated exemption for memory), whose texts are below;
   - `spec/19 §8` (how native code schedules a block's tasks, rule 4 included).
-  The interpreter does not change.
+  The interpreter does not change, and neither does ADR 0102: the checks of `spec/11 §7`, on both of its paths, read `held()` alone, as before.
 
 ## Context
 
@@ -39,43 +39,45 @@ Five more defects show in the same code:
 Native code copies a block's values in sequential phases, while none of the block's tasks runs code, and checks every allocation of a copy, and of the block's bookkeeping, before it is made. The rules below say how; the invariants that follow them are what the implementation's tests check.
 
 1. **Batches.** Native code starts a block's tasks in batches: an implementation-defined number of tasks at a time, at least 1 (today 64). The rules below hold for any width.
-   - **Per-batch state.** The state of a task (its thread, its handshakes, its outcome) exists only while its batch runs. The block keeps, across batches, only its result list (rule 5) and one atomic count, the lowest index of a task that failed or stopped, which the tasks read with their ancestors' cancellation to know whether they are cancelled.
+   - **Per-batch state.** The state of a task (its thread, its handshakes, its outcome) exists only while its batch runs. The block keeps, across batches, only its result list (rule 5) and one atomic count, the lowest index of a task that failed or aborted (N, the number of tasks, while none has).
+   - **Cancellation.** A task carries, for its own block and each block above it, an entry (count, index): that block's count and the index of the task, among that block's tasks, on the task's path. The task is cancelled when, in any entry, the count is below the index. A task that fails or aborts lowers its block's count to its own index with `fetch_min`, so the lowest index wins whatever the order of the writes. Cancelling the task that runs a block cancels every task under it, through the entry of its own block.
    - **Tasks by index.** The block reads task i's closure, or element i of a `together for`, from the block's own heap when task i is forked. No list of every task is built.
 2. **The fork phase, per batch.** For each task of the batch, one at a time, in task order:
-   - **A cancelled task is skipped.** A task whose cancellation is already set (a task before it failed or stopped, or the block's own task was cancelled) is not forked and never starts. As a task that has not started, it leaves no event in the trace (`spec/19 §6` rule 4).
+   - **A cancelled task is skipped.** A task whose cancellation is already set (a task before it failed or aborted, or the block's own task was cancelled) is not forked and never starts. As a task that has not started, it leaves no event in the trace (`spec/19 §6` rule 4).
    - **The handshake.** The block's task exports the task's inputs (its closure and, for `together for`, its element), then starts the task's thread. The thread imports the inputs and answers through a handshake of its own, a one-shot channel whose sender reports success, reports a refusal by the budget, or drops on a panic. The block's task waits on that answer, then drops the portable form.
+   - **A task's start is a checked step.** Before it starts a thread, the block's task reserves `C` bytes, a fixed bound the implementation states on what a start allocates: the standard library's thread handle, its result slot and its name, the clone of the task's template, and the runtime state the thread makes when it enters the task. A debug build asserts, at each start, that `held()` grew by at most `C`.
    - **A failed fork.** Each thread of the batch that has already imported is told to exit without running code, releases what it imported, and is joined. Then:
      - a step refused by the budget, in the export or the import, ends the block with U6003 at the block, with the memory-limit message of ADR 0061;
      - a thread that cannot be started ends the block with U6003 at the block, "a task of `together` could not run". This is the only case that message names;
      - a panic during an export or an import is a defect of the runtime: U8001, exit code 3, as `runtime.rs` reports its other internal errors (#424). The copies run inside `catch_unwind`, in `tasks::run` and on each task's thread, so that a panic never unwinds through the generated code's `extern "C"` frames.
    - **The go signal.** When every task of the batch has imported, the block's task sends each one its own go signal, and the batch runs. No counting barrier is used, so no failure can leave a thread waiting forever.
-   - **When a task starts.** A task has started when it receives its go signal. A task whose cancellation is set between its import and its go signal (an ancestor's task failed or stopped) is told to exit instead, releases what it imported, and leaves no event, as a task that never started.
+   - **When a task starts.** A task has started when it receives its go signal. A task whose cancellation is set between its import and its go signal (a task before it, or an ancestor's, failed or aborted) is told to exit instead, releases what it imported, and leaves no event, as a task that never started.
 3. **The join phase, per batch.**
-   - **Deciding the batch first.** When every task of the batch has ended its code, the block's task reads how each ended: returned, failed or stopped. No value is copied to decide. The batch's deciding task is its lowest-indexed task that failed or stopped (`spec/19 §6` rule 3), if any.
+   - **The trace, then the decision.** When every task of the batch has ended its code, the block's task adopts the events of every started task of the batch into the block's trace, in task order, with a `cancelled` event for each started task that stopped because it was cancelled, as the join does today (`spec/19 §6` rule 4, `§7` rule 4). The adoption is a checked step: the growth of the block's trace is reserved before it is made. Then the block's task reads how each task ended: returned, failed, aborted, or stopped by a cancellation. No value is copied to decide. The batch's deciding task is its lowest-indexed task that failed or aborted (`spec/19 §6` rule 3), if any. A task stopped by a cancellation never decides.
    - **Every task returned.** The results are transferred one task at a time, in task order: task i's thread exports its result into a portable form while the block's task waits, then exits; the block's task joins the thread, tears its heap down, imports the form into the block's result list, and drops the form. Only then does task i+1 export. A result is never exported while another task of the block runs code, and no form outlives its transfer. Then the next batch forks.
-   - **A task failed.** Every other thread of the batch is told to exit without exporting, and is joined, and its heap is torn down. Then the deciding task exports its failure value, its thread is joined and torn down, and the block's task imports the value. The results already in the block's result list are released, and the block fails with that value. Later batches never fork.
-   - **A task stopped.** Every thread of the batch exits without exporting and is joined. Nothing is copied, the results already in the block's result list are released, and the block stops as the deciding task did.
-   - **The trace.** Events are adopted into the block's trace in task order, up to and including the deciding task, as today.
+   - **A task failed.** Every other thread of the batch is told to exit without exporting, and is joined, and its heap is torn down. The results already in the block's result list are released. Then the deciding task exports its failure value, its thread is joined and torn down, and the block's task imports the value, and the block fails with it. Later batches never fork.
+   - **A task aborted.** Every thread of the batch exits without exporting and is joined. Nothing is copied, the results already in the block's result list are released, and the block aborts as the deciding task did.
+   - **No task decides, and one was cancelled.** That happens only when the task that runs the block was cancelled. Every thread of the batch exits without exporting and is joined, the results already in the block's result list are released, later batches never fork, and the block stops as a cancelled task, as it does today. The same holds when the block's own task is cancelled between two batches: the next batch does not fork.
    - **A failure of the join phase.** A transfer step refused by the budget, or a panic during a transfer, decides the block at the task being transferred:
      - the remaining threads of the batch exit without exporting and are joined, and their heaps are torn down;
      - the results already in the block's result list, and the form being transferred, are released;
-     - the events of the batch's tasks are adopted in task order, up to and including the task being transferred;
+     - the batch's events were adopted before the decision, and stay;
      - then the block aborts: U6003 at the block, with the memory-limit message, for a refusal; U8001 for a panic.
 4. **The check before each allocation.**
-   - **What a step counts.** Every step of a copy (export or import) and every allocation of the block's bookkeeping first computes the bytes it will allocate: the object it makes, or the node of the portable form, plus the growth of any container in that step (rule 5).
+   - **What a step counts.** Every step of a copy (export or import), every allocation of the block's bookkeeping, each task's start (rule 2) and each adoption of a batch's events (rule 3) first computes the bytes it will allocate: the object it makes, or the node of the portable form, plus the growth of any container in that step (rule 5).
    - **The reservation.** It adds those bytes to `reserved`, a process-wide atomic count of bytes that steps have announced and not yet allocated. It then checks `held() +sat reserved ≤ mem_ceiling`, allocates, and subtracts its bytes from `reserved`. A guard object subtracts them when it is dropped, so a panic between the reservation and the allocation still releases them.
-   - **Counted twice, briefly.** Between a step's allocation and its subtraction, the step's bytes are counted in both `held()` and `reserved`. A concurrent check can then see up to one step's bytes more than are held, and stop earlier than it would have; it never sees fewer.
-   - **The slow path of a check.** The checks of `spec/11 §7`, on their slow path (ADR 0102 rule 5), compare `held() +sat reserved` with `mem_ceiling`, so a task's own check sees the copies other blocks have announced. The fast path reads `held` alone, as before.
-   - **Over the ceiling.** The step subtracts its bytes and the copy aborts with U6003 at the block (rule 2 for a fork, rule 3 for a join).
+   - **Counted twice, briefly.** Between a step's allocation and its subtraction, the step's bytes are counted in both `held()` and `reserved`. A concurrent step can then see up to one step's bytes more than are held, and be refused earlier than it would have been; it never sees fewer.
+   - **Over the ceiling.** The step subtracts its bytes and the block aborts with U6003 at the block, with the memory-limit message (rule 2 for a fork or a start, rule 3 for a join or an adoption).
    - **Concurrent copies.** Copies made by concurrent blocks (blocks inside sibling tasks) see each other's reservations. They cannot together take `held()` past the ceiling: a step that would is refused.
-5. **Exact allocations, bounded working memory.** No container of a copy, or of the block's bookkeeping, grows by doubling. Each allocation is announced as a step of known size.
+5. **Announced allocations, bounded working memory.** No container of a copy, or of the block's bookkeeping, grows unannounced: each allocation, the slot table's geometric growth included, is announced as a step of known size.
    - **The block's result list** is reserved exactly, for the number of tasks, as one step before the first batch forks.
    - **A batch's state** (its threads, handshakes and outcomes, for at most the batch's width) is reserved exactly, as one step before the batch forks.
-   - **The destination's slot table** is reserved exactly, for the number of objects the portable form holds, as one step before an import.
+   - **The destination's slot table** grows, before an import of k objects that its free capacity cannot hold, to max(len + k, 2·capacity) slots, as one step whose bytes are that growth. If that step is refused, it retries with exact growth, to len + k slots; only if that is refused too does the import stop. Growth is geometric, so the transfers of a join reallocate the table O(log N) times, and the join stays linear in what it copies.
    - **The portable form's nodes:**
      - export first counts the value's objects and payload in a counting pass, then reserves the nodes exactly, as one step;
      - the counting pass marks each source object with its node index plus 1, in a field of the object's slot, so the export needs no index map. A mark of 0 means unmarked;
-     - after the copy pass, a reset pass sets the mark of every object it marked back to 0, with the same walk and no allocation. So every mark is 0 outside an export, and a mark an export reads is one that export wrote;
+     - after the copy pass, a reset pass sets the mark of every object it marked back to 0, with the same walk, reusing the copy walk's stack segments, so it allocates nothing. So every mark is 0 outside an export, and a mark an export reads is one that export wrote;
+     - an export that is refused, or that panics, ends the run (U6003 or U8001), and its marks are not reset. That is sound only because those ends are terminal: no later export reads that heap;
      - a slot that `alloc` hands out, a new one or a reused one, starts with mark 0;
      - the field adds 8 bytes to every slot, in every program.
    - **Each object's cells** are one exact allocation, of the object's own size.
@@ -85,19 +87,20 @@ Native code copies a block's values in sequential phases, while none of the bloc
    - **The pending stacks** of the counting walk, the copy walk and the reset walk are kept in segments of a fixed size, each segment a checked step, so a step grows a stack by at most one segment.
    - **Children in place.** The walks read each object's children in place, holding a borrow of the source heap through the walk. That is sound because no code runs on that heap during the phase. So a map is walked without cloning its keys, and a list without cloning its elements.
    - **A task's heap is dropped whole** when its thread exits: its slot table and objects are freed together, without releasing objects one by one, so tearing a heap down does not grow its list of free slots.
-   - **The constant `W`.** One step's container growth is at most one stack segment, or `S`, a constant the implementation fixes, and every step counts it in its bytes.
+   - **The threads' exits.** A task's thread exits in one of three ways: after its fork answer, when it is told to exit before its go signal, having released what it imported; after its code, when the block's task tells it to exit without exporting; or after its code and its export, when the block's task has received the form. In each, its heap is dropped whole as it exits.
+   - **Panics.** The runtime installs a panic hook when it starts, which records the panic's message for the U8001 diagnostic instead of printing it, so stderr holds only the diagnostic.
+   - **The constant `W`.** In a step that copies one object, the container growth is at most one stack segment, or `S`, a constant the implementation fixes, and the step counts it in its bytes. The steps that reserve a container (the result list, a batch's state, the slot table, the form's nodes, import's index) are steps of their own, of the sizes stated above.
 6. **The bound.**
    - **Copy and bookkeeping allocations:** no such step takes `held()` past `mem_ceiling`. Each step's bytes, its container growth included, are reserved and checked before the allocation, against every other step in flight. For each step, this holds for the step's own bytes; what the rest of the process allocates meanwhile is covered below.
    - **Other allocations during a phase:**
-     - each task's start (the thread's runtime state, a constant per task);
-     - the adoption of a task's trace events into the block's trace at the join, under `--trace`;
+     - releasing the block's results on a later failure or abort. It runs before the failure value is imported, and it grows the heap's release stack and its list of free slots; a release frees at least what those grow by, except one doubling of its stack;
      - the code of tasks of other blocks running concurrently.
 
-     They are not copy steps. They are covered as before, by the checks of `spec/11 §7` and ADR 0061's hard ceiling.
+     They are not steps. They are covered as before, by the checks of `spec/11 §7` and ADR 0061's hard ceiling.
    - **Released slots kept aside:** a debug build keeps released slots unused for a while (`QUARANTINE` in `values.rs`), so its slot table grows where a release build would reuse a slot. Those slots are counted in `held()` like any other allocation. In both builds, the reservation of rule 5 covers the slot table's growth.
 7. **What does not change.**
    - **The interpreter:** it shares the values, makes no copy, and gains no check and no stop.
-   - **The checks of `spec/11 §7`** in both engines, except that native's slow path also reads `reserved` (rule 4).
+   - **The checks of `spec/11 §7`** in both engines, on both paths of ADR 0102: they read `held()` alone. Only the steps of rules 2 to 5 read `held() +sat reserved`.
    - **ADR 0102's fast path:** its check of `held` against `mem_ceiling` reads the same figure as before. Copies do not use the fast path.
    - **How tasks run once started:** concurrently natively, in any interleaving `spec/19 §6` rule 2 allows. Starting a batch only after its fork phase is one such schedule.
 
@@ -105,14 +108,16 @@ Native code copies a block's values in sequential phases, while none of the bloc
 
 The implementation's tests map to these one by one (see Tests).
 
-- **I1. No unchecked copy allocation.** Every allocation a copy or the block's bookkeeping makes is announced in `reserved` and checked before it is made (rules 4 and 5). No container of theirs grows by doubling.
-- **I2. Marks are unique per export.** Outside an export, every slot's mark is 0. During an export, a nonzero mark was written by that export and holds the node index it gave that object, plus 1.
-- **I3. The bound in a quiet phase.** In a phase where nothing but the block's own steps allocates (I4 holds, and no other block of the run is running code), `held()` never exceeds `mem_ceiling`.
+- **I1. No unchecked copy allocation.** Every allocation a copy, the block's bookkeeping, a task's start or an adoption of events makes is announced in `reserved` and checked before it is made (rules 4 and 5). No container of theirs grows unannounced.
+- **I2. Marks are unique per export.** Before and after every export that completes, every slot's mark is 0. During an export, a nonzero mark was written by that export and holds the node index it gave that object, plus 1.
+- **I3. The bound in a quiet phase.** In a phase where no thread other than the block's task and its batch's threads allocates, `held()` never exceeds `mem_ceiling`, apart from the one doubling of a release's stack (rule 6). The high-water mark is measured by a counter: in a debug build, the `cap` wrapper keeps the maximum of `held()` with `fetch_max` on every allocation, so no peak is missed by sampling.
 - **I4. No copy while code runs.** No copy step of a block is made while any task of that block runs code.
 - **I5. One transfer at a time.** At the join, when task i+1 starts exporting, task i's heap and thread are gone, and no portable form of an earlier transfer is alive.
 - **I6. Every thread is joined.** Whatever ends a phase (a refusal, a failure, a stop, a panic, a thread that cannot start), every thread the block started is joined, and none waits forever.
-- **I7. Decisions copy nothing extra.** A failing block copies only the deciding failure value at its join; a stopping block copies nothing at its join; a refusal or a panic copies nothing more.
+- **I7. Decisions copy nothing extra.** A failing block copies only the deciding failure value at its join; an aborting block, or one whose own task was cancelled, copies nothing at its join; a refusal or a panic copies nothing more.
 - **I8. Bounded bookkeeping.** The block's state across batches is its result list and one count; a batch's state is bounded by the batch's width.
+- **I9. Copy fidelity.** `import(export(v))` has the structure and the sharing of `v`: the same objects, the same values, and two references to one object in `v` are two references to one object in the copy. A debug build compares them after each copy.
+- **I10. Outcome equivalence.** The block's outcome and trace are those `spec/19 §6` rules 3 to 5 give: the values of all tasks when none failed or aborted; else the deciding task's failure or abort, the lowest-indexed; the events of every started task in task order, with `cancelled` events for the started tasks that were cancelled; no event for a task that never started.
 
 ### Equivalence with `una run`
 
@@ -120,13 +125,21 @@ The implementation's tests map to these one by one (see Tests).
 
 > Native code copies the values a `together` block gives its tasks and the results it receives, where the interpreter shares them. A native run can therefore stop with U6003, over its memory budget, at a block or at any check made while copies of a block are held, where `una run` of the same program completes, reports a failure, or stops later or at another site. Native code can also stop with U6003 at a block whose task thread could not be started, where `una run` starts no thread. These are the only differences this exemption allows, and they are one-way: the copies add checks and stops to native code only.
 
-The Amendment appended to ADR 0061, once this decision is accepted:
+The Amendment appended to ADR 0061, dated the day this decision is accepted:
 
-> **Amendment (ADR 0113).** Rule 2 gains a check point in native code only: each step of the copies a `together` block makes, and each allocation of its bookkeeping, checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The slow path of the checks of `spec/11 §7` reads `held() + reserved` in native code. The interpreter's checks do not change.
+> **Amendment (YYYY-MM-DD, ADR 0113).** Rule 2 gains a check point in native code only: each step of the copies a `together` block makes, each allocation of its bookkeeping and each start of its task threads checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
+
+The text added to `spec/11 §7`, at the end of **Checks**:
+
+> (v0.2, ADR 0113.) A native executable also checks the budget before each allocation of the copies a `together` block makes of its tasks' inputs and results, of the block's bookkeeping and of its tasks' starts (`spec/16 §3` rule 3, `spec/19 §8`). Over the budget, it aborts with U6003 at the block, with the message above.
+
+The text added to `spec/16 §3` rule 3:
+
+> (v0.2, ADR 0113.) The copies a `together` block makes check the budget before each allocation, and a refusal aborts with U6003 at the block, `this call exceeds the memory limit of N MiB`. A task thread that cannot start aborts with U6003 at the block, ``a task of `together` could not run``. A panic of the runtime during a copy is U8001, exit code 3.
 
 - **The magnitude.** Natively, at a block's peak:
   - during a fork, the batch's imported inputs, plus one portable form while a task imports;
-  - during a join, the block's result list so far, plus one task's heap and one portable form while its result transfers.
+  - during a join, the block's result list so far, plus the batch's task heaps, up to the batch's width and falling by one per transfer, and one portable form while a result transfers.
 
   For example, a `together for` of 1,000 tasks whose bodies read a 10 MB value imports 10 GB over the block, at most 64 × 10 MB at once.
 - **The way to remove the copies** is to share values between task heaps. ADR 0107's layout and ADR 0108's records, both Proposed, are where that work belongs.
@@ -138,7 +151,7 @@ The Amendment appended to ADR 0061, once this decision is accepted:
   - If, in addition, no other thread of the run allocates during the block's phases, the sequence of `held()` and `reserved` values the checks see depends on the program alone, and the site of a U6003 at those checks is the same on every run. That is the case of a block that does not run inside a task with a live sibling: a block of `main`, or of a task whose block has only it left running.
   - It is the same on macOS and Linux, except at the exact boundary: the bytes the standard library allocates differ per platform (a thread's start, for example).
 - **Checks inside concurrently running tasks** read the one `held()` of the process, so their order can vary.
-  - Since a failure or a stop cancels only the tasks after it (`tasks.rs`, as the join implements `spec/19 §6`), **which task decides** a block that stops is deterministic when the lowest-indexed task that stops does so by its own allocations, whatever its siblings allocate meanwhile.
+  - Since a failure or an abort cancels only the tasks after it (`tasks.rs`, as the join implements `spec/19 §6`), **which task decides** a block that aborts is deterministic when the lowest-indexed task that aborts does so by its own allocations, whatever its siblings allocate meanwhile.
   - **Its site** is then deterministic too, when that task has one check that its own allocation makes fail.
   - Two tasks racing to the limit, or a later task stopping while an earlier one is near the budget, have no deterministic site. The outcome is still U6003, as ADR 0061 rule 5 guarantees.
 - **The #314 program:**
@@ -166,7 +179,7 @@ The figures were measured on main bbd03d46's release build, natively, on an Appl
 
 **Complexity:**
 - **Export:** O(n) in the objects it copies: the counting pass, the copy pass and the reset pass each visit every object once. The slot marks replace today's `BTreeMap` index, which cost O(n log n).
-- **Import:** O(n). A map's entries cost O(m log m) to build, in its m entries, as building any map does.
+- **Import:** O(n), with the slot table's growth amortized O(1) per object (rule 5). A map's entries cost O(m log m) to build, in its m entries, as building any map does.
 - **Working memory per step:** constant (rule 5). Before, a pending stack and cloned children could take O(n) in one step.
 - **Bookkeeping:** O(N) for a block of N tasks, its result list, with O(width) per batch. Before, about 300 bytes per task, unchecked.
 - **The marks** cost 8 bytes per slot in every program.
@@ -180,7 +193,7 @@ Each test names the invariant it checks.
 - **Marks (I2):**
   - an object exported once, then exported again after 10^6 other exports, is copied correctly, and every mark is 0 between exports (a debug walk of the heap);
   - a slot released and reused by `alloc` after an export starts with mark 0;
-  - the debug build checks, at the end of every export, that every slot of the source heap has mark 0.
+  - the debug build checks, at the end of every completed export, that every slot of the source heap has mark 0.
 - **The bound (I1, I3),** with a debug high-water mark of `held()` in the runtime. Debug builds keep released slots in quarantine, so the reservation must cover the table's growth there too:
   - a run whose fork phase would take it past its budget stops with U6003 at the block, with `held()` never over `mem_ceiling`;
   - cases:
@@ -209,8 +222,14 @@ Each test names the invariant it checks.
 - **The join (I5, I7):**
   - in `together { big(), g() }`, where `g` aborts with U6004, native code reports U6004 as `una run` does: no result is exported;
   - a failing block exports and imports only the deciding failure value, after every other thread of the batch is joined;
-  - a block whose results would take the run over its budget stops with U6003 at the block, with the memory-limit message, after every task ended; the results already imported are released, and the events are adopted up to the task being transferred;
+  - a block whose results would take the run over its budget stops with U6003 at the block, with the memory-limit message, after every task ended; the results already imported are released, and every started task's events are in the trace;
   - a panic during a transfer, under a test hook: U8001, exit code 3.
+- **The trace (I10):**
+  - in a batch where task 2 fails and task 3, already started, is cancelled, the trace holds task 1's and task 2's events, then task 3's events and its `cancelled` event, as `una run` gives;
+  - a block whose own task is cancelled between two batches leaves the second batch unforked, with no event from it.
+- **Task starts (I1, I3):** a debug assertion at each start checks that `held()` grew by at most `C`; a `together for` whose starts alone would pass the budget stops with U6003 at the block.
+- **Slot-table growth (I1):** for 10^3, 10^4 and 10^5 transfers into one heap, a debug counter of the table's reallocations grows as log N, and a refused geometric step that an exact one fits still completes.
+- **Copy fidelity (I9):** a debug comparison after each copy, run over the cases of the bound and over a value with shared sublists, a map whose values share one record, and a value whose levels each hold the level below twice, at depth 40.
 - **The reservation (I1):** a panic between a reservation and its allocation, under a test hook, leaves `reserved` at 0 afterwards.
 - **Scaling, by counters (I1):**
   - the steps a copy makes equal the objects it copies, counted once each;
@@ -225,7 +244,7 @@ Each test names the invariant it checks.
 - **The race is gone.** A block's copies are checked while none of its tasks runs code, so the site of a copy check depends on the program, not on the scheduler. #314 has one site again.
 - **No copy reaches the hard ceiling.** Every allocation of a copy, and of the block's bookkeeping, is announced, reserved and checked before it is made, containers included, against every other copy in flight.
 - **Native holds less at its peak.** A task's portable form is dropped as soon as it is imported, each batch exports its inputs only when it starts, results are imported as they transfer, and the block's state per task is one word of its result list.
-- **A failing block copies less.** Only the deciding failure value is copied, and a stopping block copies nothing at its join.
+- **A failing block copies less.** Only the deciding failure value is copied, and an aborting block copies nothing at its join.
 - **A defect is reported as one.** A panic in a copy is U8001, never a U6003 the exemption would let pass.
 - **The copies of a block lose their parallelism** (estimated above, with the worst case stated). Removing the copies altogether, by sharing values between task heaps, is the path to more speed.
 - **Native stays stricter than the interpreter for large captured values or results**, as it has been since #775. That is now stated in `spec/16 §5`, with its cause and its bound.
@@ -247,5 +266,7 @@ Each test names the invariant it checks.
 - **An index map in the export instead of slot marks.** It costs nothing per slot, but its node splits grow by O(log n) in one step, and it makes the export O(n log n). Rejected for the marks, whose cost is a fixed 8 bytes per slot.
 - **Marks that pack a copy's identity with the node index, with no reset pass** (this ADR's second round). It saves the reset walk, but the identity wraps: each `together for` task makes two exports, so a long-running program reaches 2^32 exports in hours, and a stale mark whose identity matches is read as this copy's, which yields a silently wrong value. A reused slot also kept its mark. Rejected for index marks reset after each export, whose cost is one more walk with no allocation.
 - **Keep every batch's results as portable forms until the block ends** (this ADR's second round). It imports nothing until the block is decided, but a form costs several times the final list (16-byte cells and a header per object, against one 8-byte word per result), and the forms stay alive while later batches run code. Rejected for importing each result as it transfers, and releasing the imported results on a later failure.
+- **Exact growth of the destination's slot table** (this ADR's third round). It never over-reserves, but each transfer of a join then reallocates the whole table, which makes a join of N results into a table of M slots Θ(N·M). Rejected for geometric growth, counted as the step's bytes, with exact growth only as the fallback of a refused step.
+- **Make the checks of `spec/11 §7` read `held() + reserved` on their slow path** (this ADR's third round). A task's own check would see the copies other blocks announce, but ADR 0102's fast path reads `held` alone, so the two paths would disagree, and a cancelled task could stop with U6003 instead of as cancelled, losing its `cancelled` event. The copy steps already check `held() + reserved` themselves. Rejected.
 - **A counting barrier for the fork's go signal.** It is simpler, but a thread that fails to start, or a panic, leaves the others waiting forever. Rejected for per-task handshakes.
 - **Share values between native task heaps.** It removes the copies and their cost, but it changes the native heap model (ADR 0107, ADR 0108, both Proposed). Deferred to that work.
