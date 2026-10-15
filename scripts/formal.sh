@@ -10,15 +10,8 @@
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-toolchain=$(cat "$root/formal/lean-toolchain")
-version=${toolchain#leanprover/lean4:}
-lean_home=${UNA_FORMAL_LEAN:-${XDG_CACHE_HOME:-$HOME/.cache}/una/lean/$version}
-if [ ! -x "$lean_home/bin/lake" ]; then
-    echo "== installing the Lean release pinned in formal/lean-toolchain in $lean_home"
-    "$root/scripts/install-lean.sh" "$lean_home"
-fi
-PATH="$lean_home/bin:$PATH"
-export PATH
+# The pinned Lean, installed if missing and its version checked (scripts/lean-env.sh).
+. "$root/scripts/lean-env.sh"
 cd "$root/formal"
 
 echo "== restrictions by constructor (#535)"

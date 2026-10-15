@@ -1,4 +1,4 @@
-"""More composed families (the coordinator's order after seed 8, by risk).
+"""More composed families, after seed 8, by risk.
 
 - TC, policies inside `together` (`spec/07 §5` with `spec/19 §3`): a policy called by a task under
   a secret program counter, a secret task count or a secret element; a failing `via` (S-18, ADR
@@ -59,7 +59,7 @@ def tc1(seed, edition):
 # of the task, it cancels a sibling task, or skips code after the block, with a public effect. Above
 # `public`, U4002, in both forms. With `to public` the failure is public and only the after-block
 # form is open: how far a cancelled sibling got is timing (`spec/19 §3` rule 3), so an open sibling
-# form would make the two-run oracle compare scheduling, not labels (Una-2's review of #533).
+# form would make the two-run oracle compare scheduling, not labels (from the review of #533).
 def tc2(seed, edition):
     rng = rng_for(seed)
     to_level = rng.choice(["public", "internal", "secret"])

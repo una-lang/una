@@ -106,7 +106,7 @@ def main(argv=None):
             c.add_argument("--core-check", required=True,
                            help="the una-core-check executable (formal/.lake/build/bin)")
             c.add_argument("--z3", help="the solver for the residual class's full check "
-                           "(N-138); without it those rows are invalid")
+                           "(#548); without it those rows are invalid")
     gt = sub.add_parser("gate")
     gt.add_argument("--una", required=True)
     gt.add_argument("--out", required=True)

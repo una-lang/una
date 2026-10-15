@@ -1,5 +1,5 @@
 """Composed families: two blind rows at once, where each rule has to hold inside the other's
-construct (N-106's next step).
+construct.
 
 - CS, `together` over user sum types (`spec/19 §3` with `spec/07 §3` rule 2, §7 rule 3): a task
   matches a secret sum value, or reads a secret variant field, or a secret `is` decides how many

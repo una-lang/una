@@ -5,7 +5,7 @@
 - A clean environment: `HOME` and `TMPDIR` point inside the run's directory.
 - A wall-clock timeout.
 
-It refuses to run without `sandbox-exec`: the coordinator's condition 1 has no fallback.
+It refuses to run without `sandbox-exec`: the hunt's sandbox has no fallback.
 """
 
 import os

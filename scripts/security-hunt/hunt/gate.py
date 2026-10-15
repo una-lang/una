@@ -1,6 +1,6 @@
 """The `hunt` release gate (docs/release-gates.md): a fixed, seeded run of the generators through
 the must-reject and must-keep drivers, the two-run oracle and the comparison with the model's
-re-check (`differ`), with five canaries.
+re-check (`differ`), with canaries.
 
 It fails closed. The gate passes only when all of these hold:
 - no must-reject program is accepted, no refactor turns a rejected program into an accepted one,
@@ -8,8 +8,9 @@ It fails closed. The gate passes only when all of these hold:
 - every check and every run ends in a known way (no timeout of `una check`, no internal error,
   no unreadable output, no nondeterministic run);
 - the re-check rejects no declaration the checks accept; its `unknown` outcomes are exactly the
-  pinned ones (`PINNED_UNKNOWN`), its residual comparisons the pinned count, and the programs it
-  reads clean meet their floor;
+  pinned ones (`PINNED_UNKNOWN`); what it does not read is exactly the pinned counts per reason
+  (`PINNED_FALLBACK`, `PINNED_NOT_RECHECKED`); its residual comparisons are the pinned count and
+  each is clean; the programs it compares and the declarations it accepts meet their floors;
 - each driver judged exactly the cases the fixed run generates, and none of those counts is zero;
   the oracle's complete-against-complete comparisons, the programs that have one, and the programs
   whose variants differ at the literal's own level (liveness) meet their floors;
@@ -17,7 +18,8 @@ It fails closed. The gate passes only when all of these hold:
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; and an
   operation planted as accepting `public`, sent a secret, whose redacted argument the oracle must
-  report by itself; and a planted Core document the re-check must reject (`DIFFER_CANARY`).
+  report by itself; and planted Core documents the re-check must reject for their reason, with a
+  control it must read clean (`DIFFER_CANARIES`, `DIFFER_CONTROL`).
 """
 
 import io
@@ -53,11 +55,55 @@ PINNED_UNKNOWN = {
 # The residual programs the re-check compares (a step a secret may abort, which the full check's
 # obligations guard): their count is pinned, so a silent drop fails.
 PINNED_RESIDUAL = 9
-# A floor on the programs the re-check reads clean: about 90% of the measured run's 1,198.
-MIN_DIFFER_CLEAN = 1078
-# The planted Core document the re-check must reject: v0.3.14's export of a program whose
-# `to_text` temporary it labeled `public` (S-27, docs/reviews/formal-m2-replay).
-DIFFER_CANARY = "docs/reviews/formal-m2-replay/core-s27/S-27.interpolated_record.v0.3.14.json"
+# What the re-check compares, as the measured run found it. A program is compared when at least
+# one of its own (`app.*`) functions is accepted by the re-check; the floors are about 90% of the
+# measured run's 868 compared programs and 1,358 accepted declarations.
+MIN_DIFFER_COMPARED = 781
+MIN_ACCEPTED_DECLARATIONS = 1222
+# Documents the re-check reads as a whole fallback (every line `not re-checked` for one reason):
+# nothing in them is compared, so their count is pinned per reason, exactly.
+PINNED_FALLBACK = {
+    "a `case` on `app.main.Either`": 4,
+    "a `case` on `app.main.Maybe`": 3,
+    "the type `app.main.Box` with type arguments": 32,
+    "the type `app.main.Chain` with type arguments": 7,
+    "the type `app.main.Outer` with type arguments": 9,
+    "the type `app.main.Sink` with type arguments": 18,
+}
+# The program's own declarations the re-check does not re-check, outside those documents, per
+# reason, exactly: a change in what it reads is visible.
+PINNED_NOT_RECHECKED = {
+    "B1 restriction (impure via): `app.keys.masked`": 34,
+    "F1 restriction (`div` on operands of mixed or unknown integer types)": 1,
+    "a `case` on `app.main.Either`": 4,
+    "a `case` on `app.main.Maybe`": 3,
+    "a `handler` declaration": 192,
+    "a `via` function, which no label rule checks": 436,
+    "a call of `prelude.sort`": 10,
+    "reaches `app.main.block`, which is not re-checked (the form `together`)": 4,
+    "the constraint `integer`": 14,
+    "the constraint `ord`": 4,
+    "the form `together_for`": 75,
+    "the form `together`": 83,
+    "the type `app.main.Bad`": 16,
+    "the type `app.main.Box` with type arguments": 46,
+    "the type `app.main.Chain` with type arguments": 14,
+    "the type `app.main.Maybe` with type arguments": 6,
+    "the type `app.main.Outer` with type arguments": 18,
+    "the type `app.main.Sink` with type arguments": 44,
+}
+ACCEPTED = ("accepted", "accepted, conditional on A3")
+# The planted Core documents of the re-check comparison (docs/reviews/formal-m2-replay/core-s27):
+# v0.3.14's exports of S-27's two cases, each of which the re-check must reject at
+# `app.main.main` for its reason, and the fix's export of the first, which it must read clean.
+REPLAY = "docs/reviews/formal-m2-replay/core-s27"
+DIFFER_CANARIES = {
+    "S-27.interpolated_record.v0.3.14.json":
+        "the text of a value, `secret[PII] Text`, does not flow into `public Text`",
+    "S-27.when_literal_range.v0.3.14.json":
+        "the result of `==`, `secret Bool`, does not flow into `public Bool`",
+}
+DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
 # literals that decide nothing: about 90% of the measured run's 334 programs and 1,202
 # complete-against-complete comparisons, and of its 100 live programs (docs/release-gates.md).
@@ -203,20 +249,47 @@ def _sharded(fn, rows, workers):
     return tally, lines
 
 
+def reading(row):
+    """What the re-check did with a program it read: (`fallback`, reason) when every line is
+    `not re-checked` for one reason, (`compared`, None) when at least one of the program's own
+    (`app.*`) functions is accepted, else (`unread`, None)."""
+    lines = row.get("recheck") or []
+    if lines and all(x["outcome"] == "not re-checked" for x in lines) \
+            and len({x["note"] for x in lines}) == 1:
+        return "fallback", lines[0]["note"]
+    if any(x["decl"].startswith("app.") and x["outcome"] in ACCEPTED for x in lines):
+        return "compared", None
+    return "unread", None
+
+
 def differ_canary(core_check, work):
-    """Whether the re-check comparison sees a planted fault: v0.3.14's Core export of a program
-    whose `to_text` temporary it labeled `public` while it held a `secret[PII]` field (S-27). Read
-    through `judge_differ` as a program's export, it must be a finding."""
+    """Whether the re-check comparison sees planted faults, and only them: each document of
+    DIFFER_CANARIES, read as a program's export through `judge_differ`, must be a finding whose
+    rejected declaration is `app.main.main` for its reason, and DIFFER_CONTROL must read clean,
+    with `app.main.main` accepted."""
     repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    path = os.path.join(repo, DIFFER_CANARY)
-    try:
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
-    except OSError:
-        return False
-    exported = sandbox.Run(0, text, "", False, 0.0)
-    rec = sandbox.run([core_check, path], cwd=work, writable=work, timeout=CHECK_TIMEOUT)
-    return drivers.judge_differ(exported, text, rec)["kind"] == "finding"
+
+    def judged(name):
+        path = os.path.join(repo, REPLAY, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            return None
+        rec = sandbox.run([core_check, path], cwd=work, writable=work, timeout=CHECK_TIMEOUT,
+                          env_extra=drivers.RECHECK_ENV)
+        return drivers.judge_differ(sandbox.Run(0, text, "", False, 0.0), text, rec)
+
+    for name, note in DIFFER_CANARIES.items():
+        j = judged(name)
+        if j is None or j["kind"] != "finding":
+            return False
+        rejected = [x for x in j["recheck"] if x["outcome"] == "rejected"]
+        if [(x["decl"], x["note"]) for x in rejected] != [("app.main.main", note)]:
+            return False
+    control = judged(DIFFER_CONTROL)
+    return control is not None and control["kind"] == "clean" and any(
+        x["decl"] == "app.main.main" and x["outcome"] in ACCEPTED for x in control["recheck"])
 
 
 def _version(una):
@@ -332,12 +405,52 @@ def run(una, out_dir, tip, core_check, z3):
             errors.append(f"differ {name}: unknown for another reason: {unknown_seen[name]}")
     differ_clean = sum(1 for r in differ_rows if r.get("differ") == "clean")
     differ_residual = sum(1 for r in differ_rows if r.get("differ") == "residual")
-    if differ_clean < MIN_DIFFER_CLEAN:
-        errors.append(f"differ: {differ_clean} programs read clean, under the floor of "
-                      f"{MIN_DIFFER_CLEAN}")
+    # A residual row's own comparison must be clean: an export or re-check failure there is an
+    # error, never hidden by the row's class.
+    for r in differ_rows:
+        if r.get("differ") == "residual" and r.get("differ_raw") != "clean":
+            errors.append(f"differ {r['name']}: the residual row's comparison is "
+                          f"{r.get('differ_raw')!r}: {r.get('differ_detail') or ''}")
+    # What was compared: a clean row counts only when the re-check accepted one of the program's
+    # own functions; whole-document fallbacks and declarations not re-checked are pinned.
+    compared_rows, fallbacks, not_rechecked, accepted_decls = 0, Counter(), Counter(), 0
+    for r in differ_rows:
+        if r.get("differ") != "clean":
+            continue
+        how, why = reading(r)
+        if how == "fallback":
+            fallbacks[why] += 1
+            continue
+        compared_rows += how == "compared"
+        for x in r.get("recheck") or []:
+            if not x["decl"].startswith("app."):
+                continue
+            if x["outcome"] in ACCEPTED:
+                accepted_decls += 1
+            elif x["outcome"] == "not re-checked":
+                not_rechecked[x["note"]] += 1
+    if compared_rows < MIN_DIFFER_COMPARED:
+        errors.append(f"differ: {compared_rows} programs compared, under the floor of "
+                      f"{MIN_DIFFER_COMPARED}")
+    if accepted_decls < MIN_ACCEPTED_DECLARATIONS:
+        errors.append(f"differ: {accepted_decls} declarations accepted by the re-check, under the "
+                      f"floor of {MIN_ACCEPTED_DECLARATIONS}")
+    for name, pinned in (("whole-document fallbacks", PINNED_FALLBACK),
+                         ("declarations not re-checked", PINNED_NOT_RECHECKED)):
+        got = fallbacks if pinned is PINNED_FALLBACK else not_rechecked
+        for why in sorted(set(got) | set(pinned)):
+            if got.get(why, 0) != pinned.get(why, 0):
+                errors.append(f"differ: {got.get(why, 0)} {name} for {why!r}, and the gate pins "
+                              f"{pinned.get(why, 0)}")
     if differ_residual != PINNED_RESIDUAL:
         errors.append(f"differ: {differ_residual} residual programs compared, and the gate pins "
                       f"{PINNED_RESIDUAL}")
+    # The two drivers' tier-0 verdicts must agree, program by program.
+    tier0 = {r["name"]: r["verdict"] for r in reject_rows}
+    for r in differ_rows:
+        if r["name"] in tier0 and tier0[r["name"]] != r["verdict"]:
+            errors.append(f"differ {r['name']}: tier 0 said {tier0[r['name']]!r} to must-reject "
+                          f"and {r['verdict']!r} here")
 
     # Canaries.
     canaries = {}
@@ -372,6 +485,9 @@ def run(una, out_dir, tip, core_check, z3):
                    "programs_compared": programs_compared, "variants_compared": compared,
                    "live": live},
         "differ": {"expected": len(rows), "judged": len(differ_rows), "clean": differ_clean,
+                   "compared": compared_rows, "accepted_declarations": accepted_decls,
+                   "fallbacks": dict(sorted(fallbacks.items())),
+                   "not_rechecked": dict(sorted(not_rechecked.items())),
                    "unknown": len(unknown_seen), "residual": differ_residual},
     }
     for key in ("reject", "keep", "oracle", "differ"):

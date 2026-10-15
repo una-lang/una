@@ -12,8 +12,8 @@ MUST_KEEP = "must-keep"
 # A program `una check` must accept: a rejection is over-strictness, for triage (#513).
 MUST_ACCEPT = "must-accept"
 OPEN = "open"
-# A program whose abort a secret decides, a termination channel T6 does not claim (N-132): its
-# verdicts are recorded, never judged clean (N-138).
+# A program whose abort a secret decides, a termination channel T6 does not claim: its
+# verdicts are recorded, never judged clean (#548).
 RESIDUAL = "residual"
 CLASSES = (MUST_REJECT, MUST_KEEP, MUST_ACCEPT, OPEN, RESIDUAL)
 

@@ -275,12 +275,12 @@ gate_hunt() {
     # The re-check's executable comes from the pinned Lean, as scripts/formal.sh finds it; a
     # missing executable fails the gate.
     run hunt sh -c '
+        scripts/check-solver.sh || exit 1
         [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
         una=$(pwd)/target/release/una
-        toolchain=$(cat formal/lean-toolchain)
-        lean_home=${UNA_FORMAL_LEAN:-${XDG_CACHE_HOME:-$HOME/.cache}/una/lean/${toolchain#leanprover/lean4:}}
-        [ -x "$lean_home/bin/lake" ] || scripts/install-lean.sh "$lean_home" || exit 1
-        (cd formal && PATH="$lean_home/bin:$PATH" lake build una-core-check) || exit 1
+        root=$(pwd)
+        . scripts/lean-env.sh || exit 1
+        (cd formal && lake build una-core-check) || exit 1
         core_check=$(pwd)/formal/.lake/build/bin/una-core-check
         [ -x "$core_check" ] || { echo "no una-core-check at $core_check"; exit 1; }
         cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \

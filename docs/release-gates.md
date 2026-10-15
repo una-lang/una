@@ -53,12 +53,24 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
   - of each such event, every field but `seq`, which numbers the hidden events too, and `outcome`, which is what the host returned to the program, an input of the run and not something the program sends; the arguments that decide it are compared. Of `Keys.hmac`, only `key_name`, its one sink, is compared.
 
   Every variant that completes is compared with the program's first end that completed, the base's or a variant's, so an aborted base hides nothing. An argument of a visible event that the run redacted at a level above the observer is a finding by itself, whatever the other variants show: the run says that a value above what the operation accepts reached it. A program whose policy releases to `public` is set aside and counted, since the release explains a difference.
-- **The comparison with the model's re-check** (#791): every program the checks accept is exported (`una --json core`) and read by the formal model's checker, `una-core-check`, which the gate builds with the pinned Lean after the `formal` gate. A declaration the re-check rejects is a finding. Its other outcomes are fixed by the run:
-  - **`unknown`:** an outcome the comparison cannot judge, such as a program outside the model's fragment. The expected ones are pinned by name with their reason (`PINNED_UNKNOWN`): today four programs that use the primitive `fixed`, outside the fragment by design. Any other `unknown`, and a pinned one that is no longer unknown or is unknown for another reason, fails the gate.
-  - **Residual programs** (a step a secret may abort, which the full check's obligations guard) are compared with the pinned solver. Their count is pinned (9). A row the full check does not decide, or decides by another code, is an error, and one the full check accepts with a public print after the step is a finding.
-  - **A floor:** at least 1,078 programs read clean (measured: 1,198).
+- **The comparison with the model's re-check** (#791): every program that `una check --tier 0` accepts is exported (`una --json core`) and read by the formal model's checker, `una-core-check`. The gate builds the checker with the pinned Lean, its version checked (`scripts/lean-env.sh`, shared with `scripts/formal.sh`), after the `formal` gate, and a Lean panic aborts it. A declaration the re-check rejects is a finding. What it compares is fixed by the run:
+  - **Compared:** a program counts as compared only when the re-check accepts at least one of the program's own (`app.*`) functions. At least 781 programs (measured: 868) and 1,222 accepted declarations (measured: 1,358).
+  - **What it does not read:**
+    - a document the re-check reads as a whole fallback, every line `not re-checked` for one reason, compares nothing, so the count of such documents is pinned per reason, exactly;
+    - so is the count of the program's own declarations it does not re-check, per reason, such as a `via` function or a `handler` declaration, which the model's fragment does not cover.
 
-  The comparison found S-27 (#799) on its first run, and adds about 45 seconds.
+    A change in either count fails the gate until the pins say so.
+  - **`unknown`:** an outcome the comparison cannot judge. The expected ones are pinned by name with their reason (`PINNED_UNKNOWN`): today four programs that use the primitive `fixed`, outside the fragment by design. Any other `unknown`, and a pinned one that is no longer unknown or is unknown for another reason, fails the gate.
+  - **Residual programs:** these are programs where a secret may abort a step, which the full check's obligations guard. They are compared with the pinned solver, and their count is pinned (9).
+    - A residual row whose own comparison is not clean is an error, and so is one the full check does not decide, or decides by another code.
+    - One the full check accepts with a public print after the step is a finding.
+  - **Tier-0 verdicts:** each program's verdict must agree with the must-reject driver's.
+  - **Scope:**
+    - the comparison reads only what `una check` accepts, at tier 0;
+    - it does not export rejected declarations (no `--with-rejected` step);
+    - the reverse comparison, a declaration the checker rejects and the model accepts (#514), stays out of the gate.
+
+  It found S-27 (#799) on its first run, and adds about 45 seconds.
 - **Termination is recorded, not judged.** A pair of variants where one completes (`ok` or `failed`) and the other aborts with U6003, U6004 or U6005, or reaches the run's time limit, is outside the noninterference guarantee (`spec/07 §1`, ADR 0061). The gate prints such pairs, `summary.json` lists them, and the record carries their count. Two variants that complete with different statuses are compared as public output.
 - **It fails closed.** The gate fails:
   - on any finding;
@@ -69,12 +81,12 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 - **Its size.**
   - **Pinned counts:** 5,000 programs judged by must-reject, 8,594 (program, refactor) pairs by must-keep, 434 programs with a varied literal by the oracle, and 5,000 programs by the re-check comparison (`PINNED` in `scripts/security-hunt/hunt/gate.py`, checked against the generators by a unit test).
   - **Floors on the oracle**, about 90% of the measured run, against a run that compares little: only comparisons of two complete variants count. At least 300 programs with such a comparison (measured: 334), 1,000 such comparisons (measured: 1,202), and 90 live programs (measured: 100). A program is live when two of its complete variants differ at the literal's own level, where every event is visible with its outcome: its literal decides something, so its comparisons are not vacuous. The run document redacts every value above `public`, so liveness sees only what a literal decides in the control flow, such as whether an operation runs: of the measured run's programs, those of H3 are live, and those of K4, P1 and T8, whose secret reaches only redacted values, are not counted live although they may be compared well. 100 programs were set aside: 74 whose policy releases to `public` and 26 the checks reject.
-- **Canaries.** Five planted faults run through the same code, and a canary that is not caught fails the gate:
+- **Canaries.** Planted faults run through the same code, and a canary that is not caught fails the gate:
   - a program the checks accept, labeled must-reject, which the must-reject driver must report;
   - a program that prints a public literal its manifest marks as secret, whose variants the oracle must tell apart at `public`;
   - a program that calls an operation accepting `secret` under a secret branch, which the gate plants as accepting `internal`: the oracle must report it at `internal` only;
   - a program that sends a secret to an operation accepting `secret`, which the gate plants as accepting `public`: every variant shows the same redacted argument, and the oracle must report the redacted sink by itself;
-  - a Core document the re-check must reject: the export of S-27's case by v0.3.14 (`docs/reviews/formal-m2-replay/core-s27`), read as a program's export, must be a finding.
+  - two Core documents the re-check must reject, v0.3.14's exports of S-27's two cases (`docs/reviews/formal-m2-replay/core-s27`): each, read as a program's export, must be a finding whose one rejected declaration is `app.main.main`, for its reason; and the fix's export of the first, a control, must read clean with `app.main.main` accepted.
 - **Evidence:** `OUT/hunt/summary.json` (the verdict, the seed, the case counts, the `una` tip, the findings, errors, termination pairs and canaries) and one result file per driver. The record's `## Hunt` section summarizes it.
 - **Scope.** macOS only: every compiler run is under `sandbox-exec`, with one writable directory, no network and a clean environment, and there is no unsandboxed fallback. The oracle varies source literals only, runs the interpreter only and observes at `public` and at `internal`; host inputs, the files a program writes and the native backend are not part of the gate yet (#782).
 

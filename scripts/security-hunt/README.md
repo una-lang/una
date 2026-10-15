@@ -39,5 +39,5 @@ python3 -B -m hunt gate --una /abs/path/to/una --out DIR --tip SHA            # 
 
 - **Reproduction.** Every program is rebuilt from its operator, seed and edition. A program's seed comes from the campaign seed, the operator and the index, nothing else. Each manifest row records a digest of the program's files, and the drivers rebuild every program and compare it with that digest before they run it.
 - **Machine slots.** `reject`, `keep` and `differ` run the compiler, which is heavy work. They run only in a machine slot between benchmark runs.
-- **Findings.** A finding goes to the coordinator first, with its minimized repro, before any fix.
+- **Findings.** A finding is reported privately first, with its minimized repro, before any fix.
 - **Nothing generated is committed.** Campaigns write outside the repository.

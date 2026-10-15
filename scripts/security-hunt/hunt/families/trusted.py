@@ -419,7 +419,7 @@ def t11(seed, edition):
     caller = caller_module(s, *pre, fn, imports=[(KEYS, ["Gate", "checkpin"])])
     if pc == "internal":
         # Under an internal program counter the policy call can fail, so it is U4002 first, at
-        # the call, whatever `to` and the wrapper are (Una-2's review of #517): these variants
+        # the call, whatever `to` and the wrapper are (from the review of #517): these variants
         # test that rule, and the failure's own label only adds to it.
         expect = ["U4002"]
     cls = OPEN if fail_label_public else MUST_REJECT
