@@ -83,7 +83,7 @@ class Generators(unittest.TestCase):
         for p in every_program():
             # A program that uses `together` in 0.1 on purpose is a must-reject check of the
             # gate (U0103): families C, CS, CP and TC.
-            if p.edition == "0.1" and p.expect != ["U0103"]:
+            if p.edition == "0.1" and "U0103" not in p.expect:
                 self.assertFalse(any("together" in t for t in p.files.values()), p.name)
 
     def test_listing_of_t1_t2_t3(self):
@@ -542,6 +542,35 @@ class Generators(unittest.TestCase):
                 continue
             public = p.variant.startswith("to-public-pc-public")
             self.assertEqual(p.cls, OPEN if public else MUST_REJECT, p.variant)
+
+
+class Concurrency(unittest.TestCase):
+    """C6, the oracle's programs of family C (#807)."""
+
+    def test_every_form_builds_a_runnable_varied_program_in_0_2_only(self):
+        forms = set()
+        for i in range(60):
+            p02 = OPERATORS["C6"](derive_seed(1, "C6", i), "0.2")
+            p01 = OPERATORS["C6"](derive_seed(1, "C6", i), "0.1")
+            forms.add(p02.variant)
+            self.assertIn("together", p02.files["src/app/main.una"])
+            self.assertNotIn("⟦", p02.files["src/app/main.una"])
+            if p02.variant == "attempt-sibling":
+                # The checks reject a secret-decided failure even inside `attempt` (measured).
+                self.assertEqual((p02.cls, p02.expect, p02.vary), (MUST_REJECT, ["U4002"], []))
+                continue
+            self.assertEqual(p02.cls, OPEN)
+            self.assertEqual(len(p02.vary), 1, p02.name)
+            self.assertEqual(p02.vary[0]["label"], "secret")
+            self.assertIn('entry = "app.main"', p02.files["una.toml"])
+            # Edition 0.1 reserves `together`: must-reject, with nothing to vary or run.
+            # (A form with a `fail` block also expects U0101, 0.1's own refusal of that form.)
+            fail_form = "fail Bad" in p01.files["src/app/main.una"]
+            self.assertEqual((p01.cls, p01.expect, p01.vary),
+                             (MUST_REJECT, ["U0103", "U0101"] if fail_form else ["U0103"], []))
+        self.assertEqual(forms, {"for-elements", "branch-value", "attempt-sibling", "secret-sink",
+                                 "under-public-pc", "secret-fan-out", "shape-length",
+                                 "public-fan-out", "element-fail"})
 
 
 class Refactors(unittest.TestCase):
@@ -1038,6 +1067,37 @@ class Gate(unittest.TestCase):
         self.assertEqual(tally[("n",)], 10)
 
 
+class GeneratorErrors(unittest.TestCase):
+    """A lexical or syntax code a generated program does not expect is the generator's error, and
+    a must-reject program counts only when rejected by one of its expected codes (#807)."""
+
+    def row(self, codes, expect=(), cls=MUST_REJECT, verdict="rejected"):
+        got = {c for c in codes}
+        return {"name": "p", "class": cls, "verdict": verdict, "expect": list(expect),
+                "codes": [[c, "src/app/main.una", 1, 1] for c in codes],
+                "expect_seen": bool(got & set(expect)) if expect else None}
+
+    def test_an_unexpected_syntax_code_is_an_error_whatever_the_class(self):
+        self.assertTrue(gate.generator_errors([self.row(["U0001"], ["U4001"])]))
+        self.assertTrue(gate.generator_errors([self.row(["U0001"], cls=OPEN)]))
+        # An expected one (the edition gate of `together`) is not.
+        self.assertEqual(gate.generator_errors([self.row(["U0103"], ["U0103"])]), [])
+
+    def test_a_must_reject_program_needs_its_expected_code(self):
+        self.assertEqual(gate.generator_errors([self.row(["U4002"], ["U4002"])]), [])
+        self.assertTrue(gate.generator_errors([self.row(["U4003"], ["U4002"])]))
+        # A must-reject program with no expected code would count any rejection.
+        self.assertTrue(gate.generator_errors([self.row(["U4002"], [])]))
+
+    def test_a_refactor_that_breaks_parsing_is_an_error_of_the_pair(self):
+        def pair(base, twin):
+            return {"name": "p", "refactor": "R6", "expect": [],
+                    "base": {"codes": [[c, "x", 1, 1] for c in base]},
+                    "twin": {"codes": [[c, "x", 1, 1] for c in twin]}}
+        self.assertEqual(gate.keep_generator_errors([pair(["U4001"], ["U4001"])]), [])
+        self.assertTrue(gate.keep_generator_errors([pair(["U4001"], ["U0001"])]))
+
+
 class Native(unittest.TestCase):
     """The native sample's comparison (`native.compare`, #792), on run documents and traces in
     the format the engines write: printed lines quoted by `una_core::quote`, the root's `task`
@@ -1149,12 +1209,24 @@ class Native(unittest.TestCase):
         self.assertEqual(self.compare(doc, stdout='right\nleft {1} "q"\n2\n'), [])
         # Another line: not what the trace printed, nor the document's.
         self.assertTrue(self.compare(doc, stdout='left {1} "q"\nother\n2\n'))
-        # A line the native trace printed but the document did not hold: a divergence, unless an
-        # extra task event of the native trace printed it.
+        # On an ordered run (no failure, no cancellation), an extra task event is a divergence.
         extra = trace + [self.print_event(4, "late", "2")]
-        self.assertEqual(self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n',
-                                      ntrace=extra), [])
-        self.assertTrue(self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n'))
+        self.assertIn("the trace differs on an ordered run",
+                      self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n', ntrace=extra))
+        # Whether a run is ordered is the interpreter's run's to say: a cancellation only the
+        # native run has is a divergence, not a reason to compare more loosely.
+        native_cancel = trace + [{"seq": 4, "task": "1", "cancelled": True}]
+        self.assertIn("the trace differs on an ordered run",
+                      self.compare(doc, stdout='left {1} "q"\nright\n2\n', ntrace=native_cancel))
+        # On a run that is not ordered (a task cancelled), the extra events of tasks that started
+        # after it are allowed, and only the lines they printed.
+        cancel = {"seq": 5, "task": "1", "cancelled": True}
+        unordered = trace + [cancel]
+        doc2 = self.doc(output=('left {1} "q"', "right", "2"), trace=unordered)
+        self.assertEqual(self.compare(doc2, stdout='left {1} "q"\nright\n2\nlate\n',
+                                      ntrace=unordered + [self.print_event(6, "late", "2")]), [])
+        self.assertTrue(self.compare(doc2, stdout='left {1} "q"\nright\n2\nlate\n',
+                                     ntrace=unordered))
 
     def test_the_sample_is_a_fixed_function_of_the_name(self):
         names = [f"p{i}" for i in range(2000)]
