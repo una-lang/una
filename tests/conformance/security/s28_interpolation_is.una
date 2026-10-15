@@ -1,0 +1,10 @@
+-- test: `is` against a text literal that interpolates a `secret` value would give a `public` `Bool` decided by the secret; a pattern is a constant, so it is U4008 (S-28)
+-- spec: spec/07 §7
+-- expect: error U4008 at 9:16
+module s28_interpolation_is
+
+pub check(g: Text) -> Bool
+=
+  let s: secret Text = "abc"
+  let b = g is "{s}"
+  b

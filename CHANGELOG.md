@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.11
+
+v0.1.10 with the S-28 fix: a text literal with interpolation in a pattern is U4008 (#801).
+
+### Security
+
+- **A text literal with interpolation in a pattern is U4008** (#801, S-28, `spec/07 §7` rule 3). A `when` arm `is "…"` and the expression `x is "…"` treated their literal as a constant, `public`, but a text literal with interpolation is computed from the values it interpolates. So a `when` could choose the arm that prints, and an `is` give a `public` `Bool`, by a `secret` value, with no diagnostic. A pattern's literal is now a constant: interpolating in it is U4008, whose explanation shows the repair, comparing with `==`, whose result carries the value's label. Every release from v0.1.0 through v0.1.10 accepts such programs: the parser and the checker have read a pattern's text this way since v0.1.0, and v0.1.10 was run to confirm it.
+
 ## v0.1.10
 
 v0.1.9 with the S-20 fix: a function named as a value needs its `uses` where it is named (#673).
