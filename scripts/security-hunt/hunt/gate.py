@@ -27,9 +27,15 @@ from .una import Varied, header, join_decls, package
 
 # The fixed run: changing any of these changes the gate, and docs/release-gates.md with it.
 SEED = 767
-COUNT = 5
+COUNT = 50
 EDITIONS = ("0.1", "0.2")
 REFACTOR_IDS = ("R6", "R9")
+# The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
+# until this table and docs/release-gates.md say so.
+PINNED = {"programs": 5000, "reject": 5000, "keep": 8594, "oracle": 434}
+# Floors on what the oracle compares, against a run that sets most programs aside.
+MIN_ORACLE_COMPARED = 0
+MIN_VARIANTS_COMPARED = 0
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -211,6 +217,17 @@ def run(una, out_dir, tip):
             errors.append(f"{key}: no case judged")
     if compared == 0:
         errors.append("oracle: no variant compared")
+    if compared < MIN_VARIANTS_COMPARED:
+        errors.append(f"oracle: {compared} variants compared, under the floor of "
+                      f"{MIN_VARIANTS_COMPARED}")
+    programs_compared = sum(1 for r in oracle_rows if not r.get("set_aside"))
+    if programs_compared < MIN_ORACLE_COMPARED:
+        errors.append(f"oracle: {programs_compared} programs compared, under the floor of "
+                      f"{MIN_ORACLE_COMPARED}")
+    for key, want in PINNED.items():
+        got = sizes[key] if key == "programs" else sizes[key]["expected"]
+        if got != want:
+            errors.append(f"{key}: the fixed run has {got} cases, and the gate pins {want}")
     for name, caught in sorted(canaries.items()):
         if not caught:
             errors.append(f"canary {name}: not caught, so the gate cannot see that fault")

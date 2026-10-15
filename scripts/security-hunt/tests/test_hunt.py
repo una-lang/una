@@ -845,7 +845,13 @@ class Gate(unittest.TestCase):
         self.assertEqual(len({p.name for p in a}), len(a))
         self.assertTrue(any(p.vary for p in a))
         self.assertTrue(any(p.cls == MUST_REJECT for p in a))
-        self.assertGreater(gate.expected_keep(a), 0)
+        # The pinned sizes are the generators' (a change of either fails here first).
+        self.assertEqual(gate.PINNED, {
+            "programs": len(a),
+            "reject": sum(1 for p in a if p.cls != "must-keep"),
+            "keep": gate.expected_keep(a),
+            "oracle": sum(1 for p in a if p.vary),
+        })
 
     def test_the_canaries_are_what_they_claim(self):
         rej = gate.canary_reject()
