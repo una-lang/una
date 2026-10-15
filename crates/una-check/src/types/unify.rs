@@ -9,7 +9,8 @@ use una_syntax::Span;
 
 use super::label::Label;
 use super::ty::{
-    Flagged, FnTy, FnUse, KindLabels, Shared, Ty, map_args, map_function, map_same, reuse,
+    Flagged, FnTy, FnUse, KindLabels, Shared, Ty, map_args, map_function, map_same, mix_nested,
+    reuse,
 };
 
 /// Why a unification variable exists, for the diagnostic when inference leaves it unknown.
@@ -58,6 +59,10 @@ pub(crate) struct Vars {
     /// (#581): the declaration then reports no variable it left unsolved, which only the
     /// missing name could have solved.
     saw_unknown: bool,
+    /// While unifying an expected type with a found one ([`Vars::unify_expected`]): a solved
+    /// variable of the found side takes the refinements the expected side writes (ADR 0103
+    /// rule 5: the expected type fixes a type argument).
+    expected_wins: bool,
 }
 
 impl Vars {
@@ -69,6 +74,7 @@ impl Vars {
             generation: 0,
             erased: RefCell::new(ErasedMemo::default()),
             saw_unknown: false,
+            expected_wins: false,
         }
     }
 
@@ -99,7 +105,9 @@ impl Vars {
     /// nodes whatever the operand's size.
     pub(crate) fn peel(&self, ty: &Ty) -> Ty {
         let mut current = self.shallow(ty);
-        while let Ty::Labeled(_, inner) = &current {
+        // A refined element type (ADR 0103) sits inside its label, as `Pos of Meter` in a
+        // `List[Pos of Meter]`: its refinements are not part of what an operator reads.
+        while let Ty::Labeled(_, inner) | Ty::Refined(_, inner) = &current {
             let next = self.shallow(inner);
             current = next;
         }
@@ -119,9 +127,15 @@ impl Vars {
     }
 
     /// `ty` with every solved variable replaced by its value, and without labels: what type
-    /// checking compares.
+    /// checking compares. A variable solved at a refined element type, as a lambda's parameter
+    /// over a `List[Pos]`, resolves to its base: the checks that match on a type's shape see
+    /// `Int`, and the recorded types, resolved with their labels, keep the refinements (ADR
+    /// 0103 rule 5). Nested positions keep theirs.
     pub(crate) fn resolve(&self, ty: &Ty) -> Ty {
-        self.erase(&self.resolve_shape(ty))
+        match self.erase(&self.resolve_shape(ty)) {
+            Ty::Refined(_, inner) => (*inner).clone(),
+            other => other,
+        }
     }
 
     /// [`Ty::erase`], each labeled node erased once in this declaration.
@@ -131,6 +145,10 @@ impl Vars {
         }
         match ty {
             Ty::Labeled(_, inner) => (*self.erase_node(inner)).clone(),
+            // ADR 0103: erasing labels keeps the refinements of a nested position.
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements.clone(), self.erase_node(inner))
+            }
             Ty::List(element) => Ty::List(self.erase_node(element)),
             Ty::Map(key, value) => Ty::Map(self.erase_node(key), self.erase_node(value)),
             Ty::Kind(id, args) => Ty::Kind(*id, self.erase_args(args)),
@@ -279,6 +297,9 @@ impl Vars {
         let resolve = |ty: &Ty| self.resolve_shape_in(ty, shapes);
         match node {
             Ty::Labeled(label, inner) => node.relabeled(resolve(inner), label),
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements.clone(), reuse(inner, resolve(inner)))
+            }
             Ty::List(element) => Ty::List(reuse(element, resolve(element))),
             Ty::Map(key, value) => Ty::Map(reuse(key, resolve(key)), reuse(value, resolve(value))),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, resolve)),
@@ -338,7 +359,7 @@ impl Vars {
     /// `ty` with the variables and labels at its top removed: its shape at the top.
     fn bare(&self, ty: &Ty) -> Ty {
         let mut current = self.shallow_ref(ty);
-        while let Ty::Labeled(_, inner) = current {
+        while let Ty::Labeled(_, inner) | Ty::Refined(_, inner) = current {
             current = self.shallow_ref(inner);
         }
         current.clone()
@@ -349,6 +370,9 @@ impl Vars {
     pub(crate) fn head(&self, ty: &Ty) -> Ty {
         match self.shallow(ty) {
             Ty::Labeled(label, inner) => self.head(&inner).with_label(&label),
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements, Shared::new(self.head(&inner)))
+            }
             other => other,
         }
     }
@@ -366,7 +390,7 @@ impl Vars {
 
     fn occurs(&self, var: usize, ty: &Ty) -> bool {
         match self.shallow_ref(ty) {
-            Ty::Labeled(_, inner) => self.occurs(var, inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.occurs(var, inner),
             Ty::Var(other) => *other == var,
             Ty::List(element) => self.occurs(var, element),
             Ty::Map(key, value) => self.occurs(var, key) || self.occurs(var, value),
@@ -400,7 +424,7 @@ impl Vars {
         let mut current = ty.clone();
         loop {
             match current {
-                Ty::Labeled(_, inner) => current = (*inner).clone(),
+                Ty::Labeled(_, inner) | Ty::Refined(_, inner) => current = (*inner).clone(),
                 Ty::Var(var) => match self.slots.get(var).and_then(|slot| slot.value.clone()) {
                     Some(Ty::Var(next)) => current = Ty::Var(next),
                     Some(Ty::Labeled(label, inner)) if matches!(*inner, Ty::Var(_)) => {
@@ -423,6 +447,17 @@ impl Vars {
         self.unify_in(a, b, false)
     }
 
+    /// [`Vars::unify`] of an `expected` type with a `found` one: a solved variable of the found
+    /// side takes, at each position, the refinements the expected type writes there (ADR 0103
+    /// rule 5). So `let b: List[Pos] = a.append(item: n)` instantiates `append` at `Pos`, and
+    /// the argument `n` flows into `Pos` with its obligation.
+    pub(crate) fn unify_expected(&mut self, expected: &Ty, found: &Ty) -> bool {
+        let saved = std::mem::replace(&mut self.expected_wins, true);
+        let unified = self.unify_in(expected, found, false);
+        self.expected_wins = saved;
+        unified
+    }
+
     /// [`Vars::unify`]; under an invariant parameter of a kind (`fixed`), a solved variable
     /// keeps its labels, since values of the kind at one label do not flow into it at another
     /// (ADR 0046 rule 2): the flow that follows compares them.
@@ -435,11 +470,16 @@ impl Vars {
         if fixed {
             return true;
         }
-        for (target, other) in [(a, b), (b, a)] {
+        for (target, other, found) in [(a, b, false), (b, a, true)] {
             if let Some(var) = self.solved_head(target)
                 && let Some(value) = self.slots.get(var).and_then(|slot| slot.value.clone())
             {
                 let joined = self.join(&value, other);
+                let joined = if found && self.expected_wins {
+                    overlay(&joined, &self.resolve_shape(other))
+                } else {
+                    joined
+                };
                 self.bind(var, joined);
             }
         }
@@ -577,6 +617,25 @@ impl Resolver<'_> {
 pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let (la, lb) = (a.top_label(), b.top_label());
     let label = if join { la.join(&lb) } else { la.meet(&lb) };
+    // ADR 0103 rule 5: a join keeps the refinements both sides carry at this position, and a
+    // meet those of either. Without any on either side, the paths below are as before.
+    if a.refinements().is_some() || b.refinements().is_some() {
+        match (a.unlabeled(), b.unlabeled()) {
+            (Ty::Never, _) => return b.clone().with_label(&label),
+            (_, Ty::Never) => return a.clone().with_label(&label),
+            (Ty::Error(_), _) | (_, Ty::Error(_)) => return Ty::error(),
+            _ => {}
+        }
+        let refinements = mix_nested(a.refinements(), b.refinements(), join);
+        let (bare_a, bare_b) = (a.unlabeled().clone(), b.unlabeled().clone());
+        let base = combine(&bare_a, &bare_b, join, kinds);
+        let base = base.unlabeled().clone();
+        let inner = match refinements {
+            Some(refinements) => Ty::Refined(refinements, Shared::new(base)),
+            None => base,
+        };
+        return inner.with_label(&label);
+    }
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error(_), _) | (_, Ty::Error(_)) => return Ty::error(),
@@ -651,6 +710,38 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
         return b.clone();
     }
     a.relabeled(base, &label)
+}
+
+/// `ty` with the refinements that `from`, of the same shape, writes at each position in place
+/// of its own; a position where `from` writes none keeps those of `ty` (ADR 0103 rule 5).
+fn overlay(ty: &Ty, from: &Ty) -> Ty {
+    // Without a refinement on either side the overlay is `ty` itself, in O(1): editions
+    // before `0.3` never pay for it.
+    if !ty.flags().refined && !from.flags().refined {
+        return ty.clone();
+    }
+    let inner = match (ty.unlabeled(), from.unlabeled()) {
+        (Ty::List(x), Ty::List(y)) => Ty::List(Shared::new(overlay(x, y))),
+        (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
+            Ty::Map(Shared::new(overlay(xk, yk)), Shared::new(overlay(xv, yv)))
+        }
+        (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
+            *i,
+            xs.iter()
+                .zip(ys.iter())
+                .map(|(x, y)| overlay(x, y))
+                .collect(),
+        ),
+        (other, _) => other.clone(),
+    };
+    let refinements = from.refinements().or_else(|| ty.refinements()).cloned();
+    let inner = match refinements {
+        Some(refinements) if !matches!(inner, Ty::Error(_) | Ty::Never) => {
+            Ty::Refined(refinements, Shared::new(inner))
+        }
+        _ => inner,
+    };
+    inner.with_label(&ty.top_label())
 }
 
 /// `new` as a child node: the node of `x` or of `y` when `new` is the same value as it.

@@ -8,7 +8,7 @@ use una_diag::Code;
 use una_project::Edition;
 
 use super::env::{Constraint, Entity, Env, FnAst, FnKind};
-use super::ty::{KindId, Names, Show, Ty};
+use super::ty::{KindId, Names, Refinement, Show, Ty};
 use super::{Findings, Report};
 
 /// For each kind, whether its values can hold a function whatever its type arguments are, and
@@ -57,7 +57,7 @@ impl KindFacts {
     /// the type parameters whose values they hold to `params`.
     fn walk(&self, ty: &Ty, params: &mut BTreeSet<usize>) -> bool {
         match ty {
-            Ty::Labeled(_, inner) => self.walk(inner, params),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.walk(inner, params),
             Ty::Fn(_) => true,
             Ty::Param(index) => {
                 params.insert(*index);
@@ -90,7 +90,7 @@ impl KindFacts {
 /// The kinds that values of `ty` contain directly: not through `List` or `Option`.
 fn contained(ty: &Ty, option: Option<KindId>, out: &mut Vec<KindId>) {
     match ty {
-        Ty::Labeled(_, inner) => contained(inner, option, out),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) => contained(inner, option, out),
         Ty::Kind(kind, args) => {
             if Some(*kind) == option {
                 return;
@@ -242,7 +242,7 @@ impl Grounded<'_, '_> {
     /// not. An instance not yet known is assumed not grounded, and joins the fixpoint.
     fn ty(&mut self, ty: &Ty, params: &[bool]) -> bool {
         match ty {
-            Ty::Labeled(_, inner) => self.ty(inner, params),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.ty(inner, params),
             Ty::Param(index) => params.get(*index).copied().unwrap_or(true),
             Ty::Kind(kind, args) => {
                 let args: Vec<bool> = args.iter().map(|arg| self.ty(arg, params)).collect();
@@ -354,7 +354,9 @@ fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
     // Every kind that a field type mentions, at any depth.
     fn mentioned(ty: &Ty, out: &mut Vec<(KindId, Vec<Ty>)>) {
         match ty {
-            Ty::Labeled(_, inner) | Ty::List(inner) => mentioned(inner, out),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => {
+                mentioned(inner, out)
+            }
             Ty::Map(key, value) => {
                 mentioned(key, out);
                 mentioned(value, out);
@@ -443,7 +445,7 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
             .join(", ")
     };
     match ty {
-        Ty::Labeled(_, inner) => written(env, kind, inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) => written(env, kind, inner),
         Ty::Param(index) => kind.params.get(*index).copied().unwrap_or("?").to_owned(),
         Ty::List(element) => format!("List[{}]", written(env, kind, element)),
         Ty::Map(key, value) => format!(
@@ -797,5 +799,9 @@ impl Names for CallerNames<'_, '_> {
         self.params
             .get(index)
             .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
+    }
+
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        self.env.refined_display(refinements, base)
     }
 }

@@ -45,7 +45,7 @@ impl Checker<'_, '_, '_> {
     /// The outer form of `ty` for the example of an annotation, as `Map[...]`.
     fn outer_example(&self, ty: &Ty) -> String {
         match ty {
-            Ty::Labeled(_, inner) => self.outer_example(inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.outer_example(inner),
             Ty::List(_) => "List[...]".to_owned(),
             Ty::Map(..) => "Map[...]".to_owned(),
             Ty::Kind(kind, args) => {
@@ -105,6 +105,9 @@ impl Checker<'_, '_, '_> {
                 let inner = self.open((*inner).clone(), span, index);
                 inner.with_label(&label)
             }
+            // ADR 0103 rule 5: an editable binding without an annotation drops every
+            // refinement of its initial value, at every position.
+            Ty::Refined(_, inner) => self.open((*inner).clone(), span, index),
             Ty::List(element) => Ty::List(Shared::new(self.open((*element).clone(), span, index))),
             Ty::Map(key, value) => {
                 let key = self.open((*key).clone(), span, index);
@@ -287,7 +290,7 @@ fn derived(name: &str, slot: &str) -> String {
 fn holds_function(ty: &Ty) -> bool {
     match ty {
         Ty::Fn(_) => true,
-        Ty::Labeled(_, inner) | Ty::List(inner) => holds_function(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => holds_function(inner),
         Ty::Map(key, value) => holds_function(key) || holds_function(value),
         Ty::Kind(_, args) => args.iter().any(holds_function),
         _ => false,
@@ -298,7 +301,7 @@ fn holds_function(ty: &Ty) -> bool {
 fn closed(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) | Ty::Fn(_) | Ty::Error(_) | Ty::Never => false,
-        Ty::Labeled(_, inner) | Ty::List(inner) => closed(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => closed(inner),
         Ty::Map(key, value) => closed(key) && closed(value),
         Ty::Kind(_, args) => args.iter().all(closed),
         _ => true,

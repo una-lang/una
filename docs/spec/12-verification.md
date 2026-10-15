@@ -58,6 +58,11 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 
 **Refinements are top-level.** A type argument is never refined (ADR 0040, `spec/03 §3`), so no obligation or hypothesis concerns the elements of a list, an option or a value of a generic kind. The obligations of a function type under a type argument, below, concern the type, not the elements.
 
+(v0.3, ADR 0103.) **Refined elements.** In edition `0.3` a type argument may be refined (`spec/03 §3`):
+- **Obligations.** Each flow site above into a type with a refined nested position, a list literal's elements, and a map's `with` and `set` (key and value) give `refinement` obligations. At a nested position, one obligation per refinement the same position of the value's type does not carry, as the same formula, over a fresh binder that holds the value's refinements there, with no hypothesis of the path context, by variance (`spec/03 §6`). The goal prints as `<position> of <value>: <refinement>`, the position as `spec/13 §5` writes it (`element`, `arg 2`).
+- **Facts.** A binder whose type is refined at its top gets the refinement as a hypothesis, as above: a pattern variable, a loop variable, a lambda's parameter and a call's result read from a refined position carry it.
+- Every query stays in `QF_UFLIA`; the binders are never quantified.
+
 **Function types** (ADR 0037). A function type carries the refinements of its parameters and result: from its written form, from the header of a named function used as a value, whose parameters keep their declared names and types, and from a lambda's parameter annotations. These are the refined premises of S-Fun (`spec/10 §2`):
 
 1. **Obligations.** When a value of type `fn(A1, ..., An) -> R` flows into a position of type `fn(B1, ..., Bn) -> S`, each refinement of `Ai` that `Bi` does not carry is one `refinement` obligation, with the refinements of `Bi` as hypotheses (contravariant), and each refinement of `S` that `R` does not carry is one, with the refinements of `B1` to `Bn` and of `R` as hypotheses (covariant). A refinement both carry, that is the same refined kind or range, gives none. The obligations are at the value's span, under the path context of the flow, and function types nested in parameters, results and type arguments are compared the same way. A lambda's annotation that is stronger than the parameter type it is given is such a flow, at the lambda.
@@ -76,7 +81,7 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | --- | --- |
 | `Int` | `Int` |
 | `Bool` | `Bool` |
-| `Text`, `Hashed`, `List[T]`, records, sums, type parameters | One `declare-sort` per distinct instantiated type, named by a deterministic mangling (`i!List_Int`, `u!Kind_events_seating_Event`). (v0.2, ADR 0060.) A recursive kind is one sort, and its recursive fields are functions into it; no axiom of acyclicity or size is added |
+| `Text`, `Hashed`, `List[T]`, records, sums, type parameters | One `declare-sort` per distinct instantiated type, named by a deterministic mangling (`i!List_Int`, `u!Kind_events_seating_Event`). (v0.2, ADR 0060.) A recursive kind is one sort, and its recursive fields are functions into it; no axiom of acyclicity or size is added (v0.3, ADR 0103.) Sorts erase refinements: `List[Pos]` and `List[Int]` are one sort. |
 | Field access `a.f` on kind `T` | `declare-fun u!f!f!T (T) S`, one per variant for a sum (Namespaces below) |
 | `x.len` | `declare-fun i!len!T (T) Int`, plus ground fact `(>= (i!len!T x) 0)` for each occurring term |
 | Variant test `a is C` | `declare-fun i!tag!T (T) Int`, `(= (i!tag!T a) k_C)` with `k_C` the declaration index, plus ground fact `0 <= tag < n` per occurring term |

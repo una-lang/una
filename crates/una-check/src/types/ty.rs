@@ -109,6 +109,7 @@ impl KindLabels {
     fn written(&self, ty: &Ty) -> Label {
         match ty {
             Ty::Labeled(label, inner) => label.join(&self.written(inner)),
+            Ty::Refined(_, inner) => self.written(inner),
             Ty::List(element) => self.written(element),
             Ty::Map(key, value) => self.written(key).join(&self.written(value)),
             Ty::Kind(id, args) => args
@@ -122,7 +123,7 @@ impl KindLabels {
     /// inside a function type (`in_fn`), or under an invariant parameter of a kind.
     fn occurrences(&self, ty: &Ty, in_fn: bool, out: &mut Vec<usize>) {
         match ty {
-            Ty::Labeled(_, inner) => self.occurrences(inner, in_fn, out),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.occurrences(inner, in_fn, out),
             Ty::Param(index) => {
                 if in_fn {
                     out.push(*index);
@@ -229,6 +230,13 @@ pub(crate) enum Ty {
     /// type of its own: it equals another measured type with the same unit and magnitude
     /// type, and nothing else.
     Measured(Shared<super::units::Unit>, Shared<Ty>),
+    /// A nested position whose values satisfy `refinements` (ADR 0103): an argument of a type
+    /// written or instantiated with a refined kind or a range, in edition 0.3. It sits inside
+    /// its position's label, `Labeled(ℓ, Refined(r, base))`, and the top of a declared type
+    /// keeps its refinements in [`Declared`]. Type equality and unification ignore it, as they
+    /// ignore labels; the verifier proves every flow into it and assumes it where values are
+    /// read from it.
+    Refined(Shared<[Refinement]>, Shared<Ty>),
 }
 
 /// A function type `fn(params) -> result uses ... fails ...`.
@@ -299,6 +307,33 @@ fn mix(a: &[Refinement], b: &[Refinement], common: bool) -> Vec<Refinement> {
     }
 }
 
+/// The refinements of a nested position where two types meet (ADR 0103 rule 5): those both
+/// carry (`common`), as a join of covariant positions keeps, or those of either, as a meet
+/// keeps. Two ranges are the same when they read the same, wherever they are written.
+pub(crate) fn mix_nested(
+    a: Option<&Shared<[Refinement]>>,
+    b: Option<&Shared<[Refinement]>>,
+    common: bool,
+) -> Option<Shared<[Refinement]>> {
+    let same = |x: &Refinement, y: &Refinement| match (x, y) {
+        (Refinement::Range(x, _), Refinement::Range(y, _)) => x == y,
+        _ => x == y,
+    };
+    let (a, b): (&[Refinement], &[Refinement]) =
+        (a.map_or(&[][..], |a| &a[..]), b.map_or(&[][..], |b| &b[..]));
+    let out: Vec<Refinement> = if common {
+        a.iter()
+            .filter(|r| b.iter().any(|q| same(r, q)))
+            .cloned()
+            .collect()
+    } else {
+        let mut out = a.to_vec();
+        out.extend(b.iter().filter(|r| !a.iter().any(|q| same(r, q))).cloned());
+        out
+    };
+    (!out.is_empty()).then(|| out.into_iter().collect())
+}
+
 /// A capability that a function type or a function requires, `uses @name: C[ops]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FnUse {
@@ -316,6 +351,20 @@ pub(crate) enum Refinement {
     Alias(AliasId, Vec<Ty>),
     /// Range sugar, as written: `in 0..5000` or `in 1..<20`, and where it is written.
     Range(String, Span),
+}
+
+impl Refinement {
+    /// The refinement with each type parameter of its alias's arguments replaced by the
+    /// matching argument: a refinement over a type parameter, as `NonEmpty[T]`, instantiated.
+    pub(crate) fn substitute(&self, args: &[Ty]) -> Refinement {
+        match self {
+            Refinement::Alias(id, alias_args) => Refinement::Alias(
+                *id,
+                alias_args.iter().map(|arg| arg.substitute(args)).collect(),
+            ),
+            Refinement::Range(..) => self.clone(),
+        }
+    }
 }
 
 /// A written type: its base, the refinements it carries and whether it has a label.
@@ -428,9 +477,14 @@ impl Flagged for Ty {
             Ty::Map(key, value) => key.flags().and(value.flags()),
             Ty::Kind(_, args) => args.flags(),
             Ty::Fn(function) => function.flags(),
+            Ty::Refined(_, inner) => Flags {
+                refined: true,
+                ..inner.flags()
+            },
             Ty::Labeled(label, inner) => {
                 let own = Flags {
                     var: false,
+                    refined: false,
                     label: true,
                     var_label: label.symbols.iter().any(|s| s.starts_with('?')),
                     normal: !label.is_public()
@@ -502,6 +556,7 @@ impl Ty {
             (Ty::Kind(i, a), Ty::Kind(j, b)) => i == j && Shared::ptr_eq(a, b),
             (Ty::Fn(a), Ty::Fn(b)) => Shared::ptr_eq(a, b),
             (Ty::Labeled(l, a), Ty::Labeled(m, b)) => Shared::ptr_eq(a, b) && l == m,
+            (Ty::Refined(r, a), Ty::Refined(q, b)) => Shared::ptr_eq(a, b) && r == q,
             (Ty::Int, Ty::Int)
             | (Ty::Bool, Ty::Bool)
             | (Ty::Text, Ty::Text)
@@ -521,6 +576,12 @@ impl Ty {
     /// value, that is when `self` is a labeled node in the form `with_label` builds whose
     /// inner node and label the operation left as they were.
     pub(crate) fn relabeled(&self, inner: Ty, label: &Label) -> Ty {
+        // `inner` was computed from `self.unlabeled()`, below `self`'s refinements (ADR 0103):
+        // they wrap it again, so no operation on labels drops a refinement.
+        let inner = match (self.refinements(), &inner) {
+            (Some(_), Ty::Refined(..) | Ty::Error(_) | Ty::Never) | (None, _) => inner,
+            (Some(refinements), _) => Ty::Refined(refinements.clone(), Shared::new(inner)),
+        };
         if self.keeps(&inner, label) {
             self.clone()
         } else {
@@ -558,10 +619,15 @@ impl Ty {
         }
     }
 
-    /// The type without its top label.
+    /// The type without its top label, and without the refinements of its position (ADR
+    /// 0103): the shape at its top. [`Ty::relabeled`] puts the refinements back.
     pub(crate) fn unlabeled(&self) -> &Ty {
         match self {
-            Ty::Labeled(_, inner) => inner,
+            Ty::Labeled(_, inner) => match &**inner {
+                Ty::Refined(_, base) => base,
+                other => other,
+            },
+            Ty::Refined(_, base) => base,
             other => other,
         }
     }
@@ -594,6 +660,9 @@ impl Ty {
         }
         match self {
             Ty::Measured(_, inner) => inner.without_units(),
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements.clone(), Shared::new(inner.without_units()))
+            }
             Ty::Labeled(label, inner) => {
                 Ty::Labeled(label.clone(), Shared::new(inner.without_units()))
             }
@@ -631,6 +700,94 @@ impl Ty {
         }
     }
 
+    /// The refinements of the type's top position, when it is a refined nested position (ADR
+    /// 0103), under its label.
+    pub(crate) fn refinements(&self) -> Option<&Shared<[Refinement]>> {
+        match self {
+            Ty::Labeled(_, inner) => match &**inner {
+                Ty::Refined(refinements, _) => Some(refinements),
+                _ => None,
+            },
+            Ty::Refined(refinements, _) => Some(refinements),
+            _ => None,
+        }
+    }
+
+    /// `self` with the refinements of `final_ty` at each position the two share, its own
+    /// labels and shape kept: a lambda parameter's type as its body assumed it, refitted to
+    /// the type argument that the call settles on (ADR 0103 rule 5). `fold`'s accumulator
+    /// assumed `Pos` from `initial` until `step`'s `Int` result made it `Int`. Linear in the
+    /// size of the types.
+    pub(crate) fn refit(&self, final_ty: &Ty) -> Ty {
+        if !self.flags().refined && !final_ty.flags().refined {
+            return self.clone();
+        }
+        let label = self.top_label();
+        let shape = match (self.unlabeled(), final_ty.unlabeled()) {
+            (Ty::List(a), Ty::List(b)) => Ty::List(Shared::new(a.refit(b))),
+            (Ty::Map(ak, av), Ty::Map(bk, bv)) => {
+                Ty::Map(Shared::new(ak.refit(bk)), Shared::new(av.refit(bv)))
+            }
+            (Ty::Kind(i, a), Ty::Kind(j, b)) if i == j && a.len() == b.len() => Ty::Kind(
+                *i,
+                a.iter().zip(b.iter()).map(|(x, y)| x.refit(y)).collect(),
+            ),
+            (Ty::Fn(a), Ty::Fn(b)) if a.params.len() == b.params.len() => {
+                Ty::Fn(Shared::new(FnTy {
+                    params: a
+                        .params
+                        .iter()
+                        .zip(&b.params)
+                        .map(|(x, y)| x.refit(y))
+                        .collect(),
+                    result: a.result.refit(&b.result),
+                    ..(**a).clone()
+                }))
+            }
+            (own, _) => own.clone(),
+        };
+        let shape = match final_ty.refinements() {
+            Some(refinements) if !matches!(shape, Ty::Error(_) | Ty::Never) => {
+                Ty::Refined(refinements.clone(), Shared::new(shape))
+            }
+            _ => shape,
+        };
+        shape.with_label(&label)
+    }
+
+    /// `self` with every refinement removed, at every position (ADR 0103 rule 5): the base of
+    /// a type, as an inferred type argument that its values do not agree on, or an editable
+    /// binding without an annotation.
+    pub(crate) fn without_refinements(&self) -> Ty {
+        if !self.flags().refined {
+            return self.clone();
+        }
+        match self {
+            Ty::Refined(_, inner) => inner.without_refinements(),
+            Ty::Labeled(label, inner) => {
+                let new = inner.without_refinements();
+                if new.same(inner) {
+                    self.clone()
+                } else {
+                    new.with_label(label)
+                }
+            }
+            Ty::List(element) => Ty::List(reuse(element, element.without_refinements())),
+            Ty::Map(key, value) => Ty::Map(
+                reuse(key, key.without_refinements()),
+                reuse(value, value.without_refinements()),
+            ),
+            Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, Ty::without_refinements)),
+            Ty::Fn(function) => Ty::Fn(map_function(
+                function,
+                Ty::without_refinements,
+                Ty::without_refinements,
+                None,
+            )),
+            other => other.clone(),
+        }
+    }
+
     /// The join of the labels of every position that holds data: the top, list elements, kind
     /// arguments and the labels that the fields and variant fields of a kind declare,
     /// instantiated and through the kinds they contain (`spec/07 §7` rule 3, re-review N-001).
@@ -641,6 +798,7 @@ impl Ty {
                 starred(label).join(&inner.deep_label(kinds))
             }
             Ty::Labeled(label, inner) => label.join(&inner.deep_label(kinds)),
+            Ty::Refined(_, inner) => inner.deep_label(kinds),
             Ty::List(element) => element.deep_label(kinds),
             Ty::Map(key, value) => key.deep_label(kinds).join(&value.deep_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
@@ -670,6 +828,7 @@ impl Ty {
     pub(crate) fn every_label(&self, kinds: &KindLabels) -> Label {
         match self {
             Ty::Labeled(label, inner) => label.join(&inner.every_label(kinds)),
+            Ty::Refined(_, inner) => inner.every_label(kinds),
             Ty::List(element) => element.every_label(kinds),
             Ty::Map(key, value) => key.every_label(kinds).join(&value.every_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
@@ -796,6 +955,9 @@ impl Ty {
         }
         match self {
             Ty::Labeled(_, inner) => inner.erase(),
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements.clone(), reuse(inner, inner.erase()))
+            }
             Ty::List(element) => Ty::List(reuse(element, element.erase())),
             Ty::Map(key, value) => Ty::Map(reuse(key, key.erase()), reuse(value, value.erase())),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, Ty::erase)),
@@ -813,6 +975,14 @@ impl Ty {
     pub(crate) fn substitute(&self, args: &[Ty]) -> Ty {
         match self {
             Ty::Labeled(label, inner) => self.relabeled(inner.substitute(args), label),
+            // A refinement over a type parameter, as `NonEmpty[T]`, is instantiated too.
+            Ty::Refined(refinements, inner) => Ty::Refined(
+                refinements
+                    .iter()
+                    .map(|refinement| refinement.substitute(args))
+                    .collect(),
+                reuse(inner, inner.substitute(args)),
+            ),
             Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::error()),
             Ty::List(element) => Ty::List(reuse(element, element.substitute(args))),
             Ty::Map(key, value) => Ty::Map(
@@ -840,6 +1010,9 @@ impl Ty {
                 let mapped = inner.map_labels(f);
                 self.relabeled(mapped, &f(label))
             }
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements.clone(), reuse(inner, inner.map_labels(f)))
+            }
             Ty::List(element) => Ty::List(reuse(element, element.map_labels(f))),
             Ty::Map(key, value) => Ty::Map(
                 reuse(key, key.map_labels(f)),
@@ -862,6 +1035,9 @@ impl Ty {
     pub(crate) fn symbolic(&self, names: &[String]) -> Ty {
         match self {
             Ty::Labeled(label, inner) => self.relabeled(inner.symbolic(names), label),
+            Ty::Refined(refinements, inner) => {
+                Ty::Refined(refinements.clone(), reuse(inner, inner.symbolic(names)))
+            }
             Ty::Param(index) => match names.get(*index) {
                 Some(name) => Ty::Param(*index).with_label(&Label::symbol(name.clone())),
                 None => Ty::Param(*index),
@@ -890,7 +1066,7 @@ impl Ty {
     /// holds one too, as `fn(fn() -> Unit uses @log: Log[write]) -> Unit` does.
     pub(crate) fn second_class(&self) -> bool {
         match self {
-            Ty::Labeled(_, inner) => inner.second_class(),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => inner.second_class(),
             Ty::List(element) => element.second_class(),
             Ty::Map(key, value) => key.second_class() || value.second_class(),
             Ty::Kind(_, args) => args.iter().any(Ty::second_class),
@@ -907,7 +1083,7 @@ impl Ty {
     /// Adds the indices of the type parameters that occur in the type to `params`.
     pub(crate) fn params(&self, params: &mut Vec<usize>) {
         match self {
-            Ty::Labeled(_, inner) => inner.params(params),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => inner.params(params),
             Ty::Param(index) => params.push(*index),
             Ty::List(element) => element.params(params),
             Ty::Map(key, value) => {
@@ -931,6 +1107,14 @@ impl Ty {
 pub(crate) trait Names {
     fn kind_name(&self, id: KindId) -> String;
     fn param_name(&self, index: usize) -> String;
+    /// How a refined nested position is written (ADR 0103): the name of the refined kind its
+    /// last refinement comes from, or its base followed by its range. `None` prints the base.
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        match refinements.last()? {
+            Refinement::Range(range, _) => Some(format!("{base} {range}")),
+            Refinement::Alias(..) => None,
+        }
+    }
 }
 
 /// The shape of a type node, as the printers read it (ADR 0080): the checker's [`Ty`] and the
@@ -938,6 +1122,8 @@ pub(crate) trait Names {
 /// print both alike, and a hover's text is the text a message gives the same type.
 pub(crate) enum View<'t, T> {
     Labeled(&'t Label, &'t T),
+    /// A refined nested position (ADR 0103).
+    Refined(&'t [Refinement], &'t T),
     Int,
     Fixed(IntType),
     /// A measured type: its unit and its magnitude type (ADR 0104).
@@ -968,6 +1154,7 @@ impl TypeView for Ty {
     fn view(&self) -> View<'_, Ty> {
         match self {
             Ty::Labeled(label, inner) => View::Labeled(label, inner),
+            Ty::Refined(refinements, inner) => View::Refined(refinements, inner),
             Ty::Int => View::Int,
             Ty::Fixed(int) => View::Fixed(*int),
             Ty::Measured(unit, inner) => View::Measured(unit, inner),
@@ -996,6 +1183,13 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
         match self.0.view() {
             // Messages about types name their bases; labels have messages of their own.
             View::Labeled(_, inner) => write!(f, "{}", Show(inner, names)),
+            View::Refined(refinements, inner) => {
+                let base = Show(inner, names).to_string();
+                match names.refined_name(refinements, &base) {
+                    Some(name) => write!(f, "{name}"),
+                    None => write!(f, "{base}"),
+                }
+            }
             View::Int => write!(f, "Int"),
             View::Fixed(int) => write!(f, "{}", int.as_str()),
             View::Measured(unit, inner) => write!(f, "{} of {unit}", Show(inner, names)),
@@ -1042,6 +1236,13 @@ impl<T: TypeView, N: Names> fmt::Display for ShowLabeled<'_, '_, T, N> {
         let names = self.1;
         match self.0.view() {
             View::Labeled(label, inner) => write!(f, "{label} {}", ShowLabeled(inner, names)),
+            View::Refined(refinements, inner) => {
+                let base = ShowLabeled(inner, names).to_string();
+                match names.refined_name(refinements, &base) {
+                    Some(name) => write!(f, "{name}"),
+                    None => write!(f, "{base}"),
+                }
+            }
             View::List(element) => write!(f, "List[{}]", ShowLabeled(element, names)),
             View::Map(key, value) => write!(
                 f,

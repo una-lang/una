@@ -15,7 +15,8 @@ use super::env::{Entity, FieldDef, FnAst, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnTy, FnUse, KindId, Refinement, Shared, Ty};
+use super::shared::Flagged as _;
+use super::ty::{FnTy, FnUse, KindId, KindLabels, Refinement, Shared, Ty};
 use super::unify::{Origin, Vars};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -314,7 +315,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let head = self.vars.head(ty);
         let function = match head.unlabeled().clone() {
             Ty::Fn(function) => (*function).clone(),
-            Ty::Labeled(..) => {
+            Ty::Labeled(..) | Ty::Refined(..) => {
                 self.unchecked(args);
                 return Ty::error();
             }
@@ -812,6 +813,14 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let values = declared_args(&def.params, &checked);
         let result = def.result.base.substitute(&subst);
+        // ADR 0103 rule 5: a type argument at a position of the result that is not covariant,
+        // inside a function type or under a user kind's argument, keeps no refinement, so an
+        // inferred refinement never meets a contravariant or invariant flow.
+        let result = if subst.is_empty() || covariant_in(&def.result.base, &self.env.kind_labels) {
+            result
+        } else {
+            self.refined_vars_at_base(&result)
+        };
         let decided = self.decided_callbacks(&callee, span, &needs, call_fails.is_some(), &checked);
         let result = if prelude_labeled(self.env.prelude, &def) {
             self.prelude_result(&callee, def.name, checked, result)
@@ -1888,6 +1897,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     ident.span,
                     span,
                 );
+                let targs = self.invariant_base(kind, targs, hint.is_some());
                 return Ty::Kind(kind, targs.into());
             }
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
@@ -1903,6 +1913,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
                 let hint = self.expected_args(id, expected);
                 self.construct(id, None, &targs, hint.as_deref(), args, ident.span, span);
+                let targs = self.invariant_base(id, targs, hint.is_some());
                 return Ty::Kind(id, targs.into());
             }
             Some(Entity::Kind(_)) => {
@@ -1928,6 +1939,61 @@ impl<'a> Checker<'_, 'a, '_> {
         self.report.error(Code::U2001, ident.span, problem);
         self.unchecked(args);
         Ty::error()
+    }
+
+    /// ADR 0103 rule 5: without an expected type, a type argument of `kind` at an invariant
+    /// parameter (ADR 0046) keeps no inferred refinement, so it never meets an invariant flow.
+    /// `ty` with each variable whose value now holds a refinement replaced by that value's
+    /// base (ADR 0103 rule 5). Every other variable stays a variable, so the labels that later
+    /// unifications join into it still reach this type; a type without a refinement, in any
+    /// edition before `0.3` always, is returned as it is.
+    fn refined_vars_at_base(&self, ty: &Ty) -> Ty {
+        if self.env.edition < Edition::V0_3 || !self.vars.resolve_shape(ty).flags().refined {
+            return ty.clone();
+        }
+        match ty {
+            Ty::Var(_) => self.vars.resolve_shape(ty).without_refinements(),
+            Ty::Refined(_, inner) => self.refined_vars_at_base(inner),
+            Ty::Labeled(label, inner) => self.refined_vars_at_base(inner).with_label(label),
+            Ty::List(element) => Ty::List(Shared::new(self.refined_vars_at_base(element))),
+            Ty::Map(key, value) => Ty::Map(
+                Shared::new(self.refined_vars_at_base(key)),
+                Shared::new(self.refined_vars_at_base(value)),
+            ),
+            Ty::Kind(id, args) => Ty::Kind(
+                *id,
+                args.iter()
+                    .map(|arg| self.refined_vars_at_base(arg))
+                    .collect(),
+            ),
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
+                params: function
+                    .params
+                    .iter()
+                    .map(|param| self.refined_vars_at_base(param))
+                    .collect(),
+                result: self.refined_vars_at_base(&function.result),
+                ..(**function).clone()
+            })),
+            other => other.without_refinements(),
+        }
+    }
+
+    fn invariant_base(&self, kind: KindId, targs: Vec<Ty>, expected: bool) -> Vec<Ty> {
+        if expected {
+            return targs;
+        }
+        targs
+            .into_iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                if self.env.kind_labels.is_invariant(kind, index) {
+                    self.refined_vars_at_base(&arg)
+                } else {
+                    arg
+                }
+            })
+            .collect()
     }
 
     /// The type arguments `targs` of a constructor of `kind` take the arguments of the
@@ -2302,10 +2368,36 @@ fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
 }
 
 /// Whether `ty` holds a type variable at any position.
+/// Whether every type parameter of `ty` is at a covariant position (ADR 0103 rule 5): never
+/// inside a function type, nor in an argument of a kind's parameter that is invariant (ADR
+/// 0046), as one that a field holds in a function type is.
+fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
+    let no_params = |ty: &Ty| {
+        let mut params = Vec::new();
+        ty.params(&mut params);
+        params.is_empty()
+    };
+    match ty {
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => {
+            covariant_in(inner, kinds)
+        }
+        Ty::Map(key, value) => covariant_in(key, kinds) && covariant_in(value, kinds),
+        Ty::Kind(id, args) => args.iter().enumerate().all(|(index, arg)| {
+            if kinds.is_invariant(*id, index) {
+                no_params(arg)
+            } else {
+                covariant_in(arg, kinds)
+            }
+        }),
+        Ty::Fn(_) => no_params(ty),
+        _ => true,
+    }
+}
+
 fn holds_var(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) => true,
-        Ty::Labeled(_, inner) | Ty::List(inner) => holds_var(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => holds_var(inner),
         Ty::Map(key, value) => holds_var(key) || holds_var(value),
         Ty::Kind(_, args) => args.iter().any(holds_var),
         Ty::Fn(function) => {

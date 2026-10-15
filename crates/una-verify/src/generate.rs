@@ -609,6 +609,84 @@ impl<'p> Index<'p> {
     }
 }
 
+/// How a nested position compares in a flow (ADR 0103 rule 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Variance {
+    Covariant,
+    Contravariant,
+    Invariant,
+}
+
+impl Variance {
+    /// The variance of a position of variance `inner` inside one of variance `self`.
+    fn then(self, inner: Variance) -> Variance {
+        match (self, inner) {
+            (Variance::Invariant, _) | (_, Variance::Invariant) => Variance::Invariant,
+            (Variance::Covariant, inner) => inner,
+            (Variance::Contravariant, Variance::Covariant) => Variance::Contravariant,
+            (Variance::Contravariant, Variance::Contravariant) => Variance::Covariant,
+        }
+    }
+
+    fn flipped(self) -> Variance {
+        self.then(Variance::Contravariant)
+    }
+}
+
+/// Whether the type parameter `param` occurs in `ty` only in data positions: never inside a
+/// function type, and never as an argument of a user kind (`in_kind`), whose own variance is
+/// not followed here, so such a parameter counts as invariant.
+fn data_only(ty: &Type, param: &str, in_kind: bool) -> bool {
+    match ty {
+        Type::Base {
+            base: Base::Param(name),
+            ..
+        } => name != param || !in_kind,
+        Type::Base {
+            base: Base::Named { module, args, .. },
+            ..
+        } => {
+            let nested = in_kind || !is_prelude(module);
+            args.iter().all(|arg| data_only(arg, param, nested))
+        }
+        Type::Base { .. } => true,
+        Type::Fn { .. } => !mentions_param(ty, param),
+    }
+}
+
+/// Whether the type parameter `param` occurs anywhere in `ty`.
+fn mentions_param(ty: &Type, param: &str) -> bool {
+    match ty {
+        Type::Base {
+            base: Base::Param(name),
+            ..
+        } => name == param,
+        Type::Base {
+            base: Base::Named { args, .. },
+            ..
+        } => args.iter().any(|arg| mentions_param(arg, param)),
+        Type::Base { .. } => false,
+        Type::Fn { params, result, .. } => {
+            params.iter().any(|p| mentions_param(p, param)) || mentions_param(result, param)
+        }
+    }
+}
+
+/// Whether a refinement is at some position of `ty`, its top included (ADR 0103).
+fn has_refinements(ty: &Type) -> bool {
+    match ty {
+        Type::Base {
+            base: Base::Named { args, .. },
+            refinements,
+            ..
+        } => !refinements.is_empty() || args.iter().any(has_refinements),
+        Type::Base { refinements, .. } => !refinements.is_empty(),
+        Type::Fn { params, result, .. } => {
+            params.iter().any(has_refinements) || has_refinements(result)
+        }
+    }
+}
+
 /// `ty` with the type parameters `params` replaced by `args`.
 fn substitute(ty: &Type, params: &[String], args: &[Type]) -> Type {
     match ty {
@@ -907,6 +985,9 @@ struct Walker<'p, 'i> {
     /// hold by the parameters' own, and give no obligation. It holds the source names of
     /// the lambda's parameters, which the goal text of the call's `requires` prints (R-032).
     eta: Option<Vec<String>>,
+    /// The element type of the list that the `together for` being walked makes, from the
+    /// binder of its `let`: each task's value flows into it (ADR 0103 rule 3).
+    together_element: Option<Type>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
     /// The binder that an assignment's refinement obligation is about, which a counterexample
@@ -963,6 +1044,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             lambdas: BTreeMap::new(),
             fresh: 0,
             eta: None,
+            together_element: None,
             eta_name: None,
             assigned: None,
             frames: BTreeMap::new(),
@@ -1248,6 +1330,61 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ctx.assume(f.f);
             }
         }
+        // ADR 0103 rule 6: the refinements of its nested positions, of the terms that project
+        // them, under the tags of their variants.
+        self.assume_projections(ctx, value, &[], 8);
+    }
+
+    /// The facts on access of ADR 0103 rule 6 for the fields of `value` whose instantiated
+    /// type is refined: each refinement of a field, applied to the field's term, under `guard`
+    /// and, for a sum, the tag of the field's variant. Bounded by `depth`, so a recursive kind
+    /// adds a bounded number of facts; linear in the fields of the kinds it reaches.
+    fn assume_projections(&mut self, ctx: &mut Ctx, value: &Tv, guard: &[F], depth: usize) {
+        let Type::Base {
+            base: Base::Named { module, name, args },
+            ..
+        } = &value.ty
+        else {
+            return;
+        };
+        if depth == 0 || !args.iter().any(has_refinements) {
+            return;
+        }
+        let variants = self.index.variant_names(module, name).len().max(1);
+        let tag = if variants > 1 { self.tag(value) } else { None };
+        for variant in 0..variants {
+            let mut guarded = guard.to_vec();
+            if let Some(tag) = &tag {
+                guarded.push(F::eq(tag.clone(), F::Int(variant.to_string())));
+            }
+            for index in 0.. {
+                let Some(field) = self.field(value, variant, index) else {
+                    break;
+                };
+                // A field of a generic kind is encoded at its parameter's sort, which a
+                // refinement of the argument does not speak of: no fact about it or below it
+                // (sound, incomplete).
+                if !has_refinements(&field.ty) || field.f.sort() != sort(&field.ty) {
+                    continue;
+                }
+                for refinement in refinements(&field.ty) {
+                    let env = Env {
+                        vars: &|_| None,
+                        it: Some(field.clone()),
+                        result: None,
+                    };
+                    if let Some(f) = self.term(&refinement.clause.term, &env) {
+                        let fact = if guarded.is_empty() {
+                            f.f
+                        } else {
+                            F::op("=>", vec![F::and(guarded.clone()), f.f])
+                        };
+                        ctx.define(fact);
+                    }
+                }
+                self.assume_projections(ctx, &field, &guarded, depth - 1);
+            }
+        }
     }
 
     // ----- expressions -----
@@ -1378,8 +1515,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                             task_ctx.assume(F::op(op, vec![x.f, high.f]));
                         }
                     }
+                    let element = self.together_element.take();
                     let mut task_leaves = Vec::new();
                     self.walk(task, &task_ctx, &mut task_leaves);
+                    // ADR 0103 rule 3: each task's value is an element of the list.
+                    if let Some(element) = element.filter(has_refinements) {
+                        for leaf in &task_leaves {
+                            let Some(value) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = task_ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            self.refined_flow(&element, value, leaf.span, &leaf_ctx);
+                        }
+                    }
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
                         divisions: ctx.divisions.clone(),
@@ -1503,6 +1652,14 @@ impl<'p, 'i> Walker<'p, 'i> {
                             }
                         }
                         Bound::Expr(inner) => {
+                            if let Expr::TogetherFor { .. } = inner
+                                && let Type::Base {
+                                    base: Base::Named { args, .. },
+                                    ..
+                                } = ty
+                            {
+                                self.together_element = args.first().cloned();
+                            }
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);
                             // No path of the bound expression completes, as `fail`: the rest
@@ -1681,7 +1838,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     arg_spans,
                     ..
                 } => {
-                    self.fields(ctor, args, arg_spans, &ctx);
+                    self.declared_fields(ctor, args, arg_spans, &ctx);
                     return;
                 }
                 Expr::Handle {
@@ -1860,6 +2017,17 @@ impl<'p, 'i> Walker<'p, 'i> {
             let who = self.who(&value);
             self.fn_flow(&value.ty, ty, &who, span, ctx);
         }
+        // ADR 0103 rule 4: the value flows into the binder's nested positions, as an annotated
+        // `let`, an assignment or an `edit` argument's rebind binds it. A binder at the value's
+        // own type gives none. A list literal's elements are its own flows (rule 3). The
+        // refinements of either side count: a contravariant or invariant position proves the
+        // value's.
+        if let Some(source) = self.rhs_type(rhs, ctx)
+            && (has_refinements(ty) || has_refinements(&source))
+        {
+            let what = self.text(span);
+            self.nested_flows(&source, ty, span, &what);
+        }
         std::rc::Rc::make_mut(&mut ctx.types).insert(name.to_owned(), ty.clone());
         let x = own(ctx, name);
         match rhs {
@@ -1907,6 +2075,24 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.fixed_facts(*op, *int, args, &values, &x.f, ctx);
                 }
                 if let Prim::Map(op) = prim {
+                    // ADR 0103 rules 3 and 5: `with` and `set` store the key and the value at
+                    // the map's types; a lookup stores nothing, so its key is at its base.
+                    if *op == MapOp::With
+                        && let Some(Type::Base {
+                            base: Base::Named { args: kv, .. },
+                            ..
+                        }) = values.first().map(|map| &map.ty)
+                    {
+                        let kv = kv.clone();
+                        for (index, target) in kv.iter().enumerate() {
+                            if let Some(value) = values.get(index + 1)
+                                && has_refinements(target)
+                            {
+                                let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                                self.refined_flow(target, value, at, ctx);
+                            }
+                        }
+                    }
                     self.map_facts(*op, &values, &x, ctx);
                 }
                 if let Some(value) = self.prim(*prim, &values)
@@ -1976,6 +2162,17 @@ impl<'p, 'i> Walker<'p, 'i> {
                         ..*contract
                     };
                     self.call(&contract, &values, arg_spans, *span, &x, ctx);
+                    // ADR 0103 rule 6: a generic callee's result at refined type arguments
+                    // carries their refinements. It returns only values it was given at those
+                    // types, each a flow with its obligation, as `fold`'s accumulator is
+                    // `initial` or a result of `step`.
+                    if !contract.type_params.is_empty() && has_refinements(&result) {
+                        let value = Tv {
+                            f: x.f.clone(),
+                            ty: result.clone(),
+                        };
+                        self.assume_refinements(ctx, &value);
+                    }
                     if is_prelude(&function.module) {
                         self.text_facts(&function.name, &values, &x, ctx);
                     }
@@ -2067,7 +2264,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 args,
                 arg_spans,
             } => {
-                self.fields(ctor, args, arg_spans, ctx);
+                self.fields(&x.ty, ctor, args, arg_spans, ctx);
                 self.field_functions(&x.ty, ctor, args, arg_spans, ctx);
                 if let Some(tag) = self.tag(&x) {
                     ctx.define(F::eq(tag, F::Int(ctor.index.to_string())));
@@ -2116,6 +2313,19 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let value = self.atom(item, ctx);
                         let who = self.who(&value);
                         self.fn_flow(&value.ty, element, &who, span, ctx);
+                    }
+                }
+                // ADR 0103 rule 3: each element flows into a refined element type.
+                if let Type::Base {
+                    base: Base::Named { args, .. },
+                    ..
+                } = ty
+                    && let Some(element) = args.first()
+                    && has_refinements(element)
+                {
+                    for item in items {
+                        let value = self.atom(item, ctx);
+                        self.refined_flow(element, &value, span, ctx);
                     }
                 }
                 if let Some(len) = self.len(&x) {
@@ -2195,7 +2405,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 arg_spans,
                 ..
             } => {
-                self.fields(ctor, args, arg_spans, ctx);
+                self.declared_fields(ctor, args, arg_spans, ctx);
                 let checked = self.atom(value, ctx);
                 let env = Env {
                     vars: &|name| Some(own(ctx, name)),
@@ -2401,8 +2611,36 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
-    /// The fields of a constructed value or a failure: refinement obligations at each.
-    fn fields(&mut self, ctor: &Ctor, args: &[Atom], arg_spans: &[Span], ctx: &Ctx) {
+    /// The arguments of a construction of `owner` into its fields, at the kind's type
+    /// arguments: one `refinement` obligation per refinement of the field type, and for a
+    /// kind without type arguments, the flows of its function fields too; a generic kind's,
+    /// the prelude's `Some`, `Ok` and `Err` included, are [`Walker::field_functions`]'s. A
+    /// field at a refined type argument, as `Box(value: n)` at `Box[Pos]`, is an obligation
+    /// (ADR 0103 rule 3).
+    fn fields(&mut self, owner: &Type, ctor: &Ctor, args: &[Atom], arg_spans: &[Span], ctx: &Ctx) {
+        let generic = match owner {
+            Type::Base {
+                base: Base::Named { module, name, args },
+                ..
+            } => self.index.prelude_kind(module, name) || !args.is_empty(),
+            Type::Base { .. } | Type::Fn { .. } => false,
+        };
+        for (index, (atom, span)) in args.iter().zip(arg_spans).enumerate() {
+            let Some(field_ty) = self.index.field_type(owner, ctor.index, index) else {
+                continue;
+            };
+            let value = self.atom(atom, ctx);
+            if generic {
+                self.refined_flow(&field_ty, &value, *span, ctx);
+            } else {
+                self.refinement_sites(&field_ty, &value, *span, ctx);
+            }
+        }
+    }
+
+    /// The fields of a failure, a kind without type arguments: refinement obligations at
+    /// each, at the declared field types.
+    fn declared_fields(&mut self, ctor: &Ctor, args: &[Atom], arg_spans: &[Span], ctx: &Ctx) {
         let variants = if self.index.prelude_kind(&ctor.kind.module, &ctor.kind.name) {
             None
         } else {
@@ -2431,6 +2669,43 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
+    /// The type of the value that `rhs` makes, before it is bound: an atom's, a callee's result
+    /// at its type arguments, a function value's or an operation's result, or a field's
+    /// declared type. `None` for the right-hand sides whose flows are their own: a
+    /// construction's fields, a tuple's components, a list literal's elements, a lambda and a
+    /// primitive, whose types hold no refinement.
+    fn rhs_type(&mut self, rhs: &Rhs, ctx: &Ctx) -> Option<Type> {
+        match rhs {
+            Rhs::Atom(atom) => Some(self.atom(atom, ctx).ty),
+            Rhs::Call {
+                function,
+                type_args,
+                ..
+            } => {
+                let key = (function.module.as_str(), function.name.as_str());
+                let contract = self.index.contracts.get(&key)?;
+                Some(substitute(contract.result, contract.type_params, type_args))
+            }
+            Rhs::Apply { callee, .. } => match self.atom(callee, ctx).ty {
+                Type::Fn { result, .. } => Some((*result).clone()),
+                Type::Base { .. } => None,
+            },
+            Rhs::Op {
+                capability_path,
+                op,
+                ..
+            } => self
+                .index
+                .operation(capability_path, op)
+                .map(|signature| signature.result.clone()),
+            Rhs::Field { value, index, .. } => {
+                let record = self.atom(value, ctx);
+                self.index.field_type(&record.ty, 0, *index)
+            }
+            _ => None,
+        }
+    }
+
     /// A value flowing into `target`: one `refinement` obligation per refinement, at the
     /// value (`spec/12 §3`), and for a function value, the obligations of its function type
     /// (ADR 0037 rule 2).
@@ -2439,7 +2714,15 @@ impl<'p, 'i> Walker<'p, 'i> {
             let who = self.who(value);
             self.fn_flow(&value.ty, target, &who, span, ctx);
         }
+        self.refined_flow(target, value, span, ctx);
+    }
+
+    /// [`Walker::refinement_sites`] without the flows of function types: one obligation per
+    /// refinement of `target`, and those of its nested positions (ADR 0103 rule 4).
+    fn refined_flow(&mut self, target: &Type, value: &Tv, span: Span, ctx: &Ctx) {
         let value_text = self.text(span);
+        // ADR 0103 rule 4: the nested positions of the target, by variance.
+        self.nested_flows(&value.ty, target, span, &value_text);
         for refinement in refinements(target) {
             let env = Env {
                 vars: &|_| None,
@@ -2465,8 +2748,9 @@ impl<'p, 'i> Walker<'p, 'i> {
     // ----- function types (ADR 0037) -----
 
     /// The values of the normal return paths `leaves` flowing into `target`, a declared result
-    /// or a binder, when it holds a function type (ADR 0037 rule 2): at each returned
-    /// expression, or at `at`, the expression a binder is bound to.
+    /// or a binder: their nested positions (ADR 0103 rule 4), and when `target` holds a
+    /// function type, its flows (ADR 0037 rule 2), at each returned expression, or at `at`,
+    /// the expression a binder is bound to. The top refinements of `target` are the caller's.
     fn returned_functions(
         &mut self,
         entry: &Ctx,
@@ -2474,6 +2758,14 @@ impl<'p, 'i> Walker<'p, 'i> {
         target: &Type,
         at: Option<Span>,
     ) {
+        for leaf in leaves {
+            let Some(value) = &leaf.value else {
+                continue;
+            };
+            let span = at.unwrap_or(leaf.span);
+            let what = self.text(span);
+            self.nested_flows(&value.ty, target, span, &what);
+        }
         if !contains_fn(target) {
             return;
         }
@@ -2546,6 +2838,179 @@ impl<'p, 'i> Walker<'p, 'i> {
     fn fresh_binder(&mut self, name: &str) -> Name {
         self.fresh += 1;
         format!("{name}%f{}", self.fresh)
+    }
+
+    /// A value of type `source` flowing into `target` at its nested positions (ADR 0103 rule
+    /// 4): at each refined position of `target` that `source` reaches, one `refinement`
+    /// obligation per refinement that the same position of `source` does not carry, over a
+    /// fresh binder that holds the refinements of `source` there. Covariant positions prove
+    /// the target's refinements, contravariant ones the source's, invariant ones both. The
+    /// obligations are closed: a kind's refinement speaks only of `it`, so no hypothesis of the
+    /// path context is needed, and the same pair of refinements gives the same query wherever
+    /// it is compared. The top position is [`Walker::refinement_sites`]'s, and the parameters
+    /// and result of a function type are [`Walker::fn_flow`]'s. Linear in the size of the
+    /// types.
+    fn nested_flows(&mut self, source: &Type, target: &Type, span: Span, what: &str) {
+        let mut found = Vec::new();
+        self.nested_positions(source, target, Variance::Covariant, "", &mut found);
+        for (path, from, to, variance) in found {
+            if variance != Variance::Contravariant {
+                self.nested_obligations(&from, &to, &path, span, what);
+            }
+            if variance != Variance::Covariant {
+                self.nested_obligations(&to, &from, &path, span, what);
+            }
+        }
+    }
+
+    /// The pairs of nested positions of `source` and `target` that have the same shape, with
+    /// their paths (`element`, `arg 2`, as `spec/13 §5` writes them) and variances.
+    fn nested_positions(
+        &self,
+        source: &Type,
+        target: &Type,
+        variance: Variance,
+        path: &str,
+        out: &mut Vec<(String, Type, Type, Variance)>,
+    ) {
+        match (source, target) {
+            (
+                Type::Base {
+                    base:
+                        Base::Named {
+                            module,
+                            name,
+                            args: from,
+                        },
+                    ..
+                },
+                Type::Base {
+                    base:
+                        Base::Named {
+                            module: to_module,
+                            name: to_name,
+                            args: to,
+                        },
+                    ..
+                },
+            ) if module == to_module && name == to_name && from.len() == to.len() => {
+                for (index, (a, b)) in from.iter().zip(to).enumerate() {
+                    let own = if is_prelude(module) && name == "List" {
+                        "element".to_owned()
+                    } else {
+                        format!("arg {}", index + 1)
+                    };
+                    let here = if path.is_empty() {
+                        own
+                    } else {
+                        format!("{path}.{own}")
+                    };
+                    let variance = variance.then(self.arg_variance(module, name, index));
+                    out.push((here.clone(), a.clone(), b.clone(), variance));
+                    self.nested_positions(a, b, variance, &here, out);
+                }
+            }
+            (
+                Type::Fn {
+                    params: from,
+                    result: from_result,
+                    ..
+                },
+                Type::Fn {
+                    params: to,
+                    result: to_result,
+                    ..
+                },
+            ) if from.len() == to.len() => {
+                // The parameters' and the result's own refinements are `fn_flow`'s; the
+                // positions nested in them are compared here.
+                for (index, (a, b)) in from.iter().zip(to).enumerate() {
+                    let here = format!("{path}.param {}", index + 1);
+                    self.nested_positions(
+                        a,
+                        b,
+                        variance.flipped(),
+                        here.trim_start_matches('.'),
+                        out,
+                    );
+                }
+                let here = format!("{path}.result");
+                self.nested_positions(
+                    from_result,
+                    to_result,
+                    variance,
+                    here.trim_start_matches('.'),
+                    out,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// The variance of argument `index` of the type `module.name` (ADR 0103 rule 4): the
+    /// arguments of `List`, `Option`, `Result` and `Map` are covariant, and so is a parameter
+    /// of a user kind that no field holds inside a function type or under another user kind's
+    /// argument; any other is invariant, which only adds obligations (ADR 0046).
+    fn arg_variance(&self, module: &str, name: &str, index: usize) -> Variance {
+        if is_prelude(module) {
+            return Variance::Covariant;
+        }
+        let Some(kind) = self.index.kinds.get(&(module, name)) else {
+            return Variance::Invariant;
+        };
+        let Some(param) = kind.params.get(index) else {
+            return Variance::Invariant;
+        };
+        let covariant = kind.variants.iter().all(|variant| {
+            variant
+                .fields
+                .iter()
+                .all(|(_, ty)| data_only(ty, param, false))
+        });
+        if covariant {
+            Variance::Covariant
+        } else {
+            Variance::Invariant
+        }
+    }
+
+    /// The obligations of one nested position: each refinement of `to` that `from` does not
+    /// carry, as the same formula, holds of a fresh binder that holds those of `from`.
+    fn nested_obligations(&mut self, from: &Type, to: &Type, path: &str, span: Span, what: &str) {
+        let missing: Vec<Refinement> = refinements(to)
+            .iter()
+            .filter(|goal| {
+                !refinements(from)
+                    .iter()
+                    .any(|held| held.clause.term == goal.clause.term)
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        let shown_binder: String = path
+            .chars()
+            .map(|c| if c == ' ' || c == '.' { '_' } else { c })
+            .collect();
+        let mut closed = Ctx::default();
+        let binder = self.fresh_binder(&shown_binder);
+        let value = self.flow_binder(&mut closed, &binder, from);
+        for goal in &missing {
+            let shown = instantiate(&goal.clause.term, &shown_binder);
+            let repair = format!(
+                "build `{what}` at the refined type, or give its {path} the refinement `{}`",
+                goal.name
+            );
+            self.flow_obligation(
+                &closed,
+                goal,
+                &value,
+                format!("{path} of `{what}`: {shown}"),
+                span,
+                repair,
+            );
+        }
     }
 
     /// A value of type `source` flowing into `target` (ADR 0037 rule 2, S-Fun): for function

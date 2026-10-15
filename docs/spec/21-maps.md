@@ -34,6 +34,7 @@ The operations are a prelude function and built-in methods resolved by the recei
 | `m.entries()` | `List[Entry[K, V]]` | `ensures result.len == m.len` |
 
 1. **Updates.** `set` and `remove` take the receiver as `edit`, and follow `spec/17 §3`: the receiver is a place, the call is the whole expression of its statement, and `old(m)` in the table is the receiver's value before the call.
+   - (v0.3, ADR 0103.) With a refined key or value type, `with` and `set` store their `key` and `value` at those types, with an obligation each (`spec/12 §3`). `has`, `get`, `remove` and `without` take the key at the base of the key type: a lookup stores nothing, so a key outside the refinement finds no entry.
 2. **Absence is not a failure.** `get` returns `None` for a missing key. Handle it with `if none` (`spec/06 §3`) or `when`.
 3. **Iteration.** `keys`, `values` and `entries` list the entries in key order, so a `for` over them visits the keys in ascending order.
 4. **Interpolation** (ADR 0068). A map renders as `{k: v, …}` in key order, with keys and values in the Una form of `spec/11 §5`, and `{}` when it is empty: `{"a": 1, "b": 2}`.

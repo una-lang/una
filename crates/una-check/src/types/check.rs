@@ -331,6 +331,10 @@ impl Names for Checker<'_, '_, '_> {
             .get(index)
             .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
     }
+
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        self.env.refined_display(refinements, base)
+    }
 }
 
 /// A checker's names as source writes them, for repairs.
@@ -343,6 +347,10 @@ impl Names for Written<'_, '_, '_, '_> {
 
     fn param_name(&self, index: usize) -> String {
         self.0.param_name(index)
+    }
+
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        self.0.env.refined_display(refinements, base)
     }
 }
 
@@ -541,7 +549,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         found: &Ty,
         role: Role<'_>,
     ) -> bool {
-        if self.vars.unify(expected, found) {
+        if self.vars.unify_expected(expected, found) {
             return true;
         }
         // ADR 0104: two types that differ only in their units are U2028.
@@ -826,6 +834,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn lambda_refinements(&mut self, span: Span, refinements: Vec<Refinement>) {
         if self.pass == Pass::Check && !refinements.is_empty() {
             self.records.lambda_params.insert(span, refinements);
+        }
+    }
+
+    /// Records, in pass 2, that the type at `span` takes its refinements from the final value
+    /// of `from` (ADR 0103 rule 5).
+    pub(crate) fn refit(&mut self, span: Span, from: Ty) {
+        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+            self.records.refits.push((span, from));
         }
     }
 
@@ -1135,7 +1151,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.current = Some(id);
         self.type_params = def.type_params.clone();
         for param in &def.params {
-            let ty = self.symbolic(&param.ty.base);
+            let ty = self.symbolic(&self.env.top_refined(&param.ty));
             let editable = param.convention == Some(una_syntax::ast::Convention::Edit);
             self.bind_as(param.name, ty, editable);
             if let Some(local) = self.locals.last_mut() {

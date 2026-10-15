@@ -57,6 +57,10 @@ pub(crate) struct Records {
     /// The refinements of each lambda parameter, by the span of its name: its annotation's,
     /// or the expected parameter type's (ADR 0037 rule 1).
     pub(crate) lambda_params: BTreeMap<Span, Vec<Refinement>>,
+    /// The types recorded before a call settled its type arguments, by span, with the type
+    /// they were taken from, unresolved: a lambda's parameters and the lambda itself. Their
+    /// refinements are refitted to that type's final value (ADR 0103 rule 5).
+    pub(crate) refits: Vec<(Span, Ty)>,
 }
 
 impl Records {
@@ -78,5 +82,11 @@ impl Records {
         self.args.extend(other.args);
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
+        for (span, from) in other.refits {
+            if let Some(recorded) = self.types.get(&span) {
+                let refitted = recorded.refit(&resolve(&from));
+                self.types.insert(span, refitted);
+            }
+        }
     }
 }

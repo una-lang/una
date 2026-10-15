@@ -170,6 +170,8 @@ impl Snapshots {
                 let inner = self.shared(inner);
                 self.node(Node::Measured((**unit).clone(), inner))
             }
+            // A hover shows a refined position's base (ADR 0103).
+            Ty::Refined(_, inner) => self.of(inner),
             Ty::List(element) => {
                 let element = self.shared(element);
                 self.node(Node::List(element))

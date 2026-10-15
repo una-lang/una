@@ -1499,7 +1499,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // labels join.
         let mut shape = match expected.map(|ty| self.vars.head(ty)) {
             Some(Ty::Fn(function)) => Some((*function).clone()),
-            Some(Ty::Labeled(_, inner)) => match &*inner {
+            Some(Ty::Labeled(_, inner) | Ty::Refined(_, inner)) => match &*inner {
                 Ty::Fn(function) => Some((**function).clone()),
                 _ => None,
             },
@@ -1542,6 +1542,9 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         for (index, param) in params.iter().enumerate() {
             let from_shape = shape.as_ref().and_then(|f| f.params.get(index).cloned());
+            // The type a parameter without an annotation takes from the expected one, before
+            // the call settles it (ADR 0103 rule 5).
+            let unannotated = param.ty.is_none().then(|| from_shape.clone()).flatten();
             let shape_refinements: Option<Vec<Refinement>> =
                 shape.as_ref().map(|f| f.refinements.param(index).to_vec());
             let mut written_refinements: Option<Vec<Refinement>> = None;
@@ -1623,7 +1626,15 @@ impl<'a> Checker<'_, 'a, '_> {
             own_refinements.push(own.clone());
             self.lambda_refinements(param.name.span, own);
             self.typed(param.name.span, &ty);
+            if let Some(from) = unannotated {
+                self.refit(param.name.span, from);
+            }
             self.bind(name, ty);
+        }
+        // The lambda's type takes its parameters' refinements as the call settles them, as
+        // each parameter does (ADR 0103 rule 5).
+        if let Some(function) = &shape {
+            self.refit(span, Ty::Fn(Shared::new(function.clone())));
         }
         let result = shape.as_ref().map(|f| f.result.clone());
         let fails = shape.as_ref().and_then(|f| f.fails.clone());

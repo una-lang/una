@@ -882,6 +882,15 @@ impl<'a> Env<'a> {
 
     /// The name of a kind, for messages: with its module's path when another module declares
     /// a kind of the same name (#17).
+    /// How a refined nested position is written in messages (ADR 0103): the refined kind its
+    /// last refinement comes from, or its base followed by its range.
+    pub(crate) fn refined_display(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        match refinements.last()? {
+            Refinement::Range(range, _) => Some(format!("{base} {range}")),
+            Refinement::Alias(id, _) => self.aliases.get(*id).map(|alias| alias.name.to_owned()),
+        }
+    }
+
     pub(crate) fn kind_display(&self, id: KindId) -> String {
         match self.kinds.get(id) {
             Some(kind) if self.shared_kind_names.get(id).copied().unwrap_or(false) => {
@@ -1673,13 +1682,14 @@ impl<'a> Env<'a> {
                     self.type_argument(module, arg.span, &lowered.base, report);
                     self.refined_argument(module, arg, lowered, type_params, report);
                 }
+                let lowered = lowered.into_iter().map(|arg| self.nested(arg)).collect();
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
             TypeCore::List(element) => {
                 let lowered = self.lower_type(module, element, type_params, report);
                 self.type_argument(module, element.span, &lowered.base, report);
                 self.refined_argument(module, element, &lowered, type_params, report);
-                Declared::plain(Ty::List(Shared::new(lowered.base)))
+                Declared::plain(Ty::List(Shared::new(self.nested(lowered).base)))
             }
             TypeCore::Function {
                 params,
@@ -1831,6 +1841,40 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// A written type argument as the nested position it is: in edition 0.3, its refinements
+    /// stay, as a refined position (ADR 0103 rule 1); in editions 0.1 and 0.2, its base, since
+    /// [`Env::refined_argument`] reported it (ADR 0040).
+    /// The type a binder declared at `declared` gives its uses in edition `0.3`: the base with
+    /// its refinements at the top, inside its label, so that rule 5 of ADR 0103 sees a `Pos`
+    /// parameter as a `Pos` (`or_else` is `Pos` when both its arguments are) and an annotated
+    /// `let` fixes the refinements of the type arguments it is the expected type of. Every
+    /// refinement here is proved where the binder is bound. Earlier editions, the base.
+    pub(crate) fn top_refined(&self, declared: &Declared) -> Ty {
+        if self.edition < una_project::Edition::V0_3 || declared.refinements.is_empty() {
+            return declared.base.clone();
+        }
+        let label = declared.base.top_label();
+        let base = declared.base.unlabeled().clone();
+        Ty::Refined(
+            declared.refinements.iter().cloned().collect(),
+            Shared::new(base),
+        )
+        .with_label(&label)
+    }
+
+    fn nested(&self, lowered: Declared) -> Declared {
+        if self.edition < una_project::Edition::V0_3 || lowered.refinements.is_empty() {
+            return Declared::plain(lowered.base);
+        }
+        // The refinements sit inside the position's label, `Labeled(ℓ, Refined(r, base))`.
+        let label = lowered.base.top_label();
+        let base = lowered.base.unlabeled().clone();
+        Declared::plain(
+            Ty::Refined(lowered.refinements.into_iter().collect(), Shared::new(base))
+                .with_label(&label),
+        )
+    }
+
     /// U2002: a written type argument of a refined kind, or with range sugar (ADR 0040). A type
     /// that contains one is reported at the innermost refined type argument, once, since the
     /// lowered argument keeps only its base.
@@ -1842,7 +1886,11 @@ impl<'a> Env<'a> {
         type_params: &[&'a str],
         report: &mut Report<'_>,
     ) {
-        if !self.reports(module) || !lowered.is_refined() {
+        // ADR 0103 rule 1: in edition 0.3 a refined type argument is well-formed.
+        if !self.reports(module)
+            || !lowered.is_refined()
+            || self.edition >= una_project::Edition::V0_3
+        {
             return;
         }
         let base = Show(
@@ -2108,6 +2156,10 @@ impl Names for LowerNames<'_, '_> {
         self.type_params
             .get(index)
             .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
+    }
+
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        self.env.refined_display(refinements, base)
     }
 }
 

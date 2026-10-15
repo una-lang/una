@@ -362,7 +362,7 @@ impl Checker<'_, '_, '_> {
     fn fn_uses_name(&self, ty: &Ty) -> Option<String> {
         match self.resolve(ty) {
             Ty::Fn(function) => function.uses.first().map(|need| need.name.clone()),
-            Ty::Labeled(_, inner) => self.fn_uses_name(&inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.fn_uses_name(&inner),
             _ => None,
         }
     }
@@ -401,7 +401,9 @@ impl Checker<'_, '_, '_> {
     pub(crate) fn holds_function(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
             Ty::Fn(_) => true,
-            Ty::List(inner) | Ty::Labeled(_, inner) => self.holds_function(&inner),
+            Ty::List(inner) | Ty::Labeled(_, inner) | Ty::Refined(_, inner) => {
+                self.holds_function(&inner)
+            }
             Ty::Map(key, value) => self.holds_function(&key) || self.holds_function(&value),
             Ty::Kind(id, args) => {
                 self.env
@@ -1249,7 +1251,7 @@ pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
     fn walk(ty: &Ty, kinds: &mut Vec<usize>) -> bool {
         match ty {
             Ty::Fn(_) => true,
-            Ty::List(inner) | Ty::Labeled(_, inner) => walk(inner, kinds),
+            Ty::List(inner) | Ty::Labeled(_, inner) | Ty::Refined(_, inner) => walk(inner, kinds),
             Ty::Map(key, value) => {
                 let key = walk(key, kinds);
                 walk(value, kinds) || key

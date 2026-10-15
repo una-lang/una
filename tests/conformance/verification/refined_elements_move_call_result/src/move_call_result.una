@@ -1,0 +1,19 @@
+-- test: movement call_result: a call's `List[Int]` result bound by a `let` annotated `List[Pos]` and assigned to a binding annotated `List[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_call_result.una:16:22
+-- expect: error U5001 at src/move_call_result.una:18:7
+module move_call_result
+
+pub kind Pos = Int where it > 0
+
+ints() -> List[Int] = [0]
+
+pos(p: Pos) -> List[Pos] = [p]
+
+pub moved(p: Pos) -> Int
+=
+  let a: List[Pos] = pos(p)
+  let b: List[Pos] = ints()
+  let edit c: List[Pos] = a
+  c = ints()
+  b.len + c.len

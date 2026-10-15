@@ -1,0 +1,176 @@
+//! ADR 0103's soundness guard for refined elements of collections. Unification ignores the
+//! refinements at nested positions, as it ignores labels, so a value that moves between two
+//! types without its `refinement` obligation would let a `List[Int]` into a `List[Pos]`
+//! unseen. Each way a value moves has a conformance case,
+//! `tests/conformance/verification/refined_elements_move_<kind>`, whose refuted movement fails
+//! if its site is missed. This test fails when a kind of movement has no case, or a case names
+//! a kind this list does not have, so the list and the cases stay one.
+
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::unwrap_used)]
+
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use una_cli::Tier;
+
+/// Every way a value moves from one type into another (ADR 0103 rules 3 and 4).
+const MOVEMENTS: &[&str] = &[
+    "annotated_let",
+    "argument",
+    "assignment",
+    "call_result",
+    "captured",
+    "edit_back",
+    "element",
+    "field",
+    "generic",
+    "generic_field",
+    "handler_result",
+    "join",
+    "operation_argument",
+    "return",
+    "together",
+    "with_argument",
+];
+
+#[test]
+fn every_movement_has_a_refined_elements_case() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/verification");
+    let found: BTreeSet<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            name.strip_prefix("refined_elements_move_")
+                .map(str::to_owned)
+        })
+        .collect();
+    let listed: BTreeSet<String> = MOVEMENTS.iter().map(|kind| (*kind).to_owned()).collect();
+    let missing: Vec<&String> = listed.difference(&found).collect();
+    let unlisted: Vec<&String> = found.difference(&listed).collect();
+    assert!(
+        missing.is_empty(),
+        "movements without a refined_elements_move_ case: {missing:?}"
+    );
+    assert!(
+        unlisted.is_empty(),
+        "refined_elements_move_ cases for movements this list does not have: {unlisted:?}"
+    );
+    for kind in MOVEMENTS {
+        let src = dir.join(format!("refined_elements_move_{kind}/src/move_{kind}.una"));
+        let text = std::fs::read_to_string(&src).unwrap();
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("-- expect: error U5001 at ")),
+            "{kind}: the case must expect the refuted movement"
+        );
+    }
+}
+
+/// A package of edition 0.3 under the test's temporary directory, with the repository's lock,
+/// holding `source` as its one module.
+fn package(name: &str, source: &str) -> PathBuf {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("refined_elements")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository.join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/m.una"), source).unwrap();
+    root
+}
+
+/// The goals of the `refinement` obligations that tier 1 would generate for `source`, not
+/// solved, on a stack as large as tier 1 gives them.
+fn refinement_goals(name: &str, source: &str) -> Vec<String> {
+    let root = package(name, source);
+    let checked = una_cli::check(&root, Tier::Zero).unwrap();
+    assert!(
+        checked.diagnostics.is_empty(),
+        "{name}: {:?}",
+        checked.diagnostics
+    );
+    let obligations = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(&checked.program, &checked.sources)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    obligations
+        .into_iter()
+        .filter(|o| o.kind == una_diag::ObligationKind::Refinement)
+        .map(|o| o.goal)
+        .collect()
+}
+
+const POS: &str = "module m\n\npub kind Pos = Int where it > 0\n\n";
+
+#[test]
+fn a_list_literal_gives_one_obligation_per_element() {
+    // ADR 0103 Complexity: a literal of k elements gives k obligations, linear in k.
+    let counts: Vec<usize> = [10, 100, 1000]
+        .iter()
+        .map(|&k| {
+            let items = vec!["p"; k].join(", ");
+            let source = format!("{POS}pub many(p: Pos) -> List[Pos] = [{items}]\n");
+            refinement_goals(&format!("literal_{k}"), &source).len()
+        })
+        .collect();
+    assert_eq!(counts, vec![10, 100, 1000]);
+}
+
+#[test]
+fn appends_in_a_body_give_one_obligation_each() {
+    // ADR 0103 Complexity: each `append` into a `List[Pos]` binding is one argument flow.
+    let counts: Vec<usize> = [10, 100, 1000]
+        .iter()
+        .map(|&k| {
+            let mut source =
+                format!("{POS}pub grown(p: Pos) -> List[Pos]\n=\n  let edit out: List[Pos] = []\n");
+            for _ in 0..k {
+                writeln!(source, "  out = out.append(item: p)").unwrap();
+            }
+            source.push_str("  out\n");
+            refinement_goals(&format!("appends_{k}"), &source).len()
+        })
+        .collect();
+    // At least one obligation per append, and the growth is linear: 10x the appends gives
+    // about 10x the obligations.
+    assert!(counts[0] >= 10, "{counts:?}");
+    assert!(
+        counts[2] <= counts[1] * 11 && counts[1] <= counts[0] * 11,
+        "{counts:?}"
+    );
+}
+
+#[test]
+fn a_nested_flow_gives_one_obligation_per_refined_position() {
+    // ADR 0103 Complexity: a flow compares a type of depth d in O(d), with one obligation per
+    // refined position, here the innermost one, whatever the depth.
+    for depth in 1..=8 {
+        let wrap = |inner: &str| (0..depth).fold(inner.to_owned(), |ty, _| format!("List[{ty}]"));
+        let source = format!(
+            "{POS}pub moved(xs: {}) -> {} = xs\n",
+            wrap("Int"),
+            wrap("Pos")
+        );
+        let goals = refinement_goals(&format!("depth_{depth}"), &source);
+        assert_eq!(goals.len(), 1, "depth {depth}: {goals:?}");
+    }
+}

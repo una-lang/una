@@ -166,7 +166,9 @@ impl<'a> Checker<'_, 'a, '_> {
             declared.base = self.symbolic(&declared.base);
             declared
         });
-        let expected = declared.as_ref().map(|declared| declared.base.clone());
+        let expected = declared
+            .as_ref()
+            .map(|declared| self.env.top_refined(declared));
         let role = Role::Annotation(name);
         let (ty, value) = match &stmt.value {
             LetValue::Handled(handled) => {
@@ -207,10 +209,15 @@ impl<'a> Checker<'_, 'a, '_> {
             .as_ref()
             .is_some_and(super::ty::Declared::is_refined);
         let annotated = declared.is_some();
-        let bound = declared.map_or_else(|| self.vars.resolve_bound(&ty), |declared| declared.base);
+        let bound = declared.map_or_else(
+            || self.vars.resolve_bound(&ty),
+            |declared| self.env.top_refined(&declared),
+        );
         // ADR 0075: an un-annotated `let edit` has label variables at its open positions.
+        // ADR 0103 rule 5: it drops every refinement of its initial value, at every position,
+        // as it drops the refinement at its top (`spec/17 §2` rule 4).
         let bound = if stmt.editable && !annotated {
-            self.open_label_positions(bound, stmt.name.span)
+            self.open_label_positions(bound.without_refinements(), stmt.name.span)
         } else {
             bound
         };
