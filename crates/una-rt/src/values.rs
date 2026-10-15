@@ -933,11 +933,22 @@ pub fn import(portable: &Portable) -> i64 {
 }
 
 /// The list of the integers from `low` to `high`, with `high` when `inclusive` is 1: the
-/// elements of a `together for` over a range.
-pub fn range(low: i64, high: i64, inclusive: i64) -> i64 {
+/// elements of a `together for` over a range at `site`, whose memory budget each element
+/// checks. When the budget stops the task, the list is empty, so no task runs over it.
+pub fn range(site: i64, low: i64, high: i64, inclusive: i64) -> i64 {
     let (mut current, high) = (int_value(low), int_value(high));
+    let site = usize::try_from(site).unwrap_or(usize::MAX);
     let out = list();
     while current < high || (inclusive == 1 && current == high) {
+        // #773: the budget is checked at each element, at the loop, as the interpreter does;
+        // without it, a wide range grew past the allocator's hard ceiling and aborted the
+        // process where `una run` reports U6003.
+        if !crate::runtime::within_budget(site) {
+            // The task stops: no task runs over the list, so it is dropped, and an empty
+            // list makes none (`una_rt_together_for` then reports the stop).
+            release(out);
+            return list();
+        }
         let word = int_word(&current);
         push(out, word);
         release(word);

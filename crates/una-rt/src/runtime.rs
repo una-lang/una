@@ -876,6 +876,33 @@ pub fn budget(site: usize) -> i64 {
     }
 }
 
+/// Checks the memory budget at an element that a `together for` over a range makes, at the
+/// loop's `site`, as the interpreter does while it makes the list (#773, ADR 0061 rule 2): over
+/// the budget, the run aborts with U6003 at the loop. Returns false when the run or the task
+/// stops, and true otherwise. Cancellation is not checked here: the tasks check it.
+pub(crate) fn within_budget(site: usize) -> bool {
+    let held = crate::held();
+    if HOT.with(|hot| !hot.active.get() || held <= hot.mem_ceiling.get()) {
+        return true;
+    }
+    slow_path();
+    let abort = STATE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let state = cell.as_mut()?;
+        let message = over_budget(state, held)?;
+        let location = site_location(state, site);
+        Some(stop_or_abort(&mut cell, Code::U6003, location, message))
+    });
+    match abort {
+        None => true,
+        Some(None) => false,
+        Some(Some((state, code, location, message))) => {
+            abort_run(state, code, location, message);
+            false
+        }
+    }
+}
+
 /// The text of `word`, a value of the type at `ty` in the program's type descriptions, as
 /// interpolation writes it, with every field (`spec/11 §5`, ADR 0068). A new reference.
 /// `params` are the descriptors of the type parameters that the type holds, by position.

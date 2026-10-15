@@ -105,6 +105,11 @@ struct Outcome {
 /// that the caller keeps. Returns the block's value, a word the caller owns, and its status:
 /// 0, 1 when the value is the block's failure, or 2 when the calling task must stop.
 fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -> (i64, i64) {
+    // #773: a task that a check already stopped, such as the budget while a range was made
+    // for this block, runs no task and stops at once, as the interpreter's does.
+    if with_state(|state| state.stopped.is_some()).unwrap_or(false) {
+        return (0, 2);
+    }
     let Some(template) = with_state(|state| state.for_tasks(site)) else {
         return (0, 2);
     };

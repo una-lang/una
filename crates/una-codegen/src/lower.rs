@@ -1074,7 +1074,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         let (high, _) = self.atom(high, env)?;
                         let inclusive =
                             self.builder.ins().iconst(types::I64, i64::from(*inclusive));
-                        (self.call("una_rt_range", &[low, high, inclusive])?, true)
+                        (
+                            self.call("una_rt_range", &[site, low, high, inclusive])?,
+                            true,
+                        )
                     }
                 };
                 let closure = self.closure(std::slice::from_ref(var.as_ref()), task, env)?;
