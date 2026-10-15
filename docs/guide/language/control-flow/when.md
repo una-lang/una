@@ -214,6 +214,7 @@ Further rules:
 - [U2008](../../../../crates/una-explain/explain/U2008.md): an unreachable arm, or an `else` that is not last.
 - [U2022](../../../../crates/una-explain/explain/U2022.md): a range bound that does not fit a fixed-width type.
 - [U4002](../../../../crates/una-explain/explain/U4002.md): a failure in an arm under a labeled value.
+- [U4008](../../../../crates/una-explain/explain/U4008.md): a text literal with interpolation in a pattern.
 - [U5001](../../../../crates/una-explain/explain/U5001.md): range or literal arms that do not cover every value.
 
 ## Edition
