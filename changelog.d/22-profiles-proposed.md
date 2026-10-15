@@ -1,0 +1,1 @@
+- **Profiles proposed** (#22, ADR 0109, Proposed). In edition `0.3`, `[package] profile` is `"app"` (the default, today's language) or `"systems"`, which only adds obligations: `Int` arithmetic is proven to stay in a machine word, and the memory budget is declared. No profile removes a check; foreign code and SIMD are gated to `systems` by their own ADRs.
