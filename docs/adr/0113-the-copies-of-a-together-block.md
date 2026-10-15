@@ -1,10 +1,10 @@
 # 0113. The copies of a `together` block, made in sequential phases and checked before each allocation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-15
-- Deciders: Una project (pending)
+- Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #777
-- Amends, once accepted:
+- Amends:
   - ADR 0061 (rule 2, where the budget is checked), by an appended, dated Amendment, and `spec/11 §7`, whose texts are below;
   - `spec/16 §3` rule 3 and `spec/16 §5` (the engines' equivalence, with a stated exemption for memory), whose texts are below;
   - `spec/19 §8` (how native code schedules a block's tasks, rule 4 included).
@@ -142,21 +142,21 @@ The implementation's tests map to these one by one (see Tests).
 
 > Native code copies the values a `together` block gives its tasks and the results it receives, where the interpreter shares them. A native run can therefore stop with U6003, over its memory budget, at a block or at any check made while copies of a block are held, where `una run` of the same program completes, reports a failure, or stops later or at another site. Native code can also stop with U6003 at a block whose task thread could not be started, where `una run` starts no thread, at a block whose copy would hold more than 2^32 − 1 objects, or at a retain that would give one value more than 2^32 − 1 references while the run's heap and stacks hold at least (2^32 − 1) × 8 bytes. That last stop has no site and writes no trace file. These are the only differences this exemption allows, and they are one-way: the copies add checks and stops to native code only.
 
-The Amendment appended to ADR 0061, dated the day this decision is accepted:
+The Amendment appended to ADR 0061:
 
-> **Amendment (YYYY-MM-DD, ADR 0113).** Rule 2 gains a check point in native code only: each step of the copies a `together` block makes, each allocation of its bookkeeping and each start of its task threads checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
+> **Amendment (2026-10-15, ADR 0113).** Rule 2 gains a check point in native code only: each step of the copies a `together` block makes, each allocation of its bookkeeping and each start of its task threads checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
 
 The text added to `spec/11 §7`, at the end of **Checks**:
 
-> (v0.2, ADR 0113.) A native executable also checks the budget before each allocation of the copies a `together` block makes of its tasks' inputs and results, of the block's bookkeeping and of its tasks' starts (`spec/16 §3` rule 3, `spec/19 §8`). Over the budget, it aborts with U6003 at the block, with the message above.
+> (v0.2, ADR 0113, 2026-10-15.) A native executable also checks the budget before each allocation of the copies a `together` block makes of its tasks' inputs and results, of the block's bookkeeping and of its tasks' starts (`spec/16 §3` rule 3, `spec/19 §8`). Over the budget, it aborts with U6003 at the block, with the message above.
 
 The text added to `spec/13 §5`, after the rule on U6003's position:
 
-> (v0.2, ADR 0113.) A native executable's U6003 for a reference count at its limit has no position: its one line on stderr names the code and the message, and no trace file is written. The interpreter never reports it, so `una run --json` has no shape for it.
+> (v0.2, ADR 0113, 2026-10-15.) A native executable's U6003 for a reference count at its limit has no position: its one line on stderr names the code and the message, and no trace file is written. The interpreter never reports it, so `una run --json` has no shape for it.
 
 The text added to `spec/16 §3` rule 3:
 
-> (v0.2, ADR 0113.) The copies a `together` block makes check the budget before each allocation, and a refusal aborts with U6003 at the block, `this call exceeds the memory limit of N MiB`. A task thread that cannot start aborts with U6003 at the block, ``a task of `together` could not run``. An export of more than 4294967295 objects aborts with U6003 at the block, and a retain past 4294967295 references to one value ends the process with U6003, exit code 1, when the run's heap and stacks hold at least (2^32 − 1) × 8 bytes, else with U8001, exit code 3, with one line on stderr, no site and no trace file. A panic of the runtime during a copy is U8001, exit code 3.
+> (v0.2, ADR 0113, 2026-10-15.) The copies a `together` block makes check the budget before each allocation, and a refusal aborts with U6003 at the block, `this call exceeds the memory limit of N MiB`. A task thread that cannot start aborts with U6003 at the block, ``a task of `together` could not run``. An export of more than 4294967295 objects aborts with U6003 at the block, and a retain past 4294967295 references to one value ends the process with U6003, exit code 1, when the run's heap and stacks hold at least (2^32 − 1) × 8 bytes, else with U8001, exit code 3, with one line on stderr, no site and no trace file. A panic of the runtime during a copy is U8001, exit code 3.
 
 - **The magnitude.** Natively, at a block's peak:
   - during a fork, the batch's imported inputs, plus one portable form while a task imports;
@@ -215,7 +215,7 @@ The figures were measured on main bbd03d46's release build, natively, on an Appl
 | A list of 10^6 short texts | 152.4 MiB | 162.8 MiB | 1.069 |
 | A list of 10^6 lists of two integers | 133.9 MiB | 142.0 MiB | 1.061 |
 
-The field costs 8 MiB per 10^6 objects, as its size predicts. Packing the mark into the count's word removes that cost.
+The field costs 8 MiB per 10^6 objects, as its size predicts. Packing the mark into the count's word removes that cost. The packed variant (a 32-bit count with the compare on every retain, and a 32-bit mark) was measured against the same main at a load average of about 2 to 8 (2026-10-15, 19:53Z to 20:02Z): peak memory ratios of 1.000, 1.000, 1.013 and 0.986 for the four programs above, within the runs' spread; and, on a program that makes about 2·10^7 retains and releases (10^5 records read 200 times), a median time over 11 interleaved pairs of 2684 ms without it and 2687 ms with it, a ratio of 1.001.
 - **The handshakes:** per task, one import answer, one go signal, and one export signal at the join.
 
 ### Tests
