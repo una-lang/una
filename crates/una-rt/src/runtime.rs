@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
@@ -18,6 +18,91 @@ use crate::values;
 
 /// The exit code of a usage error (`spec/13 §5`, ADR 0036).
 const USAGE: i32 = 2;
+
+/// The bytes of stack that the run's live threads reserve: the thread that runs `main`'s code
+/// and every task's. With [`crate::held`], it bounds the words that can hold a reference, which
+/// decides how a count at its limit is reported ([`count_limit_reached`], ADR 0113).
+static STACKS: AtomicUsize = AtomicUsize::new(0);
+
+/// A thread's stack, counted in [`STACKS`] while the value lives: made when the thread starts,
+/// dropped as it ends.
+pub(crate) struct StackCount(usize);
+
+impl StackCount {
+    /// Counts a stack of `bytes`.
+    pub(crate) fn new(bytes: usize) -> StackCount {
+        STACKS.fetch_add(bytes, Ordering::SeqCst);
+        StackCount(bytes)
+    }
+}
+
+impl Drop for StackCount {
+    fn drop(&mut self) {
+        STACKS.fetch_sub(self.0, Ordering::SeqCst);
+    }
+}
+
+/// Whether a stop is ending the process (ADR 0113): the first thread to stop ends it, and any
+/// thread that stops afterwards waits for the end instead of writing a second report.
+static ENDING: AtomicBool = AtomicBool::new(false);
+
+/// Claims the end of the process for the calling thread's stop. When another stop claimed it
+/// first, the thread parks until the process ends, and never returns.
+fn end_once() {
+    if ENDING.swap(true, Ordering::SeqCst) {
+        loop {
+            std::thread::park();
+        }
+    }
+}
+
+/// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
+/// in the heap and the stacks cannot be the program's (ADR 0113 rule 5).
+const COUNT_LIMIT_BYTES: usize = (values::COUNT_LIMIT as usize).saturating_mul(8);
+
+/// The bytes of [`COUNT_LIMIT_BYTES`], or fewer in tests, which lower it to reach U6003.
+#[cfg(test)]
+pub(crate) static TEST_COUNT_LIMIT_BYTES: AtomicUsize = AtomicUsize::new(COUNT_LIMIT_BYTES);
+
+fn count_limit_bytes() -> usize {
+    #[cfg(test)]
+    {
+        TEST_COUNT_LIMIT_BYTES.load(Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        COUNT_LIMIT_BYTES
+    }
+}
+
+/// A retain found a count at its limit (ADR 0113 rule 5): ends the process from whatever thread
+/// runs it, and never returns. With at least [`COUNT_LIMIT_BYTES`] held in the heap and the
+/// stacks, the run is over a limit of the native runtime: U6003, exit code 1. With less, no
+/// program holds that many references, so the count is a defect of the runtime or the generated
+/// code: U8001, exit code 3. Either way one line goes to stderr, with no position, since a retain
+/// has no site, and no trace is written; a failed write of it exits with code 2 (`spec/13 §5`).
+pub(crate) fn count_limit_reached() -> ! {
+    crate::ceiling(usize::MAX);
+    end_once();
+    let held = crate::held().saturating_add(STACKS.load(Ordering::SeqCst));
+    let (code, message, exit) = if held >= count_limit_bytes() {
+        (
+            Code::U6003,
+            "the native runtime's reference count of a value reached its limit (4294967295)",
+            1,
+        )
+    } else {
+        (
+            Code::U8001,
+            "internal error: a reference count of the native runtime reached its limit (4294967295) with less memory held than that many references take",
+            3,
+        )
+    };
+    let written = writeln!(io::stderr(), "[{code}] error: {message}");
+    // Nothing unwinds through the compiled frames (spec/16 §4 rule 3).
+    #[allow(clippy::exit)]
+    std::process::exit(if written.is_ok() { exit } else { USAGE });
+}
 
 /// What `una build` embeds in the executable (`spec/16 §2`), as JSON: the `[run] grants`, every
 /// `uses` of `main` with its operations and where it is written, where each call of the
@@ -580,6 +665,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         .name("una-main".to_owned())
         .stack_size(stack)
         .spawn(move || {
+            let _stack = StackCount::new(stack);
             let mut state = state;
             state.stack_base = stack_position(&state);
             state.baseline = crate::held();
@@ -1063,6 +1149,8 @@ fn site_location(state: &State, site: usize) -> Location {
 fn abort_run(state: State, code: Code, location: Location, message: String) {
     let least = if code == Code::U8001 { 3 } else { 1 };
     crate::ceiling(usize::MAX);
+    // One stop ends the process: a stop on another thread may have claimed it (ADR 0113).
+    end_once();
     let _ = io::stdout().flush();
     let diagnostic = Diagnostic::error(code, message, location);
     let written = write!(
