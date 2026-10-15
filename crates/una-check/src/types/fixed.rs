@@ -212,7 +212,17 @@ impl Checker<'_, '_, '_> {
             }
             _ => return None,
         };
-        self.outside_rl(span, || format!("the method `{method}`"));
+        // #743: what the refinement language offers instead (`spec/03 §3`).
+        let advice = if method == "to_int" {
+            "state the bound on the value in its own type, such as `a <= 100`: the refinement language compares a fixed-width value with a literal directly (`spec/03 §3`); convert with `to_int()` in the body"
+        } else {
+            "the refinement language has literals, parameters and their fields, `.len`, `+`, `-`, `*` with a literal, `/` and `mod` by a nonzero literal, comparisons, `and`, `or`, `not`, `implies` and calls of predicates (`spec/03 §3`); compute the rest in the body"
+        };
+        self.outside_rl_with(
+            span,
+            || format!("the method `{method}`"),
+            Some(super::Report::advice(advice)),
+        );
         let mut label = self.deep(target);
         if let Some(target_int) = convert {
             self.no_args(method, args, span);

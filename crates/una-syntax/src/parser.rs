@@ -600,6 +600,36 @@ impl<'a> Parser<'a> {
                 let span = self.advance();
                 Ok(Ident { name, span })
             }
+            TokenKind::Keyword(keyword) => {
+                let word = keyword.as_str();
+                // #743: a reserved keyword where a module path segment or an operation is named
+                // says what the rule is, with a name to use instead. Renaming one changes other
+                // files or declarations (a module's file and imports, an operation's every use),
+                // so the repair is advice (ADR 0096 rule 2(a)).
+                let role = match expected {
+                    "a module path" | "a module path segment" => {
+                        Some(("a module path segment", "module"))
+                    }
+                    "an operation name" => Some(("an operation name", "op")),
+                    _ => None,
+                };
+                match role {
+                    Some((role, suffix)) => {
+                        let fresh = self.fresh_name(&format!("{word}_{suffix}"), &[]);
+                        let mut error = SyntaxError::new(
+                            Code::U0101,
+                            self.span(),
+                            format!("`{word}` is a reserved keyword, so it cannot be {role}"),
+                        );
+                        error.repairs.push(SyntaxRepair {
+                            description: format!("choose another name, such as `{fresh}`"),
+                            edit: None,
+                        });
+                        Err(self.report_error(error))
+                    }
+                    None => Err(self.unexpected(expected)),
+                }
+            }
             _ => Err(self.unexpected(expected)),
         }
     }

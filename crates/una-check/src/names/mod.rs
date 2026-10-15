@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use una_core::IntType;
 use una_diag::{Code, Diagnostic, Edit, Escape, Related, Repair, Widening};
 use una_project::{Edition, Manifest, is_module_path};
-use una_syntax::ast::{DeclKind, File, Ident, KindBody, RequirementSource};
+use una_syntax::ast::{ClauseKind, DeclKind, File, Ident, KindBody, RequirementSource};
 use una_syntax::{FileId, Interner, SourceDb, Span};
 
 /// A module of the package, parsed.
@@ -336,6 +336,52 @@ impl<'p, 'a> Checker<'p, 'a> {
         diagnostic.repairs.push(Self::advice(format!(
             "rename `{name}` to `{suggestion}` here and where it is used"
         )));
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// U1005 for the requirement identifier `id` (#743). The name suggested is derived from
+    /// `id` and free in the package. When no `derived from` clause names `id`, the repair is the
+    /// edit of the identifier; otherwise renaming it also changes those clauses, in other
+    /// declarations, so the repair is advice that lists them.
+    fn requirement_convention(
+        &mut self,
+        span: Span,
+        id: &str,
+        ids: &BTreeSet<&'a str>,
+        cited: Option<&Vec<Span>>,
+    ) {
+        let suggestion =
+            conventions::unused_requirement(conventions::requirement_name(id), &|name| {
+                ids.contains(name)
+            });
+        let mut diagnostic = self.make(
+            Code::U1005,
+            span,
+            format!(
+                "requirement identifier `{id}` must be upper snake case ending with `_` and a number, as in `{suggestion}`"
+            ),
+        );
+        let repair = match cited {
+            None => self.edit(
+                format!("rename `{id}` to `{suggestion}`; no `derived from` clause names it"),
+                span,
+                suggestion.clone(),
+            ),
+            Some(sites) => {
+                let places: Vec<String> = sites
+                    .iter()
+                    .map(|site| {
+                        let location = self.package.sources.location(*site);
+                        format!("{}:{}", location.file, location.start.line)
+                    })
+                    .collect();
+                Self::advice(format!(
+                    "rename `{id}` to `{suggestion}` here and in the `derived from` clauses that name it, at {}",
+                    places.join(", ")
+                ))
+            }
+        };
+        diagnostic.repairs.push(repair);
         self.diagnostics.push(diagnostic);
     }
 
@@ -718,6 +764,32 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// requirements that are not proposed (U1007), across the package.
     fn requirements(&mut self) {
         let mut first: BTreeMap<&'a str, Span> = BTreeMap::new();
+        // Every requirement identifier, and where each is named by a `derived from` clause,
+        // for the U1005 repair (#743).
+        let mut ids: BTreeSet<&'a str> = BTreeSet::new();
+        let mut cited: BTreeMap<&'a str, Vec<Span>> = BTreeMap::new();
+        for module in &self.package.modules {
+            for decl in &module.tree.decls {
+                match &decl.kind {
+                    DeclKind::Requirement(requirement) => {
+                        ids.insert(self.name(&requirement.id));
+                    }
+                    DeclKind::Function(function) => {
+                        for clause in &function.clauses {
+                            if let ClauseKind::DerivedFrom(requirements) = &clause.kind {
+                                for requirement in requirements {
+                                    cited
+                                        .entry(self.name(requirement))
+                                        .or_default()
+                                        .push(requirement.span);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         for module in &self.package.modules {
             for decl in &module.tree.decls {
                 let DeclKind::Requirement(requirement) = &decl.kind else {
@@ -725,13 +797,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 };
                 let id = self.name(&requirement.id);
                 if !conventions::requirement(id) {
-                    self.convention(
-                        requirement.id.span,
-                        "requirement identifier",
-                        id,
-                        "must be upper snake case ending with `_` and a number",
-                        "EVENTS_3",
-                    );
+                    self.requirement_convention(requirement.id.span, id, &ids, cited.get(id));
                 }
                 self.lower_convention(&requirement.owner, "owner");
                 match first.get(id) {
@@ -1056,8 +1122,18 @@ impl<'p, 'a> Checker<'p, 'a> {
                 }
             }
         }
+        // #743: when the entry's own file is there but its module header did not parse, as with
+        // `module when`, the syntax error at the header says why; a second error here would
+        // only repeat it.
+        let unparsed_entry = |entry: &str| {
+            let file = format!("src/{}.una", entry.replace('.', "/"));
+            self.package.modules.iter().any(|module| {
+                module.tree.module.is_none() && self.package.sources.file(module.id).path() == file
+            })
+        };
         if let Some(entry) = &settings.entry
             && !paths.contains_key(&entry.value)
+            && !unparsed_entry(&entry.value)
         {
             self.error(
                 Code::U7002,
