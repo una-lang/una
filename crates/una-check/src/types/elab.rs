@@ -1397,7 +1397,8 @@ impl<'e, 'a> Fx<'e, 'a> {
             let test = match &arm.pattern.kind {
                 PatternKind::Literal(literal) => {
                     let mut test_lets = Vec::new();
-                    let value = self.literal_atom(&mut test_lets, literal, arm.pattern.span);
+                    let value =
+                        self.pattern_literal_atom(&mut test_lets, literal, arm.pattern.span);
                     let t = self.temp();
                     test_lets.push(Let::inferred(
                         t.clone(),
@@ -1647,7 +1648,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         _ => Atom::Unit,
                     },
                     IsTarget::Literal(literal) => {
-                        let literal = self.literal_atom(lets, literal, span);
+                        let literal = self.pattern_literal_atom(lets, literal, span);
                         self.push(
                             lets,
                             span,
@@ -1877,6 +1878,21 @@ impl<'e, 'a> Fx<'e, 'a> {
                 Atom::Unit
             }
         }
+    }
+
+    /// A pattern's literal, which is a constant (`spec/07 §7` rule 3): the checks reject a text
+    /// literal with interpolation in a pattern (U4008, S-28). One that reaches here anyway is
+    /// recorded as lost, for U8001, as a lost component of a checked type is, and the
+    /// declaration is broken: never exported as checked Core, never silently built.
+    fn pattern_literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
+        if super::expr::interpolates(literal) {
+            self.lost
+                .borrow_mut()
+                .push("a text literal with interpolation in a pattern (U4008)".to_owned());
+            self.broken = true;
+            return Atom::Unit;
+        }
+        self.literal_atom(lets, literal, span)
     }
 
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
@@ -2465,6 +2481,29 @@ mod tests {
             fails,
             label,
         }
+    }
+
+    #[test]
+    fn a_pattern_literal_that_interpolates_is_found_for_u8001() {
+        // S-28: the checks reject it (U4008); the elaboration's guard keys on the same test.
+        let mut db = una_syntax::SourceDb::new();
+        let file = db.add("a.una", b"x");
+        let span = Span::at(file, 0);
+        let text = |parts| Literal::Text(TextLit { parts, span });
+        let value = Expr {
+            kind: ExprKind::Literal(Literal::Bool(true)),
+            span,
+        };
+        assert!(super::super::expr::interpolates(&text(vec![
+            TextPart::Text("a".to_owned()),
+            TextPart::Interpolation(value),
+        ])));
+        assert!(!super::super::expr::interpolates(&text(vec![
+            TextPart::Text("a".to_owned())
+        ])));
+        assert!(!super::super::expr::interpolates(&Literal::Int(
+            "3".to_owned()
+        )));
     }
 
     #[test]

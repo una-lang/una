@@ -561,6 +561,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 PatternKind::Literal(literal) => {
                     value_arms = true;
+                    self.constant_pattern(literal);
                     if let Literal::Text(text) = literal {
                         self.text(text);
                     }

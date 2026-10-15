@@ -692,6 +692,22 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `v is V` and `v is literal`; the result takes `v`'s top label.
+    /// A pattern's literal is a constant (`spec/07 §7` rule 3): a text literal with interpolation
+    /// in a pattern is U4008 (S-28). Its text is computed from the values it interpolates, and
+    /// testing against it would decide a branch, or the `Bool` of `is`, by those values without
+    /// their labels.
+    pub(crate) fn constant_pattern(&mut self, literal: &Literal) {
+        if let Literal::Text(text) = literal
+            && interpolates(literal)
+        {
+            self.report.error(
+                Code::U4008,
+                text.span,
+                "a text literal in a pattern cannot interpolate a value, since a pattern is a constant; compare with `==`, whose result carries the value's label".to_owned(),
+            );
+        }
+    }
+
     fn is(&mut self, value: &Expr, target: &IsTarget, span: Span) -> Ty {
         let tested = match target {
             IsTarget::Variant(ident) => {
@@ -722,6 +738,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             .edit(format!("write `{replacement}`"), span, replacement)
                     });
                 self.outside_rl_with(span, || "`is` with a literal".to_owned(), repair);
+                self.constant_pattern(literal);
                 let ty = self.expr(value, None);
                 let literal_ty = self.literal(literal, span);
                 if !self.vars.unify(&ty, &literal_ty) {
@@ -1482,4 +1499,11 @@ fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut Vec<String>)
         | ExprKind::It
         | ExprKind::Error => {}
     }
+}
+
+/// Whether `literal` is a text literal with interpolation, which a pattern may not hold: its text
+/// is computed from what it interpolates (U4008, `spec/07 §7` rule 3, S-28).
+pub(crate) fn interpolates(literal: &Literal) -> bool {
+    matches!(literal, Literal::Text(text)
+        if text.parts.iter().any(|part| matches!(part, TextPart::Interpolation(_))))
 }

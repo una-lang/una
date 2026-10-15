@@ -150,6 +150,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U4004 | security | `policy` outside a trusted module |
 | U4005 | security | Invalid policy (public `via`, or type mismatch) |
 | U4007 | security | Unknown label category |
+| U4008 | security | A text literal with interpolation in a pattern |
 | U5001 | verification | Obligation refuted |
 | U5002 | verification | Obligation unknown |
 | U5003 | verification | Solver missing or version mismatch |
