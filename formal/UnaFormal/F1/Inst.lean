@@ -1,5 +1,5 @@
 /-
-M3's first item (the owner's condition 3, 2026-10-09): instantiation commutes with the semantic
+M3's first item (condition 3, 2026-10-09): instantiation commutes with the semantic
 reading of labels. Reading an instantiated label under `ρ` is reading the label itself under
 `ρ` extended by the instantiation, each covered `T` read as `ℓ*` of its type argument. So the
 checker's instantiation at a call (`LExpr.inst`, `LTy.lsubst`) is the reading's, and a proof

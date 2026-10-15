@@ -3739,7 +3739,7 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
             }
             // ADR 0037 rule 2: an annotated binder whose function type differs from the type
             // of the value keeps the temporary, so the flow from one to the other is an
-            // `Atom::Var` right side that the verifier checks, whatever the value is (N-005).
+            // `Atom::Var` right side that the verifier checks, whatever the value is.
             // Only a temporary is merged: a source binder stays in scope for the code after
             // it, so `let b = a` keeps `a` (#139).
             CoreExpr::Atom {

@@ -92,7 +92,7 @@ impl Checker<'_, '_, '_> {
 
     /// The deep label of `ty`, its solved variables replaced: the join of every label at a
     /// position that holds data, the labels its kinds' fields declare included (`spec/07 §7`
-    /// rule 3, re-review N-001).
+    /// rule 3).
     pub(crate) fn deep(&self, ty: &Ty) -> Label {
         self.labeled(ty).deep_label(&self.env.kind_labels)
     }

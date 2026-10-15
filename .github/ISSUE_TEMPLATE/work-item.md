@@ -1,6 +1,6 @@
 ---
 name: Work item
-about: One unit of work, from the backlog, a review finding or an owner decision
+about: One unit of work, from the backlog, a review finding or a project decision
 title: ""
 labels: []
 assignees: []
@@ -24,4 +24,4 @@ assignees: []
 
 ## Source
 
-<!-- Backlog row, review finding, Gate 1 issue or owner decision, with its date. -->
+<!-- Backlog row, review finding, Gate 1 issue or project decision, with its date. -->

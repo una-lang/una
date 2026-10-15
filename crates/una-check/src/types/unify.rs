@@ -231,7 +231,7 @@ impl Vars {
     /// [`Vars::resolve_labeled`] for a local bound by `let`: the labels of solved variables are
     /// settled as they are now, and the label of a variable still unsolved is kept, so that
     /// the call that later solves it, like the call of a generic function bound with `let`,
-    /// counts its labels (ADR 0038 D3.2, D-137, re-review N-003).
+    /// counts its labels (ADR 0038 D3.2, D-137).
     /// D-162: a variable left unsolved by the `let` keeps its label, and the local
     /// is not generalized: every call of it solves the same variable, whose labels join.
     pub(crate) fn resolve_bound(&self, ty: &Ty) -> Ty {

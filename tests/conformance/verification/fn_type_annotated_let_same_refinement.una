@@ -1,4 +1,4 @@
--- test: an annotated let whose right side has the same refined function type verifies, whatever the right side is (N-005)
+-- test: an annotated let whose right side has the same refined function type verifies, whatever the right side is
 -- spec: spec/12 §3
 -- expect: ok
 module fn_type_annotated_let_same_refinement

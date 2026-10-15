@@ -7,7 +7,7 @@ path knowledge `K` imply the condition: at the operation itself, and at a call, 
 reference to a named function, where the callee's own condition, instantiated at the arguments,
 is also known. A lambda's body is checked under the knowledge of its definition. Implications are
 decided by truth table over the condition's atoms, each a `Bool` variable or an opaque comparison
-identified by its syntax (the coordinator's ruling N-151).
+identified by its syntax (a ruling of the review of the formal track).
 
 The theorem (`trace_safety`) says that a run of a checked function on arguments where a
 condition is false never performs its operation, whatever the run's outcome.

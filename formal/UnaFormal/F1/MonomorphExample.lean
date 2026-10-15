@@ -244,7 +244,7 @@ end Releases
 -- The agreement fails when the instance's body is not `g`'s.
 #guard !progSim ren { P₂ with funs := [mainMono, { gInt with body := .atom (.int 0) }] } P₂
 
--- `cond` is recomputed from the final members (Una-1's note on A3): `g1`, checked at its
+-- `cond` is recomputed from the final members (a review note on A3): `g1`, checked at its
 -- instances but demoted before the certificates, leaves with its instance, so the program checked
 -- at instances still agrees with the document's; built from a `cond` that still holds `g1`, it
 -- would not, and every declaration of the document would lose its certificate.

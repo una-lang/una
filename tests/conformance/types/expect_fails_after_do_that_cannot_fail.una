@@ -1,4 +1,4 @@
--- test: expect fails after a do expression that cannot fail is U1001 at the variant, whatever variants are in scope; a do line that can fail is checked as before (N-007)
+-- test: expect fails after a do expression that cannot fail is U1001 at the variant, whatever variants are in scope; a do line that can fail is checked as before
 -- spec: spec/10 §12
 -- expect: error U1001 at 19:16
 module expect_fails_after_do_that_cannot_fail

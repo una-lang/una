@@ -1,4 +1,4 @@
--- test: an annotated let of a refined function type is an obligation whatever its right side is: call, field read, generic call, variable, prelude call, constructor field, in both directions (N-005)
+-- test: an annotated let of a refined function type is an obligation whatever its right side is: call, field read, generic call, variable, prelude call, constructor field, in both directions
 -- spec: spec/12 §3
 -- expect: error U5001 at 27:27
 -- expect: error U5001 at 32:27

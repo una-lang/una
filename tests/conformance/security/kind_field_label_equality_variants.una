@@ -1,4 +1,4 @@
--- test: a record with a secret field compared by ==, a generic, contains and a generic over contains (N-001)
+-- test: a record with a secret field compared by ==, a generic, contains and a generic over contains
 -- spec: spec/07 §7
 -- expect: error U4001 at 22:45
 -- expect: error U4001 at 24:34
