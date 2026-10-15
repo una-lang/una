@@ -2831,9 +2831,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let value =
                         self.pattern_literal_atom(&mut test_lets, literal, arm.pattern.span);
                     let t = self.temp();
+                    // The test depends on the scrutinee, so it carries its label (S-27).
+                    let label = self.computed_label(when.scrutinee.span);
                     test_lets.push(Let::inferred(
                         t.clone(),
-                        bool_ty(),
+                        with_label(bool_ty(), &label),
                         Bound::Rhs(Rhs::Prim {
                             prim: Prim::Eq,
                             args: vec![scrutinee.clone(), value],
@@ -2887,6 +2889,17 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.literal_atom(lets, literal, span)
     }
 
+    /// The label of a value computed from the whole value recorded at `span`, such as its text
+    /// or a comparison with it: the deep join of its type's labels, kinds' fields included, as
+    /// the checker labels it (S-27).
+    /// A value with no recorded type fails closed: `⊤`, never `public`.
+    fn computed_label(&self, span: Span) -> Label {
+        self.records.types.get(&span).map_or_else(
+            || Label::top(&self.env.categories),
+            |ty| ty.computed_label(&self.env.kind_labels),
+        )
+    }
+
     /// `lo <= x and x <= hi`, or `x < hi` for `..<`, as nested `if`s.
     fn range_test(
         &mut self,
@@ -2898,10 +2911,12 @@ impl<'e, 'a> Fx<'e, 'a> {
         let low = Atom::Int(signed(&range.low));
         let high = Atom::Int(signed(&range.high));
         let span = range.span;
+        // Each test depends on the value, so it carries its label (S-27).
+        let label = self.computed_label(value_span);
         let above = self.temp();
         lets.push(Let::inferred(
             above.clone(),
-            bool_ty(),
+            with_label(bool_ty(), &label),
             Bound::Rhs(Rhs::Prim {
                 prim: Prim::Le,
                 args: vec![low, value.clone()],
@@ -2914,7 +2929,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let prim = if range.exclusive { Prim::Lt } else { Prim::Le };
         let below_expr = CoreExpr::Let {
             name: below.clone(),
-            ty: bool_ty(),
+            ty: with_label(bool_ty(), &label),
             value: Box::new(Bound::Rhs(Rhs::Prim {
                 prim,
                 args: vec![value.clone(), high],
@@ -2931,7 +2946,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let t = self.temp();
         lets.push(Let::inferred(
             t.clone(),
-            bool_ty(),
+            with_label(bool_ty(), &label),
             Bound::Expr(CoreExpr::If {
                 cond: Atom::Var(above),
                 then: Box::new(below_expr),
@@ -3332,10 +3347,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let labels: Vec<Label> = arg_spans
                         .iter()
                         .map(|arg| {
-                            self.records
-                                .types
-                                .get(arg)
-                                .map_or_else(Label::public, Ty::argument_label)
+                            // An argument with no recorded type fails closed: `⊤`, so the trace
+                            // redacts it.
+                            self.records.types.get(arg).map_or_else(
+                                || Label::top(&self.env.categories),
+                                Ty::argument_label,
+                            )
                         })
                         .collect();
                     let capability_path = self.capability_path(Some(capability));
@@ -3397,11 +3414,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                 TextPart::Interpolation(expr) => {
                     let value = self.atom(lets, expr);
                     let t = self.temp();
-                    let label = self
-                        .records
-                        .types
-                        .get(&expr.span)
-                        .map_or_else(Label::public, Ty::argument_label);
+                    // The text holds the value's fields in clear (`spec/10 §12` rule 14), so it
+                    // carries their labels too, as the checker's label does (S-27).
+                    let label = self.computed_label(expr.span);
                     lets.push(Let::inferred(
                         t.clone(),
                         with_label(text_ty(), &label),

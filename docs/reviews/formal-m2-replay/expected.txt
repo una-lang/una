@@ -145,3 +145,15 @@ main.probe	rejected	the result of `attempt` is below what decides the failure
 main.probe	rejected	the result of `attempt` is below what decides the failure
 == S-05.two_handles.v0.1.3
 main.probe	rejected	a failure under a program counter above `public` (U4002)
+== S-27.interpolated_record.fixed
+app.main.main	accepted	
+prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)
+== S-27.interpolated_record.v0.3.14
+app.main.main	rejected	the text of a value, `secret[PII] Text`, does not flow into `public Text`
+prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)
+== S-27.when_literal_range.fixed
+app.main.main	accepted	
+prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)
+== S-27.when_literal_range.v0.3.14
+app.main.main	rejected	the result of `==`, `secret Bool`, does not flow into `public Bool`
+prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)
