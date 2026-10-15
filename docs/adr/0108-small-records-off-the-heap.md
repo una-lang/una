@@ -30,7 +30,7 @@ A record kind or a tuple type is **flat** when all of these hold:
 
 1. its layout (ADR 0107 rule 3), with flat fields counted by their own cells (rule 3 below), has at most **4 cells** (32 bytes);
 2. at most **2** of those cells are word cells;
-3. it is not generic: a generic kind's fields of a parameter type are words, and its code is compiled once (ADR 0062 rule 11), so its instances stay heap objects;
+3. it is not generic, and no field's type mentions a type parameter: so neither a generic kind nor a tuple type such as `(T, Int)` inside a generic body is flat. A field of a parameter type is a word, and its code is compiled once (ADR 0062 rule 11), so its instances stay heap objects;
 4. its kind is not in a recursive set of kinds (ADR 0060): a flat value contains no value of its own kind, so flattening ends.
 
 A variant with a payload is not flat in this decision (Alternatives, C). The limits 4 and 2 are the lowering's, not the language's; the Evidence measures them, and a later change of the limits is a change of this ADR.
@@ -42,25 +42,35 @@ Whether a type is flat is decided from its declaration alone, the same way in bo
 A value of a flat type is **unboxed**: its cells are separate values, each in its ADR 0107 representation, a raw machine integer or a word.
 
 - **Locals, `let edit` bindings and loop state** hold the cells as separate values (Cranelift SSA values or block parameters; C locals). A field read is the cell itself; a field edit (`spec/17 §2`) replaces one cell, in place by construction, with no reference count to test.
-- **Parameters and results.** A flat parameter is passed as its cells, in order, as separate arguments; a flat result is returned as its cells, in the result struct of ADR 0107 rule 7 item 4. This amends ADR 0107 rule 7 item 3, which passes every record by handle: a flat record is passed by its cells, by value, and is never a C struct parameter, so the C signatures stay scalar.
-- **Fields of other records.** A flat field of a record is stored inline: its cells are the outer record's cells, with their marks (ADR 0107 rule 3). An outer record with flat fields is itself flat if it meets rule 1, and otherwise a heap object of ADR 0107 rule 3 whose layout includes the inner cells. So `Segment(a: Point, b: Point)` with `Point(x: I64, y: I64)` is four raw cells, flat, and `Polygon(a: Point, b: Point, c: Point)` is one heap object of six raw cells, with no inner object.
+- **Parameters and results.** A flat parameter is passed as its cells, in order, as separate arguments, followed by its companion (rule 3); a flat result is returned as its cells and companion, in the result struct of ADR 0107 rule 7 item 4. This amends ADR 0107 rule 7 item 3, which passes every record by handle: a flat record is passed by its cells, by value, and is never a C struct parameter, so the C signatures stay scalar.
+- **Fields of other records.** A flat field of a record is stored inline: its cells are the outer record's cells, with their marks (ADR 0107 rule 3). The layout's descriptor (ADR 0107 rule 3) records the nesting: each inline field's kind, field names and cell range, so rendering (`Polygon(a: Point(x: 1, y: 2), ...)`), JSON's nested objects and structural comparison walk the same structure as the interpreter's value, never a flat list of cells. An outer record with flat fields is itself flat if it meets rule 1, and otherwise a heap object of ADR 0107 rule 3 whose layout includes the inner cells. So `Segment(a: Point, b: Point)` with `Point(x: I64, y: I64)` is four raw cells, flat, and `Polygon(a: Point, b: Point, c: Point)` is one heap object of six raw cells, with no inner object.
 
 ### 3. Boxing at uniform positions, at most once per value
 
 Where an unboxed record meets a position that needs one word (ADR 0107 rule 4: a generic function or kind, a closure's environment, a handler's cells, a list or map element, a task's copy, a value the runtime renders, compares or encodes), the lowering **boxes** it: one allocation of an ADR 0107 rule 3 object with the record's layout, and stores of its cells. Where a word of a flat type meets an unboxed position, it **unboxes**: ADR 0107 rule 2's checked read of each cell and a retain of each word cell. The word is kept as the value's companion (below), retained if the code borrowed it, so it is released only at the value's last use.
 
-**At most once per value.** Boxing a record twice would allocate twice where today's code allocates once. So the lowering keeps, for each unboxed value, an optional **companion handle**:
+**At most once per value.** Boxing a record twice would allocate twice where ADR 0107 allocates once. So every unboxed value carries a **companion**: one more word, which is 0 (none), a handle to an object of the record's layout that holds the value's current cells, or that handle with bit 0 set (**stale**: the object holds older cells).
 
-- a value that was unboxed from a word keeps that word as its companion;
-- the first boxing of a value without a companion makes one and keeps it;
-- a later boxing of the same value reuses the companion with a retain;
-- an edit of any cell marks the companion **stale**, with no heap write: a stale companion is never given to anything;
-- the next boxing of a value whose companion is stale tests the companion's count: when it is 1, nothing else holds it, so its cells are rewritten in place and it is reused, as ADR 0107 would have edited its object in place; otherwise it is released and a new object is made, as ADR 0107 would have copied its shared object at the edit;
-- at the value's last use, the companion is released with the cells.
+- **Origin.** A value unboxed from a word keeps that word as its companion. A value constructed unboxed starts with none.
+- **Boxing.** With a companion that is not stale, boxing reuses it with a retain, or moves it at the value's last use. With none, boxing allocates one object, which becomes the companion. With a stale one, boxing clears bit 0 and tests the object's count: when it is 1, nothing else holds it, so its cells are rewritten in place (counts below) and it is reused, as ADR 0107 would have edited its object in place; otherwise the value releases it and allocates a new one, as ADR 0107 would have copied its shared object at the edit.
+- **Edits.** An edit of any cell sets bit 0 of the companion, when there is one, with no heap write.
+- **Staleness is a runtime value.** Bit 0 is part of the companion word, so it follows the paths the program takes: after `if c { p.x = 1 }`, or across a loop's iterations, the companion is a block parameter (Cranelift) or a local (C), merged at joins like any value. No lowering state decides it. A stale companion is odd, so ADR 0107 rule 2's decode rejects it: if a lowering bug ever gave one to anything, the use would fail closed as a fault, never read the older cells.
+- **Calls and results.** A flat parameter is passed as its cells **and its companion**, and a flat result is returned the same way: the companion is one more word argument or result, owned or borrowed with the cells under borrow inference. So `g(p)` in a loop, where `g` boxes its parameter, boxes once in all, as ADR 0107 passes one object.
+- **Copies.** A copy of an unboxed value (`let q = p`, a shared use) copies its companion with a retain, when it has one that is not stale. A stale companion is not copied: the copy starts with none. An edit of `q` then marks only `q`'s companion stale.
+- **Release.** At the value's last use, its companion, when there is one, is released with its word cells.
+- **Tasks.** A companion is a handle of the thread's heap (ADR 0107 rule 2), so it never crosses a fork or a join: the runtime's copy of a value for another task produces a value without a companion.
 
-The companion is a Core IR-level variable that the lowering adds, so it follows the same ownership rules as any word. With it, a program never allocates more record objects than under ADR 0107, path by path: ADR 0107 allocates once per construction, and again at an edit of a shared object. Here an unboxed value allocates only at a boxing, and only when it has no companion (it was constructed unboxed, and this is its first boxing, which matches ADR 0107's allocation at construction) or when its stale companion is shared (which matches ADR 0107's copy at the edit). A scaling test counts allocations to hold this, including a loop that edits a record and passes it to generic code on every iteration, which must allocate once in all.
+**Where this allocates more than ADR 0107.** The companion keeps the count at or below ADR 0107's on every path but one: a **field read of an inline flat field** (rule 2, "Fields of other records"). Under ADR 0107, `poly.a` is an object of its own, which a later boxing passes with a retain. Here `poly.a` is cells copied out of `poly`, with no companion, and its first boxing allocates. So a loop that reads `poly.a` and passes it to generic code allocates once per iteration, where ADR 0107 allocates nothing. Within one value, the rules above still hold: a field read bound once and boxed k times allocates once. This cost is the price of inlining, which saves f - 1 allocations at every construction of the outer record; the Evidence measures both sides (k7), and the Gate 2 table states it. Elsewhere, the scaling tests count allocations and require at most ADR 0107's: a loop that edits a record and boxes it each iteration, a loop that calls `g(p)` where `g` boxes, and copies boxed in turn.
 
-**Canonical results.** Boxing makes an object of the record's layout, the same object ADR 0107 would have made, so the runtime's equality, ordering, rendering, JSON and copies see the same value. Equality of two unboxed records of the same flat type, and their ordering where the type has one (`spec/20`), compile to cell-by-cell comparisons in declaration order, raw cells as integers of their type and word cells through the runtime's comparison of words. This is the comparison the runtime makes on the boxed objects, cell by cell, so both agree with the interpreter's structural comparison (`spec/11`); the equivalence suite checks it on both representations.
+**Counts at boxing.** An object made or refreshed by a boxing holds references to its word cells:
+
+- when the boxing is the value's last use, the cells move into the object, with no retain;
+- when the value stays live, each word cell is retained, since the value and the object both hold it;
+- an in-place refresh of a stale companion first releases the object's old word cells, then stores the new ones, moved or retained by the same two cases.
+
+The companion is a variable the lowering adds, and a word like any other: it is moved, retained and released under the same rules, and on a failure the callee releases the companions it owns with the cells (rule 4).
+
+**Canonical results.** Boxing makes an object of the record's layout, the same object ADR 0107 would have made, so the runtime's equality, ordering, rendering, JSON and copies see the same value. Equality of two unboxed records of the same flat type, and their ordering where the type has one (`spec/20`), compile to cell-by-cell comparisons in declaration order, raw cells as integers of their type and word cells through the runtime's comparison of words. Lexicographic order over the concatenated cells equals the nested lexicographic order over the fields, since an inline flat field's cells are contiguous, in its own declaration order, and of a fixed count. A word cell holding a variant without payload is the immediate `index << 1 | 1`, whose numeric order is its declaration order, the order of `spec/20`; the runtime's comparison of words already compares immediates that way. This is the comparison the runtime makes on the boxed objects, cell by cell, so both agree with the interpreter's structural comparison (`spec/11`); the equivalence suite checks it on both representations.
 
 ### 4. Reference counts
 
@@ -74,7 +84,9 @@ An unboxed record holds a reference to each of its word cells, as its heap objec
 
 ### 5. Stack and frame size
 
-Unboxed records live in registers and spill to the frame. A frame grows by at most 32 bytes per live flat value, plus 8 for its companion. The stack check of ADR 0102 rule 7 compares the stack position with its budget: where the stack budget binds, U6003 may fire at a smaller depth than with heap records, by at most the growth of the frames, exactly as any change of frame layout does today (ADR 0102 rule 7). `--max-depth` stays exact. The memory budget (ADR 0061) counts heap bytes, which fall.
+Unboxed records live in registers and spill to the frame. Against ADR 0107, where a record is one 8-byte handle, a frame grows by at most 32 bytes per flat value live across a call: 4 cells and a companion, less the handle. So a function with v flat values live across a call has a frame at most 32v bytes larger.
+
+The stack check of ADR 0102 rule 7 compares the stack position with its budget. `--max-depth` stays exact, and it binds first in the usual case. Where the stack budget binds instead, as with large frames, U6003 can fire at a smaller depth than under ADR 0107, by the ratio of the frame sizes: a recursion whose frame grows from F to F + 32v bytes reaches at least F / (F + 32v) of its former depth. ADR 0102 rule 7 already treats the stack limit as a margin exact only to frame layout, but this is a known risk of regression, not a non-change: a program that ran at the edge of the stack budget can abort with the same input and budget. The frame test measures the worst case and states it as a number in the implementing pull request. A stack budget measured in a unit that does not depend on frame layout would remove the risk; that is ADR 0102's decision, not this one's. The memory budget (ADR 0061) counts heap bytes, which fall.
 
 ### 6. Regions and escape analysis are not needed for flat records
 
@@ -86,7 +98,7 @@ The decision does not use escape analysis or regions:
 ### 7. Debug builds and the counters
 
 - `live` counts heap objects, which fall; `copies` counts list, map and text copies, unchanged; `fallbacks` counts records that `reuse` rebuilt because their object was shared. For a flat record, a field edit never falls back, since the cells are the program's own. Tests that assert exact counts on records are updated to the lower values; no counter rises.
-- A debug build checks, at each boxing, that a companion that is not stale holds the same cells as the value, and at each unboxing that the word is an object of the expected layout (ADR 0107 rule 2, its debug form).
+- A debug build checks, at each boxing, that a companion that is not stale holds the same cells as the value, and at each use of a companion, that it passes ADR 0107 rule 2's checks (a live slot, its generation, the layout), which the checked read performs in any build.
 
 ### 8. Cost model
 
@@ -97,20 +109,22 @@ Per operation, against ADR 0107 (f cells, w of them word cells, w at most 2):
 | construct | 1 call, 1 allocation, f stores | f register moves, no call |
 | read a field | checked inline load | the cell itself |
 | edit a field | in place if the count is 1, else copy | replace one cell; a companion, if any, becomes stale |
-| pass to a function, last use | 1 word | f values |
+| pass to a function, last use | 1 word | f values and the companion |
 | pass, shared | 1 retain | w retains |
 | release | 1 release, a free at count 0 | w releases |
-| into a generic position | none | first time: 1 allocation and f stores; later: 1 retain; after an edit: f stores in place if the companion is unique, else 1 allocation |
+| into a generic position | none | without a companion: 1 allocation and f stores; with one: 1 retain; with a stale one: f stores in place if it is unique, else 1 allocation |
+| a field read of an inline flat field, then boxed | 1 retain of the field's object | 1 allocation (rule 3, the one path that allocates more) |
 | from a generic position | none | 1 checked read per cell, w retains, and 1 retain of the word when it was borrowed |
 
-**Complexity.** Every operation is O(f), with f at most 4, so O(1). No program allocates more records than under ADR 0107 (rule 3, at most once). No choice is quadratic. Space: a flat record costs no heap bytes until it is boxed, and then the same as ADR 0107.
+**Complexity.** Every operation is O(f), with f at most 4, so O(1). A program allocates no more record objects than under ADR 0107, except one allocation per boxing of a value read from an inline flat field (rule 3), which is O(1) each and never more than one per such read. No choice is quadratic. Space: a flat record costs no heap bytes until it is boxed, and then the same as ADR 0107.
 
 ### 9. Safety, equivalence and tests
 
 - **Memory safety.** Unboxed cells are values in registers or the frame, never addressed by generated code other than the frame's own spills. Boxing and unboxing use ADR 0107's checked objects.
 - **Equivalence.** The equivalence suite runs every example in both backends. The implementation adds cases where a flat record crosses each uniform position of rule 3 and comes back, is edited after boxing (the companion is dropped), is compared and rendered unboxed and boxed, is captured by a closure, is copied into a task, and leaves a loop on a failure.
-- **Allocation scaling test.** A loop that builds flat records, and one that builds them and passes each to a generic function k times, at 10^5, 10^6 and 10^7 iterations: the allocation count is 0 for the first, and at most one per iteration for the second, whatever k.
-- **Frame test.** A recursion carrying a flat record reaches the same `--max-depth` as with a heap record; where the stack budget binds, its depth moves by at most the frame growth of rule 5.
+- **Allocation scaling tests,** at 10^5, 10^6 and 10^7 iterations, counting allocations: a loop that builds flat records (0 in all); one that builds them and passes each to a generic function k times (at most one per iteration, whatever k); one that edits one record and boxes it each iteration (1 in all); one that calls `g(p)` with the same `p`, where `g` boxes it (1 in all); a copy `q` of a boxed `p`, boxed in turn (no new allocation); and one that reads an inline flat field and boxes it each iteration (one per iteration, the stated exception).
+- **Rendering and JSON of nested flat fields.** An outer heap record with flat fields, and a flat record with a flat field, rendered, encoded as JSON and compared, against the interpreter.
+- **Frame test.** A recursion carrying a flat record reaches the same `--max-depth` as with a heap record. Where the stack budget binds, the worst case is measured: a recursive function with many flat values live across its call, whose reached depth is compared with ADR 0107's and reported as a number (rule 5).
 
 ### 10. Order of work
 
@@ -123,6 +137,8 @@ Kernels in Una and C, on the method of ADR 0107's Evidence (build outside the ti
 - **k1** (ADR 0107's kernel: 5,000,000 `Point(x: I64, y: I64)` built and summed): a "flat" C variant against ADR 0107's "indexed" and today's "boxed".
 - **k5, shared records with word cells.** A loop that passes a record of two handles and an `I64` to an out-of-line function as a shared use, 5,000,000 times: "flat" (two retains and two releases per call) against "indexed" (one retain and one release of the record's handle).
 - **k6, boxing once.** A loop that builds a `Point` and passes it to an out-of-line generic function three times, each a shared use: "flat" (the first boxing allocates the companion, the next two reuse it) against "indexed" (the object allocated at construction). Both allocate once per iteration; the kernel checks that the companion costs no more than ADR 0107's object.
+- **k6c, the companion across calls.** One `Point`, and a loop that calls `g(p)` 5,000,000 times, where `g` passes it to generic code: "flat" (cells and companion passed, the companion made once and returned) against "indexed" (one object, a retain per call). Both allocate once in all.
+- **k7, inline flat fields.** `Polygon(a: Point, b: Point, c: Point)` built once per 1,000 iterations, and `poly.a` read and passed to generic code every iteration: "flat" (one object of six raw cells per construction, and one allocation per boxing of `poly.a`) against "indexed" (four objects per construction, and a retain per read). This is the path of rule 3 that allocates more, measured against the construction it saves.
 
 MEASURE: table to fill from a quiet slot, one row per kernel and variant.
 
@@ -133,20 +149,22 @@ With ADR 0107, small records were the largest expected gap (above 1.5x on record
 | Case | Expected | Remaining cost, and what removes it |
 |---|---|---|
 | flat records in locals, loops, direct calls | at parity, an estimate until k1 "flat" is measured | none |
+| flat records passed to generic code | one allocation per value at its first boxing, as under ADR 0107, carried across calls by the companion | #752 |
+| inline flat fields read and passed to generic code in a loop | one allocation per read, where ADR 0107 allocates none: worse than ADR 0107 on that path, better at construction (k7 measures both) | #752; or a later rule that stores such a field as a handle when the program boxes it |
 | flat records with word cells, shared | up to 2 retains and releases per shared use, where Rust moves or borrows | borrow inference already removes most; none planned beyond it |
-| flat records through generic code or closures | one allocation per value, as under ADR 0107 | #752 (call-site specialization) keeps them unboxed through the prelude's higher-order functions |
 | records above 4 cells or 2 word cells | ADR 0107's costs: above 1.5x on record-heavy code | a larger limit, if the Evidence supports it; regions for large values (ADR 0107 rule 8) |
 | variants with payloads, generic kinds (`Option[Point]`) | ADR 0107's costs | Alternative C, and specialization (#752) |
 | lists of records | ADR 0107's memory gap | #751 |
 
-So, plainly: this decision is expected to close the gap for small records in monomorphic code, the common case of record-heavy kernels. It does not close it for `Option` or `Result` of records, which are generic kinds, nor for large records: a program whose hot path builds `Option[Point]` values stays above the bar until Alternative C or #752 is decided.
+So, plainly: this decision is expected to close the gap for small records in monomorphic code, the common case of record-heavy kernels. It adds a cost ADR 0107 does not have on one path, inline flat fields boxed in a loop. It does not close it for `Option` or `Result` of records, which are generic kinds, nor for large records: a program whose hot path builds `Option[Point]` values stays above the bar until Alternative C or #752 is decided.
 
 ## Consequences
 
 - Small records cost what Rust's structs cost in monomorphic code, with no lifetime analysis to trust.
 - The lowering gains a second representation for records and the boxing companion, which every rule that moves, retains or releases a value must handle. The equivalence suite and the allocation test are the guard.
 - C signatures grow by up to 4 scalar parameters per flat record, which ADR 0106 states as part of the boundary contract.
-- Frames grow, so the stack budget may bind a few calls earlier where it binds at all.
+- **Known regression risk:** frames grow by up to 32 bytes per flat value live across a call, so where the stack budget binds before `--max-depth`, a program at the edge of it can abort with U6003 where it ran before (rule 5).
+- One path allocates more than under ADR 0107: an inline flat field read and boxed (rule 3).
 - Variants with payloads, generic kinds and large records are left to later decisions.
 
 ## Alternatives considered
