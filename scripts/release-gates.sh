@@ -18,6 +18,9 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
+#                equivalence test against una-rt built with AddressSanitizer, with the checking
+#                toolchain of scripts/check-toolchain.toml; macOS only for now
 #   site         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
@@ -44,7 +47,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build mac linux linux-arm64 release reproducible determinism native site formal)
+ALL=(clone build mac linux linux-arm64 release reproducible determinism native sanitize site formal)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -258,6 +261,11 @@ gate_site() {
             && UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
+
+# #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
+# built with AddressSanitizer, by the checking toolchain of scripts/check-toolchain.toml, which
+# builds no release artifact.
+gate_sanitize() { run sanitize scripts/sanitize.sh; }
 
 for gate in "${GATES[@]}"; do
     "gate_$gate"
