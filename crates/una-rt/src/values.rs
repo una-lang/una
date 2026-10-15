@@ -128,10 +128,35 @@ impl Object {
 }
 
 /// A slot of the heap: an object and its count of references, or a free slot.
+///
+/// The count is 32 bits, so that it and the mark of a copy (ADR 0113 rule 5) share the word a
+/// 64-bit count took and no slot grows. A count never passes [`COUNT_LIMIT`]: the retain that
+/// would pass it ends the process ([`crate::runtime::count_limit_reached`]).
 #[derive(Debug, Default)]
 struct Slot {
-    count: usize,
+    count: u32,
     object: Option<Object>,
+}
+
+/// The most references one object may have: every retain compares with it (ADR 0113).
+pub(crate) const COUNT_LIMIT: u32 = u32::MAX;
+
+/// The limit of a count, which the tests lower to reach it without 2^32 retains.
+#[cfg(test)]
+pub(crate) static TEST_COUNT_LIMIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(COUNT_LIMIT);
+
+/// The limit every retain compares with: [`COUNT_LIMIT`], or a lower one in tests.
+#[inline]
+fn count_limit() -> u32 {
+    #[cfg(test)]
+    {
+        TEST_COUNT_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        COUNT_LIMIT
+    }
 }
 
 /// How many freed slots a debug build keeps unused before it reuses the oldest: a use of an
@@ -234,17 +259,33 @@ fn with<R>(word: i64, f: impl FnOnce(&Object) -> R) -> Option<R> {
 }
 
 /// Adds a reference to `word`. Immediates have none.
+///
+/// A count at its limit is never incremented: the retain ends the process instead, after the
+/// borrow of the heap ends, and never returns, since a retain that returned without counting
+/// would let a later release free a value still referenced (ADR 0113 rule 5).
 pub fn retain(word: i64) {
     let Some(index) = slot(word) else {
         return;
     };
-    HEAP.with(|heap| {
+    let at_limit = HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         match heap.slots.get_mut(index) {
-            Some(slot) if slot.object.is_some() => slot.count += 1,
-            _ => heap.faults += 1,
+            Some(slot) if slot.object.is_some() => {
+                if slot.count >= count_limit() {
+                    return true;
+                }
+                slot.count += 1;
+                false
+            }
+            _ => {
+                heap.faults += 1;
+                false
+            }
         }
     });
+    if at_limit {
+        crate::runtime::count_limit_reached();
+    }
 }
 
 /// Releases a reference to `word`, and frees what its last reference kept.
@@ -279,6 +320,39 @@ pub fn release(word: i64) {
             }
         }
     }
+}
+
+/// The literals whose count is not back to the one reference the heap keeps: 0 once `main`
+/// has returned, unless the generated code retained a literal without its release, or released
+/// one it did not retain. A debug build reports it as an internal error (ADR 0113: a count that
+/// drifts upward could otherwise reach its limit with no memory behind it).
+pub fn unbalanced_literals() -> usize {
+    HEAP.with(|heap| {
+        let heap = heap.borrow();
+        heap.literals
+            .values()
+            .chain(heap.int_literals.values())
+            .filter(|&&word| {
+                slot(word)
+                    .and_then(|index| heap.slots.get(index))
+                    .is_none_or(|slot| slot.count != 1)
+            })
+            .count()
+    })
+}
+
+/// Sets the count of the live object of `word` to `count`, so that a test reaches the limit of
+/// a count with the limit the runtime ships.
+#[cfg(test)]
+pub(crate) fn set_count_for_test(word: i64, count: u32) {
+    let Some(index) = slot(word) else {
+        return;
+    };
+    HEAP.with(|heap| {
+        if let Some(slot) = heap.borrow_mut().slots.get_mut(index) {
+            slot.count = count;
+        }
+    });
 }
 
 /// The number of objects that the program still references: every object but the literals,
@@ -1602,6 +1676,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn i2_the_count_and_a_mark_fit_the_word_a_64_bit_count_took() {
+        // ADR 0113 rule 5: the count is 32 bits, so that it and a 32-bit mark take the word the
+        // count took before, and no slot grows.
+        assert_eq!(2 * size_of::<u32>(), size_of::<usize>());
+        assert_eq!(
+            size_of::<Slot>(),
+            size_of::<usize>() + size_of::<Option<Object>>()
+        );
+    }
+
+    #[test]
     fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
         // The verifier gives both one uninterpreted symbol, which holds because both
         // run over one search. Texts and parts over a small alphabet, with a non-ASCII
@@ -1893,6 +1978,15 @@ mod tests {
         assert_eq!(int(big), "99999999999999999999999");
         assert_eq!(int_literal("7"), n(7));
         assert_eq!(live(), before);
+        // ADR 0113: each literal's count is back to the heap's one reference; a retain without
+        // its release is counted, and its release makes it balanced again.
+        assert_eq!(unbalanced_literals(), 0);
+        retain(text);
+        retain(big);
+        assert_eq!(unbalanced_literals(), 2);
+        release(text);
+        release(big);
+        assert_eq!(unbalanced_literals(), 0);
     }
 
     #[test]

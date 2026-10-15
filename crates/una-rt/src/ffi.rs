@@ -1062,4 +1062,269 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         assert!(ended < 5_000, "{ended} runs ended");
     }
+
+    /// The meta of the count-limit scenarios: one site, which no report of them names.
+    const LIMIT_META: &str = r#"{"grants":[],"uses":[],"sites":[{"file":"src/c.una","start":{"line":2,"col":3},"end":{"line":2,"col":9}}]}"#;
+
+    /// The trace a count-limit scenario asks for, which its stop must not write: next to the
+    /// test executable, so that the test and the scenario it runs name the same file, and runs
+    /// from two checkouts never share one.
+    fn limit_trace(scenario: &str) -> std::path::PathBuf {
+        let name = scenario.rsplit("::").next().unwrap_or(scenario);
+        std::env::current_exe()
+            .unwrap()
+            .with_file_name(format!("una-rt-{name}.json"))
+    }
+
+    /// Runs `main` with a trace at `trace` and the count limit lowered to `limit`.
+    fn limit_scenario(trace: &str, limit: u32, entry: impl FnOnce() -> i64 + Send + 'static) {
+        values::TEST_COUNT_LIMIT.store(limit, std::sync::atomic::Ordering::SeqCst);
+        runtime::start(&["--trace".to_owned(), trace.to_owned()], LIMIT_META, entry);
+    }
+
+    /// A lambda with no parameter that takes a fresh text to its count's limit of 2.
+    extern "C" fn to_the_limit(_closure: i64) -> Returned {
+        let x = values::text_word("x".to_owned());
+        values::retain(x);
+        values::retain(x);
+        eprintln!("{MARK}");
+        Returned {
+            value: 0,
+            status: 0,
+        }
+    }
+
+    /// Two tasks that reach the limit together, after both arrive here.
+    static TOGETHER: std::sync::LazyLock<std::sync::Barrier> =
+        std::sync::LazyLock::new(|| std::sync::Barrier::new(2));
+
+    /// Says on stdout, flushed, that the task is about to reach the limit, then waits for the
+    /// other task and reaches it.
+    extern "C" fn to_the_limit_together(closure: i64) -> Returned {
+        {
+            use std::io::Write;
+            println!("{BEFORE_LIMIT}");
+            let _ = std::io::stdout().flush();
+        }
+        TOGETHER.wait();
+        to_the_limit(closure)
+    }
+
+    /// What each of the two tasks says before it reaches the limit.
+    const BEFORE_LIMIT: &str = "una-rt test: a task reaches the limit";
+
+    /// What `main` says once a count reached the shipped limit without passing it.
+    const AT_LIMIT: &str = "una-rt test: the count reached 4294967295";
+
+    /// Runs `scenario` in a process of its own with a trace path, and returns its exit code,
+    /// its stderr, whether the trace was written, and its stdout.
+    fn run_limit_scenario(scenario: &str) -> (Option<i32>, String, bool, String) {
+        let trace = limit_trace(scenario);
+        let _ = std::fs::remove_file(&trace);
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                scenario,
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        let written = trace.exists();
+        let _ = std::fs::remove_file(&trace);
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            written,
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    }
+
+    const INTERNAL: &str = "[U8001] error: internal error: a reference count of the native runtime reached its limit (4294967295) with less memory held than that many references take";
+    const OVER: &str = "[U6003] error: the native runtime's reference count of a value reached its limit (4294967295)";
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_in_main_scenario() {
+        limit_scenario(
+            &limit_trace("i2_count_limit_in_main_scenario").to_string_lossy(),
+            2,
+            || {
+                let x = values::text_word("x".to_owned());
+                values::retain(x);
+                values::retain(x);
+                eprintln!("{MARK}");
+                0
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_shipped_scenario() {
+        // The limit the runtime ships, 4294967295: a count one below it takes one more
+        // reference without overflow, and the next retain is the stop.
+        limit_scenario(
+            &limit_trace("i2_count_limit_shipped_scenario").to_string_lossy(),
+            values::COUNT_LIMIT,
+            || {
+                let x = values::text_word("x".to_owned());
+                values::set_count_for_test(x, values::COUNT_LIMIT - 1);
+                values::retain(x);
+                {
+                    use std::io::Write;
+                    println!("{AT_LIMIT}");
+                    let _ = std::io::stdout().flush();
+                }
+                values::retain(x);
+                eprintln!("{MARK}");
+                0
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_with_the_memory_it_needs_scenario() {
+        runtime::TEST_COUNT_LIMIT_BYTES.store(0, std::sync::atomic::Ordering::SeqCst);
+        limit_scenario(
+            &limit_trace("i2_count_limit_with_the_memory_it_needs_scenario").to_string_lossy(),
+            2,
+            || {
+                let x = values::text_word("x".to_owned());
+                values::retain(x);
+                values::retain(x);
+                eprintln!("{MARK}");
+                0
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_in_a_task_scenario() {
+        let lambda =
+            Code(i64::try_from(to_the_limit as extern "C" fn(i64) -> Returned as usize).unwrap());
+        limit_scenario(
+            &limit_trace("i2_count_limit_in_a_task_scenario").to_string_lossy(),
+            2,
+            move || {
+                let closures = values::list();
+                let closure = values::closure(lambda, 0);
+                values::push(closures, closure);
+                values::release(closure);
+                let value = tasks::together(closures, 0);
+                eprintln!("{MARK}: the block returned");
+                value
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_during_an_import_scenario() {
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        limit_scenario(
+            &limit_trace("i2_count_limit_during_an_import_scenario").to_string_lossy(),
+            values::COUNT_LIMIT,
+            move || {
+                // A list holding one text three times: its import into the task's heap retains the
+                // text once per element, and the third finds the lowered limit of 3.
+                let x = values::text_word("x".to_owned());
+                let inner = values::list();
+                for _ in 0..3 {
+                    values::push(inner, x);
+                }
+                values::release(x);
+                let items = values::list();
+                values::push(items, inner);
+                values::release(inner);
+                let closure = values::closure(marked, 1);
+                values::TEST_COUNT_LIMIT.store(3, std::sync::atomic::Ordering::SeqCst);
+                let value = tasks::together_for(closure, items, 0);
+                eprintln!("{MARK}: the block returned");
+                value
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_in_two_tasks_at_once_scenario() {
+        let lambda = Code(
+            i64::try_from(to_the_limit_together as extern "C" fn(i64) -> Returned as usize)
+                .unwrap(),
+        );
+        runtime::TEST_EXPECT_PARKED.store(1, std::sync::atomic::Ordering::SeqCst);
+        limit_scenario(
+            &limit_trace("i2_count_limit_in_two_tasks_at_once_scenario").to_string_lossy(),
+            2,
+            move || {
+                let closures = values::list();
+                for _ in 0..2 {
+                    let closure = values::closure(lambda, 0);
+                    values::push(closures, closure);
+                    values::release(closure);
+                }
+                let value = tasks::together(closures, 0);
+                eprintln!("{MARK}: the block returned");
+                value
+            },
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i2_a_count_at_its_limit_ends_the_process_and_never_returns() {
+        // ADR 0113 rule 5: a retain that finds a count at its limit ends the process, on any
+        // thread, inside a copy or not, with one line on stderr and no trace: U8001 when the
+        // heap and the stacks hold less than such a count needs, U6003 when they hold it. A
+        // retain that returned without counting would leave the count one short.
+        let cases = [
+            ("ffi::tests::i2_count_limit_shipped_scenario", 3, INTERNAL),
+            ("ffi::tests::i2_count_limit_in_main_scenario", 3, INTERNAL),
+            (
+                "ffi::tests::i2_count_limit_with_the_memory_it_needs_scenario",
+                1,
+                OVER,
+            ),
+            ("ffi::tests::i2_count_limit_in_a_task_scenario", 3, INTERNAL),
+            (
+                "ffi::tests::i2_count_limit_during_an_import_scenario",
+                3,
+                INTERNAL,
+            ),
+            (
+                "ffi::tests::i2_count_limit_in_two_tasks_at_once_scenario",
+                3,
+                INTERNAL,
+            ),
+        ];
+        for (scenario, code, line) in cases {
+            let (status, stderr, traced, stdout) = run_limit_scenario(scenario);
+            assert_eq!(status, Some(code), "{scenario}: {stderr}");
+            assert_eq!(stderr, format!("{line}\n"), "{scenario}: one line only");
+            assert!(!traced, "{scenario}: the stop wrote a trace");
+            if scenario.ends_with("shipped_scenario") {
+                // The count reached the shipped limit without passing it; the next retain stopped.
+                assert!(stdout.contains(AT_LIMIT), "{scenario}: {stdout}");
+            }
+            if scenario.ends_with("two_tasks_at_once_scenario") {
+                // Both tasks reached the limit, and the one that did not end the process parked:
+                // one line on stderr, and one stop parked behind it.
+                assert_eq!(
+                    stdout.matches(BEFORE_LIMIT).count(),
+                    2,
+                    "{scenario}: {stdout}"
+                );
+                assert!(
+                    stdout.contains("una-rt test: parked stops: 1"),
+                    "{scenario}: {stdout}"
+                );
+            }
+        }
+    }
 }

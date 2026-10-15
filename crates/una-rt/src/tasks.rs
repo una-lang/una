@@ -149,6 +149,7 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
                         .name(format!("una-task-{}", index + 1))
                         .stack_size(template.stack)
                         .spawn_scoped(scope, move || {
+                            let _stack = runtime::StackCount::new(template.stack);
                             task(
                                 index,
                                 &closure,

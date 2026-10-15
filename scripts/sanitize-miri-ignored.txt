@@ -13,6 +13,13 @@ ffi::tests::a_slice_ending_before_it_starts_scenario
 ffi::tests::a_slice_past_the_text_scenario
 ffi::tests::a_text_call_outside_its_precondition_aborts_the_run
 ffi::tests::every_entry_point_takes_any_word_in_a_run
+ffi::tests::i2_a_count_at_its_limit_ends_the_process_and_never_returns
+ffi::tests::i2_count_limit_during_an_import_scenario
+ffi::tests::i2_count_limit_in_a_task_scenario
+ffi::tests::i2_count_limit_in_main_scenario
+ffi::tests::i2_count_limit_in_two_tasks_at_once_scenario
+ffi::tests::i2_count_limit_shipped_scenario
+ffi::tests::i2_count_limit_with_the_memory_it_needs_scenario
 ffi::tests::words_in_a_run_scenario
 runtime::tests::a_cancellation_from_another_thread_scenario
 runtime::tests::a_cancellation_from_another_thread_stops_the_next_check
