@@ -1296,6 +1296,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn the_depth_limit_fires_at_its_exact_call() {
         // ADR 0102 rule 8: the call at the limit aborts with U6003 at its site, and every call
         // under it runs, the depth going down at `leave`.
@@ -1340,6 +1341,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn the_memory_budget_fires_at_its_exact_byte() {
         // ADR 0102 rule 8: holding exactly the budget runs, at a call and at a loop iteration,
         // and one byte more aborts with U6003 at the site.
@@ -1385,6 +1387,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn the_mechanism_allocates_nothing() {
         // ADR 0102 rule 3: installing and taking the state, an operation's shield and the
         // checks hold no byte more, so the memory budget fires where it did.
@@ -1435,6 +1438,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn a_cancellation_from_another_thread_stops_the_next_check() {
         // ADR 0102 rule 4: `Hot` never holds whether a flag is set, so a flag that another
         // thread sets after the task's state was installed stops its next call, iteration and
@@ -1478,6 +1482,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn the_checks_take_the_fast_path_at_every_size_and_depth() {
         // ADR 0102 rule 6: on `main`'s thread, under every limit, each call, iteration and
         // operation check stays on the fast path, whose work is O(1): the slow path is never

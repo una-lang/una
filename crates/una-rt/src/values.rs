@@ -1602,6 +1602,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "does not finish under Miri within 15 minutes (#778)")]
     fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
         // The verifier gives both one uninterpreted symbol, which holds because both
         // run over one search. Texts and parts over a small alphabet, with a non-ASCII
@@ -1730,9 +1731,11 @@ mod tests {
             }
             value
         };
-        let (a, b) = (chain(1_000_000), chain(1_000_000));
+        // Under Miri (#766), which runs each step slowly, the same walks at a smaller depth.
+        let depth = if cfg!(miri) { 1_000 } else { 1_000_000 };
+        let (a, b) = (chain(depth), chain(depth));
         assert_eq!(equal(a, b), 1);
-        let shorter = chain(999_999);
+        let shorter = chain(depth - 1);
         assert_eq!(equal(a, shorter), 0);
         for value in [a, b, shorter] {
             release(value);
@@ -1808,6 +1811,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "does not finish under Miri within 15 minutes (#778)")]
     fn a_value_copied_between_heaps_keeps_its_contents_and_sharing() {
         let before = live();
         let shared = text_word("shared".to_owned());

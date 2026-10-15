@@ -404,7 +404,8 @@ mod tests {
             ]),
             Shape::List(0),
         ]);
-        let depth = 1_000_000;
+        // Under Miri (#766), which runs each step slowly, the same walk at a smaller depth.
+        let depth = if cfg!(miri) { 1_000 } else { 1_000_000 };
         let mut value = (1 << 1) | 1;
         for _ in 0..depth {
             let cell = values::data(0);

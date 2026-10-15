@@ -24,7 +24,7 @@ Ranked by the worst class, then by what guards it today:
 | --- | --- | --- | --- | --- |
 | 1 | Checker: names, types, labels, capabilities (`una-check`, `una-syntax`) | Soundness | Conformance suite; Lean re-check of fragment F1 | The re-check covers part of the language; capability confinement (T4) is not proven |
 | 2 | Verifier and Z3 (`una-verify`) | Soundness; memory safety once proven checks are elided | Pinned solver; model re-checks of `sat`; obligations that are not proven are errors | `unsat` (proven) is trusted with no certificate; refinement soundness (T5) is not modeled |
-| 3 | Native runtime (`una-rt`) and the code that calls it | Memory safety | `unsafe` confined to `ffi.rs`; native and interpreter compared on every runnable program | No sanitizer, Miri or fuzzing run |
+| 3 | Native runtime (`una-rt`) and the code that calls it | Memory safety | `unsafe` confined to `ffi.rs`; native and interpreter compared on every runnable program, also against an AddressSanitizer build; Miri on the unit tests | No fuzzing; sanitizers on macOS only; three tests not run under Miri (#778) |
 | 4 | Host capabilities and the prelude | Soundness (labels), wrong result | Host-table checks; two implementations compared | Two implementations of each operation; the TLS stack is trusted |
 | 5 | Native codegen (`una-codegen`) and the system linker | Wrong result | Native and interpreter compared | Programs outside the runnable corpus; `cc` unpinned and unrecorded |
 | 6 | Reference interpreter (`una-interp`) | Wrong result | It is the reference; native runs are compared with it | Not related to the formal model |
@@ -80,7 +80,10 @@ Ranked by the worst class, then by what guards it today:
   - the native gate compares every runnable program of the repository's suites with the interpreter (`crates/una-cli/tests/native.rs`, `spec/16`).
 - **Formal coverage:** none.
 - **Open gaps:**
-  - **No sanitizer, Miri or fuzzing run** covers `ffi.rs` or the code that calls it. The differential test compares outputs; it does not detect an out-of-bounds read that happens to produce the right output.
+  - The `sanitize` release gate (#766, `scripts/sanitize.sh`), with a nightly Rust used only for checking (`scripts/check-toolchain.toml`):
+    - AddressSanitizer: `una-rt` built with it, and the native equivalence test run against it, every runnable program; a canary fails the gate unless it is active and the linked runtime is the instrumented one. It instruments the runtime, its crate dependencies and the generic standard-library code compiled into them, under those programs. The precompiled standard library is not instrumented (only its libc calls are intercepted), and neither is the generated code.
+    - Miri on the unit tests of `una-rt`, which reports undefined behavior in the Rust code they reach, `ffi.rs` included, with permissive provenance, since the runtime's handles are integers: a known weakening of its checks. Two deep-value tests run under Miri at depth 1,000 rather than 1,000,000. Twenty-six tests are not run under Miri, a set the gate pins by name (`scripts/sanitize-miri-ignored.txt`): 14 scenarios that run in a process of their own, 9 tests that start such a process, and 3 that do not finish under Miri, with the cause unknown (#778), among them a test of the copy between heaps of #775.
+  - **No fuzzing** of the entry points yet (#766, step 3), and the sanitizer gate runs on macOS only.
   - The build report's `tcb` section does not list the runtime, although it is in the Trusted zone.
 
 ### 3.4 Host capabilities and the prelude
@@ -128,7 +131,7 @@ The theorems hold for the Core that the Lean importer reads from `una.core/1`. E
 Every component is compiled by `rustc` at the version that `rust-toolchain.toml` pins (1.98.1), from crates of crates.io, among them `cranelift`, `rustls` with `ring`, `webpki-roots` and `num-bigint`, at the versions that `Cargo.lock` records.
 
 - **A bug can cause:** whatever the crate or compiler can cause, in every artifact: a soundness defect, a wrong result, memory unsafety in a crate's own `unsafe`, or a compromised dependency (supply chain).
-- **Guards:** the pinned toolchain; `Cargo.lock`, which `scripts/local-ci.sh` enforces with `--locked`; the reproducible gate, which shows that an archive is what its source and lock determine.
+- **Guards:** the pinned toolchain; `Cargo.lock`, which `scripts/local-ci.sh` enforces with `--locked`; the reproducible gate, which shows that an archive is what its source and lock determine. A second, nightly toolchain is pinned in `scripts/check-toolchain.toml` for the `sanitize` gate only: it checks, and builds no artifact.
 - **Open gaps:** no gate checks the dependencies against the RustSec advisory database or for provenance (such as `cargo-audit`, `cargo-deny` or `cargo-vet`), so a known-vulnerable or compromised version in `Cargo.lock` reaches every artifact unseen.
 
 ### 3.9 Release scripts and archives
@@ -178,7 +181,7 @@ The largest addition to come is foreign code: `trusted` foreign functions and th
 
 ## 6. Open gaps, ranked
 
-1. **No memory-safety tooling on the runtime boundary** (§3.3), #766. The entry points are now called with foreign words on every change; what remains is a sanitizer run of the runtime and of generated code over the runnable suites, Miri on `ffi.rs`'s callers where it applies, and a fuzzer on the runtime's entry points. ADR 0106's `sanitize` gate would cover part of it. This rank reflects the class, not the history: no defect is known.
+1. **Memory-safety tooling on the runtime boundary is partial** (§3.3), #766. The entry points are called with foreign words on every change, and the `sanitize` gate runs AddressSanitizer over the native equivalence test and Miri over the runtime's unit tests. What remains: a fuzzer on the entry points, the gate on Linux, three tests that do not finish under Miri (#778), and the generated code, which no sanitizer instruments (ADR 0106's C backend would add UndefinedBehaviorSanitizer). This rank reflects the class, not the history: no memory-safety defect is known.
 2. **Capability confinement unproven, and the re-check partial** (§3.1), #768. Milestone M7 of the formal track, and widening what the re-check reads.
 3. **Proven obligations trusted without certificate** (§3.2), #66. Today a false proof gives a wrong value. **It becomes a memory-safety gap the day a bounds, handle or stack check is elided on a proof** (#737), unless elision is restricted to checks whose failure stays a wrong value, such as overflow, or, for bounds checks only, a checked certificate. ADR 0106 and ADR 0112, both proposed, state that restriction (RB-3a, and ADR 0112 §2 and §9): handle, stack and resource checks are never elided. Refinement soundness relative to the solver (T5) is not started.
 4. **No advisory or provenance check on the crate dependencies** (§3.8), #770. A gate that checks `Cargo.lock` against the RustSec database and the dependencies' provenance.

@@ -623,6 +623,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn a_text_call_outside_its_precondition_aborts_the_run() {
         // #693: `slice` outside `0 <= start <= end <= t.len` and `replace` with an empty pattern
         // abort at the call with U8001, the interpreter's message and exit code 3, as `set` does
@@ -704,6 +705,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn a_set_outside_the_list_aborts_the_run() {
         // #480, `spec/17 §7.3`: `set`'s `requires` keeps its index in range, and outside it the
         // interpreter aborts with a fault. Native code used to leave the list unchanged and go
@@ -736,6 +738,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn a_refused_task_aborts_the_run() {
         // #424 (from its review): a refused call is an internal error, not a quiet cancellation:
         // the run ends with U8001 at the block and exit code 3, and the lambda never ran.
@@ -863,6 +866,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "does not finish under Miri within 15 minutes (#778)")]
     fn every_entry_point_takes_any_word_without_a_panic() {
         // #766, step 1: a lowering bug passes the runtime a word it never should. Each entry
         // point of the table must then return a word or count a fault, never panic, and the
@@ -937,6 +941,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn every_entry_point_takes_any_word_in_a_run() {
         // #766, step 1, inside a started run, with its heap, its sites and a memory budget of
         // 8 MiB: the same calls, `range` with every word. A call either returns, or ends the
