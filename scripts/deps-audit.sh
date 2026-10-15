@@ -5,6 +5,8 @@
 #
 # 1. cargo-deny at the version of supply-chain/tools.lock.
 # 2. The RustSec advisory database, fetched now; its commit and date are printed for the record.
+#    A fetch can succeed and leave an old database (a cached clone, a stalled mirror), so the
+#    database's last commit must be at most MAX_AGE_DAYS old by the current UTC time.
 # 3. cargo deny, against that database with no further fetch: advisories (deny.toml has no
 #    ignore without a ruling), licenses, bans and sources (crates.io only), with Cargo.lock as is.
 # 4. The supply-chain review record: crates/una-cli/tests/dependencies.rs, which checks that
@@ -12,6 +14,8 @@
 #
 # Usage: scripts/deps-audit.sh
 set -u
+
+MAX_AGE_DAYS=7
 
 fail() {
     echo "deps: FAIL: $1" >&2
@@ -36,6 +40,11 @@ done
 [ ${#found[@]} -eq 1 ] || fail "expected one advisory database in $dbs, found ${#found[@]}"
 commit=$(git -C "${found[0]}" log -1 --format='%H %cI') || fail "the advisory database has no commit"
 echo "advisory-db: $commit"
+committed=$(git -C "${found[0]}" log -1 --format=%ct) || fail "the advisory database has no commit time"
+age=$(($(date -u +%s) - committed))
+echo "advisory-db age: $((age / 86400)) days $((age % 86400 / 3600)) hours (at most $MAX_AGE_DAYS days)"
+[ "$age" -le $((MAX_AGE_DAYS * 86400)) ] \
+    || fail "the advisory database's last commit is older than $MAX_AGE_DAYS days: a stale fetch"
 
 echo "== cargo deny"
 cargo deny --locked --offline check advisories bans licenses sources || fail "cargo deny"

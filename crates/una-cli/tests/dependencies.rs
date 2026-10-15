@@ -2,7 +2,15 @@
 //! `supply-chain/crates.tsv` lists every crate that `Cargo.lock` takes from crates.io, by name,
 //! version and checksum, and nothing else. A crate added, moved to another version, or whose
 //! checksum changed fails here until the record names it, so a new dependency is reviewed before
-//! it merges. The test reads only files of the repository, so it runs offline.
+//! it merges.
+//!
+//! A package of `Cargo.lock` with no source is a path dependency, which neither the record nor
+//! cargo-deny's sources check sees. So the packages with no source must be exactly the
+//! workspace's members, by name and version, and every member's manifest must be inside the
+//! repository: a path dependency outside the workspace, or a vendored copy, fails.
+//!
+//! The test reads the repository's files and runs `cargo metadata --no-deps --offline --locked`,
+//! so it runs offline.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -14,10 +22,14 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The repository root.
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
 }
 
 /// The only registry a dependency may come from.
@@ -44,9 +56,8 @@ fn value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     rest.strip_prefix('"')?.strip_suffix('"')
 }
 
-/// The packages of `Cargo.lock`.
-fn lock_packages() -> Vec<Package> {
-    let lock = std::fs::read_to_string(root().join("Cargo.lock")).unwrap();
+/// The packages of a `Cargo.lock` text.
+fn packages(lock: &str) -> Vec<Package> {
     let mut packages = Vec::new();
     for block in lock.split("[[package]]").skip(1) {
         let mut package = Package {
@@ -73,6 +84,87 @@ fn lock_packages() -> Vec<Package> {
         packages.push(package);
     }
     packages
+}
+
+/// The packages of the repository's `Cargo.lock`.
+fn lock_packages() -> Vec<Package> {
+    packages(&std::fs::read_to_string(root().join("Cargo.lock")).unwrap())
+}
+
+/// The workspace's members, by name and version, from `cargo metadata`, each checked to have its
+/// manifest inside the repository.
+fn members() -> BTreeSet<(String, String)> {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--no-deps",
+            "--offline",
+            "--locked",
+            "--format-version",
+            "1",
+        ])
+        .current_dir(root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cargo metadata: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let root = root();
+    let mut members = BTreeSet::new();
+    for package in metadata["packages"].as_array().unwrap() {
+        let name = package["name"].as_str().unwrap().to_owned();
+        let version = package["version"].as_str().unwrap().to_owned();
+        let manifest = Path::new(package["manifest_path"].as_str().unwrap())
+            .canonicalize()
+            .unwrap();
+        assert!(
+            manifest.starts_with(&root),
+            "the workspace member {name} has its manifest outside the repository: {}",
+            manifest.display()
+        );
+        members.insert((name, version));
+    }
+    assert!(!members.is_empty(), "cargo metadata lists no member");
+    members
+}
+
+/// The problems with the sources of `packages`: a source other than crates.io, a crates.io
+/// package with no checksum, a package with no source that has a checksum, and any difference
+/// between the packages with no source and the workspace's `members`.
+fn source_problems(packages: &[Package], members: &BTreeSet<(String, String)>) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut pathed = BTreeSet::new();
+    for package in packages {
+        let id = format!("{} {}", package.name, package.version);
+        match &package.source {
+            None => {
+                if package.checksum.is_some() {
+                    problems.push(format!("{id} has a checksum but no source"));
+                }
+                pathed.insert((package.name.clone(), package.version.clone()));
+            }
+            Some(source) if source == CRATES_IO => {
+                if package.checksum.is_none() {
+                    problems.push(format!("{id} comes from crates.io with no checksum"));
+                }
+            }
+            Some(source) => problems.push(format!("{id} comes from {source}")),
+        }
+    }
+    for (name, version) in pathed.difference(members) {
+        problems.push(format!(
+            "{name} {version} has no source and is not a member of the workspace (a path dependency outside it, or a vendored copy)"
+        ));
+    }
+    for (name, version) in members.difference(&pathed) {
+        problems.push(format!(
+            "the workspace member {name} {version} is not a package of Cargo.lock"
+        ));
+    }
+    problems
 }
 
 /// The record's lines after its header, each as name, version and checksum.
@@ -105,34 +197,51 @@ fn record() -> Vec<(String, String, String)> {
 }
 
 #[test]
-fn every_dependency_comes_from_crates_io_or_the_workspace() {
-    let mut others = Vec::new();
-    for package in lock_packages() {
-        match &package.source {
-            // A package with no source is a crate of the workspace.
-            None => assert!(
-                package.checksum.is_none(),
-                "{} {} has a checksum but no source",
-                package.name,
-                package.version
-            ),
-            Some(source) if source == CRATES_IO => assert!(
-                package.checksum.is_some(),
-                "{} {} comes from crates.io with no checksum",
-                package.name,
-                package.version
-            ),
-            Some(source) => others.push(format!(
-                "{} {} from {source}",
-                package.name, package.version
-            )),
-        }
-    }
+fn every_dependency_comes_from_crates_io_or_is_a_workspace_member() {
+    let problems = source_problems(&lock_packages(), &members());
     assert!(
-        others.is_empty(),
-        "dependencies from a source other than crates.io:\n{}",
-        others.join("\n")
+        problems.is_empty(),
+        "the sources of Cargo.lock:\n{}",
+        problems.join("\n")
     );
+}
+
+#[test]
+fn a_path_dependency_outside_the_workspace_is_a_problem() {
+    let members: BTreeSet<_> = [("una-a".to_owned(), "1.0.0".to_owned())].into();
+    let checksum = "a".repeat(64);
+    let lock = |extra: &str| {
+        format!(
+            "version = 4\n\n[[package]]\nname = \"una-a\"\nversion = \"1.0.0\"\ndependencies = [\n \"dep\",\n]\n\n[[package]]\nname = \"dep\"\nversion = \"0.1.0\"\nsource = \"{CRATES_IO}\"\nchecksum = \"{checksum}\"\n{extra}"
+        )
+    };
+    // The workspace and a crates.io package: no problem.
+    assert_eq!(
+        source_problems(&packages(&lock("")), &members),
+        Vec::<String>::new()
+    );
+    // Each of these is one problem.
+    for extra in [
+        // A path dependency outside the workspace, or a vendored copy: no source, no checksum.
+        "\n[[package]]\nname = \"outside\"\nversion = \"0.1.0\"\n".to_owned(),
+        // A vendored copy of a member's name at another version.
+        "\n[[package]]\nname = \"una-a\"\nversion = \"0.9.0\"\n".to_owned(),
+        // A git dependency.
+        "\n[[package]]\nname = \"g\"\nversion = \"0.1.0\"\nsource = \"git+https://example.org/g#abc\"\n"
+            .to_owned(),
+        // A crates.io package with no checksum.
+        format!("\n[[package]]\nname = \"n\"\nversion = \"0.1.0\"\nsource = \"{CRATES_IO}\"\n"),
+    ] {
+        let problems = source_problems(&packages(&lock(&extra)), &members);
+        assert_eq!(problems.len(), 1, "{extra}: {problems:?}");
+    }
+    // A member that Cargo.lock does not have.
+    let more: BTreeSet<_> = [
+        ("una-a".to_owned(), "1.0.0".to_owned()),
+        ("una-b".to_owned(), "1.0.0".to_owned()),
+    ]
+    .into();
+    assert_eq!(source_problems(&packages(&lock("")), &more).len(), 1);
 }
 
 #[test]
