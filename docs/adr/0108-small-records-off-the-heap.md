@@ -158,9 +158,9 @@ Measured on 2026-10-15, 03:45 UTC, in the same quiet window as ADR 0107's Eviden
 
 What the numbers say:
 
-- **k1:** a flat `Point` in a loop costs no allocation, and the C compiler reduces the loop as it would Rust's: 49x faster than ADR 0107's object per record.
+- **k1:** a flat `Point` in a loop costs no allocation, and the C compiler reduces the loop as it would Rust's: 49x faster than ADR 0107's object per record. This is the best case, an upper bound of the gain: a loop whose records reach an opaque use each iteration keeps their stores and gains less, though it still allocates nothing.
 - **k5:** two retains and releases of word cells per shared use, against one of the record's handle, cost about 5%. Rule 1's limit of 2 word cells keeps it there.
-- **k6, k6c:** boxing once through the companion, locally and across calls, costs the same as ADR 0107's object, within noise.
+- **k6, k6c:** boxing once through the companion costs about 3% more than ADR 0107's object locally (k6, ranges barely overlapping), and ties across calls (k6c).
 - **k7:** storing flat fields inline made each boxed read allocate, 5.4x slower than ADR 0107 on that path, while saving three allocations per construction. The read path dominates any program that reads a field more often than it builds the record, so inline flat fields were dropped from the decision (Alternative F).
 
 As for ADR 0107, these are C numbers: they show in Una's executables once a backend emits this code (#522).
@@ -171,7 +171,7 @@ With ADR 0107, small records were the largest expected gap (above 1.5x on record
 
 | Case | Expected | Remaining cost, and what removes it |
 |---|---|---|
-| flat records in locals, loops, direct calls | at parity: k1 "flat" compiles to the code a struct gives, no allocation | none |
+| flat records in locals, loops, direct calls | at parity where the compiler can reduce the code as it would Rust's (k1 "flat", the best case); otherwise no allocation and no count, the code a struct gives | none |
 | flat records passed to generic code | one allocation per value at its first boxing, as under ADR 0107, carried across calls by the companion | #752 |
 | flat fields of records | ADR 0107's costs: an object per field at construction, a retain per read | records stored inline, with their identity kept another way (Alternative F), or #751 for lists |
 | flat records with word cells, shared | up to 2 retains and releases per shared use, about 5% on k5, where Rust moves or borrows | borrow inference already removes most; none planned beyond it |
