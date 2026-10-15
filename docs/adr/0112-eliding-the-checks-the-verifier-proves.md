@@ -30,13 +30,14 @@ The constraints are those of ADR 0106 and ADR 0107: soundness is never traded fo
 Elision happens in release builds only, in the C that ADR 0106 emits, before it is emitted (RB-3).
 
 - `una build` without `--release` keeps every check, and so does the interpreter. A Cranelift executable is the fully checked reference of every release executable.
-- `una build --release --no-elision` builds a release executable with every check, for audit and for the gates below. It writes the same report, with `elided` empty.
+- `una build --release --no-elision` builds a release executable with every check, for audit and for the gates below. It runs no elision query, so it depends on the solver no more than tier 1 does, and its report has `elided` empty. With and without elision, a program gives the same output, failures, trace and exit code (the `elision-equivalence` gate); the executables and the reports differ, at least in `elided`.
 
 ### 2. Which checks (EL-2)
 
 A check may be elided only when, should the proof that elides it be wrong, the operation that remains is defined at every input and its effect is a wrong value: never undefined behavior, never a read or write out of bounds, never a lost failure of a resource or a capability. This is ADR 0106's rule RB-3a: a false proof of a bounds, handle or stack check would be a memory-safety bug, not a wrong answer, so those checks are never elided on the solver's word alone (§9). Two kinds meet it:
 
-- **The `Int` promotion path.** For `+`, `-`, `*` and unary `-` on `Int` (and on a measured `Int`, ADR 0104), when the exact result is proven in the tagged range, -2^62 to 2^62 - 1, **and** each operand is proven in that range. The operand condition matters: an operand that came in large from an entry point (ADR 0109 rule 3) is held promoted, and a result proven small, as `x - x`, says nothing about it. The operation then becomes the machine operation on 64-bit words, in the unsigned form of RB-7, with the result retagged.
+- **The `Int` promotion path.** For `+`, `-`, `*` and unary `-` on `Int` (and on a measured `Int`, ADR 0104), when the exact result is proven in the tagged range, -2^62 to 2^62 - 1, **and** each operand is proven in that range. The operand condition matters: an operand that came in large from an entry point (ADR 0109 rule 3) is held promoted, and a result proven small, as `x - x`, says nothing about it. The operation then becomes the machine operation on the untagged 64-bit values, in the unsigned form of RB-7, and the result is retagged as `((uint64_t)r << 1) | 1`, an unsigned shift. The elided path never retains or releases an operand, so a wrong operand proof can at most leak a promoted value, never free one twice.
+- **The canonical representation (EL-2a).** A proof about an operand's value says something about its representation only if every `Int` whose value lies in the tagged range is held tagged. So the runtime keeps that invariant: every arbitrary-precision result is normalized to the tagged form when it fits, and so is every value that enters at an entry point (`to_int`, `parse_int`, JSON's `Number`, a host operation; ADR 0109 rule 3). A debug build asserts it at each of them, and a test feeds a small value through each entry point and checks that it arrives tagged. Elision is not enabled before this invariant is enforced.
 - **The fixed-width overflow test.** For an operation or a narrowing conversion on a fixed-width type whose `overflow` obligation is proven (`spec/18 §3`). The operation becomes the wrapping operation of its width, in the unsigned form of RB-7.
 
 Every other check stays, for a stated reason:
@@ -54,29 +55,43 @@ A later kind needs its own amendment of this record, which shows its remaining o
 Each elided check is tied to one proof, and only these count:
 
 - **A proven tier-1 obligation at the site.** A fixed-width operation's `overflow` obligation; in a `systems` package, an `Int` operation's `overflow` obligation (ADR 0109 rule 3).
-- **An elision query, for `Int` outside `systems`.** No obligation covers an `Int` operation of an `app` package. A release build generates, for each such operation, one query with the same encoding as a `systems` `overflow` obligation at that site, and one for each operand's range. These queries are **advisory**: a proven answer elides the check; a refuted, unknown or timed-out answer keeps it. They never give a diagnostic and never change what the package accepts. A debug build and `una check` do not generate them.
+- **An elision query, for `Int` outside `systems`.** No obligation covers an `Int` operation of an `app` package. A release build generates, for each such operation, one query with the same encoding as a `systems` `overflow` obligation at that site, and one for each operand's range. These queries are **advisory**: a proven answer elides the check; a refuted or unknown answer keeps it. They never give a diagnostic and never change what the package accepts:
+  - a malformed elision query, an encoder error on one, or a solver crash keeps the check, is counted in the report (`native.elision_errors`), and never fails a build that would otherwise succeed;
+  - they appear nowhere in the report's obligations; an elision query shows only as the cache key of an `elided` entry.
+
+  A debug build, `una check` and `--no-elision` do not generate them.
 - **A refinement that bounds a value** (`spec/16 §4` rule 2) is how an operand is proven in range: it is part of the query's hypotheses, as for any obligation.
 
-The check stays wherever the proof is missing: an unknown answer, a wall-clock timeout (`spec/12 §6`), a query outside the encoding, or an operand not proven in range. Nothing defaults to elision.
+The check stays wherever the proof is missing: an unknown answer, a query outside the encoding, or an operand not proven in range. Nothing defaults to elision.
 
 ### 4. The proof cache (EL-4)
 
-A cached answer counts as it does for every obligation (`spec/12`, ADR 0064): only with its HMAC tag verified under the user's key and its key computed from the current lock and the exact query text. An unreadable entry is solved again. `unknown` with reason `wallclock` is never cached, so a timeout never elides a check in a later build.
+A cached answer counts as it does for every obligation (`spec/12`, ADR 0064): only with its HMAC tag verified under the user's key and its key computed from the current lock and the exact query text. An unreadable entry is solved again.
 
-Elision depends only on the sources, `una.toml`, `verification.lock` and the solver's answers. A wall-clock timeout can make two builds of one commit differ: the one that timed out keeps the check. That difference is on the side of more checks, and the build report records it (`unknown: wallclock`), as tier 1 already does. The `reproducible` gate compares builds whose reports record no wall-clock answer.
+**Deterministic limits.** An elision query runs under the solver's deterministic resource limit, the `step_budget` of `verification.lock` (`(set-option :rlimit …)`, `spec/12 §6`), so the same inputs always give the same answer and the same elided set. The wall-clock guard stays only as an outer safety net: an elision query that hits it fails the release build (U8001, "the solver hit its wall-clock guard on an elision query; build again, or with `--no-elision`"), never changing what the build emits. So elision depends only on the sources, `una.toml`, `verification.lock` and the solver, and two release builds of one commit give the same `elided` and the same bytes, with no exception in the `reproducible` gate.
 
 ### 5. The record (EL-5)
 
 The build report's `native` section gains `elided`: one entry per elided check, with its site (`file:line:col`), its kind (`int-promotion` or `fixed-overflow`), and the proof that elided it: the obligation's id (`spec/13 §2`) or, for an elision query, its cache key, with the status `proven`.
 
-The code generator writes the same set as it emits the C. Before the C compiler runs, `una build --release` compares the two: a check missing from the emitted C without an entry, or an entry for a check the C keeps, is an internal error, U8001, and no executable is written. So the report lists exactly the checks that are absent, never more and never fewer.
+Before the C compiler runs, `una build --release` compares three sets, each computed independently of the others:
+
+1. **The required checks:** every check site that Core IR calls for, enumerated by a pass over Core IR that is separate from the emitter;
+2. **The present checks:** the checks the emitted C contains, read back from the C itself, where the emitter writes each check through a marker that names its site (a named check macro or call per site);
+3. **The elided checks:** `native.elided`.
+
+It requires the first to equal the union of the other two, and the other two to be disjoint. Anything else, a check the emitter dropped by a bug as much as an elision without an entry, is U8001, and no executable is written. No flag, environment variable or build mode skips this comparison, `--no-elision` included, where the third set is empty. So the report lists exactly the checks that are absent, never more and never fewer.
 
 ### 6. With ADR 0106 (EL-6)
 
 - **Before the C.** A check is elided before C is emitted (RB-3). The C compiler is never told a fact it could use to delete another check.
 - **Defined forms only.** The remaining operation uses RB-7's forms: unsigned arithmetic of the width, converted back. `__builtin_assume`, `__builtin_unreachable` and `restrict` stay excluded. A wrong proof gives a wrong value, which the equivalence gates below catch where they reach it.
 - **No weakened neighbor.** An elision never changes another check's operands (RB-3): a bounds check, a division test or a conversion check on the result of an elided operation reads the same value it would read with the check present.
-- **`check-survival`.** Its trigger programs fail by construction: each overflow, division or bounds trigger has a refuted obligation or an unproven elision query at its site, so nothing there is elided. The gate also reads each trigger's build report and requires `elided` to hold no entry at the trigger's site. Its canary (a check removed by hand) still makes it fail, with or without elision.
+- **`check-survival`.** Its triggers are of two sorts:
+  - **Una programs** for the `Int` promotion path: an `app` package whose elision query at the trigger's site is unproven, so the check is kept and fires.
+  - **Harness builds** for the fixed-width overflow and division kinds: an accepted program can never reach them, since their obligations are proven or the program is not built, so, like the stale-handle kind (ADR 0106, G2), the trigger is a test build that keeps the check present and feeds the failing values directly, showing that it fires in the shipped configuration.
+
+  The gate reads each trigger's build report and requires `elided` to hold no entry at the trigger's site. Its canary (a check removed by hand) still makes it fail, with or without elision.
 
 ### 7. Trust (EL-7)
 
@@ -87,10 +102,12 @@ The cost of a wrong proof is bounded by EL-2: a wrong value, the value a wrappin
 ### 8. Gates and tests
 
 - **`elision-equivalence`** (a release gate): every runnable program of the equivalence suite (ADR 0055 NB-4), built for release with and without elision, gives identical output, failures and trace, and the same as the interpreter.
-- **`elision-record`** (a release gate): over the conformance suite and the examples, the checks absent from the emitted C equal the report's `elided`, and each entry's proof is `proven` in the report's obligations or in the cache. EL-5 already enforces it per build; the gate keeps the comparison running on every program.
+- **`elision-record`** (a release gate): over the conformance suite and the examples, EL-5's three-set comparison holds, and each entry's proof is `proven` in the report's obligations or in the cache. Its canary: a test build of the emitter that drops one check without recording it must give U8001.
 - **Per kind:** for `int-promotion` and `fixed-overflow`, a program whose proof holds (the check is elided, and listed) and its twin whose proof fails (the check stays, and is not listed); and a program with an operand from an entry point, whose check stays though its result is proven in range.
 - **A wrong proof stays defined:** a test build that marks one refuted `overflow` obligation proven builds an executable that computes the wrapped value, and the `sanitize` gate's flags report nothing on it.
-- **Determinism:** two release builds of one commit with a warm cache give the same `elided` and the same bytes.
+- **Advisory failures:** a forced malformed elision query gives a successful build with that check kept and counted in `elision_errors`.
+- **The canonical representation:** a small value through each entry point arrives tagged (EL-2a).
+- **Determinism:** two release builds of one commit, with a cold cache and with a warm one, give the same `elided` and the same bytes.
 - **Scaling:** a module with 10, 100 and 1,000 `Int` operations: the number of elision queries is linear, and a rebuild with a warm cache solves none.
 
 ### 9. What would unlock bounds elision later (#66)
