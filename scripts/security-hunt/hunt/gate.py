@@ -38,11 +38,12 @@ REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
 PINNED = {"programs": 5000, "reject": 5000, "keep": 8594, "oracle": 434}
-# Floors on what the oracle compares, against a run that sets most programs aside: about 90% of
-# the measured run's 334 programs and 1,202 variants (docs/release-gates.md).
+# Floors on what the oracle compares, against a run that sets most programs aside or compares
+# literals that decide nothing: about 90% of the measured run's 334 programs and 1,202
+# complete-against-complete comparisons, and of its 100 live programs (docs/release-gates.md).
 MIN_ORACLE_COMPARED = 300
 MIN_VARIANTS_COMPARED = 1000
-MIN_LIVE = 0
+MIN_LIVE = 90
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
