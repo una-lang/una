@@ -394,3 +394,51 @@ Conformance cases, with the source before and after and a check of the fixed sou
 ## Note (2026-10-14): condition (g) as implemented
 
 The amendment of 2026-10-14 states (g) as "`C″` is not already a conjunct of the target's condition". The implementation (#639) withholds the edit when every conjunct of `C″`, its operands once its own top-level `and` is flattened, is already a conjunct of the target's condition. A `C″` that is itself one conjunct is the case the amendment states. A `C″` with several is withheld in more cases, never fewer, so `una fix` writes nothing the amendment would not, and never writes the same conjunct twice. `spec/05 §3` states this form.
+
+## Amendment (2026-10-15): when `una fix` restores a locked condition
+
+- Status: Proposed (#725)
+
+Rule 8 says the repair of U3023 "is to restore the locked condition or label (rank 1, mechanical)", and the repair has carried `edit: null` so far, so `una fix` never applies it. This amendment gives the first repair of a refuted `contract_lock` obligation an edit, and states when. ADR 0084's amendment of the same date lets `una fix` see it.
+
+**The target.** The header's operation that the obligation is charged at: `op` in the header's `uses` clause of the locked binding, the one binding that names the entry's binding with the entry's capability (the third amendment of 2026-10-13). A second binding of that capability, or the locked binding renamed, is U3023 of tier 0 at the binding, with no obligation and no edit. Tier 1 only runs once tier 0 is clean, so the target is never ambiguous.
+
+**The edit.** `C_lock` is the lock's condition as its string reads, with its escapes decoded: a condition written `region == \"eu\"` in `una.toml` is written `region == "eu"` in the header. Then:
+- when the header writes `op` with no condition, the edit writes `op where C_lock`;
+- when it writes `op where C_src`, the edit writes `op where (C_src) and (C_lock)`, both operands in parentheses whatever their operators, as the amendment of 2026-10-14 writes a conjunction. The condition already written stays, word for word.
+
+The edit changes the module's header only. It never changes `una.toml`, the operation list, the binding, the capability or another clause: changing the lock stays never a repair (rule 8). When ADR 0094's labels are implemented, the condition follows a label as rule 1 writes it, `op gives L where …`. Today a lock entry with `gives` is U7002, so no lock has one.
+
+**When the repair carries the edit.** All of these must hold. Otherwise the repair carries the same description with `edit: null`:
+
+- (a) **An explicit operation.** The header lists `op` by name in the binding's brackets. A binding written without brackets would need its operation list spelled out, which no edit of ADR 0084 writes (as condition (b) of the amendment of 2026-10-14).
+- (b) **One line.** The text of `C_lock` holds no line break. A comment runs to the end of its line, so a condition on one line holds no comment, and every token of it lands inside the binding's brackets on the header's line.
+- (c) **Within the encoding.** `C_lock`, and `C_src` when the header writes one, are inside the verifier's encoding (`spec/12 §4`). A lock condition outside it is reported at the lock entry, with its own repair (#638). A header condition outside it is dropped from the premise, so a conjunction with it would be dropped too, and the obligation would stay refuted.
+- (d) **Not already written.** Not every conjunct of `C_lock` is already a conjunct of `C_src`, in the form of the note of 2026-10-14 on condition (g). With (c), such an obligation is proven, never refuted, so this is a backstop only.
+- (e) **Refuted, and no unknown obligation.** Only a refuted `contract_lock` obligation carries the edit, never an unknown one (U5002). While any obligation of the package's tier-1 check is unknown, no repair carries it, under condition (h) of the amendment of 2026-10-14. A repair that meets (a) to (d) then ends its description with the same sentence: "; not applied while an obligation of this package is unknown (U5002)".
+
+**Names (hygiene).** The edit writes a condition whose names already resolve at the header. Rule 8 checks a lock condition against the function's current parameters, with the context and the scope of the header's own conditions (rule 1), and reports U7002 at the lock entry otherwise. So every name of `C_lock` resolves, at the header, to the declaration it resolved to when the lock was checked, and the edit adds no binder. In particular, a parameter that the header has renamed, removed or retyped since the lock was written makes the lock U7002 at tier 0 (rule 8: "which includes a parameter that has been renamed, removed or retyped"). Tier 1 does not run, no `contract_lock` obligation exists, and the edit never writes a name that resolves to nothing. ADR 0096 rule 3a holds with nothing withheld.
+
+**What the edit does to authority.** The header's condition on `op` becomes `C_lock`, or `C_src and C_lock`. The function may perform `op` in fewer states than before, never more. The edit never widens a `uses`, a grant, a visibility or the lock, and removes no condition. With (c), `(C_src and C_lock) ⇒ C_lock` holds, so the obligation it repairs is proven.
+
+**What the edit does to other declarations.**
+- **The function's callers:** at each call or `with` that passes a binding to the locked function, the obligation `C′[args] ⇒ C` gains a conjunct in its premise `C′`. That makes it no harder.
+- **The function's body:** each performance of `op` through the binding, each call that passes it on and each `with` it reaches now has an `effect_condition` obligation under the stronger condition. One may be refuted. The diagnostic then sits in the body at its own site. There it is guarded by hand, or, at a call or a `with` that meets the amendment of 2026-10-14, repaired one call further down in a later round. ADR 0084's round limit bounds the chain.
+- **Other locks:** a lock constrains its own function's header only, so no other `contract_lock` obligation changes.
+
+**Determinism.** The edit's text is computed from the module and `una.toml` alone: the header's operation, `C_src` and the lock's string. It needs no solver result. Solver timing can only withhold the edit, under (e), never change it, as the amendment of 2026-10-14 states for its own edit.
+
+**Stricter only.** No rule of acceptance changes: a program that checks today still checks, and one that is rejected is still rejected. `una fix` may now write a condition that the checker already offers as the first repair.
+
+**Cost.** One edit per locked condition, computed with the lock's check, linear in the condition's text. No new query.
+
+Conformance cases, with the source before and after, a check of the fixed source and `una.toml` unchanged byte for byte:
+- a header operation without a condition, restored to `op where C_lock`;
+- a header condition containing `or`, restored to `op where (C_src) and (C_lock)`;
+- a lock condition with a text literal written with TOML escapes, restored with the decoded text;
+- one case for each of (a) to (e) where the repair stays a description: a binding without brackets, a lock condition spanning two lines, a header condition outside the encoding, and an unrelated obligation made unknown by `step_budget = 1`, with the sentence of (e). (d) is a backstop that a refuted obligation never meets, so a unit test pins it;
+- a parameter renamed in the header since the lock was written: U7002 at the lock entry, and `una fix` applies nothing;
+- a parameter named like a function of the module, used in the lock condition: the restored header reads it as the parameter, and checks;
+- an edit after which an operation in the body is refuted, reported at that operation in the next round;
+- `--tier 0`, which applies nothing;
+- `una fix` run twice, the outputs and the written sources compared byte for byte.
