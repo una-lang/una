@@ -1,0 +1,52 @@
+# The fuzz targets of the native runtime (#766, the `sanitize` release gate). Outside the
+# workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
+# it. scripts/sanitize.sh builds it with the checking toolchain of scripts/check-toolchain.toml,
+# with libFuzzer's coverage, AddressSanitizer and `--cfg una_fuzz`, and runs each target.
+[package]
+name = "una-rt-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+# libFuzzer, whose C++ sources the crate vendors and builds (Apache-2.0 WITH LLVM-exception).
+libfuzzer-sys = "=0.4.13"
+num-bigint = "0.4.6"
+una-core = { path = "../crates/una-core" }
+una-rt = { path = "../crates/una-rt" }
+
+[[bin]]
+name = "literal"
+path = "fuzz_targets/literal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "words"
+path = "fuzz_targets/words.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canary"
+path = "fuzz_targets/canary.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true

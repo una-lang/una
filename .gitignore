@@ -4,3 +4,8 @@
 
 # Python bytecode
 __pycache__/
+
+# libFuzzer's work directories, should a fuzz target run from fuzz/ (#766)
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/

@@ -131,9 +131,11 @@ macro_rules! exported {
 
         /// Each entry point of the table: its name, its function, its arity, and the function
         /// called on words taken in order from a slice, missing ones 0 (#766: every entry point
-        /// is called with words the generated code never passes).
-        #[cfg(test)]
-        fn exported_table() -> Vec<(&'static str, &'static str, usize, fn(&[i64]) -> i64)> {
+        /// is called with words the generated code never passes). Also built with
+        /// `--cfg una_fuzz`, for the `words` fuzz target (`fuzz/`), and never otherwise.
+        #[cfg(any(test, una_fuzz))]
+        #[doc(hidden)]
+        pub fn exported_table() -> Vec<(&'static str, &'static str, usize, fn(&[i64]) -> i64)> {
             vec![$(
                 (
                     stringify!($name),
@@ -443,6 +445,23 @@ unsafe fn text(pointer: *const u8, len: usize) -> Option<String> {
     // contract).
     let bytes = unsafe { std::slice::from_raw_parts(pointer, len) };
     String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// The words of [`una_rt_int_literal`] and [`una_rt_text_literal`] for `bytes`, for the
+/// `literal` fuzz target (`fuzz/`, #766): the generated code passes its read-only data, the
+/// target any bytes. Built only with `--cfg una_fuzz`.
+#[cfg(una_fuzz)]
+#[doc(hidden)]
+pub fn fuzz_literals(bytes: &[u8]) -> (i64, i64) {
+    // SAFETY: `bytes` is a slice, so its `len` bytes are initialized and stay valid during the
+    // call; both functions copy them (`text`) before returning, so the lifetime their contract
+    // asks for, the whole process, is not needed here.
+    unsafe {
+        (
+            una_rt_int_literal(bytes.as_ptr(), bytes.len()),
+            una_rt_text_literal(bytes.as_ptr(), bytes.len()),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -773,6 +792,9 @@ mod tests {
         *state
     }
 
+    /// The number of words of [`word_pool`]: 26 chosen, then 16 drawn.
+    const WORD_POOL_LEN: usize = 42;
+
     /// One call of the word tests: the entry point's name, its function on words, the words.
     type WordCase = (&'static str, fn(&[i64]) -> i64, Vec<i64>);
 
@@ -820,7 +842,9 @@ mod tests {
 
     /// The words of the word tests: boundary words, live handles of each kind, a freed handle,
     /// handles one slot off a live one, and 16 words of a fixed seed. Made in the same order
-    /// on every call, so a run made again holds the same words.
+    /// on every call, so a run made again holds the same words. The test under Miri picks words
+    /// by their position here: a word added or moved changes [`WORD_POOL_LEN`] and those
+    /// positions with it.
     fn word_pool() -> Vec<i64> {
         use num_bigint::BigInt;
 
@@ -879,16 +903,16 @@ mod tests {
             let int = |value: i64| values::int_word(&BigInt::from(value));
             // Under Miri (#778), where each allocation is slow, a pool of one word of each kind
             // (zero, a tagged integer, the extremes, a handle beyond the table, a freed one and
-            // one a slot off, a big integer, a text, a list, a variant and a map) and 20 drawn
-            // tuples, about 9,000 calls rather than more than 100,000.
+            // the two a slot off a live one, a big integer, a text, a list, a variant and a map)
+            // and 20 drawn tuples, about 10,000 calls rather than more than 100,000. The
+            // indices are positions in `word_pool`, whose length is checked so that they move
+            // with it.
+            // The pool's length is checked on every run, under Miri or not.
+            assert_eq!(word_pool().len(), WORD_POOL_LEN);
             let (pool, drawn, least) = if cfg!(miri) {
                 let all = word_pool();
-                let kinds = [0, 3, 6, 7, 13, 14, 15, 19, 20, 23, 24, 25];
-                (
-                    kinds.iter().filter_map(|&k| all.get(k).copied()).collect(),
-                    20,
-                    5_000,
-                )
+                let kinds = [0, 3, 6, 7, 13, 14, 15, 16, 19, 20, 23, 24, 25];
+                (kinds.iter().map(|&k| all[k]).collect(), 20, 5_000)
             } else {
                 (word_pool(), 600, 10_000)
             };

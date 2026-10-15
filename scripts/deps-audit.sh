@@ -8,9 +8,11 @@
 #    A fetch can succeed and leave an old database (a cached clone, a stalled mirror), so the
 #    database's last commit must be at most MAX_AGE_DAYS old by the current UTC time.
 # 3. cargo deny, against that database with no further fetch: advisories (deny.toml has no
-#    ignore without a ruling), licenses, bans and sources (crates.io only), with Cargo.lock as is.
+#    ignore without a ruling), licenses, bans and sources (crates.io only), with Cargo.lock as is;
+#    then the same for the fuzz targets' crate (fuzz/, #766), with fuzz/Cargo.lock as is.
 # 4. The supply-chain review record: crates/una-cli/tests/dependencies.rs, which checks that
-#    supply-chain/crates.tsv lists exactly the crates.io packages of Cargo.lock.
+#    supply-chain/crates.tsv lists exactly the crates.io packages of Cargo.lock, and
+#    supply-chain/fuzz-crates.tsv those of fuzz/Cargo.lock that Cargo.lock does not have.
 #
 # Usage: scripts/deps-audit.sh
 set -u
@@ -48,6 +50,9 @@ echo "advisory-db age: $((age / 86400)) days $((age % 86400 / 3600)) hours (at m
 
 echo "== cargo deny"
 cargo deny --locked --offline check advisories bans licenses sources || fail "cargo deny"
+echo "== cargo deny, the fuzz targets"
+cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked --offline check \
+    advisories bans licenses sources || fail "cargo deny, the fuzz targets"
 
 echo "== the supply-chain review record"
 cargo test --locked -p una-cli --test dependencies || fail "the supply-chain review record"
