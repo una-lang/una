@@ -1,0 +1,16 @@
+-- test: movement map_values: a map's `values()` of a `Map[Text, Int]` bound by a `let` annotated `List[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_map_values.una:15:23
+module move_map_values
+
+pub kind Pos = Int where it > 0
+
+pub kept(m: Map[Text, Pos]) -> Int
+=
+  let vs: List[Pos] = m.values()
+  vs.len
+
+pub moved(m: Map[Text, Int]) -> Int
+=
+  let vs: List[Pos] = m.values()
+  vs.len

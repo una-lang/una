@@ -554,8 +554,13 @@ fn walked_flags(ty: &Ty) -> Flags {
                 None => flags,
             }
         }
+        Ty::Refined(_, inner) => Flags {
+            refined: true,
+            ..walked_flags(inner)
+        },
         Ty::Labeled(label, inner) => Flags {
             var: false,
+            refined: false,
             label: true,
             var_label: label.symbols.iter().any(|s| s.starts_with('?')),
             normal: !label.is_public()

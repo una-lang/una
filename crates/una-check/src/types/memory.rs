@@ -400,6 +400,8 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The flows back of the `edit` arguments of a call, once all its arguments are typed.
     pub(crate) fn flow_back(&mut self, pending: Vec<FlowBack>) {
         for back in pending {
+            // ADR 0103 rule 4: the `edit` argument's final value flows back into the place.
+            self.record_flow(back.span, &back.place_ty, &back.value);
             self.rebind(&back.place, &back.place_ty, &back.value, back.span);
         }
     }

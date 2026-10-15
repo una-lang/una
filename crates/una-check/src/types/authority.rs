@@ -2079,7 +2079,7 @@ pub(crate) fn budget(
 pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
     fn holds(ty: &Ty) -> bool {
         match ty {
-            Ty::Labeled(_, inner) => holds(inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => holds(inner),
             Ty::Fn(function) => !function.uses.is_empty() || function.fails.is_some(),
             _ => false,
         }

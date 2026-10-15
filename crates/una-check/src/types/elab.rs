@@ -225,6 +225,34 @@ fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
 
 /// The records of module `module`: those of the package, or those of the standard modules,
 /// whose spans are those of another source database.
+/// The flows the checker recorded (ADR 0103), each with its target's and value's Core IR
+/// types, for `una_core::flow::Kinds::pending` to decide which are pending `refinement`
+/// obligations, as tier 1 decides (#615). Linear in the flows and their types.
+pub(crate) fn refined_flows(
+    env: &Env<'_>,
+    findings: &Findings,
+    sources: &SourceDb,
+    standard: &SourceDb,
+) -> Vec<(Span, Type, Type)> {
+    let dbs = Dbs { sources, standard };
+    findings
+        .records
+        .refined_flows
+        .iter()
+        .map(|flow| {
+            let mut fx = Fx::new(env, findings, dbs, flow.module);
+            if let Some(def) = flow.function.and_then(|id| env.functions.get(id)) {
+                fx.type_params.clone_from(&def.type_params);
+            }
+            (
+                flow.span,
+                fx.convert(&flow.target),
+                fx.convert(&flow.source),
+            )
+        })
+        .collect()
+}
+
 fn records_of<'f>(env: &Env<'_>, findings: &'f Findings, module: usize) -> &'f Records {
     if module >= env.prelude {
         &findings.standard_records
@@ -421,6 +449,8 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Labeled(label, inner) => with_label(self.convert(inner), label),
             // ADR 0104 rule 5: a unit is erased; Core holds the magnitude type.
             Ty::Measured(_, inner) => self.convert(inner),
+            // ADR 0103: a refined nested position keeps its refinements in Core IR.
+            Ty::Refined(refinements, inner) => self.refined(self.convert(inner), refinements),
             // ADR 0037 rule 1: the parameters and the result keep their refinements.
             Ty::Fn(function) => Type::Fn {
                 params: function
@@ -481,7 +511,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .get(*index)
                     .map_or_else(|| "?".to_owned(), |p| (*p).to_owned()),
             ),
-            Ty::Labeled(_, inner) => self.base(inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.base(inner),
             Ty::Fn(_) | Ty::Var(_) | Ty::Never | Ty::Error(_) => Base::Unknown,
         }
     }
@@ -591,7 +621,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let def = self.env.kinds.get(*id)?;
                 Some(Box::new(self.path(def.module, def.name)))
             }
-            Ty::Labeled(_, inner) => self.kind_path(inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.kind_path(inner),
             _ => None,
         }
     }
@@ -599,7 +629,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn kind_name(&self, ty: &Ty) -> String {
         match ty {
             Ty::Kind(id, _) => self.env.kind_name(*id).to_owned(),
-            Ty::Labeled(_, inner) => self.kind_name(inner),
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.kind_name(inner),
             _ => "?".to_owned(),
         }
     }
@@ -3773,6 +3803,16 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
     }
     if *label != ty.top_label() {
         return Some(format!("the label `{}` became `{label}`", ty.top_label()));
+    }
+    // ADR 0103: every refinement of a nested position is in Core IR.
+    if let Some(refinements) = ty.refinements() {
+        let kept = match core {
+            Type::Base { refinements, .. } => refinements.len(),
+            Type::Fn { .. } => 0,
+        };
+        if kept < refinements.len() {
+            return Some("a refinement of a type argument".to_owned());
+        }
     }
     match (ty.unlabeled(), core) {
         (

@@ -67,6 +67,8 @@ Range sugar: `T in a..b` means `T where a <= it and it <= b`; `T in a..<b` means
 
 **Refined type arguments** (ADR 0040). A refined kind, or a type with range sugar, written as a type argument is ill-formed (U2002), including inside a kind definition or a function type: `Option[Pos]`, `List[Int in 0..5]`, `Result[Pos, E]` and `Box[Pos]` are rejected, and a type that contains one, as `Option[List[Pos]]`, is reported at the innermost refined type argument. A type argument inferred from a value of a refined kind is the base of that kind, so the result does not carry the refinement. The parameters and result of a function type are not type arguments: `fn(Pos) -> Int` is well-formed (ADR 0037).
 
+(v0.3, ADR 0103.) **Refined elements.** In edition `0.3` a refined kind, a type with range sugar, or a type that contains one MAY be a type argument: `List[Pos]`, `Option[Int in 0..5]`, `Map[Text, Pos]`, `Box[Pos]`, in signatures, fields, function types, annotations and written type arguments. Every value at such a position satisfies its refinement: each flow of a value into it is an obligation (`spec/12 §3`), and each value read from it carries the refinement as a fact. A refined type satisfies a constraint of `spec/20 §1` when its base does. Editions `0.1` and `0.2` keep the rule above.
+
 **Refined function kinds** (ADR 0045). A `where` clause on a kind whose base is a function type, as `kind F = fn(Int) -> Int where good(it)`, is ill-formed (U2002 at the clause), with a message that names the kind: Core IR has no refinement over a function base (`spec/09 §2`). The parameters and the result of the function type may be refined instead. Range sugar is not such a clause: in `kind F = fn(Int) -> Int in 0..5` the range binds to the result type. An alias of such a kind, `kind G = F`, is reported once, at the clause of `F`.
 
 ## 4. Predicates
@@ -100,6 +102,7 @@ Subtyping is used at every point where a value flows into a position with a decl
 | --- | --- |
 | `{v: B \| p} <: {v: B \| q}` | Obligation `p implies q` under the path context (`spec/12 §3`) |
 | `l1 T <: l2 T` | `l1 ⊑ l2` (`spec/07 §2`) |
+| (v0.3, ADR 0103) `C[σ] <: C[τ]` at a refined nested position | the refinement of each position of `τ` that `σ` does not carry, as an obligation over a fresh binder: covariant through `List`, `Option`, `Result`, `Map` and a covariant kind parameter, contravariant through a function's parameters, both ways through an invariant kind parameter (ADR 0046) |
 | function types | Contravariant parameters, covariant result, declared uses and fails of the subtype included in the supertype's |
 
 Capabilities are not values and have no subtyping; passing them is governed by sufficiency (`spec/10 §2`).
@@ -112,3 +115,4 @@ There are no implicit conversions between distinct nominal kinds or between `Int
 - `let` bindings infer their type from the right-hand side. A binding whose right-hand side is in RL gets the selfified type `{v: B | v == e}`, so facts flow into later obligations.
 - Lambda parameter types are taken from the expected function type; without one, annotations are required (U2010).
 - Generic arguments are inferred at call sites by unification. Refinements are never inferred beyond selfification and path conditions, which keeps verification predictable.
+- (v0.3, ADR 0103 rule 5.) A type argument inferred from values keeps a refinement only when every value that determines it has that refinement at that position, as the same refined kind or range, and the parameter is at no contravariant or invariant position of the callee's result. Otherwise it is the base, as in editions `0.1` and `0.2`. A join (`if`, `when`, `if none use`, `if error use`) keeps a nested refinement only when every branch has it. Map lookups (`has`, `get`, `remove`, `without`) take the key at the base of the key type (`spec/21 §2`).

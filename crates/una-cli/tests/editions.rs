@@ -1,7 +1,8 @@
 //! Editions are cumulative (`spec/13 §7`): every edition `0.2` package of the conformance suite,
 //! checked as edition `0.3`, reports byte-identical `una --json check` output and exit status.
 //! The rules that target edition `0.3` change some of them: a construct such a rule adds, which
-//! edition `0.2` rejects as a syntax error, or an error such a rule adds. Each such package is
+//! edition `0.2` rejects as a syntax error, an error such a rule adds, or an error such a rule
+//! removes under the amended preview rule (ADR 0103 rule 9). Each such package is
 //! listed in `EXPECTED_DIFFERENCES` with the exact result of both editions, and a listed package
 //! that does not differ fails the test, so the list stays exact.
 
@@ -46,13 +47,25 @@ enum Difference {
         /// The added diagnostics.
         edition_0_3: &'static [(&'static str, &'static str)],
     },
+    /// The rule only removes errors, as ADR 0103 rule 9 lets edition `0.3` accept refined type
+    /// arguments and the facts they give (`spec/13 §7`): the diagnostics document of edition
+    /// `0.2` is that of edition `0.3` with exactly these diagnostics added, each a code and
+    /// `file:line:col`.
+    Looser {
+        /// The package, relative to `tests/conformance`.
+        case: &'static str,
+        /// The diagnostics of edition `0.2` that edition `0.3` does not report.
+        edition_0_2: &'static [(&'static str, &'static str)],
+    },
 }
 
 impl Difference {
     /// The package, relative to `tests/conformance`.
     fn case(&self) -> &'static str {
         match self {
-            Difference::Syntax { case, .. } | Difference::Stricter { case, .. } => case,
+            Difference::Syntax { case, .. }
+            | Difference::Stricter { case, .. }
+            | Difference::Looser { case, .. } => case,
         }
     }
 
@@ -60,7 +73,7 @@ impl Difference {
     fn packages(&self) -> Vec<&'static str> {
         match self {
             Difference::Syntax { case, twin, .. } => vec![*case, *twin],
-            Difference::Stricter { case, .. } => vec![*case],
+            Difference::Stricter { case, .. } | Difference::Looser { case, .. } => vec![*case],
         }
     }
 }
@@ -136,6 +149,16 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
             ("U3026", "src/relay.una:81:12"),
             ("U3026", "src/relay.una:83:12"),
         ],
+    },
+    // ADR 0103 rule 1: a refined type argument, U2002 before edition 0.3.
+    Difference::Looser {
+        case: "verification/refined_elements_0_2",
+        edition_0_2: &[("U2002", "src/edition_0_2.una:8:22")],
+    },
+    // ADR 0103 rule 6: `[p]` is a `List[Pos]` in edition 0.3, so `first`'s element carries `Pos`.
+    Difference::Looser {
+        case: "verification/refined_elements_0_2_facts",
+        edition_0_2: &[("U5001", "src/edition_0_2_facts.una:14:25")],
     },
 ];
 
@@ -407,6 +430,9 @@ fn every_expected_difference_is_exact() {
             Difference::Stricter { case, edition_0_3 } => {
                 stricter(&root, &scratch, case, edition_0_3);
             }
+            Difference::Looser { case, edition_0_2 } => {
+                looser(&root, &scratch, case, edition_0_2);
+            }
         }
     }
 }
@@ -509,19 +535,48 @@ fn stricter(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
     let (_, before, _) = check_as(&case, scratch, EDITION_0_2);
     let (status, after, _) = check_as(&case, scratch, EDITION_0_3);
     let before: Value = serde_json::from_slice(&before).unwrap();
-    let mut after: Value = serde_json::from_slice(&after).unwrap();
+    let after: Value = serde_json::from_slice(&after).unwrap();
     assert!(!added.is_empty(), "{name}: a stricter entry adds nothing");
     assert_eq!(status, Some(1), "{name} as edition 0.3");
+    differs_by(name, "edition 0.3", "edition 0.2", after, &before, added);
+}
+
+/// A [`Difference::Looser`]: edition `0.2` reports exactly the pinned diagnostics more than
+/// edition `0.3` does, and nothing else differs.
+fn looser(root: &Path, scratch: &Path, name: &str, removed: &[(&str, &str)]) {
+    let case = root.join(name);
+    let (status, before, _) = check_as(&case, scratch, EDITION_0_2);
+    let (_, after, _) = check_as(&case, scratch, EDITION_0_3);
+    let before: Value = serde_json::from_slice(&before).unwrap();
+    let after: Value = serde_json::from_slice(&after).unwrap();
+    assert!(
+        !removed.is_empty(),
+        "{name}: a looser entry removes nothing"
+    );
+    assert_eq!(status, Some(1), "{name} as edition 0.2");
+    differs_by(name, "edition 0.2", "edition 0.3", before, &after, removed);
+}
+
+/// That `more`, the document of `more_edition`, is `less` with exactly the `listed`
+/// diagnostics added.
+fn differs_by(
+    name: &str,
+    more_edition: &str,
+    less_edition: &str,
+    mut more: Value,
+    less: &Value,
+    listed: &[(&str, &str)],
+) {
     // Each listed diagnostic is taken out once, so a duplicate or a missing one fails, and
     // `fixable` loses those that `una fix` applies (`spec/13 §5`).
     let mut fixable = 0;
-    let diagnostics = after["diagnostics"].as_array_mut().unwrap();
-    for (code, at) in added {
+    let diagnostics = more["diagnostics"].as_array_mut().unwrap();
+    for (code, at) in listed {
         let found = diagnostics
             .iter()
             .position(|d| d["code"] == *code && location(&d["primary"]) == *at);
         let Some(index) = found else {
-            panic!("{name} as edition 0.3: no {code} at {at}");
+            panic!("{name} as {more_edition}: no {code} at {at}");
         };
         let removed = diagnostics.remove(index);
         let first = &removed["repairs"][0];
@@ -532,9 +587,9 @@ fn stricter(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
             fixable += 1;
         }
     }
-    after["fixable"] = Value::from(after["fixable"].as_u64().unwrap() - fixable);
+    more["fixable"] = Value::from(more["fixable"].as_u64().unwrap() - fixable);
     assert_eq!(
-        after, before,
-        "{name}: edition 0.3 differs from edition 0.2 by more than the listed diagnostics"
+        &more, less,
+        "{name}: {more_edition} differs from {less_edition} by more than the listed diagnostics"
     );
 }

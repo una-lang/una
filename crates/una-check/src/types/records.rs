@@ -57,6 +57,25 @@ pub(crate) struct Records {
     /// The refinements of each lambda parameter, by the span of its name: its annotation's,
     /// or the expected parameter type's (ADR 0037 rule 1).
     pub(crate) lambda_params: BTreeMap<Span, Vec<Refinement>>,
+    /// The types recorded before a call settled its type arguments, by span, with the type
+    /// they were taken from, unresolved: a lambda's parameters and the lambda itself. Their
+    /// refinements are refitted to that type's final value (ADR 0103 rule 5).
+    pub(crate) refits: Vec<(Span, Ty)>,
+    /// Each flow of a value into a type, in edition `0.3`, for the pending `refinement`
+    /// obligations that ADR 0103 adds: where tier 1 generates one, as
+    /// `una_core::flow::Kinds::pending` decides over Core IR (#615).
+    pub(crate) refined_flows: Vec<RefinedFlow>,
+}
+
+/// A flow of a value at `span` into `target`, in the module `module` and the function
+/// `function`, whose type parameters name the types' parameters.
+#[derive(Clone, Debug)]
+pub(crate) struct RefinedFlow {
+    pub(crate) span: Span,
+    pub(crate) module: usize,
+    pub(crate) function: Option<usize>,
+    pub(crate) target: Ty,
+    pub(crate) source: Ty,
 }
 
 impl Records {
@@ -78,5 +97,30 @@ impl Records {
         self.args.extend(other.args);
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
+        // A lambda's own type takes the refinements of the type arguments its call settles
+        // on, in its flow as in its record (ADR 0103 rule 5).
+        let refitted: BTreeMap<Span, Ty> = other
+            .refits
+            .iter()
+            .map(|(span, from)| (*span, resolve(from)))
+            .collect();
+        for flow in other.refined_flows {
+            let source = resolve(&flow.source);
+            let source = match refitted.get(&flow.span) {
+                Some(settled) => source.refit(settled),
+                None => source,
+            };
+            self.refined_flows.push(RefinedFlow {
+                target: resolve(&flow.target),
+                source,
+                ..flow
+            });
+        }
+        for (span, from) in other.refits {
+            if let Some(recorded) = self.types.get(&span) {
+                let refitted = recorded.refit(&resolve(&from));
+                self.types.insert(span, refitted);
+            }
+        }
     }
 }

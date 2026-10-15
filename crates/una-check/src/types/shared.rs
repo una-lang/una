@@ -6,7 +6,7 @@
 use std::fmt;
 use std::rc::Rc;
 
-use super::ty::Ty;
+use super::ty::{Refinement, Ty};
 
 /// What a type node holds, anywhere below it, computed once when the node is made from the
 /// flags of its children (ADR 0077 stage 3a). A node never changes, so neither do its flags:
@@ -25,6 +25,9 @@ pub(crate) struct Flags {
     /// A unit of measure, `Ty::Measured` (ADR 0104), so that a type without one is never
     /// rebuilt to remove it.
     pub(crate) unit: bool,
+    /// A refinement at a nested position, `Ty::Refined` (ADR 0103). A variable's solution
+    /// may hold one that this flag does not see.
+    pub(crate) refined: bool,
 }
 
 impl Flags {
@@ -35,6 +38,7 @@ impl Flags {
         var_label: false,
         normal: true,
         unit: false,
+        refined: false,
     };
 
     /// What `self` or `other` holds.
@@ -45,6 +49,7 @@ impl Flags {
             var_label: self.var_label || other.var_label,
             normal: self.normal && other.normal,
             unit: self.unit || other.unit,
+            refined: self.refined || other.refined,
         }
     }
 }
@@ -163,6 +168,19 @@ impl FromIterator<Ty> for Shared<[Ty]> {
         Shared {
             flags: node.flags(),
             node,
+        }
+    }
+}
+
+impl FromIterator<Refinement> for Shared<[Refinement]> {
+    /// The refinements at a nested position (ADR 0103), as one node. As a function type's
+    /// refinements, they hold no type that an operation changes, so the node's flags are a
+    /// leaf's.
+    fn from_iter<I: IntoIterator<Item = Refinement>>(refinements: I) -> Shared<[Refinement]> {
+        una_core::label_counters::node();
+        Shared {
+            flags: Flags::LEAF,
+            node: refinements.into_iter().collect(),
         }
     }
 }

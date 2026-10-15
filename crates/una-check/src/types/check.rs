@@ -253,6 +253,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// In pass 1, the open positions of this declaration's editable bindings: each variable's
     /// name and the unification variable whose type will be its shape (ADR 0075).
     pub(crate) edit_open: Vec<(String, usize)>,
+    /// The spans whose unification only propagates an expected type, as a list literal's
+    /// items, a branch of a branching expression or a default value: not flows of their own
+    /// (ADR 0103), so no `refinement` flow is recorded there.
+    pub(crate) flow_hints: std::collections::BTreeSet<Span>,
     /// The outer form of the editable binding being opened, for the example of an annotation.
     pub(crate) edit_outer: String,
     /// The function or predicate whose body is checked.
@@ -331,6 +335,10 @@ impl Names for Checker<'_, '_, '_> {
             .get(index)
             .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
     }
+
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        self.env.refined_display(refinements, base)
+    }
 }
 
 /// A checker's names as source writes them, for repairs.
@@ -343,6 +351,10 @@ impl Names for Written<'_, '_, '_, '_> {
 
     fn param_name(&self, index: usize) -> String {
         self.0.param_name(index)
+    }
+
+    fn refined_name(&self, refinements: &[Refinement], base: &str) -> Option<String> {
+        self.0.env.refined_display(refinements, base)
     }
 }
 
@@ -470,6 +482,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             annotated_lambdas: BTreeMap::new(),
             edit_bounds: BTreeMap::new(),
             edit_open: Vec::new(),
+            flow_hints: std::collections::BTreeSet::new(),
             edit_outer: String::new(),
             current: None,
             handler: None,
@@ -541,7 +554,12 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         found: &Ty,
         role: Role<'_>,
     ) -> bool {
-        if self.vars.unify(expected, found) {
+        // ADR 0103: the flow, for its pending `refinement` obligation, decided over Core IR
+        // once the types are final.
+        if !self.flow_hints.contains(&span) {
+            self.record_flow(span, expected, found);
+        }
+        if self.vars.unify_expected(expected, found) {
             return true;
         }
         // ADR 0104: two types that differ only in their units are U2028.
@@ -826,6 +844,30 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn lambda_refinements(&mut self, span: Span, refinements: Vec<Refinement>) {
         if self.pass == Pass::Check && !refinements.is_empty() {
             self.records.lambda_params.insert(span, refinements);
+        }
+    }
+
+    /// Records, in pass 2, that the type at `span` takes its refinements from the final value
+    /// of `from` (ADR 0103 rule 5).
+    pub(crate) fn refit(&mut self, span: Span, from: Ty) {
+        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+            self.records.refits.push((span, from));
+        }
+    }
+
+    /// Records, in pass 2 and edition `0.3`, a value of type `source` at `span` flowing into
+    /// `target`, for its pending `refinement` obligation (ADR 0103 rule 4, #615).
+    pub(crate) fn record_flow(&mut self, span: Span, target: &Ty, source: &Ty) {
+        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+            self.records
+                .refined_flows
+                .push(super::records::RefinedFlow {
+                    span,
+                    module: self.module,
+                    function: self.current,
+                    target: target.clone(),
+                    source: source.clone(),
+                });
         }
     }
 
@@ -1135,7 +1177,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.current = Some(id);
         self.type_params = def.type_params.clone();
         for param in &def.params {
-            let ty = self.symbolic(&param.ty.base);
+            let ty = self.symbolic(&self.env.top_refined(&param.ty));
             let editable = param.convention == Some(una_syntax::ast::Convention::Edit);
             self.bind_as(param.name, ty, editable);
             if let Some(local) = self.locals.last_mut() {
