@@ -566,7 +566,8 @@ class Concurrency(unittest.TestCase):
             # Edition 0.1 reserves `together`: must-reject, with nothing to vary or run.
             self.assertEqual((p01.cls, p01.expect, p01.vary), (MUST_REJECT, ["U0103"], []))
         self.assertEqual(forms, {"for-elements", "branch-value", "attempt-sibling", "secret-sink",
-                                 "under-public-pc", "secret-fan-out"})
+                                 "under-public-pc", "secret-fan-out", "shape-length",
+                                 "public-fan-out", "element-fail"})
 
 
 class Refactors(unittest.TestCase):
@@ -1082,6 +1083,16 @@ class GeneratorErrors(unittest.TestCase):
     def test_a_must_reject_program_needs_its_expected_code(self):
         self.assertEqual(gate.generator_errors([self.row(["U4002"], ["U4002"])]), [])
         self.assertTrue(gate.generator_errors([self.row(["U4003"], ["U4002"])]))
+        # A must-reject program with no expected code would count any rejection.
+        self.assertTrue(gate.generator_errors([self.row(["U4002"], [])]))
+
+    def test_a_refactor_that_breaks_parsing_is_an_error_of_the_pair(self):
+        def pair(base, twin):
+            return {"name": "p", "refactor": "R6", "expect": [],
+                    "base": {"codes": [[c, "x", 1, 1] for c in base]},
+                    "twin": {"codes": [[c, "x", 1, 1] for c in twin]}}
+        self.assertEqual(gate.keep_generator_errors([pair(["U4001"], ["U4001"])]), [])
+        self.assertTrue(gate.keep_generator_errors([pair(["U4001"], ["U0001"])]))
 
 
 class Native(unittest.TestCase):
@@ -1195,12 +1206,19 @@ class Native(unittest.TestCase):
         self.assertEqual(self.compare(doc, stdout='right\nleft {1} "q"\n2\n'), [])
         # Another line: not what the trace printed, nor the document's.
         self.assertTrue(self.compare(doc, stdout='left {1} "q"\nother\n2\n'))
-        # A line the native trace printed but the document did not hold: a divergence, unless an
-        # extra task event of the native trace printed it.
+        # On an ordered run (no failure, no cancellation), an extra task event is a divergence.
         extra = trace + [self.print_event(4, "late", "2")]
-        self.assertEqual(self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n',
-                                      ntrace=extra), [])
-        self.assertTrue(self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n'))
+        self.assertIn("the trace differs on an ordered run",
+                      self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n', ntrace=extra))
+        # On a run that is not ordered (a task cancelled), the extra events of tasks that started
+        # after it are allowed, and only the lines they printed.
+        cancel = {"seq": 5, "task": "1", "cancelled": True}
+        unordered = trace + [cancel]
+        doc2 = self.doc(output=('left {1} "q"', "right", "2"), trace=unordered)
+        self.assertEqual(self.compare(doc2, stdout='left {1} "q"\nright\n2\nlate\n',
+                                      ntrace=unordered + [self.print_event(6, "late", "2")]), [])
+        self.assertTrue(self.compare(doc2, stdout='left {1} "q"\nright\n2\nlate\n',
+                                     ntrace=unordered))
 
     def test_the_sample_is_a_fixed_function_of_the_name(self):
         names = [f"p{i}" for i in range(2000)]

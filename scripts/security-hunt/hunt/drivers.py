@@ -114,7 +114,7 @@ def must_keep(rows, una, root, timeout, out, refactors=("R6", "R9")):
             changed = (base.kind == "accepted") != (v.kind == "accepted")
             result = {
                 "name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
-                "refactor": rid, "refactor_seed": rseed,
+                "refactor": rid, "refactor_seed": rseed, "expect": list(prog.expect),
                 "base": base.row(), "twin": v.row(), "finding": changed,
                 "direction": ("rejected-to-accepted" if v.kind == "accepted" else
                               "accepted-to-rejected") if changed else None,

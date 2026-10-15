@@ -205,18 +205,27 @@ def c5(seed, edition):
                  note="a leak candidate if accepted: probes C4's triage")
 
 
-# C6. The oracle's programs (#807): accepted, with a `main`, and one secret literal that `together`
-# could let decide what an observer sees. The oracle varies the literal; public output, and the
-# events an observer at `public` or `internal` sees, must not move with it.
+# C6. The oracle's programs (#807): with a `main`, and one secret literal that `together` could let
+# decide what an observer sees. The oracle varies the literal; public output, and the events an
+# observer at `public` or `internal` sees, must not move with it.
+#
+# Two kinds. The first six forms are accepted, and print what the secret cannot decide: the oracle
+# checks that the checks' acceptance is sound for them. The last three, `shape-length`,
+# `public-fan-out` and `element-fail`, are closed calls that a correct checker rejects (U4001,
+# U4003, U4002), so the oracle sets them aside, a count the gate pins; a checker that wrongly
+# accepted one would let the oracle see the secret in public output or public events, a finding.
 VAULT = ("capability Vault\n  op note(x: Int) -> Unit\n    accepts secret\n\n"
          "handler quiet() for Vault\n  op note(x) = unit")
 C6_MAIN = "pub main() -> Unit\n  uses @console: Console[print]\n=\n"
+LOG_PUBLIC = ("capability Log\n  op write(line: Text) -> Unit\n\n"
+              "handler quiet_log() for Log\n  op write(line) = unit")
 
 
 def c6(seed, edition):
     rng = rng_for(seed)
     form = rng.choice(["for-elements", "branch-value", "attempt-sibling", "secret-sink",
-                       "under-public-pc", "secret-fan-out"])
+                       "under-public-pc", "secret-fan-out", "shape-length", "public-fan-out",
+                       "element-fail"])
     v = Varied()
     lit = v.lit("Int", "secret", str(rng.choice([2, 5, 7])))
     secret = f"  let s: secret Int = {lit}\n"
@@ -254,7 +263,7 @@ def c6(seed, edition):
         main = (secret + "  let flag = true\n  if flag\n"
                 "    together\n      let x = s * 3\n      let y = 4\n"
                 '    @console.print("{y}")\n  else\n    @console.print("no")')
-    else:
+    elif form == "secret-fan-out":
         # Secret-sized fan-out: the secret decides how many tasks run, each doing only work no
         # observer below the literal sees. Their number, and their events, must not show.
         decls += [VAULT, "fan(n: secret Int) -> Unit\n  uses @vault: Vault[note]\n=\n"
@@ -263,7 +272,32 @@ def c6(seed, edition):
                          "  unit"]
         main = (secret + "  fan(s) with @vault = quiet()\n"
                 '  @console.print("done")')
-    decls.append(C6_MAIN + main)
+    elif form == "shape-length":
+        # The secret decides the list's length; the result's length is printed.
+        main = (secret + "  let xs = if s > 3 then [1, 2] else [1]\n"
+                "  let done = together for p in xs\n    p + 1\n"
+                '  @console.print("{done.len}")')
+    elif form == "public-fan-out":
+        # The secret decides how many tasks run, each calling an operation an observer at
+        # `public` sees.
+        decls += [LOG_PUBLIC, "fan(n: secret Int) -> Unit\n  uses @log: Log[write]\n=\n"
+                              "  let k = if n > 4 then 4 else n\n"
+                              '  let notes = together for p in 0..<k\n    @log.write("task")\n'
+                              "  unit"]
+        main = (secret + "  fan(s) with @log = quiet_log()\n"
+                '  @console.print("done")')
+    elif form == "element-fail":
+        # A task fails on its secret element; the block's failure passes to `main`, beside the
+        # public print that it would skip.
+        decls += [OOPS, "check(p: secret Int) -> secret Int\n  fails Oops\n=\n"
+                        "  if p > 3\n    fail Bad\n  p"]
+        main = (secret + "  let pins: List[secret Int] = [1, s]\n"
+                "  let results = together for p in pins\n    check(p)\n"
+                "      if error pass\n"
+                '  @console.print("checked")')
+    decls.append(C6_MAIN.replace("=\n", "  fails Oops\n=\n", 1) if form == "element-fail"
+                 else C6_MAIN + "")
+    decls[-1] = decls[-1] + main
     if form == "attempt-sibling":
         text = join_decls(*decls)
         for item in v.items:
@@ -274,9 +308,14 @@ def c6(seed, edition):
             # Edition 0.1 also refuses this `fail` block's form, U0101, besides `together`.
             prog.expect.append("U0101")
         return prog
-    return _make("C6", edition, seed, OPEN, join_decls(*decls), variant=form,
-                 note="expected accepted; the oracle checks that what an observer below the "
-                      "secret sees does not depend on it", varied=v)
+    closed = {"shape-length": "U4001", "public-fan-out": "U4003", "element-fail": "U4002"}
+    note = (f"a closed call: a correct checker rejects it ({closed[form]}), and the oracle sets it "
+            "aside; a checker that accepted it would let the oracle see the secret"
+            if form in closed else
+            "expected accepted; the oracle checks that what an observer below the secret sees "
+            "does not depend on it")
+    return _make("C6", edition, seed, OPEN, join_decls(*decls), variant=form, note=note,
+                 varied=v)
 
 
 OPERATORS = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5, "C6": c6}

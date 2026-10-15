@@ -13,10 +13,11 @@ The comparison is the one of the native equivalence test (crates/una-cli/tests/n
   place, `  at <file>:<line>:<column>`, or the note that names the code's explanation,
   `  note: run `una explain <code>` for an explanation`;
 - a run that starts tasks (`spec/19 §8` rule 4): the output is what the native trace says each
-  task printed, each task's lines in its own order, and, as a multiset, the document's output, plus
-  only lines that extra task events of the native trace printed; and the trace is the
-  interpreter's, or, on a run that is not ordered, holds the interpreter's in order with the extra
-  events those of tasks (`task_differences`);
+  task printed, each task's lines in its own order (a redacted line is not matched, and which
+  task prints first is outside the model); on an ordered run, one that neither fails nor cancels
+  a task, the trace equals the interpreter's and the output is the document's; on a run that is
+  not ordered, the trace holds the interpreter's in order with the extra events those of tasks,
+  and the output the document's plus only lines those extra events printed (`task_differences`);
 - a run the interpreter ends with a resource abort, U6003, U6004 or U6005: where each engine runs
   out is not exact (ADR 0061), so the executable must end the same way, the same exit code and
   error, and the same standard output, as
@@ -147,9 +148,21 @@ def _printed(events):
             and isinstance(e.get("args"), dict) and isinstance(e["args"].get("line"), str)]
 
 
-def task_differences(stdout, interpreted, native, output):
+def _cancels(trace):
+    """Whether a trace holds a task's cancellation: an event with no operation (`spec/19 §7`)."""
+    return isinstance(trace, list) and any(
+        isinstance(e, dict) and "capability" not in e and "op" not in e for e in trace)
+
+
+def task_differences(stdout, interpreted, native, output, ordered):
     """How a native run that starts tasks departs from `spec/19 §8` rule 4: the rule of native.rs,
-    and the document's `output` against the native standard output."""
+    and the document's `output` against the native standard output. On an ordered run, one that
+    neither fails nor cancels a task, both are exact: the trace equals the interpreter's and the
+    output is the document's, as a multiset of lines; only a run that is not ordered may hold the
+    extra events and lines of tasks that started after a failed one. Lines whose printed form is
+    redacted in the trace are not matched against it, and the interleaving of tasks' lines is
+    compared only as each task's own order (`spec/19 §6` rule 7: which task prints first is
+    outside the model)."""
     from collections import Counter
 
     differences = []
@@ -166,6 +179,12 @@ def task_differences(stdout, interpreted, native, output):
     # The document's output, as a multiset: the native run may hold more lines only where its
     # trace holds more print events than the interpreter's, on a run that is not ordered.
     native_lines, doc_lines = Counter(stdout.splitlines()), Counter(output or [])
+    if ordered:
+        if native_lines != doc_lines:
+            differences.append("the output is not the document's")
+        if timeless(native) != timeless(interpreted):
+            differences.append("the trace differs on an ordered run")
+        return differences
     if native_lines != doc_lines:
         missing = doc_lines - native_lines
         extra = Counter(quote(line) for line in (native_lines - doc_lines).elements())
@@ -232,7 +251,9 @@ def compare(interp, doc, native, native_trace):
             differences.append("neither trace is a prefix of the other")
         return differences
     if _starts_tasks(trace) or _starts_tasks(native_trace):
-        return differences + task_differences(native.stdout, trace, native_trace, doc.get("output"))
+        ordered = status != "failed" and not _cancels(trace) and not _cancels(native_trace)
+        return differences + task_differences(native.stdout, trace, native_trace,
+                                              doc.get("output"), ordered)
     if native.stdout != expected:
         differences.append("standard output differs")
     if timeless(native_trace) != timeless(trace):
