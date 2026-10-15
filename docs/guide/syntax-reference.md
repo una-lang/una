@@ -2117,7 +2117,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | U1001 to U1009 | names: resolution, duplicates, cycles, visibility, conventions, requirements, file paths, reserved module names |
 | U2001 to U2027 | types: mismatches, labels, exhaustiveness, constructors, RL, predicates, conventions, literals, tasks, constraints |
 | U3001 to U3019 | authority: capabilities, effects, failures, handlers, one effect per line, `of` clauses |
-| U4001 to U4007 | security: flows, implicit flows, sinks, policies, categories |
+| U4001 to U4008 | security: flows, implicit flows, sinks, policies, categories, interpolation in a pattern |
 | U5001 to U5003 | verification: refuted, unknown, solver missing |
 | U6001, U6003 | runtime: `main` failed, call depth or memory limit exceeded |
 | U7001 to U7005 | project: formatting, `una.toml`, escape budget, lock, trusted modules |

@@ -2873,15 +2873,14 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     /// A pattern's literal, which is a constant (`spec/07 §7` rule 3): the checks reject a text
-    /// literal with interpolation in a pattern (U4008, S-28), so one here means the declaration
-    /// is broken, and it is never exported as checked Core.
+    /// literal with interpolation in a pattern (U4008, S-28). One that reaches here anyway is
+    /// recorded as lost, for U8001, as a lost component of a checked type is, and the
+    /// declaration is broken: never exported as checked Core, never silently built.
     fn pattern_literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
-        if let Literal::Text(text) = literal
-            && text
-                .parts
-                .iter()
-                .any(|part| matches!(part, TextPart::Interpolation(_)))
-        {
+        if super::expr::interpolates(literal) {
+            self.lost
+                .borrow_mut()
+                .push("a text literal with interpolation in a pattern (U4008)".to_owned());
             self.broken = true;
             return Atom::Unit;
         }
@@ -4080,6 +4079,29 @@ mod tests {
             fails,
             label,
         }
+    }
+
+    #[test]
+    fn a_pattern_literal_that_interpolates_is_found_for_u8001() {
+        // S-28: the checks reject it (U4008); the elaboration's guard keys on the same test.
+        let mut db = una_syntax::SourceDb::new();
+        let file = db.add("a.una", b"x");
+        let span = Span::at(file, 0);
+        let text = |parts| Literal::Text(TextLit { parts, span });
+        let value = Expr {
+            kind: ExprKind::Literal(Literal::Bool(true)),
+            span,
+        };
+        assert!(super::super::expr::interpolates(&text(vec![
+            TextPart::Text("a".to_owned()),
+            TextPart::Interpolation(value),
+        ])));
+        assert!(!super::super::expr::interpolates(&text(vec![
+            TextPart::Text("a".to_owned())
+        ])));
+        assert!(!super::super::expr::interpolates(&Literal::Int(
+            "3".to_owned()
+        )));
     }
 
     #[test]

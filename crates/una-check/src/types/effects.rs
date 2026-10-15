@@ -156,6 +156,9 @@ impl Scan<'_, '_> {
             }
             BlockExpr::When(when) => {
                 self.expr(&when.scrutinee);
+                // An arm's pattern holds no expression: its literal is a constant, since
+                // interpolating in it is U4008 (`spec/07 §7` rule 3, S-28), so walking the
+                // scrutinee and the bodies is complete.
                 for arm in &when.arms {
                     match &arm.body {
                         Body::Line(expr) => self.expr(expr),
@@ -231,6 +234,8 @@ impl Scan<'_, '_> {
                 self.top = top;
                 self.expr(inner);
             }
+            // `is` reads only its value: its literal is a constant, since interpolating in it is
+            // U4008 (`spec/07 §7` rule 3, S-28), so walking `value` alone is complete.
             ExprKind::Old(inner)
             | ExprKind::Unary { operand: inner, .. }
             | ExprKind::Field { target: inner, .. }
