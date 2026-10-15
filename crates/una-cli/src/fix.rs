@@ -135,7 +135,7 @@ pub(crate) fn fix_command(
         // has no candidate there, so its tier 1 is left to the final check.
         if diagnostics.is_empty()
             && options.tier == Tier::One
-            && !program.condition_edits.is_empty()
+            && (!program.condition_edits.is_empty() || restores_locks(&program))
         {
             let found = verification::tier_one(&package, &program, &options.solving).diagnostics;
             let candidates: Vec<Diagnostic> = found
@@ -348,14 +348,29 @@ fn reused(checked: Option<(Files, Vec<Diagnostic>)>, now: &Files) -> Option<Vec<
 }
 
 /// Whether a diagnostic of tier 1 may give `una fix` an edit: a refuted `effect_condition`
-/// obligation, the only kind of tier 1 whose repair carries one (ADR 0084, amendment of
-/// 2026-10-14). Another kind needs its own amendment first.
+/// obligation (ADR 0084, amendment of 2026-10-14) or a refuted `contract_lock` obligation
+/// (amendment of 2026-10-15), the only kinds of tier 1 whose repair carries one. Another kind
+/// needs its own amendment first.
 fn tier_one_candidate(diagnostic: &Diagnostic) -> bool {
-    diagnostic.code == Code::U5001
-        && diagnostic
-            .obligation
-            .as_ref()
-            .is_some_and(|obligation| obligation.kind == ObligationKind::EffectCondition)
+    let kind = diagnostic
+        .obligation
+        .as_ref()
+        .map(|obligation| obligation.kind);
+    // ADR 0084, amendment of 2026-10-15: a refuted `contract_lock` obligation is U3023, and
+    // its restoration a candidate too; an unknown obligation (U5002) never is.
+    (diagnostic.code == Code::U5001 && kind == Some(ObligationKind::EffectCondition))
+        || (diagnostic.code == Code::U3023 && kind == Some(ObligationKind::ContractLock))
+}
+
+/// Whether the checker computed an edit that restores a locked condition in some header (ADR
+/// 0092, amendment of 2026-10-15): such a program has a tier-1 candidate to look for.
+fn restores_locks(program: &una_core::Program) -> bool {
+    program.modules.iter().any(|module| {
+        module.decls.iter().any(|decl| match decl {
+            una_core::Decl::Fun(fun) => fun.locks.iter().any(|lock| lock.edit.is_some()),
+            _ => false,
+        })
+    })
 }
 
 /// The first repair of `diagnostic`, in the order `spec/13 §1` prints them: by escape cost,

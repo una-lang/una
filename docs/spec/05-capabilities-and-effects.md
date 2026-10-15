@@ -68,6 +68,8 @@ pub check_in(phone: secret[PII] Phone) -> Availability
    - an operation of the binding that the entry does not list, every declared operation when the header writes no brackets: U3023 at the operation;
    - an operation that the entry conditions by `C_lock`: a `contract_lock` obligation (`spec/12 §3`), `C_src ⇒ C_lock`, refuted U3023 and unknown U5002, "the header of `update_prices` lets `@catalog.journal` run where `not dry_run` does not hold, which `una.toml` locks".
 
+   (ADR 0092, amendment of 2026-10-15.) The first repair of the refuted `contract_lock` obligation, "restore the locked condition", carries an edit that `una fix` applies (`spec/13 §5`): it writes `op where C_lock` on the header's operation, or `op where (C_src) and (C_lock)` when the header conditions `op` by `C_src`. `C_lock` is the text of the lock's condition expression as its string reads, escapes decoded. The edit changes the module only, never `una.toml`. It carries the edit only when the header lists `op` by name, `C_lock` holds no line feed, `C_lock` and `C_src` are within the encoding (`spec/12 §4`), `C_lock`'s conjuncts are not all among `C_src`'s already, the obligation is refuted, and no obligation of the package is unknown. While one is, the repair's description ends with "; not applied while an obligation of this package is unknown (U5002)".
+
    A binding or an operation that the header leaves out grants less, and passes. A handler is not locked: its operations are charged against its own header, and where it is installed against the installing function's conditions (rule 4).
 
 ## 4. Passing capabilities

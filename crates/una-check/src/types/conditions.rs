@@ -479,7 +479,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
 /// The conjuncts of `expr`: its operands once its top-level `and` is flattened, each without
 /// the parentheses that enclose it (ADR 0092, amendment of 2026-10-14, condition (g)).
-fn conjuncts(expr: &Expr) -> Vec<&Expr> {
+pub(crate) fn conjuncts(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::Paren(inner) => conjuncts(inner),
         ExprKind::Binary {
@@ -500,7 +500,7 @@ fn conjuncts(expr: &Expr) -> Vec<&Expr> {
 /// tokens in the same order are the same condition token for token; a text literal is compared
 /// by its words, which can only find two conditions equal that are not, and so withhold an
 /// edit, never write one twice.
-fn tokens(text: &str) -> Vec<String> {
+pub(crate) fn tokens(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut word = String::new();
     for c in text.chars() {

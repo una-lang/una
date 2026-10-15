@@ -243,6 +243,10 @@ pub struct Lock {
     pub at: Span,
     /// Where the lock entry is written in `una.toml`.
     pub entry: Span,
+    /// The edit that writes the lock's condition back on the header's operation: its range and
+    /// replacement, when conditions (a), (b) and (d) hold (ADR 0092, amendment of 2026-10-15).
+    /// The verifier keeps it under (c), and the report gives it under (e).
+    pub edit: Option<(Span, String)>,
 }
 
 /// A term of the refinement language (`spec/03 §3`): a tree over binders, `it` and

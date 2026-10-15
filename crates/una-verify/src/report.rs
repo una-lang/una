@@ -331,7 +331,8 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
 /// ADR 0092, amendment of 2026-10-14: the first repair at a call or a `with` whose callee's
 /// condition the checker could write carries that edit when the obligation is refuted (U5001)
 /// and no obligation of the package is unknown, condition (h). While one is, its description
-/// says why it carries none.
+/// says why it carries none. The amendment of 2026-10-15 gives the first repair of a refuted
+/// `contract_lock` obligation (U3023) its edit under the same rule, its condition (e).
 fn condition_edit(
     repairs: &mut [Repair],
     effect: &Effect,
