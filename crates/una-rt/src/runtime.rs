@@ -1,7 +1,7 @@
 //! The runtime in safe Rust: the command line, grants, the call depth, host operations and the
 //! trace of a native executable (`spec/16 §3`). [`crate::ffi`] calls it from the C ABI.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -221,7 +221,7 @@ pub(crate) struct State {
     pub(crate) trace: Option<Vec<Event>>,
     trace_path: Option<PathBuf>,
     pub(crate) failed_write: Option<io::Error>,
-    depth: usize,
+    /// The maximum call depth. The current depth is `Hot::depth`, its one copy (ADR 0102).
     max_depth: usize,
     sites: Arc<Vec<Location>>,
     failure: Option<Arc<Failure>>,
@@ -303,10 +303,11 @@ fn unshielded(cancel: &[Arc<AtomicBool>], shielded: usize) -> bool {
 impl State {
     /// What the tasks of a block at `site` start from.
     pub(crate) fn for_tasks(&self, site: usize) -> TaskTemplate {
-        let left = self.max_depth.saturating_sub(self.depth);
+        let depth = HOT.with(|hot| hot.depth.get());
+        let left = self.max_depth.saturating_sub(depth);
         TaskTemplate {
             tracing: self.trace.is_some(),
-            depth: self.depth,
+            depth,
             max_depth: self.max_depth,
             sites: Arc::clone(&self.sites),
             failure: self.failure.clone(),
@@ -392,6 +393,104 @@ impl State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    static HOT: Hot = const { Hot::inactive() };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many checks of this thread took the slow path (ADR 0102): the tests count
+    /// operations, not time.
+    static SLOW_PATHS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Counts a check that takes the slow path, in tests.
+fn slow_path() {
+    #[cfg(test)]
+    SLOW_PATHS.with(|count| count.set(count.get() + 1));
+}
+
+/// What the checks at every call and loop iteration read, mirrored from the thread's state so
+/// that the common case needs no borrow of it (ADR 0102). Only `Copy` cells: the thread-local
+/// has no destructor, so its first access registers none, and nothing here allocates, which
+/// would move the point where the memory budget fires.
+struct Hot {
+    /// Whether the thread has a run's state.
+    active: Cell<bool>,
+    /// The current call depth, its one copy.
+    depth: Cell<usize>,
+    max_depth: Cell<usize>,
+    stack_base: Cell<usize>,
+    stack_budget: Cell<usize>,
+    /// The heap the run may hold before a check reports it ([`mem_ceiling`]).
+    mem_ceiling: Cell<usize>,
+    /// `State::shielded`, and the length of `State::cancel`: no flag is unshielded when
+    /// `shielded >= flags`.
+    shielded: Cell<usize>,
+    flags: Cell<usize>,
+}
+
+impl Hot {
+    /// The record of a thread without a run's state: every check lets the call proceed.
+    const fn inactive() -> Hot {
+        Hot {
+            active: Cell::new(false),
+            depth: Cell::new(0),
+            max_depth: Cell::new(0),
+            stack_base: Cell::new(0),
+            stack_budget: Cell::new(0),
+            mem_ceiling: Cell::new(usize::MAX),
+            shielded: Cell::new(0),
+            flags: Cell::new(0),
+        }
+    }
+
+    /// Whether a flag past the shielded ones is set: at once false on `main`'s thread, which
+    /// has no flag; otherwise each one loaded, as `State::cancelled` does, behind a shared
+    /// borrow, which allocates nothing.
+    fn cancelled(&self) -> bool {
+        self.shielded.get() < self.flags.get()
+            && STATE.with(|cell| cell.borrow().as_ref().is_some_and(State::cancelled))
+    }
+}
+
+/// The heap a run may hold before a check reports it: `baseline` plus the budget of
+/// `max_memory` MiB, both saturating. `held > mem_ceiling(baseline, max_memory)` exactly when
+/// [`over_budget`] reports (ADR 0102 rule 5).
+fn mem_ceiling(baseline: usize, max_memory: usize) -> usize {
+    baseline.saturating_add(max_memory.saturating_mul(1024 * 1024))
+}
+
+/// Installs `state` as the thread's, at the call depth `depth`, and mirrors it in [`Hot`]: the
+/// one place, with [`take_state`], that writes either (ADR 0102 rule 3).
+fn install(state: State, depth: usize) {
+    HOT.with(|hot| {
+        hot.depth.set(depth);
+        hot.max_depth.set(state.max_depth);
+        hot.stack_base.set(state.stack_base);
+        hot.stack_budget.set(state.stack_budget);
+        hot.mem_ceiling
+            .set(mem_ceiling(state.baseline, state.max_memory));
+        hot.shielded.set(state.shielded);
+        hot.flags.set(state.cancel.len());
+        hot.active.set(true);
+    });
+    STATE.with(|cell| *cell.borrow_mut() = Some(state));
+}
+
+/// Takes the thread's state out of `cell`, clearing [`Hot`] first, so that no check reads a
+/// record whose state is gone.
+fn take_state(cell: &mut Option<State>) -> Option<State> {
+    HOT.with(|hot| {
+        hot.active.set(false);
+        hot.depth.set(0);
+        hot.max_depth.set(0);
+        hot.stack_base.set(0);
+        hot.stack_budget.set(0);
+        hot.mem_ceiling.set(usize::MAX);
+        hot.shielded.set(0);
+        hot.flags.set(0);
+    });
+    cell.take()
 }
 
 /// `f` of the state of the run, when the thread runs `main`.
@@ -456,7 +555,6 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
         failed_write: None,
-        depth: 0,
         max_depth: options.max_depth,
         sites: Arc::new(meta.sites),
         failure: meta.failure.map(Arc::new),
@@ -487,7 +585,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             state.baseline = crate::held();
             // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
             crate::ceiling(state.baseline.saturating_add(budget.saturating_mul(2)));
-            STATE.with(|cell| *cell.borrow_mut() = Some(state));
+            install(state, 0);
             let status = entry();
             crate::ceiling(usize::MAX);
             // A debug build of the runtime checks the compiled code's reference counting: it
@@ -510,7 +608,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             } else {
                 (0, 0, 0, 0)
             };
-            let state = STATE.with(|cell| cell.borrow_mut().take());
+            let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
             (status, state, faults)
         });
     let (status, state, (faults, leaked, copies, fallbacks)) =
@@ -691,14 +789,37 @@ pub fn enter(site: usize) -> i64 {
     let marker = site;
     let position = stack_position(&marker);
     let held = crate::held();
+    // ADR 0102: the conjunction of the negated abort conditions, on `Hot`; when it fails, the
+    // check below decides, with the same position and `held`.
+    let proceed = HOT.with(|hot| {
+        if !hot.active.get() {
+            return true;
+        }
+        let depth = hot.depth.get();
+        let clear = depth < hot.max_depth.get()
+            && hot.stack_base.get().abs_diff(position) <= hot.stack_budget.get()
+            && held <= hot.mem_ceiling.get()
+            && !hot.cancelled();
+        if clear {
+            // No borrow of the state runs compiled code (ADR 0102 rule 2).
+            debug_assert!(STATE.with(|cell| cell.try_borrow_mut().is_ok()));
+            hot.depth.set(depth + 1);
+        }
+        clear
+    });
+    if proceed {
+        return 0;
+    }
+    slow_path();
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
         let state = cell.as_mut()?;
         if state.cancelled() {
             return Some(None);
         }
+        let depth = HOT.with(|hot| hot.depth.get());
         let used = state.stack_base.abs_diff(position);
-        let message = if state.depth >= state.max_depth || used > state.stack_budget {
+        let message = if depth >= state.max_depth || used > state.stack_budget {
             format!(
                 "this call exceeds the maximum call depth of {}",
                 state.max_depth
@@ -706,7 +827,7 @@ pub fn enter(site: usize) -> i64 {
         } else if let Some(message) = over_budget(state, held) {
             message
         } else {
-            state.depth += 1;
+            HOT.with(|hot| hot.depth.set(depth + 1));
             return None;
         };
         let location = site_location(state, site);
@@ -728,6 +849,13 @@ pub fn enter(site: usize) -> i64 {
 /// must stop, as [`enter`] does, and 0 otherwise.
 pub fn budget(site: usize) -> i64 {
     let held = crate::held();
+    // ADR 0102: the negated abort conditions, on `Hot`.
+    let proceed =
+        HOT.with(|hot| !hot.active.get() || (held <= hot.mem_ceiling.get() && !hot.cancelled()));
+    if proceed {
+        return 0;
+    }
+    slow_path();
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
         let state = cell.as_mut()?;
@@ -764,6 +892,11 @@ pub fn write(ty: i64, word: i64) -> i64 {
 /// Returns 1 when the task must stop before an operation, having been cancelled, and 0
 /// otherwise (`spec/19 §6` rule 4).
 pub fn poll() -> i64 {
+    // ADR 0102: no unshielded flag set, on `Hot`.
+    if HOT.with(|hot| !hot.active.get() || !hot.cancelled()) {
+        return 0;
+    }
+    slow_path();
     with_state(|state| i64::from(state.cancelled())).unwrap_or(0)
 }
 
@@ -781,6 +914,7 @@ pub fn operation_begin() {
     with_state(|state| {
         state.operations.push(state.shielded);
         state.shielded = state.cancel.len();
+        HOT.with(|hot| hot.shielded.set(state.shielded));
     });
 }
 
@@ -790,6 +924,7 @@ pub fn operation_end() {
     with_state(|state| {
         if let Some(shielded) = state.operations.pop() {
             state.shielded = shielded;
+            HOT.with(|hot| hot.shielded.set(shielded));
         }
     });
 }
@@ -807,7 +942,7 @@ fn stop_or_abort(
             state.stopped = Some((code, location, message));
             None
         }
-        _ => cell.take().map(|state| (state, code, location, message)),
+        _ => take_state(cell).map(|state| (state, code, location, message)),
     }
 }
 
@@ -847,7 +982,6 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<Atomic
         trace: template.tracing.then(Vec::new),
         trace_path: None,
         failed_write: None,
-        depth: template.depth,
         max_depth: template.max_depth,
         sites: Arc::clone(&template.sites),
         failure: template.failure.clone(),
@@ -869,12 +1003,12 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<Atomic
         stopped: None,
     };
     state.stack_base = stack_position(&state);
-    STATE.with(|cell| *cell.borrow_mut() = Some(state));
+    install(state, template.depth);
 }
 
 /// Ends the state of the task the thread runs, and returns it.
 pub(crate) fn leave_task() -> Option<State> {
-    STATE.with(|cell| cell.borrow_mut().take())
+    STATE.with(|cell| take_state(&mut cell.borrow_mut()))
 }
 
 /// The U6003 message when the heap the run holds, `held` bytes, is over its budget.
@@ -954,9 +1088,9 @@ pub fn main_failed(failure: i64) {
 
 /// Leaves a call.
 pub fn leave() {
-    STATE.with(|cell| {
-        if let Some(state) = cell.borrow_mut().as_mut() {
-            state.depth = state.depth.saturating_sub(1);
+    HOT.with(|hot| {
+        if hot.active.get() {
+            hot.depth.set(hot.depth.get().saturating_sub(1));
         }
     });
 }
@@ -1052,5 +1186,278 @@ mod tests {
         );
         assert!(check_grants(&meta, &[files(true, true)]).is_empty());
         assert!(check_grants(&meta, &[files(true, false), files(false, true)]).is_empty());
+    }
+
+    /// A description with one site, `src/t.una` at 3:3, for the checks' locations.
+    const SITE_META: &str = r#"{"grants":[],"uses":[],"sites":[{"file":"src/t.una","start":{"line":3,"col":3},"end":{"line":3,"col":9}}]}"#;
+
+    /// Printed by a scenario at each step it passes, so that the test sees how far it got.
+    const STEP: &str = "fast-path-step";
+
+    /// Runs the scenario `name` of this module in a process of its own, since an abort ends the
+    /// process: its exit code and its standard error.
+    fn scenario(name: &str) -> (Option<i32>, String) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                &format!("runtime::tests::{name}"),
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// How many steps a scenario passed.
+    fn steps(stderr: &str) -> usize {
+        stderr.lines().filter(|line| line.starts_with(STEP)).count()
+    }
+
+    #[test]
+    fn the_memory_ceiling_is_the_budget_comparison() {
+        // ADR 0102 rule 5: `held > mem_ceiling(baseline, max_memory)` exactly when
+        // `over_budget` reports, on the edge values and on a grid around them.
+        let mib = 1024 * 1024;
+        let big = usize::MAX / mib;
+        let mut values = vec![0, 1, 2, mib - 1, mib, mib + 1, usize::MAX - 1, usize::MAX];
+        values.extend([usize::MAX / 2, usize::MAX - mib, usize::MAX - mib + 1]);
+        let memories = [1, 2, 64, big - 1, big, big + 1, usize::MAX];
+        for &baseline in &values {
+            for &max_memory in &memories {
+                let ceiling = mem_ceiling(baseline, max_memory);
+                let budget = max_memory.saturating_mul(mib);
+                let mut helds = values.clone();
+                for delta in [0, 1, 2] {
+                    helds.push(ceiling.saturating_sub(delta));
+                    helds.push(ceiling.saturating_add(delta));
+                    helds.push(baseline.saturating_add(budget).saturating_sub(delta));
+                }
+                for held in helds {
+                    let over = held.saturating_sub(baseline) > budget;
+                    assert_eq!(
+                        held > ceiling,
+                        over,
+                        "baseline {baseline}, max_memory {max_memory}, held {held}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "run by `the_depth_limit_fires_at_its_exact_call`, in a process of its own"]
+    fn the_depth_limit_scenario() {
+        // `--max-depth 5`: five calls in, then one call out and in again, then the sixth call.
+        start(&strings(&["--max-depth", "5"]), SITE_META, || {
+            for _ in 0..5 {
+                assert_eq!(enter(0), 0);
+                eprintln!("{STEP}");
+            }
+            leave();
+            assert_eq!(enter(0), 0);
+            eprintln!("{STEP}");
+            enter(0);
+            eprintln!("{STEP}: past the limit");
+            0
+        });
+    }
+
+    #[test]
+    fn the_depth_limit_fires_at_its_exact_call() {
+        // ADR 0102 rule 8: the call at the limit aborts with U6003 at its site, and every call
+        // under it runs, the depth going down at `leave`.
+        let (code, stderr) = scenario("the_depth_limit_scenario");
+        assert_eq!(code, Some(1), "{stderr}");
+        assert_eq!(steps(&stderr), 6, "{stderr}");
+        assert!(stderr.contains("U6003"), "{stderr}");
+        assert!(
+            stderr.contains("this call exceeds the maximum call depth of 5"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/t.una"), "{stderr}");
+    }
+
+    /// Holds exactly up to the memory ceiling of the run, then checks with `check`, which must
+    /// let the run proceed; then one byte more, where `check` must abort it.
+    fn memory_scenario(check: fn() -> i64) {
+        start(&strings(&["--max-memory", "1"]), SITE_META, move || {
+            let ceiling = HOT.with(|hot| hot.mem_ceiling.get());
+            let held = crate::held();
+            let fill: Vec<u8> = Vec::with_capacity(ceiling - held);
+            assert_eq!(check(), 0);
+            eprintln!("{STEP}");
+            let more: Vec<u8> = Vec::with_capacity(1);
+            check();
+            eprintln!("{STEP}: past the budget");
+            drop((fill, more));
+            0
+        });
+    }
+
+    #[test]
+    #[ignore = "run by `the_memory_budget_fires_at_its_exact_byte`, in a process of its own"]
+    fn the_memory_budget_at_a_call_scenario() {
+        memory_scenario(|| enter(0));
+    }
+
+    #[test]
+    #[ignore = "run by `the_memory_budget_fires_at_its_exact_byte`, in a process of its own"]
+    fn the_memory_budget_at_an_iteration_scenario() {
+        memory_scenario(|| budget(0));
+    }
+
+    #[test]
+    fn the_memory_budget_fires_at_its_exact_byte() {
+        // ADR 0102 rule 8: holding exactly the budget runs, at a call and at a loop iteration,
+        // and one byte more aborts with U6003 at the site.
+        for name in [
+            "the_memory_budget_at_a_call_scenario",
+            "the_memory_budget_at_an_iteration_scenario",
+        ] {
+            let (code, stderr) = scenario(name);
+            assert_eq!(code, Some(1), "{name}: {stderr}");
+            assert_eq!(steps(&stderr), 1, "{name}: {stderr}");
+            assert!(
+                stderr.contains("this call exceeds the memory limit of 1 MiB"),
+                "{name}: {stderr}"
+            );
+            assert!(stderr.contains("src/t.una"), "{name}: {stderr}");
+        }
+    }
+
+    #[test]
+    #[ignore = "run by `the_mechanism_allocates_nothing`, in a process of its own"]
+    fn the_mechanism_allocates_nothing_scenario() {
+        start(&[], SITE_META, || {
+            // Warm: the first operation's shield grows `operations` once, as it does today.
+            operation_begin();
+            operation_end();
+            let before = crate::held();
+            operation_begin();
+            operation_end();
+            let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
+            let after_take = crate::held();
+            if let Some(state) = state {
+                install(state, 0);
+            }
+            let after = crate::held();
+            assert_eq!(enter(0), 0);
+            leave();
+            assert_eq!(budget(0), 0);
+            assert_eq!(poll(), 0);
+            let checked = crate::held();
+            eprintln!("{STEP} {before} {after_take} {after} {checked}");
+            0
+        });
+    }
+
+    #[test]
+    fn the_mechanism_allocates_nothing() {
+        // ADR 0102 rule 3: installing and taking the state, an operation's shield and the
+        // checks hold no byte more, so the memory budget fires where it did.
+        let (code, stderr) = scenario("the_mechanism_allocates_nothing_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        let line = stderr
+            .lines()
+            .find(|line| line.starts_with(STEP))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let held: Vec<&str> = line.split_whitespace().skip(1).collect();
+        assert_eq!(held.len(), 4, "{line}");
+        assert!(held.iter().all(|h| *h == held[0]), "{line}");
+    }
+
+    #[test]
+    #[ignore = "run by `a_cancellation_from_another_thread_stops_the_next_check`, in a process of its own"]
+    fn a_cancellation_from_another_thread_scenario() {
+        start(&[], SITE_META, || {
+            let template = with_state(|state| state.for_tasks(0)).unwrap();
+            let flag = Arc::new(AtomicBool::new(false));
+            let (ready, wait_ready) = std::sync::mpsc::channel();
+            let (set, wait_set) = std::sync::mpsc::channel();
+            let task_flag = Arc::clone(&flag);
+            let task = std::thread::spawn(move || {
+                enter_task(&template, "1".to_owned(), task_flag);
+                // On the fast path: no flag set.
+                let clear = (poll(), budget(0), enter(0));
+                leave();
+                ready.send(()).unwrap();
+                wait_set.recv().unwrap();
+                // The flag was set by `main`'s thread meanwhile: the very next checks see it.
+                let stopped = (poll(), budget(0), enter(0));
+                // An operation in progress shields the flag set before it, until it ends.
+                operation_begin();
+                let shielded = poll();
+                operation_end();
+                let after = poll();
+                leave_task();
+                (clear, stopped, shielded, after)
+            });
+            wait_ready.recv().unwrap();
+            flag.store(true, Ordering::SeqCst);
+            set.send(()).unwrap();
+            let (clear, stopped, shielded, after) = task.join().unwrap();
+            eprintln!("{STEP} {clear:?} {stopped:?} {shielded} {after}");
+            0
+        });
+    }
+
+    #[test]
+    fn a_cancellation_from_another_thread_stops_the_next_check() {
+        // ADR 0102 rule 4: `Hot` never holds whether a flag is set, so a flag that another
+        // thread sets after the task's state was installed stops its next call, iteration and
+        // operation; an operation in progress shields it until it ends.
+        let (code, stderr) = scenario("a_cancellation_from_another_thread_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{STEP} (0, 0, 0) (1, 1, 1) 0 1")),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `the_checks_take_the_fast_path_at_every_size_and_depth`, in a process of its own"]
+    fn the_checks_scaling_scenario() {
+        start(&strings(&["--max-depth", "5000"]), SITE_META, || {
+            let slow = || SLOW_PATHS.with(Cell::get);
+            let checks = |n: u32| {
+                let before = slow();
+                for _ in 0..n {
+                    enter(0);
+                    leave();
+                    budget(0);
+                    poll();
+                }
+                slow() - before
+            };
+            let small = checks(1_000);
+            let large = checks(100_000);
+            for _ in 0..10 {
+                enter(0);
+            }
+            let shallow = checks(1_000);
+            for _ in 0..990 {
+                enter(0);
+            }
+            let deep = checks(1_000);
+            eprintln!("{STEP} {small} {large} {shallow} {deep}");
+            0
+        });
+    }
+
+    #[test]
+    fn the_checks_take_the_fast_path_at_every_size_and_depth() {
+        // ADR 0102 rule 6: on `main`'s thread, under every limit, each call, iteration and
+        // operation check stays on the fast path, whose work is O(1): the slow path is never
+        // taken, whatever the number of calls or the depth. Operations are counted, not
+        // time, so the machine's load cannot fail it.
+        let (code, stderr) = scenario("the_checks_scaling_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert!(stderr.contains(&format!("{STEP} 0 0 0 0")), "{stderr}");
     }
 }
