@@ -23,14 +23,15 @@ Ranked by the worst class, then by what guards it today:
 | Rank | Component | Worst class | Main guard | Main gap |
 | --- | --- | --- | --- | --- |
 | 1 | Checker: names, types, labels, capabilities (`una-check`, `una-syntax`) | Soundness | Conformance suite; Lean re-check of fragment F1 | The re-check covers part of the language; capability confinement (T4) is not proven |
-| 2 | Verifier and Z3 (`una-verify`) | Soundness | Pinned solver; model re-checks of `sat`; obligations that are not proven are errors | `unsat` (proven) is trusted with no certificate; refinement soundness (T5) is not modeled |
+| 2 | Verifier and Z3 (`una-verify`) | Soundness; memory safety once proven checks are elided | Pinned solver; model re-checks of `sat`; obligations that are not proven are errors | `unsat` (proven) is trusted with no certificate; refinement soundness (T5) is not modeled |
 | 3 | Native runtime (`una-rt`) and the code that calls it | Memory safety | `unsafe` confined to `ffi.rs`; native and interpreter compared on every runnable program | No sanitizer, Miri or fuzzing run |
 | 4 | Host capabilities and the prelude | Soundness (labels), wrong result | Host-table checks; two implementations compared | Two implementations of each operation; the TLS stack is trusted |
 | 5 | Native codegen (`una-codegen`) and the system linker | Wrong result | Native and interpreter compared | Programs outside the runnable corpus; `cc` unpinned and unrecorded |
 | 6 | Reference interpreter (`una-interp`) | Wrong result | It is the reference; native runs are compared with it | Not related to the formal model |
 | 7 | Elaboration and the bridge to the formal model | Soundness | Identity runs of the Core export | Elaboration and the importer are trusted |
-| 8 | Release scripts and archives | Supply chain, leak of the build | Reproducible gate; SHA-256 digests | No signature or provenance statement |
-| 9 | Proof cache | Soundness | HMAC-SHA-256 tags under the user's key | The key file is trusted |
+| 8 | The Rust toolchain and the crate dependencies | Supply chain, and any class of the crate's own bug | Pinned toolchain; `Cargo.lock` with `--locked`; reproducible gate | No advisory or provenance check on dependencies |
+| 9 | Release scripts and archives | Supply chain, leak of the build | Reproducible gate; SHA-256 digests | No signature or provenance statement |
+| 10 | Proof cache | Soundness | HMAC-SHA-256 tags under the user's key | The key file is trusted |
 
 ## 3. The components
 
@@ -54,7 +55,7 @@ Ranked by the worst class, then by what guards it today:
 
 `una-verify` (about 9,400 lines) encodes obligations in SMT-LIB (`spec/12 §4`) and runs `z3 -in -smt2`, one process per query, at the version that `verification.lock` pins (`scripts/install-z3.sh` checks the download's SHA-256).
 
-- **A bug can cause:** soundness. An encoding error, or a solver bug, that answers `unsat` for a false obligation proves a contract, a refinement or the absence of an overflow that does not hold. For a fixed-width integer, whose overflow is proven absent and not checked at run time (`spec/18`), the run then computes a wrong value; it never accesses memory out of bounds through that, since list indexing stays checked.
+- **A bug can cause:** soundness. An encoding error, or a solver bug, that answers `unsat` for a false obligation proves a contract, a refinement or the absence of an overflow that does not hold. For a fixed-width integer, whose overflow is proven absent and not checked at run time (`spec/18 §3`), the run then computes a wrong value. Today it cannot access memory out of bounds through that, because index, length and handle checks always run. **That holds only while no such check is elided.** Once a run-time check is removed because the verifier proved it unneeded (#737, ADR 0106), the verifier and the solver guard memory safety for every elided bounds, handle or stack check: a false `unsat` behind an elided bounds check is an out-of-bounds access. ADR 0106's proposed rule RB-3a keeps proof-based elision to checks whose failure stays a wrong value, and asks a certificate (#66) for the others (§5).
 - **Guards:**
   - an obligation that is not proven is an error (charter P8), so a timeout or an unknown never passes;
   - a `sat` answer is re-checked when it uses uninterpreted arithmetic (ADR 0053, ADR 0054), and a model that disagrees with real arithmetic is not a counterexample;
@@ -71,7 +72,8 @@ Ranked by the worst class, then by what guards it today:
 
 - **A bug can cause:** memory safety, at the boundary with generated code. Elsewhere, a wrong result.
 - **Guards:**
-  - `unsafe` is forbidden in the workspace and allowed only in `crates/una-rt/src/ffi.rs` (ADR 0058): 9 `unsafe` blocks, each with a `// SAFETY:` comment, and 5 exported `unsafe extern "C"` functions;
+  - `unsafe` is forbidden in the workspace and allowed only in `crates/una-rt/src/ffi.rs` (ADR 0058): 9 `unsafe` blocks, each with a `// SAFETY:` comment, 4 exported `unsafe extern "C"` functions (`una_rt_start`, `una_rt_int_literal`, `una_rt_text_literal`, `una_rt_closure`), and one `unsafe extern "C"` block that imports the generated code's entry points;
+  - one `transmute` turns a closure's code address into a function pointer (`invoke`). It is the one place where a wrong code word becomes a call to an arbitrary address. `invoke` checks that the word is a closure of the right arity before it (#424), but the address itself is the one generated code passed to `una_rt_closure`;
   - handles are slot indices, not pointers, and the runtime's lookup refuses a word that is not a live handle (`crates/una-rt/src/values.rs`). A stale handle whose slot was reused names another live object: a wrong result, not a memory error. Handles carry no generation yet (ADR 0107 proposes one, §5);
   - the allocator `cap` enforces the memory budget (ADR 0061);
   - the native gate compares every runnable program of the repository's suites with the interpreter (`crates/una-cli/tests/native.rs`, `spec/16`).
@@ -114,13 +116,21 @@ The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implement
 
 ### 3.7 Elaboration and the bridge to the formal model
 
-The theorems hold for the Core that the Lean importer reads from `una.core/1`. Elaboration from the surface language to Core, the importer (`formal/UnaFormal/F1/Import.lean`) and the Lean kernel are trusted (formal status document).
+The theorems hold for the Core that the Lean importer reads from `una.core/1`. Elaboration from the surface language to Core, the importer (`formal/UnaFormal/F1/Import.lean`) and the Lean kernel, at the version that `formal/lean-toolchain` pins, are trusted (formal status document).
 
 - **A bug can cause:** soundness: a program whose Core is proven while its source means something else.
 - **Guards:** the identity runs of the export (#397, #407), and the conformance suite, which checks the source.
 - **Open gap:** elaboration is not modeled.
 
-### 3.8 Release scripts and archives
+### 3.8 The Rust toolchain and the crate dependencies
+
+Every component is compiled by `rustc` at the version that `rust-toolchain.toml` pins (1.98.1), from crates of crates.io, among them `cranelift`, `rustls` with `ring`, `webpki-roots` and `num-bigint`, at the versions that `Cargo.lock` records.
+
+- **A bug can cause:** whatever the crate or compiler can cause, in every artifact: a soundness defect, a wrong result, memory unsafety in a crate's own `unsafe`, or a compromised dependency (supply chain).
+- **Guards:** the pinned toolchain; `Cargo.lock`, which `scripts/local-ci.sh` enforces with `--locked`; the reproducible gate, which shows that an archive is what its source and lock determine.
+- **Open gaps:** no gate checks the dependencies against the RustSec advisory database or for provenance (such as `cargo-audit`, `cargo-deny` or `cargo-vet`), so a known-vulnerable or compromised version in `Cargo.lock` reaches every artifact unseen.
+
+### 3.9 Release scripts and archives
 
 `scripts/local-release.sh` builds the archives from a clean worktree of the tagged commit, and `scripts/release-gates.sh` runs every gate on that commit in a fresh clone (`docs/release-gates.md`).
 
@@ -128,7 +138,7 @@ The theorems hold for the Core that the Lean importer reads from `una.core/1`. E
 - **Guards:** the reproducible gate rebuilds the archives and compares their digests; every archive has a SHA-256 file; the gate summary is checked against a privacy pattern before it can be published.
 - **Open gaps:** no signature or provenance statement accompanies an archive, so a downloader can check a digest but not who built it from which commit.
 
-### 3.9 The proof cache
+### 3.10 The proof cache
 
 The cache answers a query that was solved before. Since ADR 0064, each entry carries an HMAC-SHA-256 tag under the user's key, and an entry whose tag fails is solved again.
 
@@ -160,20 +170,21 @@ Four decisions are proposed and not accepted. Each would change the base as foll
   - Handles gain a generation, and the layout is checked on each read, so a stale or corrupt handle fails a check or reads a live object of the expected layout. `unsafe` stays in `ffi.rs`.
   - It proposes static assertions on sizes and offsets on both sides, and sanitizer cases for table growth, moved storage and reused slots.
 - **ADR 0108, small records off the heap (#754).** It adds no `unsafe` and no new trusted tool. It moves correctness into the lowering (ownership of the unboxed values and their companions), guarded by equivalence and allocation tests, and states a stack-depth regression risk.
-- **ADR 0109, profiles `app` and `systems` (#762).** It adds nothing to the base. In `systems`, every `Int` operation gets an overflow obligation, so more results rest on the verifier (§3.2). Combined with the elision of proven checks (#737), a false proof would give a wrong value where `app` gives the right one, and, under ADR 0106's discipline, never undefined behavior.
+- **ADR 0109, profiles `app` and `systems` (#762).** It adds nothing to the base. In `systems`, every `Int` operation gets an overflow obligation, so more results rest on the verifier (§3.2). Combined with the elision of proven checks (#737), a false proof of an overflow obligation would give a wrong value where `app` gives the right one, and, under ADR 0106's discipline, no undefined behavior. That holds for overflow checks, whose failure is a wrong value. If elision also removes a bounds, handle or stack check, a false proof there is a memory-safety defect (§3.2), so elision must be restricted to checks whose failure stays a wrong value. ADR 0106 (proposed) states this as its rule RB-3a: only such checks may be elided on a proof, and a bounds, handle or stack check needs a checked certificate of its `unsat` (#66).
 
 The largest addition to come is foreign code: `trusted` foreign functions and the FFI boundary (#23, #33). It would add code that no Una check covers, and memory-safety risk at a new boundary. This profile is the baseline that its decision builds on.
 
 ## 6. Open gaps, ranked
 
-1. **No memory-safety tooling on the runtime boundary** (§3.3). A sanitizer run of the runtime and of generated code over the runnable suites, Miri on `ffi.rs`'s callers where it applies, and a fuzzer on the runtime's entry points. ADR 0106's `sanitize` gate would cover part of it. This rank reflects the class, not the history: no defect is known.
-2. **Capability confinement unproven, and the re-check partial** (§3.1). Milestone M7 of the formal track, and widening what the re-check reads.
-3. **Proven obligations trusted without certificate** (§3.2). Certificates checked by a small kernel (#66); refinement soundness relative to the solver (T5).
-4. **The adversarial generators are a campaign, not a gate** (`docs/plan/security-hunt.md`). They are run on demand and are not part of `scripts/release-gates.sh`.
-5. **The build report's `tcb` section is incomplete.** It omits the runtime, the codegen, the linker or C compiler and its version, and the TLS stack.
-6. **The system `cc` and linker are unpinned and unrecorded** (§3.5). ADR 0106's matrix would address it.
-7. **Host premises and the two host implementations** (§3.4). Testing the premises of the model against the implementations, and comparing the two implementations beyond the runnable programs.
-8. **No provenance for archives** (§3.8). A signature, or a provenance statement that ties each archive to its commit and its gate record.
-9. **Elaboration and the interpreter are not related to the model** (§3.6, §3.7).
+1. **No memory-safety tooling on the runtime boundary** (§3.3), #766. A sanitizer run of the runtime and of generated code over the runnable suites, Miri on `ffi.rs`'s callers where it applies, and a fuzzer on the runtime's entry points. ADR 0106's `sanitize` gate would cover part of it. This rank reflects the class, not the history: no defect is known.
+2. **Capability confinement unproven, and the re-check partial** (§3.1), #768. Milestone M7 of the formal track, and widening what the re-check reads.
+3. **Proven obligations trusted without certificate** (§3.2), #66. Today a false proof gives a wrong value. **It becomes a memory-safety gap the day a bounds, handle or stack check is elided on a proof** (#737), unless elision is restricted to checks whose failure stays a wrong value, such as overflow, or an elided check needs a certificate. ADR 0106, still proposed, now states that restriction as its rule RB-3a. Refinement soundness relative to the solver (T5) is not started.
+4. **No advisory or provenance check on the crate dependencies** (§3.8), #770. A gate that checks `Cargo.lock` against the RustSec database and the dependencies' provenance.
+5. **The adversarial generators are a campaign, not a gate** (`docs/plan/security-hunt.md`), #767. They are run on demand and are not part of `scripts/release-gates.sh`.
+6. **The build report's `tcb` section is incomplete**, #769. It omits the runtime, the codegen, the linker or C compiler and its version, and the TLS stack.
+7. **The system `cc` and linker are unpinned and unrecorded** (§3.5). ADR 0106's matrix would address it.
+8. **Host premises and the two host implementations** (§3.4). Testing the premises of the model against the implementations, and comparing the two implementations beyond the runnable programs.
+9. **No provenance for archives** (§3.9). A signature, or a provenance statement that ties each archive to its commit and its gate record.
+10. **Elaboration and the interpreter are not related to the model** (§3.6, §3.7).
 
 This document is revised when a component enters or leaves the base, when a gap closes, and before any decision that adds foreign code.
