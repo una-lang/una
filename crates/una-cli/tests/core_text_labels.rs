@@ -160,7 +160,7 @@ fn comparison_labels(dir: &PathBuf) -> Vec<String> {
 fn walk_comparisons(node: &Value, out: &mut Vec<String>) {
     match node {
         Value::Object(fields) => {
-            let prim = &fields
+            let prim = fields
                 .get("value")
                 .map(|value| &value["value"]["prim"]["kind"]);
             let is_comparison = fields.get("kind").and_then(Value::as_str) == Some("let")
@@ -169,7 +169,7 @@ fn walk_comparisons(node: &Value, out: &mut Vec<String>) {
                 && prim.is_some_and(|kind| kind == "eq" || kind == "le" || kind == "lt");
             if is_comparison {
                 let label = &fields["ty"]["label"];
-                out.push(format!("{}", label["level"].as_str().unwrap()));
+                out.push(label["level"].as_str().unwrap().to_owned());
             }
             for value in fields.values() {
                 walk_comparisons(value, out);
