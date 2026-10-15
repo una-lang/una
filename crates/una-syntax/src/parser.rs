@@ -61,6 +61,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         errors: Vec::new(),
         v0_2: lexed.keywords >= KeywordSet::V0_2,
         v0_3: lexed.keywords >= KeywordSet::V0_3,
+        in_body: false,
     };
     let tree = parser.file();
     Parsed {
@@ -117,6 +118,7 @@ pub fn parse_uses_clause(
         errors: Vec::new(),
         v0_2: true,
         v0_3: true,
+        in_body: false,
     };
     match parser.lone_uses_clause() {
         Ok(clause) if parser.errors.is_empty() => Ok(clause),
@@ -208,6 +210,10 @@ struct Parser<'a> {
     v0_2: bool,
     /// Whether the constructs of edition 0.3 parse (`spec/13 §7`).
     v0_3: bool,
+    /// Whether a function body or a handler operation body is being parsed, where a
+    /// declaration keyword bound as a name is renamed by an edit (ADR 0096, amendment of
+    /// 2026-10-15).
+    in_body: bool,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -591,6 +597,31 @@ impl<'a> Parser<'a> {
 
     // ----- names -----
 
+    /// The keywords that cannot stand in a function's body, clauses or types, so that within a
+    /// binding's scope every token of one of them is a use of the binding: a binding named with
+    /// one is renamed by an exact edit (ADR 0096, amendment of 2026-10-15).
+    const DECLARATION_KEYWORDS: [&'static str; 19] = [
+        "accepts",
+        "capability",
+        "do",
+        "example",
+        "expect",
+        "given",
+        "handler",
+        "import",
+        "kind",
+        "module",
+        "op",
+        "opaque",
+        "performed",
+        "policy",
+        "predicate",
+        "pub",
+        "reflect",
+        "requirement",
+        "trusted",
+    ];
+
     /// A lower-case name. A word reserved for a later version is read as a name; the lexer has
     /// reported its U0103 (approved M1 plan, recovery rules).
     fn lower_name(&mut self, expected: &str) -> Parse<Ident> {
@@ -640,8 +671,11 @@ impl<'a> Parser<'a> {
     /// the binding and its uses in its block: in a body, `result` names nothing else, since it
     /// is legal only in `ensures` (U2012) and neither lambdas nor nested blocks have clauses.
     /// `it` also names the value of a `checked` predicate or a `where` clause in a body, so
-    /// its repair, like every other, is advice.
-    fn binding_name(&mut self, expected: &str, local: bool) -> Parse<Ident> {
+    /// its repair is advice. A declaration keyword bound inside a function body or a handler
+    /// operation body is renamed through its scope, since none can stand there as a keyword
+    /// (ADR 0096, amendment of 2026-10-15); every other repair is advice.
+    fn binding_name(&mut self, expected: &str, binding: Binding) -> Parse<Ident> {
+        let local = binding == Binding::Let;
         let TokenKind::Keyword(keyword) = *self.peek() else {
             return self.lower_name(expected);
         };
@@ -669,6 +703,37 @@ impl<'a> Parser<'a> {
         };
         let fresh = self.fresh_name(&base, &[]);
         let span = self.span();
+        // A declaration keyword bound inside a function or handler-operation body is renamed
+        // through its scope (ADR 0096, amendment of 2026-10-15); a function's parameter is not,
+        // since its callers name it.
+        if Self::DECLARATION_KEYWORDS.contains(&word)
+            && (self.in_body || binding == Binding::HandlerOp)
+            && binding != Binding::Param
+            && binding != Binding::Loop
+            && let Some(renames) = self.keyword_renames(keyword, &fresh, binding)
+        {
+            let end = renames.last().map_or(span.end, |(last, _)| last.end);
+            let mut replacement = String::new();
+            let mut at = span.start;
+            for (range, name) in &renames {
+                replacement.push_str(self.text.get(at..range.start).unwrap_or(""));
+                replacement.push_str(name);
+                at = range.end;
+            }
+            let mut error = SyntaxError::new(Code::U0101, span, message);
+            error.repairs.push(SyntaxRepair {
+                description: format!("rename the binding and its uses to `{fresh}`"),
+                edit: Some((
+                    Span {
+                        file: span.file,
+                        start: span.start,
+                        end,
+                    },
+                    replacement,
+                )),
+            });
+            return Err(self.report_error(error));
+        }
         let repair = match self.result_renames(&base) {
             Some(renames) if local && keyword == Keyword::Result => {
                 let end = renames.last().map_or(span.end, |(last, _)| last.end);
@@ -765,6 +830,108 @@ impl<'a> Parser<'a> {
                 }
                 _ => {}
             }
+        }
+        Some(renames)
+    }
+
+    /// The renames of a binding named with the declaration keyword `keyword`, from the current
+    /// token, to `name`, through its scope (ADR 0096, amendment of 2026-10-15): a `let`'s block
+    /// (past `together` blocks), or the body of the lambda, the `when` arm or the handler
+    /// operation that binds it. A use inside an interpolation hole is a token too, so it is
+    /// renamed; a name after `.` (a field or a method) and an argument label (`op:`, a callee's
+    /// parameter) are left as they are. `None` when the scope cannot be read with certainty,
+    /// such as a second binding of the same word in it: then the repair is advice.
+    fn keyword_renames(
+        &self,
+        keyword: Keyword,
+        name: &str,
+        binding: Binding,
+    ) -> Option<Vec<(Span, String)>> {
+        let tokens = self.tokens.get(self.pos..)?;
+        let mut renames = vec![(tokens.first()?.span, name.to_owned())];
+        let kind = |at: usize| self.tokens.get(at).map(|t| &t.kind);
+        // Brackets opened since the binding: a lambda's, an arm's or an operation's parameter
+        // list closes at -1.
+        let mut brackets: i64 = 0;
+        // Indentation since the scope's body began.
+        let mut blocks: usize = 0;
+        // Whether the body has begun, and whether it is a block (else one line).
+        let mut in_body = binding == Binding::Let;
+        let mut block_body = binding == Binding::Let;
+        let mut level = self.pos;
+        for (offset, token) in tokens.iter().enumerate().skip(1) {
+            let at = self.pos + offset;
+            match &token.kind {
+                TokenKind::LParen | TokenKind::LBracket => brackets += 1,
+                TokenKind::RParen | TokenKind::RBracket => {
+                    brackets -= 1;
+                    if brackets < 0 && !in_body {
+                        // The parameter list (or the pattern) has closed: the body follows its
+                        // `->` (a lambda, a `when` arm) or `=` (a handler operation) at once.
+                        let opens = match binding {
+                            Binding::HandlerOp => TokenKind::Eq,
+                            _ => TokenKind::Arrow,
+                        };
+                        if kind(at + 1) != Some(&opens) {
+                            return None;
+                        }
+                        in_body = true;
+                        brackets = 0;
+                        block_body = matches!(kind(at + 2), Some(TokenKind::Newline))
+                            && matches!(kind(at + 3), Some(TokenKind::Indent));
+                        // A lambda's body is one line (`line_expr`).
+                        if binding == Binding::Lambda && block_body {
+                            return None;
+                        }
+                    } else if in_body && binding == Binding::Lambda && brackets < 0 {
+                        // The lambda's body ends where the call around it closes.
+                        break;
+                    }
+                }
+                TokenKind::Comma if in_body && binding == Binding::Lambda && brackets <= 0 => {
+                    break;
+                }
+                TokenKind::Indent if in_body => blocks += 1,
+                TokenKind::Dedent if in_body && blocks > 0 => {
+                    blocks -= 1;
+                    // The block of a block body has closed.
+                    if blocks == 0 && block_body && binding != Binding::Let {
+                        break;
+                    }
+                }
+                TokenKind::Dedent if binding == Binding::Let => {
+                    // The end of the `let`'s block, unless it was a `together` block.
+                    if !self.opens_together(level, at) {
+                        break;
+                    }
+                    level = at;
+                }
+                TokenKind::Dedent => break,
+                TokenKind::Newline if in_body && !block_body && blocks == 0 && brackets <= 0 => {
+                    break;
+                }
+                TokenKind::Newline if !in_body => return None,
+                TokenKind::Eof => break,
+                TokenKind::Keyword(k) if *k == keyword => {
+                    if self.binds_at(at) {
+                        return None;
+                    }
+                    let after_dot = at.checked_sub(1).and_then(kind) == Some(&TokenKind::Dot);
+                    let label = matches!(kind(at + 1), Some(TokenKind::Colon));
+                    if after_dot || label {
+                        continue;
+                    }
+                    if !in_body {
+                        // Another parameter of the same list with the same word.
+                        return None;
+                    }
+                    renames.push((token.span, name.to_owned()));
+                }
+                _ => {}
+            }
+        }
+        if !in_body {
+            return None;
         }
         Some(renames)
     }
@@ -1440,7 +1607,7 @@ impl<'a> Parser<'a> {
     fn param(&mut self) -> Parse<Param> {
         let start = self.span();
         let convention = self.convention();
-        let name = self.binding_name("a parameter name", false)?;
+        let name = self.binding_name("a parameter name", Binding::Param)?;
         self.expect(&TokenKind::Colon, "`:` and the parameter's type")?;
         let ty = self.ty()?;
         Ok(Param {
@@ -1487,7 +1654,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Arrow, "`->` and the result type")?;
         let result = self.ty()?;
         let (clauses, body) = if self.eat(&TokenKind::Eq) {
-            let expr = self.line_expr()?;
+            let expr = self.body_of(Self::line_expr)?;
             self.expect_line_end()?;
             (Vec::new(), Body::Line(expr))
         } else {
@@ -1515,7 +1682,7 @@ impl<'a> Parser<'a> {
             self.check_order(&ranked, &FUNCTION_CLAUSES);
             self.expect(&TokenKind::Eq, "`=` and the body")?;
             self.expect_line_end()?;
-            (clauses, Body::Block(self.indented_block()?))
+            (clauses, Body::Block(self.body_of(Self::indented_block)?))
         };
         Ok(DeclKind::Function(FunctionDecl {
             public,
@@ -1702,20 +1869,28 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// `parse` run as a function body or a handler operation body.
+    fn body_of<T>(&mut self, parse: fn(&mut Self) -> Parse<T>) -> Parse<T> {
+        let outer = std::mem::replace(&mut self.in_body, true);
+        let parsed = parse(self);
+        self.in_body = outer;
+        parsed
+    }
+
     fn handler_op(&mut self) -> Parse<HandlerOp> {
         let start = self.expect_keyword(Keyword::Op)?;
         let name = self.lower_name("an operation name")?;
         self.expect(&TokenKind::LParen, "`(` and the parameter names")?;
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
-            params.push(self.binding_name("a parameter name", false)?);
+            params.push(self.binding_name("a parameter name", Binding::HandlerOp)?);
             while self.eat(&TokenKind::Comma) {
-                params.push(self.binding_name("a parameter name", false)?);
+                params.push(self.binding_name("a parameter name", Binding::HandlerOp)?);
             }
         }
         self.expect(&TokenKind::RParen, "`,` or `)`")?;
         self.expect(&TokenKind::Eq, "`=` and the body")?;
-        let body = self.inline_or_block()?;
+        let body = self.body_of(Self::inline_or_block)?;
         Ok(HandlerOp {
             name,
             params,
@@ -2076,7 +2251,7 @@ impl<'a> Parser<'a> {
     fn let_stmt(&mut self) -> Parse<LetStmt> {
         let start = self.advance();
         let editable = self.eat_keyword(Keyword::Edit);
-        let name = self.binding_name("a name", true)?;
+        let name = self.binding_name("a name", Binding::Let)?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.ty()?)
         } else {
@@ -2372,7 +2547,7 @@ impl<'a> Parser<'a> {
         let field = self.lower_name("a field name")?;
         let local = if self.eat(&TokenKind::Colon) {
             self.no_nested_pattern(variant)?;
-            Some(self.binding_name("a local name", false)?)
+            Some(self.binding_name("a local name", Binding::Pattern)?)
         } else {
             None
         };
@@ -2478,7 +2653,7 @@ impl<'a> Parser<'a> {
     /// `for x in xs` or `for i in a..<b` with its block (`spec/17 §1`).
     fn for_stmt(&mut self) -> Parse<ForStmt> {
         let start = self.advance();
-        let var = self.binding_name("the loop variable", false)?;
+        let var = self.binding_name("the loop variable", Binding::Loop)?;
         self.expect_keyword(Keyword::In)?;
         let low = self.line_expr()?;
         let exclusive = if self.eat(&TokenKind::DotDotLt) {
@@ -2652,7 +2827,7 @@ impl<'a> Parser<'a> {
     }
 
     fn lambda_param(&mut self) -> Parse<LambdaParam> {
-        let name = self.binding_name("a parameter name", false)?;
+        let name = self.binding_name("a parameter name", Binding::Lambda)?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.ty()?)
         } else {
@@ -3085,4 +3260,21 @@ impl<'a> Parser<'a> {
             }
         }
     }
+}
+
+/// Where a name is bound, for its repair when it is a reserved keyword (#206, #743).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Binding {
+    /// A `let` (or `let edit`) binding.
+    Let,
+    /// A parameter of a function, a predicate or a policy: callers name it.
+    Param,
+    /// A parameter of a handler operation.
+    HandlerOp,
+    /// A lambda's parameter.
+    Lambda,
+    /// A local name a pattern binds.
+    Pattern,
+    /// A loop variable.
+    Loop,
 }
