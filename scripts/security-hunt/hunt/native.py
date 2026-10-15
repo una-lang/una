@@ -251,7 +251,9 @@ def compare(interp, doc, native, native_trace):
             differences.append("neither trace is a prefix of the other")
         return differences
     if _starts_tasks(trace) or _starts_tasks(native_trace):
-        ordered = status != "failed" and not _cancels(trace) and not _cancels(native_trace)
+        # Ordered or not by the interpreter's run alone: a cancellation, or a failure, that only
+        # the native run has is a divergence, never a reason to compare it more loosely.
+        ordered = status != "failed" and not _cancels(trace)
         return differences + task_differences(native.stdout, trace, native_trace,
                                               doc.get("output"), ordered)
     if native.stdout != expected:

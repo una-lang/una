@@ -1210,6 +1210,11 @@ class Native(unittest.TestCase):
         extra = trace + [self.print_event(4, "late", "2")]
         self.assertIn("the trace differs on an ordered run",
                       self.compare(doc, stdout='left {1} "q"\nright\n2\nlate\n', ntrace=extra))
+        # Whether a run is ordered is the interpreter's run's to say: a cancellation only the
+        # native run has is a divergence, not a reason to compare more loosely.
+        native_cancel = trace + [{"seq": 4, "task": "1", "cancelled": True}]
+        self.assertIn("the trace differs on an ordered run",
+                      self.compare(doc, stdout='left {1} "q"\nright\n2\n', ntrace=native_cancel))
         # On a run that is not ordered (a task cancelled), the extra events of tasks that started
         # after it are allowed, and only the lines they printed.
         cancel = {"seq": 5, "task": "1", "cancelled": True}
