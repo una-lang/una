@@ -57,21 +57,23 @@ A raw value carries no tag, so it is never retained, released or followed. Its a
 
 ### 2. Handles stay checked indices
 
-A heap value is still a handle, `(index + 1) << 1`, into the thread's slot table. It does **not** become a pointer.
+A heap value is still a handle into the thread's slot table, an even nonzero word. It does **not** become a pointer. It now carries a generation: `(generation << 33) | ((index + 1) << 1)`, with an index below 2^32 - 1 and a generation of 30 bits.
 
-- A slot holds the reference count, the object's **layout id** (rule 3), and the address of the object's storage. A free slot has layout id 0, which no layout uses.
+- A slot holds the reference count, the object's **layout id** (rule 3), its **generation**, and the address of the object's storage. A free slot has layout id 0, which no layout uses.
+- **Generations.** Freeing a slot increments its generation, and a new object in that slot gets a handle with the new generation. So a stale handle never matches the slot's current object, even one of the same layout: without the generation it would read another value's fields, memory safe but a silent read that could cross labels (`spec/07`). A slot whose generation reaches 2^30 - 1 is retired, never reused, so a generation never wraps; the cost is one slot of 32 bytes per 2^30 reuses. A debug build keeps the quarantine of #201 as well.
 - **The table never moves.** It is segmented: segment k holds 2^(k+10) slots, and a fixed directory of segment addresses, allocated with the table and never resized, finds a slot from its index's leading bit (one `clz`, one load). A segment, once allocated, keeps its address until the thread's heap is dropped. So no slot address, and no directory address, can dangle while the heap lives. The table grows in O(1) amortized per new slot, with no copy.
 - **One table per heap, never shared.** Each task has its own heap and table (`spec/16 §4` rule 6), and a handle never crosses threads: values are copied at the fork and the join, as today. The directory is reached through the thread's `Hot` record (ADR 0102), which `install` sets with the rest of `Hot`.
-- **An object's storage does not move while its slot is live**, except inside a runtime call that grows it (a packed list's `append`, rule 5). Generated code never keeps an object's or a slot's address across a runtime call: each access runs the whole sequence below from the handle. In C, a runtime call is an opaque external call, so the C compiler itself must reload after it, and no rule depends on the code generator caching correctly.
+- **An object's storage does not move while its slot is live**, except inside a runtime call that grows it (a packed list's `append`, rule 5).
+- **Addresses are recomputed after every runtime call.** This is a rule of the lowering in both backends: the code they emit never uses an object's or a slot's address computed before a runtime call after that call. It recomputes the address from the handle, with the checks below. A backend's own optimizer may then reuse a value only where the language it compiles to allows it (Cranelift's IR, or C without undefined behavior), whatever it inlines, so the rule holds with or without link-time optimization across `una-rt`. It does not rest on the call being opaque.
 - Generated code reads a record's field inline, with no runtime call:
   1. check `index < length`, the length read from the table header;
-  2. find the slot through the directory, and check `slot.layout == expected`;
+  2. find the slot through the directory, and check `slot.layout == expected` and `slot.generation == handle's generation`;
   3. load the field at its constant offset from `slot.address`.
-  Two compares and three or four loads. Two reads of the same handle with no runtime call between them share one check, which the backend's common subexpression elimination performs.
+  Three compares and three or four loads. Two reads of the same handle with no runtime call between them share one check and one address.
 - When a check fails, the code calls today's runtime path for that operation, which counts the fault and answers as today (`values::faults`). The fast path never decides anything the slow path would not.
 - **One declared layout for the slot and the table header.** They are `#[repr(C)]` structs in `una-rt`, and the C backend reads them through struct types from one generated header, never through computed byte offsets. Both sides carry static assertions of their size and of each field's offset (`const` assertions in Rust, `_Static_assert` in the header), so the two cannot drift. Cranelift lowering takes the same offsets from the same Rust constants. This is the only access to runtime memory that generated code makes, and ADR 0106's RB-2 names it as its single allowed form of indexing.
 
-So a stale handle, a handle whose slot was reused, and a word that the generated code wrongly takes for a handle (a compiler bug, or a raw cell read as a word) read either an object of the expected layout or nothing: never freed memory, never past the end of an object, and never a raw cell as a handle without the same check. This keeps the property that today's `RefCell` lookup gives, in both backends, and makes the C backend memory safe even if its compiler output is wrong. A pointer would save one load and one compare per access (Evidence measures it), and would lose that property.
+So a stale handle, a handle whose slot was reused (by any layout), and a word that the generated code wrongly takes for a handle (a compiler bug, or a raw cell read as a word) read either the object the handle was made for or nothing: never freed memory, never past the end of an object, and never a raw cell as a handle without the same check. This keeps the property that today's `RefCell` lookup gives, in both backends, and makes the C backend memory safe even if its compiler output is wrong. A pointer would save the directory lookup and the three compares per access (Evidence measures it), and would lose that property.
 
 The directory and an object's storage are reached by generated code through addresses that the runtime publishes in `ffi.rs`, where the `// SAFETY:` comments state the invariants above: segments never move, storage moves only inside runtime calls, no Rust borrow of the heap is held while compiled code runs (ADR 0102 rule 2 already guarantees it), and a table belongs to one thread. Nothing else in `una-rt` becomes `unsafe`.
 
@@ -137,7 +139,7 @@ ADR 0106 needs these fixed, because they are the C signatures:
 - The memory budget counts bytes as they are allocated and freed. A region frees late, so a program could exceed the budget under regions where today it does not, which is an observable change (U6003).
 - Rules 2 and 3 already remove most of the per-object cost that regions target: one allocation per record, no `Vec` growth. The Evidence measures what remains.
 
-A later ADR can add regions for values a sound analysis proves local, with these rules as its base.
+A later ADR (#750) can add regions or escape analysis for values a sound analysis proves local, with these rules as its base.
 
 ### 9. Debug builds and the counters
 
@@ -152,7 +154,7 @@ Per operation, in calls into `una-rt` and memory accesses, today against this de
 | Operation | Today | Proposed |
 |---|---|---|
 | construct a record | 1 + f calls, 2 allocations, `Vec` growth | 1 call, 1 allocation of exact size, f stores |
-| read a field | 1 call (heap borrow, handle check, `Vec` index) | inline: 1 `clz`, 3 to 4 loads, 2 compares; shared by later reads of the same handle before a call |
+| read a field | 1 call (heap borrow, handle check, `Vec` index) | inline: 1 `clz`, 3 to 4 loads, 3 compares; shared by later reads of the same handle before a call |
 | release a record (last reference) | 1 call, f releases inside | 1 call, releases of word cells only |
 | fixed-width method (`wrapping_add`, `bit_xor`, …) | 1 call, big-integer conversion | 1 to 2 instructions |
 | fixed-width arithmetic with an overflow check | tag, check, untag | 1 instruction and a flag test |
@@ -169,7 +171,7 @@ Per operation, in calls into `una-rt` and memory accesses, today against this de
 - **Bounds:** list and text bounds checks are unchanged; packed lists check the same index.
 - **Memory budget:** objects and packed lists are allocated through the same allocator; the budget sees fewer bytes, never more, for the same program, so no program that runs today exceeds it.
 - **Equivalence:** the equivalence suite (`spec/16 §5`) runs every example in both backends against the interpreter. The implementation adds cases at each boundary of rule 4: an `I64` and a `U64` beyond 63 bits through a generic function, a closure, a map key, a packed list, rendering and JSON; and a record with raw and word fields through equality, ordering, hashing, rendering, JSON, a task's fork and join, and an in-place edit.
-- **Sanitizer gate:** a native test, built with `-fsanitize=address` in the C backend's sanitizer gate (ADR 0106), grows the slot table across many segments inside a loop that holds a handle and reads its fields between allocations, and frees and reuses slots behind stale handles; it must run clean, with the stale reads counted as faults.
+- **Sanitizer gate:** a native test, built with `-fsanitize=address` in the C backend's sanitizer gate (ADR 0106), grows the slot table across many segments inside a loop that holds a handle and reads its fields between allocations; holds a field read of a packed list across an `append` that moves its storage; and frees and reuses slots, with the same layout and with another, behind stale handles. It must run clean, with every stale read counted as a fault and none answered from the new object.
 - **Layout assertions:** the static assertions of rule 2 compile in both the runtime and the generated header, and a test checks that both report the same sizes and offsets.
 - **Scaling tests:** construction and field reads at 10^5, 10^6 and 10^7 records, and a packed list at the same sizes, stay within a fixed ratio per element, and count allocations instead of timing where they can (as ADR 0102's does).
 
@@ -198,27 +200,27 @@ Gate 2's performance bar is parity with Rust on the benchmark set: a geometric m
 | Decision | Cost kept against Rust | Expected effect on the bar | Meant to remove it |
 |---|---|---|---|
 | `Int` stays a tagged word that promotes (rule 1, ADR 0106) | an overflow branch and a tag adjustment per operation; promotion is rare | up to about 1.3x on loops of unrefined `Int` arithmetic; near parity where code uses `I64` or a refinement | #737: a range the verifier proves makes `Int` a plain machine integer (`spec/16 §4` rule 2) |
-| checked handles (rule 2) | per first field read of a handle after a call: 1 `clz`, 3 to 4 loads, 2 compares | small, a few percent, on record-heavy code: the branches are predicted and later reads share the check | none planned: kept on purpose for memory safety (Alternative A); #522's C compiler hoists checks out of loops where no call intervenes |
-| a heap object per record (rules 2, 3; regions deferred) | an allocation, a slot and reference counting for every record, where Rust keeps short-lived structs on the stack | **the largest gap**: likely above 1.5x on kernels that build many small short-lived records, as k1 does | regions or escape analysis for proven-local values (rule 8), and small records by value (Alternative D); neither has an issue yet |
-| the uniform word at generic and closure boundaries (rule 4) | boxing per crossing, and a call through a function pointer that blocks inlining | likely above 1.5x on hot `map`, `fold` or `filter` over fixed-width elements with a lambda, where Rust inlines the iterator chain; none for `for` loops, which have no closure | specializing the prelude's higher-order functions per call site in the C backend (#522); no issue yet |
+| checked handles (rule 2) | per first field read of a handle after a call: 1 `clz`, 3 to 4 loads, 3 compares | small, a few percent, on record-heavy code: the branches are predicted and later reads share the check | none planned: kept on purpose for memory safety (Alternative A); #522's C compiler hoists checks out of loops where no call intervenes |
+| a heap object per record (rules 2, 3; regions deferred) | an allocation, a slot and reference counting for every record, where Rust keeps short-lived structs on the stack | **the largest gap**: likely above 1.5x on kernels that build many small short-lived records, as k1 does | #750: small records without a heap object, by escape analysis or regions (rule 8, Alternative D) |
+| the uniform word at generic and closure boundaries (rule 4) | boxing per crossing, and a call through a function pointer that blocks inlining | likely above 1.5x on hot `map`, `fold` or `filter` over fixed-width elements with a lambda, where Rust inlines the iterator chain; none for `for` loops, which have no closure | #752: call-site specialization of the prelude's higher-order functions, with #522 |
 | reference counting (unchanged, `spec/16 §4` rule 1) | a non-atomic increment and decrement per shared use | about 1.0 to 1.2x on pointer-heavy code | borrow inference already removes most; #737 does not touch it |
 | capabilities passed explicitly (unchanged) | an extra argument per call | small | #738 |
-| 64-bit cells, a slot and an allocator header per record | memory | **above 1.2x** for a `List[Point]` of small records: about 56 bytes per `Point(x: I64, y: I64)` (24-byte slot, 16 bytes of cells, about 16 of allocator header) against Rust's 16 in a `Vec<Point>`, about 3.5x | packed fields (Alternative E) and records stored inline in a list's elements, which value semantics allow since no element is aliased; neither has an issue yet |
+| 64-bit cells, a slot and an allocator header per record | memory | **above 1.2x** for a `List[Point]` of small records: about 64 bytes per `Point(x: I64, y: I64)` (32-byte slot, 16 bytes of cells, about 16 of allocator header) against Rust's 16 in a `Vec<Point>`, about 4x | #751: records stored inline in a list's elements, which value semantics allow since no element is aliased; with packed fields (Alternative E) |
 
-So, plainly: with this ADR, #737, #738 and #522, parity is plausible for loops over fixed-width and refined integers, packed lists and loop state, which is what k2 and k3 exercise. It is **not** plausible for programs that build many small records, or keep large lists of small records, or run hot higher-order functions over closures: they need escape analysis or regions, records inline in lists, and per-call-site specialization of the prelude's higher-order functions. Those three are design work of their own, each with safety arguments as long as this one's, and should get issues before Gate 2 is planned around this track.
+So, plainly: with this ADR, #737, #738 and #522, parity is plausible for loops over fixed-width and refined integers, packed lists and loop state, which is what k2 and k3 exercise. It is **not** plausible for programs that build many small records, or keep large lists of small records, or run hot higher-order functions over closures: they need escape analysis or regions, records inline in lists, and per-call-site specialization of the prelude's higher-order functions. Those three are design work of their own, each with safety arguments as long as this one's: #750, #751 and #752.
 
 ## Consequences
 
 - Record-heavy and fixed-width code no longer pays a runtime call per access, and the C backend of ADR 0106 can compile field access, fixed-width arithmetic and loop state into plain C.
 - Memory use falls for records and packed lists, so the budget binds later, never sooner.
 - The runtime's generic operations need a layout descriptor for every object, and packed lists need a second element path. Both are mechanical, but every runtime operation over data is touched once.
-- Generated code reads the slot table directly. Because segments never move and every access starts again from the handle, there is no cached base to reload, and no invariant that each call site must keep. The cost is one `clz` and one directory load per access, which k1's "indexed" variant includes.
+- Generated code reads the slot table directly. Because segments never move and every access starts again from the handle, there is no cached base to reload, and no invariant that each call site must keep. The cost is one `clz`, one directory load and the generation compare per access, which k1's "indexed" variant includes.
 - `spec/18 §7` changes: a fixed-width value is a raw machine integer outside generic positions. The representation stays unobservable.
 - Regions, field packing, and passing small records by value are deferred, each with its reason above.
 
 ## Alternatives considered
 
-**A. Handles become pointers to the object.** One `clz`, two loads and two compares fewer per access (k1 "layout" against "indexed"). Not chosen: a stale or corrupt handle would read freed or foreign memory, the C backend's memory safety would depend on the correctness of its own output, and the runtime would need `unsafe` beyond `ffi.rs` to follow pointers. The checks of rule 2 cost little next to what the inline access saves.
+**A. Handles become pointers to the object.** One `clz`, two loads and three compares fewer per access (k1 "layout" against "indexed"). Not chosen: a stale or corrupt handle would read freed or foreign memory, a reused slot would answer for a stale handle, the C backend's memory safety would depend on the correctness of its own output, and the runtime would need `unsafe` beyond `ffi.rs` to follow pointers. The checks of rule 2 cost little next to what the inline access saves.
 
 **B. Monomorphize generic code per representation**, so a `List[U8]` passed to `map` needs no boxing. Not chosen: it breaks the single compiled copy of ADR 0062 rule 11 and ADR 0066, and code grows with instantiations. Rule 4's boxing costs O(1) per crossing.
 
