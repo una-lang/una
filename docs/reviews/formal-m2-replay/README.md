@@ -157,14 +157,18 @@ It reports a body with `together` or `together_for` as that form, outside F1. Tw
 
 ## S-27 (#799)
 
-S-27 is a defect of the Core export, not of the checker. In edition 0.2 and later, interpolating a value writes its Una form without redaction (`spec/10 §12` rule 14), so the text holds the value's labeled fields in clear.
+S-27 is a defect of the Core export, not of the checker. Its first shape: in edition 0.2 and later, interpolating a value writes its Una form without redaction (`spec/10 §12` rule 14), so the text holds the value's labeled fields in clear.
 - The checker labels that text with every label of the value's type, its fields' included.
 - The export bound it to a `to_text` temporary labeled without the labels that kinds' fields declare. That is the label operation arguments use for trace redaction, which redacts a kind value field by field.
 - So a record with a `secret[PII]` field was exported as `public Text` holding the field in clear.
 - The hunt's re-check comparison (#791) found it: the re-check rejected 16 programs of family K4 that `una check` accepts.
 
-**Method.** The exports are JSON, `una --json core` of the conformance case `tests/conformance/security/interpolated_record_fields_core_label`, so they need no reader. There are two of them in `core-s27/`:
-- `S-27.interpolated_record.v0.3.14.json`, exported by the release v0.3.14 (the release archive, its digest checked against the published one);
-- `S-27.interpolated_record.fixed.json`, exported by the fix.
+The review of every temporary that elaboration labels by hand found a second shape of the same class: a `when` over a literal or a range compares the scrutinee, and the export labeled those comparisons `public Bool` whatever the scrutinee's label.
 
-**Result.** The re-check rejects the first, at the `to_text` temporary ("the text of a value, `secret[PII] Text`, does not flow into `public Text`"), and accepts the second.
+**Method.** The exports are JSON (`una --json core`), so they need no reader. Each comes from a conformance case, and each case has two exports in `core-s27/`: one by the release v0.3.14 (the release archive, its digest checked against the published one), named `….v0.3.14.json`, and one by the fix, named `….fixed.json`.
+- `S-27.interpolated_record` comes from `tests/conformance/security/interpolated_record_fields_core_label`.
+- `S-27.when_literal_range` comes from `tests/conformance/security/when_on_labeled_scrutinee_core_label`.
+
+**Result.** The re-check rejects both v0.3.14 exports and accepts both fixed ones.
+- `interpolated_record` is rejected at the `to_text` temporary: "the text of a value, `secret[PII] Text`, does not flow into `public Text`".
+- `when_literal_range` is rejected at the literal arm's test: "the result of `==`, `secret Bool`, does not flow into `public Bool`".

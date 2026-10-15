@@ -151,3 +151,9 @@ prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7
 == S-27.interpolated_record.v0.3.14
 app.main.main	rejected	the text of a value, `secret[PII] Text`, does not flow into `public Text`
 prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)
+== S-27.when_literal_range.fixed
+app.main.main	accepted	
+prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)
+== S-27.when_literal_range.v0.3.14
+app.main.main	rejected	the result of `==`, `secret Bool`, does not flow into `public Bool`
+prelude.is_json_number	outside the flow model	refinement predicate (`spec/07 §7` rule 6)

@@ -141,3 +141,61 @@ fn an_interpolated_value_text_carries_its_fields_labels_in_the_core_export() {
         }
     }
 }
+
+/// The labels of every comparison temporary (`==`, `<=`, `<`) of the export, as `level[categories]`.
+fn comparison_labels(dir: &PathBuf) -> Vec<String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["--json", "core", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut out = Vec::new();
+    walk_comparisons(&document, &mut out);
+    out
+}
+
+fn walk_comparisons(node: &Value, out: &mut Vec<String>) {
+    match node {
+        Value::Object(fields) => {
+            let prim = &fields
+                .get("value")
+                .map(|value| &value["value"]["prim"]["kind"]);
+            let is_comparison = fields.get("kind").and_then(Value::as_str) == Some("let")
+                && fields["value"]["kind"] == "rhs"
+                && fields["value"]["value"]["kind"] == "prim"
+                && prim.is_some_and(|kind| kind == "eq" || kind == "le" || kind == "lt");
+            if is_comparison {
+                let label = &fields["ty"]["label"];
+                out.push(format!("{}", label["level"].as_str().unwrap()));
+            }
+            for value in fields.values() {
+                walk_comparisons(value, out);
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| walk_comparisons(item, out)),
+        _ => {}
+    }
+}
+
+#[test]
+fn a_when_test_on_a_labeled_scrutinee_carries_its_label_in_the_core_export() {
+    // `when` over a literal and over a range desugars to comparisons with the scrutinee; each
+    // depends on it, so each carries its label (S-27).
+    let lines = "  let s: secret Int = 3\n  let r = when s\n    is 3 -> 1\n    in 4..9 -> 2\n    else -> 3\n  @console.print(\"done\")";
+    let source = format!(
+        "module app.main\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{lines}\n"
+    );
+    for edition in ["0.2", "0.3"] {
+        let dir = package("when", edition, &source);
+        let got = comparison_labels(&dir);
+        assert_eq!(got.len(), 3, "edition {edition}: {got:?}");
+        assert!(
+            got.iter().all(|level| level == "secret"),
+            "edition {edition}: {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
