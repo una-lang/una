@@ -30,6 +30,7 @@ NOINLINE int64_t rt_alloc(int64_t size, int64_t layout) {
     i = nslots++;
     uint64_t j = i + ((uint64_t)1 << BASE); int k = 63 - __builtin_clzll(j);
     if (!dir[k - BASE]) dir[k - BASE] = calloc((size_t)1 << k, sizeof(slot));
+    at(i)->generation = 1;
     if (nslots > capfree) { capfree = capfree ? capfree * 2 : 1024; freelist = realloc(freelist, capfree * sizeof(int64_t)); }
   }
   header *h = malloc((size_t)size); h->count = 1; h->layout = layout;
@@ -38,6 +39,7 @@ NOINLINE int64_t rt_alloc(int64_t size, int64_t layout) {
 }
 NOINLINE void rt_free(int64_t o) { uint64_t i = (((uint64_t)o >> 1) & 0xffffffffu) - 1; slot *s = at(i); free(s->addr); s->count = 0; s->layout = 0; s->addr = NULL; if (++s->generation < (1 << 30) - 1) freelist[nfree++] = (int64_t)i; }
 static inline slot *check(int64_t o, int64_t layout) {
+  if (o & 1) abort();
   uint64_t i = (((uint64_t)o >> 1) & 0xffffffffu) - 1;
   if (i >= nslots) abort();
   slot *s = at(i);
