@@ -53,6 +53,18 @@
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
+# A trace would print the patterns below, and a startup file could read them: refuse a trace,
+# whether `bash -x` or an exported SHELLOPTS turned it on (SHELLOPTS itself is read-only, and
+# holds no xtrace once this check passes), drop the startup files the shells of the gates would
+# read, and write no core file that could hold the patterns.
+case $- in
+    *x*)
+        echo "release gates: refusing to run with xtrace (set -x), which would print the patterns" >&2
+        exit 2
+        ;;
+esac
+unset BASH_ENV ENV
+ulimit -c 0
 
 ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize hunt site formal)
 
@@ -74,45 +86,64 @@ done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
-# The privacy pattern of the public summary (#717, docs/release-gates.md §3): UNA_PRIVACY_PATTERN
-# when the caller set it, else the macOS Keychain item una-privacy-pattern. It is held in a shell
-# variable that is never exported, and the caller's UNA_PRIVACY_PATTERN is unset at once, so no
-# gate and no child of a gate inherits it; only the summary step receives it. It is never
-# printed, logged or written. Without it the run stops before any gate (fail closed), unless
-# UNA_GATES_UNCHECKED=1 asks for a run whose summary is unchecked and that prints no publish
-# command, such as a dry run.
-PRIVACY=${UNA_PRIVACY_PATTERN:-}
+# The two patterns of this run (docs/release-gates.md §3): the privacy pattern of the public
+# summary (#717) and the neutrality pattern of the public pages (ADR 0088, #789). Each comes
+# from its environment variable when the caller set it, else from its macOS Keychain item. Each
+# is held in a shell variable that is never exported, the caller's variable unset at once, and
+# reaches the one step that applies it on a pipe (file descriptor 3), never in an environment
+# or an argument, which other processes of the machine could read: the summary step for the
+# privacy pattern, the site gate for the neutrality pattern. Neither is ever printed, logged or
+# written. Each must be a valid extended regular expression (grep -E, the one dialect every
+# check uses) that matches the canary `una-pattern-canary`, so that a pattern that matches
+# nothing cannot pass for a check. Without either, the run stops before any gate (fail
+# closed), unless UNA_GATES_UNCHECKED=1 asks for a run whose summary says it is unchecked and
+# that prints no publish command, such as a dry run.
+unset PRIVACY NEUTRALITY
+
+# The pattern named $1 (privacy or neutrality), from $2 (the value of the variable $3) or the
+# Keychain item una-$1-pattern, checked, into the variable named $4.
+read_pattern() {
+    local name=$1 value=$2 variable=$3 into=$4 status
+    if [ -z "$value" ] && command -v security > /dev/null 2>&1; then
+        value=$(security find-generic-password -s "una-$name-pattern" -w 2> /dev/null) || value=""
+    fi
+    if [ -z "$value" ]; then
+        if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
+            echo "release gates: no $name pattern; UNA_GATES_UNCHECKED=1, so this run is unchecked and prints no publish command" >&2
+            printf -v "$into" '%s' ""
+            return 0
+        fi
+        echo "release gates: no $name pattern: set $variable, or create the Keychain item una-$name-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
+        exit 2
+    fi
+    # A value that cannot be a pattern of this project: blank, all hexadecimal digits (what
+    # `security -w` prints for a value it cannot print as text), or longer than a pipe holds.
+    if [ -z "${value//[[:space:]]/}" ] || [[ $value =~ ^[0-9A-Fa-f]+$ ]] || [ ${#value} -gt 60000 ]; then
+        echo "release gates: the $name pattern is blank, hexadecimal or too long; set it again" >&2
+        exit 2
+    fi
+    case $value in
+        *una-pattern-canary*) ;;
+        *)
+            echo "release gates: the $name pattern does not name the canary una-pattern-canary (docs/release-gates.md §3)" >&2
+            exit 2
+            ;;
+    esac
+    printf 'una-pattern-canary\n' | grep -Eiq -f <(printf '%s\n' "$value") 2> /dev/null
+    status=$?
+    if [ "$status" = 2 ]; then
+        echo "release gates: the $name pattern is not a valid extended regular expression (grep -E)" >&2
+        exit 2
+    elif [ "$status" != 0 ]; then
+        echo "release gates: the $name pattern does not match the canary una-pattern-canary" >&2
+        exit 2
+    fi
+    printf -v "$into" '%s' "$value"
+}
+read_pattern privacy "${UNA_PRIVACY_PATTERN:-}" UNA_PRIVACY_PATTERN PRIVACY
 unset UNA_PRIVACY_PATTERN
-if [ -z "$PRIVACY" ] && command -v security > /dev/null 2>&1; then
-    PRIVACY=$(security find-generic-password -s una-privacy-pattern -w 2> /dev/null) || PRIVACY=""
-fi
-if [ -z "$PRIVACY" ]; then
-    if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
-        echo "release gates: no privacy pattern; UNA_GATES_UNCHECKED=1, so the summary is unchecked and no publish command is printed" >&2
-    else
-        echo "release gates: no privacy pattern: set UNA_PRIVACY_PATTERN, or create the Keychain item una-privacy-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
-        exit 2
-    fi
-fi
-# The neutrality pattern of the public pages (ADR 0088, #789): UNA_NEUTRALITY_PATTERN when the
-# caller set it, else the macOS Keychain item una-neutrality-pattern, held and checked exactly
-# as the privacy pattern above: in a shell variable that is never exported, the caller's
-# variable unset at once, never printed, logged or written. Only the site gate receives it, in
-# the environment of its one command, which hands it on to the steps that check the pages.
-# Without it the run stops before any gate, unless UNA_GATES_UNCHECKED=1.
-NEUTRALITY=${UNA_NEUTRALITY_PATTERN:-}
+read_pattern neutrality "${UNA_NEUTRALITY_PATTERN:-}" UNA_NEUTRALITY_PATTERN NEUTRALITY
 unset UNA_NEUTRALITY_PATTERN
-if [ -z "$NEUTRALITY" ] && command -v security > /dev/null 2>&1; then
-    NEUTRALITY=$(security find-generic-password -s una-neutrality-pattern -w 2> /dev/null) || NEUTRALITY=""
-fi
-if [ -z "$NEUTRALITY" ]; then
-    if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
-        echo "release gates: no neutrality pattern; UNA_GATES_UNCHECKED=1, so the pages are not checked against it" >&2
-    else
-        echo "release gates: no neutrality pattern: set UNA_NEUTRALITY_PATTERN, or create the Keychain item una-neutrality-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
-        exit 2
-    fi
-fi
 SOURCE=${UNA_GATES_SOURCE:-$(git -C "$REPO" remote get-url origin)}
 mkdir -p "$OUT/logs"
 OUT=$(CDPATH='' cd -- "$OUT" && pwd)
@@ -162,9 +193,10 @@ run() {
         echo "the clone is not exactly $SHA with no change; run the clone gate first" > "$log"
     elif (
         cd "$CLONE" || exit 1
-        # Only the site gate's command gets the neutrality pattern, in its environment alone.
-        if [ "$gate" = site ]; then
-            UNA_NEUTRALITY_PATTERN=$NEUTRALITY "$@"
+        # Only the site gate's command gets the neutrality pattern, on file descriptor 3 (a
+        # pipe), and UNA_NEUTRALITY_PATTERN_FD says so; no other gate has that descriptor.
+        if [ "$gate" = site ] && [ -n "$NEUTRALITY" ]; then
+            UNA_NEUTRALITY_PATTERN_FD=3 "$@" 3< <(printf '%s\n' "$NEUTRALITY")
         else
             "$@"
         fi
@@ -304,17 +336,30 @@ gate_hunt() {
 }
 
 gate_site() {
-    # The neutrality pattern reaches this one command through its environment (`run`), never
-    # its arguments; the command takes it into a variable at once and hands it only to the
-    # bundle and the website steps.
+    # The neutrality pattern reaches this one command on file descriptor 3 (`run`), never in
+    # its environment or arguments; the command reads it into a variable, closes the
+    # descriptor, and hands it to the bundle and the website steps each on a pipe of its own.
     run site sh -c '
-        neutrality=$UNA_NEUTRALITY_PATTERN
-        unset UNA_NEUTRALITY_PATTERN
+        unset neutrality
+        neutrality=
+        if [ -n "${UNA_NEUTRALITY_PATTERN_FD:-}" ]; then
+            neutrality=$(cat <&3)
+            exec 3<&-
+        fi
+        unset UNA_NEUTRALITY_PATTERN_FD
+        # Each step reads the pattern from its own pipe on descriptor 3, when there is one.
+        with_pattern() {
+            if [ -n "$neutrality" ]; then
+                printf "%s\n" "$neutrality" | { UNA_NEUTRALITY_PATTERN_FD=3 "$@" 3<&0 </dev/null; }
+            else
+                "$@"
+            fi
+        }
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
             && scripts/doc-links.py \
-            && UNA_NEUTRALITY_PATTERN=$neutrality UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && UNA_NEUTRALITY_PATTERN=$neutrality UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
+            && with_pattern env UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
 
@@ -430,11 +475,23 @@ echo "record: $OUT/record.md"
 # whose summary passed the privacy check (docs/release-gates.md §4).
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
 rm -f "$OUT/summary.md" "$OUT/release-notes.md" "$OUT"/una-*-validation.md
-if [ -n "$version" ] && UNA_PRIVACY_PATTERN="$PRIVACY" python3 -B "$REPO/scripts/release-summary.py" "$version" "$OUT/record.md" "$OUT/summary.md"; then
+# The privacy pattern goes to the summary step on descriptor 3; a run without the neutrality
+# pattern is unchecked too, and its summary says so.
+summary() {
+    local neutrality=checked
+    [ -n "$NEUTRALITY" ] || neutrality=unchecked
+    if [ -n "$PRIVACY" ]; then
+        UNA_PRIVACY_PATTERN_FD=3 UNA_SUMMARY_NEUTRALITY=$neutrality python3 -B "$REPO/scripts/release-summary.py" "$@" 3< <(printf '%s\n' "$PRIVACY")
+    else
+        UNA_SUMMARY_NEUTRALITY=$neutrality python3 -B "$REPO/scripts/release-summary.py" "$@"
+    fi
+}
+if [ -n "$version" ] && summary "$version" "$OUT/record.md" "$OUT/summary.md"; then
     built=$CLONE/target/local-release/v$version
     if [ -f "$built/notes.md" ]; then
         { cat "$OUT/summary.md"; echo; cat "$built/notes.md"; } > "$OUT/release-notes.md"
-        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "$PRIVACY" ]; then
+        # Published only when both patterns checked this run.
+        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "$PRIVACY" ] && [ -n "$NEUTRALITY" ]; then
             cp "$OUT/summary.md" "$OUT/una-$version-validation.md"
             sh "$REPO/scripts/release-publish.sh" "$version" "$OUT" "$built"
         fi

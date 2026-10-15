@@ -8,10 +8,13 @@ tool and advisory database (#770) and the verdict. Nothing
 else of the record is copied: no subject, no notes, no log digest, no docs bundle.
 
 Every field is checked against its shape before it is written, and a field that does not match
-stops the summary: no free text of the record can reach it. When the environment variable
-UNA_PRIVACY_PATTERN is set, the finished summary must not match it (case-insensitive extended
-regular expression); when it is unset, the summary is written and a warning says that it is
-unchecked, and docs/release-gates.md §4 does not publish an unchecked summary.
+stops the summary: no free text of the record can reach it. The privacy pattern comes on the
+file descriptor that UNA_PRIVACY_PATTERN_FD names, as scripts/release-gates.sh passes it, else
+from the environment variable UNA_PRIVACY_PATTERN, for a run by hand; the finished summary must
+not match it (case-insensitive extended regular expression). Without it, or when
+UNA_SUMMARY_NEUTRALITY=unchecked says that the run checked no page against the neutrality
+pattern, the summary opens with a line that says it is unchecked, a warning says so, and
+docs/release-gates.md §4 does not publish an unchecked summary.
 
 Usage: scripts/release-summary.py VERSION RECORD OUT
 Exit code: 0 written, 1 a field out of shape or a privacy match, 2 a usage error.
@@ -120,11 +123,19 @@ def main():
     else:
         deps = []
 
-    pattern = os.environ.get("UNA_PRIVACY_PATTERN", "")
+    fd = os.environ.get("UNA_PRIVACY_PATTERN_FD", "")
+    if fd:
+        with os.fdopen(int(fd), "r", encoding="utf-8", errors="strict") as handle:
+            pattern = handle.read().rstrip("\n")
+    else:
+        pattern = os.environ.get("UNA_PRIVACY_PATTERN", "")
+    neutrality_unchecked = os.environ.get("UNA_SUMMARY_NEUTRALITY", "") == "unchecked"
     text = [f"# Una v{version}: release validation", ""]
+    # An unchecked summary says so in its own text, so that it cannot pass for a published one.
     if not pattern:
-        # An unchecked summary says so in its own text, so that it cannot pass for a published one.
         text += ["**Unchecked: written without the privacy pattern; not for publication.**", ""]
+    if neutrality_unchecked:
+        text += ["**Unchecked: the pages were not checked against the neutrality pattern; not for publication.**", ""]
     text += [f"- Commit: `{commit}`", f"- Run: {run.group(1)}, {run.group(2)}",
              f"- Toolchain: {run.group(3)}; {run.group(4)}", ""]
     text += ["| Gate | Result | Seconds |", "| --- | --- | --- |"]
@@ -141,6 +152,9 @@ def main():
              "The gates are defined in `docs/release-gates.md` at the commit above.", ""]
     summary = "\n".join(text)
 
+    if len(pattern) > 60000:
+        # More than a pipe holds at once: the write below would wait for a reader forever.
+        fail("the privacy pattern is longer than 60,000 characters")
     if pattern:
         # grep -E, so the pattern means what it means in the other checks (site-bundle.sh). The
         # pattern goes to grep through a pipe (-f), never on a command line, where any process
@@ -158,8 +172,11 @@ def main():
         if found.returncode != 1:
             fail("grep could not apply UNA_PRIVACY_PATTERN")
     else:
-        print("release-summary: warning: UNA_PRIVACY_PATTERN is unset, so the summary is unchecked "
+        print("release-summary: warning: no privacy pattern, so the summary is unchecked "
               "and is not published (docs/release-gates.md §4)", file=sys.stderr)
+    if neutrality_unchecked:
+        print("release-summary: warning: the run checked no page against the neutrality pattern, "
+              "so the summary is unchecked and is not published (docs/release-gates.md §4)", file=sys.stderr)
     with open(out, "w", encoding="utf-8") as f:
         f.write(summary)
     print(f"summary: {out} ({'privacy checked' if pattern else 'privacy unchecked'})")
