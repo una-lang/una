@@ -157,6 +157,10 @@ else
     step "Document links" sh -c 'scripts/doc-links.py --self-test && scripts/doc-links.py'
 fi
 
+# The security hunt's tests that need no compiler (#767): its generators, drivers, two-run oracle
+# and release gate. Python runs with -B, so the checkout gets no bytecode files.
+step "Security hunt (unit tests)" sh -c 'cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests'
+
 # The formal track (docs/plan/formal-track.md §6, #46): the Lean development builds with the
 # pinned toolchain, and no stated theorem depends on `sorry`.
 step "Formal (Lean)" scripts/formal.sh

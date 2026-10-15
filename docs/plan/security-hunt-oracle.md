@@ -2,7 +2,7 @@
 
 - Issue: #513, part (e) of `docs/plan/security-hunt.md`
 - Date: 2026-10-10
-- Status: specification (L3), no code yet
+- Status: specification (L3); the part the `hunt` release gate runs is `scripts/security-hunt/hunt/oracle.py` (#767): V-secret, the interpreter, the `public` and `internal` observers. The rest is #782
 
 ## 1. What it checks
 
