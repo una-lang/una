@@ -62,12 +62,26 @@ The representation at the boundary between Core IR and a backend (value words, h
    - **Shifts** are done on unsigned types only, with the count masked to the width, and converted back. A left shift of a negative signed value is never emitted.
    - **Conversions** to a narrower signed type go through the unsigned type of that width, with the range check of ADR 0057 before; the subset does not rely on implementation-defined signed narrowing.
    - **Division and remainder** check the divisor for zero and the `MIN / -1` and `MIN % -1` cases before the operation.
-   - **Memory.** No pointer arithmetic outside `una-rt`, except exactly the three forms ADR 0107 needs, each after its checks and through types from one generated header that matches `una-rt`'s `#[repr(C)]` layout, with `_Static_assert` of size, offsets and alignment on the C side and const assertions on the Rust side:
-     1. the slot table, `table[i].field`, after `i < len` (unsigned), the layout check and the generation check (ADR 0107 rule 2);
-     2. an object's cells, at a constant offset from the slot's storage pointer, after the layout and generation checks, with the offset below the layout's cell count (ADR 0107 rule 3);
-     3. a packed list's elements, at `header + i * width`, after an unsigned `i < length` check (ADR 0107 rule 5).
+   - **Memory.** No pointer arithmetic outside `una-rt` except the forms below, which are exactly what ADR 0107 (with ADR 0108) needs. Each goes through `#[repr(C)]` types from one generated header, with `_Static_assert` of size, offsets and alignment on the C side and const assertions on the Rust side. Each access is a `memcpy`, or a load or store through a type of the element's width whose alignment the allocator guarantees: cells are 8-byte aligned, and packed elements of their natural width follow a 16-byte header.
+     - **Header reads:** the slot table's length and directory base, read through the thread's Hot record (ADR 0107 rule 2), and a packed list's header fields (`length`, and `capacity` where a set path reads it).
+     - **Form 1, a handle to its slot,** in this order (ADR 0107 rule 2):
+       1. bit 0 of the handle is 0;
+       2. decode the index plus one (bits 1 to 32) and the generation (bits 33 to 62);
+       3. check the unsigned `index < table length`;
+       4. compute the directory entry `k`, with `k` below the directory's fixed length (60 entries, statically asserted), and load `dir[k]`, the segment's address;
+       5. load the slot at `segment[index - offset(k)]`;
+       6. check `slot.layout == expected` and `slot.generation ==` the handle's generation;
+       7. only then read `slot.address`.
+     - **Form 2, an object's cells:** after form 1, a cell at a constant offset from `slot.address`, with the offset below the layout's cell count (ADR 0107 rule 3).
+     - **Form 3, a packed list's elements:** form 1 first, with the layout id of the element type (`I8` to `U64`, `Bool`, word lists; ADR 0107 rule 5), so that a list of one width is never read as another. Then `slot.address`, then `header.length`, then the unsigned `i < length` check, then the element at `storage + header size + i * width`. The index is untagged first; a promoted index goes to the runtime.
+     - **Stores, exactly three:**
+       - construction: the cells of a freshly allocated object, by form 2, right after the runtime's allocation returns the handle, with form 1's checks still run;
+       - a field edit in place (ADR 0107 rule 3): after form 1, read `slot.count`, and store a raw cell only when it is 1; a word cell's old value is released through a runtime call; otherwise the copy is a runtime call;
+       - a packed list's `set` in place: form 3's checks and `count == 1`, then the element store; otherwise the runtime copies.
+     - **Everything else is a runtime call:** `append`, any copying path, and every retain and release (reference counts are never changed inline).
+     - **Addresses after a runtime call:** no address computed before a runtime call is used after it; every access starts again from the handle (ADR 0107 rule 2).
 
-     Each access is a `memcpy`, or a load through a type of the element's width whose alignment the allocator guarantees and both sides assert. The program is compiled with `-fno-strict-aliasing` and `-fno-delete-null-pointer-checks`.
+     The program is compiled with `-fno-strict-aliasing` and `-fno-delete-null-pointer-checks`.
    - **Evaluation order.** The emitted C keeps Core IR's A-normal form: at most one call or side effect per C statement, every intermediate value in a local, the statements in Core's order. No function call takes another call as an argument, and no operand of an operator with unspecified order has an effect. Una's order of effects (failures, the trace, capabilities) is then the C program's, whatever the compiler.
    - **Initialization.** Every local is initialized where it is declared, and every aggregate, the result struct of ADR 0107 rule 7 on a failure path included, is fully initialized (zero) before it is copied or returned. No member is ever read indeterminate.
    - **Termination.** Every emitted loop is finite by construction (a `for` over a list or a range) or carries a depth or fuel check whose failure is an observable effect, so no loop falls under C11 6.8.5p6, where a loop without side effects may be assumed to terminate. Recursion carries the depth check of ADR 0102.
