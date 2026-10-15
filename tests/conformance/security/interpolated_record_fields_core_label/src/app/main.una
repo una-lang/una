@@ -1,0 +1,19 @@
+-- test: a record with a `secret[PII]` field, interpolated into the `data` of `Keys.hmac`, which accepts every label: accepted, and its Core export labels the interpolated text `secret[PII]`, the label of what it holds (S-27, the test of crates/una-cli/tests/core_text_labels.rs)
+-- spec: spec/10 §12, spec/14 §3
+-- expect: ok
+module app.main
+
+kind Card
+  holder: Text
+  number: secret[PII] Text
+
+pub main() -> Unit
+  uses @keys: Keys[hmac]
+  uses @console: Console[print]
+  fails KeyError
+=
+  let s: secret[PII] Text = "0612345678"
+  let c = Card(holder: "Ana", number: s)
+  let h = @keys.hmac(key_name: "pepper", data: "{c}")
+    if error pass
+  @console.print("tagged")

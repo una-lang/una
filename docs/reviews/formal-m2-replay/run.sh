@@ -43,3 +43,11 @@ for fs in inferred public internal; do
         "$root/formal/.lake/build/bin/una-core-check" "$out/$name.$fs.json" | cut -f2- || true
     done
 done
+# S-27: the Core exports (`una --json core`) of the conformance case
+# `security/interpolated_record_fields_core_label`, by v0.3.14 (the release before the fix) and by
+# the fix (`core-s27/`): the re-check rejects the first, whose `to_text` temporary is labeled
+# `public` while it holds a `secret[PII]` field, and accepts the second.
+for core in "$here"/core-s27/*.json; do
+    echo "== $(basename "$core" .json)"
+    "$root/formal/.lake/build/bin/una-core-check" "$core" | cut -f2- || true
+done

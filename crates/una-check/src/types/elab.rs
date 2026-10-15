@@ -3397,11 +3397,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                 TextPart::Interpolation(expr) => {
                     let value = self.atom(lets, expr);
                     let t = self.temp();
+                    // The text holds the value's fields in clear (`spec/10 §12` rule 14), so it
+                    // carries their labels too, as the checker's label does (S-27).
                     let label = self
                         .records
                         .types
                         .get(&expr.span)
-                        .map_or_else(Label::public, Ty::argument_label);
+                        .map_or_else(Label::public, |ty| ty.text_label(&self.env.kind_labels));
                     lets.push(Let::inferred(
                         t.clone(),
                         with_label(text_ty(), &label),

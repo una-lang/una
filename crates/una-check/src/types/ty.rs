@@ -809,9 +809,11 @@ impl Ty {
     }
 
     /// [`Ty::deep_label`] without the labels that kinds' fields declare: what Core IR records
-    /// for the arguments of an operation and interpolated values, since the runtime redacts
-    /// the fields of a kind value by their own declared labels (`spec/11 §5`).
+    /// for the arguments of an operation, since the runtime redacts the fields of a kind value
+    /// by their own declared labels (`spec/11 §5`).
     /// D-165: traces keep redacting field by field, as before N-001.
+    /// An interpolated value's text has no fields left to redact, so its label is
+    /// [`Ty::text_label`] instead (S-27).
     ///
     /// The label sits on a position that is not a type parameter, an argument or a `Text`
     /// temporary, so a symbolic label it joins is starred: a plain `ℓ_T` labels only a position
@@ -819,6 +821,15 @@ impl Ty {
     /// only whether the label is `public`, which starring does not change.
     pub(crate) fn argument_label(&self) -> Label {
         starred(&self.deep_label(&KindLabels::default()))
+    }
+
+    /// The label of the text that interpolating a value of this type writes: the join of every
+    /// label of the type, deep, the labels that kinds' fields declare included (`spec/10 §12`
+    /// rule 14), as the checker labels the interpolation. In edition 0.2 and later the text
+    /// renders those fields without redaction, so leaving their labels out would export a
+    /// labeled field in clear under a lower label (S-27). Starred as [`Ty::argument_label`] is.
+    pub(crate) fn text_label(&self, kinds: &KindLabels) -> Label {
+        starred(&self.deep_label(kinds))
     }
 
     /// The join of every label of the type, at every position: [`Ty::deep_label`] and the
