@@ -2828,7 +2828,8 @@ impl<'e, 'a> Fx<'e, 'a> {
             let test = match &arm.pattern.kind {
                 PatternKind::Literal(literal) => {
                     let mut test_lets = Vec::new();
-                    let value = self.literal_atom(&mut test_lets, literal, arm.pattern.span);
+                    let value =
+                        self.pattern_literal_atom(&mut test_lets, literal, arm.pattern.span);
                     let t = self.temp();
                     test_lets.push(Let::inferred(
                         t.clone(),
@@ -2869,6 +2870,22 @@ impl<'e, 'a> Fx<'e, 'a> {
                 span: when.span,
             }),
         )
+    }
+
+    /// A pattern's literal, which is a constant (`spec/07 §7` rule 3): the checks reject a text
+    /// literal with interpolation in a pattern (U4008, S-28), so one here means the declaration
+    /// is broken, and it is never exported as checked Core.
+    fn pattern_literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
+        if let Literal::Text(text) = literal
+            && text
+                .parts
+                .iter()
+                .any(|part| matches!(part, TextPart::Interpolation(_)))
+        {
+            self.broken = true;
+            return Atom::Unit;
+        }
+        self.literal_atom(lets, literal, span)
     }
 
     /// `lo <= x and x <= hi`, or `x < hi` for `..<`, as nested `if`s.
@@ -3082,7 +3099,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         _ => Atom::Unit,
                     },
                     IsTarget::Literal(literal) => {
-                        let literal = self.literal_atom(lets, literal, span);
+                        let literal = self.pattern_literal_atom(lets, literal, span);
                         self.push(
                             lets,
                             span,

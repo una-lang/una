@@ -1,0 +1,13 @@
+-- test: a constant text literal in a `when` arm and in `is` is accepted, the control of the cases above (S-28)
+-- spec: spec/07 §7
+-- expect: ok
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let g = "abc"
+  let b = g is "abc"
+  when g
+    is "abc" -> @console.print("yes {b}")
+    else -> @console.print("no")

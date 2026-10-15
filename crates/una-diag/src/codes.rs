@@ -225,6 +225,8 @@ pub enum Code {
     U4005,
     /// Unknown label category.
     U4007,
+    /// A text literal with interpolation in a pattern.
+    U4008,
     /// Obligation refuted.
     U5001,
     /// Obligation unknown.
@@ -255,7 +257,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 93] = [
+    pub const ALL: [Code; 94] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -336,6 +338,7 @@ impl Code {
         Code::U4004,
         Code::U4005,
         Code::U4007,
+        Code::U4008,
         Code::U5001,
         Code::U5002,
         Code::U5003,
@@ -767,6 +770,11 @@ impl Code {
                 code: "U4007",
                 domain: Domain::Security,
                 meaning: "Unknown label category",
+            },
+            Code::U4008 => &Entry {
+                code: "U4008",
+                domain: Domain::Security,
+                meaning: "A text literal with interpolation in a pattern",
             },
             Code::U5001 => &Entry {
                 code: "U5001",
