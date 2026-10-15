@@ -2,7 +2,7 @@
 construct: when
 editions: ["0.1", "0.2"]
 spec: ["spec/01 §5", "spec/02 §6", "spec/02 §8", "spec/10 §4", "spec/12 §3", "spec/12 §4", "spec/07 §3", "spec/18 §2"]
-codes: [U0101, U2001, U2007, U2008, U2022, U4002, U5001]
+codes: [U0101, U2001, U2007, U2008, U2022, U4002, U4008, U5001]
 ---
 
 # `when`
@@ -63,7 +63,7 @@ bind            = lower_ident [ ":" lower_ident ] ;       (* field, or field: lo
 This is `spec/02 §6`.
 
 - **`is V`** or **`is V(field)`**: a variant, binding its fields by name, or under another name with `field: name`.
-- **`is 200`**: a literal of the value's type.
+- **`is 200`**: a literal of the value's type. A pattern's literal is a constant, so a text literal there cannot interpolate a value: `is "{s}"` is U4008. Compare with `==` instead.
 - **`in a..b`** or **`in a..<b`**: a range, inclusive or excluding its upper bound.
 - **`else`**: every value no earlier arm matched. It is the last arm (`spec/02 §8`).
 - An arm's body is one expression on the line, or an indented block.
@@ -214,6 +214,7 @@ Further rules:
 - [U2008](../../../../crates/una-explain/explain/U2008.md): an unreachable arm, or an `else` that is not last.
 - [U2022](../../../../crates/una-explain/explain/U2022.md): a range bound that does not fit a fixed-width type.
 - [U4002](../../../../crates/una-explain/explain/U4002.md): a failure in an arm under a labeled value.
+- [U4008](../../../../crates/una-explain/explain/U4008.md): a text literal with interpolation in a pattern.
 - [U5001](../../../../crates/una-explain/explain/U5001.md): range or literal arms that do not cover every value.
 
 ## Edition

@@ -46,6 +46,8 @@ pub(crate) fn mentions(expr: &Expr, name: &str, resolve: &dyn Fn(&Ident) -> Stri
         ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
             mentions(target, name, resolve)
         }
+        // `is` reads only its value: its literal is a constant, since interpolating in it is U4008
+        // (`spec/07 §7` rule 3, S-28), so `value` alone is complete.
         ExprKind::Is { value, .. } => mentions(value, name, resolve),
         ExprKind::Binary { left, right, .. } => {
             mentions(left, name, resolve) || mentions(right, name, resolve)
@@ -102,6 +104,7 @@ pub(crate) fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut V
         ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
             reads(target, resolve, out);
         }
+        // As in `mentions`: an `is` literal is a constant (U4008, S-28).
         ExprKind::Is { value, .. } => reads(value, resolve, out),
         ExprKind::Binary { left, right, .. } => {
             reads(left, resolve, out);
