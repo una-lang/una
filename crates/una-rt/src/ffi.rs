@@ -120,13 +120,39 @@ pub unsafe extern "C" fn una_rt_text_literal(bytes: *const u8, len: usize) -> i6
 
 /// The operations of [`crate::values`] that return a word, by word.
 macro_rules! exported {
-    ($($name:ident => $function:path, ($($arg:ident),*);)*) => {$(
-        #[doc = concat!("[`", stringify!($function), "`], for the generated code.")]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name($($arg: i64),*) -> i64 {
-            $function($($arg),*)
+    ($($name:ident => $function:path, ($($arg:ident),*);)*) => {
+        $(
+            #[doc = concat!("[`", stringify!($function), "`], for the generated code.")]
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name($($arg: i64),*) -> i64 {
+                $function($($arg),*)
+            }
+        )*
+
+        /// Each entry point of the table: its name, its function, its arity, and the function
+        /// called on words taken in order from a slice, missing ones 0 (#766: every entry point
+        /// is called with words the generated code never passes).
+        #[cfg(test)]
+        fn exported_table() -> Vec<(&'static str, &'static str, usize, fn(&[i64]) -> i64)> {
+            vec![$(
+                (
+                    stringify!($name),
+                    stringify!($function),
+                    0 $(+ { let _ = stringify!($arg); 1 })*,
+                    |words: &[i64]| {
+                        let next = std::cell::Cell::new(0_usize);
+                        let _ = (words, &next);
+                        $function($({
+                            let _ = stringify!($arg);
+                            let at = next.get();
+                            next.set(at + 1);
+                            words.get(at).copied().unwrap_or(0)
+                        }),*)
+                    },
+                ),
+            )*]
         }
-    )*};
+    };
 }
 
 exported! {
@@ -734,5 +760,264 @@ mod tests {
                 .contains("a task of `together` holds no compiled lambda that takes its arguments"),
             "{stderr}"
         );
+    }
+
+    /// A xorshift generator, so that the words are the same on every run (#766).
+    fn xorshift(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    /// One call of the word tests: the entry point's name, its function on words, the words.
+    type WordCase = (&'static str, fn(&[i64]) -> i64, Vec<i64>);
+
+    /// The calls of the word tests (#766), in a fixed order: every entry point of the table but
+    /// the host operations, whose effects (output, files, network) need a run's grants and are
+    /// tested with them. All tuples of `pool` for an arity of two or less, and `drawn` tuples
+    /// drawn with a fixed seed above. `range` takes its words from `bounds` when given.
+    fn word_cases(pool: &[i64], bounds: Option<&[i64]>, drawn: usize) -> Vec<WordCase> {
+        let mut state: u64 = 0x766;
+        let mut cases = Vec::new();
+        for (name, function, arity, call) in super::exported_table() {
+            if function.starts_with("host") {
+                continue;
+            }
+            let words = match bounds {
+                Some(bounds) if name == "una_rt_range" => bounds,
+                _ => pool,
+            };
+            let mut tuples: Vec<Vec<i64>> = Vec::new();
+            match arity {
+                0 => tuples.push(Vec::new()),
+                1 => tuples.extend(words.iter().map(|&a| vec![a])),
+                2 => {
+                    for &a in words {
+                        tuples.extend(words.iter().map(|&b| vec![a, b]));
+                    }
+                }
+                _ => {
+                    for _ in 0..drawn {
+                        tuples.push(
+                            (0..arity)
+                                .map(|_| {
+                                    let pick = xorshift(&mut state) % words.len() as u64;
+                                    words[usize::try_from(pick).unwrap_or(0)]
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+            }
+            cases.extend(tuples.into_iter().map(|tuple| (name, call, tuple)));
+        }
+        cases
+    }
+
+    /// The words of the word tests: boundary words, live handles of each kind, a freed handle,
+    /// handles one slot off a live one, and 16 words of a fixed seed. Made in the same order
+    /// on every call, so a run made again holds the same words.
+    fn word_pool() -> Vec<i64> {
+        use num_bigint::BigInt;
+
+        let int = |value: i64| values::int_word(&BigInt::from(value));
+        let freed = values::text_word("freed".to_owned());
+        values::release(freed);
+        let text = values::text_literal("abc");
+        let some_list = values::append(values::list(), text);
+        let mut pool = vec![
+            0,
+            1,
+            2,
+            3,
+            -1,
+            -2,
+            i64::MIN,
+            i64::MAX,
+            i64::MIN + 1,
+            i64::MAX - 1,
+            1 << 32,
+            1 << 62,
+            -(1 << 62),
+            // A handle beyond the table, one of a freed slot, and those one slot off a live one.
+            1 << 40,
+            freed,
+            some_list.wrapping_add(2),
+            some_list.wrapping_sub(2),
+            int(7),
+            int(-7),
+            values::int_word(&(BigInt::from(i64::MAX) * 4)),
+            text,
+            values::text_word(String::new()),
+            values::list(),
+            some_list,
+            values::data(3),
+            values::map_empty(),
+        ];
+        let mut state: u64 = 0x0766_0766;
+        for _ in 0..16 {
+            pool.push(xorshift(&mut state).cast_signed());
+        }
+        pool
+    }
+
+    #[test]
+    fn every_entry_point_takes_any_word_without_a_panic() {
+        // #766, step 1: a lowering bug passes the runtime a word it never should. Each entry
+        // point of the table must then return a word or count a fault, never panic, and the
+        // runtime must stay usable. Outside a run, an abort returns 0 rather than ending the
+        // process (`runtime::abort_at`), so every call returns here; `range` gets small bounds,
+        // since outside a run no memory budget bounds its list. The same calls inside a run
+        // are `every_entry_point_takes_any_word_in_a_run`.
+        std::thread::spawn(|| {
+            use num_bigint::BigInt;
+
+            let int = |value: i64| values::int_word(&BigInt::from(value));
+            let pool = word_pool();
+            let small: Vec<i64> = (-3..=3).map(int).collect();
+            let cases = word_cases(&pool, Some(&small), 600);
+            assert!(cases.len() > 10_000, "{}", cases.len());
+            let mut failures = Vec::new();
+            for (name, call, tuple) in &cases {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(tuple)));
+                if result.is_err() {
+                    failures.push(format!("{name}({tuple:?})"));
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{} panics:\n{}",
+                failures.len(),
+                failures.join("\n")
+            );
+            // The runtime still works.
+            let text = values::text_literal("still");
+            assert_eq!(values::text_len(text), int(5));
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// The scenario of [`every_entry_point_takes_any_word_in_a_run`], run in a process of its own
+    /// since an abort ends the process.
+    const WORDS_IN_A_RUN: &str = "ffi::tests::words_in_a_run_scenario";
+
+    /// Where the parent test writes the first call the scenario makes, by the parent's process.
+    fn words_from(parent: u32) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("una-rt-words-{parent}"))
+    }
+
+    /// What the scenario prints before each call, and once all are made.
+    const WORDS_CALL: &str = "una-rt words: call";
+    const WORDS_DONE: &str = "una-rt words: done";
+
+    #[test]
+    #[ignore = "run by `every_entry_point_takes_any_word_in_a_run`, in a process of its own"]
+    fn words_in_a_run_scenario() {
+        let from: usize = std::fs::read_to_string(words_from(std::os::unix::process::parent_id()))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+            .unwrap_or(0);
+        let args = ["--max-memory".to_owned(), "8".to_owned()];
+        runtime::start(&args, SET_META, move || {
+            let pool = word_pool();
+            // Fewer drawn tuples than outside a run: each call that ends the run costs a process.
+            let cases = word_cases(&pool, None, 100);
+            for (index, (name, call, tuple)) in cases.iter().enumerate().skip(from) {
+                eprintln!("{WORDS_CALL} {index} {name}{tuple:?}");
+                call(tuple);
+            }
+            // The run still works.
+            let text = values::text_literal("still");
+            assert_eq!(values::text_len(text), values::int_word(&5.into()));
+            eprintln!("{WORDS_DONE} {}", cases.len());
+            0
+        });
+    }
+
+    #[test]
+    fn every_entry_point_takes_any_word_in_a_run() {
+        // #766, step 1, inside a started run, with its heap, its sites and a memory budget of
+        // 8 MiB: the same calls, `range` with every word. A call either returns, or ends the
+        // run as the model says (exit code 1 or 3 with its diagnostic: U6003 over the budget,
+        // U8001 for a `set` outside its list), and the next run resumes after it. A panic, a
+        // signal, another exit, or a run that does not end within `DEADLINE` (a call that hangs,
+        // itself a defect) is a failure that names the call, its entry point and its words.
+        // The slowest run takes about 0.7 s on a recent machine, so a minute leaves room for
+        // slower machines and for Linux under emulation.
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+        let from = words_from(std::process::id());
+        let log = std::env::temp_dir().join(format!("una-rt-words-{}.log", std::process::id()));
+        let mut next = 0_usize;
+        let mut ended = 0_usize;
+        let mut failures = Vec::new();
+        let mut slowest = std::time::Duration::ZERO;
+        loop {
+            std::fs::write(&from, next.to_string()).unwrap();
+            // The child's stderr goes to a file, which never blocks it as a full pipe would.
+            let file = std::fs::File::create(&log).unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    WORDS_IN_A_RUN,
+                    "--nocapture",
+                    "--test-threads",
+                    "1",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(file)
+                .spawn()
+                .unwrap();
+            let started = std::time::Instant::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if started.elapsed() > DEADLINE {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            };
+            slowest = slowest.max(started.elapsed());
+            let stderr = std::fs::read_to_string(&log).unwrap_or_default();
+            if stderr.contains(WORDS_DONE) {
+                break;
+            }
+            let last = stderr
+                .lines()
+                .filter_map(|line| line.strip_prefix(WORDS_CALL))
+                .filter_map(|rest| {
+                    let mut parts = rest.trim().splitn(2, ' ');
+                    let index: usize = parts.next()?.parse().ok()?;
+                    Some((index, parts.next().unwrap_or("").to_owned()))
+                })
+                .next_back();
+            let Some((last, call)) = last else {
+                failures.push(format!("no call made from {next}: {stderr}"));
+                break;
+            };
+            match status {
+                None => failures.push(format!("call {last}: {call}: hung for {DEADLINE:?}")),
+                Some(status) => {
+                    let in_model = matches!(status.code(), Some(1 | 3))
+                        && (stderr.contains("U6003") || stderr.contains("U8001"))
+                        && !stderr.contains("panicked");
+                    if !in_model {
+                        failures.push(format!("call {last}: {call}: {status:?}: {stderr}"));
+                    }
+                }
+            }
+            ended += 1;
+            next = last + 1;
+        }
+        let _ = std::fs::remove_file(&from);
+        let _ = std::fs::remove_file(&log);
+        eprintln!("{ended} runs ended in the model; the slowest took {slowest:?}");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(ended < 5_000, "{ended} runs ended");
     }
 }
