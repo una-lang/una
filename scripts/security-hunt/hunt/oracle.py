@@ -171,7 +171,18 @@ def accepts_table(core_doc):
     return table
 
 
-def project(doc, observer, table):
+REDACTED = re.compile(r"<redacted:([A-Za-z]+)")
+# Fields of a run document that may differ between two runs of one program: none. Two runs whose
+# documents differ in anything are nondeterministic, an error.
+RUN_VARYING_FIELDS = ()
+
+
+def above(level, observer):
+    """Whether `level` is above `observer`; a level the oracle does not know is (fail closed)."""
+    return level not in LEVELS or LEVELS.index(level) > LEVELS.index(observer)
+
+
+def project(doc, observer, table, keep_outcome=False):
     """What an observer at `observer` sees of one run (docs/release-gates.md, the `hunt` gate):
     - `status`, every `output` line in order (`Console.print` accepts `public`), and `failure`
       (its variant and its `public` fields);
@@ -181,8 +192,12 @@ def project(doc, observer, table):
       `outcome` is the host's answer, an input of the run, not something the program sends. For
       `Keys.hmac` only `key_name`, its one sink, is kept of the arguments. An event with no
       operation (a task's cancellation, `spec/19 §7`) is kept whole but for `seq`.
+    `violations` lists the visible events whose sink arguments the run redacted at a level above
+    the observer: the run itself says the argument is above what the operation accepts, so the
+    checks let a labeled value reach the sink, a finding whatever the other variants do.
+    `keep_outcome` keeps outcomes too, for the liveness view at the literal's own level.
     Raises `UnknownOperation` for an event of an operation `table` does not have."""
-    trace = []
+    trace, violations = [], []
     for ev in doc.get("trace", []):
         if "capability" not in ev and "op" not in ev:
             trace.append({k: v for k, v in ev.items() if k != "seq"})
@@ -192,9 +207,15 @@ def project(doc, observer, table):
             raise UnknownOperation(f"an event of {key[0]}.{key[1]}, whose accepts is not known")
         if not sees(observer, table[key]):
             continue
-        view = {k: v for k, v in ev.items() if k not in ("seq", "outcome")}
+        drop = ("seq",) if keep_outcome else ("seq", "outcome")
+        view = {k: v for k, v in ev.items() if k not in drop}
         if key in SINK_ARGS and isinstance(view.get("args"), dict):
             view["args"] = {k: v for k, v in view["args"].items() if k in SINK_ARGS[key]}
+        for name, value in sorted((view.get("args") or {}).items()):
+            for lvl in REDACTED.findall(str(value)):
+                if above(lvl, observer):
+                    violations.append(f"{key[0]}.{key[1]}({name}) is <redacted:{lvl}> at a sink "
+                                      f"{observer} sees")
         trace.append(view)
     return {
         "status": doc.get("status"),
@@ -202,12 +223,13 @@ def project(doc, observer, table):
         "failure": doc.get("failure"),
         "diagnostics": [[d.get("severity"), d.get("code")] for d in doc.get("diagnostics", [])],
         "trace": trace,
+        "violations": violations,
     }
 
 
-def observe(run, observers, table):
-    """One run's end: (`complete`, {observer: view}), (`abort`, codes), (`rejected`, codes), or
-    (`error`, why)."""
+def observe(run, observers, table, live_level):
+    """One run's end: (`complete`, {"views": {observer: view}, "live": view at `live_level`}),
+    (`abort`, codes), (`rejected`, codes), or (`error`, why)."""
     if run.timed_out:
         return ("abort", ["timeout"])
     try:
@@ -218,18 +240,20 @@ def observe(run, observers, table):
     if not isinstance(doc, dict) or doc.get("schema") != "una.run/1":
         return ("error", f"exit {run.code}, not a una.run/1 document")
     status = doc.get("status")
-    codes = sorted({d.get("code") for d in doc.get("diagnostics", [])
-                    if d.get("severity") == "error"})
+    diags = doc.get("diagnostics", [])
+    codes = sorted({d.get("code") for d in diags if d.get("severity") == "error"})
     if status == "rejected" and run.code == 1:
         return ("rejected", codes)
-    complete = (status == "ok" and run.code == 0) or \
-        (status == "failed" and run.code == 1 and doc.get("failure"))
-    if status == "ok" and run.code == 0 and doc.get("diagnostics"):
-        return ("error", "an ok run with diagnostics: "
-                         + ", ".join(d.get("code", "?") for d in doc["diagnostics"]))
-    if complete:
+    if status == "ok" and run.code == 0 and diags:
+        return ("error", "an ok run with diagnostics: " + ", ".join(d.get("code", "?") for d in diags))
+    if status == "failed" and any(d.get("severity") != "error" for d in diags):
+        return ("error", "a failed run with diagnostics other than errors: "
+                         + ", ".join(d.get("code", "?") for d in diags))
+    if (status == "ok" and run.code == 0) or (status == "failed" and run.code == 1
+                                              and doc.get("failure")):
         try:
-            return ("complete", {o: project(doc, o, table) for o in observers})
+            return ("complete", {"views": {o: project(doc, o, table) for o in observers},
+                                 "live": project(doc, live_level, table, keep_outcome=True)})
         except UnknownOperation as e:
             return ("error", str(e))
     if status == "aborted" and run.code == 1 and codes and set(codes) <= ABORT_CODES:
@@ -237,33 +261,51 @@ def observe(run, observers, table):
     return ("error", f"status {status!r}, exit {run.code}, codes {codes}")
 
 
-def judge(base, other):
-    """The verdict on two variants' ends: `same`, `leak`, `termination` or `error`. Two complete
-    runs are compared at every observer; a difference at any of them is a leak."""
-    if base[0] == "error" or other[0] == "error":
+def judge(ref, other):
+    """The verdict on a variant's end `other` against `ref`, the program's first complete end
+    (the base's, or the first variant's that completed), or None when no end has completed yet:
+    - `same` or `leak`: two complete ends, compared at every observer; a difference at any is a
+      leak, whatever the base did;
+    - `termination`: one side completes and the other aborts (outside T6, `spec/07 §1`);
+    - `abort`: no end has completed yet and this one aborts too;
+    - `error`: an error on either side."""
+    if other[0] == "error" or (ref is not None and ref[0] == "error"):
         return "error"
-    if base[0] == "complete" and other[0] == "complete":
-        return "same" if base[1] == other[1] else "leak"
-    if base[0] == "abort" and other[0] == "abort":
-        return "same"
-    if {base[0], other[0]} == {"complete", "abort"}:
-        return "termination"
+    if other[0] == "complete":
+        if ref is None:
+            return "first"
+        return "same" if ref[1]["views"] == other[1]["views"] else "leak"
+    if other[0] == "abort":
+        return "abort" if ref is None else "termination"
     return "error"
 
 
-def leaking_observers(base, other):
+def leaking_observers(ref, other):
     """The observers at which two complete ends differ."""
-    if base[0] != "complete" or other[0] != "complete":
+    if ref[0] != "complete" or other[0] != "complete":
         return []
-    return sorted(o for o in base[1] if base[1][o] != other[1].get(o))
+    a, b = ref[1]["views"], other[1]["views"]
+    return sorted(o for o in a if a[o] != b.get(o))
+
+
+def violations(end):
+    """The redacted sinks a complete end shows its observers."""
+    if end[0] != "complete":
+        return []
+    return sorted({v for view in end[1]["views"].values() for v in view.get("violations", [])})
+
+
+def literal_level(vary):
+    """The lowest level among a program's varied literals; a level the oracle does not know counts
+    as `restricted`."""
+    return min((level_of(p["label"]) if level_of(p["label"]) in LEVELS else "restricted"
+                for p in vary), key=LEVELS.index)
 
 
 def observers_for(vary):
     """The observers a program's varied literals are above: every one of OBSERVERS strictly below
-    the lowest level among them. A level the oracle does not know counts as `restricted`'s, so both
-    observers are tested."""
-    lowest = min((LEVELS.index(level_of(p["label"])) if level_of(p["label"]) in LEVELS
-                  else len(LEVELS) - 1) for p in vary)
+    the lowest level among them."""
+    lowest = LEVELS.index(literal_level(vary))
     return [o for o in OBSERVERS if LEVELS.index(o) < lowest]
 
 
@@ -281,33 +323,53 @@ def export_core(una, pkg, root, timeout):
     return doc, None
 
 
-def run_twice(una, files, name, root, timeout, observers, table):
-    """Writes the variant, runs it twice, and returns its end, or an error when the two runs
-    differ."""
-    p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files, variant=name)
-    pkg = p.write(root)
-    ends = []
-    for _ in range(2):
-        r = sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg, writable=root,
-                        timeout=timeout)
-        ends.append(observe(r, observers, table))
-    if ends[0] != ends[1]:
+def raw(run):
+    """What two runs of one variant must share: every byte of the run document, its exit code and
+    whether it timed out, minus RUN_VARYING_FIELDS (none)."""
+    try:
+        doc = json.loads(run.stdout)
+        if isinstance(doc, dict):
+            doc = {k: v for k, v in doc.items() if k not in RUN_VARYING_FIELDS}
+    except ValueError:
+        doc = run.stdout
+    return (run.timed_out, run.code, doc)
+
+
+def run_twice(una, files, name, root, timeout, observers, table, live_level):
+    """Runs the variant twice, each run in a fresh directory of its own (its package, home and
+    temporary files), and returns its end; an error when the two runs' documents differ."""
+    runs = []
+    for k in range(2):
+        rundir = sandbox.fresh_dir(root, f"{name}-r{k}-")
+        p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
+                    variant=name)
+        pkg = p.write(rundir)
+        runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg,
+                                writable=rundir, timeout=timeout))
+    if raw(runs[0]) != raw(runs[1]):
         return ("error", "nondeterministic: two runs of one variant differ")
-    return ends[0]
+    return observe(runs[0], observers, table, live_level)
 
 
-def oracle(rows, una, root, timeout, out, rebuild):
+def oracle(rows, una, root, timeout, out, rebuild, plant=None):
     """Runs the oracle on every manifest row with varied literals. `rebuild` turns a row into its
-    program (`drivers.rebuild`). Writes one result per program to `out` and returns the tally."""
+    program (`drivers.rebuild`); `plant`, for the gate's canaries only, rewrites the table of
+    `accepts`. Writes one result per program to `out` and returns the tally.
+
+    A program's result counts `compared`, its complete-against-complete comparisons, and says
+    whether it is `live`: whether two of its complete ends differ at the literal's own level, where
+    every event below it is visible with its outcome."""
     tally = Counter()
     for row in rows:
         if not row.get("vary"):
             continue
         prog = rebuild(row)
         observers = observers_for(prog.vary)
+        live_level = literal_level(prog.vary)
         result = {"name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
                   "class": prog.cls, "observers": observers, "variants": [], "finding": False,
-                  "error": None, "termination": []}
+                  "error": None, "termination": [], "violations": [], "compared": 0,
+                  "live": False}
         if not observers:
             result["set_aside"] = "no observer below the varied literal"
         elif releases_to_public(prog.files):
@@ -320,9 +382,9 @@ def oracle(rows, una, root, timeout, out, rebuild):
                       variant=prog.name + "-core").write(root)
         core, why = export_core(una, pkg, root, timeout)
         if core is None:
-            # A program the checks reject has no complete export: the base run below says so.
+            # A program the checks reject has no complete export: the base run says so.
             base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers,
-                             dict((k, {v}) for k, v in HOST_ACCEPTS.items()))
+                             {k: {v} for k, v in HOST_ACCEPTS.items()}, live_level)
             if base[0] == "rejected":
                 result["set_aside"] = "rejected by the checks: " + ", ".join(base[1])
                 tally["set aside (rejected)"] += 1
@@ -332,34 +394,57 @@ def oracle(rows, una, root, timeout, out, rebuild):
             out.write(json.dumps(result, sort_keys=True) + "\n")
             continue
         table = accepts_table(core)
-        base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers, table)
+        if plant is not None:
+            table = plant(table)
+        base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers, table,
+                         live_level)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
             result["error"] = "base: " + base[1]
+        ref = base if base[0] == "complete" else None
+        completes = [base] if base[0] == "complete" else []
         for i, pos in enumerate(prog.vary):
             if result["error"]:
                 break
             for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
                 files = substitute(prog.files, pos, text)
                 end = run_twice(una, files, f"{prog.name}-v{i}-{j}", root, timeout, observers,
-                                table)
+                                table, live_level)
                 if end[0] == "rejected":
                     end = ("error", "a variant is rejected by the checks: " + ", ".join(end[1]))
-                verdict = judge(base, end)
+                verdict = judge(ref, end)
                 entry = {"position": i, "value": text, "verdict": verdict}
+                if verdict == "first":
+                    # The first complete end: the reference of the rest. Against an aborted
+                    # base, the pair is a termination pair.
+                    ref = end
+                    if base[0] == "abort":
+                        verdict = entry["verdict"] = "termination"
+                if verdict in ("same", "leak"):
+                    result["compared"] += 1
                 if verdict == "leak":
-                    entry["observers"] = leaking_observers(base, end)
+                    entry["observers"] = leaking_observers(ref, end)
                     result["finding"] = True
+                if end[0] == "complete":
+                    completes.append(end)
                 result["variants"].append(entry)
                 tally["variant " + verdict] += 1
                 if verdict == "termination":
+                    other = base if end[0] == "complete" else ref
                     result["termination"].append(
-                        {"value": text, "base": base[0] if base[0] == "complete" else base[1],
+                        {"value": text,
+                         "base": other[0] if other[0] == "complete" else other[1],
                          "variant": end[0] if end[0] == "complete" else end[1]})
                 elif verdict == "error":
-                    result["error"] = end[1] if end[0] == "error" else f"ends {base[0]} and {end[0]}"
+                    result["error"] = end[1] if end[0] == "error" else f"ends {ref[0] if ref else None} and {end[0]}"
                     break
+        found = sorted({v for e in completes for v in violations(e)})
+        if found:
+            result["violations"] = found
+            result["finding"] = True
+        lives = [e[1]["live"] for e in completes]
+        result["live"] = any(x != lives[0] for x in lives[1:])
         tally["program " + ("error" if result["error"] else
                             "finding" if result["finding"] else "compared")] += 1
         out.write(json.dumps(result, sort_keys=True) + "\n")

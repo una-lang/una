@@ -267,11 +267,13 @@ gate_hunt() {
     # runs with -B, so the clone gets no bytecode files and stays exact.
     local hunt=$OUT/hunt
     rm -rf "${hunt:?}"
+    # The output directory and the commit go in as positional arguments, never spliced into the
+    # script's text.
     run hunt sh -c '
         [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
         una=$(pwd)/target/release/una
         cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \
-            --una "$una" --out "'"$hunt"'" --tip "'"$SHA"'"'
+            --una "$una" --out "$1" --tip "$2"' sh "$hunt" "$SHA"
 }
 
 gate_site() {
@@ -350,7 +352,8 @@ s = json.load(open(sys.argv[1]))
 print("- Verdict: %s; seed %s, %s programs, una tip `%s`" % (s["verdict"], s["seed"], s["sizes"]["programs"], s["tip"]))
 for key in ("reject", "keep", "oracle"):
     print("- %s: %s of %s cases judged" % (key, s["sizes"][key]["judged"], s["sizes"][key]["expected"]))
-print("- Oracle variants compared: %s; programs set aside: %s" % (s["sizes"]["oracle"]["variants_compared"], s["sizes"]["oracle"]["set_aside"]))
+o = s["sizes"]["oracle"]
+print("- Oracle: %s programs and %s variants compared, %s live, %s programs set aside" % (o["programs_compared"], o["variants_compared"], o["live"], o["set_aside"]))
 print("- Termination pairs (outside the noninterference guarantee, recorded): %s" % s["termination_pairs"]["count"])
 print("- Canaries: " + ", ".join("%s %s" % (k, "caught" if v else "missed") for k, v in sorted(s["canaries"].items())))
 print("- Findings: %s; errors: %s" % (len(s["findings"]), len(s["errors"])))

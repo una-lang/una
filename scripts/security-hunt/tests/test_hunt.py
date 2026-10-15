@@ -639,6 +639,11 @@ def run_doc(status, output=(), failure=None, diagnostics=(), trace=()):
                        "trace": list(trace)})
 
 
+def done(views, live=None):
+    """A complete end with these observer views."""
+    return ("complete", {"views": views, "live": live or {}})
+
+
 def diag(code, severity="error"):
     return {"severity": severity, "code": code, "message": "m",
             "primary": {"file": "src/a.una", "start": {"line": 1, "col": 1}}}
@@ -722,8 +727,8 @@ class Oracle(unittest.TestCase):
         table, a, b = self.h3({"level": "internal", "categories": [], "symbols": []})
         self.assertEqual(self.views(a, "public", table), self.views(b, "public", table))
         self.assertNotEqual(self.views(a, "internal", table), self.views(b, "internal", table))
-        base = ("complete", {o: self.views(a, o, table) for o in ("public", "internal")})
-        other = ("complete", {o: self.views(b, o, table) for o in ("public", "internal")})
+        base = done({o: self.views(a, o, table) for o in ("public", "internal")})
+        other = done({o: self.views(b, o, table) for o in ("public", "internal")})
         self.assertEqual(oracle.judge(base, other), "leak")
         self.assertEqual(oracle.leaking_observers(base, other), ["internal"])
 
@@ -731,8 +736,7 @@ class Oracle(unittest.TestCase):
         table, _, _ = self.h3({"level": "secret", "categories": [], "symbols": []})
         a = self.views([EVENT], "public", table, output=["yes"])
         b = self.views([], "public", table, output=[])
-        self.assertEqual(oracle.judge(("complete", {"public": a}), ("complete", {"public": b})),
-                         "leak")
+        self.assertEqual(oracle.judge(done({"public": a}), done({"public": b})), "leak")
 
     def test_an_unclassified_accepts_stays_visible(self):
         # No clause, an unknown level, a public label with categories, a missing level: each is
@@ -749,7 +753,7 @@ class Oracle(unittest.TestCase):
 
     def test_an_event_of_an_unknown_operation_is_an_error(self):
         doc = run_doc("ok", ["a"], trace=[dict(EVENT, capability="Ghost", op="boo")])
-        end = oracle.observe(Run(0, doc, "", False, 0.1), ["public"], self.TABLE)
+        end = oracle.observe(Run(0, doc, "", False, 0.1), ["public"], self.TABLE, "secret")
         self.assertEqual(end[0], "error")
         self.assertIn("Ghost.boo", end[1])
 
@@ -799,7 +803,8 @@ class Oracle(unittest.TestCase):
 
     def test_observe_fails_closed(self):
         def end(code, text, timed_out=False):
-            return oracle.observe(Run(code, text, "", timed_out, 0.1), ["public"], self.TABLE)[0]
+            return oracle.observe(Run(code, text, "", timed_out, 0.1), ["public"], self.TABLE,
+                                  "secret")[0]
         self.assertEqual(end(0, run_doc("ok", ["a"])), "complete")
         self.assertEqual(end(1, run_doc("failed", failure={"variant": "Halt", "fields": {}},
                                         diagnostics=[diag("U6001")])), "complete")
@@ -814,19 +819,22 @@ class Oracle(unittest.TestCase):
         self.assertEqual(end(0, run_doc("ok", diagnostics=[diag("U0001", "warning")])), "error")
         self.assertEqual(end(1, run_doc("ok")), "error")
         self.assertEqual(end(1, run_doc("failed")), "error")
+        # A failed run with a diagnostic other than an error is an error too.
+        self.assertEqual(end(1, run_doc("failed", failure={"variant": "Halt", "fields": {}},
+                                        diagnostics=[diag("U6001"), diag("U0001", "warning")])),
+                         "error")
         self.assertEqual(end(0, "not json"), "error")
         self.assertEqual(end(-6, ""), "error")
         self.assertEqual(end(0, json.dumps({"schema": "una.check/1"})), "error")
 
     def test_judge(self):
-        a = ("complete", {"public": {"output": ["1"]}})
-        b = ("complete", {"public": {"output": ["2"]}})
+        a, b = done({"public": {"output": ["1"]}}), done({"public": {"output": ["2"]}})
         abort = ("abort", ["U6003"])
         self.assertEqual(oracle.judge(a, a), "same")
         self.assertEqual(oracle.judge(a, b), "leak")
         self.assertEqual(oracle.judge(a, abort), "termination")
-        self.assertEqual(oracle.judge(abort, a), "termination")
-        self.assertEqual(oracle.judge(abort, ("abort", ["timeout"])), "same")
+        self.assertEqual(oracle.judge(None, a), "first")
+        self.assertEqual(oracle.judge(None, abort), "abort")
         self.assertEqual(oracle.judge(a, ("error", "x")), "error")
         self.assertEqual(oracle.judge(a, ("rejected", [])), "error")
         # ok against failed is a difference in what is public, so a leak.
@@ -834,8 +842,103 @@ class Oracle(unittest.TestCase):
         failed = oracle.project(json.loads(run_doc("failed", failure={"variant": "H",
                                                                        "fields": {}})),
                                 "public", self.TABLE)
-        self.assertEqual(oracle.judge(("complete", {"public": ok}),
-                                      ("complete", {"public": failed})), "leak")
+        self.assertEqual(oracle.judge(done({"public": ok}), done({"public": failed})), "leak")
+
+    def test_a_redacted_argument_at_a_visible_sink_is_a_finding_by_itself(self):
+        table = oracle.accepts_table(self.core(("Vault", "note", None)))
+        ev = {"seq": 0, "instance": "with:quiet#1", "capability": "Vault", "op": "note",
+              "args": {"x": "<redacted:secret>"}, "outcome": {"kind": "ok", "value": "unit"}}
+        self.assertEqual(len(self.views([ev], "public", table)["violations"]), 1)
+        # Inside a rendered value, too.
+        nested = dict(ev, args={"x": "Card(n: <redacted:confidential>)"})
+        self.assertEqual(len(self.views([nested], "internal", table)["violations"]), 1)
+        # An `internal` argument at an operation accepting `internal`, seen at `internal`: fine.
+        table = oracle.accepts_table(self.core(("Vault", "note", {"level": "internal"})))
+        fine = dict(ev, args={"x": "<redacted:internal>"})
+        self.assertEqual(self.views([fine], "internal", table)["violations"], [])
+        self.assertEqual(self.views([fine], "public", table)["trace"], [])
+        # `Keys.hmac`'s data is not a sink, and is dropped first.
+        hmac = {"seq": 0, "instance": "host:Keys", "capability": "Keys", "op": "hmac",
+                "args": {"key_name": "\"k\"", "data": "<redacted:secret>"},
+                "outcome": {"kind": "ok", "value": "hashed:00"}}
+        self.assertEqual(self.views([hmac])["violations"], [])
+        self.assertEqual(len(self.views([dict(hmac, args={"key_name": "<redacted:secret>"})])
+                             ["violations"]), 1)
+
+    def drive(self, ends, live=None):
+        """Runs `oracle.oracle` on one program with one Int literal, whose base and variants end as
+        `ends` says (in order), with no compiler: run_twice and export_core are replaced."""
+        prog = gate.canary_oracle()
+        calls = iter(ends)
+        saved = oracle.run_twice, oracle.export_core
+        oracle.export_core = lambda *a: ({"complete": True, "modules": []}, None)
+        oracle.run_twice = lambda *a: next(calls)
+        try:
+            buf = io.StringIO()
+            with tempfile.TemporaryDirectory() as tmp:
+                oracle.oracle([dict(prog.manifest(), digest=prog.digest())], "una", tmp, 1, buf,
+                              lambda row: prog)
+        finally:
+            oracle.run_twice, oracle.export_core = saved
+        return json.loads(buf.getvalue())
+
+    def test_two_complete_variants_are_compared_whatever_the_base_did(self):
+        abort = ("abort", ["U6003"])
+        ends = [abort, done({"public": {"output": ["A"]}}), done({"public": {"output": ["B"]}}),
+                done({"public": {"output": ["A"]}}), abort, abort]
+        row = self.drive(ends)
+        self.assertTrue(row["finding"])
+        self.assertEqual([v["verdict"] for v in row["variants"]],
+                         ["termination", "leak", "same", "termination", "termination"])
+        # Only complete-against-complete comparisons count.
+        self.assertEqual(row["compared"], 2)
+        self.assertEqual(len(row["termination"]), 3)
+
+    def test_aborts_alone_compare_nothing(self):
+        abort = ("abort", ["U6003"])
+        row = self.drive([abort] * 6)
+        self.assertEqual(row["compared"], 0)
+        self.assertFalse(row["finding"])
+        self.assertEqual({v["verdict"] for v in row["variants"]}, {"abort"})
+
+    def test_liveness_is_a_difference_at_the_literals_level(self):
+        same = {"public": {"output": ["x"]}}
+        ends = [done(same, live={"o": 1})] + [done(same, live={"o": 2})] * 5
+        row = self.drive(ends)
+        self.assertFalse(row["finding"])
+        self.assertTrue(row["live"])
+        row = self.drive([done(same, live={"o": 1})] * 6)
+        self.assertFalse(row["live"])
+
+    def test_a_redacted_sink_in_any_complete_end_is_a_finding(self):
+        bad = {"public": {"output": ["x"], "violations": ["Vault.note(x) is <redacted:secret>"]}}
+        row = self.drive([done(bad)] * 6)
+        self.assertTrue(row["finding"])
+        self.assertEqual(row["violations"], ["Vault.note(x) is <redacted:secret>"])
+
+    def test_two_runs_of_a_variant_must_match_byte_for_byte(self):
+        doc = run_doc("ok", ["a"])
+        runs = iter([Run(0, doc, "", False, 0.1), Run(0, doc.replace('"a"', '"b"'), "", False, 0.2)])
+        dirs = []
+        saved = oracle.sandbox.run, oracle.sandbox.fresh_dir
+        oracle.sandbox.run = lambda argv, cwd, writable, timeout: next(runs)
+
+        def fresh(root, prefix):
+            dirs.append(prefix)
+            return tempfile.mkdtemp(prefix=prefix, dir=tmp)
+        oracle.sandbox.fresh_dir = fresh
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                end = oracle.run_twice("una", {"una.toml": "x\n"}, "p", tmp, 1, ["public"],
+                                       self.TABLE, "secret")
+        finally:
+            oracle.sandbox.run, oracle.sandbox.fresh_dir = saved
+        self.assertEqual(end, ("error", "nondeterministic: two runs of one variant differ"))
+        self.assertEqual(len(dirs), 2)
+        self.assertNotEqual(dirs[0], dirs[1])
+        # Elapsed time is not part of the document, so it does not count.
+        self.assertEqual(oracle.raw(Run(0, doc, "", False, 0.1)), oracle.raw(Run(0, doc, "", False, 9)))
+        self.assertEqual(oracle.RUN_VARYING_FIELDS, ())
 
 
 class Gate(unittest.TestCase):
@@ -865,6 +968,36 @@ class Gate(unittest.TestCase):
         # The literal is public in Una: no label on its binding.
         self.assertEqual(line.strip(), "let x: Int = 5")
         self.assertTrue(oracle.values(pos["type"], pos["literal"], orc.files))
+
+    def test_caught_needs_exactly_the_planted_fault(self):
+        def row(observers=(), violations=(), **kw):
+            return dict({"finding": bool(observers or violations), "error": None,
+                         "variants": [{"observers": list(observers)}],
+                         "violations": list(violations)}, **kw)
+        self.assertTrue(gate.caught("oracle", row(["public"])))
+        self.assertTrue(gate.caught("internal", row(["internal"])))
+        self.assertFalse(gate.caught("internal", row(["internal", "public"])))
+        self.assertFalse(gate.caught("internal", row()))
+        self.assertTrue(gate.caught("redacted", row(violations=["v"])))
+        self.assertFalse(gate.caught("redacted", row(["public"], ["v"])))
+        self.assertFalse(gate.caught("oracle", row(["public"], error="boom")))
+        self.assertFalse(gate.caught("oracle", row(["public"], set_aside="x")))
+
+    def test_the_canary_programs_carry_their_planted_shapes(self):
+        internal, redacted = gate.canary_internal(), gate.canary_redacted()
+        for p in (internal, redacted):
+            text = p.files["src/app/main.una"]
+            self.assertIn("accepts secret", text)
+            self.assertEqual([v["label"] for v in p.vary], ["secret"])
+        self.assertIn("if flag", internal.files["src/app/main.una"])
+        self.assertIn("@vault.note(n)", redacted.files["src/app/main.una"])
+        self.assertEqual(gate.planted("internal")({})[("Vault", "note")], {"internal"})
+
+    def test_the_gate_refuses_a_directory_that_is_not_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "old"), "w").close()
+            with self.assertRaises(SystemExit):
+                gate.run("una", tmp, "0" * 40)
 
     def test_shards_keep_row_order(self):
         rows = [{"n": i} for i in range(10)]

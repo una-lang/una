@@ -1,5 +1,5 @@
 """The `hunt` release gate (docs/release-gates.md): a fixed, seeded run of the generators through
-the must-reject and must-keep drivers and the two-run oracle, with two canaries.
+the must-reject and must-keep drivers and the two-run oracle, with four canaries.
 
 It fails closed. The gate passes only when all of these hold:
 - no must-reject program is accepted, no refactor turns a rejected program into an accepted one,
@@ -7,8 +7,13 @@ It fails closed. The gate passes only when all of these hold:
 - every check and every run ends in a known way (no timeout of `una check`, no internal error,
   no unreadable output, no nondeterministic run);
 - each driver judged exactly the cases the fixed run generates, and none of those counts is zero;
-- both canaries are caught: a must-reject program that is in fact accepted, and a program whose
-  printed public literal the manifest marks as secret.
+  the oracle's complete-against-complete comparisons, the programs that have one, and the programs
+  whose variants differ at the literal's own level (liveness) meet their floors;
+- every canary is caught (`CANARIES`): a must-reject program that is in fact accepted; a program
+  whose printed public literal the manifest marks as secret; an operation planted as accepting
+  `internal`, reached under a secret branch, which only the `internal` observer must see; and an
+  operation planted as accepting `public`, sent a secret, whose redacted argument the oracle must
+  report by itself.
 """
 
 import io
@@ -37,6 +42,7 @@ PINNED = {"programs": 5000, "reject": 5000, "keep": 8594, "oracle": 434}
 # the measured run's 334 programs and 1,202 variants (docs/release-gates.md).
 MIN_ORACLE_COMPARED = 300
 MIN_VARIANTS_COMPARED = 1000
+MIN_LIVE = 0
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -75,6 +81,75 @@ def canary_oracle():
     files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
     return Program(op="canary-oracle", rule="the gate's own canary", edition="0.2", seed=0,
                    cls=OPEN, files=files, vary=vary)
+
+
+VAULT = ("capability Vault\n  op note(x: Int) -> Unit\n    accepts secret\n\n"
+         "handler quiet() for Vault\n  op note(x) = unit")
+
+
+def canary_internal():
+    """An accepted program that calls an operation accepting `secret` under a secret branch; the
+    gate plants that operation as accepting `internal`. The `public` observer must see the same in
+    every variant, and the `internal` observer the event come and go: a leak at `internal` only."""
+    v = Varied()
+    lit = v.lit("Bool", "secret", "true")
+    text = join_decls(
+        header(MOD), VAULT,
+        "work(n: Int) -> Unit\n  uses @vault: Vault[note]\n=\n  @vault.note(n)",
+        "guarded(flag: secret Bool) -> Unit\n=\n"
+        "  if flag\n    work(1) with @vault = quiet()\n  else\n    unit",
+        CONSOLE_MAIN + f"  let s: secret Bool = {lit}\n  guarded(s)\n"
+        '  @console.print("done")')
+    files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
+    return Program(op="canary-internal", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+def canary_redacted():
+    """An accepted program that sends a secret to an operation accepting `secret`; the gate plants
+    that operation as accepting `public`. Every variant shows the same `<redacted:secret>`
+    argument, so only the redacted-sink rule can report it."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    text = join_decls(
+        header(MOD), VAULT,
+        "send(n: secret Int) -> Unit\n  uses @vault: Vault[note]\n=\n  @vault.note(n)",
+        CONSOLE_MAIN + f"  let s: secret Int = {lit}\n  send(s) with @vault = quiet()\n"
+        '  @console.print("done")')
+    files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
+    return Program(op="canary-redacted", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+def planted(level):
+    """The canaries' planted fault: `Vault.note` accepts `level` in the oracle's table."""
+    def plant(table):
+        table = dict(table)
+        table[("Vault", "note")] = {level}
+        return table
+    return plant
+
+
+def oracle_canary(prog, una, work, plant=None):
+    """Runs one program through the oracle, and returns its result row."""
+    buf = io.StringIO()
+    oracle.oracle([dict(prog.manifest(), digest=prog.digest())], una, work, RUN_TIMEOUT, buf,
+                  lambda row: prog, plant=plant)
+    return json.loads(buf.getvalue())
+
+
+def caught(name, row):
+    """Whether a canary's result is the fault it plants, and only that."""
+    if row.get("error") or row.get("set_aside") or not row.get("finding"):
+        return False
+    leaks = sorted({o for v in row["variants"] for o in v.get("observers", [])})
+    if name == "oracle":
+        return "public" in leaks
+    if name == "internal":
+        return leaks == ["internal"] and not row["violations"]
+    if name == "redacted":
+        return bool(row["violations"]) and not leaks
+    return False
 
 
 def expected_keep(progs):
@@ -118,6 +193,8 @@ def _version(una):
 def run(una, out_dir, tip):
     """Runs the gate. Writes OUT/manifest.jsonl, reject.jsonl, keep.jsonl, oracle.jsonl,
     canaries.jsonl and summary.json, prints the summary, and returns 0 (PASS) or 1 (FAIL)."""
+    if os.path.exists(out_dir) and os.listdir(out_dir):
+        raise SystemExit(f"hunt gate: {out_dir} is not empty; the gate writes a fresh directory")
     root = drivers.campaign_root(out_dir)
     progs = programs()
     by_name = {p.name: p for p in progs}
@@ -174,11 +251,17 @@ def run(una, out_dir, tip):
             errors.append(f"oracle {r['name']}: {r['error']}")
         if r.get("finding"):
             seen = sorted({o for v in r["variants"] for o in v.get("observers", [])})
-            findings.append(f"oracle {r['name']}: an observer at {', '.join(seen)} sees the "
-                            "varied literal")
+            if seen:
+                findings.append(f"oracle {r['name']}: an observer at {', '.join(seen)} sees the "
+                                "varied literal")
+            for v in r.get("violations", []):
+                findings.append(f"oracle {r['name']}: {v}")
         for t in r.get("termination", []):
             termination.append(dict(t, name=r["name"]))
-    compared = sum(1 for r in oracle_rows for v in r["variants"] if v["verdict"] != "error")
+    # Only complete-against-complete comparisons count toward the floors.
+    compared = sum(r.get("compared", 0) for r in oracle_rows)
+    programs_compared = sum(1 for r in oracle_rows if r.get("compared", 0) > 0)
+    live = sum(1 for r in oracle_rows if r.get("live"))
 
     # Canaries.
     canaries = {}
@@ -186,16 +269,16 @@ def run(una, out_dir, tip):
     buf = io.StringIO()
     drivers.must_reject([dict(crej.manifest(), digest=crej.digest())], una, work, CHECK_TIMEOUT,
                         buf, build=lambda row: crej)
-    row = json.loads(buf.getvalue())
-    canaries["reject"] = bool(row.get("finding"))
-    cor = canary_oracle()
-    buf = io.StringIO()
-    oracle.oracle([dict(cor.manifest(), digest=cor.digest())], una, work, RUN_TIMEOUT, buf,
-                  lambda row: cor)
-    row = json.loads(buf.getvalue())
-    canaries["oracle"] = bool(row.get("finding")) and not row.get("error")
+    canaries["reject"] = bool(json.loads(buf.getvalue()).get("finding"))
+    canary_rows = {
+        "oracle": oracle_canary(canary_oracle(), una, work),
+        "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
+        "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
+    }
+    for name, row in canary_rows.items():
+        canaries[name] = caught(name, row)
     with open(os.path.join(root, "canaries.jsonl"), "w", encoding="utf-8") as f:
-        f.write(json.dumps(canaries, sort_keys=True) + "\n")
+        f.write(json.dumps({"caught": canaries, "rows": canary_rows}, sort_keys=True) + "\n")
 
     for name, lines in (("reject", reject_rows), ("keep", keep_rows), ("oracle", oracle_rows)):
         with open(os.path.join(root, f"{name}.jsonl"), "w", encoding="utf-8") as f:
@@ -208,7 +291,8 @@ def run(una, out_dir, tip):
         "keep": {"expected": expected_keep(progs), "judged": len(keep_rows)},
         "oracle": {"expected": len(varied), "judged": len(oracle_rows),
                    "set_aside": sum(1 for r in oracle_rows if r.get("set_aside")),
-                   "variants_compared": compared},
+                   "programs_compared": programs_compared, "variants_compared": compared,
+                   "live": live},
     }
     for key in ("reject", "keep", "oracle"):
         s = sizes[key]
@@ -221,7 +305,9 @@ def run(una, out_dir, tip):
     if compared < MIN_VARIANTS_COMPARED:
         errors.append(f"oracle: {compared} variants compared, under the floor of "
                       f"{MIN_VARIANTS_COMPARED}")
-    programs_compared = sum(1 for r in oracle_rows if not r.get("set_aside"))
+    if live < MIN_LIVE:
+        errors.append(f"oracle: {live} programs whose variants differ at the literal's level, "
+                      f"under the floor of {MIN_LIVE}")
     if programs_compared < MIN_ORACLE_COMPARED:
         errors.append(f"oracle: {programs_compared} programs compared, under the floor of "
                       f"{MIN_ORACLE_COMPARED}")
@@ -229,8 +315,8 @@ def run(una, out_dir, tip):
         got = sizes[key] if key == "programs" else sizes[key]["expected"]
         if got != want:
             errors.append(f"{key}: the fixed run has {got} cases, and the gate pins {want}")
-    for name, caught in sorted(canaries.items()):
-        if not caught:
+    for name, seen in sorted(canaries.items()):
+        if not seen:
             errors.append(f"canary {name}: not caught, so the gate cannot see that fault")
 
     verdict = "PASS" if not errors and not findings else "FAIL"
@@ -253,7 +339,8 @@ def run(una, out_dir, tip):
     print(f"hunt gate: seed {SEED}, {len(progs)} programs, una tip {tip}")
     for key in ("reject", "keep", "oracle"):
         print(f"  {key}: {sizes[key]['judged']} of {sizes[key]['expected']} cases judged")
-    print(f"  oracle: {compared} variants compared, {sizes['oracle']['set_aside']} programs set aside")
+    print(f"  oracle: {programs_compared} programs and {compared} variants compared (complete "
+          f"against complete), {live} live, {sizes['oracle']['set_aside']} programs set aside")
     print(f"  canaries: " + ", ".join(f"{k} {'caught' if v else 'MISSED'}"
                                       for k, v in sorted(canaries.items())))
     print(f"  termination pairs (outside T6, recorded): {len(termination)}")
