@@ -1,5 +1,5 @@
 /* The proposed layout (ADR 0107 rule 2): handles stay slot indices into a segmented slot
-   table whose segments never move: segment k holds 2^(k+10) slots, and a fixed directory
+   table whose segments never move: segment k holds 2^(k+4) slots, and a fixed directory
    of segment addresses is reached by the index's leading bit. A record is one object, a
    header and its fields inline (I64 raw). A field read is inline: a checked index, the
    segment and slot, a checked layout id and generation, then a load. A handle is
@@ -9,11 +9,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #define NOINLINE __attribute__((noinline))
-#define BASE 10
+#define BASE 4
 typedef struct { int64_t count; int64_t layout; } header;
 typedef struct { header h; int64_t x, y; } Point;
 typedef struct { int64_t count; int64_t layout; int64_t generation; header *addr; } slot;
-static slot *dir[54]; static uint64_t nslots; static int64_t *freelist; static uint64_t nfree, capfree;
+static slot *dir[60]; static uint64_t nslots; static int64_t *freelist; static uint64_t nfree, capfree;
 static inline slot *at(uint64_t i) {
   uint64_t j = i + ((uint64_t)1 << BASE);
   int k = 63 - __builtin_clzll(j);
