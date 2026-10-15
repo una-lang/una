@@ -673,6 +673,17 @@ impl Lexer<'_> {
         if c == ';' {
             self.semicolon_repair(start, end);
         }
+        // ADR 0096, amendment of 2026-10-15: `%` gets a description, never an edit. Una's
+        // `mod` is Euclidean and the `%` of C, TypeScript and Rust truncates, so a rewrite could
+        // change what the writer meant for negative operands.
+        if c == '%'
+            && let Some(error) = self.out.errors.last_mut()
+        {
+            error.repairs.push(SyntaxRepair {
+                description: "Una writes the remainder as `mod`, which is Euclidean: `-7 mod 3 == 2`, where `%` in C, TypeScript and Rust gives `-1`; the two agree when both operands are non-negative".to_owned(),
+                edit: None,
+            });
+        }
         self.pos = end;
     }
 

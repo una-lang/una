@@ -1266,6 +1266,99 @@ fn a_reserved_keyword_as_a_binding_name_says_so() {
 }
 
 #[test]
+fn a_declaration_keyword_as_a_local_name_is_renamed_through_its_scope_743() {
+    // ADR 0096, amendment of 2026-10-15: none of these keywords can stand in a function's
+    // body, so within a binding's scope every token of the word is a use, and the rename is
+    // exact. It covers interpolation holes and leaves a name after `.` and a label alone.
+    let message = "U0101 `op` is a reserved keyword, so it cannot name a binding";
+    let renamed = |edit: &str| {
+        vec![(
+            "rename the binding and its uses to `op_value`".to_owned(),
+            Some(edit.to_owned()),
+        )]
+    };
+    assert_eq!(
+        repairs(
+            "f(n: Int) -> Text\n=\n  let op = n + 1\n  let s = \"{op}!\"\n  g(x: op.op, op: op)\n"
+        ),
+        [(
+            message.to_owned(),
+            renamed(
+                "op_value = n + 1\n  let s = \"{op_value}!\"\n  g(x: op_value.op, op: op_value"
+            )
+        )]
+    );
+    // A lambda's parameter: its body, to the end of the call around it.
+    assert_eq!(
+        repairs("f(xs: List[Int]) -> Int = xs.map(each: fn(op) -> op + 1).sum + g(op)\n")[0].1,
+        renamed("op_value) -> op_value")
+    );
+    // A `when` arm's binding: the arm's body, on its line or in its block.
+    assert_eq!(
+        repairs("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(value: op) -> op\n    is None -> 0\n")[0].1,
+        renamed("op_value) -> op_value")
+    );
+    assert_eq!(
+        repairs("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(value: op) ->\n      let n = op\n      n + op\n    is None -> 0\n")[0].1,
+        renamed("op_value) ->\n      let n = op_value\n      n + op_value")
+    );
+    // A handler operation's parameter: the capability's operation names it, not a caller.
+    assert_eq!(
+        repairs("handler memory(limit: Int) for Store\n  op put(key, op) = op + limit\n  op size() = limit\n")[0].1,
+        renamed("op_value) = op_value")
+    );
+    // The fresh name avoids every name of the file (rule 3a).
+    assert_eq!(
+        repairs("op_value() -> Int = 1\n\nf() -> Int\n=\n  let op = 2\n  op + op_value()\n")[0].1,
+        vec![(
+            "rename the binding and its uses to `op_value2`".to_owned(),
+            Some("op_value2 = 2\n  op_value2".to_owned())
+        )]
+    );
+    // A function's or a handler declaration's parameter is named by its callers, or holds
+    // the handler's own `op` declarations in its scope: advice only.
+    let advice = vec![("choose another name, such as `op_value`".to_owned(), None)];
+    assert_eq!(repairs("f(op: Int) -> Int = op\n")[0].1, advice);
+    assert_eq!(
+        repairs("handler memory(op: Int) for Store\n  op size() = 1\n")[0].1,
+        advice
+    );
+    // Outside a function or handler operation body, such as in an example, advice only.
+    assert_eq!(
+        repairs("example \"e\"\n  do f(fn(op) -> op)\n  expect true\n")[0].1,
+        advice
+    );
+    // A second binding of the word in the scope: advice only.
+    assert_eq!(
+        repairs("f() -> Int\n=\n  let op = 1\n  let op = 2\n  op\n")[0].1,
+        advice
+    );
+}
+
+#[test]
+fn a_percent_sign_gets_the_remainder_rule_and_no_edit_743() {
+    // ADR 0096, amendment of 2026-10-15: `mod` is Euclidean and `%` truncates, so a rewrite
+    // could change the meaning for negative operands; the description gives both readings.
+    let found = repairs("f(a: Int) -> Int = a % 3\n");
+    assert!(
+        found[0].0.starts_with("U0001 invalid character `%`"),
+        "{found:?}"
+    );
+    assert_eq!(
+        found[0].1,
+        [(
+            "Una writes the remainder as `mod`, which is Euclidean: `-7 mod 3 == 2`, where `%` in C, TypeScript and Rust gives `-1`; the two agree when both operands are non-negative".to_owned(),
+            None
+        )]
+    );
+    // A `%` in a text literal or a comment is not a token.
+    assert_eq!(
+        errors("f() -> Text = \"50%\" -- 50%\n"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
 fn renames_are_chosen_across_the_files_of_a_package_125() {
     // #125 (R-1): a word gets one new name for the whole package, which no file has, so a
     // renamed declaration and its uses in another module never come to name another

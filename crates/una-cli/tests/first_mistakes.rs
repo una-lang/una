@@ -2,7 +2,8 @@
 //! (#733, #576): a reserved keyword where a module path segment or an operation is named, a
 //! requirement identifier off the convention, and a method in a contract. Each diagnostic says
 //! what the rule is and what to write instead; an edit is offered only where it stays inside
-//! the declaration (ADR 0096 rule 2(a)), and the edited program checks.
+//! the declaration (ADR 0096 rule 2(a)), and the edited program checks. A declaration keyword
+//! bound as a local name is renamed through its scope (ADR 0096, amendment of 2026-10-15).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -170,4 +171,113 @@ fn to_int_in_a_contract_says_what_the_refinement_language_offers() {
         "{first:#?}"
     );
     assert!(first["repairs"][0]["edit"].is_null());
+}
+
+/// Applies the edit of every diagnostic's first repair to `src/<file>.una` and returns the
+/// diagnostics of the check that follows.
+fn apply_edits(root: &Path, file: &str) -> Vec<Value> {
+    let path = root.join("src").join(format!("{file}.una"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let offset = |position: &Value| {
+        let line = usize::try_from(position["line"].as_u64().unwrap()).unwrap();
+        let col = usize::try_from(position["col"].as_u64().unwrap()).unwrap();
+        text.split('\n')
+            .take(line - 1)
+            .map(|l| l.chars().count() + 1)
+            .sum::<usize>()
+            + col
+            - 1
+    };
+    let mut edits: Vec<(usize, usize, String)> = diagnostics(root)
+        .iter()
+        .filter_map(|d| d["repairs"].as_array()?.first()?.get("edit").cloned())
+        .filter(|edit| !edit.is_null())
+        .map(|edit| {
+            (
+                offset(&edit["start"]),
+                offset(&edit["end"]),
+                edit["replacement"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(!edits.is_empty(), "no edit to apply");
+    edits.sort();
+    let mut chars: Vec<char> = text.chars().collect();
+    for (start, end, replacement) in edits.iter().rev() {
+        chars.splice(start..end, replacement.chars());
+    }
+    std::fs::write(&path, chars.into_iter().collect::<String>()).unwrap();
+    diagnostics(root)
+}
+
+#[test]
+fn a_declaration_keyword_as_a_local_name_is_renamed_and_the_program_checks() {
+    // ADR 0096, amendment of 2026-10-15: a `let`, a lambda's parameter and a handler
+    // operation's parameter named `op` are renamed through their scopes, including an
+    // interpolation hole, and the edited program checks.
+    let root = package(
+        "keyword-locals",
+        "m",
+        "module m\n\ncapability Stock\n  op hold(item: Text) -> Bool\n\npub handler fake() for Stock\n  op hold(op) = op == \"x\"\n\npub next(xs: List[Int]) -> List[Int] = xs.map(each: fn(op) -> op + 1)\n\npub show(n: Int) -> Text\n=\n  let op = n + 1\n  \"{op}!\"\n",
+    );
+    let found = diagnostics(&root);
+    assert_eq!(found.len(), 3, "{found:#?}");
+    for diagnostic in &found {
+        assert_eq!(diagnostic["code"], "U0101");
+        assert_eq!(
+            diagnostic["repairs"][0]["description"],
+            "rename the binding and its uses to `op_value`"
+        );
+    }
+    assert_eq!(apply_edits(&root, "m"), Vec::<Value>::new());
+    let fixed = std::fs::read_to_string(root.join("src/m.una")).unwrap();
+    assert!(
+        fixed.contains("op hold(op_value) = op_value == \"x\""),
+        "{fixed}"
+    );
+    assert!(fixed.contains("fn(op_value) -> op_value + 1"), "{fixed}");
+    assert!(
+        fixed.contains("let op_value = n + 1\n  \"{op_value}!\""),
+        "{fixed}"
+    );
+}
+
+#[test]
+fn the_rename_leaves_a_field_name_and_an_argument_label_alone() {
+    // A name after `.` and an argument label are not uses of the binding. `op` is a keyword,
+    // so neither is legal: the edited program still reports each, with advice and no edit.
+    for (name, use_site) in [("keyword-dot", "n + op.op"), ("keyword-label", "g(op: op)")] {
+        let root = package(
+            name,
+            "m",
+            &format!(
+                "module m\n\ng(size: Int) -> Int = size\n\npub f(n: Int) -> Int\n=\n  let op = n\n  {use_site}\n"
+            ),
+        );
+        let after = apply_edits(&root, "m");
+        assert_eq!(after.len(), 1, "{after:#?}");
+        assert_eq!(after[0]["code"], "U0101");
+        assert!(after[0]["repairs"][0]["edit"].is_null(), "{after:#?}");
+        let fixed = std::fs::read_to_string(root.join("src/m.una")).unwrap();
+        let expected = use_site
+            .replace("op.op", "op_value.op")
+            .replace(": op)", ": op_value)");
+        assert!(fixed.contains(&expected), "{fixed}");
+    }
+}
+
+#[test]
+fn a_function_parameter_named_with_a_declaration_keyword_gets_advice() {
+    // A call names the parameter (`f(op: 1)`), so renaming it is outside the declaration.
+    let root = package(
+        "keyword-param",
+        "m",
+        "module m\n\npub f(op: Int) -> Int = op\n",
+    );
+    let found = only(&root, "U0101");
+    assert_eq!(
+        found["repairs"][0]["description"],
+        "choose another name, such as `op_value`"
+    );
+    assert!(found["repairs"][0]["edit"].is_null(), "{found:#?}");
 }
