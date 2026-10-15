@@ -1098,14 +1098,27 @@ mod tests {
     static TOGETHER: std::sync::LazyLock<std::sync::Barrier> =
         std::sync::LazyLock::new(|| std::sync::Barrier::new(2));
 
+    /// Says on stdout, flushed, that the task is about to reach the limit, then waits for the
+    /// other task and reaches it.
     extern "C" fn to_the_limit_together(closure: i64) -> Returned {
+        {
+            use std::io::Write;
+            println!("{BEFORE_LIMIT}");
+            let _ = std::io::stdout().flush();
+        }
         TOGETHER.wait();
         to_the_limit(closure)
     }
 
+    /// What each of the two tasks says before it reaches the limit.
+    const BEFORE_LIMIT: &str = "una-rt test: a task reaches the limit";
+
+    /// What `main` says once a count reached the shipped limit without passing it.
+    const AT_LIMIT: &str = "una-rt test: the count reached 4294967295";
+
     /// Runs `scenario` in a process of its own with a trace path, and returns its exit code,
-    /// its stderr, and whether the trace was written.
-    fn run_limit_scenario(scenario: &str) -> (Option<i32>, String, bool) {
+    /// its stderr, whether the trace was written, and its stdout.
+    fn run_limit_scenario(scenario: &str) -> (Option<i32>, String, bool, String) {
         let trace = limit_trace(scenario);
         let _ = std::fs::remove_file(&trace);
         let output = Command::new(std::env::current_exe().unwrap())
@@ -1125,6 +1138,7 @@ mod tests {
             output.status.code(),
             String::from_utf8_lossy(&output.stderr).into_owned(),
             written,
+            String::from_utf8_lossy(&output.stdout).into_owned(),
         )
     }
 
@@ -1140,6 +1154,30 @@ mod tests {
             || {
                 let x = values::text_word("x".to_owned());
                 values::retain(x);
+                values::retain(x);
+                eprintln!("{MARK}");
+                0
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
+    fn i2_count_limit_shipped_scenario() {
+        // The limit the runtime ships, 4294967295: a count one below it takes one more
+        // reference without overflow, and the next retain is the stop.
+        limit_scenario(
+            &limit_trace("i2_count_limit_shipped_scenario").to_string_lossy(),
+            values::COUNT_LIMIT,
+            || {
+                let x = values::text_word("x".to_owned());
+                values::set_count_for_test(x, values::COUNT_LIMIT - 1);
+                values::retain(x);
+                {
+                    use std::io::Write;
+                    println!("{AT_LIMIT}");
+                    let _ = std::io::stdout().flush();
+                }
                 values::retain(x);
                 eprintln!("{MARK}");
                 0
@@ -1220,6 +1258,7 @@ mod tests {
             i64::try_from(to_the_limit_together as extern "C" fn(i64) -> Returned as usize)
                 .unwrap(),
         );
+        runtime::TEST_EXPECT_PARKED.store(1, std::sync::atomic::Ordering::SeqCst);
         limit_scenario(
             &limit_trace("i2_count_limit_in_two_tasks_at_once_scenario").to_string_lossy(),
             2,
@@ -1245,6 +1284,7 @@ mod tests {
         // heap and the stacks hold less than such a count needs, U6003 when they hold it. A
         // retain that returned without counting would leave the count one short.
         let cases = [
+            ("ffi::tests::i2_count_limit_shipped_scenario", 3, INTERNAL),
             ("ffi::tests::i2_count_limit_in_main_scenario", 3, INTERNAL),
             (
                 "ffi::tests::i2_count_limit_with_the_memory_it_needs_scenario",
@@ -1264,10 +1304,27 @@ mod tests {
             ),
         ];
         for (scenario, code, line) in cases {
-            let (status, stderr, traced) = run_limit_scenario(scenario);
+            let (status, stderr, traced, stdout) = run_limit_scenario(scenario);
             assert_eq!(status, Some(code), "{scenario}: {stderr}");
             assert_eq!(stderr, format!("{line}\n"), "{scenario}: one line only");
             assert!(!traced, "{scenario}: the stop wrote a trace");
+            if scenario.ends_with("shipped_scenario") {
+                // The count reached the shipped limit without passing it; the next retain stopped.
+                assert!(stdout.contains(AT_LIMIT), "{scenario}: {stdout}");
+            }
+            if scenario.ends_with("two_tasks_at_once_scenario") {
+                // Both tasks reached the limit, and the one that did not end the process parked:
+                // one line on stderr, and one stop parked behind it.
+                assert_eq!(
+                    stdout.matches(BEFORE_LIMIT).count(),
+                    2,
+                    "{scenario}: {stdout}"
+                );
+                assert!(
+                    stdout.contains("una-rt test: parked stops: 1"),
+                    "{scenario}: {stdout}"
+                );
+            }
         }
     }
 }

@@ -50,10 +50,39 @@ static ENDING: AtomicBool = AtomicBool::new(false);
 /// first, the thread parks until the process ends, and never returns.
 fn end_once() {
     if ENDING.swap(true, Ordering::SeqCst) {
+        #[cfg(test)]
+        PARKED.fetch_add(1, Ordering::SeqCst);
         loop {
             std::thread::park();
         }
     }
+}
+
+/// How many stops parked behind the one that ends the process, in tests.
+#[cfg(test)]
+static PARKED: AtomicUsize = AtomicUsize::new(0);
+
+/// How many parked stops a test waits for before the stop that ends the process exits.
+#[cfg(test)]
+pub(crate) static TEST_EXPECT_PARKED: AtomicUsize = AtomicUsize::new(0);
+
+/// In tests that expect parked stops: waits, at most 10 seconds, for them to park, then says on
+/// stdout how many did, so that the test sees the later stops parked rather than not reached.
+#[cfg(test)]
+fn report_parked() {
+    let expected = TEST_EXPECT_PARKED.load(Ordering::SeqCst);
+    if expected == 0 {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while PARKED.load(Ordering::SeqCst) < expected && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    println!(
+        "una-rt test: parked stops: {}",
+        PARKED.load(Ordering::SeqCst)
+    );
+    let _ = io::stdout().flush();
 }
 
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
@@ -82,7 +111,8 @@ fn count_limit_bytes() -> usize {
 /// code: U8001, exit code 3. Either way one line goes to stderr, with no position, since a retain
 /// has no site, and no trace is written; a failed write of it exits with code 2 (`spec/13 §5`).
 pub(crate) fn count_limit_reached() -> ! {
-    crate::ceiling(usize::MAX);
+    // The allocator's ceiling stays: the threads that still run until the process ends keep
+    // their hard cap, and this stop allocates nothing.
     end_once();
     let held = crate::held().saturating_add(STACKS.load(Ordering::SeqCst));
     let (code, message, exit) = if held >= count_limit_bytes() {
@@ -99,6 +129,8 @@ pub(crate) fn count_limit_reached() -> ! {
         )
     };
     let written = writeln!(io::stderr(), "[{code}] error: {message}");
+    #[cfg(test)]
+    report_parked();
     // Nothing unwinds through the compiled frames (spec/16 §4 rule 3).
     #[allow(clippy::exit)]
     std::process::exit(if written.is_ok() { exit } else { USAGE });
@@ -686,7 +718,9 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             // The tasks of `together` blocks check their own heaps when they end (`tasks`).
             let faults = if cfg!(debug_assertions) {
                 (
-                    values::faults() + crate::tasks::TASK_FAULTS.load(Ordering::SeqCst),
+                    values::faults()
+                        + values::unbalanced_literals()
+                        + crate::tasks::TASK_FAULTS.load(Ordering::SeqCst),
                     values::live() + crate::tasks::TASK_LEAKS.load(Ordering::SeqCst),
                     values::copies() + crate::tasks::TASK_COPIES.load(Ordering::SeqCst),
                     values::fallbacks() + crate::tasks::TASK_FALLBACKS.load(Ordering::SeqCst),
@@ -735,7 +769,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if faults > 0 {
         let _ = writeln!(
             stderr,
-            "error: internal error: uses of released values or misread type descriptors: {faults}"
+            "error: internal error: uses of released values, misread type descriptors or literals whose count did not return to its start: {faults}"
         );
         code = 3;
     }

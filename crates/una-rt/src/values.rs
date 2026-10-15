@@ -322,6 +322,39 @@ pub fn release(word: i64) {
     }
 }
 
+/// The literals whose count is not back to the one reference the heap keeps: 0 once `main`
+/// has returned, unless the generated code retained a literal without its release, or released
+/// one it did not retain. A debug build reports it as an internal error (ADR 0113: a count that
+/// drifts upward could otherwise reach its limit with no memory behind it).
+pub fn unbalanced_literals() -> usize {
+    HEAP.with(|heap| {
+        let heap = heap.borrow();
+        heap.literals
+            .values()
+            .chain(heap.int_literals.values())
+            .filter(|&&word| {
+                slot(word)
+                    .and_then(|index| heap.slots.get(index))
+                    .is_none_or(|slot| slot.count != 1)
+            })
+            .count()
+    })
+}
+
+/// Sets the count of the live object of `word` to `count`, so that a test reaches the limit of
+/// a count with the limit the runtime ships.
+#[cfg(test)]
+pub(crate) fn set_count_for_test(word: i64, count: u32) {
+    let Some(index) = slot(word) else {
+        return;
+    };
+    HEAP.with(|heap| {
+        if let Some(slot) = heap.borrow_mut().slots.get_mut(index) {
+            slot.count = count;
+        }
+    });
+}
+
 /// The number of objects that the program still references: every object but the literals,
 /// which the heap keeps for the whole run. 0 once `main` has returned, unless the generated
 /// code leaks.
@@ -1945,6 +1978,15 @@ mod tests {
         assert_eq!(int(big), "99999999999999999999999");
         assert_eq!(int_literal("7"), n(7));
         assert_eq!(live(), before);
+        // ADR 0113: each literal's count is back to the heap's one reference; a retain without
+        // its release is counted, and its release makes it balanced again.
+        assert_eq!(unbalanced_literals(), 0);
+        retain(text);
+        retain(big);
+        assert_eq!(unbalanced_literals(), 2);
+        release(text);
+        release(big);
+        assert_eq!(unbalanced_literals(), 0);
     }
 
     #[test]
