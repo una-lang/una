@@ -480,6 +480,9 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
         targets.extend(entries);
     }
     let mut compared = 0;
+    // Every package's differences are gathered before the test fails, so one run shows the
+    // whole scope of a drift, never only its first package.
+    let mut drift: Vec<String> = Vec::new();
     for target in targets {
         // Tier 1 generates obligations only for a package without diagnostics.
         let (checked, obligations) = generated(&target);
@@ -534,7 +537,25 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
         pending.dedup();
         generated.sort();
         generated.dedup();
-        assert_eq!(generated, pending, "{}", target.display());
+        let name = target
+            .strip_prefix(repository())
+            .unwrap_or(&target)
+            .display()
+            .to_string();
+        for site in &generated {
+            if pending.binary_search(site).is_err() {
+                drift.push(format!(
+                    "{name}: tier 1 generates `{site}`, the checker records none"
+                ));
+            }
+        }
+        for site in &pending {
+            if generated.binary_search(site).is_err() {
+                drift.push(format!(
+                    "{name}: the checker records `{site}`, tier 1 generates none"
+                ));
+            }
+        }
         // ADR 0101: solved, the same obligations get every value they request; an error of
         // the solver after `sat`, in any outcome, means a wrong script (#668).
         let solved = una_cli::check(&target, Tier::One).unwrap();
@@ -560,6 +581,12 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
         assert_eq!(unencodable, Vec::<String>::new(), "{}", target.display());
         compared += 1;
     }
+    assert!(
+        drift.is_empty(),
+        "{} sites differ between the checker and tier 1:\n{}",
+        drift.len(),
+        drift.join("\n")
+    );
     assert!(compared > 30, "{compared}");
 }
 

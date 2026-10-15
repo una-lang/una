@@ -217,6 +217,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // ADR 0103 rule 5: it drops every refinement of its initial value, at every position,
         // as it drops the refinement at its top (`spec/17 §2` rule 4).
         let bound = if stmt.editable && !annotated {
+            // Its value flows into the base: no refined position, so no flow at it.
+            self.records.refined_flows.retain(|flow| flow.span != value);
             self.open_label_positions(bound.without_refinements(), stmt.name.span)
         } else {
             bound
@@ -655,7 +657,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         .as_ref()
                         .map(|label| self.raise_pc(label, handled.expr.span));
                     let used = self.within(ctx, |checker| {
-                        checker.expr_as(value, Some(&expected), Role::Plain)
+                        {
+                            // The default's flow is the binder's (ADR 0103).
+                            checker.flow_hints.insert(value.span);
+                            checker.expr_as(value, Some(&expected), Role::Plain)
+                        }
                     });
                     if let Some(saved) = saved {
                         self.restore_pc(saved);
@@ -689,6 +695,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     current = self.unwrap_option(&current, handled.expr.span);
                     let expected = current.clone();
                     let saved = self.raise_pc(&option, handled.expr.span);
+                    // The default's flow is the binder's (ADR 0103).
+                    self.flow_hints.insert(value.span);
                     let used = self.expr_as(value, Some(&expected), Role::Plain);
                     self.restore_pc(saved);
                     let joined = self.vars.join(&current, &used);

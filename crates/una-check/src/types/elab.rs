@@ -225,6 +225,34 @@ fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
 
 /// The records of module `module`: those of the package, or those of the standard modules,
 /// whose spans are those of another source database.
+/// The flows the checker recorded (ADR 0103), each with its target's and value's Core IR
+/// types, for `una_core::flow::Kinds::pending` to decide which are pending `refinement`
+/// obligations, as tier 1 decides (#615). Linear in the flows and their types.
+pub(crate) fn refined_flows(
+    env: &Env<'_>,
+    findings: &Findings,
+    sources: &SourceDb,
+    standard: &SourceDb,
+) -> Vec<(Span, Type, Type)> {
+    let dbs = Dbs { sources, standard };
+    findings
+        .records
+        .refined_flows
+        .iter()
+        .map(|flow| {
+            let mut fx = Fx::new(env, findings, dbs, flow.module);
+            if let Some(def) = flow.function.and_then(|id| env.functions.get(id)) {
+                fx.type_params.clone_from(&def.type_params);
+            }
+            (
+                flow.span,
+                fx.convert(&flow.target),
+                fx.convert(&flow.source),
+            )
+        })
+        .collect()
+}
+
 fn records_of<'f>(env: &Env<'_>, findings: &'f Findings, module: usize) -> &'f Records {
     if module >= env.prelude {
         &findings.standard_records

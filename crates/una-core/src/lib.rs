@@ -5,6 +5,7 @@
 #![deny(missing_docs)]
 
 mod descriptor;
+pub mod flow;
 pub mod http;
 mod ir;
 pub mod json;

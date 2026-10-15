@@ -31,6 +31,10 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// Checks `expr` against `expected`, describing a mismatch by `role`.
     pub(crate) fn expr_as(&mut self, expr: &Expr, expected: Option<&Ty>, role: Role<'_>) -> Ty {
+        // A branching expression's paths flow on their own, each at its value (ADR 0103).
+        if matches!(expr.kind, ExprKind::IfLine { .. }) {
+            self.flow_hints.insert(expr.span);
+        }
         let ty = self.infer(expr, expected);
         match expected {
             Some(expected) if !self.unify_at(expr.span, expected, &ty, role) => expected.clone(),
@@ -813,7 +817,13 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mut found = Vec::new();
         for item in items {
+            // An item's flow is the literal's: Core IR binds the literal as one value, whose
+            // items flow into its element type at the literal (ADR 0103 rule 3).
+            self.flow_hints.insert(item.span);
             found.push(self.expr(item, Some(&element)));
+        }
+        for ty in &found {
+            self.record_flow(span, &element, ty);
         }
         // ADR 0046 rule 3: each item flows into the element type, which keeps the labels of
         // the first item at an invariant parameter of a kind.

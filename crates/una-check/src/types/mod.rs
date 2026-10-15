@@ -551,6 +551,23 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .dedup_by(|a, b| a.0 == ObligationKind::EffectCondition && a == b);
     let headers = headers(&env);
     let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
+    // ADR 0103: the pending `refinement` obligations of the flows into refined positions,
+    // decided by the rule tier 1 uses (#615).
+    let kinds = una_core::flow::Kinds::new(&program);
+    let flows = elab::refined_flows(&env, &findings, package.sources, &standard.sources);
+    let before = findings.obligations.len();
+    for (span, target, source) in flows {
+        if kinds.pending(&source, &target) {
+            findings
+                .obligations
+                .push((ObligationKind::Refinement, span, None));
+        }
+    }
+    if findings.obligations.len() != before {
+        findings
+            .obligations
+            .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
+    }
     // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never
     // a silent pass (`spec/10 §2`). D-144: switched to B, ADR 0045: the
     // check runs in every build, not only in debug builds, and reports at the declaration.

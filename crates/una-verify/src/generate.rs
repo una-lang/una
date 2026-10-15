@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
+use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
     LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type, Use,
@@ -359,6 +360,9 @@ pub(crate) struct Index<'p> {
     /// parameter of function type is the only way their calls perform effects.
     library: BTreeSet<(&'p str, &'p str)>,
     kinds: BTreeMap<(&'p str, &'p str), Kind<'p>>,
+    /// The program's kinds for the variance of refined flows (ADR 0103 rule 4), shared with
+    /// the type checker's pending sites.
+    flow_kinds: una_core::flow::Kinds<'p>,
     policies: BTreeMap<(&'p str, &'p str), (&'p Type, &'p Type)>,
     /// The `to` type of each policy, by its `via` function.
     vias: BTreeMap<(&'p str, &'p str), Vec<&'p Type>>,
@@ -402,6 +406,7 @@ impl<'p> Index<'p> {
             uses_of: BTreeMap::new(),
             library: BTreeSet::new(),
             kinds: BTreeMap::new(),
+            flow_kinds: una_core::flow::Kinds::new(program),
             policies: BTreeMap::new(),
             vias: BTreeMap::new(),
             unresolved: RefCell::new(BTreeSet::new()),
@@ -609,70 +614,6 @@ impl<'p> Index<'p> {
     }
 }
 
-/// How a nested position compares in a flow (ADR 0103 rule 4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Variance {
-    Covariant,
-    Contravariant,
-    Invariant,
-}
-
-impl Variance {
-    /// The variance of a position of variance `inner` inside one of variance `self`.
-    fn then(self, inner: Variance) -> Variance {
-        match (self, inner) {
-            (Variance::Invariant, _) | (_, Variance::Invariant) => Variance::Invariant,
-            (Variance::Covariant, inner) => inner,
-            (Variance::Contravariant, Variance::Covariant) => Variance::Contravariant,
-            (Variance::Contravariant, Variance::Contravariant) => Variance::Covariant,
-        }
-    }
-
-    fn flipped(self) -> Variance {
-        self.then(Variance::Contravariant)
-    }
-}
-
-/// Whether the type parameter `param` occurs in `ty` only in data positions: never inside a
-/// function type, and never as an argument of a user kind (`in_kind`), whose own variance is
-/// not followed here, so such a parameter counts as invariant.
-fn data_only(ty: &Type, param: &str, in_kind: bool) -> bool {
-    match ty {
-        Type::Base {
-            base: Base::Param(name),
-            ..
-        } => name != param || !in_kind,
-        Type::Base {
-            base: Base::Named { module, args, .. },
-            ..
-        } => {
-            let nested = in_kind || !is_prelude(module);
-            args.iter().all(|arg| data_only(arg, param, nested))
-        }
-        Type::Base { .. } => true,
-        Type::Fn { .. } => !mentions_param(ty, param),
-    }
-}
-
-/// Whether the type parameter `param` occurs anywhere in `ty`.
-fn mentions_param(ty: &Type, param: &str) -> bool {
-    match ty {
-        Type::Base {
-            base: Base::Param(name),
-            ..
-        } => name == param,
-        Type::Base {
-            base: Base::Named { args, .. },
-            ..
-        } => args.iter().any(|arg| mentions_param(arg, param)),
-        Type::Base { .. } => false,
-        Type::Fn { params, result, .. } => {
-            params.iter().any(|p| mentions_param(p, param)) || mentions_param(result, param)
-        }
-    }
-}
-
-/// Whether a refinement is at some position of `ty`, its top included (ADR 0103).
 /// `ty` with every refinement removed, at every position: what is known of a value whose
 /// type was not found (ADR 0103 rule 4).
 fn unrefined(ty: &Type) -> Type {
@@ -706,6 +647,7 @@ fn unrefined(ty: &Type) -> Type {
     }
 }
 
+/// Whether a refinement is at some position of `ty`, its top included (ADR 0103).
 fn has_refinements(ty: &Type) -> bool {
     match ty {
         Type::Base {
@@ -2876,13 +2818,13 @@ impl<'p, 'i> Walker<'p, 'i> {
         target: &Type,
         at: Option<Span>,
     ) {
+        // Each path at its own value, as a function's returns are, a bound expression's too.
         for leaf in leaves {
             let Some(value) = &leaf.value else {
                 continue;
             };
-            let span = at.unwrap_or(leaf.span);
-            let what = self.text(span);
-            self.nested_flows(&value.ty, target, span, &what);
+            let what = self.text(leaf.span);
+            self.nested_flows(&value.ty, target, leaf.span, &what);
         }
         if !contains_fn(target) {
             return;
@@ -2970,158 +2912,24 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// types.
     fn nested_flows(&mut self, source: &Type, target: &Type, span: Span, what: &str) {
         let mut found = Vec::new();
-        self.nested_positions(source, target, Variance::Covariant, "", &mut found);
-        for (path, from, to, variance) in found {
-            if variance != Variance::Contravariant {
-                self.nested_obligations(&from, &to, &path, span, what);
+        self.index
+            .flow_kinds
+            .nested_positions(source, target, Variance::Covariant, "", &mut found);
+        for position in found {
+            if position.variance != Variance::Contravariant {
+                self.nested_obligations(&position.from, &position.to, &position.path, span, what);
             }
-            if variance != Variance::Covariant {
-                self.nested_obligations(&to, &from, &path, span, what);
+            if position.variance != Variance::Covariant {
+                self.nested_obligations(&position.to, &position.from, &position.path, span, what);
             }
-        }
-    }
-
-    /// The pairs of nested positions of `source` and `target` that have the same shape, with
-    /// their paths (`element`, `arg 2`, as `spec/13 §5` writes them) and variances.
-    fn nested_positions(
-        &self,
-        source: &Type,
-        target: &Type,
-        variance: Variance,
-        path: &str,
-        out: &mut Vec<(String, Type, Type, Variance)>,
-    ) {
-        match (source, target) {
-            (
-                Type::Base {
-                    base:
-                        Base::Named {
-                            module,
-                            name,
-                            args: from,
-                        },
-                    ..
-                },
-                Type::Base {
-                    base:
-                        Base::Named {
-                            module: to_module,
-                            name: to_name,
-                            args: to,
-                        },
-                    ..
-                },
-            ) if module == to_module && name == to_name && from.len() == to.len() => {
-                for (index, (a, b)) in from.iter().zip(to).enumerate() {
-                    let own = if is_prelude(module) && name == "List" {
-                        "element".to_owned()
-                    } else {
-                        format!("arg {}", index + 1)
-                    };
-                    let here = if path.is_empty() {
-                        own
-                    } else {
-                        format!("{path}.{own}")
-                    };
-                    let variance = variance.then(self.arg_variance(module, name, index));
-                    out.push((here.clone(), a.clone(), b.clone(), variance));
-                    self.nested_positions(a, b, variance, &here, out);
-                }
-            }
-            // A tuple, as an `edit` call's results (`spec/17 §4`): each component covariant.
-            // A component's own refinements are its binder's, an `edit` rebind's or the
-            // result's (`result_refinement`), proved with their facts; only the positions
-            // nested in it are compared here.
-            (
-                Type::Base {
-                    base: Base::Tuple(from),
-                    ..
-                },
-                Type::Base {
-                    base: Base::Tuple(to),
-                    ..
-                },
-            ) if from.len() == to.len() => {
-                for (index, (a, b)) in from.iter().zip(to).enumerate() {
-                    let here = format!("{path}.component {}", index + 1);
-                    let here = here.trim_start_matches('.').to_owned();
-                    self.nested_positions(a, b, variance, &here, out);
-                }
-            }
-            (
-                Type::Fn {
-                    params: from,
-                    result: from_result,
-                    ..
-                },
-                Type::Fn {
-                    params: to,
-                    result: to_result,
-                    ..
-                },
-            ) if from.len() == to.len() => {
-                // The parameters' and the result's own refinements are `fn_flow`'s; the
-                // positions nested in them are compared here.
-                for (index, (a, b)) in from.iter().zip(to).enumerate() {
-                    let here = format!("{path}.param {}", index + 1);
-                    self.nested_positions(
-                        a,
-                        b,
-                        variance.flipped(),
-                        here.trim_start_matches('.'),
-                        out,
-                    );
-                }
-                let here = format!("{path}.result");
-                self.nested_positions(
-                    from_result,
-                    to_result,
-                    variance,
-                    here.trim_start_matches('.'),
-                    out,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    /// The variance of argument `index` of the type `module.name` (ADR 0103 rule 4): the
-    /// arguments of `List`, `Option`, `Result` and `Map` are covariant, and so is a parameter
-    /// of a user kind that no field holds inside a function type or under another user kind's
-    /// argument; any other is invariant, which only adds obligations (ADR 0046).
-    fn arg_variance(&self, module: &str, name: &str, index: usize) -> Variance {
-        if is_prelude(module) {
-            return Variance::Covariant;
-        }
-        let Some(kind) = self.index.kinds.get(&(module, name)) else {
-            return Variance::Invariant;
-        };
-        let Some(param) = kind.params.get(index) else {
-            return Variance::Invariant;
-        };
-        let covariant = kind.variants.iter().all(|variant| {
-            variant
-                .fields
-                .iter()
-                .all(|(_, ty)| data_only(ty, param, false))
-        });
-        if covariant {
-            Variance::Covariant
-        } else {
-            Variance::Invariant
         }
     }
 
     /// The obligations of one nested position: each refinement of `to` that `from` does not
     /// carry, as the same formula, holds of a fresh binder that holds those of `from`.
     fn nested_obligations(&mut self, from: &Type, to: &Type, path: &str, span: Span, what: &str) {
-        let missing: Vec<Refinement> = refinements(to)
-            .iter()
-            .filter(|goal| {
-                !refinements(from)
-                    .iter()
-                    .any(|held| held.clause.term == goal.clause.term)
-            })
+        let missing: Vec<Refinement> = una_core::flow::missing(from, to)
+            .into_iter()
             .cloned()
             .collect();
         if missing.is_empty() {

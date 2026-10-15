@@ -253,6 +253,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// In pass 1, the open positions of this declaration's editable bindings: each variable's
     /// name and the unification variable whose type will be its shape (ADR 0075).
     pub(crate) edit_open: Vec<(String, usize)>,
+    /// The spans whose unification only propagates an expected type, as a list literal's
+    /// items, a branch of a branching expression or a default value: not flows of their own
+    /// (ADR 0103), so no `refinement` flow is recorded there.
+    pub(crate) flow_hints: std::collections::BTreeSet<Span>,
     /// The outer form of the editable binding being opened, for the example of an annotation.
     pub(crate) edit_outer: String,
     /// The function or predicate whose body is checked.
@@ -478,6 +482,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             annotated_lambdas: BTreeMap::new(),
             edit_bounds: BTreeMap::new(),
             edit_open: Vec::new(),
+            flow_hints: std::collections::BTreeSet::new(),
             edit_outer: String::new(),
             current: None,
             handler: None,
@@ -549,6 +554,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         found: &Ty,
         role: Role<'_>,
     ) -> bool {
+        // ADR 0103: the flow, for its pending `refinement` obligation, decided over Core IR
+        // once the types are final.
+        if !self.flow_hints.contains(&span) {
+            self.record_flow(span, expected, found);
+        }
         if self.vars.unify_expected(expected, found) {
             return true;
         }
@@ -842,6 +852,22 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn refit(&mut self, span: Span, from: Ty) {
         if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
             self.records.refits.push((span, from));
+        }
+    }
+
+    /// Records, in pass 2 and edition `0.3`, a value of type `source` at `span` flowing into
+    /// `target`, for its pending `refinement` obligation (ADR 0103 rule 4, #615).
+    pub(crate) fn record_flow(&mut self, span: Span, target: &Ty, source: &Ty) {
+        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+            self.records
+                .refined_flows
+                .push(super::records::RefinedFlow {
+                    span,
+                    module: self.module,
+                    function: self.current,
+                    target: target.clone(),
+                    source: source.clone(),
+                });
         }
     }
 

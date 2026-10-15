@@ -112,7 +112,10 @@ impl Checker<'_, '_, '_> {
         let mut found = Vec::new();
         for (arg, param) in args.iter().zip(params) {
             self.method_label(method, param, arg);
-            let expected = if *param == "key" {
+            let expected = if *param == "key" && op != MapOp::With {
+                // ADR 0103 rule 5: a lookup takes `key` at the base of `K`.
+                key.without_refinements()
+            } else if *param == "key" {
                 key.as_ref().clone()
             } else {
                 value.as_ref().clone()
