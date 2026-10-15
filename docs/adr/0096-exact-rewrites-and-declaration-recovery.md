@@ -196,3 +196,44 @@ The table's other rows were checked against the same question: can the edit chan
 ## Note (2026-10-13): dependents report their own name and type errors again
 
 The amendment "a dependent reports only its syntax" (2026-10-12) is relaxed. #581 closed the cascades it worked around at the source. An unresolved name now reports one diagnostic, at the reference: an inference variable, a lambda parameter or an ordering that only the missing name could have typed reports nothing (`compiler/architecture.md §5`). Rule 9 holds as first written: a dependent withholds its effect, flow and canonical-form diagnostics. It also withholds a U1001 or U1006 at a poisoned name, which type checking reports for a variant or a method-syntax call that name resolution leaves alone. The tests of rules 8 and 14 pass without the amendment. This widens what a rejected package reports, never what is accepted, so no new acceptance is needed.
+
+## Amendment (2026-10-15): `%`, and declaration keywords as names
+
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-15)
+
+**`%` gets a description, not an edit.** C, TypeScript and Rust write the remainder as `%`, which truncates: `-7 % 3` is `-1`. Una's `mod` is Euclidean: `-7 mod 3` is `2`. The two agree when both operands are non-negative, and differ otherwise. So rewriting `%` to `mod` would not keep the reading of rule 2(c) for negative operands, and an applied edit could silently change what the writer meant. The shape joins the list of shapes with no exact rewrite (rule 3). U0001 at a `%` keeps its message and gains this description: "Una writes the remainder as `mod`, which is Euclidean: `-7 mod 3 == 2`, where `%` in C, TypeScript and Rust gives `-1`; the two agree when both operands are non-negative". It is shown only for a `%` that the lexer reports as U0001, which is never one inside a text literal or a comment.
+
+An edit applied only where the verifier proves both operands non-negative was considered and not chosen. The syntax layer computes edits, before tier 1 runs. A proof-guarded edit would be a new kind of repair: a tier-0 diagnostic whose edit depends on a tier-1 result, with its own obligation and determinism rules. The description gives the writer both readings and costs nothing.
+
+**A declaration keyword used as a local name gets a rename edit.** One row joins the table of rule 3. It is exact under rule 2: it is computed from the tokens of one declaration and changes nothing outside it, it keeps the program's meaning token for token, and it is deterministic. It does not change what is accepted, widen authority or drop a condition, and the shape stays an error (rule 1).
+
+| Shape | Una's form, and the edit | Condition for the edit |
+| --- | --- | --- |
+| a declaration keyword as a local name: `accepts`, `capability`, `do`, `example`, `expect`, `given`, `handler`, `import`, `kind`, `module`, `op`, `opaque`, `performed`, `policy`, `predicate`, `pub`, `reflect`, `requirement`, `trusted` | `<word>_value`, renamed in its scope, or the first of `<word>_value2`, `<word>_value3`, … that rule 3a allows | A binding inside a function body or a handler operation body: a `let` binding, a lambda parameter, a binding of a pattern, or a parameter of a handler operation. Never a parameter of a function, and never a parameter of a handler declaration. |
+
+**Why not a function's parameters.** A call names its arguments by the parameters' names (`f(op: 1)`, or the pun `f(op)`). Renaming a function's parameter changes its interface, and every call in another declaration would stop matching it. That is outside the declaration (rule 2(a)), so a function parameter keeps the description. A handler operation's parameters are named by the capability's operation, not by the handler, and a lambda's arguments are passed without labels (a function value takes its arguments without labels, U2005), so renaming those changes no call.
+
+**Why not a handler declaration's parameters.** Their scope holds the handler's own `op` declarations, where `op` is the keyword.
+
+**What the rename covers.** Every use of the binding in its scope, including a use inside an interpolation hole, `"{op}"`. It never touches a name after `.`, which is a field or a method, or an argument label, which names the callee's parameter.
+
+**Why these keywords.** The amendment of 2026-10-12 kept the rename edit for `result` only. The syntax layer cannot tell a use of a binding named `error`, `unit` or `it` from the keyword in the same scope. The keywords listed here are the opposite case: none of them can stand in an expression, a statement, a type or a header clause of a function. So within the binding's scope, the function's body and its clauses, every token of the word is a use of the binding, and the rename is exact. Every other keyword keeps the description without an edit, because it can appear in a scope as a keyword:
+- in expressions: `if`, `when`, `let`, `and`, `fn`, `attempt`;
+- in types: the label words `secret`, `internal`, …, and `where`;
+- in header clauses: `requires`, `uses`, `derived`.
+The examples' own keywords `do`, `expect`, `given` and `performed` appear only in `example` declarations, never in a function's scope.
+
+The list must be checked again whenever a construct brings one of these words into a body. One example is the `test` declarations of ADR 0105 (Proposed), whose bodies would hold `expect`. Until such a check, the row applies only inside a function body or a handler operation body, as its condition says.
+
+**Hygiene.** The fresh name follows rule 3a: it is visible nowhere it would be written, so no occurrence changes what it refers to.
+
+**Determinism.** The edit depends only on the declaration's tokens.
+
+Conformance cases, each with the source before and after and a check of the fixed source:
+- `%` between operands: the description, and no edit;
+- `op` as a `let` binding, renamed through its block, with a use inside an interpolation hole. The same case has a `.op` after a value and an argument label `op:`, which the rename leaves as they are. `op` is a keyword, so neither can be legal: the check of the fixed source still reports their own U0101, each with its description and no edit, and nothing else;
+- `op` as a lambda parameter, and as a handler operation's parameter;
+- no edit for `op` as a function's parameter or a handler declaration's parameter, with the description only;
+- a fresh name that avoids a function of the module, and one that avoids a name the scope already binds (`op_value` taken, so `op_value2`) (rule 3a);
+- no edit for `when` as a name, with the description only.
