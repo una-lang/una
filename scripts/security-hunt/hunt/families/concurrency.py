@@ -314,8 +314,12 @@ def c6(seed, edition):
             if form in closed else
             "expected accepted; the oracle checks that what an observer below the secret sees "
             "does not depend on it")
-    return _make("C6", edition, seed, OPEN, join_decls(*decls), variant=form, note=note,
+    prog = _make("C6", edition, seed, OPEN, join_decls(*decls), variant=form, note=note,
                  varied=v)
+    if edition == "0.1" and "fail Bad" in prog.files["src/app/main.una"]:
+        # Edition 0.1 also refuses a `fail` block of this form, U0101, besides `together`.
+        prog.expect.append("U0101")
+    return prog
 
 
 OPERATORS = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5, "C6": c6}

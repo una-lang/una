@@ -83,7 +83,7 @@ class Generators(unittest.TestCase):
         for p in every_program():
             # A program that uses `together` in 0.1 on purpose is a must-reject check of the
             # gate (U0103): families C, CS, CP and TC.
-            if p.edition == "0.1" and p.expect != ["U0103"]:
+            if p.edition == "0.1" and "U0103" not in p.expect:
                 self.assertFalse(any("together" in t for t in p.files.values()), p.name)
 
     def test_listing_of_t1_t2_t3(self):
@@ -564,7 +564,10 @@ class Concurrency(unittest.TestCase):
             self.assertEqual(p02.vary[0]["label"], "secret")
             self.assertIn('entry = "app.main"', p02.files["una.toml"])
             # Edition 0.1 reserves `together`: must-reject, with nothing to vary or run.
-            self.assertEqual((p01.cls, p01.expect, p01.vary), (MUST_REJECT, ["U0103"], []))
+            # (A form with a `fail` block also expects U0101, 0.1's own refusal of that form.)
+            fail_form = "fail Bad" in p01.files["src/app/main.una"]
+            self.assertEqual((p01.cls, p01.expect, p01.vary),
+                             (MUST_REJECT, ["U0103", "U0101"] if fail_form else ["U0103"], []))
         self.assertEqual(forms, {"for-elements", "branch-value", "attempt-sibling", "secret-sink",
                                  "under-public-pc", "secret-fan-out", "shape-length",
                                  "public-fan-out", "element-fail"})
