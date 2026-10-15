@@ -18,8 +18,10 @@ It fails closed. The gate passes only when all of these hold:
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; an
   operation planted as accepting `public`, sent a secret, whose redacted argument the oracle must
-  report by itself; the same leak through a `together` branch; a must-reject program that does not
-  parse, which must be a generator's error; planted Core documents the re-check must reject for their reason, with a
+  report by itself; the same leak through a `together` branch; a must-reject program of edition
+  0.3 expecting U3021 that is in fact accepted; a literal marked secret that decides whether a
+  conditioned public operation runs, which the oracle must see in the trace alone; a must-reject
+  program that does not parse, which must be a generator's error; planted Core documents the re-check must reject for their reason, with a
   control it must read clean (`DIFFER_CANARIES`, `DIFFER_CONTROL`); a native executable built
   from another variant than the one the interpreter ran, which the native comparison must report
   as a divergence; and three pairs of a program and a changed copy (an event's argument,
@@ -38,7 +40,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from . import drivers, native, oracle, sandbox
-from .families import OPERATORS, family_of
+from .families import DEFAULT_EDITIONS, OPERATOR_EDITIONS, OPERATORS, editions_of, family_of
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
 from .refactor import REFACTORS
@@ -47,11 +49,13 @@ from .una import Varied, header, join_decls, package
 # The fixed run: changing any of these changes the gate, and docs/release-gates.md with it.
 SEED = 767
 COUNT = 50
-EDITIONS = ("0.1", "0.2")
+# The editions of every operator but those of edition 0.3's rules, which run 0.2, as the edition
+# gate's probe, and 0.3 (`OPERATOR_EDITIONS`, #813).
+EDITIONS = DEFAULT_EDITIONS
 REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
-PINNED = {"programs": 5100, "reject": 5100, "keep": 8722, "oracle": 481, "differ": 5100}
+PINNED = {"programs": 5600, "reject": 5600, "keep": 9722, "oracle": 581, "differ": 5600}
 # The re-check comparison's expected `unknown` outcomes, by program, each with its reason: any
 # other `unknown` is an error, and so is a pinned one that is no longer unknown (#791).
 PINNED_UNKNOWN = {
@@ -151,7 +155,7 @@ def programs():
     for op in sorted(OPERATORS):
         for i in range(COUNT):
             seed = derive_seed(SEED, op, i)
-            for edition in EDITIONS:
+            for edition in editions_of(op):
                 out.append(OPERATORS[op](seed, edition))
     return out
 
@@ -193,6 +197,44 @@ def canary_oracle_tasks():
     files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
     return Program(op="canary-oracle-tasks", rule="the gate's own canary", edition="0.2", seed=0,
                    cls=OPEN, files=files, vary=vary)
+
+
+def canary_reject_boundary():
+    """A must-reject row of edition 0.3 expecting U3021 whose program the checks accept: a call
+    into a boundary granted within its ceiling. The must-reject driver must call it a finding on
+    the edition 0.3 path too (#813)."""
+    store = join_decls(header("app.store"), "pub capability Store\n  op read(key: Text) -> Text")
+    edge = join_decls(header("app.edge", imports=[("app.store", ["Store"])]),
+                      "pub fetch(key: Text) -> Text\n  uses @store: Store[read]\n=\n"
+                      "  @store.read(key)")
+    main = join_decls(header(MOD, imports=[("app.edge", ["fetch"]), ("app.store", ["Store"])]),
+                      "pub preview(key: Text) -> Text\n  uses @store: Store[read]\n=\n"
+                      "  fetch(key) with @store = @store[read]")
+    files = package("canary", "0.3", {"app.store": store, "app.edge": edge, MOD: main},
+                    tables=[("boundaries", [("app.edge", ["Store[read]"])])])
+    return Program(op="canary-reject-boundary", rule="the gate's own canary", edition="0.3",
+                   seed=0, cls=MUST_REJECT, files=files, expect=["U3021"])
+
+
+def canary_oracle_condition():
+    """An accepted program of edition 0.3 whose literal, public in the code and marked secret by
+    its manifest, decides the condition of a conditioned public operation: whether `journal` runs.
+    It prints a constant, so its variants differ only in that operation's events, and the oracle
+    must call it a leak at `public` through the trace alone (#813)."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    text = join_decls(
+        header(MOD),
+        "capability Catalog\n  op journal(n: Int) -> Unit\n\n"
+        "handler book() for Catalog\n  op journal(n) = unit",
+        "work(n: Int, dry: Bool) -> Unit\n  uses @cat: Catalog[journal where not dry]\n=\n"
+        "  if not dry\n    @cat.journal(n)\n  unit",
+        CONSOLE_MAIN + f"  let x: Int = {lit}\n  work(1, dry: x > 3) with @cat = book()\n"
+        '  @console.print("done")')
+    files, vary = v.place(package("canary", "0.3", {MOD: text}, entry=MOD, grants=["console"]))
+    return Program(op="canary-oracle-condition", rule="the gate's own canary", edition="0.3",
+                   seed=0, cls=OPEN, files=files, vary=vary)
+
 
 
 VAULT = ("capability Vault\n  op note(x: Int) -> Unit\n    accepts secret\n\n"
@@ -310,7 +352,7 @@ def caught(name, row):
         return (bool(diverged) and not record.get("not_compiled")
                 and not any(v.endswith("-base") for v in diverged))
     leaks = sorted({o for v in row["variants"] for o in v.get("observers", [])})
-    if name in ("oracle", "oracle-tasks"):
+    if name in ("oracle", "oracle-tasks", "oracle-condition"):
         return "public" in leaks
     if name == "internal":
         return leaks == ["internal"] and not row["violations"]
@@ -465,6 +507,11 @@ def run(una, out_dir, tip, core_check, z3):
     if os.path.exists(out_dir) and os.listdir(out_dir):
         raise SystemExit(f"hunt gate: {out_dir} is not empty; the gate writes a fresh directory")
     root = drivers.campaign_root(out_dir)
+    # `una run` and `una build` do the full check: a conditioned operation's obligations need the
+    # pinned solver (#813).
+    native.RUN_ENV.clear()
+    if z3:
+        native.RUN_ENV.update(drivers.solver_env(z3))
     progs = programs()
     by_name = {p.name: p for p in progs}
     if len(by_name) != len(progs):
@@ -592,6 +639,9 @@ def run(una, out_dir, tip, core_check, z3):
         if r["class"] == RESIDUAL and r["verdict"] == "accepted":
             if r.get("invalid"):
                 errors.append(f"differ {r['name']}: residual row invalid ({r.get('full_kind')})")
+            if r.get("missed"):
+                findings.append(f"differ {r['name']}: the full check accepts it, and it must "
+                                f"reject it with {', '.join(r['expect'])}")
             if r.get("triage"):
                 findings.append(f"differ {r['name']}: the full check accepts a public print after "
                                 "the step")
@@ -662,6 +712,11 @@ def run(una, out_dir, tip, core_check, z3):
     drivers.must_reject([dict(crej.manifest(), digest=crej.digest())], una, work, CHECK_TIMEOUT,
                         buf, build=lambda row: crej)
     canaries["reject"] = bool(json.loads(buf.getvalue()).get("finding"))
+    cbound = canary_reject_boundary()
+    buf = io.StringIO()
+    drivers.must_reject([dict(cbound.manifest(), digest=cbound.digest())], una, work,
+                        CHECK_TIMEOUT, buf, build=lambda row: cbound)
+    canaries["reject-boundary"] = bool(json.loads(buf.getvalue()).get("finding"))
     csyn = canary_syntax()
     buf = io.StringIO()
     drivers.must_reject([dict(csyn.manifest(), digest=csyn.digest())], una, work, CHECK_TIMEOUT,
@@ -680,6 +735,7 @@ def run(una, out_dir, tip, core_check, z3):
         "native": json.loads(buf.getvalue()),
         "oracle": oracle_canary(canary_oracle(), una, work),
         "oracle-tasks": oracle_canary(canary_oracle_tasks(), una, work),
+        "oracle-condition": oracle_canary(canary_oracle_condition(), una, work),
         "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
         "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
     }
@@ -771,7 +827,9 @@ def run(una, out_dir, tip, core_check, z3):
     verdict = "PASS" if not errors and not findings else "FAIL"
     summary = {
         "verdict": verdict, "seed": SEED, "count_per_operator": COUNT,
-        "editions": list(EDITIONS), "refactors": list(REFACTOR_IDS), "tip": tip,
+        "editions": list(EDITIONS),
+        "operator_editions": {op: list(e) for op, e in sorted(OPERATOR_EDITIONS.items())},
+        "refactors": list(REFACTOR_IDS), "tip": tip,
         "una": _version(una), "sizes": sizes, "canaries": canaries,
         "findings": findings, "errors": errors,
         "termination_pairs": {"count": len(termination), "pairs": termination},

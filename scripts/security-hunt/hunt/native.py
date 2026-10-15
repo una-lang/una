@@ -41,6 +41,12 @@ import re
 from . import sandbox
 from .program import Program
 
+# The environment of every `una run` and `una build` of the oracle and the native sample: `una run`
+# and `una build` do the full check, and a program with a conditioned operation (family Q, #813)
+# has obligations for the solver. The gate sets it to the pinned solver's `PATH`
+# (`drivers.solver_env`) before it runs anything; a program without obligations never calls it.
+RUN_ENV = {}
+
 # The sample is stratified, a fixed function of the fixed run's names:
 # - the oracle's programs whose name's SHA-256 starts with a byte below SAMPLE_BELOW, 20 of 256,
 #   about 8% of its programs and 5% or more of those it compares;
@@ -271,7 +277,7 @@ def build_and_run(una, files, name, root, timeout, limits):
     pkg = p.write(rundir)
     exe = os.path.join(rundir, "native-exe")
     built = sandbox.run([una, "--json", "build", ".", "--out", exe], cwd=pkg, writable=rundir,
-                        timeout=timeout * 6)
+                        timeout=timeout * 6, env_extra=RUN_ENV)
     if built.timed_out or built.code != 0:
         why = "timed out" if built.timed_out else built.stderr.strip()[-300:]
         return ("not compiled" if NOT_COMPILED in built.stderr else "build failed", why)
@@ -294,7 +300,7 @@ def pair(una, root, timeout, limits, interpreted_files, native_files, name):
                 variant=name)
     pkg = p.write(rundir)
     interp = sandbox.run([una, "--json", "run", ".", *limits], cwd=pkg, writable=rundir,
-                         timeout=timeout)
+                         timeout=timeout, env_extra=RUN_ENV)
     try:
         doc = json.loads(interp.stdout)
     except ValueError:

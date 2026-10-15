@@ -280,7 +280,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             if z3:
                 fv = parse_check(sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
                                              timeout=timeout, env_extra=solver_env(z3)))
-            r = judge_residual(v.kind, fv, prog.variant)
+            r = judge_residual(v.kind, fv, prog.variant, prog.expect)
             result.update(full=None if fv is None else fv.row(), **r)
             tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + r["full_kind"])] += 1
         if v.kind == "accepted":
@@ -325,26 +325,35 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
 OBLIGATION_CODES = {"U5001", "U5002"}
 
 
-def judge_residual(tier0, full, variant):
+def judge_residual(tier0, full, variant, expect=()):
     """A residual program's verdicts (#548), fail-closed. `tier0` is `una check --tier 0`'s
     kind, `full` the full check's `Verdict`, or None when no solver was given. The row is invalid,
     and the batch is rerun, unless the full check ran with the solver to an acceptance or to a
     rejection by an obligation: no solver, U5003, a timeout, an ICE, a usage error, an unreadable
     or inconsistent output, or a rejection by other codes, which tests nothing of the channel. A
-    public print after the step goes to triage when either check accepts it."""
+    public print after the step goes to triage when either check accepts it.
+
+    A row with `expect` (family Q, #813) is one the full check must reject with one of those codes:
+    a rejection by others is invalid, and an acceptance is `missed`, a finding."""
     after = variant.endswith("-print-after")
+    allowed = OBLIGATION_CODES | set(expect)
+    codes = {c[0] for c in full.codes} if full is not None else set()
     if full is None:
         kind = "invalid (no solver)"
     elif any(c[0] == "U5003" for c in full.codes):
         kind = "invalid (U5003)"
     elif full.kind not in ("accepted", "rejected"):
         kind = f"invalid ({full.kind})"
-    elif full.kind == "rejected" and not {c[0] for c in full.codes} <= OBLIGATION_CODES:
-        kind = "invalid (rejected by " + ", ".join(sorted({c[0] for c in full.codes})) + ")"
+    elif full.kind == "rejected" and not codes <= allowed:
+        kind = "invalid (rejected by " + ", ".join(sorted(codes)) + ")"
+    elif full.kind == "rejected" and expect and not codes & set(expect):
+        kind = ("invalid (rejected by " + ", ".join(sorted(codes)) + ", not "
+                + ", ".join(expect) + ")")
     else:
         kind = full.kind
     return {"full_kind": kind, "invalid": kind.startswith("invalid"),
-            "triage": kind == "accepted" and after, "triage_tier0": tier0 == "accepted" and after}
+            "triage": kind == "accepted" and after, "triage_tier0": tier0 == "accepted" and after,
+            "missed": bool(expect) and kind == "accepted"}
 
 
 def solver_env(z3):

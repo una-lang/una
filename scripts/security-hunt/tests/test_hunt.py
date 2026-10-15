@@ -15,18 +15,15 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hunt import drivers, gate, native, oracle, sandbox  # noqa: E402
-from hunt.families import OPERATORS  # noqa: E402
-from hunt.program import CLASSES, MUST_REJECT, OPEN, derive_seed, rng_for  # noqa: E402
+from hunt.families import OPERATORS, editions_of  # noqa: E402
+from hunt.program import CLASSES, MUST_REJECT, OPEN, RESIDUAL, derive_seed, rng_for  # noqa: E402
 from hunt.refactor import _blocks, r6_rename, r9_reorder  # noqa: E402
 from hunt.sandbox import Run  # noqa: E402
-
-EDITIONS = ("0.1", "0.2")
-
 
 def every_program(n=40):
     for op in sorted(OPERATORS):
         for i in range(n):
-            for ed in EDITIONS:
+            for ed in editions_of(op):
                 yield OPERATORS[op](derive_seed(1, op, i), ed)
 
 
@@ -45,7 +42,7 @@ class Generators(unittest.TestCase):
 
     def test_a_seed_rebuilds_the_same_program(self):
         for op in OPERATORS:
-            for ed in EDITIONS:
+            for ed in editions_of(op):
                 seed = derive_seed(99, op, 3)
                 a, b = OPERATORS[op](seed, ed), OPERATORS[op](seed, ed)
                 self.assertEqual(a.digest(), b.digest())
@@ -951,7 +948,7 @@ class Oracle(unittest.TestCase):
         runs = iter([Run(0, doc, "", False, 0.1), Run(0, doc.replace('"a"', '"b"'), "", False, 0.2)])
         dirs = []
         saved = oracle.sandbox.run, oracle.sandbox.fresh_dir
-        oracle.sandbox.run = lambda argv, cwd, writable, timeout: next(runs)
+        oracle.sandbox.run = lambda argv, cwd, writable, timeout, env_extra=None: next(runs)
 
         def fresh(root, prefix):
             dirs.append(prefix)
@@ -1096,6 +1093,107 @@ class GeneratorErrors(unittest.TestCase):
                     "twin": {"codes": [[c, "x", 1, 1] for c in twin]}}
         self.assertEqual(gate.keep_generator_errors([pair(["U4001"], ["U4001"])]), [])
         self.assertTrue(gate.keep_generator_errors([pair(["U4001"], ["U0001"])]))
+
+
+class Edition03(unittest.TestCase):
+    """The operators of edition 0.3's rules (#813): boundaries (ADR 0093) and conditions on
+    operations (ADR 0092)."""
+
+    NEW = ("B1", "B2", "Q1", "Q2", "Q3")
+
+    def test_the_new_operators_run_0_2_as_the_probe_and_0_3(self):
+        for op in self.NEW:
+            self.assertEqual(editions_of(op), ("0.2", "0.3"), op)
+        self.assertEqual(editions_of("T1"), ("0.1", "0.2"))
+        progs = gate.programs()
+        self.assertFalse(any(p.edition == "0.3" for p in progs if p.op not in self.NEW))
+        self.assertFalse(any(p.edition == "0.1" for p in progs if p.op in self.NEW))
+        for op in self.NEW:
+            self.assertEqual(sum(1 for p in progs if p.op == op), 2 * gate.COUNT, op)
+
+    def test_the_probe_is_a_check_with_its_gate_code(self):
+        for op in self.NEW:
+            for i in range(40):
+                p = OPERATORS[op](derive_seed(1, op, i), "0.2")
+                self.assertEqual(p.cls, MUST_REJECT, p.name)
+                self.assertTrue(set(p.expect) <= {"U0101", "U7002"} and p.expect, p.name)
+                self.assertEqual(p.vary, [], p.name)
+                b = OPERATORS[op](derive_seed(1, op, i), "0.3")
+                self.assertIn('edition = "0.3"', b.files["una.toml"])
+
+    def test_the_forms_and_their_classes(self):
+        seen = {}
+        for i in range(200):
+            for op in self.NEW:
+                p = OPERATORS[op](derive_seed(5, op, i), "0.3")
+                seen.setdefault(op, {})[p.variant.rsplit("-", 1)[0] if op in ("B1", "Q1", "Q2")
+                                       else p.variant] = (p.cls, tuple(p.expect))
+        self.assertEqual(len(seen["B1"]), 7)
+        self.assertEqual(len(seen["Q1"]), 8)
+        self.assertEqual(seen["Q1"]["ceiling"], (MUST_REJECT, ("U7002",)))
+        self.assertTrue(all(cls == MUST_REJECT and e for cls, e in seen["B1"].values()))
+        self.assertEqual(seen["B1"]["release"][1], ("U3024",))
+        # Q2's rows are residual: the refuted ones expect their code, the proven ones none.
+        self.assertEqual(seen["Q2"]["unguarded"], (RESIDUAL, ("U5001",)))
+        self.assertEqual(seen["Q2"]["lock-weakened"], (RESIDUAL, ("U3023",)))
+        self.assertEqual(seen["Q2"]["guarded"], (RESIDUAL, ()))
+        self.assertEqual(set(seen["B2"]), {"grant-handler", "narrowed", "function-value",
+                                           "under-secret-pc"})
+        self.assertEqual(set(seen["Q3"]), {"guarded-live", "guarded-dry", "secret-condition"})
+        for op in ("B2", "Q3"):
+            self.assertTrue(all(cls == OPEN for cls, _ in seen[op].values()))
+
+    def test_boundaries_and_contracts_tables(self):
+        p = next(OPERATORS["B1"](derive_seed(1, "B1", i), "0.3") for i in range(200)
+                 if OPERATORS["B1"](derive_seed(1, "B1", i), "0.3").variant.startswith("ceiling"))
+        self.assertIn('[boundaries]\n"app.edge" = ["', p.files["una.toml"])
+        q = next(OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.3") for i in range(200)
+                 if OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.3").variant.startswith("lock"))
+        self.assertIn('[contracts]\n"app.main.update" = ["@log: Log[write where not ',
+                      q.files["una.toml"])
+        # No table, no change: the files of the older operators are as before.
+        self.assertNotIn("[boundaries]", OPERATORS["T1"](1, "0.2").files["una.toml"])
+
+    def test_residual_rows_with_an_expected_code(self):
+        V = drivers.Verdict
+        u5001 = V("rejected", [["U5001", "a", 1, 1]], 0.1)
+        r = drivers.judge_residual("accepted", u5001, "unguarded-dry", ["U5001"])
+        self.assertEqual((r["full_kind"], r["invalid"], r["missed"]), ("rejected", False, False))
+        r = drivers.judge_residual("accepted", V("accepted", [], 0.1), "unguarded-dry", ["U5001"])
+        self.assertEqual((r["full_kind"], r["invalid"], r["missed"]), ("accepted", False, True))
+        # The expected code may be outside the obligations' (U3023 through `contract_lock`).
+        u3023 = V("rejected", [["U3023", "a", 1, 1]], 0.1)
+        r = drivers.judge_residual("accepted", u3023, "lock-weakened-dry", ["U3023"])
+        self.assertEqual((r["full_kind"], r["invalid"]), ("rejected", False))
+        # A rejection by another code, even an obligation's, is not the expected one.
+        u5002 = V("rejected", [["U5002", "a", 1, 1]], 0.1)
+        r = drivers.judge_residual("accepted", u5002, "unguarded-dry", ["U5001"])
+        self.assertTrue(r["invalid"])
+        self.assertFalse(r["missed"])
+        r = drivers.judge_residual("accepted", u3023, "unguarded-dry", ["U5001"])
+        self.assertTrue(r["invalid"])
+        # No solver is invalid, never missed or clean.
+        r = drivers.judge_residual("accepted", None, "unguarded-dry", ["U5001"])
+        self.assertEqual((r["invalid"], r["missed"]), (True, False))
+        # Without `expect` the row keeps its old, descriptive meaning.
+        r = drivers.judge_residual("accepted", V("accepted", [], 0.1), "guarded-dry")
+        self.assertEqual((r["invalid"], r["missed"]), (False, False))
+
+    def test_the_edition_0_3_canaries(self):
+        rej = gate.canary_reject_boundary()
+        self.assertEqual((rej.cls, rej.expect, rej.edition), (MUST_REJECT, ["U3021"], "0.3"))
+        self.assertIn('"app.edge" = ["Store[read]"]', rej.files["una.toml"])
+        self.assertIn("with @store = @store[read]", rej.files["src/app/main.una"])
+        orc = gate.canary_oracle_condition()
+        self.assertEqual([v["label"] for v in orc.vary], ["secret"])
+        pos = orc.vary[0]
+        line = orc.files[pos["file"]].split("\n")[pos["line"] - 1]
+        self.assertEqual(line.strip(), "let x: Int = 5")
+        self.assertIn("work(1, dry: x > 3)", orc.files[pos["file"]])
+        self.assertIn("journal where not dry", orc.files[pos["file"]])
+        self.assertTrue(gate.caught("oracle-condition", {
+            "finding": True, "error": None, "variants": [{"observers": ["public"]}],
+            "violations": []}))
 
 
 class Native(unittest.TestCase):

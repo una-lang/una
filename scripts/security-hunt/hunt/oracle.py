@@ -351,7 +351,7 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
                     variant=name)
         pkg = p.write(rundir)
         runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg,
-                                writable=rundir, timeout=timeout))
+                                writable=rundir, timeout=timeout, env_extra=native.RUN_ENV))
     if raw(runs[0]) != raw(runs[1]):
         return ("error", "nondeterministic: two runs of one variant differ"), runs[0]
     return observe(runs[0], observers, table, live_level), runs[0]
@@ -406,7 +406,7 @@ def native_pass(prog, una, root, timeout, result):
                     variant=name)
         pkg = p.write(rundir)
         run = sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg, writable=rundir,
-                          timeout=timeout)
+                          timeout=timeout, env_extra=native.RUN_ENV)
         try:
             status = json.loads(run.stdout).get("status")
         except (ValueError, AttributeError):
