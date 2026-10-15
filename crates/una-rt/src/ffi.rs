@@ -866,7 +866,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "does not finish under Miri within 15 minutes (#778)")]
     fn every_entry_point_takes_any_word_without_a_panic() {
         // #766, step 1: a lowering bug passes the runtime a word it never should. Each entry
         // point of the table must then return a word or count a fault, never panic, and the
@@ -878,10 +877,24 @@ mod tests {
             use num_bigint::BigInt;
 
             let int = |value: i64| values::int_word(&BigInt::from(value));
-            let pool = word_pool();
+            // Under Miri (#778), where each allocation is slow, a pool of one word of each kind
+            // (zero, a tagged integer, the extremes, a handle beyond the table, a freed one and
+            // one a slot off, a big integer, a text, a list, a variant and a map) and 20 drawn
+            // tuples, about 9,000 calls rather than more than 100,000.
+            let (pool, drawn, least) = if cfg!(miri) {
+                let all = word_pool();
+                let kinds = [0, 3, 6, 7, 13, 14, 15, 19, 20, 23, 24, 25];
+                (
+                    kinds.iter().filter_map(|&k| all.get(k).copied()).collect(),
+                    20,
+                    5_000,
+                )
+            } else {
+                (word_pool(), 600, 10_000)
+            };
             let small: Vec<i64> = (-3..=3).map(int).collect();
-            let cases = word_cases(&pool, Some(&small), 600);
-            assert!(cases.len() > 10_000, "{}", cases.len());
+            let cases = word_cases(&pool, Some(&small), drawn);
+            assert!(cases.len() > least, "{}", cases.len());
             let mut failures = Vec::new();
             for (name, call, tuple) in &cases {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(tuple)));
