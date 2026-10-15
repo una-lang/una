@@ -397,7 +397,8 @@ The amendment of 2026-10-14 states (g) as "`C″` is not already a conjunct of t
 
 ## Amendment (2026-10-15): when `una fix` restores a locked condition
 
-- Status: Proposed (#725)
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-15)
 
 Rule 8 says the repair of U3023 "is to restore the locked condition or label (rank 1, mechanical)", and the repair has carried `edit: null` so far, so `una fix` never applies it. This amendment gives the first repair of a refuted `contract_lock` obligation an edit, and states when. ADR 0084's amendment of the same date lets `una fix` see it.
 

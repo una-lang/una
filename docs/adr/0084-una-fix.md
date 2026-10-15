@@ -104,7 +104,8 @@ A conformance case pins each point:
 
 ## Amendment (2026-10-15): a restored locked condition is a tier-1 candidate
 
-- Status: Proposed (#725)
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-15)
 
 The amendment of 2026-10-14 admits one kind of tier-1 edit, and says that "a future kind that does needs its own amendment, which states its determinism as (h) does, before `una fix` applies it". ADR 0092's amendment of 2026-10-15 is that kind: the first repair of a refuted `contract_lock` obligation restores the locked condition in the header, and its determinism is stated there, under its condition (e), as (h) states it.
 
