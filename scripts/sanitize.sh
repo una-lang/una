@@ -98,13 +98,13 @@ linker_var=CARGO_TARGET_$(echo "$host" | tr '[:lower:]-' '[:upper:]_')_LINKER
 
 # The unit tests of una-rt at their full sizes, under AddressSanitizer (#778): Miri runs some of
 # them smaller, and the deep ones prove here, as natively, that their walks use no recursion.
-# The test binary is the one artifact built as a test (`"test":true` in its profile), never the
-# last one cargo happens to print. It must call AddressSanitizer's checks, or this step proves
-# nothing.
+# The test binary is the one artifact whose profile is a test's (`"profile":{…"test":true`),
+# never the last one cargo happens to print, and there must be exactly one. It must call
+# AddressSanitizer's checks, or this step proves nothing.
 asan_tests_binaries=$(env RUSTFLAGS="-Zsanitizer=address" "$linker_var=/usr/bin/cc" CC=/usr/bin/cc \
     cargo +"$channel" test -p una-rt --lib --target "$host" --target-dir target/sanitize \
     --no-run --message-format=json 2>/dev/null \
-    | grep '"test":true' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')
+    | grep '"profile":{[^}]*"test":true' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')
 [ "$(printf '%s\n' "$asan_tests_binaries" | grep -c .)" = 1 ] \
     || fail "the unit tests of una-rt built as $(printf '%s\n' "$asan_tests_binaries" | grep -c .) test binaries, not one"
 asan_tests_binary=$asan_tests_binaries
@@ -186,11 +186,30 @@ fuzz_bin=$fuzz_out/build/$host/release
 FUZZ_SEED=766
 FUZZ_TARGETS="literal:350000 words:350000 json:450000"
 FUZZ_CEILING=600
+# The coverage each target must reach, so that a target that returns early on every input, or a
+# runtime built without libFuzzer's counters, fails rather than running its count for nothing:
+# the counters of the instrumented code libFuzzer loads, and the edges (`cov`) and features
+# (`ft`) its run ends with. Each floor is nine tenths of a measured run's value
+# (docs/release-gates.md).
+FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
+
+# The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml
+# and left out here, or the reverse, fails.
+built_targets=$(sed -n '/^\[\[bin\]\]$/{n;s/^name = "\(.*\)"$/\1/p;}' fuzz/Cargo.toml | sort | tr '\n' ' ')
+listed_targets=$(for entry in canary $FUZZ_TARGETS; do echo "${entry%%:*}"; done | sort | tr '\n' ' ')
+[ "$built_targets" = "$listed_targets" ] \
+    || fail "fuzz/Cargo.toml builds the targets $built_targets, but this script runs $listed_targets"
 
 # Runs target $1 for $2 inputs; its status is left in $fuzz_rc, and in $fuzz_artifact the
 # input it kept for a crash, a timeout or an out-of-memory, if any.
 fuzz_run() {
     dir=$fuzz_out/$1
+    # A previous run's reproducers are kept, moved aside under the time they were moved; only
+    # the canary's, which are its planted crash, are removed.
+    if [ "$1" != canary ] && [ -n "$(find "$dir/artifacts" -type f 2>/dev/null | head -1)" ]; then
+        kept=$dir/artifacts-$(date -u +%Y%m%dT%H%M%SZ)
+        mv "$dir/artifacts" "$kept" && echo "the reproducers of the previous run of $1 are kept in $kept"
+    fi
     rm -rf "${dir:?}/corpus" "${dir:?}/artifacts" "${dir:?}/minimized"
     mkdir -p "$dir/corpus" "$dir/artifacts"
     env ASAN_OPTIONS="detect_leaks=0" "$fuzz_bin/$1" -seed="$FUZZ_SEED" -runs="$2" \
@@ -221,10 +240,13 @@ fuzz_report() {
 }
 
 # Each target calls AddressSanitizer's checks, with its runtime active.
-for target in canary literal words json; do
+for entry in canary $FUZZ_TARGETS; do
+    target=${entry%%:*}
     nm -u "$fuzz_bin/$target" | grep -q '___asan_report' \
         || fail "the fuzz target $target is not instrumented with AddressSanitizer"
-    ASAN_OPTIONS="verbosity=1:detect_leaks=0" "$fuzz_bin/$target" -runs=0 2>&1 \
+    mkdir -p "$fuzz_out/$target/check"
+    ASAN_OPTIONS="verbosity=1:detect_leaks=0" "$fuzz_bin/$target" -runs=0 \
+        -artifact_prefix="$fuzz_out/$target/check/" 2>&1 \
         | grep -q "AddressSanitizer: libc interceptors initialized" \
         || fail "AddressSanitizer is not active in the fuzz target $target"
 done
@@ -252,7 +274,21 @@ for entry in $FUZZ_TARGETS; do
     executed=$(sed -n 's/^stat::number_of_executed_units: *//p' "$fuzz_out/$target/log" | tail -1)
     [ -n "$executed" ] && [ "$executed" -ge "$runs" ] \
         || { tail -20 "$fuzz_out/$target/log" >&2; fail "the fuzz target $target ran ${executed:-no} inputs of $runs before its ceiling of $FUZZ_CEILING s"; }
+    # Its coverage, against the target's floors.
+    floors=$(for f in $FUZZ_FLOORS; do [ "${f%%:*}" = "$target" ] && echo "${f#*:}"; done)
+    [ -n "$floors" ] || fail "the fuzz target $target has no coverage floors"
+    counters=$(sed -n 's/.*(\([0-9]*\) inline 8-bit counters).*/\1/p' "$fuzz_out/$target/log" | head -1)
+    done_line=$(grep -E '^#[0-9]+[[:space:]]+DONE ' "$fuzz_out/$target/log" | tail -1)
+    cov=$(echo "$done_line" | sed -n 's/.* cov: \([0-9]*\) .*/\1/p')
+    ft=$(echo "$done_line" | sed -n 's/.* ft: \([0-9]*\) .*/\1/p')
+    floor_counters=$(echo "$floors" | cut -d: -f1)
+    floor_cov=$(echo "$floors" | cut -d: -f2)
+    floor_ft=$(echo "$floors" | cut -d: -f3)
+    [ -n "$counters" ] && [ -n "$cov" ] && [ -n "$ft" ] \
+        && [ "$counters" -ge "$floor_counters" ] && [ "$cov" -ge "$floor_cov" ] && [ "$ft" -ge "$floor_ft" ] \
+        || fail "the fuzz target $target reached ${counters:-no} counters, cov ${cov:-none} and ft ${ft:-none}, below its floors $floor_counters, $floor_cov and $floor_ft"
     grep -E '^Done [0-9]+ runs' "$fuzz_out/$target/log"
+    echo "coverage: $counters counters (floor $floor_counters), cov $cov (floor $floor_cov), ft $ft (floor $floor_ft)"
 done
 
 echo "sanitize: PASS ($channel, $host)"

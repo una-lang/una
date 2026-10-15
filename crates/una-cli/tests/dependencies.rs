@@ -307,6 +307,67 @@ fn the_fuzz_crate_takes_its_path_dependencies_from_the_workspace() {
 }
 
 #[test]
+fn the_fuzz_crate_fuzzes_the_workspace_crates_at_their_place() {
+    // The fuzz lock names its path packages by name and version only, which a path elsewhere
+    // with the same name and version would also satisfy. So `cargo metadata` says where they
+    // are: the fuzz crate's own manifest is `fuzz/Cargo.toml`, and each of its path
+    // dependencies is the manifest of a workspace member under `crates/`.
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--manifest-path",
+            "fuzz/Cargo.toml",
+            "--no-deps",
+            "--offline",
+            "--locked",
+            "--format-version",
+            "1",
+        ])
+        .current_dir(root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cargo metadata of fuzz/Cargo.toml: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let root = root();
+    let packages = metadata["packages"].as_array().unwrap();
+    assert_eq!(packages.len(), 1, "fuzz/Cargo.toml is one package");
+    let package = &packages[0];
+    let (name, version) = fuzz_crate();
+    assert_eq!(package["name"].as_str(), Some(name.as_str()));
+    assert_eq!(package["version"].as_str(), Some(version.as_str()));
+    assert_eq!(
+        Path::new(package["manifest_path"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        root.join("fuzz/Cargo.toml").canonicalize().unwrap()
+    );
+    let members: BTreeSet<String> = members().into_iter().map(|(name, _)| name).collect();
+    let mut paths = 0;
+    for dependency in package["dependencies"].as_array().unwrap() {
+        let Some(path) = dependency["path"].as_str() else {
+            continue;
+        };
+        paths += 1;
+        let name = dependency["name"].as_str().unwrap();
+        let place = Path::new(path).canonicalize().unwrap();
+        assert!(
+            members.contains(name)
+                && place == root.join("crates").join(name).canonicalize().unwrap(),
+            "the fuzz crate's path dependency {name} is at {}, not the workspace's crates/{name}",
+            place.display()
+        );
+    }
+    assert!(
+        paths >= 1,
+        "the fuzz crate has no path dependency on the workspace"
+    );
+}
+
+#[test]
 fn the_fuzz_record_lists_exactly_the_fuzz_crates_not_in_the_record() {
     let fuzz_only = fuzz_only(lock_packages(), fuzz_lock_packages());
     check_record(

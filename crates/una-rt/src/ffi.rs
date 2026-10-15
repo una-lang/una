@@ -907,9 +907,10 @@ mod tests {
             // and 20 drawn tuples, about 10,000 calls rather than more than 100,000. The
             // indices are positions in `word_pool`, whose length is checked so that they move
             // with it.
+            // The pool's length is checked on every run, under Miri or not.
+            assert_eq!(word_pool().len(), WORD_POOL_LEN);
             let (pool, drawn, least) = if cfg!(miri) {
                 let all = word_pool();
-                assert_eq!(all.len(), WORD_POOL_LEN);
                 let kinds = [0, 3, 6, 7, 13, 14, 15, 16, 19, 20, 23, 24, 25];
                 (kinds.iter().map(|&k| all[k]).collect(), 20, 5_000)
             } else {
