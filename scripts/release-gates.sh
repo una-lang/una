@@ -94,6 +94,25 @@ if [ -z "$PRIVACY" ]; then
         exit 2
     fi
 fi
+# The neutrality pattern of the public pages (ADR 0088, #789): UNA_NEUTRALITY_PATTERN when the
+# caller set it, else the macOS Keychain item una-neutrality-pattern, held and checked exactly
+# as the privacy pattern above: in a shell variable that is never exported, the caller's
+# variable unset at once, never printed, logged or written. Only the site gate receives it, in
+# the environment of its one command, which hands it on to the steps that check the pages.
+# Without it the run stops before any gate, unless UNA_GATES_UNCHECKED=1.
+NEUTRALITY=${UNA_NEUTRALITY_PATTERN:-}
+unset UNA_NEUTRALITY_PATTERN
+if [ -z "$NEUTRALITY" ] && command -v security > /dev/null 2>&1; then
+    NEUTRALITY=$(security find-generic-password -s una-neutrality-pattern -w 2> /dev/null) || NEUTRALITY=""
+fi
+if [ -z "$NEUTRALITY" ]; then
+    if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
+        echo "release gates: no neutrality pattern; UNA_GATES_UNCHECKED=1, so the pages are not checked against it" >&2
+    else
+        echo "release gates: no neutrality pattern: set UNA_NEUTRALITY_PATTERN, or create the Keychain item una-neutrality-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
+        exit 2
+    fi
+fi
 SOURCE=${UNA_GATES_SOURCE:-$(git -C "$REPO" remote get-url origin)}
 mkdir -p "$OUT/logs"
 OUT=$(CDPATH='' cd -- "$OUT" && pwd)
@@ -141,7 +160,15 @@ run() {
     start=$(date +%s)
     if ! exact; then
         echo "the clone is not exactly $SHA with no change; run the clone gate first" > "$log"
-    elif (cd "$CLONE" && "$@") > "$log" 2>&1; then
+    elif (
+        cd "$CLONE" || exit 1
+        # Only the site gate's command gets the neutrality pattern, in its environment alone.
+        if [ "$gate" = site ]; then
+            UNA_NEUTRALITY_PATTERN=$NEUTRALITY "$@"
+        else
+            "$@"
+        fi
+    ) > "$log" 2>&1; then
         result=PASS
     fi
     record "$gate" "$result" $(($(date +%s) - start))
@@ -277,12 +304,17 @@ gate_hunt() {
 }
 
 gate_site() {
+    # The neutrality pattern reaches this one command through its environment (`run`), never
+    # its arguments; the command takes it into a variable at once and hands it only to the
+    # bundle and the website steps.
     run site sh -c '
+        neutrality=$UNA_NEUTRALITY_PATTERN
+        unset UNA_NEUTRALITY_PATTERN
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
             && scripts/doc-links.py \
-            && UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && UNA_NEUTRALITY_PATTERN=$neutrality UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
+            && UNA_NEUTRALITY_PATTERN=$neutrality UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
 

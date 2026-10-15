@@ -148,8 +148,10 @@ def main():
         read, write = os.pipe()
         os.write(write, pattern.encode() + b"\n")
         os.close(write)
+        # Nor in grep's environment: it needs only the pipe.
+        env = {k: v for k, v in os.environ.items() if k != "UNA_PRIVACY_PATTERN"}
         found = subprocess.run(["grep", "-E", "-i", "-q", "-f", f"/dev/fd/{read}"],
-                               input=summary.encode(), pass_fds=(read,))
+                               input=summary.encode(), pass_fds=(read,), env=env)
         os.close(read)
         if found.returncode == 0:
             fail("the summary matches UNA_PRIVACY_PATTERN")

@@ -97,6 +97,8 @@ json() {
 }
 
 pattern=${UNA_NEUTRALITY_PATTERN:-}
+# Held in this variable only: no command this script runs inherits it.
+unset UNA_NEUTRALITY_PATTERN
 neutrality=unchecked
 [ -n "$pattern" ] && neutrality=checked
 
@@ -120,7 +122,9 @@ echo "$files" | while read -r kind path; do
     esac
     neutral=null
     if [ -n "$pattern" ]; then
-        if grep -Eiq -- "$pattern" "$path"; then neutral=false; else neutral=true; fi
+        # The pattern goes to grep on its standard input (the shell's own printf), never as an
+        # argument, which other processes could read.
+        if printf '%s\n' "$pattern" | grep -Eiq -f - -- "$path"; then neutral=false; else neutral=true; fi
     fi
     printf '{"path":%s,"kind":"%s","title":%s,"sha256":"%s","spec_refs":[%s],"neutral":%s}\n' \
         "$(printf '%s\n' "$path" | json)" "$kind" "$title" "$digest" "$refs" "$neutral" >>"$entries"

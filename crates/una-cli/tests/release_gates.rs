@@ -23,6 +23,7 @@ fn gates(sha: &str, out: &Path, gates: &[&str]) -> Output {
         .args(gates)
         .env("UNA_GATES_SOURCE", root())
         .env_remove("UNA_PRIVACY_PATTERN")
+        .env_remove("UNA_NEUTRALITY_PATTERN")
         .env("UNA_GATES_UNCHECKED", "1")
         .output()
         .unwrap()
@@ -310,18 +311,43 @@ fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// One Keychain item of the fake `security`: what it answers and its exit code, and the value of
+/// its environment variable when the caller exports one.
+#[derive(Clone, Copy)]
+struct Item<'a> {
+    answer: &'a str,
+    code: i32,
+    exported: Option<&'a str>,
+}
+
+/// An item the Keychain holds, with `answer`, and that the caller does not export.
+fn held(answer: &str) -> Item<'_> {
+    Item {
+        answer,
+        code: 0,
+        exported: None,
+    }
+}
+
+/// An item the Keychain does not hold (`security` exits 44), exported as `exported` or not.
+fn absent(exported: Option<&str>) -> Item<'_> {
+    Item {
+        answer: "",
+        code: 44,
+        exported,
+    }
+}
+
 /// Runs the clone gate on `sha` into a fresh `out`, with a fake `security` first on PATH that
-/// answers the Keychain query with `answer` (and exit code `code`), UNA_PRIVACY_PATTERN set to
-/// `exported` or unset, and UNA_GATES_UNCHECKED unset. A fake `git` first on PATH appends the
+/// answers the Keychain queries for `una-privacy-pattern` with `privacy` and for
+/// `una-neutrality-pattern` with `neutrality`, UNA_PRIVACY_PATTERN and UNA_NEUTRALITY_PATTERN
+/// set as their items say, and UNA_GATES_UNCHECKED unset. A fake `git` and a fake `grep` first
+/// on PATH append the command lines they were started with to `out`.argv, and the fake `git`
+/// its environment to `out`.env, then run the real ones, so the test sees what a gate's child
+/// inherits and what any process's arguments hold. A fake `git` first on PATH appends the
 /// environment it was started with to `out`.env and then runs the real git, so the test sees
 /// what a gate's child inherits.
-fn gates_with_keychain(
-    sha: &str,
-    out: &Path,
-    answer: &str,
-    code: i32,
-    exported: Option<&str>,
-) -> Output {
+fn gates_with_keychain(sha: &str, out: &Path, privacy: Item, neutrality: Item) -> Output {
     let _ = std::fs::remove_dir_all(out);
     let bin = out.with_extension("bin");
     let _ = std::fs::remove_dir_all(&bin);
@@ -330,7 +356,8 @@ fn gates_with_keychain(
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\n[ \"$1 $2 $3\" = \"find-generic-password -s una-privacy-pattern\" ] || exit 9\nprintf '%s\\n' '{answer}'\nexit {code}\n"
+            "#!/bin/sh\n[ \"$1 $2 $4\" = \"find-generic-password -s -w\" ] || exit 9\ncase $3 in\n    una-privacy-pattern) printf '%s\\n' '{}'; exit {} ;;\n    una-neutrality-pattern) printf '%s\\n' '{}'; exit {} ;;\nesac\nexit 9\n",
+            privacy.answer, privacy.code, neutrality.answer, neutrality.code
         ),
     )
     .unwrap();
@@ -350,16 +377,42 @@ fn gates_with_keychain(
         .to_owned();
     let dump = out.with_extension("env");
     let _ = std::fs::remove_file(&dump);
+    let argv = out.with_extension("argv");
+    let _ = std::fs::remove_file(&argv);
     let git = bin.join("git");
     std::fs::write(
         &git,
         format!(
-            "#!/bin/sh\nenv >> '{}'\nexec '{real_git}' \"$@\"\n",
+            "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nenv >> '{}'\nexec '{real_git}' \"$@\"\n",
+            argv.display(),
             dump.display()
         ),
     )
     .unwrap();
     let status = Command::new("chmod").arg("755").arg(&git).status().unwrap();
+    assert!(status.success());
+    let real_grep = Command::new("sh")
+        .args(["-c", "command -v grep"])
+        .output()
+        .unwrap();
+    let real_grep = String::from_utf8(real_grep.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let grep = bin.join("grep");
+    std::fs::write(
+        &grep,
+        format!(
+            "#!/bin/sh\nprintf 'grep %s\\n' \"$*\" >> '{}'\nexec '{real_grep}' \"$@\"\n",
+            argv.display()
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(&grep)
+        .status()
+        .unwrap();
     assert!(status.success());
     // The test's own PATH, with the fakes in front: a test may read its environment, which the
     // library rule (compiler/conventions.md §1) does not cover.
@@ -375,9 +428,13 @@ fn gates_with_keychain(
         .env("UNA_GATES_SOURCE", root())
         .env("PATH", path)
         .env_remove("UNA_PRIVACY_PATTERN")
+        .env_remove("UNA_NEUTRALITY_PATTERN")
         .env_remove("UNA_GATES_UNCHECKED");
-    if let Some(pattern) = exported {
+    if let Some(pattern) = privacy.exported {
         command.env("UNA_PRIVACY_PATTERN", pattern);
+    }
+    if let Some(pattern) = neutrality.exported {
+        command.env("UNA_NEUTRALITY_PATTERN", pattern);
     }
     command.output().unwrap()
 }
@@ -411,7 +468,7 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
     // A sentinel that appears nowhere else: if the script printed, logged or wrote the pattern,
     // it would show up below.
     let sentinel = "sentinel-7f3a9c1e-una-privacy";
-    let output = gates_with_keychain(&sha, &out, sentinel, 0, None);
+    let output = gates_with_keychain(&sha, &out, held(sentinel), held("neutrality-held"));
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -437,9 +494,20 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
         !dump.contains(sentinel),
         "a gate's child inherited the pattern"
     );
+    // No process got it as an argument: not git, and not the grep that checks the summary,
+    // which reads it from a pipe.
+    let args = std::fs::read_to_string(out.with_extension("argv")).unwrap();
+    assert!(
+        args.contains("grep -E -i -q -f /dev/fd/"),
+        "the summary's check did not run:\n{args}"
+    );
+    assert!(
+        !args.contains(sentinel),
+        "a process had the pattern in its arguments"
+    );
     // A pattern the caller exported is read, then unset for every gate.
     let exported = "sentinel-41b8d2f0-exported";
-    let output = gates_with_keychain(&sha, &out, "", 44, Some(exported));
+    let output = gates_with_keychain(&sha, &out, absent(Some(exported)), held("neutrality-held"));
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -454,8 +522,13 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
     );
     let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
     assert!(!String::from_utf8_lossy(&printed).contains(exported));
+    let args = std::fs::read_to_string(out.with_extension("argv")).unwrap();
+    assert!(
+        !args.contains(exported),
+        "a process had the pattern in its arguments"
+    );
     // No Keychain item and no UNA_GATES_UNCHECKED: the run stops before any gate.
-    let output = gates_with_keychain(&sha, &out, "", 44, None);
+    let output = gates_with_keychain(&sha, &out, absent(None), held("neutrality-held"));
     assert_eq!(output.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&output.stderr)
@@ -467,4 +540,82 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
     let _ = std::fs::remove_dir_all(&out);
     let _ = std::fs::remove_dir_all(out.with_extension("bin"));
     let _ = std::fs::remove_file(out.with_extension("env"));
+    let _ = std::fs::remove_file(out.with_extension("argv"));
+}
+
+#[test]
+fn the_neutrality_pattern_comes_from_the_keychain_and_is_never_printed_or_written() {
+    // #789: read as the privacy pattern is, and never passed to the gates other than the site
+    // gate, which the clone gate below is not.
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-neutrality");
+    let sentinel = "sentinel-5c2e8b47-una-neutrality";
+    let output = gates_with_keychain(&sha, &out, held("privacy-held"), held(sentinel));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    assert!(
+        !String::from_utf8_lossy(&printed).contains(sentinel),
+        "the pattern was printed"
+    );
+    for (path, bytes) in contents(&out) {
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(sentinel),
+            "the pattern was written to {}",
+            path.display()
+        );
+    }
+    let dump = std::fs::read_to_string(out.with_extension("env")).unwrap();
+    assert!(dump.contains("PATH="), "the fake git did not run");
+    assert!(
+        !dump.contains(sentinel) && !dump.contains("UNA_NEUTRALITY_PATTERN"),
+        "a gate's child inherited the pattern"
+    );
+    let args = std::fs::read_to_string(out.with_extension("argv")).unwrap();
+    assert!(
+        !args.contains(sentinel),
+        "a process had the pattern in its arguments"
+    );
+    // A pattern the caller exported is read, then unset for every gate.
+    let exported = "sentinel-90d1a6c3-exported-neutrality";
+    let output = gates_with_keychain(&sha, &out, held("privacy-held"), absent(Some(exported)));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump = std::fs::read_to_string(out.with_extension("env")).unwrap();
+    assert!(dump.contains("PATH="), "the fake git did not run");
+    assert!(
+        !dump.contains(exported),
+        "a gate's child inherited the exported pattern"
+    );
+    let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    assert!(!String::from_utf8_lossy(&printed).contains(exported));
+    let args = std::fs::read_to_string(out.with_extension("argv")).unwrap();
+    assert!(
+        !args.contains(exported),
+        "a process had the pattern in its arguments"
+    );
+    // No Keychain item and no UNA_GATES_UNCHECKED: the run stops before any gate.
+    let output = gates_with_keychain(&sha, &out, held("privacy-held"), absent(None));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("create the Keychain item una-neutrality-pattern"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.join("results.tsv").exists());
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(out.with_extension("bin"));
+    let _ = std::fs::remove_file(out.with_extension("env"));
+    let _ = std::fs::remove_file(out.with_extension("argv"));
 }

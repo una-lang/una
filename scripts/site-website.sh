@@ -13,6 +13,15 @@
 # checkout's `una`, before the website builds /learn/ from the clone. The build must then
 # report its Learn pages. A website without learn.lock is built without them, and this says so.
 #
+# Neutrality of the Learn pages (#789, una-lang/una-by-example#15): check.py also runs with
+# --require-neutrality, so every README of una-by-example, English or translated, is checked
+# against UNA_NEUTRALITY_PATTERN, which comes only from this script's environment (from
+# scripts/release-gates.sh, which reads it from its caller or the Keychain), and a run without
+# the pattern fails. Only under UNA_GATES_UNCHECKED=1, a run whose summary is not for
+# publication (scripts/release-gates.sh), is the check skipped, and check.py says so. The
+# website is built with UNA_LEARN_DRAFTS unset, so no environment can turn its build into the
+# preview of draft translations.
+#
 # It needs git access to the website's repository (and to una-by-example when the website pins it), Node.js (>= 20.19) with npm, and Python 3. It installs
 # the website's packages with `npm ci --ignore-scripts`, from its package-lock.json, so no
 # install script runs. Before that, the website's scripts/deps-audit.mjs audits the lockfile
@@ -29,6 +38,11 @@ set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+
+# The neutrality pattern, taken from the environment into a variable at once and unset, so that
+# only the two commands below that check pages receive it, each in its own environment.
+neutral=${UNA_NEUTRALITY_PATTERN:-}
+unset UNA_NEUTRALITY_PATTERN
 
 fail() {
     echo "site-website: FAIL ($1)" >&2
@@ -82,7 +96,13 @@ if [ -f "$website/learn.lock" ]; then
     archives=$out/una-by-example-archives
     rm -rf "${archives:?}"
     python3 -B "$learn/scripts/archive.py" "$archives" || fail "una-by-example's archives do not build"
-    python3 -B "$learn/scripts/check.py" --una "$una" --una-version-from-binary --archives "$archives" \
+    neutrality=--require-neutrality
+    if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
+        neutrality=
+        echo "una-by-example: UNA_GATES_UNCHECKED=1, so the neutrality pattern is not required"
+    fi
+    # shellcheck disable=SC2086 # $neutrality is one flag or none.
+    UNA_NEUTRALITY_PATTERN=$neutral python3 -B "$learn/scripts/check.py" --una "$una" --una-version-from-binary --archives "$archives" $neutrality \
         || fail "an example of una-by-example does not check with this una"
 else
     echo "una-by-example: skipped (the website at $commit has no learn.lock)"
@@ -99,7 +119,7 @@ node scripts/deps-audit.mjs || fail "the website's dependency audit"
 npm ci --ignore-scripts --no-audit --no-fund --loglevel=error || fail "npm ci"
 node "$root/scripts/doc-links/website-anchors.mjs" "$out/anchors/ids.json" "$root" \
     || fail "the heading ids of scripts/doc-links.py are not the website's"
-UNA_BUNDLE=$bundle UNA_BY_EXAMPLE=$learn npm run --silent build >"$out/website-build.log" 2>&1 \
+UNA_NEUTRALITY_PATTERN=$neutral env -u UNA_LEARN_DRAFTS UNA_BUNDLE="$bundle" UNA_BY_EXAMPLE="$learn" npm run --silent build >"$out/website-build.log" 2>&1 \
     || { cat "$out/website-build.log" >&2; fail "the website does not build from the bundle"; }
 cat "$out/website-build.log"
 if [ -n "$learn" ]; then
