@@ -208,9 +208,33 @@ Three kernels, each written in Una and as two or three C programs that emulate t
 
 Method, as ADR 0106's measurements: each program is built outside the timing; every variant of a kernel must print the same output; one discarded warm-up round; then 15 interleaved rounds, timed with a monotonic clock, on a quiet machine. C is compiled with `cc -O2 -fwrapv -fno-strict-aliasing -fno-delete-null-pointer-checks`. Medians, with the minimum and maximum:
 
-MEASURE: table to fill from the quiet slot, one row per kernel and variant, with today's `una build` executable as a fourth column.
+Measured on 2026-10-15, 03:43 to 03:45 UTC, on an Apple M1 Max (10 cores), macOS 26.6.2, Apple clang 21.0.0, on a quiet machine, with `una` 0.3.14 built in release mode from `main` at 56bfcc1d. Every variant of a kernel printed the same output. Seconds, medians of 15 rounds, with the minimum and maximum:
 
-The C "boxed" variants understate today's cost: they model a fixed-width method as an out-of-line call on a tagged word, where the runtime converts through an arbitrary-precision integer.
+| Kernel | Variant | Median | Min | Max |
+|---|---|---|---|---|
+| k1 | C, today's layout ("boxed") | 0.1554 | 0.1551 | 0.1607 |
+| k1 | C, pointer ("layout") | 0.1325 | 0.1142 | 0.1364 |
+| k1 | C, checked handle ("indexed") | 0.1524 | 0.1341 | 0.1593 |
+| k1 | `una build`, today | 2.8011 | 2.7462 | 2.8891 |
+| k1c | C, boxed | 0.1573 | 0.1560 | 0.1642 |
+| k1c | C, layout | 0.1331 | 0.1160 | 0.1440 |
+| k1c | C, indexed | 0.1544 | 0.1361 | 0.1621 |
+| k2 | C, boxed | 0.0128 | 0.0125 | 0.0144 |
+| k2 | C, packed ("layout") | 0.0062 | 0.0061 | 0.0069 |
+| k2 | `una build`, today | 2.1793 | 2.1578 | 2.2680 |
+| k3 | C, boxed (heap tuple) | 0.3043 | 0.3028 | 0.3094 |
+| k3 | C, registers ("layout") | 0.0128 | 0.0126 | 0.0140 |
+| k3 | `una build`, today | 1.4848 | 1.4753 | 1.4994 |
+
+What the numbers say:
+
+- **Records (k1).** All three C variants allocate one record per iteration, and the allocation dominates: the inline access of rules 2 and 3 gains little over today's layout emulated in C (0.152 against 0.155 s). The gain of rule 3 is in what the emulation leaves out (next point). Rule 2's checked handle costs about 15% against a raw pointer (0.152 against 0.133 s), with its slot table and checks: more than the earlier estimate of "a few percent", and it stays, for memory safety (Alternative A). A runtime call between the two reads (k1c) adds almost nothing.
+- **Packed bytes (k2).** Rule 5 halves the time of the C emulation (2.1x), with an eighth of the memory.
+- **Loop state (k3).** Rule 6 removes a heap tuple per iteration: 24x against the emulation.
+- **Today's executable is far slower than the emulation of its own layout**: 18x on k1, 170x on k2, 5x on k3. The emulation calls a few out-of-line functions per operation. Today's runtime borrows its heap through a `RefCell` on every call, checks the call depth and budget, and converts every fixed-width method through an arbitrary-precision integer. So the layout of this ADR is only part of the distance to parity: most of the rest is the code each operation runs, which the optimized backend (ADR 0106) and the inline lowering of rules 1 to 6 address together. The Evidence does not separate the two shares; the implementing pull requests of rule 12 measure each step with these kernels.
+- **The C numbers are not Una numbers.** The gains above (2.1x packed, 24x registers) are those of the layout in C. They show in Una's executables only once a backend emits that code, which for the optimized backend is #522 (ADR 0106). Until then, a rule of this ADR implemented in the Cranelift backend is measured on its own, with these kernels.
+
+The C "boxed" variants understate today's cost, as the table shows: they model a fixed-width method as an out-of-line call on a tagged word, where the runtime converts through an arbitrary-precision integer, and a runtime call as a plain function call.
 
 ## Against the Gate 2 performance bar
 
@@ -219,7 +243,7 @@ Gate 2's performance bar is parity with Rust on the benchmark set: a geometric m
 | Decision | Cost kept against Rust | Expected effect on the bar | Meant to remove it |
 |---|---|---|---|
 | `Int` stays a tagged word that promotes (rule 1, ADR 0106) | an overflow branch and a tag adjustment per operation; promotion is rare | up to about 1.3x on loops of unrefined `Int` arithmetic; near parity where code uses `I64` or a refinement | #737: a range the verifier proves makes `Int` a plain machine integer (`spec/16 §4` rule 2) |
-| checked handles (rule 2) | per first field read of a handle after a call: 1 `clz`, 3 to 4 loads, a bit test and 3 compares | an estimate, not a measurement: a few percent on record-heavy code, since the branches are predicted and reads of one handle between calls share the check. The C compiler cannot hoist the check out of a loop that stores through an `int64_t *` (an in-place field edit), since under `-fno-strict-aliasing` the store may alias the slot; the Evidence measures both cases (k1 and k1c) | none planned: kept on purpose for memory safety (Alternative A) |
+| checked handles (rule 2) | per first field read of a handle after a call: 1 `clz`, 3 to 4 loads, a bit test and 3 compares | measured: about 15% against a raw pointer on k1 and k1c, which allocate a record per iteration (0.152 against 0.133 s); a call between reads adds almost nothing. The C compiler cannot hoist the check out of a loop that stores through an `int64_t *` (an in-place field edit), since under `-fno-strict-aliasing` the store may alias the slot. This fits Gate 2's 1.1x geometric mean only if allocation-bound, record-heavy programs are a minority of the benchmark set, or if the rest of such a program runs faster than Rust: an assumption, stated, not shown | kept for memory safety (Alternative A). If it binds, hoisting the generation and layout check to once per handle per loop iteration when no runtime call intervenes is a later elision item, with #737, not this ADR's |
 | a heap object per record (rules 2, 3; regions deferred) | an allocation, a slot and reference counting for every record, where Rust keeps short-lived structs on the stack | **the largest gap**: likely above 1.5x on kernels that build many small short-lived records, as k1 does | #750: small records without a heap object, by escape analysis or regions (rule 8, Alternative D) |
 | the uniform word at generic and closure boundaries (rule 4) | boxing per crossing, and a call through a function pointer that blocks inlining | likely above 1.5x on hot `map`, `fold` or `filter` over fixed-width elements with a lambda, where Rust inlines the iterator chain; none for `for` loops, which have no closure | #752: call-site specialization of the prelude's higher-order functions, with #522 |
 | reference counting (unchanged, `spec/16 §4` rule 1) | a non-atomic increment and decrement per shared use | about 1.0 to 1.2x on pointer-heavy code | borrow inference already removes most; #737 does not touch it |
@@ -241,7 +265,7 @@ So, plainly: with this ADR, #737, #738 and #522, parity is plausible for loops o
 
 ## Alternatives considered
 
-**A. Handles become pointers to the object.** One `clz`, two loads, a bit test and three compares fewer per access (k1 "layout" against "indexed"). Not chosen: a stale or corrupt handle would read freed or foreign memory, a reused slot would answer for a stale handle, the C backend's memory safety would depend on the correctness of its own output, and the runtime would need `unsafe` beyond `ffi.rs` to follow pointers. The checks of rule 2 cost little next to what the inline access saves.
+**A. Handles become pointers to the object.** One `clz`, two loads, a bit test and three compares fewer per access (k1 "layout" against "indexed"). Not chosen: a stale or corrupt handle would read freed or foreign memory, a reused slot would answer for a stale handle, the C backend's memory safety would depend on the correctness of its own output, and the runtime would need `unsafe` beyond `ffi.rs` to follow pointers. The checks of rule 2 cost about 15% on k1 against a pointer (Evidence); this ADR pays it for memory safety.
 
 **B. Monomorphize generic code per representation**, so a `List[U8]` passed to `map` needs no boxing. Not chosen: it breaks the single compiled copy of ADR 0062 rule 11 and ADR 0066, and code grows with instantiations. Rule 4's boxing costs O(1) per crossing.
 
