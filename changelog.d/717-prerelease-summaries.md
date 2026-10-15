@@ -1,0 +1,1 @@
+- **A pre-release has a validation summary and is published as a pre-release** (#717, `docs/release-gates.md`). The summary's version and archive names accept a pre-release suffix such as `0.4.0-alpha.1`, and the publish command that `scripts/release-gates.sh` prints, now from `scripts/release-publish.sh`, adds `--prerelease --latest=false` for one.

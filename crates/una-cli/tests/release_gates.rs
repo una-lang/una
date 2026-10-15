@@ -22,6 +22,8 @@ fn gates(sha: &str, out: &Path, gates: &[&str]) -> Output {
         .arg(out)
         .args(gates)
         .env("UNA_GATES_SOURCE", root())
+        .env_remove("UNA_PRIVACY_PATTERN")
+        .env("UNA_GATES_UNCHECKED", "1")
         .output()
         .unwrap()
 }
@@ -145,9 +147,14 @@ fn usage_errors_exit_with_2() {
     );
 }
 
-/// Runs `scripts/release-summary.py` on `record`, with `pattern` as UNA_PRIVACY_PATTERN when
-/// given, and returns its exit code and the summary it wrote.
-fn summary(dir: &Path, record: &str, pattern: Option<&str>) -> (Option<i32>, String) {
+/// Runs `scripts/release-summary.py` for `version` on `record`, with `pattern` as
+/// UNA_PRIVACY_PATTERN when given, and returns its exit code and the summary it wrote.
+fn summary(
+    dir: &Path,
+    version: &str,
+    record: &str,
+    pattern: Option<&str>,
+) -> (Option<i32>, String) {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("record.md"), record).unwrap();
@@ -155,7 +162,7 @@ fn summary(dir: &Path, record: &str, pattern: Option<&str>) -> (Option<i32>, Str
     command
         .arg("-B")
         .arg(root().join("scripts/release-summary.py"))
-        .arg("9.9.9")
+        .arg(version)
         .arg(dir.join("record.md"))
         .arg(dir.join("summary.md"))
         .env_remove("UNA_PRIVACY_PATTERN");
@@ -176,7 +183,7 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
         commit = "c".repeat(40),
     );
-    let (code, written) = summary(&dir, &record, Some("not-in-the-summary"));
+    let (code, written) = summary(&dir, "9.9.9", &record, Some("not-in-the-summary"));
     assert_eq!(code, Some(0));
     assert_eq!(
         written,
@@ -186,7 +193,7 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         )
     );
     // A summary that matches the privacy pattern is not written.
-    let (code, written) = summary(&dir, &record, Some("darwin"));
+    let (code, written) = summary(&dir, "9.9.9", &record, Some("darwin"));
     assert_eq!(code, Some(1));
     assert!(written.is_empty());
     // A field out of its shape stops the summary: free text in the run line, or a gate the
@@ -195,9 +202,258 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         ("Darwin arm64", "Darwin arm64 on a named host"),
         ("| build | PASS |", "| deploy | PASS |"),
     ] {
-        let (code, written) = summary(&dir, &record.replace(from, to), None);
+        let (code, written) = summary(&dir, "9.9.9", &record.replace(from, to), None);
         assert_eq!(code, Some(1), "{to}");
         assert!(written.is_empty(), "{to}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-pre");
+    let digest = "a".repeat(64);
+    let record = |archive: &str| {
+        format!(
+            "# Validation record\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{digest}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `{archive}` | `{digest}` |\n\nVerdict: PASS (every gate)\n",
+            commit = "c".repeat(40),
+        )
+    };
+    let (code, written) = summary(
+        &dir,
+        "0.4.0-alpha.1",
+        &record("una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz"),
+        None,
+    );
+    assert_eq!(code, Some(0));
+    assert!(
+        written.starts_with("# Una v0.4.0-alpha.1: release validation\n"),
+        "{written}"
+    );
+    // Written without the privacy pattern: it says so.
+    assert!(
+        written
+            .contains("**Unchecked: written without the privacy pattern; not for publication.**"),
+        "{written}"
+    );
+    assert!(
+        written.contains(&format!(
+            "| `una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz` | `{digest}` |"
+        )),
+        "{written}"
+    );
+    // An archive of another version, or a version out of shape, stops the summary.
+    for (version, archive) in [
+        (
+            "0.4.0-alpha.1",
+            "una-0.4.0-alpha.2-aarch64-apple-darwin.tar.gz",
+        ),
+        ("0.4.0-alpha.1", "una-0.4.0-alpha.1-Darwin Arm.tar.gz"),
+        (
+            "0.4.0-alpha..1",
+            "una-0.4.0-alpha..1-aarch64-apple-darwin.tar.gz",
+        ),
+    ] {
+        let (code, written) = summary(&dir, version, &record(archive), None);
+        assert_eq!(code, Some(1), "{version} {archive}");
+        assert!(written.is_empty(), "{version} {archive}");
+    }
+    // The printed command: a pre-release is published as one, a release is not.
+    let built = dir.join("built");
+    std::fs::create_dir_all(&built).unwrap();
+    let publish = |version: &str| {
+        let output = Command::new("sh")
+            .arg(root().join("scripts/release-publish.sh"))
+            .arg(version)
+            .arg("/out")
+            .arg(&built)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    std::fs::write(
+        built.join("una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz"),
+        "",
+    )
+    .unwrap();
+    let command = publish("0.4.0-alpha.1");
+    assert!(
+        command.contains(
+            "gh release create v0.4.0-alpha.1 --verify-tag --title \"Una v0.4.0-alpha.1\" --notes-file /out/release-notes.md --prerelease --latest=false \\\n"
+        ),
+        "{command}"
+    );
+    assert!(
+        command.ends_with("    /out/una-0.4.0-alpha.1-validation.md\n"),
+        "{command}"
+    );
+    std::fs::remove_file(built.join("una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz")).unwrap();
+    std::fs::write(built.join("una-0.4.0-aarch64-apple-darwin.tar.gz"), "").unwrap();
+    let command = publish("0.4.0");
+    assert!(!command.contains("--prerelease"), "{command}");
+    assert!(
+        command.contains("--notes-file /out/release-notes.md \\\n"),
+        "{command}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs the clone gate on `sha` into a fresh `out`, with a fake `security` first on PATH that
+/// answers the Keychain query with `answer` (and exit code `code`), UNA_PRIVACY_PATTERN set to
+/// `exported` or unset, and UNA_GATES_UNCHECKED unset. A fake `git` first on PATH appends the
+/// environment it was started with to `out`.env and then runs the real git, so the test sees
+/// what a gate's child inherits.
+fn gates_with_keychain(
+    sha: &str,
+    out: &Path,
+    answer: &str,
+    code: i32,
+    exported: Option<&str>,
+) -> Output {
+    let _ = std::fs::remove_dir_all(out);
+    let bin = out.with_extension("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("security");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"find-generic-password -s una-privacy-pattern\" ] || exit 9\nprintf '%s\\n' '{answer}'\nexit {code}\n"
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(&fake)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real_git = String::from_utf8(real_git.stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let dump = out.with_extension("env");
+    let _ = std::fs::remove_file(&dump);
+    let git = bin.join("git");
+    std::fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\nenv >> '{}'\nexec '{real_git}' \"$@\"\n",
+            dump.display()
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod").arg("755").arg(&git).status().unwrap();
+    assert!(status.success());
+    // The test's own PATH, with the fakes in front: a test may read its environment, which the
+    // library rule (compiler/conventions.md §1) does not cover.
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    let path = format!("{}:{inherited}", bin.display());
+    let mut command = Command::new("bash");
+    command
+        .arg(root().join("scripts/release-gates.sh"))
+        .arg(sha)
+        .arg(out)
+        .arg("clone")
+        .env("UNA_GATES_SOURCE", root())
+        .env("PATH", path)
+        .env_remove("UNA_PRIVACY_PATTERN")
+        .env_remove("UNA_GATES_UNCHECKED");
+    if let Some(pattern) = exported {
+        command.env("UNA_PRIVACY_PATTERN", pattern);
+    }
+    command.output().unwrap()
+}
+
+/// Every file under `dir`, read as bytes, except the clone of the repository, whose sources
+/// (this test among them) are not the run's output.
+fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path != dir.join("clone") {
+                    stack.push(path);
+                }
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.push((path, bytes));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-keychain");
+    // A sentinel that appears nowhere else: if the script printed, logged or wrote the pattern,
+    // it would show up below.
+    let sentinel = "sentinel-7f3a9c1e-una-privacy";
+    let output = gates_with_keychain(&sha, &out, sentinel, 0, None);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    assert!(
+        !String::from_utf8_lossy(&printed).contains(sentinel),
+        "the pattern was printed"
+    );
+    for (path, bytes) in contents(&out) {
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(sentinel),
+            "the pattern was written to {}",
+            path.display()
+        );
+    }
+    // No gate's child inherits it: the environment of every git the gates ran lacks it.
+    let dump = std::fs::read_to_string(out.with_extension("env")).unwrap();
+    assert!(dump.contains("PATH="), "the fake git did not run");
+    assert!(
+        !dump.contains(sentinel),
+        "a gate's child inherited the pattern"
+    );
+    // A pattern the caller exported is read, then unset for every gate.
+    let exported = "sentinel-41b8d2f0-exported";
+    let output = gates_with_keychain(&sha, &out, "", 44, Some(exported));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump = std::fs::read_to_string(out.with_extension("env")).unwrap();
+    assert!(dump.contains("PATH="), "the fake git did not run");
+    assert!(
+        !dump.contains(exported),
+        "a gate's child inherited the exported pattern"
+    );
+    let printed = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    assert!(!String::from_utf8_lossy(&printed).contains(exported));
+    // No Keychain item and no UNA_GATES_UNCHECKED: the run stops before any gate.
+    let output = gates_with_keychain(&sha, &out, "", 44, None);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("create the Keychain item una-privacy-pattern"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!out.join("results.tsv").exists());
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(out.with_extension("bin"));
+    let _ = std::fs::remove_file(out.with_extension("env"));
 }

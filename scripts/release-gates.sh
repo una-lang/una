@@ -60,6 +60,27 @@ for gate in "${GATES[@]}"; do
 done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+
+# The privacy pattern of the public summary (#717, docs/release-gates.md §3): UNA_PRIVACY_PATTERN
+# when the caller set it, else the macOS Keychain item una-privacy-pattern. It is held in a shell
+# variable that is never exported, and the caller's UNA_PRIVACY_PATTERN is unset at once, so no
+# gate and no child of a gate inherits it; only the summary step receives it. It is never
+# printed, logged or written. Without it the run stops before any gate (fail closed), unless
+# UNA_GATES_UNCHECKED=1 asks for a run whose summary is unchecked and that prints no publish
+# command, such as a dry run.
+PRIVACY=${UNA_PRIVACY_PATTERN:-}
+unset UNA_PRIVACY_PATTERN
+if [ -z "$PRIVACY" ] && command -v security > /dev/null 2>&1; then
+    PRIVACY=$(security find-generic-password -s una-privacy-pattern -w 2> /dev/null) || PRIVACY=""
+fi
+if [ -z "$PRIVACY" ]; then
+    if [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
+        echo "release gates: no privacy pattern; UNA_GATES_UNCHECKED=1, so the summary is unchecked and no publish command is printed" >&2
+    else
+        echo "release gates: no privacy pattern: set UNA_PRIVACY_PATTERN, or create the Keychain item una-privacy-pattern; UNA_GATES_UNCHECKED=1 runs the gates without it, for a run that is not published" >&2
+        exit 2
+    fi
+fi
 SOURCE=${UNA_GATES_SOURCE:-$(git -C "$REPO" remote get-url origin)}
 mkdir -p "$OUT/logs"
 OUT=$(CDPATH='' cd -- "$OUT" && pwd)
@@ -312,18 +333,13 @@ echo "record: $OUT/record.md"
 # whose summary passed the privacy check (docs/release-gates.md §4).
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
 rm -f "$OUT/summary.md" "$OUT/release-notes.md" "$OUT"/una-*-validation.md
-if [ -n "$version" ] && python3 -B "$REPO/scripts/release-summary.py" "$version" "$OUT/record.md" "$OUT/summary.md"; then
+if [ -n "$version" ] && UNA_PRIVACY_PATTERN="$PRIVACY" python3 -B "$REPO/scripts/release-summary.py" "$version" "$OUT/record.md" "$OUT/summary.md"; then
     built=$CLONE/target/local-release/v$version
     if [ -f "$built/notes.md" ]; then
         { cat "$OUT/summary.md"; echo; cat "$built/notes.md"; } > "$OUT/release-notes.md"
-        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "${UNA_PRIVACY_PATTERN:-}" ]; then
+        if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "$PRIVACY" ]; then
             cp "$OUT/summary.md" "$OUT/una-$version-validation.md"
-            echo "publish, once the record commit is tagged v$version (docs/release-gates.md §4):"
-            echo "  gh release create v$version --verify-tag --title \"Una v$version\" --notes-file $OUT/release-notes.md \\"
-            for archive in "$built"/*.tar.gz; do
-                echo "    $archive $archive.sha256 \\"
-            done
-            echo "    $OUT/una-$version-validation.md"
+            sh "$REPO/scripts/release-publish.sh" "$version" "$OUT" "$built"
         fi
     fi
 fi
