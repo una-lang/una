@@ -1,0 +1,46 @@
+#!/bin/bash
+# The dependency audit (#770): the deps gate of scripts/release-gates.sh (docs/release-gates.md).
+# Run from the repository root. It fails closed: a missing or mismatched tool, an advisory
+# database it cannot fetch, or any finding is a failure, never a skip.
+#
+# 1. cargo-deny at the version of supply-chain/tools.lock.
+# 2. The RustSec advisory database, fetched now; its commit and date are printed for the record.
+# 3. cargo deny, against that database with no further fetch: advisories (deny.toml has no
+#    ignore without a ruling), licenses, bans and sources (crates.io only), with Cargo.lock as is.
+# 4. The supply-chain review record: crates/una-cli/tests/dependencies.rs, which checks that
+#    supply-chain/crates.tsv lists exactly the crates.io packages of Cargo.lock.
+#
+# Usage: scripts/deps-audit.sh
+set -u
+
+fail() {
+    echo "deps: FAIL: $1" >&2
+    exit 1
+}
+
+want=$(sed -n 's/^cargo-deny = "\(.*\)"$/\1/p' supply-chain/tools.lock)
+[ -n "$want" ] || fail "supply-chain/tools.lock names no cargo-deny version"
+have=$(cargo deny --version 2> /dev/null) \
+    || fail "cargo-deny is missing: cargo install --locked cargo-deny@$want"
+[ "$have" = "cargo-deny $want" ] \
+    || fail "$have, but supply-chain/tools.lock pins $want: cargo install --locked cargo-deny@$want"
+tool=$(command -v cargo-deny)
+echo "tool: $have, sha256 $(shasum -a 256 "$tool" | cut -d' ' -f1)"
+
+dbs=${CARGO_HOME:-$HOME/.cargo}/advisory-dbs
+cargo deny fetch db || fail "the advisory database could not be fetched"
+found=()
+for db in "$dbs"/advisory-db-*/; do
+    [ -d "$db/.git" ] && found+=("$db")
+done
+[ ${#found[@]} -eq 1 ] || fail "expected one advisory database in $dbs, found ${#found[@]}"
+commit=$(git -C "${found[0]}" log -1 --format='%H %cI') || fail "the advisory database has no commit"
+echo "advisory-db: $commit"
+
+echo "== cargo deny"
+cargo deny --locked --offline check advisories bans licenses sources || fail "cargo deny"
+
+echo "== the supply-chain review record"
+cargo test --locked -p una-cli --test dependencies || fail "the supply-chain review record"
+
+echo "deps: PASS"

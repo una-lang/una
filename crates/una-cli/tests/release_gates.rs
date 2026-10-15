@@ -108,7 +108,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, mac, linux, linux-arm64, release, reproducible, determinism, native, sanitize, site, formal)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, sanitize, site, formal)"
         ),
         "{record}"
     );
@@ -180,27 +180,31 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
     let digest = "a".repeat(64);
     let log = "b".repeat(64);
     let record = format!(
-        "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
+        "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Dependency audit\n\n- Tool: cargo-deny 0.20.2\n- Advisory database: `{database}` (2026-10-14T22:18:32+02:00)\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
         commit = "c".repeat(40),
+        database = "d".repeat(40),
     );
     let (code, written) = summary(&dir, "9.9.9", &record, Some("not-in-the-summary"));
     assert_eq!(code, Some(0));
     assert_eq!(
         written,
         format!(
-            "# Una v9.9.9: release validation\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64\n- Toolchain: rustc 1.98.1 (48a229cea 2026-09-01); Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds |\n| --- | --- | --- |\n| clone | PASS | 2 |\n| build | PASS | 398 |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\nThe gates are defined in `docs/release-gates.md` at the commit above.\n",
+            "# Una v9.9.9: release validation\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64\n- Toolchain: rustc 1.98.1 (48a229cea 2026-09-01); Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds |\n| --- | --- | --- |\n| clone | PASS | 2 |\n| build | PASS | 398 |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Dependency audit\n\n- Tool: cargo-deny 0.20.2\n- Advisory database: `{database}` (2026-10-14T22:18:32+02:00)\n\nVerdict: PASS (every gate)\n\nThe gates are defined in `docs/release-gates.md` at the commit above.\n",
             commit = "c".repeat(40),
+            database = "d".repeat(40),
         )
     );
     // A summary that matches the privacy pattern is not written.
     let (code, written) = summary(&dir, "9.9.9", &record, Some("darwin"));
     assert_eq!(code, Some(1));
     assert!(written.is_empty());
-    // A field out of its shape stops the summary: free text in the run line, or a gate the
-    // script does not run.
+    // A field out of its shape stops the summary: free text in the run line or the dependency
+    // audit, or a gate the script does not run.
     for (from, to) in [
         ("Darwin arm64", "Darwin arm64 on a named host"),
         ("| build | PASS |", "| deploy | PASS |"),
+        ("cargo-deny 0.20.2", "cargo-deny 0.20.2 on a named host"),
+        ("(2026-10-14T22:18:32+02:00)", "(yesterday)"),
     ] {
         let (code, written) = summary(&dir, "9.9.9", &record.replace(from, to), None);
         assert_eq!(code, Some(1), "{to}");
@@ -240,6 +244,13 @@ fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
         written.contains(&format!(
             "| `una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz` | `{digest}` |"
         )),
+        "{written}"
+    );
+    // A record with no dependency audit: the summary says so.
+    assert!(
+        written.contains(
+            "## Dependency audit\n\nNone: the deps gate did not run or did not fetch the advisory database.\n"
+        ),
         "{written}"
     );
     // An archive of another version, or a version out of shape, stops the summary.

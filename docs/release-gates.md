@@ -30,6 +30,7 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 | --- | --- | --- |
 | `clone` | A fresh clone, checked out at the SHA and checked to be exact | Git |
 | `build` | `scripts/check-solver.sh`, then, cold, `cargo build --locked --release -p una-cli -p una-rt` and `cargo test --workspace --locked` | Rust, Z3 |
+| `deps` | `scripts/deps-audit.sh`, the dependency audit (#770): `cargo-deny` at the version that `supply-chain/tools.lock` pins, against the RustSec advisory database fetched for the run, checks advisories, licenses, bans and sources by `deny.toml`; then the supply-chain review record `supply-chain/crates.tsv` must list exactly the crates.io packages of `Cargo.lock` | `cargo-deny` at its pinned version; network access to the advisory database |
 | `mac` | `scripts/local-ci.sh`: solver, the released sections of `CHANGELOG.md` against their tags (#645): the gate's clone has the tags of its source, and the gates check only the tags the gated commit contains (`UNA_RELEASED_SECTIONS_SCOPE=ancestors`), so a past release's commit can be gated again after newer tags exist, `fmt`, `clippy -D warnings`, tests, the host's release archive packed and checked | macOS |
 | `linux` | `scripts/local-ci.sh --linux`: the same steps in a `linux/amd64` container of CI's Ubuntu image, emulated on an arm64 Mac; its tests run one at a time on one thread (`RAYON_NUM_THREADS=1`, `--test-threads=1`), since processes spawned from many threads at once can hang under the emulation (#286). It checks the amd64 build, tests and archive. The released sections of `CHANGELOG.md` are checked on the host before the container starts, since a worktree mounted alone has no tags there, and the container's run skips them, visibly | Docker |
 | `linux-arm64` | `scripts/local-ci.sh --linux-arm64`: the same steps in a `linux/arm64` container, native on an arm64 Mac (#241), with the tests at full parallelism: the primary evidence of the tests on Linux (#286) | Docker |
@@ -42,6 +43,13 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 | `formal` | `scripts/formal.sh`: the Lean development of the formal track (`formal/`, `docs/plan/formal-track.md`) builds with the toolchain that `formal/lean-toolchain` pins and the dependencies that `formal/lake-manifest.json` pins, and `#print axioms` of every theorem that `formal/Theorems.lean` lists shows no `sorry` and no axiom beyond `propext`, `Classical.choice` and `Quot.sound` (#46). `scripts/local-ci.sh` runs the same step, on macOS and in both Linux containers | Lean 4.34.0, from its pinned release |
 
 The pinned Z3 comes from `UNA_GATES_Z3`, else this checkout's `target/z3`, else the clone's `target/z3`. If none is there, the `build` gate installs it with `scripts/install-z3.sh`.
+
+**The dependency audit** (#770). The `deps` gate fails closed on each of these:
+- `cargo-deny` is missing or at another version than `supply-chain/tools.lock` pins. Install it with `cargo install --locked cargo-deny@<version>`. The log records its version and the SHA-256 of its binary.
+- The advisory database cannot be fetched, offline included: the gate fails and is never skipped. The commit and date of the database it fetched go into the record and the public summary, so the run can be repeated against the same advisories.
+- An advisory of that database applies to a package of `Cargo.lock`, a yanked version or an unmaintained crate included. `deny.toml` ignores none. An ignore needs its own pull request with a reason, an expiry date and a recorded ruling, and a finding is reported before any ignore is written. A fix updates the dependency (S-26, #779).
+- A license outside `deny.toml`'s allowlist, a wildcard version requirement on a registry crate, or a package from any source but crates.io. The workspace's own crates depend on each other by path; `allow-wildcard-paths` admits those, and only because every workspace crate has `publish = false`.
+- A crates.io package of `Cargo.lock` that `supply-chain/crates.tsv` does not list with the same version and checksum, or a line of the record that `Cargo.lock` no longer has. `crates/una-cli/tests/dependencies.rs` checks this offline, so `scripts/local-ci.sh` catches a new or moved dependency before the gate does. A change to the record is the review: its pull request names each crate added or moved and why, and someone other than its author reviews it. The record started with the 158 crates of `Cargo.lock` when the gate was added, after S-26's update, as the baseline, not as a review of each of them.
 
 At the end, the script removes the Docker volumes that `--linux` and `--linux-arm64` made for the clone's target directory, so volumes do not pile up.
 
@@ -74,6 +82,7 @@ The script writes into `OUT`:
   - the commit, its subject, the run's date, platform, `rustc` and Docker, and the SHA of the script that ran;
   - a table of the gates, with result, seconds and log digest;
   - the archives that the `release` gate packed, with their SHA-256;
+  - the dependency audit: the `cargo-deny` version and the advisory database's commit and date that the `deps` gate used;
   - the verdict:
     - `PASS (every gate)`;
     - `FAIL (<gates>)`;
@@ -82,6 +91,7 @@ The script writes into `OUT`:
   - the commit, the run's date, operating system and architecture, and the `rustc` and Docker versions;
   - the table of the gates, with result and seconds;
   - the archives with their SHA-256;
+  - the dependency audit's tool and advisory database, as in the record;
   - the verdict, as in the record.
 
   Nothing else of the record is copied: no subject, no notes, no log digest. Each field is checked against its shape before it is written, and a field out of shape stops the summary, so no free text reaches it. The summary must not match the privacy pattern: `UNA_PRIVACY_PATTERN` when it is set, else the macOS Keychain item `una-privacy-pattern`, which `scripts/release-gates.sh` reads into a shell variable that it never exports, unsetting the caller's variable, so that no gate inherits it, and hands only to the summary step; it never prints, logs or writes it. Without either, the script stops before any gate; `UNA_GATES_UNCHECKED=1` runs the gates without the pattern: such a run's summary opens with "Unchecked: written without the privacy pattern; not for publication", and no publish command is printed.

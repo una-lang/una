@@ -1,0 +1,4 @@
+# The tools of the deps release gate (#770, docs/release-gates.md), at exact versions. Install
+# each with `cargo install --locked <name>@<version>`; scripts/deps-audit.sh fails when one is
+# missing or at another version.
+cargo-deny = "0.20.2"
