@@ -16,10 +16,17 @@ It fails closed. The gate passes only when all of these hold:
   whose variants differ at the literal's own level (liveness) meet their floors;
 - every canary is caught (`CANARIES`): a must-reject program that is in fact accepted; a program
   whose printed public literal the manifest marks as secret; an operation planted as accepting
-  `internal`, reached under a secret branch, which only the `internal` observer must see; and an
+  `internal`, reached under a secret branch, which only the `internal` observer must see; an
   operation planted as accepting `public`, sent a secret, whose redacted argument the oracle must
-  report by itself; and planted Core documents the re-check must reject for their reason, with a
-  control it must read clean (`DIFFER_CANARIES`, `DIFFER_CONTROL`).
+  report by itself; planted Core documents the re-check must reject for their reason, with a
+  control it must read clean (`DIFFER_CANARIES`, `DIFFER_CONTROL`); a native executable built
+  from another variant than the one the interpreter ran, which the native comparison must report
+  as a divergence; and three pairs of a program and a changed copy (an event's argument,
+  `together` tasks, an abort at `--max-depth`), each of which must agree with itself and differ
+  from its copy (`native_pairs`);
+- the native sample (`native.py`, #792): its size is the pinned one, its compared programs meet
+  their floor, the interpreter and the native executable agree on every variant compared, and the
+  programs the native backend does not compile are exactly those pinned by name.
 """
 
 import io
@@ -29,8 +36,8 @@ import subprocess
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-from . import drivers, oracle, sandbox
-from .families import OPERATORS
+from . import drivers, native, oracle, sandbox
+from .families import OPERATORS, family_of
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
 from .refactor import REFACTORS
@@ -110,6 +117,12 @@ DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 MIN_ORACLE_COMPARED = 300
 MIN_VARIANTS_COMPARED = 1000
 MIN_LIVE = 90
+# The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
+# programs it compares, about 90% of the measured run's (docs/release-gates.md).
+NATIVE_SAMPLE = 30
+NATIVE_FAMILIES = ("H", "K", "P", "T")
+MIN_NATIVE_COMPARED = 25
+MIN_NATIVE_VARIANTS = 102
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
@@ -209,6 +222,13 @@ def caught(name, row):
     """Whether a canary's result is the fault it plants, and only that."""
     if row.get("error") or row.get("set_aside") or not row.get("finding"):
         return False
+    if name == "native":
+        # Divergences on the variants built from the base's files, and none on the base itself,
+        # whose executable is its own: the comparison tells the two apart.
+        record = row.get("native", {})
+        diverged = [d["variant"] for d in record.get("divergences", [])]
+        return (bool(diverged) and not record.get("not_compiled")
+                and not any(v.endswith("-base") for v in diverged))
     leaks = sorted({o for v in row["variants"] for o in v.get("observers", [])})
     if name == "oracle":
         return "public" in leaks
@@ -217,6 +237,55 @@ def caught(name, row):
     if name == "redacted":
         return bool(row["violations"]) and not leaks
     return False
+
+
+def native_strata(rows):
+    """The oracle's results that join the native sample as their family's stratum: for every family
+    with a compared program, the compared program whose name has the lowest SHA-256, when the
+    hashed part of the sample does not hold it already; in family order."""
+    lowest = {}
+    for r in rows:
+        if r.get("compared", 0) > 0 and not r.get("error"):
+            family = family_of(r["op"])
+            if family not in lowest or native.key(r["name"]) < native.key(lowest[family]["name"]):
+                lowest[family] = r
+    return [r for _, r in sorted(lowest.items()) if not r["native"]["sampled"]]
+
+
+NOTE = ("capability Note\n  op note(x: Int) -> Unit\n\n"
+        "handler quiet() for Note\n  op note(x) = unit")
+SHOW = ("show(line: Text) -> Int\n  uses @console: Console[print]\n=\n"
+        "  @console.print(line)\n  1")
+DOWN = "down(n: Int) -> Int = if n == 0 then 0 else down(n - 1) + 1"
+
+
+def native_pairs():
+    """The native comparison's own canaries: for each, the files of a program the interpreter runs
+    and those of the one the native executable is built from. Each program against itself must
+    agree, and against the other must be a divergence:
+    - `native-trace`: the two differ in the argument of an event only, never in output;
+    - `native-tasks`: a block of `together` whose tasks print lines with braces and quotes, which
+      the trace escapes (`una_core::quote`); the other prints another line in one task;
+    - `native-abort`: a recursion past `--max-depth` (U6004); the other prints another line
+      before it."""
+    def files(body, *decls):
+        text = join_decls(header(MOD), *decls, CONSOLE_MAIN + body)
+        return package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"])
+
+    def trace(n):
+        return files(f"  work({n}) with @note = quiet()\n  @console.print(\"done\")", NOTE,
+                     "work(n: Int) -> Unit\n  uses @note: Note[note]\n=\n  @note.note(n)")
+
+    def tasks(line):
+        return files("  together\n    let a = show(\"left \\{1\\} \\\"q\\\"\")\n"
+                     f"    let b = show(\"{line}\")\n  @console.print(\"{{a + b}}\")", SHOW)
+
+    def abort(line):
+        return files(f"  @console.print(\"{line}\")\n  let d = down(5000)\n"
+                     "  @console.print(\"{d}\")", DOWN)
+
+    return {"native-trace": (trace(5), trace(6)), "native-tasks": (tasks("right"), tasks("other")),
+            "native-abort": (abort("before"), abort("other"))}
 
 
 def expected_keep(progs):
@@ -355,6 +424,13 @@ def run(una, out_dir, tip, core_check, z3):
         lambda part, buf, k: oracle.oracle(part, una, shard(k), RUN_TIMEOUT, buf,
                                            drivers.rebuild),
         varied, WORKERS)
+    # The native sample's strata: for every family with a compared program, its compared program
+    # of lowest hash joins the sample, when the hashed part does not hold it already.
+    by_name = {r["name"]: r for r in varied}
+    for r in native_strata(oracle_rows):
+        oracle.native_pass(drivers.rebuild(by_name[r["name"]]), una, shard(0), RUN_TIMEOUT, r)
+        if r["native"]["divergences"]:
+            r["finding"] = True
     termination = []
     for r in oracle_rows:
         if r.get("error"):
@@ -368,6 +444,40 @@ def run(una, out_dir, tip, core_check, z3):
                 findings.append(f"oracle {r['name']}: {v}")
         for t in r.get("termination", []):
             termination.append(dict(t, name=r["name"]))
+    # The native sample: divergences are findings; a program not compiled must be pinned by name.
+    pinned_unsupported = native.unsupported()
+    native_rows = [r for r in oracle_rows if r.get("native", {}).get("sampled")]
+    native_compared = sum(1 for r in native_rows if r["native"]["compared"] > 0)
+    native_families = sorted({family_of(r["op"]) for r in native_rows
+                              if r["native"]["compared"] > 0})
+    native_variants = sum(r["native"]["compared"] for r in native_rows)
+    not_compiled = {r["name"]: r["native"]["not_compiled"] for r in native_rows
+                    if r["native"]["not_compiled"]}
+    for r in native_rows:
+        for d in r["native"]["divergences"]:
+            findings.append(f"native {r['name']} {d['variant']}: backend divergence: "
+                            + "; ".join(d["differences"]))
+    for name in sorted(set(not_compiled) - set(pinned_unsupported)):
+        errors.append(f"native {name}: the native backend does not compile it, and "
+                      "scripts/security-hunt/native-unsupported.txt does not pin it: "
+                      f"{not_compiled[name][:200]}")
+    # A sampled program that is not compared says why: the oracle set it aside (a policy that
+    # releases to public, or a program the checks reject, so nothing runs), or it is pinned as not
+    # compiled. Any other is an error: a sample that silently compares less.
+    native_not_compared = []
+    for r in native_rows:
+        if r["native"]["compared"] > 0:
+            continue
+        why = (r.get("set_aside") or
+               (f"not compiled: {r['native']['not_compiled'][:120]}" if r["native"]["not_compiled"]
+                else None))
+        if why is None:
+            errors.append(f"native {r['name']}: sampled, but no variant was compared natively"
+                          + (f" ({r['error'][:200]})" if r.get("error") else ""))
+        native_not_compared.append({"name": r["name"], "why": why or "not compared"})
+    for name in sorted(set(pinned_unsupported) - set(not_compiled)):
+        errors.append(f"native {name}: pinned as not compiled, but it compiles or is not sampled; "
+                      "remove it from scripts/security-hunt/native-unsupported.txt")
     # Only complete-against-complete comparisons count toward the floors.
     compared = sum(r.get("compared", 0) for r in oracle_rows)
     programs_compared = sum(1 for r in oracle_rows if r.get("compared", 0) > 0)
@@ -460,7 +570,17 @@ def run(una, out_dir, tip, core_check, z3):
     drivers.must_reject([dict(crej.manifest(), digest=crej.digest())], una, work, CHECK_TIMEOUT,
                         buf, build=lambda row: crej)
     canaries["reject"] = bool(json.loads(buf.getvalue()).get("finding"))
+    for name, (a, b) in native_pairs().items():
+        same = native.pair(una, work, RUN_TIMEOUT, oracle.RUN_LIMITS, a, a, f"{name}-same")
+        other = native.pair(una, work, RUN_TIMEOUT, oracle.RUN_LIMITS, a, b, f"{name}-other")
+        canaries[name] = same == [] and bool(other)
+    native_canary = canary_oracle()
+    buf = io.StringIO()
+    oracle.oracle([dict(native_canary.manifest(), digest=native_canary.digest())], una, work,
+                  RUN_TIMEOUT, buf, lambda row: native_canary,
+                  native_plant=lambda files: native_canary.files)
     canary_rows = {
+        "native": json.loads(buf.getvalue()),
         "oracle": oracle_canary(canary_oracle(), una, work),
         "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
         "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
@@ -489,6 +609,13 @@ def run(una, out_dir, tip, core_check, z3):
                    "fallbacks": dict(sorted(fallbacks.items())),
                    "not_rechecked": dict(sorted(not_rechecked.items())),
                    "unknown": len(unknown_seen), "residual": differ_residual},
+        "native": {"expected": NATIVE_SAMPLE, "sampled": len(native_rows),
+                   "programs_compared": native_compared, "variants_compared": native_variants,
+                   "families": native_families,
+                   "not_compiled": sorted(not_compiled),
+                   "not_compared": native_not_compared,
+                   "skipped": [dict(s, name=r["name"]) for r in native_rows
+                               for s in r["native"]["skipped"]]},
     }
     for key in ("reject", "keep", "oracle", "differ"):
         s = sizes[key]
@@ -507,6 +634,18 @@ def run(una, out_dir, tip, core_check, z3):
     if programs_compared < MIN_ORACLE_COMPARED:
         errors.append(f"oracle: {programs_compared} programs compared, under the floor of "
                       f"{MIN_ORACLE_COMPARED}")
+    if len(native_rows) != NATIVE_SAMPLE:
+        errors.append(f"native: the sample has {len(native_rows)} programs, and the gate pins "
+                      f"{NATIVE_SAMPLE}")
+    if tuple(native_families) != tuple(NATIVE_FAMILIES):
+        errors.append(f"native: the families compared natively are {', '.join(native_families)}, "
+                      f"and the gate pins {', '.join(NATIVE_FAMILIES)}")
+    if native_variants < MIN_NATIVE_VARIANTS:
+        errors.append(f"native: {native_variants} variants compared natively, under the floor of "
+                      f"{MIN_NATIVE_VARIANTS}")
+    if native_compared < MIN_NATIVE_COMPARED:
+        errors.append(f"native: {native_compared} programs compared natively, under the floor of "
+                      f"{MIN_NATIVE_COMPARED}")
     for key, want in PINNED.items():
         got = sizes[key] if key == "programs" else sizes[key]["expected"]
         if got != want:
@@ -538,6 +677,12 @@ def run(una, out_dir, tip, core_check, z3):
         print(f"  {key}: {sizes[key]['judged']} of {sizes[key]['expected']} cases judged")
     print(f"  oracle: {programs_compared} programs and {compared} variants compared (complete "
           f"against complete), {live} live, {sizes['oracle']['set_aside']} programs set aside")
+    print(f"  native: {native_compared} of {len(native_rows)} sampled programs and "
+          f"{native_variants} variants compared, {len(not_compiled)} not compiled (pinned)")
+    for item in native_not_compared:
+        print(f"    not compared: {item['name']}: {item['why']}")
+    for item in sizes["native"]["skipped"]:
+        print(f"    variant not compared: {item['variant']}: {item['why']}")
     print(f"  canaries: " + ", ".join(f"{k} {'caught' if v else 'MISSED'}"
                                       for k, v in sorted(canaries.items())))
     print(f"  termination pairs (outside T6, recorded): {len(termination)}")

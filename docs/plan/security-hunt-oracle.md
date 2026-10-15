@@ -56,7 +56,7 @@ For every program and variation:
 
 1. **Check.** Run `una check --json`. Only an accepted program goes on. A rejected one feeds part (c).
 2. **Determinism check.** Each variant runs twice, alone. If a variant's two runs differ in what it shows any observer, it is nondeterministic (for example `Clock.now`, task order in `together`, a network response), and the program is set aside with the reason. Nothing it shows is a finding.
-3. **Runs.** Every variant runs on the interpreter, `una run --json` with the grants of §6. A sample of about 5% is also built with `una build` and run natively, with the same grants and flags.
+3. **Runs.** Every variant runs on the interpreter, `una run --json` with the grants of §6. A sample of about 5% is also built with `una build` and run natively, with the same grants and flags. The `hunt` release gate runs this sample since #792 (`scripts/security-hunt/hunt/native.py`, `docs/release-gates.md`).
 4. **State that outlives a run.** For programs that use `Files.write`, each variant also runs a second time on the directory its first run left. S-15's channel, where a write decides a later run's failure, is visible only that way.
 5. **Comparison.** Two variants are compared by the projection of §3, for every observer the variation tests. Separately, the interpreter's and the native run of one variant are compared on everything they show. A mismatch there breaks `spec/16 §5` and is reported as a backend divergence, which is a conformance bug, and a leak only if the native run is the one that differs where the interpreter does not.
 
