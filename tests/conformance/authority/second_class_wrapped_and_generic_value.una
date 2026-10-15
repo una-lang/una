@@ -1,4 +1,4 @@
--- test: U3006 for wrapped effectful functions, and U3016 at the effectful argument of a generic function value (N-011)
+-- test: U3006 for wrapped effectful functions, and U3016 at the effectful argument of a generic function value
 -- spec: spec/05 §6
 -- expect: error U3006 at 30:14
 -- expect: error U3006 at 35:15

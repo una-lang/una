@@ -272,8 +272,8 @@ fn package_records_never_take_those_of_the_standard_library() {
 // ----- kinds and written types (U2002, U2003) -----
 
 #[test]
-fn a_refined_type_argument_is_named_as_written_n010() {
-    // N-010: a type argument names the refined kind written, not the kind or range its alias
+fn a_refined_type_argument_is_named_as_written() {
+    // A type argument names the refined kind written, not the kind or range its alias
     // goes through; range sugar on the argument itself names the refined type.
     assert_eq!(
         types(
@@ -661,7 +661,7 @@ fn unknown_label_repairs_suggest_only_what_is_not_given() {
 
 #[test]
 fn an_unknown_field_far_from_every_open_one_lists_them() {
-    // Re-review N-016: U2009 gives the help D-157 describes for U2005.
+    // U2009 gives the help D-157 describes for U2005.
     assert_eq!(
         repairs(
             "kind P\n  x: Int\n  y: Int\n\

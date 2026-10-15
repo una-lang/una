@@ -1,4 +1,4 @@
--- test: a via function whose types equal the policy's from and to types except for labels, refinements included, verifies (N-004)
+-- test: a via function whose types equal the policy's from and to types except for labels, refinements included, verifies
 -- spec: spec/07 §5, §7
 -- expect: ok
 module app

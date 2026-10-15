@@ -70,7 +70,7 @@ pub fn diagnostics(
             goal: obligation.goal.clone(),
             status: outcome.status,
         });
-        // R-021: a ground goal has no binder to show; N-009: nor has a model without
+        // R-021: a ground goal has no binder to show: nor has a model without
         // bindings, as for a closed goal that is not a literal (`zero(1) > 0`).
         // #668: a refutation whose solver gave no values says so, rather than show a model
         // that is not one.

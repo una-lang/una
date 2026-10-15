@@ -311,7 +311,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let value_label = self.labeled(ty).top_label();
         // The function type is taken before its labels are settled: the result of a generic
         // function value carries the labels of type arguments that the arguments of this call
-        // may still solve (ADR 0038 D3.2, D-137, re-review N-003).
+        // may still solve (ADR 0038 D3.2, D-137).
         let head = self.vars.head(ty);
         let function = match head.unlabeled().clone() {
             Ty::Fn(function) => (*function).clone(),
@@ -2131,7 +2131,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             "every field is given by another argument; remove this one",
                         ));
                     } else {
-                        // D-157, as for U2005 (re-review N-016).
+                        // D-157, as for U2005.
                         let listed: Vec<String> = open.iter().map(|n| format!("`{n}`")).collect();
                         diagnostic.repairs.push(Report::advice(format!(
                             "the fields that no other argument gives are {}",

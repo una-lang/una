@@ -878,8 +878,8 @@ pub f(x: Int) -> Int = x / 0
 }
 
 #[test]
-fn a_closed_goal_without_bindings_has_no_counterexample_n009() {
-    // N-009, `spec/13 §3` ("when applicable"): `zero(1) > 0` has no free binder but is not a
+fn a_closed_goal_without_bindings_has_no_counterexample() {
+    // `spec/13 §3` ("when applicable"): `zero(1) > 0` has no free binder but is not a
     // literal, so the model binds nothing, and no empty counterexample is shown.
     let source = "module app
 

@@ -30,7 +30,7 @@ structure Auth where
   `staticOps`: a `Rhs.invoke` of the function performs that operation. -/
   staticOps : List (String × String) := []
 
-/-- The events a ceiling allows. No ceiling grants a release (N-155): a policy belongs to the
+/-- The events a ceiling allows. No ceiling grants a release: a policy belongs to the
 trusted modules, and a boundary module never reaches one. -/
 def Auth.allows (a : Auth) : Event → Prop
   | .out _ => a.out = true

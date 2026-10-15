@@ -358,7 +358,7 @@ pub(crate) struct Env<'a> {
     /// as amended).
     pub(crate) locks: BTreeMap<usize, Vec<super::lock::Entry<'a>>>,
     /// The labels that each kind's fields declare and the variance of its type parameters
-    /// (re-review N-001, ADR 0046), computed once the signatures are lowered.
+    /// (ADR 0046), computed once the signatures are lowered.
     pub(crate) kind_labels: Rc<KindLabels>,
     /// The solved label variables of editable bindings, by symbol (ADR 0075).
     pub(crate) edit_labels: BTreeMap<String, Label>,
@@ -1528,7 +1528,7 @@ impl<'a> Env<'a> {
             None => None,
         };
         // The names come from the declaration, not from `CapDef::ops`, which is filled only
-        // after aliases are lowered: a kind alias's `uses` lists operations too (N-012).
+        // after aliases are lowered: a kind alias's `uses` lists operations too.
         let declared: Vec<&'a str> = capability
             .and_then(|id| self.capabilities.get(id))
             .map(|c| {
@@ -1901,7 +1901,7 @@ impl<'a> Env<'a> {
             },
         )
         .to_string();
-        // N-010: a refined kind is named as written, not by the kind or range its alias goes
+        // A refined kind is named as written, not by the kind or range its alias goes
         // through.
         let written = match (&arg.core, &arg.range) {
             (TypeCore::Named { name, .. }, None) => Some(self.text(module, name.name)),

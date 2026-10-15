@@ -1,4 +1,4 @@
--- test: a generic function used as a value, stored in a field, a list or a join, passed to a generic function or captured by a lambda, keeps the labels of its type arguments (N-003) (label sweep)
+-- test: a generic function used as a value, stored in a field, a list or a join, passed to a generic function or captured by a lambda, keeps the labels of its type arguments (label sweep)
 -- spec: spec/07 §7
 -- expect: error U4001 at 27:21
 -- expect: error U4001 at 34:3

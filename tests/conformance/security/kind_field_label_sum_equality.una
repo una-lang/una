@@ -1,4 +1,4 @@
--- test: equality on a sum kind with a secret variant field is secret, alone and in a list (N-001)
+-- test: equality on a sum kind with a secret variant field is secret, alone and in a list
 -- spec: spec/07 §7
 -- expect: error U4001 at 15:36
 -- expect: error U4001 at 17:32

@@ -17,7 +17,7 @@ pub(crate) type AliasId = usize;
 pub(crate) type CapId = usize;
 
 /// What the label rules need to know of each record and sum kind, from the types of its fields
-/// and variant fields (re-review N-001, ADR 0046).
+/// and variant fields (ADR 0046).
 /// D-168: the labels a kind's fields declare count at positions that hold data, as
 /// in [`Ty::deep_label`]; the labels inside a field of function type do not, since every use of
 /// the field's function reads them from its declared type. The type arguments of a kind count
@@ -790,7 +790,7 @@ impl Ty {
 
     /// The join of the labels of every position that holds data: the top, list elements, kind
     /// arguments and the labels that the fields and variant fields of a kind declare,
-    /// instantiated and through the kinds they contain (`spec/07 §7` rule 3, re-review N-001).
+    /// instantiated and through the kinds they contain (`spec/07 §7` rule 3).
     /// A function type holds its top label only.
     pub(crate) fn deep_label(&self, kinds: &KindLabels) -> Label {
         match self {
@@ -811,7 +811,7 @@ impl Ty {
     /// [`Ty::deep_label`] without the labels that kinds' fields declare: what Core IR records
     /// for the arguments of an operation, since the runtime redacts the fields of a kind value
     /// by their own declared labels (`spec/11 §5`).
-    /// D-165: traces keep redacting field by field, as before N-001.
+    /// D-165: traces keep redacting field by field, as before kinds' fields were labeled (ADR 0046).
     /// A value computed from a whole value of the type, such as its interpolated text, has no
     /// fields left to redact, so its label is [`Ty::computed_label`] instead (S-27).
     ///

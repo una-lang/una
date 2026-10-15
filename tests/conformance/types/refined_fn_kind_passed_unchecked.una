@@ -1,4 +1,4 @@
--- test: a refined kind over a function type is U2002, not an internal error or a silent pass, so no unchecked function passes as the kind (N-006)
+-- test: a refined kind over a function type is U2002, not an internal error or a silent pass, so no unchecked function passes as the kind
 -- spec: spec/03 §3
 -- expect: error U2002 at 8:35
 module refined_fn_kind_passed_unchecked

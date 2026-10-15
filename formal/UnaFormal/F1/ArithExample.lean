@@ -118,7 +118,7 @@ theorem div_euclid : evalPrim .div [.int (-7), .int 2] = some (.int (-4)) := rfl
 
 theorem mod_euclid : evalPrim .mod [.int (-7), .int 2] = some (.int 1) := rfl
 
-/-- A negative divisor (Una-1's review of #526): Euclidean, so the remainder stays non-negative. -/
+/-- A negative divisor (the review of #526): Euclidean, so the remainder stays non-negative. -/
 theorem div_neg_divisor : evalPrim .div [.int 7, .int (-2)] = some (.int (-3)) := rfl
 
 theorem mod_neg_divisor : evalPrim .mod [.int 7, .int (-2)] = some (.int 1) := rfl
@@ -133,7 +133,7 @@ def geRead (a b : Int) : Expr :=
   .letR "t" (.bool .bot) (.prim .lt [.int a, .int b])
     (.letR "x" (.bool .bot) (.prim .not [.var "t"]) (.atom (.var "x")))
 
-/-- **The operand order** (Una-1's review of #526): `2 <= 3` and `!(2 >= 3)`. -/
+/-- **The operand order** (the review of #526): `2 <= 3` and `!(2 >= 3)`. -/
 theorem le_two_three : (eval Host.unit 4 prog (wSet "1") [] (leRead 2 3)).2.1 = .ok (.bool true) := rfl
 
 theorem ge_two_three : (eval Host.unit 4 prog (wSet "1") [] (geRead 2 3)).2.1 = .ok (.bool false) :=

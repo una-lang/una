@@ -593,7 +593,7 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::error();
         }
         // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
-        // `checked` (re-review N-008).
+        // `checked`.
         if def.kind == (FnKind::Predicate { reflect: false })
             && !self.ctx.opaque
             && !self.ctx.opaque_calls

@@ -556,7 +556,7 @@ mutual
       let cap ← str (← field j "capability")
       let o ← str (← field j "op")
       -- The host's capabilities are named by their path, and a node whose `capability` field
-      -- is not its path's name is not read (Una-1's finding on #471).
+      -- is not its path's name is not read (the finding on #471).
       let (std, pathName) : Bool × J := match j.getObjVal? "capability_path" with
         | .ok cp => (cp.getObjValD "module" == Lean.Json.str "std.host", cp.getObjValD "name")
         | .error _ => (false, Lean.Json.null)
@@ -1687,7 +1687,7 @@ abbrev Caps' := List (String × String × List String)
 
 /-- **`std.host`, as the specification fixes it** (`spec/14 §3`; `spec/24` for edition 0.2's
 `Http`): its capabilities and their operations. The re-check does not take the export's word for
-what `std.host` is (Una-1's finding on #471): a document's `host` entry that differs from these is a
+what `std.host` is (the finding on #471): a document's `host` entry that differs from these is a
 write site (`hostSites`). Of these operations, only `Files.write` writes a file. -/
 def stdHost : Caps' :=
   [("std.host", "Console", ["print"]), ("std.host", "Clock", ["now"]),
@@ -1714,8 +1714,8 @@ def usesSite (known : Caps') (u : J) (anyHost : Bool := false) : Option String :
       else none
   | _, _ => some "a `uses` entry that cannot be read"
 
-/-- **A node that may write a file**, found anywhere in a declaration (M5b; Una-1's findings on
-#471 and the coordinator's rule). Default-deny: a node is safe only when it is positively
+/-- **A node that may write a file**, found anywhere in a declaration (M5b; the findings on
+#471). Default-deny: a node is safe only when it is positively
 identified, and every other node counts as a site.
 - An operation is safe when its capability path resolves to a capability the document declares
   (`known`: its own, and `std.host` as `stdHost` fixes it), its `capability` field is that path's
@@ -1769,7 +1769,7 @@ def hostSites (host : List J) : List String :=
     | _, _ => some "a host capability that cannot be read"
 
 /-- **The file-state label is verified for the whole package**, or nothing that uses `Files` is
-accepted (M5b, Una-1's finding on #471). The exported `file_state` is untrusted, and the re-check
+accepted (M5b, the finding on #471). The exported `file_state` is untrusted, and the re-check
 checks it only against the writes of the programs it certifies. A write anywhere else, in a
 declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from
 one, never meets it, and a lowered label would let a read's failure reveal it (S-14). So unless
@@ -2061,7 +2061,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
   -- A `with` node the importer cannot read (#551): no declaration of the document is read.
   if installs.contains "?" then
     return code.map fun d => (named d, .notRechecked "a `with` node this importer cannot read")
-  -- A `with` or `given` of a handler the document does not declare (Una-1's review of #538):
+  -- A `with` or `given` of a handler the document does not declare (the review of #538):
   -- which capability it installs is unknown, so no declaration of the document is read.
   if installs.any fun q =>
       (capOfH (if q.startsWith "given:" then (q.drop 6).toString else q)).isNone then
@@ -2347,7 +2347,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
   -- keeps its acceptance only if `confinedB` passes on what that entry reaches, under the
   -- module's ceiling: `confinedB_sound` and `body_confined` then confine every event of those
   -- runs. It is rejected when the check fails, and not re-checked when what the entry reaches is
-  -- not read, holds a release (N-155: never, R2), or a function value crosses the boundary (A1
+  -- not read, holds a release (never, R2), or a function value crosses the boundary (A1
   -- and R4: a grant the importer does not read yet).
   match boundariesOf doc with
   | .error why =>
@@ -2382,7 +2382,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
             s!"a call into the boundary module `{m}` reaches `{g}`, which is not read")
         if S.any fun g => !(((P.find g).map (·.body.within top)).getD true) then
           return some (.notRechecked
-            s!"a call into the boundary module `{m}` reaches a release or an operation without a handler (N-155)")
+            s!"a call into the boundary module `{m}` reaches a release or an operation without a handler")
         if entries.any fun g => ((P.find g).map fun fn =>
             fn.params.any (fun q => LTy.holdsFn recs 8 q.2) || LTy.holdsFn recs 8 fn.result).getD true then
           return some (.notRechecked
@@ -2470,7 +2470,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         rc.contains f || ((List.lookup f reach).getD []).any rc.contains
     pure rc
   let plain := members.filter fun f => !reachesCond.contains f
-  -- Every write site of the document, in a declaration of any kind (Una-1's finding on #471).
+  -- Every write site of the document, in a declaration of any kind (the finding on #471).
   let opNames := fun (cj : J) => match plainRun (do
       (← arr (← field cj "ops")).mapM fun o => do str (← field o "name")) with
     | .ok ns => ns
@@ -2522,7 +2522,7 @@ def checkDocument (doc : J) : Except String (List (String × Outcome)) :=
 Never "accepted": a rejected declaration is not certified Core. -/
 inductive ReverseOutcome where
   /-- The model's checker accepts it: a candidate, either an over-strict checker or a channel
-  the model lacks (a blind spot of T6), for the coordinator's review before any conclusion. -/
+  the model lacks (a blind spot of T6), for review before any conclusion. -/
   | modelAcceptsCandidate (note : String)
   /-- The model rejects it too. -/
   | modelRejects (why : String)

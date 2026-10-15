@@ -1,4 +1,4 @@
--- test: a via parameter of another refined kind than the policy's from type is U4005 (N-004)
+-- test: a via parameter of another refined kind than the policy's from type is U4005
 -- spec: spec/07 §5, §7
 -- expect: error U4005 at src/release.una:10:7
 module app

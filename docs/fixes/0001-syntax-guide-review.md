@@ -3,7 +3,7 @@
 - **Status:** Done (closed by the v0.1 closure run on 2026-09-30; the questions R-1, R-3 and R-5 and ADR 0045 for R-2 are open questions of the closure pull request)
 - **Date:** 2026-09-29
 - **Found at:** commit `3301b05` on `dev/v0.1`, with Z3 at the version of `verification.lock`
-- **Source:** the owner's "Una Language Guide: Syntax Reference (v0.1)", checked against the compiler and `docs/spec/`
+- **Source:** the project's "Una Language Guide: Syntax Reference (v0.1)", checked against the compiler and `docs/spec/`
   - Every code block of the guide was run through `una check`, `una test` or `una run`.
   - Every claim about syntax, diagnostics, the CLI and the project files was tested with a small package.
 - **Outcome:** about 220 claims match. This file lists what does not:
@@ -29,13 +29,13 @@ Read this whole file, then `CLAUDE.md`, before starting.
 - **Commits.** One commit per item, or per group of `docs` items in the same file. Use the item id in the subject, for example `fix(interp): source names of operation arguments in traces (F-0001-01)`. Push after each verified commit.
 - **Progress.** Update the progress table at the end of this file as each item closes, and set the file's status in `docs/fixes/README.md`.
 
-**Where the guide lives.** Part C edits the owner's guide, which is not yet in the repository.
+**Where the guide lives.** Part C edits the project's guide, which is not yet in the repository.
 
 - Before starting part C, check for `docs/guide/syntax-reference.md`.
-- If it is missing, ask the owner for the file, or for permission to add it at that path from the text they provide.
+- If it is missing, ask the project for the file, or for permission to add it at that path from the text they provide.
 - Do parts A, B and D in the meantime.
 - The guide is informative. When it disagrees with `docs/spec/`, the guide changes, never the spec.
-- The guide follows the writing conventions of `CLAUDE.md`: American English, and no em dashes (the owner's text uses none).
+- The guide follows the writing conventions of `CLAUDE.md`: American English, and no em dashes (its text uses none).
 
 ---
 
@@ -172,7 +172,7 @@ pub use_it() -> Int = apply(takes_pos, x: 0)
 
 ## Part C. Errors and omissions in the syntax reference guide
 
-Section numbers refer to the owner's guide, `docs/spec/`-relative references to the spec.
+Section numbers refer to the project's guide, `docs/spec/`-relative references to the spec.
 
 **How to verify each change.**
 
@@ -342,10 +342,10 @@ Section numbers refer to the owner's guide, `docs/spec/`-relative references to 
 
 ## Needs review
 
-Disagreements between the spec, the implementation and the owner's rulings, found while doing this file. They are not resolved here; the answers of the review decide them.
+Disagreements between the spec, the implementation and the project's rulings, found while doing this file. They are not resolved here; the answers of the review decide them.
 
-- **R-1. Exit code 1 without a diagnostic (ADR 0036).** The owner's rule says exit `1` means the output contains at least one error diagnostic with a code. But `una obligations`, `una trace` and `una report` exit with `1` for an obligation that is not proven, and `una test` for a failed example, with no diagnostic in their output: their documents carry the status instead. `spec/13 §5`, `spec/08 §1` and ADRs 0033 and 0034 require this, and `spec/13 §5` now states it as part of the rule. Should these outcomes also carry a diagnostic, or does the rule keep them as stated?
-- **R-2. The code for an unsupported refinement in a function type (ADR 0037, rule 10).** The owner requires an explicit diagnostic, but `CLAUDE.md` forbids diagnostic codes the spec does not define, and no registered code of `spec/13 §4` names this case. Is it an existing code (for example a type error of the `types` domain), or does the closure run register a new one in `spec/13 §4` under ADR 0037?
+- **R-1. Exit code 1 without a diagnostic (ADR 0036).** The project's rule says exit `1` means the output contains at least one error diagnostic with a code. But `una obligations`, `una trace` and `una report` exit with `1` for an obligation that is not proven, and `una test` for a failed example, with no diagnostic in their output: their documents carry the status instead. `spec/13 §5`, `spec/08 §1` and ADRs 0033 and 0034 require this, and `spec/13 §5` now states it as part of the rule. Should these outcomes also carry a diagnostic, or does the rule keep them as stated?
+- **R-2. The code for an unsupported refinement in a function type (ADR 0037, rule 10).** The project requires an explicit diagnostic, but `CLAUDE.md` forbids diagnostic codes the spec does not define, and no registered code of `spec/13 §4` names this case. Is it an existing code (for example a type error of the `types` domain), or does the closure run register a new one in `spec/13 §4` under ADR 0037?
   - **Found by the v0.1 closure run** (`9cf2b99`): the ADR's example cannot occur, since a function type names no parameters and every refinement comes from a refined kind or range sugar, which are closed over `it`. One case does exist: a refined kind whose base is a function type, as `kind F = fn(Int) -> Int where good(it)` with an opaque `good`. Core IR has no refinement on a function type (`spec/09 §2`), so its refinement is not carried, whether `F` is a parameter type (`g(f: F)`, where `g(x)` with an unchecked `x` was accepted) or a position of a function type (`fn(F) -> Int`). Debug builds now report it as U8001 (rule 11); a release build still drops it. It needs the code this question asks for, or a rule that rejects a `where` clause on a function type, in an ADR.
 - **R-3. Argument count before labels (F-0001-15).** `spec/04 §3` rule 2 makes a duplicate label U2006, and `spec/10 §12` rule 13 makes too many arguments U2001; neither says which is checked first. For `f(1, b: 2, b: 3)` with a two-parameter `f`, the compiler reports only U2001. The guide (§4.4) now describes that behavior. Should the spec state the order, or should both codes be reported?
 - **R-4. Repair candidates differ from `spec/13 §3` (F-0001-18).** ADR 0033, in `spec/13 §3`: "a refuted or unknown `refinement` or `precondition` proposes, in order, a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, and `checked`; ... a `division` a guard". The compiler instead:

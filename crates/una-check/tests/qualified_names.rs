@@ -1,4 +1,4 @@
-//! Names in messages (#13, #17; reviews R-045 and N-015): a declaration whose bare name another
+//! Names in messages (#13, #17; review R-045): a declaration whose bare name another
 //! declaration shares, in another module of the package or in the standard library, is printed
 //! with its module's path, so that "needs `@e` to be `Env`, and here it is `Env`" says which.
 
@@ -121,7 +121,7 @@ fn the_host_capability_is_named_by_the_module_that_exports_it() {
 
 #[test]
 fn two_capabilities_or_kinds_of_one_name_are_printed_with_their_modules() {
-    // #17 (N-015): "needs `@e` to be `Env`, and here it is `Env`" said nothing.
+    // #17: "needs `@e` to be `Env`, and here it is `Env`" said nothing.
     assert_eq!(
         package(&[
             (

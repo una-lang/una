@@ -1,5 +1,5 @@
 /-
-The decision label (#524, the coordinator's ruling D, `docs/plan/formal-track-handlers.md` §4a).
+The decision label (#524, ruling D, `docs/plan/formal-track-handlers.md` §4a).
 
 An effect's failure has two labels: `failLabel`, where it happens (the program counter and the
 data at the failing site), and `dl`, what decides whether a step both runs reach fails, and how
