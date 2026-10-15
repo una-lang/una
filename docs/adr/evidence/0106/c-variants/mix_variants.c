@@ -19,6 +19,10 @@ static inline int64_t emod(int64_t a, int64_t m) { __builtin_assume(m > 0); int6
 /* The dividend known non-negative, as a verified range would let the backend state it: the
    remainder is taken unsigned, as LLVM does for Rust's rem_euclid when it can prove the sign. */
 static inline int64_t emod(int64_t a, int64_t m) { __builtin_assume(a >= 0 && m > 0); return (int64_t)((uint64_t)a % (uint64_t)m); }
+#elif VARIANT == 5
+/* As variant 4, but with no __builtin_assume: the unsigned remainder alone, whose failure on a
+   wrong sign fact would be a wrong value, never undefined behavior (ADR 0106 RB-7). */
+static inline int64_t emod(int64_t a, int64_t m) { return (int64_t)((uint64_t)a % (uint64_t)m); }
 #endif
 static int64_t mix(int64_t n) { int64_t h = 7; for (int64_t i = 0; i < n; i++) h = emod(add(mul(h, 31), i), 1000000007); return h; }
 int main(void) { printf("%lld\n", (long long)mix(50000000)); return 0; }

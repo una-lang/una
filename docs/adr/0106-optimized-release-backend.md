@@ -43,10 +43,11 @@ What the numbers can and cannot say. They show the gap between Cranelift and an 
 | C, Rust's `rem_euclid` shape, branch-free | 0.259 s | 1.05 |
 | C, the divisor stated positive | 0.247 s | 1.00 |
 | C, `-O3` / without `-fwrapv` | 0.247 s / 0.248 s | 1.00 |
-| **C, the dividend stated non-negative, unsigned remainder** | **0.180 s** | **0.73** |
+| C, the dividend stated non-negative with `__builtin_assume`, unsigned remainder | 0.180 s | 0.73 |
+| **C, the unsigned remainder alone, no `__builtin_assume` (variant 5, a third quiet run at 05:32 UTC: 0.180 s against the kit's 0.246 s in the same run)** | **0.180 s** | **0.73** |
 | Rust `rem_euclid` | 0.164 s | 0.66 |
 
-The gap is not the route, the optimization level or `-fwrapv`. It is a fact about the value that the C program did not state. Stated, C comes within 10% of Rust. Una's verifier knows such facts: refinements and proven ranges. So the release backend states them in the emitted C, which is rule RB-7. The choice between the routes rests on the other constraints.
+The gap is not the route, the optimization level or `-fwrapv`. It is a fact about the value that the C program did not state. Stated, C comes within 10% of Rust. Una's verifier knows such facts: refinements and proven ranges. So the release backend states them in the emitted C, in forms whose failure is defined behavior: rule RB-7. Variant 5 shows that the defined form alone gives the whole gain: `__builtin_assume` adds nothing (`result-k2-v5-2026-10-15.json`). The choice between the routes rests on the other constraints.
 
 ## Decision
 
@@ -66,7 +67,13 @@ The representation at the boundary between Core IR and a backend (value words, h
 5. **The C compiler joins the trusted computing base for release builds (RB-5).** The build report's `native` section names the compiler and its version (`cc --version`'s first line) for a release build. The project's own gates pin it: the Linux images of `scripts/local-ci/` install a fixed clang, and the macOS gate records Apple clang's version in the validation record; a different version fails the reproducible gate's comparison only through the digests, never silently.
 6. **Reproducible (RB-6).** The emitted C has no path, time or account; the compile uses `-ffile-prefix-map` for the package root and the cargo home as `scripts/release.sh` does (#382), and no `__DATE__` or `__TIME__`. Two release builds of one commit on one compiler version give the same bytes.
 
-7. **Proven facts are stated, never assumed (RB-7).** Where the verifier proved a range or a sign for a value (a refinement, a fixed width, a discharged obligation), the emitted C may state it to the C compiler, as an unsigned operation on a value proven non-negative or as a `__builtin_assume` of a proven predicate. Only facts the verifier proved are stated. A stated fact is a hint to the optimizer, never a check removed: rule RB-3 holds. A false statement would be undefined behavior, so each statement carries the obligation that proved it, recorded in the build report, and the `sanitize` gate builds without the statements, to compare outputs.
+7. **Proven facts are stated only in forms whose failure is defined behavior (RB-7).** Where the verifier proved a range or a sign for a value (a refinement, a fixed width, a discharged obligation), the emitted C may use that fact, but only in a form that stays defined behavior if the fact were wrong:
+   - an unsigned operation on a value proven non-negative: a wrong proof gives a wrong value, which the equivalence suite catches, never undefined behavior;
+   - a narrower fixed-width type for a value proven to fit, with the conversion checked as for any fixed-width value.
+
+   Forms whose false premise is undefined behavior are excluded: `__builtin_assume`, `__builtin_unreachable`, `restrict`, and any other construct that lets the C compiler treat a wrong fact as license to delete checks or read out of bounds. A verifier or encoding bug must stay a wrong answer, never become a memory-safety bug. A stated fact never replaces a check (RB-3); each carries the obligation that proved it, recorded in the build report; and the `sanitize` gate also builds without the statements and compares outputs.
+
+   *Option for the owner, not the default:* a UB-premised assumption (`__builtin_assume`) where a measured kernel shows the defined forms cannot reach the Gate 2 margin. The risk: any verifier or encoding bug at that site becomes undefined behavior in a release build. No such case is known.
 
 ### Release gates added
 
