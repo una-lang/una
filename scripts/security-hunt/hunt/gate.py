@@ -3,7 +3,7 @@ the must-reject and must-keep drivers and the two-run oracle, with two canaries.
 
 It fails closed. The gate passes only when all of these hold:
 - no must-reject program is accepted, no refactor turns a rejected program into an accepted one,
-  and the oracle sees no difference a public observer could see;
+  and the oracle sees no difference an observer below the varied literal could see;
 - every check and every run ends in a known way (no timeout of `una check`, no internal error,
   no unreadable output, no nondeterministic run);
 - each driver judged exactly the cases the fixed run generates, and none of those counts is zero;
@@ -166,7 +166,9 @@ def run(una, out_dir, tip):
         if r.get("error"):
             errors.append(f"oracle {r['name']}: {r['error']}")
         if r.get("finding"):
-            findings.append(f"oracle {r['name']}: a public observer sees the secret vary")
+            seen = sorted({o for v in r["variants"] for o in v.get("observers", [])})
+            findings.append(f"oracle {r['name']}: an observer at {', '.join(seen)} sees the "
+                            "varied literal")
         for t in r.get("termination", []):
             termination.append(dict(t, name=r["name"]))
     compared = sum(1 for r in oracle_rows for v in r["variants"] if v["verdict"] != "error")

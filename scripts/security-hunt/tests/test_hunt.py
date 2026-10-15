@@ -7,6 +7,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import tempfile
 import unittest
@@ -680,18 +681,125 @@ class Oracle(unittest.TestCase):
         self.assertFalse(oracle.releases_to_public(to_internal))
         self.assertFalse(oracle.releases_to_public({"src/a.una": "module a\n"}))
 
-    def test_the_projection_drops_only_the_outcome(self):
-        doc = json.loads(run_doc("ok", ["a"], trace=[EVENT]))
-        view = oracle.project(doc)
-        self.assertEqual(view["trace"], [{k: v for k, v in EVENT.items() if k != "outcome"}])
-        other = dict(EVENT, outcome={"fail": {"variant": "X", "value": None}})
-        self.assertEqual(view, oracle.project(json.loads(run_doc("ok", ["a"], trace=[other]))))
+    TABLE = {k: {v} for k, v in oracle.HOST_ACCEPTS.items()}
+
+    def core(self, *caps):
+        """A Core export with user capabilities: (name, op, accepts label object or None)."""
+        decls = [{"kind": "cap", "name": n, "ops": [{"name": o, "accepts": a}]} for n, o, a in caps]
+        return {"modules": [{"path": "app.main", "decls": decls}]}
+
+    def views(self, trace, observer="public", table=None, output=("done",)):
+        doc = json.loads(run_doc("ok", list(output), trace=trace))
+        return oracle.project(doc, observer, table or self.TABLE)
+
+    def test_the_projection_drops_seq_and_outcome_and_keeps_order(self):
+        view = self.views([EVENT, dict(EVENT, seq=1, args={"message": "b"})])
+        self.assertEqual(view["trace"], [{k: v for k, v in EVENT.items()
+                                          if k not in ("seq", "outcome")},
+                                         {k: v for k, v in EVENT.items()
+                                          if k not in ("seq", "outcome", "args")}
+                                         | {"args": {"message": "b"}}])
+        other = dict(EVENT, seq=7, outcome={"fail": {"variant": "X", "value": None}})
+        self.assertEqual(self.views([EVENT]), self.views([other]))
         moved = dict(EVENT, args={"message": "<redacted:secret>"})
-        self.assertNotEqual(view, oracle.project(json.loads(run_doc("ok", ["a"], trace=[moved]))))
+        self.assertNotEqual(self.views([EVENT]), self.views([moved]))
+
+    def h3(self, accepts):
+        """The trace shapes of H3: a user operation called only when the secret is true."""
+        table = oracle.accepts_table(self.core(("Vault", "note", accepts)))
+        note = {"seq": 0, "instance": "with:quiet#1", "capability": "Vault", "op": "note",
+                "args": {"x": "1"}, "outcome": {"kind": "ok", "value": "unit"}}
+        printed = dict(EVENT, seq=1)
+        with_note, without = [note, printed], [dict(printed, seq=0)]
+        return table, with_note, without
+
+    def test_an_event_whose_operation_accepts_secret_is_hidden_below_it(self):
+        table, a, b = self.h3({"level": "secret", "categories": [], "symbols": []})
+        for observer in ("public", "internal"):
+            self.assertEqual(self.views(a, observer, table), self.views(b, observer, table))
+
+    def test_an_event_whose_operation_accepts_internal_is_seen_at_internal(self):
+        table, a, b = self.h3({"level": "internal", "categories": [], "symbols": []})
+        self.assertEqual(self.views(a, "public", table), self.views(b, "public", table))
+        self.assertNotEqual(self.views(a, "internal", table), self.views(b, "internal", table))
+        base = ("complete", {o: self.views(a, o, table) for o in ("public", "internal")})
+        other = ("complete", {o: self.views(b, o, table) for o in ("public", "internal")})
+        self.assertEqual(oracle.judge(base, other), "leak")
+        self.assertEqual(oracle.leaking_observers(base, other), ["internal"])
+
+    def test_a_public_print_under_the_secret_stays_a_leak(self):
+        table, _, _ = self.h3({"level": "secret", "categories": [], "symbols": []})
+        a = self.views([EVENT], "public", table, output=["yes"])
+        b = self.views([], "public", table, output=[])
+        self.assertEqual(oracle.judge(("complete", {"public": a}), ("complete", {"public": b})),
+                         "leak")
+
+    def test_an_unclassified_accepts_stays_visible(self):
+        # No clause, an unknown level, a public label with categories, a missing level: each is
+        # seen by every observer, so a miss gives a false finding, never a hidden leak.
+        for acc in (None, {"level": "weird"}, {"level": "public", "categories": ["PII"]}, {},
+                    {"level": ""}, {"level": "Secret"}):
+            table, a, b = self.h3(acc)
+            self.assertNotEqual(self.views(a, "public", table), self.views(b, "public", table),
+                                acc)
+        # Two declarations of one operation: seen when either is.
+        table = oracle.accepts_table(self.core(("Vault", "note", {"level": "secret"}),
+                                               ("Vault", "note", None)))
+        self.assertTrue(oracle.sees("public", table[("Vault", "note")]))
+
+    def test_an_event_of_an_unknown_operation_is_an_error(self):
+        doc = run_doc("ok", ["a"], trace=[dict(EVENT, capability="Ghost", op="boo")])
+        end = oracle.observe(Run(0, doc, "", False, 0.1), ["public"], self.TABLE)
+        self.assertEqual(end[0], "error")
+        self.assertIn("Ghost.boo", end[1])
+
+    def test_keys_hmac_shows_only_its_key_name(self):
+        ev = {"seq": 0, "instance": "host:Keys", "capability": "Keys", "op": "hmac",
+              "args": {"key_name": "\"pepper\"", "data": "<redacted:secret>"},
+              "outcome": {"kind": "ok", "value": "hashed:00"}}
+        view = self.views([ev])
+        self.assertEqual(view["trace"][0]["args"], {"key_name": "\"pepper\""})
+        self.assertEqual(view, self.views([dict(ev, args={"key_name": "\"pepper\"",
+                                                          "data": "\"x\""})]))
+
+    def test_the_host_table_is_the_preludes(self):
+        # Pinned to the declarations of crates/una-check/src/std: every host capability's
+        # operations, with their `accepts` (none written: `public`, spec/07 §7).
+        std = os.path.join(os.path.dirname(__file__), "..", "..", "..", "crates", "una-check",
+                           "src", "std")
+        found = {}
+        for name in ("prelude.una", "prelude_0_2.una"):
+            cap = op = None
+            with open(os.path.join(std, name), encoding="utf-8") as f:
+                lines = f.read().splitlines(keepends=True)
+            for line in lines:
+                m = re.match(r"pub capability (\w+)", line)
+                if m:
+                    cap, op = m.group(1), None
+                    continue
+                if cap and re.match(r"\S", line):
+                    cap = op = None
+                    continue
+                m = re.match(r"  op (\w+)\(", line)
+                if cap and m:
+                    op = m.group(1)
+                    found[(cap, op)] = "public"
+                    continue
+                m = re.match(r"    accepts (\w+)", line)
+                if cap and op and m:
+                    found[(cap, op)] = m.group(1)
+        self.assertEqual(found, oracle.HOST_ACCEPTS)
+
+    def test_observers_are_those_below_the_varied_label(self):
+        self.assertEqual(oracle.observers_for([{"label": "secret[PII]"}]), ["public", "internal"])
+        self.assertEqual(oracle.observers_for([{"label": "internal"}]), ["public"])
+        self.assertEqual(oracle.observers_for([{"label": "odd"}]), ["public", "internal"])
+        self.assertEqual(oracle.observers_for([{"label": "secret"}, {"label": "internal"}]),
+                         ["public"])
 
     def test_observe_fails_closed(self):
         def end(code, text, timed_out=False):
-            return oracle.observe(Run(code, text, "", timed_out, 0.1))[0]
+            return oracle.observe(Run(code, text, "", timed_out, 0.1), ["public"], self.TABLE)[0]
         self.assertEqual(end(0, run_doc("ok", ["a"])), "complete")
         self.assertEqual(end(1, run_doc("failed", failure={"variant": "Halt", "fields": {}},
                                         diagnostics=[diag("U6001")])), "complete")
@@ -711,8 +819,8 @@ class Oracle(unittest.TestCase):
         self.assertEqual(end(0, json.dumps({"schema": "una.check/1"})), "error")
 
     def test_judge(self):
-        a = ("complete", {"output": ["1"]})
-        b = ("complete", {"output": ["2"]})
+        a = ("complete", {"public": {"output": ["1"]}})
+        b = ("complete", {"public": {"output": ["2"]}})
         abort = ("abort", ["U6003"])
         self.assertEqual(oracle.judge(a, a), "same")
         self.assertEqual(oracle.judge(a, b), "leak")
@@ -722,10 +830,12 @@ class Oracle(unittest.TestCase):
         self.assertEqual(oracle.judge(a, ("error", "x")), "error")
         self.assertEqual(oracle.judge(a, ("rejected", [])), "error")
         # ok against failed is a difference in what is public, so a leak.
-        ok = oracle.project(json.loads(run_doc("ok")))
+        ok = self.views([], output=[])
         failed = oracle.project(json.loads(run_doc("failed", failure={"variant": "H",
-                                                                       "fields": {}})))
-        self.assertEqual(oracle.judge(("complete", ok), ("complete", failed)), "leak")
+                                                                       "fields": {}})),
+                                "public", self.TABLE)
+        self.assertEqual(oracle.judge(("complete", {"public": ok}),
+                                      ("complete", {"public": failed})), "leak")
 
 
 class Gate(unittest.TestCase):
