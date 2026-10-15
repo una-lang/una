@@ -26,6 +26,7 @@ The constraints:
 In edition `0.3`, the prelude declares two built-in types:
 
 - `Arena[T]`: a finite collection of values of `T`, each under an id, in the order they were added.
+- `Arena[T]` is not `Eq` and not `Ord`, since its ids make two arenas built alike different, and it cannot be rendered, interpolated or encoded as JSON (U2001), so no id leaks through it.
 - `Id[T]`: an opaque id of a value of `T` in some arena. It has no fields and no arithmetic. It satisfies `Eq` and not `Ord` (rule 5). It cannot be rendered, interpolated or encoded as JSON (U2001), so an id never reaches output.
 
 `Id[T]` is grounded for ADR 0060 rule R1: a kind may hold `Id` of itself, which is how a node names its neighbors.
@@ -53,8 +54,8 @@ They are built-in methods of the receiver, as a map's are (`spec/21 §2`):
 ### 3. What guards an id
 
 - **Out of bounds, stale, foreign.** Each is a `get`, `set` or `remove` of an id the arena does not hold, which the `precondition` obligation refutes or leaves unknown (U5001, U5002). The statically accepted program never performs one.
-- **At run time,** where the check is not elided by a proof (#737), the operation checks `has` again and, if it fails, aborts the run as the runtime aborts on a violated internal invariant: it never returns or writes another node. The run-time check guards against a verifier bug; it is not the program's way to test.
-- **Ids are unique per run.** An id is made from a counter of the run, never reused, so an id stays distinct from every other id ever made, in every arena, across `remove`. A copy of an arena holds the same ids as the original, since it is the same value, and after the two diverge, an id added to one is never held by the other. So `has` answers exactly whether that arena holds that id, with no aliasing between arenas or between generations. In a `together` block, each task's ids carry the task's number in their high bits, so ids made in parallel never collide (`spec/19`).
+- **At run time,** the operation checks `has` again, and this check is never elided, by #737 or any other rule: with a wrong proof there is no value of `T` to return. If it fails, the run aborts with U8001, exit code 3, "internal error: an arena operation on an id it does not hold", the same in the interpreter and the native backend. It never returns or writes another node. The run-time check guards against a verifier bug; it is not the program's way to test.
+- **Ids are unique per run.** An id is made from a counter of the run, never reused, so an id stays distinct from every other id ever made, in every arena, across `remove`. A copy of an arena holds the same ids as the original, since it is the same value, and after the two diverge, an id added to one is never held by the other. So `has` answers exactly whether that arena holds that id, with no aliasing between arenas or between generations. In a `together` block, each task's ids carry the task's number in their upper bits, so ids made in parallel never collide (`spec/19`). An id fits 62 bits, so boxing it into a generic position (`List[Id[Node]]`) is the tagged word, never a promoted integer (ADR 0107 rule 4): 20 bits for the task number and 42 bits for its counter. Running out of either is a resource limit: the run aborts with U6003, as for memory, and never wraps, which would break uniqueness.
 
 ### 4. Examples
 
@@ -104,13 +105,17 @@ An arena has two kinds of information: its **contents**, the values, and its **s
 ### 6. Verification encoding
 
 - `Arena[T]` is one sort per instantiation and `Id[T]` an uninterpreted sort, as a map's are (`spec/21 §6`). `has`, `get` and `len` are uninterpreted functions.
-- Each operation's contract gives ground facts, instantiated at the ids the query mentions, as a map's `with` and `without` are: after `add`, `set` or `remove` on `a` giving `a'`, for each id term `x` of the query other than the operation's own, `has(a', x) == has(a, x)`, and for `set` and `remove` at `i`, `get(a', x) == get(a, x)` when `x != i`. No quantifier enters the query, which stays in `QF_UFLIA`.
-- The freshness of `add` is the ground fact `not has(a, new)`, and `new != x` for each id term `x` that `a` held.
+- Each operation's contract gives ground facts, instantiated at every id term `x` of the query, as a map's `with` and `without` are. Every frame fact is an implication guarded by distinctness, since two different terms may denote the same id (an alias of the new id, or an id read from a node):
+  - after `add` giving `new`: `x != new ⇒ has(a', x) == has(a, x)` and `x != new ⇒ get(a', x) == get(a, x)`;
+  - after `set` or `remove` at `i`: `x != i ⇒ has(a', x) == has(a, x)` and `x != i ⇒ get(a', x) == get(a, x)`.
+- The freshness of `add` is `not has(a, new)`, and `has(a, x) ⇒ new != x` for each id term `x`.
+- No quantifier enters the query, which stays in `QF_UFLIA`. A conformance case aliases the new id and the removed id and checks that a false goal on the alias is refuted, never proven.
+- **Elements of `ids()`.** The fact that every element of `a.ids()` is held enters as ADR 0103's facts on access do: at each access to an element (`first`, a loop variable, a pattern), the ground fact `has(a, e)`, framed by the rules above.
 
 ### 7. Layout (ADR 0107, ADR 0108)
 
 - `Id[T]` is a flat record of one raw `U64` cell (ADR 0108 rule 1): ids live in registers and in a node's cells, with no heap object of their own.
-- `Arena[T]` is one heap object (ADR 0107 rule 3) holding two parts: its values in `add` order, as a packed list of `T` when `T` has a raw representation and a list of words otherwise (ADR 0107 rule 5); and an index from id to position, a hash table keyed by the raw id. `remove` leaves a tombstone, compacted when tombstones pass half the slots.
+- `Arena[T]` is one heap object (ADR 0107 rule 3) holding two parts: its values in `add` order, as a packed list of `T` when `T` has a raw representation and a list of words otherwise (ADR 0107 rule 5); and an index from id to position, a hash table keyed by the raw id. `remove` leaves a tombstone, compacted when tombstones pass half the slots. Compaction preserves the order of `add`, and `ids()` skips tombstones in O(n + tombstones), at most O(2n).
 - **Complexity.** `add`, `has`, `get`, `find`, `set` and `remove` are O(1) average, and O(n) amortized for a compaction spread over the removals that caused it. `ids()` is O(n). A copy, when the arena is shared, is O(n), as a list's.
 - Iteration order is the order of `add`, never the hash order, so output is deterministic (`CLAUDE.md`).
 
@@ -128,6 +133,7 @@ None is added. A held-id obligation is a `precondition` (U5001, U5002); renderin
 - Graphs and cyclic structures have a home with no references, no aliasing, and no silent misuse of an id.
 - Programs carry `has` obligations, which tests or the facts of `add` discharge. A graph algorithm that walks `edges` needs the invariant that every edge is held; ADR 0103's refined elements can state it later (`List[Id[Node]] where …` over the arena is not expressible today, so walks test with `find`).
 - The structure label makes arenas built under secret branches `secret` as a whole, conservatively.
+- Without `Ord` on `Id`, there is no `Map[Id[T], V]` and no set of ids: a map needs an order, and an observable order of ids would leak the counter. Graph algorithms mark visits in the node's own fields or in a parallel arena. A public order of ids is deferred.
 - Deferred: an invariant that ties a node's edges to its arena, which needs refinements that mention another value; arena-to-arena operations; and an `Ord` on ids, which would need a public order.
 
 ## Alternatives considered
