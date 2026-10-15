@@ -2892,11 +2892,12 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// The label of a value computed from the whole value recorded at `span`, such as its text
     /// or a comparison with it: the deep join of its type's labels, kinds' fields included, as
     /// the checker labels it (S-27).
+    /// A value with no recorded type fails closed: `⊤`, never `public`.
     fn computed_label(&self, span: Span) -> Label {
-        self.records
-            .types
-            .get(&span)
-            .map_or_else(Label::public, |ty| ty.computed_label(&self.env.kind_labels))
+        self.records.types.get(&span).map_or_else(
+            || Label::top(&self.env.categories),
+            |ty| ty.computed_label(&self.env.kind_labels),
+        )
     }
 
     /// `lo <= x and x <= hi`, or `x < hi` for `..<`, as nested `if`s.
@@ -3346,10 +3347,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let labels: Vec<Label> = arg_spans
                         .iter()
                         .map(|arg| {
-                            self.records
-                                .types
-                                .get(arg)
-                                .map_or_else(Label::public, Ty::argument_label)
+                            // An argument with no recorded type fails closed: `⊤`, so the trace
+                            // redacts it.
+                            self.records.types.get(arg).map_or_else(
+                                || Label::top(&self.env.categories),
+                                Ty::argument_label,
+                            )
                         })
                         .collect();
                     let capability_path = self.capability_path(Some(capability));

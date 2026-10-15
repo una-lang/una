@@ -161,7 +161,7 @@ S-27 is a defect of the Core export, not of the checker. Its first shape: in edi
 - The checker labels that text with every label of the value's type, its fields' included.
 - The export bound it to a `to_text` temporary labeled without the labels that kinds' fields declare. That is the label operation arguments use for trace redaction, which redacts a kind value field by field.
 - So a record with a `secret[PII]` field was exported as `public Text` holding the field in clear.
-- The hunt's re-check comparison (#791) found it: the re-check rejected 16 programs of family K4 that `una check` accepts.
+- A comparison of `una check` with the re-check, over generated programs (#791), found it: the re-check rejected 16 accepted programs that pass a record with a `secret[PII]` field, interpolated, to `Keys.hmac`.
 
 The review of every temporary that elaboration labels by hand found a second shape of the same class: a `when` over a literal or a range compares the scrutinee, and the export labeled those comparisons `public Bool` whatever the scrutinee's label.
 

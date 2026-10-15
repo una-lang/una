@@ -1,5 +1,5 @@
 -- test: `when` over a `secret` scrutinee, with a literal arm and a range arm, its result kept `secret`: accepted, and its Core export labels each comparison with the scrutinee `secret`, the label of what it decides (S-27, the test of crates/una-cli/tests/core_text_labels.rs)
--- spec: spec/10 §12
+-- spec: spec/07 §3
 -- expect: ok
 module app.main
 

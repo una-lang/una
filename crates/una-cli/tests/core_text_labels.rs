@@ -80,7 +80,7 @@ fn walk(node: &Value, out: &mut Vec<String>) {
     }
 }
 
-const KINDS: &str = "kind Card\n  holder: Text\n  number: secret[PII] Text\n\nkind Wallet\n  keeper: Text\n  card: Card\n\nkind Plain\n  name: Text\n  size: Int\n\nkind Code = Hidden(value: confidential Int) | Open\n";
+const KINDS: &str = "kind Card\n  holder: Text\n  number: secret[PII] Text\n\nkind Wallet\n  keeper: Text\n  card: Card\n\nkind Plain\n  name: Text\n  size: Int\n\nkind Code = Hidden(value: confidential Int) | Open\n\nkind Box[T]\n  inner: T\n";
 
 fn main_with(lines: &str) -> String {
     format!(
@@ -119,6 +119,11 @@ fn an_interpolated_value_text_carries_its_fields_labels_in_the_core_export() {
             vec!["confidential[]"],
         ),
         (
+            "generic",
+            "  let s: secret Int = 3\n  let b = Box(inner: s)\n  let t = \"{b}\"\n  @console.print(\"done\")",
+            vec!["secret[]"],
+        ),
+        (
             "plain",
             "  let p = Plain(name: \"Ana\", size: 3)\n  @console.print(\"{p}\")",
             vec!["public[]"],
@@ -142,8 +147,9 @@ fn an_interpolated_value_text_carries_its_fields_labels_in_the_core_export() {
     }
 }
 
-/// The labels of every comparison temporary (`==`, `<=`, `<`) of the export, as `level[categories]`.
-fn comparison_labels(dir: &PathBuf) -> Vec<String> {
+/// The labels of every `Bool` temporary of the export (`%`-named), as `level[categories]`: the
+/// comparisons of a `when` test or a range test, and the `if` that combines a range's two.
+fn bool_temporary_labels(dir: &PathBuf) -> Vec<String> {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "core", "."])
@@ -153,47 +159,59 @@ fn comparison_labels(dir: &PathBuf) -> Vec<String> {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
     let mut out = Vec::new();
-    walk_comparisons(&document, &mut out);
+    walk_bools(&document, &mut out);
     out
 }
 
-fn walk_comparisons(node: &Value, out: &mut Vec<String>) {
+fn walk_bools(node: &Value, out: &mut Vec<String>) {
     match node {
         Value::Object(fields) => {
-            let prim = fields
-                .get("value")
-                .map(|value| &value["value"]["prim"]["kind"]);
-            let is_comparison = fields.get("kind").and_then(Value::as_str) == Some("let")
-                && fields["value"]["kind"] == "rhs"
-                && fields["value"]["value"]["kind"] == "prim"
-                && prim.is_some_and(|kind| kind == "eq" || kind == "le" || kind == "lt");
-            if is_comparison {
+            let temporary = fields.get("kind").and_then(Value::as_str) == Some("let")
+                && fields
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.starts_with('%'))
+                && fields["ty"]["base"]["kind"] == "bool";
+            if temporary {
                 let label = &fields["ty"]["label"];
-                out.push(label["level"].as_str().unwrap().to_owned());
+                let categories: Vec<&str> = label["categories"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect();
+                out.push(format!(
+                    "{}[{}]",
+                    label["level"].as_str().unwrap(),
+                    categories.join(",")
+                ));
             }
             for value in fields.values() {
-                walk_comparisons(value, out);
+                walk_bools(value, out);
             }
         }
-        Value::Array(items) => items.iter().for_each(|item| walk_comparisons(item, out)),
+        Value::Array(items) => items.iter().for_each(|item| walk_bools(item, out)),
         _ => {}
     }
 }
 
 #[test]
-fn a_when_test_on_a_labeled_scrutinee_carries_its_label_in_the_core_export() {
-    // `when` over a literal and over a range desugars to comparisons with the scrutinee; each
-    // depends on it, so each carries its label (S-27).
-    let lines = "  let s: secret Int = 3\n  let r = when s\n    is 3 -> 1\n    in 4..9 -> 2\n    else -> 3\n  @console.print(\"done\")";
+fn a_test_on_a_labeled_value_carries_its_label_in_the_core_export() {
+    // `when` over a literal and over a range, and `x in lo..hi`, desugar to comparisons with the
+    // value, and a range's two are combined by an `if`; each depends on the value, so each
+    // carries its label, categories included (S-27), in every edition.
+    let lines = "  let s: secret[PII] Int = 3\n  let r = when s\n    is 3 -> 1\n    in 4..9 -> 2\n    else -> 3\n  let inside = s in 1..5\n  @console.print(\"done\")";
     let source = format!(
         "module app.main\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{lines}\n"
     );
-    for edition in ["0.2", "0.3"] {
+    for edition in ["0.1", "0.2", "0.3"] {
         let dir = package("when", edition, &source);
-        let got = comparison_labels(&dir);
-        assert_eq!(got.len(), 3, "edition {edition}: {got:?}");
+        let got = bool_temporary_labels(&dir);
+        // The literal arm's `==`; the range arm's `<=`, `<=` and their `if`; the `in`
+        // expression's `<=`, `<` and their `if`.
+        assert!(got.len() >= 7, "edition {edition}: {got:?}");
         assert!(
-            got.iter().all(|level| level == "secret"),
+            got.iter().all(|label| label == "secret[PII]"),
             "edition {edition}: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
