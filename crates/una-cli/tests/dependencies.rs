@@ -9,6 +9,11 @@
 //! workspace's members, by name and version, and every member's manifest must be inside the
 //! repository: a path dependency outside the workspace, or a vendored copy, fails.
 //!
+//! The fuzz targets (`fuzz/`, #766) are a crate outside the workspace with a `Cargo.lock` of
+//! their own. Its crates.io packages are each in the record above or, when `Cargo.lock` does
+//! not have them at that version and checksum, in `supply-chain/fuzz-crates.tsv`, which lists
+//! exactly those; its packages with no source are the fuzz crate and members of the workspace.
+//!
 //! The test reads the repository's files and runs `cargo metadata --no-deps --offline --locked`,
 //! so it runs offline.
 
@@ -91,6 +96,25 @@ fn lock_packages() -> Vec<Package> {
     packages(&std::fs::read_to_string(root().join("Cargo.lock")).unwrap())
 }
 
+/// The packages of the fuzz targets' `fuzz/Cargo.lock`.
+fn fuzz_lock_packages() -> Vec<Package> {
+    packages(&std::fs::read_to_string(root().join("fuzz/Cargo.lock")).unwrap())
+}
+
+/// The fuzz crate of `fuzz/Cargo.toml`, by name and version.
+fn fuzz_crate() -> (String, String) {
+    ("una-rt-fuzz".to_owned(), "0.0.0".to_owned())
+}
+
+/// The crates.io packages of `packages`, by name, version and checksum.
+fn from_crates_io(packages: Vec<Package>) -> BTreeSet<(String, String, String)> {
+    packages
+        .into_iter()
+        .filter(|package| package.source.as_deref() == Some(CRATES_IO))
+        .map(|package| (package.name, package.version, package.checksum.unwrap()))
+        .collect()
+}
+
 /// The workspace's members, by name and version, from `cargo metadata`, each checked to have its
 /// manifest inside the repository.
 fn members() -> BTreeSet<(String, String)> {
@@ -132,9 +156,14 @@ fn members() -> BTreeSet<(String, String)> {
 }
 
 /// The problems with the sources of `packages`: a source other than crates.io, a crates.io
-/// package with no checksum, a package with no source that has a checksum, and any difference
-/// between the packages with no source and the workspace's `members`.
-fn source_problems(packages: &[Package], members: &BTreeSet<(String, String)>) -> Vec<String> {
+/// package with no checksum, a package with no source that has a checksum, a package with no
+/// source that is not one of `members`, and, when `every_member` is set, a member that is not a
+/// package with no source.
+fn source_problems(
+    packages: &[Package],
+    members: &BTreeSet<(String, String)>,
+    every_member: bool,
+) -> Vec<String> {
     let mut problems = Vec::new();
     let mut pathed = BTreeSet::new();
     for package in packages {
@@ -159,22 +188,25 @@ fn source_problems(packages: &[Package], members: &BTreeSet<(String, String)>) -
             "{name} {version} has no source and is not a member of the workspace (a path dependency outside it, or a vendored copy)"
         ));
     }
-    for (name, version) in members.difference(&pathed) {
-        problems.push(format!(
-            "the workspace member {name} {version} is not a package of Cargo.lock"
-        ));
+    if every_member {
+        for (name, version) in members.difference(&pathed) {
+            problems.push(format!(
+                "the workspace member {name} {version} is not a package of Cargo.lock"
+            ));
+        }
     }
     problems
 }
 
-/// The record's lines after its header, each as name, version and checksum.
-fn record() -> Vec<(String, String, String)> {
-    let text = std::fs::read_to_string(root().join("supply-chain/crates.tsv")).unwrap();
+/// The lines after the header of the record `name` of `supply-chain/`, each as name, version
+/// and checksum.
+fn record(name: &str) -> Vec<(String, String, String)> {
+    let text = std::fs::read_to_string(root().join("supply-chain").join(name)).unwrap();
     let mut lines = text.lines();
     assert_eq!(
         lines.next(),
         Some(HEADER),
-        "supply-chain/crates.tsv starts with its header"
+        "supply-chain/{name} starts with its header"
     );
     lines
         .map(|line| {
@@ -185,7 +217,7 @@ fn record() -> Vec<(String, String, String)> {
                     && fields[2]
                         .chars()
                         .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
-                "supply-chain/crates.tsv: not a name, a version and a sha256 checksum: {line:?}"
+                "supply-chain/{name}: not a name, a version and a sha256 checksum: {line:?}"
             );
             (
                 fields[0].to_owned(),
@@ -198,7 +230,7 @@ fn record() -> Vec<(String, String, String)> {
 
 #[test]
 fn every_dependency_comes_from_crates_io_or_is_a_workspace_member() {
-    let problems = source_problems(&lock_packages(), &members());
+    let problems = source_problems(&lock_packages(), &members(), true);
     assert!(
         problems.is_empty(),
         "the sources of Cargo.lock:\n{}",
@@ -217,7 +249,7 @@ fn a_path_dependency_outside_the_workspace_is_a_problem() {
     };
     // The workspace and a crates.io package: no problem.
     assert_eq!(
-        source_problems(&packages(&lock("")), &members),
+        source_problems(&packages(&lock("")), &members, true),
         Vec::<String>::new()
     );
     // Each of these is one problem.
@@ -232,7 +264,7 @@ fn a_path_dependency_outside_the_workspace_is_a_problem() {
         // A crates.io package with no checksum.
         format!("\n[[package]]\nname = \"n\"\nversion = \"0.1.0\"\nsource = \"{CRATES_IO}\"\n"),
     ] {
-        let problems = source_problems(&packages(&lock(&extra)), &members);
+        let problems = source_problems(&packages(&lock(&extra)), &members, true);
         assert_eq!(problems.len(), 1, "{extra}: {problems:?}");
     }
     // A member that Cargo.lock does not have.
@@ -241,12 +273,114 @@ fn a_path_dependency_outside_the_workspace_is_a_problem() {
         ("una-b".to_owned(), "1.0.0".to_owned()),
     ]
     .into();
-    assert_eq!(source_problems(&packages(&lock("")), &more).len(), 1);
+    assert_eq!(source_problems(&packages(&lock("")), &more, true).len(), 1);
+    // Unless every member need not be one, as for the fuzz crate's lock.
+    assert_eq!(
+        source_problems(&packages(&lock("")), &more, false),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
 fn the_record_lists_exactly_the_crates_io_dependencies() {
-    let recorded = record();
+    check_record("crates.tsv", &from_crates_io(lock_packages()), "Cargo.lock");
+}
+
+#[test]
+fn the_fuzz_crate_takes_its_path_dependencies_from_the_workspace() {
+    let mut allowed = members();
+    allowed.insert(fuzz_crate());
+    let packages = fuzz_lock_packages();
+    let problems = source_problems(&packages, &allowed, false);
+    assert!(
+        problems.is_empty(),
+        "the sources of fuzz/Cargo.lock:\n{}",
+        problems.join("\n")
+    );
+    let (name, version) = fuzz_crate();
+    assert!(
+        packages
+            .iter()
+            .any(|package| package.name == name && package.version == version),
+        "fuzz/Cargo.lock has no package {name} {version}"
+    );
+}
+
+#[test]
+fn the_fuzz_record_lists_exactly_the_fuzz_crates_not_in_the_record() {
+    let fuzz_only = fuzz_only(lock_packages(), fuzz_lock_packages());
+    check_record(
+        "fuzz-crates.tsv",
+        &fuzz_only,
+        "fuzz/Cargo.lock (less the packages Cargo.lock has)",
+    );
+}
+
+/// A crate, by name, version and checksum.
+type Crate = (String, String, String);
+
+/// The crates.io packages of the fuzz lock `fuzz` that the main lock `main` does not have at the
+/// same version and checksum: what `supply-chain/fuzz-crates.tsv` must list.
+fn fuzz_only(main: Vec<Package>, fuzz: Vec<Package>) -> BTreeSet<Crate> {
+    let main = from_crates_io(main);
+    from_crates_io(fuzz).difference(&main).cloned().collect()
+}
+
+/// The crates of `locked` that `recorded` does not list (unreviewed), and the lines of
+/// `recorded` that `locked` does not have (stale).
+fn differences<'a>(
+    recorded: &'a BTreeSet<Crate>,
+    locked: &'a BTreeSet<Crate>,
+) -> (Vec<&'a Crate>, Vec<&'a Crate>) {
+    (
+        locked.difference(recorded).collect(),
+        recorded.difference(locked).collect(),
+    )
+}
+
+#[test]
+fn each_fuzz_crate_is_in_exactly_one_record() {
+    let checksum = |c: char| c.to_string().repeat(64);
+    let lock = |crates: &[(&str, &str, char)]| {
+        let mut text = "version = 4\n".to_owned();
+        for (name, version, c) in crates {
+            text.push_str(&format!(
+                "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = \"{CRATES_IO}\"\nchecksum = \"{}\"\n",
+                checksum(*c)
+            ));
+        }
+        packages(&text)
+    };
+    let one =
+        |name: &str, version: &str, c: char| (name.to_owned(), version.to_owned(), checksum(c));
+    let fuzz = || lock(&[("a", "1.0.0", 'a'), ("b", "1.0.0", 'b')]);
+    let record: BTreeSet<_> = [one("b", "1.0.0", 'b')].into();
+    // `a` is in the main lock, at the same version and checksum: the fuzz record lists `b`.
+    let only = fuzz_only(lock(&[("a", "1.0.0", 'a')]), fuzz());
+    assert_eq!(differences(&record, &only), (vec![], vec![]));
+    // The main lock drops `a`, or moves it to another version: `a` is unreviewed until the fuzz
+    // record lists it.
+    for main in [lock(&[]), lock(&[("a", "2.0.0", 'c')])] {
+        let only = fuzz_only(main, fuzz());
+        assert_eq!(
+            differences(&record, &only),
+            (vec![&one("a", "1.0.0", 'a')], vec![])
+        );
+    }
+    // A line of the fuzz record that the main lock now covers is stale: each crate is in one
+    // record only.
+    let both: BTreeSet<_> = [one("a", "1.0.0", 'a'), one("b", "1.0.0", 'b')].into();
+    let only = fuzz_only(lock(&[("a", "1.0.0", 'a')]), fuzz());
+    assert_eq!(
+        differences(&both, &only),
+        (vec![], vec![&one("a", "1.0.0", 'a')])
+    );
+}
+
+/// Checks that the record `name` of `supply-chain/` is sorted, with no line twice, and lists
+/// exactly `locked`, the crates.io packages of the lock that `what` names.
+fn check_record(name: &str, locked: &BTreeSet<Crate>, what: &str) {
+    let recorded = record(name);
     let sorted: Vec<_> = recorded
         .iter()
         .cloned()
@@ -255,29 +389,46 @@ fn the_record_lists_exactly_the_crates_io_dependencies() {
         .collect();
     assert_eq!(
         recorded, sorted,
-        "supply-chain/crates.tsv is sorted by name and version, with no line twice"
+        "supply-chain/{name} is sorted by name and version, with no line twice"
     );
     let recorded: BTreeSet<_> = recorded.into_iter().collect();
-    let locked: BTreeSet<_> = lock_packages()
-        .into_iter()
-        .filter(|package| package.source.as_deref() == Some(CRATES_IO))
-        .map(|package| (package.name, package.version, package.checksum.unwrap()))
-        .collect();
     let show = |set: Vec<&(String, String, String)>| {
         set.iter()
             .map(|(name, version, checksum)| format!("  {name}\t{version}\t{checksum}"))
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let unreviewed: Vec<_> = locked.difference(&recorded).collect();
-    let stale: Vec<_> = recorded.difference(&locked).collect();
+    let (unreviewed, stale) = differences(&recorded, locked);
     assert!(
         unreviewed.is_empty() && stale.is_empty(),
-        "Cargo.lock and supply-chain/crates.tsv differ (docs/release-gates.md, the deps gate: \
+        "{what} and supply-chain/{name} differ (docs/release-gates.md, the deps gate: \
          a crate enters the record only once it is reviewed)\n\
-         in Cargo.lock, not in the record:\n{}\n\
-         in the record, not in Cargo.lock:\n{}",
+         in {what}, not in the record:\n{}\n\
+         in the record, not in {what}:\n{}",
         show(unreviewed),
         show(stale)
     );
+}
+
+#[test]
+fn ncsa_is_allowed_for_libfuzzer_alone() {
+    // The license of the fuzz targets' vendored libFuzzer (#766): cargo-deny admits NCSA only
+    // through the one exception for libfuzzer-sys, at its version, and never in the allowlist,
+    // so any other crate that carries it fails the deps gate.
+    let deny = std::fs::read_to_string(root().join("deny.toml")).unwrap();
+    let lines: Vec<&str> = deny
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    let mentions: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("NCSA"))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(mentions.len(), 1, "deny.toml names NCSA once: {mentions:?}");
+    let at = mentions[0];
+    assert_eq!(lines[at].trim(), "allow = [\"NCSA\"]");
+    assert_eq!(lines[at - 1].trim(), "crate = \"libfuzzer-sys@0.4.13\"");
+    assert_eq!(lines[at - 2].trim(), "[[licenses.exceptions]]");
 }

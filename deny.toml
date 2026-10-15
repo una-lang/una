@@ -31,6 +31,15 @@ allow = [
 ]
 confidence-threshold = 0.93
 
+# The fuzz targets' libFuzzer (#766): libfuzzer-sys vendors and builds libFuzzer's C++, under the
+# permissive University of Illinois/NCSA Open Source License as well as its own MIT or
+# Apache-2.0. It builds only the binaries of the `sanitize` gate, never a shipped artifact. The
+# exception names this crate at this version only: NCSA is not in the allowlist above, so any
+# other crate, or another version of this one, that carries it fails the gate.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys@0.4.13"
+allow = ["NCSA"]
+
 [licenses.private]
 # The workspace's own crates are not published.
 ignore = true

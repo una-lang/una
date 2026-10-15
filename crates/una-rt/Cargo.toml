@@ -25,6 +25,8 @@ una-interp.workspace = true
 # every other module keeps the rule of compiler/conventions.md §1.
 [lints.rust]
 unsafe_code = "deny"
+# `una_fuzz`: set only by scripts/sanitize.sh for the fuzz targets of `fuzz/` (#766).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)"] }
 
 [lints.clippy]
 dbg_macro = "deny"
