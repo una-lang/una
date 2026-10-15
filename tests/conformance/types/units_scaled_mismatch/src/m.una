@@ -1,0 +1,14 @@
+-- test: kilometers and meters are two units of one dimension: adding them without `convert()` is U2028
+-- spec: spec/25 §3
+-- expect: error U2028 at src/m.una:14:65
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub bad(a: Int of Meter, k: Int of Kilometer) -> Int of Meter = a + k

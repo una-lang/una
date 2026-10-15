@@ -26,6 +26,9 @@ pub(crate) enum Res {
     /// A built-in method of an integer type, as the primitive it elaborates to (`spec/18 §4`,
     /// `§5`).
     IntMethod(una_core::Prim),
+    /// `measured()`, `magnitude()` or `convert()` (ADR 0104 rule 4): erased to the receiver,
+    /// multiplied by `ratio` when it is not 1 (rule 5).
+    UnitMethod { ratio: u128 },
     /// A built-in method of a map that reads it (`spec/21 §2`).
     MapMethod(una_core::MapOp),
     /// `edit m.set(...)` or `edit m.remove(...)`: the map rebound to `With` or `Without`.

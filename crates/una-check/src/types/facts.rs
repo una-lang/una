@@ -459,6 +459,7 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         Ty::Unit => "Unit".to_owned(),
         Ty::Hashed => "Hashed".to_owned(),
         Ty::Fixed(int) => format!("{int:?}"),
+        Ty::Measured(unit, inner) => format!("{} of {}", written(env, kind, inner), **unit),
         _ => "_".to_owned(),
     }
 }
@@ -767,7 +768,9 @@ fn satisfies(
         Constraint::Ord | Constraint::Integer => match ty.unlabeled() {
             Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => true,
             Ty::Param(index) => param_has(*index, need),
-            Ty::Text => need == Constraint::Ord,
+            // ADR 0104 rule 3: a measured type is ordered, but not `Integer`, whose `to_int()`
+            // would remove its unit without one of the three methods.
+            Ty::Text | Ty::Measured(..) => need == Constraint::Ord,
             Ty::Kind(id, _) => {
                 need == Constraint::Ord
                     && env.kinds.get(*id).is_some_and(|kind| {

@@ -35,6 +35,29 @@ pub(crate) fn literal_value(expr: &Expr) -> Option<(bool, &str)> {
     }
 }
 
+/// Whether `expr` is a constant expression: integer literals combined by `+`, `-`, `*`, `/`,
+/// `mod`, unary `-` and parentheses. It takes the unit its context expects, as one literal
+/// does (ADR 0104 rule 3).
+pub(crate) fn is_constant(expr: &Expr) -> bool {
+    use una_syntax::ast::BinaryOp;
+    match &expr.kind {
+        ExprKind::Literal(Literal::Int(_)) => true,
+        ExprKind::Paren(inner) => is_constant(inner),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        } => is_constant(operand),
+        ExprKind::Binary { op, left, right } => {
+            matches!(
+                op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod
+            ) && is_constant(left)
+                && is_constant(right)
+        }
+        _ => false,
+    }
+}
+
 /// Whether `ty` is an integer type: `Int` or a fixed-width type.
 pub(crate) fn is_integer(ty: &Ty) -> bool {
     matches!(ty, Ty::Int | Ty::Fixed(_))
@@ -80,6 +103,14 @@ impl Checker<'_, '_, '_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Ty {
+        // ADR 0104 rule 3: a literal takes the unit its context expects, and the magnitude
+        // type, as it takes a fixed-width type.
+        if let Some(Ty::Measured(unit, magnitude)) = expected.map(|e| self.vars.peel(e)) {
+            self.int_literal_type(negative, digits, span, Some(&magnitude));
+            // The expected type's magnitude, built by `Ty::measured`, holds no label.
+            debug_assert!(matches!(*magnitude, Ty::Int | Ty::Fixed(_)));
+            return Ty::Measured(unit, magnitude);
+        }
         let Some(int) = self.expected_fixed(expected) else {
             return Ty::Int;
         };
@@ -117,7 +148,7 @@ impl Checker<'_, '_, '_> {
         if self.exact_integers() {
             return;
         }
-        if matches!(self.resolve(ty), Ty::Fixed(_)) {
+        if matches!(self.resolve(ty).magnitude(), Ty::Fixed(_)) {
             self.obligation(ObligationKind::Overflow, span, None);
         }
     }
@@ -133,9 +164,26 @@ impl Checker<'_, '_, '_> {
         method: &str,
         args: &[Arg],
         span: Span,
+        expected: Option<&Ty>,
     ) -> Option<Ty> {
         if self.env.edition < Edition::V0_2 {
             return None;
+        }
+        // ADR 0104 rule 4: in edition 0.3, these three are built in, ahead of a function of
+        // the same name, when called with no argument.
+        if self.env.edition >= Edition::V0_3
+            && args.is_empty()
+            && matches!(method, "measured" | "magnitude" | "convert")
+        {
+            return Some(self.unit_method(target, method, span, expected));
+        }
+        // A built-in integer method on a measured receiver (ADR 0104 rule 3). Any other name
+        // resolves as on any value, so a function of the package called in method form keeps
+        // working.
+        if matches!(self.resolve(target).unlabeled(), Ty::Measured(..))
+            && (convert_target(method).is_some() || FixedOp::from_name(method).is_some())
+        {
+            return Some(self.measured_int_method(target, method, args, span));
         }
         let receiver = self.resolve(target);
         let convert = convert_target(method);
@@ -216,6 +264,235 @@ impl Checker<'_, '_, '_> {
         Some(Ty::Fixed(int).with_label(&label))
     }
 
+    /// `measured()`, `magnitude()` or `convert()` on `target` (ADR 0104 rule 4), the unit it
+    /// produces taken from `expected`. Each unitless use, a missing expected unit and a
+    /// conversion that is not exact or does not fit is an error, never a silent call.
+    fn unit_method(&mut self, target: &Ty, method: &str, span: Span, expected: Option<&Ty>) -> Ty {
+        use super::units::Unit;
+        let label = self.deep(target);
+        let receiver = self.resolve(target);
+        // A receiver whose type already failed reports nothing more.
+        if matches!(receiver.unlabeled(), Ty::Error(_) | Ty::Never) {
+            self.resolved(span, Res::UnitMethod { ratio: 1 });
+            return Ty::error();
+        }
+        let source_unit = receiver.unit().cloned();
+        let magnitude = receiver.magnitude().clone();
+        let expected = expected.map(|e| self.vars.peel(e));
+        let expected_unit = expected.as_ref().and_then(|e| e.unit().cloned());
+        let integer = matches!(magnitude, Ty::Int | Ty::Fixed(_) | Ty::Error(_));
+        let measured = |unit: Unit, magnitude: Ty| {
+            if unit.is_one() {
+                magnitude
+            } else {
+                Ty::measured(unit, magnitude)
+            }
+        };
+        let (result, ratio) = match method {
+            "magnitude" => match &source_unit {
+                Some(_) => (magnitude.clone(), 1),
+                None => {
+                    let message = if integer {
+                        "`magnitude()` takes a measured value, and this one has no unit".to_owned()
+                    } else {
+                        format!(
+                            "`magnitude()` takes a measured integer, not `{}`",
+                            self.show(&receiver)
+                        )
+                    };
+                    self.report.error(Code::U2028, span, message);
+                    (Ty::error(), 1)
+                }
+            },
+            "measured" if !integer => {
+                self.report.error(
+                    Code::U2028,
+                    span,
+                    format!(
+                        "`measured()` takes an integer, not `{}`",
+                        self.show(&receiver)
+                    ),
+                );
+                (Ty::error(), 1)
+            }
+            "measured" => match (&source_unit, expected_unit) {
+                (None, Some(unit)) if integer => (measured(unit, magnitude.clone()), 1),
+                (Some(_), _) => {
+                    self.report.error(
+                        Code::U2030,
+                        span,
+                        "`measured()` takes a unitless value, and this one has a unit; use `convert()` to change units".to_owned(),
+                    );
+                    (Ty::error(), 1)
+                }
+                _ => {
+                    self.report.error(
+                        Code::U2030,
+                        span,
+                        "`measured()` takes its unit from the type expected here, and none is; annotate it, as `let d: Int of Meter = n.measured()`".to_owned(),
+                    );
+                    (Ty::error(), 1)
+                }
+            },
+            _ => {
+                // `convert()`: to the expected unit, or to no unit when the source is a scaled
+                // dimensionless unit (ADR 0104 rule 2).
+                let target_unit = match (&expected_unit, &expected) {
+                    (Some(unit), _) => Some(unit.clone()),
+                    (None, Some(ty)) if matches!(ty.magnitude(), Ty::Int | Ty::Fixed(_)) => {
+                        Some(Unit::one())
+                    }
+                    _ => None,
+                };
+                match (&source_unit, target_unit) {
+                    (None, _) => {
+                        self.report.error(
+                            Code::U2030,
+                            span,
+                            "`convert()` takes a measured value, and this one has no unit; use `measured()` to give it one".to_owned(),
+                        );
+                        (Ty::error(), 1)
+                    }
+                    (Some(_), None) => {
+                        self.report.error(
+                            Code::U2030,
+                            span,
+                            "`convert()` takes its unit from the type expected here, and none is; annotate it".to_owned(),
+                        );
+                        (Ty::error(), 1)
+                    }
+                    (Some(source), Some(target_unit)) => match source.ratio_to(&target_unit) {
+                        Some(k) if fits_ratio(&magnitude, k) => {
+                            (measured(target_unit, magnitude.clone()), k)
+                        }
+                        Some(k) => {
+                            self.report.error(
+                                Code::U2030,
+                                span,
+                                format!(
+                                    "converting `{source}` to `{target_unit}` multiplies by {k}, which does not fit `{}`; widen the magnitude's integer type",
+                                    self.show(&magnitude)
+                                ),
+                            );
+                            (Ty::error(), 1)
+                        }
+                        None => {
+                            let reason = if source.same_dimension(&target_unit) {
+                                "is not by an integer ratio; write the division out with `magnitude()` and `measured()`, so its truncation shows"
+                            } else {
+                                "is between units of different dimensions"
+                            };
+                            self.report.error(
+                                Code::U2030,
+                                span,
+                                format!("converting `{source}` to `{target_unit}` {reason}"),
+                            );
+                            (Ty::error(), 1)
+                        }
+                    },
+                }
+            }
+        };
+        if ratio > 1 {
+            self.overflow_site(&magnitude, span);
+        }
+        self.resolved(span, Res::UnitMethod { ratio });
+        result.with_label(&label)
+    }
+
+    /// A built-in method of a fixed-width type on a measured receiver (ADR 0104 rule 3): the
+    /// conversions keep the unit, wrapping and saturating `add` and `sub` take the receiver's
+    /// unit and keep it, `mul` multiplies the units, shifts keep it with a unitless amount, and
+    /// every other method needs a unitless receiver (U2028).
+    fn measured_int_method(&mut self, target: &Ty, method: &str, args: &[Arg], span: Span) -> Ty {
+        let receiver = self.resolve(target);
+        let (Some(unit), magnitude) = (receiver.unit().cloned(), receiver.magnitude().clone())
+        else {
+            return Ty::error();
+        };
+        let label = self.deep(target);
+        let keep = |ty: Ty| Ty::measured(unit.clone(), ty);
+        if convert_target(method).is_some() {
+            // Typed as on the magnitude, then the unit put back.
+            let converted = self.int_method(&magnitude, method, args, span, None);
+            return match converted {
+                Some(ty) => keep(ty.magnitude().clone()).with_label(&label),
+                None => Ty::error(),
+            };
+        }
+        let Some(op) = FixedOp::from_name(method) else {
+            self.report.error(
+                Code::U2028,
+                span,
+                format!("`{method}` takes a unitless value; use `magnitude()` first"),
+            );
+            self.unchecked_args(args);
+            return Ty::error();
+        };
+        // On an `Int` magnitude, as on `Int`, these are not methods (`spec/18 §5`), so that the
+        // erased program stays well typed (ADR 0104 rule 5).
+        if !matches!(magnitude, Ty::Fixed(_)) {
+            self.report.error(
+                Code::U2001,
+                span,
+                format!("`{method}` is a method of the fixed-width integer types, not of `Int`"),
+            );
+            self.unchecked_args(args);
+            return Ty::error();
+        }
+        match op {
+            FixedOp::WrappingAdd
+            | FixedOp::WrappingSub
+            | FixedOp::SaturatingAdd
+            | FixedOp::SaturatingSub => {
+                if let [arg] = args {
+                    let what = format!("argument `{}` of `{method}`", op.label());
+                    self.expr_as(&arg.value, Some(&receiver), Role::Condition(&what));
+                }
+                self.resolved(span, Res::IntMethod(Prim::Fixed(op, fixed_of(&magnitude))));
+                keep(magnitude).with_label(&label)
+            }
+            FixedOp::WrappingMul | FixedOp::SaturatingMul => {
+                let mut product = Some(unit.clone());
+                if let [arg] = args {
+                    let found = self.infer(&arg.value, Some(&magnitude));
+                    let found = self.resolve(&found);
+                    self.unify_at(
+                        arg.value.span,
+                        &magnitude,
+                        &found.magnitude().clone(),
+                        Role::Plain,
+                    );
+                    if let Some(other) = found.unit() {
+                        product = unit.mul(other);
+                    }
+                }
+                self.resolved(span, Res::IntMethod(Prim::Fixed(op, fixed_of(&magnitude))));
+                match product {
+                    Some(p) if !p.is_one() => Ty::measured(p, magnitude).with_label(&label),
+                    _ => magnitude.with_label(&label),
+                }
+            }
+            FixedOp::ShiftRight | FixedOp::WrappingShiftLeft => {
+                if let [arg] = args {
+                    self.expr_as(&arg.value, Some(&Ty::Int), Role::Plain);
+                }
+                self.obligation(ObligationKind::Precondition, span, None);
+                self.resolved(span, Res::IntMethod(Prim::Fixed(op, fixed_of(&magnitude))));
+                keep(magnitude).with_label(&label)
+            }
+            _ => {
+                self.report.error(
+                    Code::U2028,
+                    span,
+                    format!("`{method}` takes a unitless value; use `magnitude()` first"),
+                );
+                self.unchecked_args(args);
+                Ty::error()
+            }
+        }
+    }
+
     /// U2004 when the argument of a binary method has no label and is not the punned name
     /// `param`, U2005 when its label is another (`spec/04 §3`).
     pub(crate) fn method_label(&mut self, method: &str, param: &str, arg: &Arg) {
@@ -288,4 +565,21 @@ fn convert_target(method: &str) -> Option<Option<IntType>> {
     }
     let name = method.strip_prefix("to_")?.to_ascii_uppercase();
     IntType::from_name(&name).map(Some)
+}
+
+/// Whether the ratio `k` of a `convert()` fits the magnitude's integer type, so that the
+/// erased multiplication by the literal `k` is well typed (ADR 0104 rule 4).
+fn fits_ratio(magnitude: &Ty, k: u128) -> bool {
+    match magnitude {
+        Ty::Fixed(int) => i128::try_from(k).is_ok_and(|k| k <= int.greatest()),
+        _ => true,
+    }
+}
+
+/// The fixed-width type of a magnitude, `I64` when it is none, for the primitive's operand.
+fn fixed_of(magnitude: &Ty) -> IntType {
+    match magnitude {
+        Ty::Fixed(int) => *int,
+        _ => IntType::I64,
+    }
 }

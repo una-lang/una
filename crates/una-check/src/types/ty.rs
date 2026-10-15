@@ -224,6 +224,11 @@ pub(crate) enum Ty {
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
     /// Type equality ignores labels.
     Labeled(Label, Shared<Ty>),
+    /// An integer type with a unit of measure, edition 0.3 (ADR 0104 rule 2): `Int` or a
+    /// fixed-width integer type, never labeled itself (a label wraps the measured type). A
+    /// type of its own: it equals another measured type with the same unit and magnitude
+    /// type, and nothing else.
+    Measured(Shared<super::units::Unit>, Shared<Ty>),
 }
 
 /// A function type `fn(params) -> result uses ... fails ...`.
@@ -430,9 +435,15 @@ impl Flagged for Ty {
                     var_label: label.symbols.iter().any(|s| s.starts_with('?')),
                     normal: !label.is_public()
                         && !matches!(**inner, Ty::Labeled(..) | Ty::Error(_) | Ty::Never),
+                    unit: false,
                 };
                 own.and(inner.flags())
             }
+            // A measured type holds a magnitude type, with no variable and no label (ADR 0104).
+            Ty::Measured(..) => Flags {
+                unit: true,
+                ..Flags::LEAF
+            },
             Ty::Int
             | Ty::Fixed(_)
             | Ty::Bool
@@ -499,6 +510,7 @@ impl Ty {
             | (Ty::Never, Ty::Never)
             | (Ty::Error(_), Ty::Error(_)) => true,
             (Ty::Fixed(a), Ty::Fixed(b)) => a == b,
+            (Ty::Measured(u, a), Ty::Measured(v, b)) => u == v && a == b,
             (Ty::Param(a), Ty::Param(b)) | (Ty::Var(a), Ty::Var(b)) => a == b,
             _ => false,
         }
@@ -551,6 +563,71 @@ impl Ty {
         match self {
             Ty::Labeled(_, inner) => inner,
             other => other,
+        }
+    }
+
+    /// The numeric type of a value, its label and unit set aside: `Int` for `Int of Meter`
+    /// (ADR 0104 rule 2), where the unit does not matter, as for a range's bounds or the
+    /// solver's sort. Any other type is returned unlabeled.
+    pub(crate) fn magnitude(&self) -> &Ty {
+        match self.unlabeled() {
+            Ty::Measured(_, inner) => inner,
+            other => other,
+        }
+    }
+
+    /// The measured type of `unit` over `magnitude`, `Int` or a fixed-width type without a
+    /// label: a label wraps the measured type, never its magnitude (ADR 0104, ADR 0077).
+    pub(crate) fn measured(unit: super::units::Unit, magnitude: Ty) -> Ty {
+        debug_assert!(
+            matches!(magnitude, Ty::Int | Ty::Fixed(_)),
+            "a magnitude is an unlabeled integer type: {magnitude:?}"
+        );
+        Ty::Measured(Shared::new(unit), Shared::new(magnitude))
+    }
+
+    /// The type with every unit removed, at every position (ADR 0104): what a unit-only
+    /// mismatch leaves equal.
+    pub(crate) fn without_units(&self) -> Ty {
+        if !self.has_units() {
+            return self.clone();
+        }
+        match self {
+            Ty::Measured(_, inner) => inner.without_units(),
+            Ty::Labeled(label, inner) => {
+                Ty::Labeled(label.clone(), Shared::new(inner.without_units()))
+            }
+            Ty::List(element) => Ty::List(Shared::new(element.without_units())),
+            Ty::Map(key, value) => Ty::Map(
+                Shared::new(key.without_units()),
+                Shared::new(value.without_units()),
+            ),
+            Ty::Kind(id, args) => Ty::Kind(
+                *id,
+                args.iter()
+                    .map(Ty::without_units)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
+                params: function.params.iter().map(Ty::without_units).collect(),
+                result: function.result.without_units(),
+                ..(**function).clone()
+            })),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether a unit appears anywhere in the type: its flags, O(1) over shared nodes.
+    pub(crate) fn has_units(&self) -> bool {
+        self.flags().unit
+    }
+
+    /// The unit of a measured type (ADR 0104), its label set aside.
+    pub(crate) fn unit(&self) -> Option<&super::units::Unit> {
+        match self.unlabeled() {
+            Ty::Measured(unit, _) => Some(unit),
+            _ => None,
         }
     }
 
@@ -863,6 +940,8 @@ pub(crate) enum View<'t, T> {
     Labeled(&'t Label, &'t T),
     Int,
     Fixed(IntType),
+    /// A measured type: its unit and its magnitude type (ADR 0104).
+    Measured(&'t super::units::Unit, &'t T),
     Bool,
     Text,
     Unit,
@@ -891,6 +970,7 @@ impl TypeView for Ty {
             Ty::Labeled(label, inner) => View::Labeled(label, inner),
             Ty::Int => View::Int,
             Ty::Fixed(int) => View::Fixed(*int),
+            Ty::Measured(unit, inner) => View::Measured(unit, inner),
             Ty::Bool => View::Bool,
             Ty::Text => View::Text,
             Ty::Unit => View::Unit,
@@ -918,6 +998,7 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             View::Labeled(_, inner) => write!(f, "{}", Show(inner, names)),
             View::Int => write!(f, "Int"),
             View::Fixed(int) => write!(f, "{}", int.as_str()),
+            View::Measured(unit, inner) => write!(f, "{} of {unit}", Show(inner, names)),
             View::Bool => write!(f, "Bool"),
             View::Text => write!(f, "Text"),
             View::Unit => write!(f, "Unit"),

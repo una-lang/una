@@ -43,6 +43,7 @@ mod stmt;
 mod summary;
 mod ty;
 mod unify;
+mod units;
 mod via;
 
 pub use hover::{Hover, HoverStats, HoverType};

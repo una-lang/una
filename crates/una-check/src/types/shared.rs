@@ -22,6 +22,9 @@ pub(crate) struct Flags {
     /// Every labeled position in the form `Ty::with_label` builds: its label is not `public`,
     /// and what it labels is not labeled, `Error` or `Never`.
     pub(crate) normal: bool,
+    /// A unit of measure, `Ty::Measured` (ADR 0104), so that a type without one is never
+    /// rebuilt to remove it.
+    pub(crate) unit: bool,
 }
 
 impl Flags {
@@ -31,6 +34,7 @@ impl Flags {
         label: false,
         var_label: false,
         normal: true,
+        unit: false,
     };
 
     /// What `self` or `other` holds.
@@ -40,6 +44,7 @@ impl Flags {
             label: self.label || other.label,
             var_label: self.var_label || other.var_label,
             normal: self.normal && other.normal,
+            unit: self.unit || other.unit,
         }
     }
 }

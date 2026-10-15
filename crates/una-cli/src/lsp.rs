@@ -197,8 +197,10 @@ fn index(
             let named =
                 |ident: &una_syntax::ast::Ident| analysis.interner.resolve(ident.name).to_owned();
             // LSP `SymbolKind`: Class 5, Method 6, Enum 10, Interface 11, Function 12,
-            // Constant 14, Object 19, Struct 23, Event 24.
+            // Constant 14, Object 19, Struct 23, Event 24, TypeParameter 26.
             let (name, selection, kind) = match &decl.kind {
+                // A unit of measure (ADR 0104): no LSP kind names it; a type-level name.
+                DeclKind::Measure(measure) => (named(&measure.name), measure.name.span, 26),
                 DeclKind::Kind(kind) => (named(&kind.name), kind.name.span, 23),
                 DeclKind::Predicate(predicate) => (named(&predicate.name), predicate.name.span, 6),
                 DeclKind::Function(function) => (named(&function.name), function.name.span, 12),

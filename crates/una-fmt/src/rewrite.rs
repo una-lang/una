@@ -488,6 +488,7 @@ impl Collector<'_> {
                     }
                 }
             }
+            DeclKind::Measure(_) => {}
         }
     }
 

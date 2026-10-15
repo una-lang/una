@@ -1,0 +1,10 @@
+-- test: `convert()` on a fixed-width magnitude multiplies, with an `overflow` obligation: kilometers in `I32` to meters is refuted
+-- spec: spec/25 §5
+-- expect: error U5001 at src/m.una:10:47
+module m
+
+pub measure Meter
+
+pub measure Kilometer = 1000 * Meter
+
+pub up(k: I32 of Kilometer) -> I32 of Meter = k.convert()

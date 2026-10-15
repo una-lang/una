@@ -2298,3 +2298,88 @@ fn a_lock_string_with_escapes_reads_as_its_value() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn units_are_erased_before_the_verifier() {
+    // ADR 0104 rule 5: units are erased before obligations are generated, so the query texts
+    // of a program with units are byte-identical to those of its erasure `E`, in which every
+    // `measure` and `of` is deleted, `magnitude()` and `measured()` are their receiver, and
+    // `convert()` by `k` is `* k`.
+    let measured = "module m\n\npub measure Meter\n\npub measure Second\n\npub measure Kilometer = 1000 * Meter\n\npub kind Speed = Int of Meter / Second in 0..300\n\npub speed(d: Int of Meter in 0..3000, t: Int of Second in 10..100) -> Speed = d / t\n\npub up(k: I32 of Kilometer) -> I32 of Meter = k.convert()\n\npub raw(d: Int of Meter, n: Int) -> Int\n  requires d.magnitude() > n\n=\n  d.magnitude() - n\n\npub tagged(n: I32) -> I32 of Meter = (n + 1).measured()\n";
+    let erased = "module m\n\npub kind Speed = Int in 0..300\n\npub speed(d: Int in 0..3000, t: Int in 10..100) -> Speed = d / t\n\npub up(k: I32) -> I32 = k * 1000\n\npub raw(d: Int, n: Int) -> Int\n  requires d > n\n=\n  d - n\n\npub tagged(n: I32) -> I32 = (n + 1)\n";
+    let lock_text = std::fs::read_to_string(repository().join("verification.lock")).unwrap();
+    let (parsed, _) = una_project::parse_lock(&lock_text);
+    let lock = una_verify::Lock {
+        text: lock_text,
+        solver_version: parsed.solver_version,
+        step_budget: parsed.step_budget,
+        random_seed: parsed.random_seed,
+    };
+    let mut scripts = Vec::new();
+    for (name, source) in [("units-measured", measured), ("units-erased", erased)] {
+        let root = package_of_edition(name, "0.3", &[("src/m.una", source)]);
+        let (checked, obligations) = generated(&root);
+        assert_eq!(checked.diagnostics, [], "{name}");
+        assert!(!obligations.is_empty(), "{name}");
+        scripts.push(una_verify::queries(&obligations, &lock));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    assert_eq!(scripts[0], scripts[1]);
+    // ADR 0104, note of 2026-10-15: `una core` exports the erased program, so the two
+    // documents are the same but for source locations and source texts, which differ
+    // because `E` deletes text.
+    fn strip(value: &mut Value) {
+        // A location, `{file, start, end}`, wherever it is written.
+        if let Value::Object(map) = value
+            && map.contains_key("file")
+            && map.contains_key("start")
+            && map.contains_key("end")
+        {
+            *value = Value::Null;
+            return;
+        }
+        match value {
+            Value::Object(map) => {
+                map.remove("span");
+                map.remove("text");
+                for (_, v) in map.iter_mut() {
+                    strip(v);
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut documents = Vec::new();
+    for (dir, source) in [
+        ("units-core-measured", measured),
+        ("units-core-erased", erased),
+    ] {
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(dir)
+            .join("units");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("una.toml"),
+            "[package]\nname = \"units\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n",
+        )
+        .unwrap();
+        std::fs::copy(
+            repository().join("verification.lock"),
+            root.join("verification.lock"),
+        )
+        .unwrap();
+        std::fs::write(root.join("src/m.una"), source).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .args(["--json", "core", root.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{dir}: {}", stdout(&output));
+        let mut document: Value = serde_json::from_str(stdout(&output)).unwrap();
+        strip(&mut document);
+        documents.push(document);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    assert_eq!(documents[0], documents[1]);
+}

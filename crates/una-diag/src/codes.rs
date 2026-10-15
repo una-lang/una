@@ -156,6 +156,12 @@ pub enum Code {
     U2026,
     /// An unknown constraint name.
     U2027,
+    /// Values of different units meet, or a measured and a unitless value (ADR 0104).
+    U2028,
+    /// An invalid unit declaration or unit expression (ADR 0104).
+    U2029,
+    /// A unit conversion without an expected unit, or not exact (ADR 0104).
+    U2030,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -249,7 +255,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 90] = [
+    pub const ALL: [Code; 93] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -296,6 +302,9 @@ impl Code {
         Code::U2025,
         Code::U2026,
         Code::U2027,
+        Code::U2028,
+        Code::U2029,
+        Code::U2030,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -588,6 +597,21 @@ impl Code {
                 code: "U2027",
                 domain: Domain::Types,
                 meaning: "An unknown constraint name",
+            },
+            Code::U2028 => &Entry {
+                code: "U2028",
+                domain: Domain::Types,
+                meaning: "Values of different units meet, or a measured and a unitless value",
+            },
+            Code::U2029 => &Entry {
+                code: "U2029",
+                domain: Domain::Types,
+                meaning: "An invalid unit declaration or unit expression",
+            },
+            Code::U2030 => &Entry {
+                code: "U2030",
+                domain: Domain::Types,
+                meaning: "A unit conversion without an expected unit, or not exact",
             },
             Code::U3001 => &Entry {
                 code: "U3001",

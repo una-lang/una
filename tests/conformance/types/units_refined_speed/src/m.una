@@ -1,0 +1,12 @@
+-- test: a refined measured kind is checked on its magnitude: a speed proven in `0..300` from its operand's refinement
+-- spec: spec/25 §2
+-- expect: ok
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub kind Speed = Int of Meter / Second in 0..300
+
+pub faster(v: Int of Meter / Second in 0..100) -> Speed = v + v

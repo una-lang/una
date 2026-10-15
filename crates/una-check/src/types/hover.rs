@@ -28,6 +28,8 @@ pub struct HoverType(Arc<Node>);
 enum Node {
     Leaf(Leaf),
     Labeled(Label, HoverType),
+    /// A measured type (ADR 0104): its unit, owned, and its magnitude type.
+    Measured(super::units::Unit, HoverType),
     List(HoverType),
     Map(HoverType, HoverType),
     Kind(KindId, Arc<[HoverType]>),
@@ -64,6 +66,7 @@ impl TypeView for HoverType {
                 Leaf::Error => View::Error,
             },
             Node::Labeled(label, inner) => View::Labeled(label, inner),
+            Node::Measured(unit, inner) => View::Measured(unit, inner),
             Node::List(element) => View::List(element),
             Node::Map(key, value) => View::Map(key, value),
             Node::Kind(id, args) => View::Kind(*id, args),
@@ -162,6 +165,10 @@ impl Snapshots {
             Ty::Labeled(label, inner) => {
                 let inner = self.shared(inner);
                 self.node(Node::Labeled(label.clone(), inner))
+            }
+            Ty::Measured(unit, inner) => {
+                let inner = self.shared(inner);
+                self.node(Node::Measured((**unit).clone(), inner))
             }
             Ty::List(element) => {
                 let element = self.shared(element);

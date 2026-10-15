@@ -78,7 +78,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 // `-128` fits `I8` although `128` does not.
                 if *op == UnaryOp::Neg
                     && let ExprKind::Literal(Literal::Int(digits)) = &operand.kind
-                    && self.expected_fixed(expected).is_some()
+                    && (self.expected_fixed(expected).is_some()
+                        || matches!(expected.map(|e| self.vars.peel(e)), Some(Ty::Measured(..))))
                 {
                     let ty = self.int_literal_type(true, digits, span, expected);
                     self.typed(operand.span, &ty);
@@ -87,10 +88,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (ty, symbol) = match op {
                     UnaryOp::Neg => {
                         // `-e` has the integer type of `e` (`spec/18 §2`).
-                        let hint = self.expected_fixed(expected).map(Ty::Fixed);
+                        let hint = match expected.map(|e| self.vars.peel(e)) {
+                            Some(measured @ Ty::Measured(..)) => Some(measured),
+                            _ => self.expected_fixed(expected).map(Ty::Fixed),
+                        };
                         let found = self.infer(operand, hint.as_ref());
                         let resolved = self.resolve(&found);
                         let ty = match resolved {
+                            // `-` keeps a unit (ADR 0104 rule 3).
+                            measured @ Ty::Measured(..) => measured,
                             // In a clause, every integer type reads as `Int` (`spec/18 §2`).
                             Ty::Fixed(_) if self.in_clause() => Ty::Int,
                             Ty::Fixed(int) => Ty::Fixed(int),
@@ -119,11 +125,13 @@ impl<'a> Checker<'_, 'a, '_> {
             ExprKind::Is { value, target } => self.is(value, target, span),
             ExprKind::In { value, range } => {
                 let found = self.infer(value, None);
-                match self.resolve(&found) {
+                match self.resolve(&found).magnitude().clone() {
                     // A range over a fixed-width value takes its type, and over any integer
-                    // type in a clause (`spec/18 §2`).
+                    // type in a clause (`spec/18 §2`). Its literal bounds take a measured
+                    // value's unit (ADR 0104 rule 3).
                     Ty::Fixed(int) if !self.in_clause() => self.range_bounds(range, int),
                     Ty::Fixed(_) => {}
+                    Ty::Int if self.resolve(&found).unit().is_some() => {}
                     _ => {
                         self.unify_at(
                             value.span,
@@ -167,7 +175,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 target,
                 name,
                 args,
-            } => self.method(target, name, args, span, site, *receiver),
+            } => self.method(target, name, args, span, site, *receiver, expected),
             ExprKind::Call { callee, args } => self.call(callee, args, span, site, expected),
             ExprKind::CapOp { cap, op, args } => self.cap_op(cap, op, args, span, site),
             ExprKind::CapRef(cap) => {
@@ -268,8 +276,10 @@ impl<'a> Checker<'_, 'a, '_> {
             let ty = self.expr(expr, None);
             label = label.join(&self.deep(&ty));
             match self.resolve(&ty) {
+                // A measured value writes its magnitude (ADR 0104 rule 5).
                 Ty::Int
                 | Ty::Fixed(_)
+                | Ty::Measured(..)
                 | Ty::Bool
                 | Ty::Text
                 | Ty::Error(_)
@@ -733,6 +743,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 (Code::U2001, format!("`{name}` is a type, not a value"))
             }
             Entity::Capability(_) => (Code::U2001, format!("capability `{name}` is not a value")),
+            Entity::Unit(_) => (
+                Code::U2001,
+                format!("`{name}` is a unit, not a value; a value takes it with `measured()`"),
+            ),
             Entity::Function(_) | Entity::Handler(_) => return Ty::error(),
         };
         self.report.error(problem.0, span, problem.1);
@@ -874,7 +888,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.compare_with_is(op, left, right, span, mark, needs);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
-                if self.integers_in_clause(&left_ty, &right_ty) {
+                if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
                 if self.same(span, &left_ty, &right_ty, symbol) {
@@ -895,12 +909,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (left_ty, right_ty) = self.operand_pair(left, right);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
-                if self.integers_in_clause(&left_ty, &right_ty) {
+                if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
-                        Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => {}
+                        Ty::Int
+                        | Ty::Fixed(_)
+                        | Ty::Measured(..)
+                        | Ty::Error(_)
+                        | Ty::Never
+                        | Ty::Var(_) => {}
                         // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
@@ -924,14 +943,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 Ty::Bool
             }
-            BinaryOp::Add | BinaryOp::Sub => self.ints(left, right, &operand, span, expected),
+            BinaryOp::Add | BinaryOp::Sub => {
+                self.ints(left, right, &operand, span, expected, Combine::Same)
+            }
             BinaryOp::Mul => {
                 if int_literal(left).is_none() && int_literal(right).is_none() {
                     self.outside_rl(span, || {
                         "`*` of two operands that are not literals".to_owned()
                     });
                 }
-                self.ints(left, right, &operand, span, expected)
+                self.ints(left, right, &operand, span, expected, Combine::Mul)
             }
             BinaryOp::Div | BinaryOp::Mod => {
                 if int_literal(right) != Some(true) {
@@ -940,15 +961,24 @@ impl<'a> Checker<'_, 'a, '_> {
                     });
                     self.obligation(ObligationKind::Division, span, None);
                 }
-                self.ints(left, right, &operand, span, expected)
+                let combine = if op == BinaryOp::Div {
+                    Combine::Div
+                } else {
+                    Combine::Same
+                };
+                self.ints(left, right, &operand, span, expected, combine)
             }
         }
     }
 
     /// The operands of an arithmetic operator, and its type: `Int`, or the fixed-width type of
     /// its operands, with an `overflow` obligation (`spec/18 §2`, `§3`). The side that is not
-    /// a literal is typed first, so that a literal takes its type from the other operand. In a
-    /// clause, operands of any integer types mix, and the result is `Int`.
+    /// a constant is typed first, so that a constant takes its type from the other operand. In
+    /// a clause, operands of any integer types mix, and the magnitude is `Int`.
+    ///
+    /// Units (ADR 0104 rule 3): `+`, `-` and `mod` keep one unit, `*` and `/` multiply and
+    /// divide them. A constant operand of `+`, `-` or `mod` takes the other operand's unit; one
+    /// of `*` or `/` is unitless; a constant expression as a whole takes the expected unit.
     fn ints(
         &mut self,
         left: &Expr,
@@ -956,43 +986,137 @@ impl<'a> Checker<'_, 'a, '_> {
         operand: &str,
         span: Span,
         expected: Option<&Ty>,
+        combine: Combine,
     ) -> Ty {
-        if self.in_clause() {
-            for side in [left, right] {
-                let found = self.infer(side, None);
-                if !fixed::is_integer(&self.resolve(&found)) {
-                    self.unify_at(side.span, &Ty::Int, &found, Role::Condition(operand));
-                }
-                self.operands.push(found);
+        let clause = self.in_clause();
+        let constant = (fixed::is_constant(left), fixed::is_constant(right));
+        let (first, second) = if constant.0 && !constant.1 {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        let expected_resolved = expected.map(|e| self.vars.peel(e));
+        let expected_magnitude = expected_resolved.as_ref().map(|e| e.magnitude().clone());
+        let hint = if clause {
+            None
+        } else {
+            match (&combine, &expected_magnitude) {
+                (Combine::Same, Some(ty @ Ty::Fixed(_))) => Some(ty.clone()),
+                _ => self
+                    .expected_fixed(expected_magnitude.as_ref())
+                    .map(Ty::Fixed),
             }
-            return Ty::Int;
-        }
-        let (first, second) =
-            if fixed::literal_value(left).is_some() && fixed::literal_value(right).is_none() {
-                (right, left)
-            } else {
-                (left, right)
-            };
-        let hint = self.expected_fixed(expected).map(Ty::Fixed);
+        };
         let first_ty = self.infer(first, hint.as_ref());
-        let ty = match self.resolve(&first_ty) {
-            Ty::Fixed(int) => Ty::Fixed(int),
-            _ => {
-                self.unify_at(first.span, &Ty::Int, &first_ty, Role::Condition(operand));
+        // Each operand's top node, read once (ADR 0077: no rebuilding per operation).
+        let first_top = self.vars.peel(&first_ty);
+        let magnitude = match first_top.magnitude() {
+            Ty::Fixed(int) if !clause => Ty::Fixed(*int),
+            Ty::Fixed(_) => Ty::Int,
+            found => {
+                let found = found.clone();
+                if !(clause && fixed::is_integer(&found)) {
+                    self.unify_at(first.span, &Ty::Int, &found, Role::Condition(operand));
+                }
                 Ty::Int
             }
         };
-        let second_ty = self.expr_as(second, Some(&ty), Role::Condition(operand));
-        self.operands.push(first_ty);
-        self.operands.push(second_ty);
-        self.overflow_site(&ty, span);
-        ty
+        // `+`, `-` and `mod` give the second operand the first one's type, unit included, so
+        // that a constant or a `convert()` there takes it (ADR 0104 rule 3).
+        let second_hint = match combine {
+            Combine::Same if !fixed::is_constant(first) => first_top.clone(),
+            _ => magnitude.clone(),
+        };
+        let second_ty = self.infer(second, Some(&second_hint));
+        let second_top = self.vars.peel(&second_ty);
+        let second_magnitude = second_top.magnitude().clone();
+        if !(clause && fixed::is_integer(&second_magnitude)) {
+            self.unify_at(
+                second.span,
+                &magnitude,
+                &second_magnitude,
+                Role::Condition(operand),
+            );
+        }
+        self.operands.push(first_ty.clone());
+        self.operands.push(second_ty.clone());
+        self.overflow_site(&magnitude, span);
+        // The units: a constant operand's unit is open, `None`.
+        let unit_of = |expr: &Expr, top: &Ty| -> Option<Option<super::units::Unit>> {
+            if fixed::is_constant(expr) {
+                None
+            } else {
+                Some(top.unit().cloned())
+            }
+        };
+        // In source order, `left` then `right`: `10 / m` is `1 / Meter`, not `m / 10`.
+        let swapped = constant.0 && !constant.1;
+        let units = if swapped {
+            (unit_of(second, &second_top), unit_of(first, &first_top))
+        } else {
+            (unit_of(first, &first_top), unit_of(second, &second_top))
+        };
+        let unit = match combine {
+            Combine::Same => match units {
+                (Some(a), Some(b)) => {
+                    if a != b {
+                        // Two units that print alike, as two modules' `Meter`, print qualified.
+                        let alike = a.as_ref().map(ToString::to_string)
+                            == b.as_ref().map(ToString::to_string);
+                        let shown = |u: &Option<super::units::Unit>| match u {
+                            Some(u) if alike => format!("`{}`", u.qualified()),
+                            Some(u) => format!("`{u}`"),
+                            None => "no unit".to_owned(),
+                        };
+                        self.report.error(
+                            Code::U2028,
+                            span,
+                            format!(
+                                "{operand} needs one unit on both sides, and these have {} and {}",
+                                shown(&a),
+                                shown(&b)
+                            ),
+                        );
+                    }
+                    a
+                }
+                (Some(a), None) | (None, Some(a)) => a,
+                (None, None) => expected_resolved.as_ref().and_then(|e| e.unit().cloned()),
+            },
+            Combine::Mul | Combine::Div => {
+                let (a, b) = (units.0.flatten(), units.1.flatten());
+                let one = super::units::Unit::one();
+                let (a, b) = (a.unwrap_or_else(|| one.clone()), b.unwrap_or(one));
+                let product = if matches!(combine, Combine::Mul) {
+                    a.mul(&b)
+                } else {
+                    a.div(&b)
+                };
+                if product.is_none() {
+                    self.report.error(
+                        Code::U2029,
+                        span,
+                        "the unit of this product or quotient has a scale too large".to_owned(),
+                    );
+                }
+                if constant.0 && constant.1 {
+                    // A constant expression as a whole takes the expected unit.
+                    expected_resolved.as_ref().and_then(|e| e.unit().cloned())
+                } else {
+                    product
+                }
+            }
+        };
+        match unit {
+            Some(unit) if !unit.is_one() => Ty::measured(unit, magnitude),
+            _ => magnitude,
+        }
     }
 
     /// The types of the operands of a comparison: the side that is not a literal first, so a
     /// literal takes the other side's type.
     fn operand_pair(&mut self, left: &Expr, right: &Expr) -> (Ty, Ty) {
-        if fixed::literal_value(left).is_some() && fixed::literal_value(right).is_none() {
+        if fixed::is_constant(left) && !fixed::is_constant(right) {
             let right_ty = self.expr(right, None);
             let left_ty = self.infer(left, Some(&right_ty));
             (left_ty, right_ty)
@@ -1005,11 +1129,25 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// Whether both operands are of integer types in a clause, where they compare as
     /// mathematical integers whatever their types (`spec/18 §2`).
-    fn integers_in_clause(&self, left: &Ty, right: &Ty) -> bool {
-        self.in_clause()
-            && fixed::is_integer(&self.resolve(left))
-            && fixed::is_integer(&self.resolve(right))
-            && self.resolve(left) != self.resolve(right)
+    fn integers_in_clause(&mut self, left: &Ty, right: &Ty, span: Span) -> bool {
+        // Outside clauses nothing is read here, so a comparison resolves no type (ADR 0077).
+        if !self.in_clause() {
+            return false;
+        }
+        let (l, r) = (self.resolve(left), self.resolve(right));
+        let mixed = fixed::is_integer(l.magnitude())
+            && fixed::is_integer(r.magnitude())
+            && l.magnitude() != r.magnitude();
+        // Units still agree in a clause (ADR 0104 rule 3); the magnitude types may mix.
+        if mixed && l.unit() != r.unit() {
+            let (shown_l, shown_r) = (self.show(&l), self.show(&r));
+            self.report.error(
+                Code::U2028,
+                span,
+                format!("a comparison needs one unit on both sides, and these are `{shown_l}` and `{shown_r}`"),
+            );
+        }
+        mixed
     }
 
     /// Whether two operands have one type; U2001 at the operation otherwise.
@@ -1017,9 +1155,15 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.vars.unify(left, right) {
             return true;
         }
+        let (l, r) = (self.resolve(left), self.resolve(right));
+        let code = if (l.has_units() || r.has_units()) && l.without_units() == r.without_units() {
+            Code::U2028
+        } else {
+            Code::U2001
+        };
         let (left, right) = (self.show(left), self.show(right));
         self.report.error(
-            Code::U2001,
+            code,
             span,
             format!("`{symbol}` needs operands of one type, and these are `{left}` and `{right}`"),
         );
@@ -1867,4 +2011,15 @@ fn return_paths(expr: &Expr) -> Vec<Span> {
         ExprKind::Fail(_) => Vec::new(),
         _ => vec![expr.span],
     }
+}
+
+/// How an arithmetic operator combines its operands' units (ADR 0104 rule 3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Combine {
+    /// `+`, `-`, `mod`: one unit.
+    Same,
+    /// `*`: the units multiply.
+    Mul,
+    /// `/`: the units divide.
+    Div,
 }

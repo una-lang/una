@@ -560,8 +560,13 @@ fn walked_flags(ty: &Ty) -> Flags {
             var_label: label.symbols.iter().any(|s| s.starts_with('?')),
             normal: !label.is_public()
                 && !matches!(**inner, Ty::Labeled(..) | Ty::Error(_) | Ty::Never),
+            unit: false,
         }
         .and(walked_flags(inner)),
+        Ty::Measured(..) => Flags {
+            unit: true,
+            ..Flags::LEAF
+        },
         _ => Flags::LEAF,
     }
 }

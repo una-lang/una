@@ -25,6 +25,8 @@ decl            = kind_decl | predicate_decl | function_decl | capability_decl
                 | handler_decl | policy_decl | requirement_decl | example_decl ;
 ```
 
+(v0.3, ADR 0104.) In edition `0.3`, `decl` also takes `measure_decl`, and a type takes a unit after its core, `type = [ label ] type_core [ "of" unit_expr ] [ "in" range ]` (`spec/25 §1`, `§2`).
+
 Declarations within a module may appear in any order; all top-level names of a module are visible throughout it.
 
 ## 2. Kinds and types

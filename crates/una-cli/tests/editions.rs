@@ -68,6 +68,14 @@ impl Difference {
 /// The edition `0.2` packages whose output in edition `0.3` differs by design, with the exact
 /// result of each edition.
 const EXPECTED_DIFFERENCES: &[Difference] = &[
+    // ADR 0104 rule 1: a unit declaration, a parse error before edition 0.3.
+    Difference::Syntax {
+        case: "types/units_edition_0_2",
+        edition_0_2: ("U0101", "src/m.una:6:13"),
+        edition_0_3: &[],
+        twin: "types/units_edition_0_2_erased",
+        erased: ("src/m.una", "pub measure Meter\n\n"),
+    },
     // ADR 0092 rule 1: a condition on an operation of a `uses`.
     Difference::Syntax {
         case: "authority/op_condition_edition_0_2",

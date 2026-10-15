@@ -1,0 +1,10 @@
+-- test: `n.convert()` on a unitless value is the built-in, U2030, ahead of the package's function `convert`, which is still called as `convert(n)`
+-- spec: spec/25 §5
+-- expect: error U2030 at src/m.una:10:26
+module m
+
+pub convert(x: Int) -> Int = x * 2
+
+pub ok(n: Int) -> Int = convert(n)
+
+pub bad(n: Int) -> Int = n.convert()

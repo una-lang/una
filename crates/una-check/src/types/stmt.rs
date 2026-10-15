@@ -448,8 +448,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     (low, high)
                 };
                 let first_ty = self.expr(first, None);
+                // ADR 0104 rule 3: both bounds have one unit, and the loop's value has it.
                 let base = match self.resolve(&first_ty).unlabeled() {
                     fixed @ Ty::Fixed(_) => fixed.clone(),
+                    measured @ Ty::Measured(..) => measured.clone(),
                     _ => Ty::Int,
                 };
                 let second_ty = self.expr(second, Some(&base));
