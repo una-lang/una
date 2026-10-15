@@ -23,7 +23,7 @@ def _split_code(text):
     """Splits `text` into (is_code, piece) pairs, so that rewrites skip string literals and
     comments. The interpolations `{...}` inside a string are code: a rename must reach a call
     written there, or the twin refers to a name that no longer exists (U1001) and its verdict
-    says nothing (Una-2's review of #517). A text literal cannot nest in an interpolation
+    says nothing (from the review of #517). A text literal cannot nest in an interpolation
     (U0006, `spec/02`), so an interpolation ends at its matching `}`."""
     out, i, n = [], 0, len(text)
     start = 0

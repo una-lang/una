@@ -24,10 +24,6 @@
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
-#   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
-#                gate`): its generators through the must-reject and must-keep drivers and the
-#                two-run oracle, with two canaries, failing closed (#767). macOS only: every
-#                compiler run is under sandbox-exec. Its summary is OUT/hunt/summary.json
 #   site         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
@@ -40,6 +36,13 @@
 #                npm, or no access to the website's or the examples' repository, is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
+#   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
+#                gate`): its generators through the must-reject and must-keep drivers, the
+#                two-run oracle and the comparison with the formal model's re-check, with five
+#                canaries, failing closed (#767, #791). It runs after `formal`, and builds the
+#                re-check's executable (`lake build una-core-check`) with the same pinned Lean.
+#                macOS only: every compiler run is under sandbox-exec. Its summary is
+#                OUT/hunt/summary.json
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, record.md, the full validation record, and, when the record names its
@@ -54,7 +57,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize hunt site formal)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -269,11 +272,20 @@ gate_hunt() {
     rm -rf "${hunt:?}"
     # The output directory and the commit go in as positional arguments, never spliced into the
     # script's text.
+    # The re-check's executable comes from the pinned Lean, as scripts/formal.sh finds it; a
+    # missing executable fails the gate.
     run hunt sh -c '
+        scripts/check-solver.sh || exit 1
         [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
         una=$(pwd)/target/release/una
+        root=$(pwd)
+        . scripts/lean-env.sh || exit 1
+        (cd formal && lake build una-core-check) || exit 1
+        core_check=$(pwd)/formal/.lake/build/bin/una-core-check
+        [ -x "$core_check" ] || { echo "no una-core-check at $core_check"; exit 1; }
         cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \
-            --una "$una" --out "$1" --tip "$2"' sh "$hunt" "$SHA"
+            --una "$una" --out "$1" --tip "$2" --core-check "$core_check" --z3 "$3/bin/z3"' \
+        sh "$hunt" "$SHA" "$Z3"
 }
 
 gate_site() {
@@ -350,8 +362,10 @@ fi
 import json, sys
 s = json.load(open(sys.argv[1]))
 print("- Verdict: %s; seed %s, %s programs, una tip `%s`" % (s["verdict"], s["seed"], s["sizes"]["programs"], s["tip"]))
-for key in ("reject", "keep", "oracle"):
+for key in ("reject", "keep", "oracle", "differ"):
     print("- %s: %s of %s cases judged" % (key, s["sizes"][key]["judged"], s["sizes"][key]["expected"]))
+d = s["sizes"]["differ"]
+print("- Re-check comparison: %s programs read clean, %s pinned unknown, %s residual" % (d["clean"], d["unknown"], d["residual"]))
 o = s["sizes"]["oracle"]
 print("- Oracle: %s programs and %s variants compared, %s live, %s programs set aside" % (o["programs_compared"], o["variants_compared"], o["live"], o["set_aside"]))
 print("- Termination pairs (outside the noninterference guarantee, recorded): %s" % s["termination_pairs"]["count"])

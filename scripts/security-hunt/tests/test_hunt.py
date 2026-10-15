@@ -243,7 +243,7 @@ class Generators(unittest.TestCase):
         self.assertEqual(carriers, set(PRELUDE_CARRIERS))
 
     def test_f_public_endings_are_classified_without_changing_programs(self):
-        # Una-2's review of #547: a public ending is must-reject for every carrier but the
+        # From the review of #547: a public ending is must-reject for every carrier but the
         # structural `is-ok`, which is must-accept; the programs' text is unchanged, so earlier
         # seeds rebuild to their digests (seed 11's first F1 program, below).
         from hunt.families.fragment import PUBLIC_ENDINGS, LEAK_CODES, f1
@@ -266,7 +266,7 @@ class Generators(unittest.TestCase):
         self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
 
     def test_f8_classes_and_recheck_expectations(self):
-        # N-138: a public ending of a secret is must-reject; a secret ending, and the structural
+        # #548: a public ending of a secret is must-reject; a secret ending, and the structural
         # `public` carrier at any ending, must-accept; the residual is its own class, never clean.
         from hunt.families.fragment import (FIXED_TABLES, LEAK_CODES, PUBLIC_ENDINGS,
                                             RESIDUAL_ENDINGS)
@@ -334,7 +334,7 @@ class Generators(unittest.TestCase):
         self.assertEqual(j["kind"], "finding")
 
     def test_residual_is_invalid_unless_the_full_check_decides(self):
-        # N-138, N-146: only an acceptance, or a rejection by an obligation, with the solver.
+        # #548: only an acceptance, or a rejection by an obligation, with the solver.
         V = drivers.Verdict
         after = "overflow-print-after"
         cases = [
@@ -442,7 +442,7 @@ class Generators(unittest.TestCase):
                          ["accepted", "not re-checked", "outside the flow model"])
 
     def test_differ_needs_a_line_for_each_predicate(self):
-        # Una-2's review of #539: a predicate's line is expected too, so dropping it is `unknown`.
+        # From the review of #539: a predicate's line is expected too, so dropping it is `unknown`.
         doc = json.loads(self.DOC)
         doc["modules"].append({"path": "prelude", "decls": [{"kind": "pred", "name": "is_even"}]})
         doc = json.dumps(doc)
@@ -454,7 +454,7 @@ class Generators(unittest.TestCase):
         self.assertIn("prelude.is_even", j["detail"])
 
     def test_differ_predicate_line_must_be_outside_the_flow_model(self):
-        # Una-2's review of #540: a predicate's line saying anything else is `unknown`.
+        # From the review of #540: a predicate's line saying anything else is `unknown`.
         doc = json.loads(self.DOC)
         doc["modules"].append({"path": "prelude", "decls": [{"kind": "pred", "name": "is_even"}]})
         doc = json.dumps(doc)
@@ -954,7 +954,33 @@ class Gate(unittest.TestCase):
             "reject": sum(1 for p in a if p.cls != "must-keep"),
             "keep": gate.expected_keep(a),
             "oracle": sum(1 for p in a if p.vary),
+            "differ": len(a),
         })
+        # The pinned unknowns are programs of the fixed run, and the planted Core document is in
+        # the repository.
+        names = {p.name for p in a}
+        self.assertTrue(set(gate.PINNED_UNKNOWN) <= names, set(gate.PINNED_UNKNOWN) - names)
+        repo = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        for name in [*gate.DIFFER_CANARIES, gate.DIFFER_CONTROL]:
+            self.assertTrue(os.path.isfile(os.path.join(repo, gate.REPLAY, name)), name)
+
+    def test_reading_counts_a_program_compared_only_when_its_own_function_is_accepted(self):
+        def line(decl, outcome, note=""):
+            return {"decl": decl, "outcome": outcome, "note": note}
+        fallback = {"recheck": [line("app.main.main", "not re-checked", "a type"),
+                                line("prelude.p", "not re-checked", "a type")]}
+        self.assertEqual(gate.reading(fallback), ("fallback", "a type"))
+        compared = {"recheck": [line("app.main.main", "accepted"),
+                                line("app.main.f", "not re-checked", "a handler")]}
+        self.assertEqual(gate.reading(compared), ("compared", None))
+        conditional = {"recheck": [line("app.main.main", "accepted, conditional on A3")]}
+        self.assertEqual(gate.reading(conditional), ("compared", None))
+        # Only the prelude's declarations accepted: nothing of the program was compared.
+        unread = {"recheck": [line("prelude.p", "accepted"),
+                              line("app.main.main", "not re-checked", "a handler"),
+                              line("app.main.g", "not re-checked", "a via")]}
+        self.assertEqual(gate.reading(unread), ("unread", None))
+        self.assertEqual(gate.reading({"recheck": []}), ("unread", None))
 
     def test_the_canaries_are_what_they_claim(self):
         rej = gate.canary_reject()
@@ -997,7 +1023,7 @@ class Gate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             open(os.path.join(tmp, "old"), "w").close()
             with self.assertRaises(SystemExit):
-                gate.run("una", tmp, "0" * 40)
+                gate.run("una", tmp, "0" * 40, "una-core-check", "z3")
 
     def test_shards_keep_row_order(self):
         rows = [{"n": i} for i in range(10)]

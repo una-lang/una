@@ -160,7 +160,7 @@ def h5(seed, edition):
                  variant=f"pc-{pc}-{clause}")
 
 
-# H6. What H5's open shapes must not allow (#524; probes by Una-2 in campaign 2's triage): the
+# H6. What H5's open shapes must not allow (#524; probes in campaign 2's triage): the
 # failure is handled inside the secret branch, and then something public follows inside it, the
 # branch's value leaves it, or the handler itself has a public effect.
 def h6(seed, edition):

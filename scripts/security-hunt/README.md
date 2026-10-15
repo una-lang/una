@@ -20,7 +20,7 @@ They are Python 3 with the standard library only.
   - **must-keep:** a refactor that changes the verdict is a finding;
   - **differ** (part b), which also needs `una-core-check` (`formal/.lake/build/bin`): for a program `una check` accepts, a declaration the re-check rejects is a finding, even when the re-check then times out or crashes. `clean` needs every condition: a complete export, a normal exit, a line for every function and every refinement predicate, each predicate's line `outside the flow model` (unless the whole document fell back to one reason), and only known outcomes. Anything else is `unknown`.
 - `hunt/oracle.py`: the two-run oracle's part that the release gate runs: for an accepted program, each varied secret literal is replaced by other values of its type, every variant runs twice on the interpreter, and what an observer below the literal's label sees (at `public` and `internal`, events filtered by their operation's `accepts`) must not change. Two runs of one variant that differ, or a run that ends in an unknown way, are errors; a pair where only one side aborts on a resource limit (U6003, U6004, U6005) or the time limit is recorded as a termination pair, outside T6.
-- `hunt/gate.py`: the `hunt` release gate (`docs/release-gates.md`): the fixed, seeded run through must-reject, must-keep and the oracle, its two canaries, and `summary.json`. It fails closed.
+- `hunt/gate.py`: the `hunt` release gate (`docs/release-gates.md`): the fixed, seeded run through must-reject, must-keep, the oracle and the re-check comparison (`differ`), its canaries, and `summary.json`. It fails closed.
 - `hunt/sandbox.py`: every compiler run happens under `sandbox-exec`. The only writable directory is the campaign's root, there is no network, and the environment is clean. Without `sandbox-exec`, nothing runs.
 - `tests/`: tests that need no compiler.
 
@@ -39,5 +39,5 @@ python3 -B -m hunt gate --una /abs/path/to/una --out DIR --tip SHA            # 
 
 - **Reproduction.** Every program is rebuilt from its operator, seed and edition. A program's seed comes from the campaign seed, the operator and the index, nothing else. Each manifest row records a digest of the program's files, and the drivers rebuild every program and compare it with that digest before they run it.
 - **Machine slots.** `reject`, `keep` and `differ` run the compiler, which is heavy work. They run only in a machine slot between benchmark runs.
-- **Findings.** A finding goes to the coordinator first, with its minimized repro, before any fix.
+- **Findings.** A finding is reported privately first, with its minimized repro, before any fix.
 - **Nothing generated is committed.** Campaigns write outside the repository.

@@ -143,7 +143,7 @@ FIXED_PRIMITIVE = "the primitive `fixed`"
 
 
 def judge_differ(exp, core_text, rec, main=None, expect_main=""):
-    """Part (b)'s verdict on one program `una check` accepted, fail-closed (N-99's rule, Una-2's
+    """Part (b)'s verdict on one program `una check` accepted, fail-closed (from a
     review of #527): `finding` when the re-check rejects a declaration, `clean` only when the
     export is complete and read, the re-check ran to its end, and every function of the export
     has its line; anything else is `unknown`, with why, and blocks "no finding".
@@ -167,7 +167,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     outcomes = [r["outcome"] for r in rows]
     if "rejected" in outcomes:
         # A rejection the re-check printed is a finding even if it then timed out or crashed
-        # (Una-2's review of #527): the abnormal end goes into the detail, never hides it.
+        # (from the review of #527): the abnormal end goes into the detail, never hides it.
         out["kind"] = "finding"
         if rec is not None and (rec.timed_out or rec.code not in (0, 1)):
             out["detail"] = ("a rejected declaration, then the re-check timed out" if rec.timed_out
@@ -195,7 +195,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     if missing:
         out["detail"] = f"the re-check has no line for {', '.join(missing[:3])}"
         return out
-    # A predicate's line says exactly "outside the flow model" (Una-2's review of #540), unless
+    # A predicate's line says exactly "outside the flow model" (from the review of #540), unless
     # the whole document fell back to one outcome: every line "not re-checked" for one reason
     # (`checkDocument`'s fallbacks, `docs/plan/formal-track-status.md`).
     fallback = (bool(rows) and all(r["outcome"] == "not re-checked" for r in rows)
@@ -211,7 +211,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     if odd:
         out["detail"] = f"the re-check printed the outcome {odd[0]!r}"
         return out
-    # F8 (N-138): what the re-check says of the program's own declaration is part of the verdict.
+    # F8: what the re-check says of the program's own declaration is part of the verdict.
     # "not-rechecked" is clean only when it is not re-checked for its operands' unknown types, and
     # "outside" is `unknown`, out of F1, by design; either accepted is a finding (fail closed).
     if main is not None and expect_main in ("not-rechecked", "outside"):
@@ -233,7 +233,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
             return out
         out["kind"] = "clean"
         return out
-    # Family F stays inside the re-check's vocabulary by design (Una-2's review of #547): its
+    # Family F stays inside the re-check's vocabulary by design (from the review of #547): its
     # program's own declaration not re-checked is not a comparison, so it is `unknown`.
     if main is not None and any(r["decl"] == main and r["outcome"] == "not re-checked"
                                 for r in rows):
@@ -243,9 +243,14 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     return out
 
 
+# The re-check's environment: a Lean panic aborts it, so the gate reads an abnormal end, never a
+# continued run after a panic.
+RECHECK_ENV = {"LEAN_ABORT_ON_PANIC": "1"}
+
+
 def differ(rows, una, core_check, root, timeout, out, z3=None):
     """Part (b): for each program `una check` accepts, exports its Core and runs the re-check on
-    it, and judges with `judge_differ`. A `finding` goes to the coordinator before any
+    it, and judges with `judge_differ`. A `finding` is reported privately before any
     interpretation; an `unknown` blocks the campaign's "no finding" until it is understood.
     Programs `una check` rejects are recorded only: the reverse direction is #514's."""
     tally = Counter()
@@ -254,7 +259,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
         pkg = prog.write(root)
         v = check(una, pkg, root, timeout)
         # The class is the generator's own, so a manifest written before a program was classified
-        # is judged by its class today (Una-2's review of #547).
+        # is judged by its class today (from the review of #547).
         result = dict(row, **v.row(), **{"class": prog.cls, "expect": prog.expect})
         result["differ"] = None
         result["finding"] = False
@@ -268,7 +273,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             result["over_strict"] = v.kind != "accepted"
             tally[(row["op"], MUST_ACCEPT, v.kind)] += 1
         elif prog.cls == RESIDUAL:
-            # Descriptive (N-138): both tiers' verdicts are recorded. The full check is where the
+            # Descriptive: both tiers' verdicts are recorded. The full check is where the
             # `overflow` and `division` obligations are decided, the guard of this channel, so it
             # needs the solver (`judge_residual`).
             fv = None
@@ -286,7 +291,8 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
                 f.write(exp.stdout)
             rec = None
             if not exp.timed_out and exp.code == 0:
-                rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout)
+                rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout,
+                                  env_extra=RECHECK_ENV)
             main = "app.main.run" if row["op"].startswith("F") else None
             j = judge_differ(exp, exp.stdout, rec, main=main, expect_main=prog.recheck)
             result.update(differ=j["kind"], differ_detail=j["detail"], recheck=j["recheck"],
@@ -295,7 +301,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
                           recheck_code=None if rec is None else rec.code,
                           recheck_timed_out=None if rec is None else rec.timed_out)
             if prog.cls == RESIDUAL:
-                # Never a clean comparison, in the rows file as in the tally (N-146): the
+                # Never a clean comparison, in the rows file as in the tally (#548): the
                 # re-check's own verdict stays in `differ_raw`.
                 result.update(differ="residual", differ_raw=j["kind"])
             if j["kind"] == "unknown" and not j.get("expected"):
@@ -320,7 +326,7 @@ OBLIGATION_CODES = {"U5001", "U5002"}
 
 
 def judge_residual(tier0, full, variant):
-    """A residual program's verdicts (N-138, N-146), fail-closed. `tier0` is `una check --tier 0`'s
+    """A residual program's verdicts (#548), fail-closed. `tier0` is `una check --tier 0`'s
     kind, `full` the full check's `Verdict`, or None when no solver was given. The row is invalid,
     and the batch is rerun, unless the full check ran with the solver to an acceptance or to a
     rejection by an obligation: no solver, U5003, a timeout, an ICE, a usage error, an unreadable
