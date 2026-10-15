@@ -1,0 +1,19 @@
+-- test: movement map_keys: a map's `keys()` of a `Map[Int, Text]` bound by a `let` annotated `List[Pos]` and assigned to one is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_map_keys.una:16:23
+-- expect: error U5001 at src/move_map_keys.una:18:10
+module move_map_keys
+
+pub kind Pos = Int where it > 0
+
+pub kept(m: Map[Pos, Text]) -> Int
+=
+  let ks: List[Pos] = m.keys()
+  ks.len
+
+pub moved(m: Map[Int, Text]) -> Int
+=
+  let ks: List[Pos] = m.keys()
+  let edit more: List[Pos] = []
+  more = m.keys()
+  ks.len + more.len

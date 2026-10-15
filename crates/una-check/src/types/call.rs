@@ -1941,8 +1941,6 @@ impl<'a> Checker<'_, 'a, '_> {
         Ty::error()
     }
 
-    /// ADR 0103 rule 5: without an expected type, a type argument of `kind` at an invariant
-    /// parameter (ADR 0046) keeps no inferred refinement, so it never meets an invariant flow.
     /// `ty` with each variable whose value now holds a refinement replaced by that value's
     /// base (ADR 0103 rule 5). Every other variable stays a variable, so the labels that later
     /// unifications join into it still reach this type; a type without a refinement, in any
@@ -1979,6 +1977,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
+    /// ADR 0103 rule 5: without an expected type, a type argument of `kind` at an invariant
+    /// parameter (ADR 0046) keeps no inferred refinement, so it never meets an invariant flow.
     fn invariant_base(&self, kind: KindId, targs: Vec<Ty>, expected: bool) -> Vec<Ty> {
         if expected {
             return targs;
@@ -2367,7 +2367,6 @@ fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
     def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
 }
 
-/// Whether `ty` holds a type variable at any position.
 /// Whether every type parameter of `ty` is at a covariant position (ADR 0103 rule 5): never
 /// inside a function type, nor in an argument of a kind's parameter that is invariant (ADR
 /// 0046), as one that a field holds in a function type is.
@@ -2394,6 +2393,7 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
     }
 }
 
+/// Whether `ty` holds a type variable at any position.
 fn holds_var(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) => true,

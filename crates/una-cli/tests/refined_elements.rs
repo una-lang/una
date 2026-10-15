@@ -18,22 +18,112 @@ use una_cli::Tier;
 /// Every way a value moves from one type into another (ADR 0103 rules 3 and 4).
 const MOVEMENTS: &[&str] = &[
     "annotated_let",
+    "apply_result",
     "argument",
     "assignment",
     "call_result",
     "captured",
+    "checked",
+    "declassify",
     "edit_back",
     "element",
     "field",
+    "field_read",
     "generic",
     "generic_field",
     "handler_result",
     "join",
+    "map_entries",
+    "map_get",
+    "map_keys",
+    "map_values",
+    "map_with",
+    "map_without",
     "operation_argument",
+    "operation_result",
     "return",
     "together",
     "with_argument",
 ];
+
+/// No nested position: a right-hand side whose value is a scalar.
+const SCALAR: &str = "";
+
+// rhs-cases:begin
+/// The movement case of each form of a Core right-hand side bound to a refined binder (ADR
+/// 0103 rule 4), the forms the verifier's `rhs_type` types. The match has no catch-all: a new
+/// form of `Rhs`, `Prim` or `MapOp` does not compile until it names its case here, and
+/// `every_right_hand_side_has_a_case` then requires the case.
+#[allow(dead_code)]
+fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
+    use una_core::{MapOp, Prim, Rhs};
+    match rhs {
+        Rhs::Atom(_) => "annotated_let",
+        // An `edit` call's results, rebound to the places.
+        Rhs::Tuple(_) => "edit_back",
+        Rhs::Prim { prim, .. } => match prim {
+            Prim::Map(op) => match op {
+                MapOp::Has => SCALAR,
+                MapOp::Get => "map_get",
+                MapOp::With => "map_with",
+                MapOp::Without => "map_without",
+                MapOp::Keys => "map_keys",
+                MapOp::Values => "map_values",
+                MapOp::Entries => "map_entries",
+            },
+            Prim::Add
+            | Prim::Sub
+            | Prim::Mul
+            | Prim::Div
+            | Prim::Mod
+            | Prim::Neg
+            | Prim::Eq
+            | Prim::Ne
+            | Prim::Lt
+            | Prim::Le
+            | Prim::Gt
+            | Prim::Ge
+            | Prim::Not
+            | Prim::Len
+            | Prim::Concat
+            | Prim::ToText
+            | Prim::Convert(_)
+            | Prim::Fixed(..) => SCALAR,
+        },
+        Rhs::Call { .. } => "call_result",
+        Rhs::Apply { .. } => "apply_result",
+        Rhs::Op { .. } => "operation_result",
+        Rhs::Construct { .. } => "generic_field",
+        Rhs::Field { .. } => "field_read",
+        Rhs::List(_) => "element",
+        Rhs::Lambda { .. } => "captured",
+        Rhs::Checked { .. } => "checked",
+        Rhs::Declassify { .. } => "declassify",
+    }
+}
+// rhs-cases:end
+
+#[test]
+fn every_right_hand_side_has_a_case() {
+    let source = include_str!("refined_elements.rs");
+    let block = source
+        .split("// rhs-cases:begin")
+        .nth(1)
+        .and_then(|rest| rest.split("// rhs-cases:end").next())
+        .unwrap();
+    let named: BTreeSet<&str> = block
+        .split("=> \"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(named.len() >= 15, "{named:?}");
+    let listed: BTreeSet<&str> = MOVEMENTS.iter().copied().collect();
+    let missing: Vec<&&str> = named.difference(&listed).collect();
+    assert!(
+        missing.is_empty(),
+        "right-hand side forms whose case is not a movement: {missing:?}"
+    );
+}
 
 #[test]
 fn every_movement_has_a_refined_elements_case() {

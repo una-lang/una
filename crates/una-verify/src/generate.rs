@@ -673,6 +673,39 @@ fn mentions_param(ty: &Type, param: &str) -> bool {
 }
 
 /// Whether a refinement is at some position of `ty`, its top included (ADR 0103).
+/// `ty` with every refinement removed, at every position: what is known of a value whose
+/// type was not found (ADR 0103 rule 4).
+fn unrefined(ty: &Type) -> Type {
+    match ty {
+        Type::Base { base, label, .. } => Type::Base {
+            base: match base {
+                Base::Named { module, name, args } => Base::Named {
+                    module: module.clone(),
+                    name: name.clone(),
+                    args: args.iter().map(unrefined).collect(),
+                },
+                Base::Tuple(types) => Base::Tuple(types.iter().map(unrefined).collect()),
+                other => other.clone(),
+            },
+            refinements: Vec::new(),
+            label: label.clone(),
+        },
+        Type::Fn {
+            params,
+            result,
+            uses,
+            fails,
+            label,
+        } => Type::Fn {
+            params: params.iter().map(unrefined).collect(),
+            result: Box::new(unrefined(result)),
+            uses: uses.clone(),
+            fails: fails.clone(),
+            label: label.clone(),
+        },
+    }
+}
+
 fn has_refinements(ty: &Type) -> bool {
     match ty {
         Type::Base {
@@ -2022,7 +2055,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         // own type gives none. A list literal's elements are its own flows (rule 3). The
         // refinements of either side count: a contravariant or invariant position proves the
         // value's.
-        if let Some(source) = self.rhs_type(rhs, ctx)
+        if let Some(source) = self.rhs_type(rhs, ty, ctx)
             && (has_refinements(ty) || has_refinements(&source))
         {
             let what = self.text(span);
@@ -2669,40 +2702,125 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
-    /// The type of the value that `rhs` makes, before it is bound: an atom's, a callee's result
-    /// at its type arguments, a function value's or an operation's result, or a field's
-    /// declared type. `None` for the right-hand sides whose flows are their own: a
-    /// construction's fields, a tuple's components, a list literal's elements, a lambda and a
-    /// primitive, whose types hold no refinement.
-    fn rhs_type(&mut self, rhs: &Rhs, ctx: &Ctx) -> Option<Type> {
+    /// The type of the value that `rhs` makes, before it is bound, for the flow into the
+    /// binder's nested positions (ADR 0103 rule 4). Total over the forms of a right-hand side,
+    /// with no catch-all: a new form does not compile until it says what it makes. A form
+    /// whose type cannot be found gives the binder's type with every refinement removed, so
+    /// each refined nested position of the binder is an obligation with no fact behind it,
+    /// refuted or unknown, never skipped. `None` only for the forms whose flows into the
+    /// binder are their own, each named below.
+    fn rhs_type(&mut self, rhs: &Rhs, binder: &Type, ctx: &Ctx) -> Option<Type> {
+        let unknown = || unrefined(binder);
         match rhs {
             Rhs::Atom(atom) => Some(self.atom(atom, ctx).ty),
+            Rhs::Tuple(items) => Some(Type::Base {
+                base: Base::Tuple(items.iter().map(|item| self.atom(item, ctx).ty).collect()),
+                refinements: Vec::new(),
+                label: type_label(binder).clone(),
+            }),
+            Rhs::Prim { prim, args, .. } => Some(match prim {
+                Prim::Map(op) => {
+                    let receiver = args.first().map(|map| self.atom(map, ctx).ty);
+                    match receiver {
+                        Some(Type::Base {
+                            base: Base::Named { module, name, args },
+                            ..
+                        }) if is_prelude(&module) && name == "Map" && args.len() == 2 => {
+                            let named = |name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: module.clone(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            let Ok([key, value]) = <[Type; 2]>::try_from(args) else {
+                                return Some(unknown());
+                            };
+                            match op {
+                                MapOp::Has => unknown(),
+                                MapOp::Get => named("Option", vec![value]),
+                                MapOp::With | MapOp::Without => named("Map", vec![key, value]),
+                                MapOp::Keys => named("List", vec![key]),
+                                MapOp::Values => named("List", vec![value]),
+                                MapOp::Entries => {
+                                    named("List", vec![named("Entry", vec![key, value])])
+                                }
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // Scalars: their binder has no nested position.
+                Prim::Add
+                | Prim::Sub
+                | Prim::Mul
+                | Prim::Div
+                | Prim::Mod
+                | Prim::Neg
+                | Prim::Eq
+                | Prim::Ne
+                | Prim::Lt
+                | Prim::Le
+                | Prim::Gt
+                | Prim::Ge
+                | Prim::Not
+                | Prim::Len
+                | Prim::Concat
+                | Prim::ToText
+                | Prim::Convert(_)
+                | Prim::Fixed(..) => unknown(),
+            }),
             Rhs::Call {
                 function,
                 type_args,
                 ..
             } => {
                 let key = (function.module.as_str(), function.name.as_str());
-                let contract = self.index.contracts.get(&key)?;
-                Some(substitute(contract.result, contract.type_params, type_args))
+                Some(match self.index.contracts.get(&key) {
+                    Some(contract) => substitute(contract.result, contract.type_params, type_args),
+                    // A predicate: `Bool`.
+                    None => unknown(),
+                })
             }
-            Rhs::Apply { callee, .. } => match self.atom(callee, ctx).ty {
-                Type::Fn { result, .. } => Some((*result).clone()),
-                Type::Base { .. } => None,
-            },
+            Rhs::Apply { callee, .. } => Some(match self.atom(callee, ctx).ty {
+                Type::Fn { result, .. } => (*result).clone(),
+                Type::Base { .. } => unknown(),
+            }),
             Rhs::Op {
                 capability_path,
                 op,
                 ..
-            } => self
-                .index
-                .operation(capability_path, op)
-                .map(|signature| signature.result.clone()),
+            } => Some(
+                self.index
+                    .operation(capability_path, op)
+                    .map_or_else(unknown, |signature| signature.result.clone()),
+            ),
             Rhs::Field { value, index, .. } => {
                 let record = self.atom(value, ctx);
-                self.index.field_type(&record.ty, 0, *index)
+                Some(
+                    self.index
+                        .field_type(&record.ty, 0, *index)
+                        .unwrap_or_else(unknown),
+                )
             }
-            _ => None,
+            // `checked(a, φ, …)` is `a`: the predicate says nothing of its nested positions.
+            Rhs::Checked { value, .. } => Some(self.atom(value, ctx).ty),
+            // A policy's result has its `to` type.
+            Rhs::Declassify { policy, .. } => {
+                let key = (policy.module.as_str(), policy.name.as_str());
+                Some(
+                    self.index
+                        .policies
+                        .get(&key)
+                        .map_or_else(unknown, |(_, to)| (*to).clone()),
+                )
+            }
+            // Own flows: each field into the instantiated field type (`fields`), each element
+            // into the element type (rule 3), and a lambda's own type against the binder's
+            // (`fn_flow`, ADR 0037).
+            Rhs::Construct { .. } | Rhs::List(_) | Rhs::Lambda { .. } => None,
         }
     }
 
@@ -2910,6 +3028,26 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.nested_positions(a, b, variance, &here, out);
                 }
             }
+            // A tuple, as an `edit` call's results (`spec/17 §4`): each component covariant.
+            // A component's own refinements are its binder's, an `edit` rebind's or the
+            // result's (`result_refinement`), proved with their facts; only the positions
+            // nested in it are compared here.
+            (
+                Type::Base {
+                    base: Base::Tuple(from),
+                    ..
+                },
+                Type::Base {
+                    base: Base::Tuple(to),
+                    ..
+                },
+            ) if from.len() == to.len() => {
+                for (index, (a, b)) in from.iter().zip(to).enumerate() {
+                    let here = format!("{path}.component {}", index + 1);
+                    let here = here.trim_start_matches('.').to_owned();
+                    self.nested_positions(a, b, variance, &here, out);
+                }
+            }
             (
                 Type::Fn {
                     params: from,
@@ -2998,8 +3136,10 @@ impl<'p, 'i> Walker<'p, 'i> {
         let value = self.flow_binder(&mut closed, &binder, from);
         for goal in &missing {
             let shown = instantiate(&goal.clause.term, &shown_binder);
+            // The repair does not quote the value: its text may name an escape, as
+            // `checked(…)` does, which an unmarked repair must never propose.
             let repair = format!(
-                "build `{what}` at the refined type, or give its {path} the refinement `{}`",
+                "build this value at the refined type, or give its {path} the refinement `{}`",
                 goal.name
             );
             self.flow_obligation(
