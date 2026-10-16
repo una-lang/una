@@ -65,7 +65,7 @@ una=$(CDPATH='' cd -- "$(dirname -- "$una")" && pwd)/$(basename -- "$una")
 mkdir -p "$out/anchors"
 python3 scripts/doc-links.py --anchors >"$out/anchors/ids.json" || fail "scripts/doc-links.py --anchors"
 
-website=$out/website
+website=${out:?}/website
 rm -rf "${website:?}"
 git clone --quiet --no-checkout "$source" "$website" || fail "cannot clone $source"
 git -C "$website" checkout --quiet --detach "$commit" || fail "the website has no commit $commit"
@@ -78,14 +78,14 @@ if [ -f "$website/learn.lock" ]; then
     learn_repository=$(sed -n 's/^repository = "\(.*\)"$/\1/p' "$website/learn.lock")
     learn_commit=$(sed -n 's/^commit = "\([0-9a-f]\{40\}\)"$/\1/p' "$website/learn.lock")
     [ -n "$learn_repository" ] && [ -n "$learn_commit" ] || fail "the website's learn.lock must name a repository and a 40-digit commit"
-    learn=$out/una-by-example
+    learn=${out:?}/una-by-example
     rm -rf "${learn:?}"
     git clone --quiet --no-checkout "${UNA_SITE_LEARN_SOURCE:-$learn_repository}" "$learn" || fail "cannot clone una-by-example"
     git -C "$learn" checkout --quiet --detach "$learn_commit" || fail "una-by-example has no commit $learn_commit"
     [ "$(git -C "$learn" rev-parse HEAD)" = "$learn_commit" ] || fail "the una-by-example clone is not $learn_commit"
     echo "una-by-example: $learn_commit"
     # -B: Python writes no bytecode into the clone, which check.py refuses.
-    archives=$out/una-by-example-archives
+    archives=${out:?}/una-by-example-archives
     rm -rf "${archives:?}"
     python3 -B "$learn/scripts/archive.py" "$archives" || fail "una-by-example's archives do not build"
     python3 -B "$learn/scripts/check.py" --una "$una" --una-version-from-binary --archives "$archives" \
@@ -108,12 +108,14 @@ cd "$website"
 node scripts/deps-audit.mjs || fail "the website's dependency audit"
 npm ci --ignore-scripts --no-audit --no-fund --loglevel=error || fail "npm ci"
 if [ -n "$learn" ]; then
-    # The website's own reading of learn.lock (scripts/preview/learn.mjs, readLock) must name the
-    # release the comparison above read, or none when it read none (una#831).
-    website_release=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; import { readLock } from "./scripts/preview/learn.mjs"; process.stdout.write(readLock(readFileSync("learn.lock", "utf8")).release ?? "")') \
+    # The website's own reading of learn.lock (scripts/preview/learn.mjs, readLock), the one its
+    # pages' clone and download links come from, must name the repository, the commit and the
+    # release the gate read, each line by line (una#831): a lock that reads one way to the website
+    # and another to the gate fails.
+    website_lock=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; import { readLock } from "./scripts/preview/learn.mjs"; const l = readLock(readFileSync("learn.lock", "utf8")); process.stdout.write([l.repository, l.commit, l.release ?? ""].join("\n"))') \
         || fail "the website cannot read its learn.lock"
-    [ "$website_release" = "$learn_release" ] \
-        || fail "the website reads the release of learn.lock as '$website_release', but the gate read '$learn_release'"
+    [ "$website_lock" = "$(printf '%s\n%s\n%s' "$learn_repository" "$learn_commit" "$learn_release")" ] \
+        || fail "the website reads learn.lock as another repository, commit or release than the gate: $(printf '%s' "$website_lock" | tr '\n' ' ')"
 fi
 node "$root/scripts/doc-links/website-anchors.mjs" "$out/anchors/ids.json" "$root" \
     || fail "the heading ids of scripts/doc-links.py are not the website's"

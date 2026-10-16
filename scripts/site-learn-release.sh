@@ -52,15 +52,18 @@ files_of() {
 
 compare() {
     lock=$1 archives=$2 out=$3
+    [ -d "${out:?}" ] || fail "$out is not a directory"
     release=$(release_of "$lock") || exit 1
     if [ -z "$release" ]; then
         echo "una-by-example: no release named (learn.lock has no release line), so none is compared"
         return 0
     fi
+    repositories=$(grep -c '^[[:space:]]*repository[[:space:]]*=' "$lock" || true)
+    [ "$repositories" -eq 1 ] || fail "$lock has $repositories repository lines"
     repository=$(sed -n 's/^repository[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p' "$lock")
     slug=$(printf '%s\n' "$repository" | sed -n 's#^https://github\.com/\([A-Za-z0-9._-]*/[A-Za-z0-9._-]*\)\.git$#\1#p')
     [ -n "$slug" ] || fail "learn.lock does not name a GitHub repository as https://github.com/OWNER/NAME.git"
-    released=$out/una-by-example-release
+    released=${out:?}/una-by-example-release
     rm -rf "${released:?}"
     if [ -n "${UNA_SITE_LEARN_RELEASE_DIR:-}" ]; then
         [ -d "$UNA_SITE_LEARN_RELEASE_DIR" ] || fail "UNA_SITE_LEARN_RELEASE_DIR is not a directory"
@@ -115,13 +118,16 @@ for n in sys.argv[2:]:
         "$t/build" 01-a.tar.gz 02-b.tar.gz >"$t/build/SHA256SUMS"
     cp "$t/build/"* "$t/gh-release/"
     # A gh that serves "$t/gh-release" for github.com/o/n's release r1 only, a draft when
-    # FAKE_GH_DRAFT says so; any other repository or host fails.
+    # FAKE_GH_DRAFT says so, and a download that fails or brings part of the files when
+    # FAKE_GH_DOWNLOAD says so; any other repository or host fails.
     cat >"$t/bin/gh" <<EOF
 #!/bin/sh
 [ "\$1 \$2" = "release view" ] || [ "\$1 \$2" = "release download" ] || exit 9
 [ "\$3" = r1 ] && [ "\$4" = -R ] && [ "\$5" = github.com/o/n ] || { echo "fake gh: \$*" >&2; exit 9; }
 if [ "\$2" = view ]; then echo "\${FAKE_GH_DRAFT:-false}"; exit 0; fi
 [ "\$6" = -D ] || exit 9
+[ "\${FAKE_GH_DOWNLOAD:-}" = fail ] && exit 1
+if [ "\${FAKE_GH_DOWNLOAD:-}" = partial ]; then cp "$t/gh-release/01-a.tar.gz" "\$7/"; exit 0; fi
 cp "$t/gh-release/"* "\$7/"
 EOF
     chmod +x "$t/bin/gh"
@@ -153,6 +159,18 @@ EOF
     expect pass "the release, from a directory" UNA_SITE_LEARN_RELEASE_DIR="$t/gh-release"
     grep -q "the directory $t/gh-release, in place of the release r1" "$t/log" || { echo "  WRONG: the output does not name the directory"; failures=$((failures + 1)); }
     expect fail "a draft release" UNA_SITE_LEARN_RELEASE_DIR= FAKE_GH_DRAFT=true
+    expect fail "a download that fails after the release is read" UNA_SITE_LEARN_RELEASE_DIR= FAKE_GH_DOWNLOAD=fail
+    expect fail "a download that brings part of the files" UNA_SITE_LEARN_RELEASE_DIR= FAKE_GH_DOWNLOAD=partial
+    expect fail "no gh" UNA_SITE_LEARN_RELEASE_DIR= PATH=/usr/bin:/bin
+    grep -q 'gh is needed' "$t/log" || { echo "  WRONG: no gh is not what fails"; failures=$((failures + 1)); }
+    # The build's own output: a symbolic link in it, and no SHA256SUMS, fail too.
+    ln -s 01-a.tar.gz "$t/build/05-e.tar.gz"
+    expect fail "a symbolic link in the build" UNA_SITE_LEARN_RELEASE_DIR="$t/gh-release"
+    rm "$t/build/05-e.tar.gz"
+    mv "$t/build/SHA256SUMS" "$t/SHA256SUMS.kept"
+    expect fail "a build without SHA256SUMS" UNA_SITE_LEARN_RELEASE_DIR="$t/gh-release"
+    grep -q 'the build made no SHA256SUMS' "$t/log" || { echo "  WRONG: a build without SHA256SUMS is not what fails"; failures=$((failures + 1)); }
+    mv "$t/SHA256SUMS.kept" "$t/build/SHA256SUMS"
     variant byte 'printf x >>01-a.tar.gz'
     expect fail "an archive with one more byte" UNA_SITE_LEARN_RELEASE_DIR="$t/byte"
     variant extra 'printf x >03-c.tar.gz'
@@ -198,6 +216,11 @@ for n in (\"01-a.tar.gz\", \"02-b.tar.gz\"):
     expect fail "a release that would read as an option" UNA_SITE_LEARN_RELEASE_DIR="$t/gh-release"
     lock 'release = "r2"'
     expect fail "a release gh cannot read" UNA_SITE_LEARN_RELEASE_DIR=
+    # A lock whose first repository spans two lines, which the website's reading takes, and a
+    # second one on one line, which a line-by-line reading takes: two repository lines fail.
+    printf '%s\n' '# c' 'repository =' '"https://github.com/evil/x.git"' 'repository = "https://github.com/o/n.git"' 'commit = "0000000000000000000000000000000000000000"' 'release = "r1"' >"$t/lock"
+    expect fail "a repository that reads one way to the website and another line by line" UNA_SITE_LEARN_RELEASE_DIR="$t/gh-release"
+    grep -q 'repository lines' "$t/log" || { echo "  WRONG: the two repository lines are not what fails"; failures=$((failures + 1)); }
     lock
     expect pass "no release line" UNA_SITE_LEARN_RELEASE_DIR="$t/extra"
     grep -q 'no release named' "$t/log" || { echo "  WRONG: no release line is not reported"; failures=$((failures + 1)); }
