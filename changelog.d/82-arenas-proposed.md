@@ -1,1 +1,0 @@
-- **Arenas proposed** (#82, ADR 0111, Proposed). In edition `0.3`, `Arena[T]` holds values under opaque `Id[T]` ids that are unique per run, printable never and comparable only by `==`; reading or writing an id needs a proof that the arena holds it, and an arena's structure carries its own label, so graphs and trees with parent links need no references.
