@@ -19,7 +19,7 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 - **Severity:** High
 - **Affected:** every published release up to and including v0.3.14 and v0.1.10, in every edition.
-- **Fixed in:** v0.3.15. The v0.1 line is not fixed yet.
+- **Fixed in:** v0.3.15; v0.1.11.
 - **Summary:** a `when` arm `is "…"` and the expression `x is "…"` treated their text literal as a `public` constant, but a literal with interpolation is computed from the values it interpolates. With `s: secret Text`, a `when` over another value with an arm `is "{s}"` could choose the arm that prints, and `x is "{s}"` gave a `public` `Bool`, with no diagnostic. Interpolation in a pattern's literal is now U4008 in every edition; comparing with `==` gives a `Bool` that carries the value's label.
 - **References:** #801, #803, `spec/07 §7` rule 3.
 
