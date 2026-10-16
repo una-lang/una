@@ -1,0 +1,66 @@
+module events.checkin
+
+import events.keys (attendee_key)
+import events.seating (Availability, Event, Registration, availability)
+import events.types (Phone, parse_phone)
+import std.testing (fake_hash)
+
+pub kind CheckInError = NotRegistered | Unavailable(reason: Text)
+
+pub kind StoreError = Timeout | Corrupted
+
+pub capability Registrations
+  op find(key: internal Hashed) -> Option[Registration]
+    fails StoreError
+    accepts internal
+
+pub capability Audit
+  op record(key: internal Hashed, status: Availability) -> Unit
+    fails StoreError
+    accepts internal
+
+--- Looks up a registration by phone, shows its availability, and records it.
+--- The phone never leaves this function: only its keyed hash does.
+pub check_in(phone: secret[PII] Phone) -> Availability
+  uses @registrations: Registrations[find]
+  uses @audit: Audit[record]
+  uses @keys: Keys[hmac]
+  fails CheckInError
+=
+  let key = attendee_key(phone)
+    if error fail Unavailable(reason: "keys")
+  let registration = @registrations.find(key)
+    if error fail Unavailable(reason: "registrations")
+    if none fail Unavailable(reason: "no registration for {phone}")
+  let status = availability(registration.event)
+  @audit.record(key, status)
+    if error fail Unavailable(reason: "audit")
+  status
+
+handler one_registration(r: Registration) for Registrations
+  op find(key) = Some(r)
+
+handler no_registrations() for Registrations
+  op find(key) = None
+
+handler audit_log() for Audit
+  op record(key, status) = unit
+
+handler fake_keys() for Keys
+  op hmac(key_name, data) = fake_hash(1)
+
+example "a registered attendee is checked in and audited"
+  given @registrations = one_registration(Registration(name: "Ana", event: Event(name: "Launch", remaining: 820)))
+  given @audit = audit_log()
+  given @keys = fake_keys()
+  do check_in(parse_phone("12345678901"))
+  expect result is Open
+  expect performed @audit.record
+
+example "an unknown attendee fails and is not audited"
+  given @registrations = no_registrations()
+  given @audit = audit_log()
+  given @keys = fake_keys()
+  do check_in(parse_phone("12345678901"))
+  expect fails NotRegistered
+  expect not performed @audit.record
