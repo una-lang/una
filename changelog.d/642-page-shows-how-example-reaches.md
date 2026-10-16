@@ -1,1 +1,0 @@
-- **The `[boundaries]` page shows how an example reaches a boundary** (#642). An example's `do` line takes no `with`, so an example outside a boundary calls a function of its own module that grants the boundary. The page now shows that pattern as a checked package, and states that a `given` handler granted on that way is checked at its `given` line.

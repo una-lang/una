@@ -1,1 +1,0 @@
-- **A risk profile of the trusted computing base** (#65). `docs/security/tcb.md` rates each trusted component of the toolchain by what a bug in it could cause, lists the tests, gates and formal results that guard it, ranks the open gaps, and says how the proposed native-backend and profile decisions would move it.

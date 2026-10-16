@@ -1,1 +1,0 @@
-- **The website is pinned at its Learn section** (#733, website#30). `site/website.lock` now pins una-lang/website at the commit that adds `/learn/`, Una by Example, whose `learn.lock` pins una-lang/una-by-example with all 14 chapters and 79 pages, so the `site` gate checks them.

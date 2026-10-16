@@ -1,1 +1,0 @@
-- **TLS dependency updated for four advisories** (#779). `Cargo.lock` moves rustls from 0.23.45 to 0.23.46, the release that fixes RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349. rustls is the TLS library of the `Http` capability in both engines. No other dependency changes.
