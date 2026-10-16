@@ -1,0 +1,583 @@
+{
+ "schema": "una.std-reference/1",
+ "note": "Unstable, not part of the specification: see docs/std/README.md. Hand-written; crates/una-cli/tests/std_listing.rs checks it against the listing.",
+ "areas": [
+  "text",
+  "lists",
+  "options-and-results",
+  "maps",
+  "json",
+  "files",
+  "console",
+  "clock",
+  "env",
+  "keys",
+  "http",
+  "testing"
+ ],
+ "pending": [
+  "prelude Clock",
+  "prelude Console",
+  "prelude Entry",
+  "prelude Env",
+  "prelude FileError",
+  "prelude Files",
+  "prelude Header",
+  "prelude Http",
+  "prelude HttpError",
+  "prelude Json",
+  "prelude JsonError",
+  "prelude JsonNumber",
+  "prelude KeyError",
+  "prelude Keys",
+  "prelude Nat",
+  "prelude Option",
+  "prelude Response",
+  "prelude Result",
+  "prelude abs",
+  "prelude append",
+  "prelude at",
+  "prelude contains",
+  "prelude empty_map",
+  "prelude filter",
+  "prelude first",
+  "prelude first_where",
+  "prelude fold",
+  "prelude is_empty",
+  "prelude is_json_number",
+  "prelude is_ok",
+  "prelude is_some",
+  "prelude map",
+  "prelude max",
+  "prelude min",
+  "prelude or_else",
+  "prelude parse_json",
+  "prelude quote_json",
+  "prelude set",
+  "prelude sort",
+  "prelude sum",
+  "prelude to_json",
+  "std.testing fake_hash"
+ ],
+ "entries": [
+  {
+   "module": "prelude",
+   "name": "is_digits",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when every character of `t` is an ASCII digit, so also for the empty text"
+   },
+   "use_instead": [
+    {
+     "item": "parse_int",
+     "why": "to read the number the digits write, with a reason when there is none"
+    }
+   ],
+   "see_also": [
+    "to_int"
+   ],
+   "example": "docs/std/examples/prelude/is_digits"
+  },
+  {
+   "module": "prelude",
+   "name": "starts_with",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "prefix",
+     "meaning": "the text `t` may start with"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when the first scalar values of `t` are those of `prefix`"
+   },
+   "see_also": [
+    "ends_with",
+    "contains_text"
+   ],
+   "example": "docs/std/examples/prelude/starts_with"
+  },
+  {
+   "module": "prelude",
+   "name": "trim",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` without the Unicode whitespace at both ends; never longer than `t`"
+   },
+   "use_instead": [
+    {
+     "item": "trim_start",
+     "why": "to keep the whitespace at the end"
+    },
+    {
+     "item": "trim_end",
+     "why": "to keep the whitespace at the start"
+    }
+   ],
+   "example": "docs/std/examples/prelude/trim"
+  },
+  {
+   "module": "prelude",
+   "name": "to_int",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Option[Int]",
+    "meaning": "`Some` of the integer `t` writes, an optional `-` and one or more ASCII digits; `None` for any other text"
+   },
+   "use_instead": [
+    {
+     "item": "parse_int",
+     "why": "to know why a text is not a number"
+    }
+   ],
+   "see_also": [
+    "is_digits",
+    "trim"
+   ],
+   "example": "docs/std/examples/prelude/to_int"
+  },
+  {
+   "module": "prelude",
+   "name": "split",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "on",
+     "meaning": "the separator; it must not be empty"
+    }
+   ],
+   "returns": {
+    "type": "List[Text]",
+    "meaning": "the parts of `t` between the non-overlapping occurrences of `on`, left to right; at least one part"
+   },
+   "see_also": [
+    "join",
+    "find"
+   ],
+   "cost": {
+    "time": "O(b + m), two-way search",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/split"
+  },
+  {
+   "module": "prelude",
+   "name": "join",
+   "area": "text",
+   "params": [
+    {
+     "name": "parts",
+     "meaning": "the texts to join, in order"
+    },
+    {
+     "name": "separator",
+     "meaning": "the text between each two parts"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "the parts joined, with `separator` between each two"
+   },
+   "see_also": [
+    "split"
+   ],
+   "cost": {
+    "time": "O(total bytes)",
+    "source": "ADR 0070"
+   },
+   "example": "docs/std/examples/prelude/join"
+  },
+  {
+   "module": "prelude",
+   "name": "ends_with",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "suffix",
+     "meaning": "the text `t` may end with"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when `t` ends with `suffix`"
+   },
+   "see_also": [
+    "starts_with",
+    "contains_text"
+   ],
+   "cost": {
+    "time": "O(m)",
+    "source": "ADR 0070"
+   },
+   "example": "docs/std/examples/prelude/ends_with"
+  },
+  {
+   "module": "prelude",
+   "name": "contains_text",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "part",
+     "meaning": "the text to look for"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when `part` occurs in `t`"
+   },
+   "use_instead": [
+    {
+     "item": "find",
+     "why": "to know where it occurs"
+    }
+   ],
+   "see_also": [
+    "starts_with",
+    "ends_with"
+   ],
+   "cost": {
+    "time": "O(b + m)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/contains_text"
+  },
+  {
+   "module": "prelude",
+   "name": "find",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "text",
+     "meaning": "the text to look for"
+    }
+   ],
+   "returns": {
+    "type": "Option[Int]",
+    "meaning": "`Some` of the position of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`, and `None` when it does not occur"
+   },
+   "use_instead": [
+    {
+     "item": "contains_text",
+     "why": "when only whether it occurs matters"
+    }
+   ],
+   "see_also": [
+    "slice"
+   ],
+   "cost": {
+    "time": "O(b + m), plus O(1) for the scalar index from the checkpoints",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/find"
+  },
+  {
+   "module": "prelude",
+   "name": "replace",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "pattern",
+     "meaning": "the text to replace; it must not be empty"
+    },
+    {
+     "name": "by",
+     "meaning": "the text that takes its place"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right"
+   },
+   "see_also": [
+    "split",
+    "contains_text"
+   ],
+   "cost": {
+    "time": "O(b + m + result)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/replace"
+  },
+  {
+   "module": "prelude",
+   "name": "slice",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    },
+    {
+     "name": "start",
+     "meaning": "the first position, from 0"
+    },
+    {
+     "name": "end",
+     "meaning": "the position after the last; `start <= end <= t.len`"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "the scalar values of `t` from `start` up to, not including, `end`; its length is `end - start`"
+   },
+   "see_also": [
+    "find",
+    "chars"
+   ],
+   "cost": {
+    "time": "O(result), after the index is built once",
+    "source": "ADR 0070"
+   },
+   "example": "docs/std/examples/prelude/slice"
+  },
+  {
+   "module": "prelude",
+   "name": "to_upper",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` with the ASCII letters `a` to `z` in upper case; the same length as `t`"
+   },
+   "see_also": [
+    "to_lower"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/to_upper"
+  },
+  {
+   "module": "prelude",
+   "name": "to_lower",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` with the ASCII letters `A` to `Z` in lower case; the same length as `t`"
+   },
+   "see_also": [
+    "to_upper"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/to_lower"
+  },
+  {
+   "module": "prelude",
+   "name": "chars",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "List[Text]",
+    "meaning": "one text of length 1 per scalar value of `t`, in order; as many as `t.len`"
+   },
+   "see_also": [
+    "bytes",
+    "slice"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/chars"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_int",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Int",
+    "meaning": "the integer `t` writes, an optional `-` and one or more ASCII digits; space is not trimmed"
+   },
+   "fails": [
+    {
+     "variant": "Empty",
+     "when": "`t` is empty"
+    },
+    {
+     "variant": "NotADigit",
+     "when": "at the first position that is neither the leading `-` nor a digit, which it holds as `at`"
+    },
+    {
+     "variant": "NoDigits",
+     "when": "`t` is `-` alone"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "to_int",
+     "why": "when the reason does not matter"
+    }
+   ],
+   "see_also": [
+    "ParseError",
+    "trim",
+    "is_digits"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/parse_int"
+  },
+  {
+   "module": "prelude",
+   "name": "trim_start",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` without Unicode white space at its start; never longer than `t`"
+   },
+   "see_also": [
+    "trim",
+    "trim_end"
+   ],
+   "cost": {
+    "time": "O(result + trimmed)",
+    "source": "ADR 0070"
+   },
+   "example": "docs/std/examples/prelude/trim_start"
+  },
+  {
+   "module": "prelude",
+   "name": "trim_end",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` without Unicode white space at its end; never longer than `t`"
+   },
+   "see_also": [
+    "trim",
+    "trim_start"
+   ],
+   "cost": {
+    "time": "O(result + trimmed)",
+    "source": "ADR 0070"
+   },
+   "example": "docs/std/examples/prelude/trim_end"
+  },
+  {
+   "module": "prelude",
+   "name": "bytes",
+   "area": "text",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "List[U8]",
+    "meaning": "the UTF-8 encoding of `t`; at least as many bytes as `t` has scalar values"
+   },
+   "see_also": [
+    "chars"
+   ],
+   "cost": {
+    "time": "O(b)",
+    "source": "ADR 0070",
+    "terms": "b is the length of the text in bytes"
+   },
+   "example": "docs/std/examples/prelude/bytes"
+  },
+  {
+   "module": "prelude",
+   "name": "ParseError",
+   "area": "text",
+   "see_also": [
+    "parse_int"
+   ],
+   "example": "docs/std/examples/prelude/parse_int"
+  }
+ ]
+}

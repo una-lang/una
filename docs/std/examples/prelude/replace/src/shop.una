@@ -1,0 +1,7 @@
+module shop
+
+--- A product title with its separator changed.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(replace("Desk lamp - brass - large", pattern: " - ", by: ", "))

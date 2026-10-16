@@ -1,0 +1,10 @@
+module shop
+
+--- Whether a typed article number is all digits.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let digits = is_digits("12345")
+  @console.print("12345: {digits}")
+  let mixed = is_digits("12a45")
+  @console.print("12a45: {mixed}")

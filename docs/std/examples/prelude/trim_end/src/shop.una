@@ -1,0 +1,8 @@
+module shop
+
+--- A product name with spaces after it.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let name = trim_end("  Lamp   ")
+  @console.print("[{name}]")

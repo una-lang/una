@@ -1,0 +1,14 @@
+module shop
+
+--- Where the range ends in an SKU.
+dash(sku: Text) -> Text
+=
+  when find(sku, text: "-")
+    is Some(at) -> "{sku}: the range ends at {at}"
+    is None -> "{sku}: no range"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(dash("LAMP-01"))
+  @console.print(dash("GIFTCARD"))

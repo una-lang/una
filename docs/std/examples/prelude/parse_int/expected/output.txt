@@ -1,0 +1,4 @@
+'12': 12 units
+'': nothing typed
+'-': a sign and no digits
+'1x2': not a digit at 1

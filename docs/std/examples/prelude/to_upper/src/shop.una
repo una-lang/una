@@ -1,0 +1,7 @@
+module shop
+
+--- An SKU typed in lower case.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(to_upper("lamp-01"))

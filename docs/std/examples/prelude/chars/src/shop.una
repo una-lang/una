@@ -1,0 +1,7 @@
+module shop
+
+--- The characters of a short code, one by one.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(join(chars("SKU"), separator: "|"))

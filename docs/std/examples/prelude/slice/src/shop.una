@@ -1,0 +1,7 @@
+module shop
+
+--- The range of an SKU, its first four characters.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(slice("LAMP-01", start: 0, end: 4))

@@ -1,0 +1,2 @@
+LAMP-01: the range ends at 4
+GIFTCARD: no range

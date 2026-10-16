@@ -6,6 +6,10 @@
 //!   the website would render as HTML or flatten (#695);
 //! - each item's editions are the editions in which `una check` resolves its name: one probe
 //!   package per item and edition, linear in their number.
+//! - the hand-written reference, `docs/std/reference.json` (#853), agrees with the listing: each
+//!   listed item is described or pending, with the declaration's parameters, result and failure
+//!   variants, items that exist, cited costs, and an example that uses it, checks and prints its
+//!   expected output.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -460,4 +464,323 @@ fn each_builtin_signature_checks_in_exactly_its_editions_and_a_wrong_call_does_n
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The parts of a function's declaration the reference describes (#853): its parameters' names,
+/// its result type and the kind it fails with, from the declaration line `pub NAME[...](PARAMS)
+/// -> RESULT` and a `fails KIND` line.
+struct Signature {
+    params: Vec<String>,
+    result: String,
+    fails: Option<String>,
+}
+
+fn signature(declaration: &str) -> Signature {
+    let first = declaration.lines().next().unwrap();
+    let open = first.find('(').unwrap();
+    let mut depth = 0;
+    let mut close = open;
+    for (at, c) in first.char_indices().skip_while(|(at, _)| *at <= open) {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' if depth > 0 => depth -= 1,
+            ')' if depth == 0 => {
+                close = at;
+                break;
+            }
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    let mut params = Vec::new();
+    let (mut part, mut level) = (String::new(), 0);
+    for c in first[open + 1..close].chars() {
+        match c {
+            '[' | '(' => level += 1,
+            ']' | ')' => level -= 1,
+            ',' if level == 0 => {
+                params.push(std::mem::take(&mut part));
+                continue;
+            }
+            _ => {}
+        }
+        part.push(c);
+    }
+    if !part.trim().is_empty() {
+        params.push(part);
+    }
+    let params = params
+        .iter()
+        .map(|p| {
+            p.split(':')
+                .next()
+                .unwrap()
+                .trim()
+                .trim_start_matches("edit ")
+                .to_owned()
+        })
+        .collect();
+    let result = first[close + 1..]
+        .trim()
+        .strip_prefix("->")
+        .map(|r| r.trim().to_owned())
+        .unwrap_or_default();
+    let fails = declaration
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("fails "))
+        .map(|kind| kind.trim().to_owned());
+    Signature {
+        params,
+        result,
+        fails,
+    }
+}
+
+/// The variant names of a kind's declaration `pub kind K = A | B(x: T) | C`.
+fn variant_names(declaration: &str) -> Vec<String> {
+    declaration
+        .split_once('=')
+        .map(|(_, body)| {
+            body.split('|')
+                .map(|v| v.trim().split('(').next().unwrap().trim().to_owned())
+                .filter(|v| !v.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_reference_agrees_with_the_listing_and_its_examples_run() {
+    let text = fs::read_to_string(root().join("docs/std/reference.json")).unwrap();
+    let reference: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(reference["schema"], "una.std-reference/1");
+    let items: Vec<Item> = std_items();
+    let listed = |module: &str, name: &str| {
+        items
+            .iter()
+            .find(|item| item.module == module && item.name == name)
+    };
+    let by_name = |name: &str| items.iter().find(|item| item.name == name);
+    let areas: Vec<&str> = reference["areas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let mut problems = Vec::new();
+    let mut covered = std::collections::BTreeSet::new();
+    for entry in reference["entries"].as_array().unwrap() {
+        let module = entry["module"].as_str().unwrap();
+        let name = entry["name"].as_str().unwrap();
+        let at = format!("reference {module} `{name}`");
+        if !covered.insert(format!("{module} {name}")) {
+            problems.push(format!("{at}: twice"));
+        }
+        let Some(item) = listed(module, name) else {
+            problems.push(format!("{at}: not a listed item"));
+            continue;
+        };
+        if !areas.contains(&entry["area"].as_str().unwrap_or("")) {
+            problems.push(format!(
+                "{at}: area {} is not one of the areas",
+                entry["area"]
+            ));
+        }
+        let declaration = &item.variants.last().unwrap().declaration;
+        if item.kind == "function" {
+            let sig = signature(declaration);
+            let params: Vec<String> = entry["params"]
+                .as_array()
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| p["name"].as_str().unwrap().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if params != sig.params {
+                problems.push(format!(
+                    "{at}: parameters {params:?}, the declaration's are {:?}",
+                    sig.params
+                ));
+            }
+            if entry["returns"]["type"].as_str() != Some(sig.result.as_str()) {
+                problems.push(format!(
+                    "{at}: returns {}, the declaration's result is {}",
+                    entry["returns"]["type"], sig.result
+                ));
+            }
+            let fails: Vec<String> = entry["fails"]
+                .as_array()
+                .map(|fs| {
+                    fs.iter()
+                        .map(|f| f["variant"].as_str().unwrap().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let declared = sig
+                .fails
+                .as_deref()
+                .and_then(by_name)
+                .map(|kind| variant_names(&kind.variants.last().unwrap().declaration))
+                .unwrap_or_default();
+            if fails != declared {
+                problems.push(format!(
+                    "{at}: fails with {fails:?}, the declaration's failure kind has {declared:?}"
+                ));
+            }
+        } else if entry.get("params").is_some()
+            || entry.get("returns").is_some()
+            || entry.get("fails").is_some()
+        {
+            problems.push(format!(
+                "{at}: a {} has no parameters, result or failures",
+                item.kind
+            ));
+        }
+        let named = |list: &str| -> Vec<String> {
+            entry[list]
+                .as_array()
+                .map(|xs| {
+                    xs.iter()
+                        .map(|x| x.get("item").unwrap_or(x).as_str().unwrap().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        for other in named("use_instead").iter().chain(named("see_also").iter()) {
+            if by_name(other).is_none() {
+                problems.push(format!("{at}: names `{other}`, which is not a listed item"));
+            }
+        }
+        if let Some(cost) = entry.get("cost") {
+            let source = cost["source"].as_str().unwrap_or("");
+            let exists = if let Some(number) = source.strip_prefix("ADR ") {
+                fs::read_dir(root().join("docs/adr")).unwrap().any(|e| {
+                    e.unwrap()
+                        .file_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with(&format!("{number}-"))
+                })
+            } else {
+                resolves(source)
+            };
+            if !exists {
+                problems.push(format!(
+                    "{at}: its cost cites `{source}`, which does not exist"
+                ));
+            }
+        }
+        // The example: a package that calls the item, checks clean and prints its output.
+        let Some(example) = entry["example"].as_str() else {
+            problems.push(format!("{at}: no example"));
+            continue;
+        };
+        let dir = root().join(example);
+        let src = fs::read_dir(dir.join("src"))
+            .map(|files| {
+                files
+                    .map(|f| fs::read_to_string(f.unwrap().path()).unwrap())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let used = if item.kind == "function" {
+            src.contains(&format!("{name}("))
+        } else {
+            src.contains(name)
+        };
+        if !used {
+            problems.push(format!("{at}: its example {example} does not use it"));
+        }
+    }
+    for pending in reference["pending"].as_array().unwrap() {
+        let pending = pending.as_str().unwrap();
+        if !covered.insert(pending.to_owned()) {
+            problems.push(format!(
+                "reference: `{pending}` is both pending and described"
+            ));
+        }
+    }
+    let all: std::collections::BTreeSet<String> = items
+        .iter()
+        .map(|item| format!("{} {}", item.module, item.name))
+        .collect();
+    for missing in all.difference(&covered) {
+        problems.push(format!(
+            "reference: `{missing}` is neither described nor pending"
+        ));
+    }
+    for extra in covered.difference(&all) {
+        problems.push(format!("reference: `{extra}` is not a listed item"));
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn each_example_of_the_reference_checks_and_prints_its_output() {
+    let text = fs::read_to_string(root().join("docs/std/reference.json")).unwrap();
+    let reference: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut examples: Vec<&str> = reference["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["example"].as_str())
+        .collect();
+    examples.sort_unstable();
+    examples.dedup();
+    let mut problems = Vec::new();
+    for example in examples {
+        let source = root().join(example);
+        let copy = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("std-examples")
+            .join(example);
+        let _ = fs::remove_dir_all(&copy);
+        copy_tree(&source, &copy);
+        let una = |args: &[&str]| {
+            std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .args(args)
+                .current_dir(&copy)
+                .output()
+                .unwrap()
+        };
+        let formatted = una(&["fmt", "--check", "."]);
+        if !formatted.status.success() {
+            problems.push(format!(
+                "{example}: not in canonical form:\n{}",
+                String::from_utf8_lossy(&formatted.stdout)
+            ));
+        }
+        let checked = una(&["--color", "never", "check", "."]);
+        if !checked.status.success() {
+            problems.push(format!(
+                "{example}: `una check .` fails:\n{}",
+                String::from_utf8_lossy(&checked.stderr)
+            ));
+            continue;
+        }
+        let run = una(&["run", "."]);
+        let expected = fs::read_to_string(source.join("expected/output.txt")).unwrap_or_default();
+        let printed = String::from_utf8_lossy(&run.stdout);
+        if !run.status.success() || printed != expected {
+            problems.push(format!("{example}: `una run .` prints:\n{printed}{}\nand expected/output.txt is:\n{expected}", String::from_utf8_lossy(&run.stderr)));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n\n"));
+}
+
+/// A copy of the directory `from` at `to`, without `target/` or `.una/`.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            if entry.file_name() != "target" && entry.file_name() != ".una" {
+                copy_tree(&entry.path(), &target);
+            }
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }

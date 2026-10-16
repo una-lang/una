@@ -1,0 +1,10 @@
+module shop
+
+--- Whether an SKU belongs to the lamp range.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let lamp = starts_with("LAMP-01", prefix: "LAMP")
+  @console.print("LAMP-01: {lamp}")
+  let lower = starts_with("lamp-01", prefix: "LAMP")
+  @console.print("lamp-01: {lower}")

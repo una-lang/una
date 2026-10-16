@@ -1,0 +1,2 @@
+LAMP-01: true
+lamp-01: false

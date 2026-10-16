@@ -1,0 +1,24 @@
+module shop
+
+--- A quantity typed on an order form, and why it is not one.
+quantity(raw: Text) -> Text
+=
+  let outcome = attempt parse_int(raw)
+  when outcome
+    is Ok(n) -> "'{raw}': {n} units"
+    is Err(failure) -> "'{raw}': {reason(failure)}"
+
+reason(failure: ParseError) -> Text
+=
+  when failure
+    is Empty -> "nothing typed"
+    is NoDigits -> "a sign and no digits"
+    is NotADigit(at) -> "not a digit at {at}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(quantity("12"))
+  @console.print(quantity(""))
+  @console.print(quantity("-"))
+  @console.print(quantity("1x2"))

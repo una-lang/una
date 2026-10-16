@@ -1,0 +1,14 @@
+module shop
+
+--- A quantity typed on an order form.
+quantity(raw: Text) -> Text
+=
+  when to_int(raw)
+    is Some(n) -> "{n} units"
+    is None -> "'{raw}' is not a quantity"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(quantity("12"))
+  @console.print(quantity("+3"))

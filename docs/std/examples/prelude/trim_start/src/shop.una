@@ -1,0 +1,8 @@
+module shop
+
+--- An article number typed with spaces before it.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let number = trim_start("  0042  ")
+  @console.print("[{number}]")
