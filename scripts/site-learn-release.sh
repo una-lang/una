@@ -160,8 +160,14 @@ EOF
     grep -q "the directory $t/gh-release, in place of the release r1" "$t/log" || { echo "  WRONG: the output does not name the directory"; failures=$((failures + 1)); }
     expect fail "a draft release" UNA_SITE_LEARN_RELEASE_DIR= FAKE_GH_DRAFT=true
     expect fail "a download that fails after the release is read" UNA_SITE_LEARN_RELEASE_DIR= FAKE_GH_DOWNLOAD=fail
+    grep -q 'cannot download the release r1' "$t/log" || { echo "  WRONG: a failed download is not what fails"; failures=$((failures + 1)); }
     expect fail "a download that brings part of the files" UNA_SITE_LEARN_RELEASE_DIR= FAKE_GH_DOWNLOAD=partial
-    expect fail "no gh" UNA_SITE_LEARN_RELEASE_DIR= PATH=/usr/bin:/bin
+    # A PATH that holds only the tools the script runs, so no gh is on it on any host.
+    mkdir -p "$t/nogh"
+    for tool in sh grep sed find sort diff cmp cp mkdir rm python3 wc tr env cat; do
+        ln -s "$(command -v "$tool")" "$t/nogh/$tool"
+    done
+    expect fail "no gh" UNA_SITE_LEARN_RELEASE_DIR= PATH="$t/nogh"
     grep -q 'gh is needed' "$t/log" || { echo "  WRONG: no gh is not what fails"; failures=$((failures + 1)); }
     # The build's own output: a symbolic link in it, and no SHA256SUMS, fail too.
     ln -s 01-a.tar.gz "$t/build/05-e.tar.gz"

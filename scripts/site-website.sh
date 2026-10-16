@@ -14,7 +14,7 @@
 # release, the one whose archives the Learn pages link to, that release must hold exactly the
 # files the build makes, the archives and SHA256SUMS, byte for byte (una#831,
 # scripts/site-learn-release.sh, which reads it with `gh release download`), and the website's
-# own reading of learn.lock must name that release. The build must then report its Learn pages. A website without
+# own reading of learn.lock must name the same repository, commit and release. The build must then report its Learn pages. A website without
 # learn.lock is built without them, and this says so.
 #
 # It needs git access to the website's repository (and to una-by-example when the website pins it), Node.js (>= 20.19) with npm, and Python 3. It installs
@@ -112,10 +112,13 @@ if [ -n "$learn" ]; then
     # pages' clone and download links come from, must name the repository, the commit and the
     # release the gate read, each line by line (una#831): a lock that reads one way to the website
     # and another to the gate fails.
-    website_lock=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; import { readLock } from "./scripts/preview/learn.mjs"; const l = readLock(readFileSync("learn.lock", "utf8")); process.stdout.write([l.repository, l.commit, l.release ?? ""].join("\n"))') \
+    # Both sides as JSON, so no value can hold the separator between them (una#851).
+    website_lock=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; import { readLock } from "./scripts/preview/learn.mjs"; const l = readLock(readFileSync("learn.lock", "utf8")); process.stdout.write(JSON.stringify([l.repository, l.commit, l.release ?? ""]))') \
         || fail "the website cannot read its learn.lock"
-    [ "$website_lock" = "$(printf '%s\n%s\n%s' "$learn_repository" "$learn_commit" "$learn_release")" ] \
-        || fail "the website reads learn.lock as another repository, commit or release than the gate: $(printf '%s' "$website_lock" | tr '\n' ' ')"
+    gate_lock=$(python3 -I -c 'import json, sys; sys.stdout.write(json.dumps(sys.argv[1:], separators=(",", ":"), ensure_ascii=False))' "$learn_repository" "$learn_commit" "$learn_release") \
+        || fail "cannot write the gate's reading of learn.lock"
+    [ "$website_lock" = "$gate_lock" ] \
+        || fail "the website reads learn.lock as $website_lock, the gate as $gate_lock"
 fi
 node "$root/scripts/doc-links/website-anchors.mjs" "$out/anchors/ids.json" "$root" \
     || fail "the heading ids of scripts/doc-links.py are not the website's"

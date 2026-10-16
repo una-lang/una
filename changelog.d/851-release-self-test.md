@@ -1,0 +1,1 @@
+- **The Learn release check's self-test is tighter** (#851). The download-failure case checks its reason, the case without `gh` runs with a `PATH` that holds only the tools the script needs, and the site gate compares the website's reading of `learn.lock` with its own as JSON.
