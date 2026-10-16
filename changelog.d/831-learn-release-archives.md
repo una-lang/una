@@ -1,0 +1,1 @@
+- **The `site` gate checks the Learn release's downloads** (#831). When the pinned website's `learn.lock` names a Una by Example release, `scripts/site-website.sh` downloads it and fails unless it holds exactly the files the build makes from the pinned commit, every archive and `SHA256SUMS`, byte for byte, and no other file.

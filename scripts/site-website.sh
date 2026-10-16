@@ -10,8 +10,11 @@
 # una-lang/una-by-example at the commit that lock names (una#733): that repository is cloned at
 # the commit, its download archives are built with its scripts/archive.py, and its
 # scripts/check.py checks every example, each Try it change and the archives with this
-# checkout's `una`, before the website builds /learn/ from the clone. The build must then
-# report its Learn pages. A website without learn.lock is built without them, and this says so.
+# checkout's `una`, before the website builds /learn/ from the clone. When the lock names a
+# release, the one whose archives the Learn pages link to, that release must hold exactly the
+# files the build makes, the archives and SHA256SUMS, byte for byte (una#831); it is read with
+# `gh release download`. The build must then report its Learn pages. A website without
+# learn.lock is built without them, and this says so.
 #
 # It needs git access to the website's repository (and to una-by-example when the website pins it), Node.js (>= 20.19) with npm, and Python 3. It installs
 # the website's packages with `npm ci --ignore-scripts`, from its package-lock.json, so no
@@ -19,8 +22,10 @@
 # against the npm registry's advisories with npm at the website's pinned version, failing closed
 # on any advisory or an audit that does not answer, and the website's tests, which its build
 # runs, check the lockfile against its supply-chain review record (#783). It writes only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the
-# website is cloned from, UNA_SITE_LEARN_SOURCE where una-by-example is cloned from, and UNA_BIN which `una` checks the samples (default:
-# target/release/una).
+# website is cloned from, UNA_SITE_LEARN_SOURCE where una-by-example is cloned from,
+# UNA_SITE_LEARN_RELEASE_DIR a directory that holds the release's files in place of the
+# download, and UNA_BIN which `una` checks the samples (default: target/release/una). With a
+# learn.lock that names a release, it needs `gh`, signed in with read access to una-by-example.
 #
 # Usage: scripts/site-website.sh BUNDLE OUT
 #   BUNDLE  the bundle directory, OUT/una-docs-<version> of scripts/site-bundle.sh
@@ -84,6 +89,41 @@ if [ -f "$website/learn.lock" ]; then
     python3 -B "$learn/scripts/archive.py" "$archives" || fail "una-by-example's archives do not build"
     python3 -B "$learn/scripts/check.py" --una "$una" --una-version-from-binary --archives "$archives" \
         || fail "an example of una-by-example does not check with this una"
+    # The release the Learn pages link their downloads to (una#831): when learn.lock names one,
+    # it must hold exactly the files this build makes, the archives and SHA256SUMS, byte for
+    # byte, and no other file.
+    learn_release=$(sed -n 's/^release = "\(.*\)"$/\1/p' "$website/learn.lock")
+    if [ -n "$learn_release" ]; then
+        printf '%s\n' "$learn_release" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' \
+            || fail "the website's learn.lock names a release that is not a plain tag name"
+        released=$out/una-by-example-release
+        rm -rf "${released:?}"
+        if [ -n "${UNA_SITE_LEARN_RELEASE_DIR:-}" ]; then
+            [ -d "$UNA_SITE_LEARN_RELEASE_DIR" ] || fail "UNA_SITE_LEARN_RELEASE_DIR is not a directory"
+            cp -R "$UNA_SITE_LEARN_RELEASE_DIR" "$released"
+        else
+            command -v gh >/dev/null 2>&1 || fail "gh is needed to read the release $learn_release"
+            slug=$(printf '%s\n' "$learn_repository" \
+                | sed -n 's#^https://github\.com/\([A-Za-z0-9._-]*/[A-Za-z0-9._-]*\)\.git$#\1#p')
+            [ -n "$slug" ] || fail "the website's learn.lock does not name a GitHub repository as https://github.com/OWNER/NAME.git"
+            mkdir -p "$released"
+            gh release download "$learn_release" -R "$slug" -D "$released" \
+                || fail "cannot download the release $learn_release of $slug"
+        fi
+        (cd "$archives" && find . -type f | LC_ALL=C sort) >"$out/una-by-example-built.txt"
+        (cd "$released" && find . -type f | LC_ALL=C sort) >"$out/una-by-example-released.txt"
+        [ -s "$out/una-by-example-built.txt" ] || fail "the build made no una-by-example archives"
+        grep -qx './SHA256SUMS' "$out/una-by-example-built.txt" || fail "the build made no SHA256SUMS"
+        diff "$out/una-by-example-built.txt" "$out/una-by-example-released.txt" >&2 \
+            || fail "the release $learn_release does not hold exactly the files the build makes (< built only, > released only)"
+        while IFS= read -r file; do
+            cmp -s "$archives/$file" "$released/$file" \
+                || fail "the release $learn_release has another ${file#./} than the build makes"
+        done <"$out/una-by-example-built.txt"
+        echo "una-by-example release $learn_release: the $(wc -l <"$out/una-by-example-built.txt" | tr -d ' ') files the build makes, byte for byte"
+    else
+        echo "una-by-example: no release named (the website's learn.lock has no release line)"
+    fi
 else
     echo "una-by-example: skipped (the website at $commit has no learn.lock)"
 fi
