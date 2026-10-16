@@ -127,10 +127,19 @@ The type checker adds the rest without the solver: every `when` on a choice cove
 
 ### Taking more than there is
 
-Delete the `requires used <= item.amount` line of `use_up`. `una check .` reports that the new amount may be negative (first line shown):
+Delete the `requires used <= item.amount` line of `use_up`. `una check .` reports that the new amount may be negative (its location and repairs shown; the notes after them are left out):
 
 ```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `(item.amount - used) >= 0` is refuted
+    ╭─[ src/pantry/stock.una:32:33 ]
+    │
+ 32 │   Item(name: item.name, amount: item.amount - used, measure: item.measure)
+    │                                 ─────────┬────────
+    │                                          ╰────────── refinement `(item.amount - used) >= 0` is refuted
+    │
+    │ Help 1: repair 1: add a guard (`if` or a `when` arm) that handles the values where `(item.amount - used) >= 0` does not hold
+    │
+    │ Help 2: repair 2 (escape: checked; a runtime test replaces the static proof: the program fails at run time where the proof would have rejected it; it counts against [escape_budget] and is listed in the build report): check the value with `checked(value, (item.amount - used) >= 0) else fail <Variant>`
 ...
 ```
 

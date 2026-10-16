@@ -994,6 +994,24 @@ fn every_example_has_a_readme_whose_commands_run() {
             );
             named.to_path_buf()
         };
+        // The lines of the `### ` items under `## Common mistakes`, in order: a block
+        // `after="mistakes/N"` sits under the Nth (#827).
+        let lines: Vec<&str> = text.lines().collect();
+        let section = lines.iter().position(|line| *line == "## Common mistakes");
+        let mut headings: Vec<usize> = Vec::new();
+        let mut section_end = lines.len() + 1;
+        if let Some(start) = section {
+            for (k, line) in lines.iter().enumerate().skip(start + 1) {
+                if line.starts_with("## ") {
+                    section_end = k + 1;
+                    break;
+                }
+                if line.starts_with("### ") {
+                    headings.push(k + 1);
+                }
+            }
+        }
+        let mut diagnosed: BTreeSet<String> = BTreeSet::new();
         // The package after each change a README shows (#827): the files of
         // `tests/fixtures/examples/NAME/mistakes/N/`, each replacing a file of the package, laid
         // over a fresh copy, and what `una --color never check .` prints for it, which must
@@ -1013,6 +1031,13 @@ fn every_example_has_a_readme_whose_commands_run() {
             assert!(
                 number.is_some_and(|n| (1..=mistakes).contains(&n)),
                 "{relative}, block at line {at}: after=\"{after}\" names none of the {mistakes} common mistakes (mistakes/1 to mistakes/{mistakes})"
+            );
+            let n = number.unwrap();
+            let under = headings[n - 1];
+            let next = headings.get(n).copied().unwrap_or(section_end);
+            assert!(
+                under < at && at < next,
+                "{relative}, block at line {at}: after=\"{after}\" is not under the common mistake it names, the one at line {under}"
             );
             if changed.contains_key(&after) {
                 continue;
@@ -1034,6 +1059,15 @@ fn every_example_has_a_readme_whose_commands_run() {
                     package.join(file).is_file(),
                     "tests/fixtures/examples/{name}/{after}/{file} replaces no file of the package"
                 );
+                // The change is made on the package's file as it is now: outside one region of at
+                // most a few lines, the two are the same, so an edit of the example elsewhere
+                // fails here rather than leaving the README checked against an old copy.
+                let original = std::fs::read_to_string(package.join(file)).unwrap();
+                let replacement = std::fs::read_to_string(overlay.join(file)).unwrap();
+                assert!(
+                    one_change(&original, &replacement, CHANGE_LINES),
+                    "tests/fixtures/examples/{name}/{after}/{file}: not the package's file with one change of at most {CHANGE_LINES} lines; make the change again on the current file"
+                );
                 std::fs::copy(overlay.join(file), dir.join(file)).unwrap();
             }
             let output = Command::new(env!("CARGO_BIN_EXE_una"))
@@ -1045,6 +1079,10 @@ fn every_example_has_a_readme_whose_commands_run() {
             assert!(
                 !output.status.success(),
                 "{relative}: `una check .` accepts the package after {after}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{relative}: `una check .` prints on standard output after {after}"
             );
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             changed.insert(after, (dir, files, stderr));
@@ -1073,6 +1111,7 @@ fn every_example_has_a_readme_whose_commands_run() {
                         args, "check .",
                         "{relative}, block at line {at}: after a change, a block shows what `una check .` prints"
                     );
+                    diagnosed.insert(after.clone());
                     if !is_excerpt(&block.body, stderr, true) {
                         mismatches.push(format!(
                             "{relative}, block at line {at}: not an excerpt of what `una check .` prints after {after}:\n{}\nIt prints:\n{stderr}",
@@ -1112,6 +1151,22 @@ fn every_example_has_a_readme_whose_commands_run() {
                     block.body
                 ));
             }
+        }
+
+        // Every common mistake has its change and a block of what `una check .` prints after it.
+        for n in 1..=mistakes {
+            let after = format!("mistakes/{n}");
+            assert!(
+                root.join("tests/fixtures/examples")
+                    .join(name)
+                    .join(&after)
+                    .is_dir(),
+                "{relative}: common mistake {n} has no tests/fixtures/examples/{name}/{after}"
+            );
+            assert!(
+                diagnosed.contains(&after),
+                "{relative}: common mistake {n} has no `text una=\"check .\" after=\"{after}\"` block"
+            );
         }
 
         let part = text
@@ -1164,14 +1219,77 @@ fn every_example_has_a_readme_whose_commands_run() {
     }
 }
 
+/// How many lines a change may replace, and hold, in one region (#827).
+const CHANGE_LINES: usize = 6;
+
+/// Whether `changed` is `original` with one change: they differ, and outside one region of at
+/// most `limit` lines on each side they are the same, line for line.
+fn one_change(original: &str, changed: &str, limit: usize) -> bool {
+    let a: Vec<&str> = original.split('\n').collect();
+    let b: Vec<&str> = changed.split('\n').collect();
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let room = a.len().min(b.len()) - prefix;
+    let suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(room)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (left, right) = (a.len() - prefix - suffix, b.len() - prefix - suffix);
+    (left > 0 || right > 0) && left <= limit && right <= limit
+}
+
+#[test]
+fn a_change_is_one_region_of_a_few_lines() {
+    let original = "module a\n\npub f() -> Int = 1\n\npub g() -> Int = 2\n";
+    assert!(one_change(
+        original,
+        "module a\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n",
+        6
+    ));
+    assert!(one_change(original, "module a\n\npub g() -> Int = 2\n", 6));
+    assert!(!one_change(original, original, 6), "no change");
+    assert!(
+        !one_change(
+            original,
+            "module b\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n",
+            2
+        ),
+        "two regions"
+    );
+    assert!(
+        !one_change(original, "x\ny\nz\nw\n", 2),
+        "too large a region"
+    );
+}
+
 /// The files under `dir`, as paths relative to `root` with `/` between their parts, sorted.
 fn overlay_files(root: &Path, dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let shown = path.strip_prefix(root).unwrap().display().to_string();
+        assert!(
+            !entry.file_name().to_str().unwrap().starts_with('.'),
+            "{}: a hidden file in a change, such as .DS_Store; remove it",
+            path.display()
+        );
+        assert!(
+            !entry.file_type().unwrap().is_symlink(),
+            "{}: a symbolic link in a change; a change holds files only",
+            path.display()
+        );
         if path.is_dir() {
             out.extend(overlay_files(root, &path));
         } else {
+            assert!(
+                shown.starts_with("src/")
+                    || shown.starts_with(&format!("src{}", std::path::MAIN_SEPARATOR)),
+                "{}: a change replaces files under src/ only",
+                path.display()
+            );
             let relative = path.strip_prefix(root).unwrap();
             out.push(
                 relative
