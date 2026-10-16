@@ -109,9 +109,9 @@ thread_local! {
     /// The reservations this thread holds, in tests: 0 again after every copy, a refused or a
     /// panicked one included.
     pub(crate) static LIVE_RESERVATIONS: Cell<usize> = const { Cell::new(0) };
-    /// Refuses one step of this thread, in tests: `Some(k)` lets k steps pass and refuses the
-    /// next, as a heap at its ceiling would, then lets the later ones pass.
-    pub(crate) static REFUSE_STEP: Cell<Option<usize>> = const { Cell::new(None) };
+    /// Refuses steps of this thread, in tests: `Some((k, n))` lets k steps pass and refuses the
+    /// next n, as a heap at its ceiling would, then lets the later ones pass.
+    pub(crate) static REFUSE_STEP: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
 }
 
 /// Announces a step of `bytes` and checks it: the reservation, when `held() + reserved` stays
@@ -122,12 +122,12 @@ pub(crate) fn try_reserve(bytes: usize) -> Option<Reservation> {
     #[cfg(test)]
     {
         let refused = REFUSE_STEP.with(|cell| match cell.get() {
-            Some(0) => {
-                cell.set(None);
+            Some((0, refuse)) => {
+                cell.set((refuse > 1).then(|| (0, refuse - 1)));
                 true
             }
-            Some(left) => {
-                cell.set(Some(left - 1));
+            Some((pass, refuse)) => {
+                cell.set(Some((pass - 1, refuse)));
                 false
             }
             None => false,

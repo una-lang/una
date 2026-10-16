@@ -1240,6 +1240,9 @@ pub fn export(word: i64) -> Result<Portable, Refused> {
         }
         Ok(())
     })?;
+    // INVARIANT: the copy pass makes one node for each object the counting pass marked, so a
+    // cell's node index is always in range (ADR 0113, I9).
+    debug_assert_eq!(nodes.len(), count);
     // The root finishes last, children first.
     let root = Cell::Node(nodes.len() - 1);
     Ok(Portable { nodes, root })
@@ -1409,7 +1412,7 @@ pub fn import(portable: &Portable) -> Result<i64, Refused> {
     }
     let objects = portable.nodes.len();
     reserve_slots(objects)?;
-    let growths = HEAP.with(|heap| heap.borrow().slot_growths);
+    let capacity = HEAP.with(|heap| heap.borrow().slots.capacity());
     let reserved = step(objects.saturating_mul(size_of::<i64>()))?;
     let mut words: Vec<i64> = Vec::with_capacity(objects);
     drop(reserved);
@@ -1425,13 +1428,9 @@ pub fn import(portable: &Portable) -> Result<i64, Refused> {
         };
         words.push(made);
     }
-    // INVARIANT: the objects fit the slots reserved before the first, so the table did not
-    // grow while they were made (ADR 0113 rule 5).
-    debug_assert_eq!(HEAP.with(|heap| heap.borrow().slot_growths), growths);
-    debug_assert!(HEAP.with(|heap| {
-        let heap = heap.borrow();
-        heap.slots.len() <= heap.slots.capacity()
-    }));
+    // INVARIANT: the objects fit the slots reserved before the first, so no `alloc` grew the
+    // table while they were made, unannounced (ADR 0113 rule 5).
+    debug_assert_eq!(HEAP.with(|heap| heap.borrow().slots.capacity()), capacity);
     // I9, the import's half: each object made has its node's contents, and holds the words made
     // for the node's cells.
     if cfg!(debug_assertions) {
@@ -1442,7 +1441,8 @@ pub fn import(portable: &Portable) -> Result<i64, Refused> {
             .filter(|&(node, &word)| {
                 !with(word, |object| node_matches_made(object, node, &words)).unwrap_or(false)
             })
-            .count();
+            .count()
+            + usize::from(made_word(&portable.root, &words).is_none());
         if mismatches > 0 {
             HEAP.with(|heap| heap.borrow_mut().faults += mismatches);
         }
@@ -1465,7 +1465,7 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
             && held
                 .iter()
                 .zip(cells)
-                .all(|(&word, cell)| cell_word(cell, words) == word)
+                .all(|(&word, cell)| made_word(cell, words) == Some(word))
     };
     match (object, node) {
         (Object::Int(a), Node::Int(b)) => a == b,
@@ -1496,10 +1496,19 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
         (Object::Map(entries), Node::Map(pairs)) => {
             entries.len() == pairs.len()
                 && entries.values().zip(pairs).all(|((key, value), (k, v))| {
-                    *key == cell_word(k, words) && *value == cell_word(v, words)
+                    made_word(k, words) == Some(*key) && made_word(v, words) == Some(*value)
                 })
         }
         _ => false,
+    }
+}
+
+/// The word of `cell` among the `words` an import made, or `None` for a node index past them,
+/// which the debug comparison of I9 counts as a mismatch.
+fn made_word(cell: &Cell, words: &[i64]) -> Option<i64> {
+    match *cell {
+        Cell::Word(word) => Some(word),
+        Cell::Node(node) => words.get(node).copied(),
     }
 }
 
@@ -2286,8 +2295,8 @@ mod tests {
 
     #[test]
     fn i2_an_object_exported_after_a_million_exports_copies_right() {
-        // ADR 0113, round 3's H1: a mark is the node index of the export in progress, never an
-        // identity that wraps, so a value exported after many exports reads no stale mark.
+        // ADR 0113 rule 5: a mark is the node index of the export in progress, never an identity
+        // that wraps, so a value exported after many exports reads no stale mark.
         // Miri runs a thousand: the same paths, in the time it has.
         let exports = if cfg!(miri) { 1_000 } else { 1_000_000 };
         let one = text_word("x".to_owned());
@@ -2308,8 +2317,9 @@ mod tests {
     fn i2_a_slot_alloc_hands_out_starts_unmarked() {
         // ADR 0113 rule 5: a slot `alloc` reuses has mark 0, whatever the object before it had.
         // A debug build reuses a slot only past its quarantine, so more than that are freed.
-        // Only the reused slots are checked: the freed slots still in quarantine keep their mark,
-        // which nothing reads, since every reader of a mark asks for a live object first.
+        // Only the reused slots are checked: the freed slots still in quarantine keep their mark.
+        // The copies read marks of live objects only; `alloc` reads a freed slot's mark only to
+        // clear it and keep the count of marked slots.
         let words: Vec<i64> = (0..QUARANTINE + 8)
             .map(|i| text_word(i.to_string()))
             .collect();
@@ -2510,15 +2520,17 @@ mod tests {
         // ADR 0113 rules 4 and 5: an import refused at its k-th step, for every k, returns the
         // refusal with every object it made released, no fault, and no reservation left, or
         // completes when the refused step has a fallback; the first k it no longer reaches
-        // imports the whole value.
-        std::thread::spawn(|| {
-            let value = steps_value();
-            let portable = export(value).unwrap();
-            release(value);
-            let baseline = live();
-            let mut refused = 0;
-            for k in 0.. {
-                crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some(k)));
+        // imports the whole value. Each k runs on a thread of its own, from the same empty
+        // heap, so that its k-th step is the same step every time.
+        let value = steps_value();
+        let portable = std::sync::Arc::new(export(value).unwrap());
+        release(value);
+        let mut refused = 0;
+        for k in 0.. {
+            let portable = std::sync::Arc::clone(&portable);
+            let (failed, reached) = std::thread::spawn(move || {
+                let baseline = live();
+                crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some((k, 1))));
                 let result = import(&portable);
                 let reached = crate::runtime::REFUSE_STEP.with(|cell| cell.take().is_none());
                 assert_eq!(
@@ -2527,23 +2539,24 @@ mod tests {
                     "k = {k}"
                 );
                 assert_eq!(faults(), 0, "k = {k}");
-                match result {
-                    Err(_) => {
-                        assert_eq!(live(), baseline, "k = {k}: what the import made");
-                        refused += 1;
-                    }
+                let failed = match result {
+                    Err(_) => true,
                     Ok(word) => {
                         release(word);
-                        if !reached {
-                            break;
-                        }
+                        false
                     }
-                }
+                };
+                assert_eq!(live(), baseline, "k = {k}: what the import made");
+                (failed, reached)
+            })
+            .join()
+            .unwrap();
+            refused += usize::from(failed);
+            if !reached {
+                break;
             }
-            assert!(refused >= 6, "the steps refused: {refused}");
-        })
-        .join()
-        .unwrap();
+        }
+        assert!(refused >= 6, "the steps refused: {refused}");
     }
 
     #[test]
@@ -2565,7 +2578,7 @@ mod tests {
                 held.push(text_word(held.len().to_string()));
             }
             let len = HEAP.with(|heap| heap.borrow().slots.len());
-            crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some(0)));
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some((0, 1))));
             let copy = import(&portable).unwrap();
             crate::runtime::REFUSE_STEP.with(|cell| cell.set(None));
             let grown = HEAP.with(|heap| heap.borrow().slots.capacity());
@@ -2575,6 +2588,39 @@ mod tests {
                 0
             );
             release(copy);
+            for word in held {
+                release(word);
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn i4_an_import_refused_both_growths_of_the_slot_table_stops_and_releases_all() {
+        // ADR 0113 rule 5: when the doubling of the slot table and the exact growth are both
+        // refused, the import returns the refusal before it makes any object.
+        let value = record(n(1), text_word("x".to_owned()));
+        let portable = export(value).unwrap();
+        release(value);
+        std::thread::spawn(move || {
+            let mut held = vec![text_word("0".to_owned())];
+            while HEAP.with(|heap| {
+                let heap = heap.borrow();
+                heap.slots.len() < heap.slots.capacity().max(4)
+            }) {
+                held.push(text_word(held.len().to_string()));
+            }
+            let (baseline, capacity) = (live(), HEAP.with(|heap| heap.borrow().slots.capacity()));
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(Some((0, 2))));
+            assert!(import(&portable).is_err());
+            crate::runtime::REFUSE_STEP.with(|cell| cell.set(None));
+            assert_eq!(live(), baseline);
+            assert_eq!(HEAP.with(|heap| heap.borrow().slots.capacity()), capacity);
+            assert_eq!(
+                crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get),
+                0
+            );
             for word in held {
                 release(word);
             }
