@@ -4,9 +4,9 @@
 - Date: 2026-10-15
 - Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #750
-- Builds on: ADR 0107 (data layout, Proposed), whose rules 1 to 7 this ADR assumes. It amends ADR 0107 rule 7 item 3 for the records it calls flat.
+- Builds on: ADR 0107 (data layout), whose rules 1 to 7 this ADR assumes. It amends ADR 0107 rule 7 item 3 for the records it calls flat.
 - Target: the native backend (`spec/16`), both backends. No edition changes: the representation is not observable (`spec/16 §4`).
-- Amends, once accepted: `spec/16 §4` rule 1 (where a record lives); ADR 0060's "Native representation" paragraph, by a dated note.
+- Amends: `spec/16 §4` rule 1 (where a record lives); ADR 0060's "Native representation" paragraph, by a dated note.
 
 ## Context
 

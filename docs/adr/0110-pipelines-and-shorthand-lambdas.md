@@ -5,7 +5,7 @@
 - Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #35 ("Pipelines `|>` and `it` shorthand lambdas", `plan/backlog.md`, design D)
 - Target: none: no language rule changes in any edition. Only the backlog and the description of one diagnostic change, and the Gate 1 pin does not move.
-- Amends, once accepted: `plan/backlog.md` (the row of #35), and the description of the `|>` shape that ADR 0096 rule 3 lists. No grammar, type rule or Core form changes.
+- Amends: `plan/backlog.md` (the row of #35), and the description of the `|>` shape that ADR 0096 rule 3 lists. No grammar, type rule or Core form changes.
 
 ## Context
 

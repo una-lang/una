@@ -5,7 +5,7 @@
 - Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #22 (the design of the profiles; issue #31 implements it)
 - Target: edition `0.3`, as a preview construct (`spec/13 §7`). Editions `0.1` and `0.2` do not change, and the Gate 1 pin does not move.
-- Amends, once accepted: `spec/13 §7` (the `[package] profile` key and the manifest's `[run] max_memory` key), `spec/18 §3` (the `overflow` obligation on `Int` in a `systems` package), `spec/16 §4` rule 2; a new section of `spec/16` holds the rules.
+- Amends: `spec/13 §7` (the `[package] profile` key and the manifest's `[run] max_memory` key), `spec/18 §3` (the `overflow` obligation on `Int` in a `systems` package), `spec/16 §4` rule 2; a new section of `spec/16` holds the rules.
 
 ## Context
 

@@ -5,7 +5,7 @@
 - Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #82
 - Target: edition `0.3`, as a preview construct (`spec/13 §7`). Editions `0.1` and `0.2` do not change.
-- Amends, once accepted: `spec/14` (the prelude gains `Arena[T]`, `Id[T]` and their operations), `spec/07` (the labels of an arena's structure), `spec/12 §4` (their encoding), `spec/16 §4` (their representation); a new chapter holds the rules.
+- Amends: `spec/14` (the prelude gains `Arena[T]`, `Id[T]` and their operations), `spec/07` (the labels of an arena's structure), `spec/12 §4` (their encoding), `spec/16 §4` (their representation); a new chapter holds the rules.
 
 ## Context
 
