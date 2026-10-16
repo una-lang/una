@@ -1,8 +1,8 @@
 # 0106. The optimized release backend
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-15
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #522
 - Amends: ADR 0055 rule 8, `spec/16`, `docs/release-gates.md` §2
 
