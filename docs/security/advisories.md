@@ -15,6 +15,14 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 ## Advisories
 
+### UNA-SA-015: an interpolated text pattern let a secret choose a branch or a public Bool
+
+- **Severity:** High
+- **Affected:** every published release up to and including v0.3.14 and v0.1.10, in every edition.
+- **Fixed in:** v0.3.15. The v0.1 line is not fixed yet.
+- **Summary:** a `when` arm `is "…"` and the expression `x is "…"` treated their text literal as a `public` constant, but a literal with interpolation is computed from the values it interpolates. With `s: secret Text`, a `when` over another value with an arm `is "{s}"` could choose the arm that prints, and `x is "{s}"` gave a `public` `Bool`, with no diagnostic. Interpolation in a pattern's literal is now U4008 in every edition; comparing with `==` gives a `Bool` that carries the value's label.
+- **References:** #801, #803, `spec/07 §7` rule 3.
+
 ### UNA-SA-014: release archives named the account that built them
 
 - **Severity:** Low
@@ -129,6 +137,9 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 ## Not advisories
 
+- **#773 and #775**, native code ending with an allocator abort where the interpreter reports U6003, for a wide range in a `together for` and for a copy between tasks (v0.3.15): memory stayed bounded and no label or authority guarantee was broken, so no severity of the scale applies.
+- **#779**, rustls 0.23.46 for four published advisories (v0.3.15): none is reachable in the TLS configuration of `Http`.
+- **#799**, the labels of some values in the Core export (v0.3.15): the export is read by the formal re-check, never by a run; no accepted program leaked through it.
 - **#323**, the labels of an un-annotated `let edit` (ADR 0075): `CHANGELOG.md` names only v0.2.0 as affected, which was not published.
 - **#310's `Http` part, and HTTP credentials kept to their origin** (v0.3.0): `CHANGELOG.md` names no published release that had `Http` before the fix.
 - **#186**, `edit` arguments flowing back with their final labels: `CHANGELOG.md` names no affected published release.
