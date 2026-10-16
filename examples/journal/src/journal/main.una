@@ -11,8 +11,8 @@ pub main() -> Unit
   fails FileError
 =
   -- The copy below writes where `JOURNAL_COPY` says, which is `internal`, so whether a file
-  -- exists is `internal` too, in this run and later ones (S-14): the read's failure is not
-  -- passed on, and a missing entry counts as empty.
+  -- exists is `internal` too, in this run and later ones: the read's failure is not passed
+  -- on, and a missing entry counts as empty.
   let text = @files.read("today.txt")
     if error use ""
   let hundreds = length_band(text)
