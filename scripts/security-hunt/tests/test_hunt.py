@@ -3,6 +3,7 @@
     cd scripts/security-hunt && python3 -m unittest discover -s tests
 """
 
+import dataclasses
 import io
 import json
 import os
@@ -14,16 +15,18 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hunt import drivers, gate, native, oracle, sandbox  # noqa: E402
-from hunt.families import OPERATORS, editions_of  # noqa: E402
-from hunt.program import CLASSES, MUST_REJECT, OPEN, RESIDUAL, derive_seed, rng_for  # noqa: E402
+from hunt import drivers, families, gate, native, oracle, sandbox  # noqa: E402
+from hunt.families import (OPERATORS, SAMPLE_COUNT, editions_for, editions_of,  # noqa: E402
+                           sample_forms)
+from hunt.program import (CLASSES, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed,  # noqa: E402
+                          rng_for)
 from hunt.refactor import _blocks, r6_rename, r9_reorder  # noqa: E402
 from hunt.sandbox import Run  # noqa: E402
 
 def every_program(n=40):
     for op in sorted(OPERATORS):
         for i in range(n):
-            for ed in editions_of(op):
+            for ed in editions_for(op, i):
                 yield OPERATORS[op](derive_seed(1, op, i), ed)
 
 
@@ -42,7 +45,7 @@ class Generators(unittest.TestCase):
 
     def test_a_seed_rebuilds_the_same_program(self):
         for op in OPERATORS:
-            for ed in editions_of(op):
+            for ed in editions_for(op, 3):
                 seed = derive_seed(99, op, 3)
                 a, b = OPERATORS[op](seed, ed), OPERATORS[op](seed, ed)
                 self.assertEqual(a.digest(), b.digest())
@@ -388,6 +391,44 @@ class Generators(unittest.TestCase):
         self.assertEqual((r["differ"], r["differ_raw"]), ("residual", "clean"))
         self.assertEqual((r["invalid"], r["full_kind"], r["triage"], r["triage_tier0"]),
                          (True, "invalid (no solver)", False, True))
+
+    def test_the_differ_full_check_bounds_the_solver_and_unknown_is_invalid(self):
+        # A query the solver does not decide ends as U5002 before the check's limit (#818), and a
+        # residual row with U5002 is invalid, an error, whatever its other codes.
+        self.assertLessEqual(drivers.FULL_CHECK_WALLCLOCK * 2, gate.CHECK_TIMEOUT)
+        from hunt.families.fragment import f8
+        prog = next(p for p in (f8(derive_seed(13, "F8", i), "0.2") for i in range(200))
+                    if p.cls == RESIDUAL)
+        row = dict(prog.manifest(), digest=prog.digest())
+        unknown = json.dumps({"schema": "una.diagnostics/1", "diagnostics": [diag("U5002")]})
+        ok = json.dumps({"schema": "una.diagnostics/1", "diagnostics": []})
+        core = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+            {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}}]}]})
+        seen = []
+
+        def fake(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
+            seen.append(list(argv))
+            if "core" in argv:
+                return Run(0, core, "", False, 0.1)
+            if argv[0] == "/cc":
+                return Run(0, "c.json\tapp.main.run\taccepted\t\n", "", False, 0.1)
+            if "--tier" in argv:
+                return Run(0, ok, "", False, 0.1)
+            return Run(1, unknown, "", False, 0.1)
+        real = sandbox.run
+        sandbox.run = fake
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                out = io.StringIO()
+                drivers.differ([row], "/una", "/cc", root, 10, out, z3="/z3/bin/z3")
+                r = json.loads(out.getvalue().splitlines()[0])
+        finally:
+            sandbox.run = real
+        full = [a for a in seen if "check" in a and "--tier" not in a]
+        self.assertEqual(len(full), 1)
+        self.assertEqual(full[0][-2:], ["--solver-wallclock", str(drivers.FULL_CHECK_WALLCLOCK)])
+        self.assertEqual((r["invalid"], r["full_kind"]),
+                         (True, "invalid (U5002, the solver did not decide)"))
 
     def test_differ_f8_outside_is_expected_unknown(self):
         j = self.judge_fixed("c.json\tapp.main.run\tnot re-checked\tthe primitive `fixed`\n",
@@ -1106,7 +1147,8 @@ class Edition03(unittest.TestCase):
             self.assertEqual(editions_of(op), ("0.2", "0.3"), op)
         self.assertEqual(editions_of("T1"), ("0.1", "0.2"))
         progs = gate.programs()
-        self.assertFalse(any(p.edition == "0.3" for p in progs if p.op not in self.NEW))
+        sampled = sum(1 for p in progs if p.edition == "0.3" and p.op not in self.NEW)
+        self.assertGreaterEqual(sampled, SAMPLE_COUNT * (len(OPERATORS) - len(self.NEW)))
         self.assertFalse(any(p.edition == "0.1" for p in progs if p.op in self.NEW))
         for op in self.NEW:
             self.assertEqual(sum(1 for p in progs if p.op == op), 2 * gate.COUNT, op)
@@ -1252,9 +1294,13 @@ class Edition03Guards(unittest.TestCase):
 
     def test_a_run_killed_at_its_limit_is_an_abort_only_when_its_check_decides(self):
         killed = Run(None, "", "", True, 20.0)
-        undecided = Run(1, json.dumps({"diagnostics": [diag("U5002")]}), "", False, 10.0)
-        decided = Run(0, json.dumps({"diagnostics": []}), "", False, 1.0)
-        for check, want in ((undecided, "error"), (killed, "error"), (decided, "abort")):
+        undecided = Run(1, json.dumps({"schema": "una.diagnostics/1",
+                                       "diagnostics": [diag("U5002")]}), "", False, 10.0)
+        decided = Run(0, json.dumps({"schema": "una.diagnostics/1", "diagnostics": []}), "",
+                      False, 1.0)
+        array = Run(0, "[]", "", False, 1.0)
+        for check, want in ((undecided, "error"), (killed, "error"), (array, "error"),
+                            (decided, "abort")):
             seen, restore = self.fake(lambda argv, c=check: c if "check" in argv else killed)
             try:
                 with tempfile.TemporaryDirectory() as tmp:
@@ -1336,19 +1382,34 @@ class Edition03Guards(unittest.TestCase):
             self.assertEqual(bool(out.get("error")), not set_aside, code)
 
     def test_set_asides_are_pinned_and_floors_kept_per_family(self):
-        rows = [{"op": op, "set_aside": "rejected by the checks: U4003"}
-                for op, n in (("B2", 14), ("C6", 15), ("Q3", 12), ("T12", 26)) for _ in range(n)]
-        full = rows + [{"op": op, "compared": 5}
-                       for op, n in (("B2", 36), ("C6", 32), ("Q3", 38)) for _ in range(n)]
+        # The checks' logic, on rows that meet the pins and floors exactly, built from them: one
+        # row fewer, or a family under its floor, is an error. That the pins are the generators'
+        # is the next test's, and the measured run's.
+        op_of = {"B": "B2", "C": "C6", "Q": "Q3", "T": "T12"}
+        rows = [{"op": op_of[f], "set_aside": "rejected by the checks: U4003"}
+                for f, n in sorted(gate.PINNED_SET_ASIDE_REJECTED.items()) for _ in range(n)]
+        full = rows + [{"op": op_of[f], "compared": -(-variants // programs)}
+                       for f, (programs, variants) in sorted(gate.MIN_FAMILY_COMPARED.items())
+                       for _ in range(programs)]
         self.assertEqual(gate.oracle_family_errors(full), [])
         errors = gate.oracle_family_errors(full[1:])
         self.assertEqual(len(errors), 1)
         self.assertIn("family B set aside", errors[0])
-        thin = rows + [{"op": "B2", "compared": 5}] * 36 + [{"op": "C6", "compared": 5}] * 32 \
+        thin = [r for r in full if r["op"] != "Q3" or "set_aside" in r] \
             + [{"op": "Q3", "compared": 5}] * 10
         errors = gate.oracle_family_errors(thin)
         self.assertEqual(len(errors), 1)
         self.assertIn("family Q has 10 programs", errors[0])
+
+    def test_the_set_aside_pin_is_the_generators_rejected_programs_with_a_literal(self):
+        # Computed from the generators, not from the pins: the programs with a varied literal that
+        # a correct checker rejects, closed calls and must-reject programs, per family. The gate
+        # sets each aside only with its expected code, so its count must be this one.
+        from collections import Counter
+        from hunt.families import family_of
+        got = Counter(family_of(p.op) for p in gate.programs()
+                      if p.vary and (p.cls == MUST_REJECT or (p.cls == OPEN and p.expect)))
+        self.assertEqual(dict(got), gate.PINNED_SET_ASIDE_REJECTED)
 
     def test_a_twin_of_q2_must_be_proven_and_a_refuted_row_has_its_code_alone(self):
         V = drivers.Verdict
@@ -1424,6 +1485,72 @@ class Edition03Guards(unittest.TestCase):
         self.assertFalse(gate.caught("oracle-condition",
                                      dict(good, variants=[{"observers": ["internal"]}])))
         self.assertFalse(gate.caught("oracle-condition", dict(good, finding=False)))
+
+    def test_a_kill_counts_once_and_the_gate_allows_none(self):
+        # The oracle's base and variant kills and the native pass's own kills count; a sampled
+        # program's `skipped` entry is the oracle's run again and does not (#818).
+        rows = [
+            {"base_timed_out": True, "variants": [{"timed_out": True}, {}],
+             "native": {"skipped": [{"variant": "a"}, {"variant": "b"}]}},
+            {"variants": [], "native": {"skipped": [{"variant": "c"}], "pass_timed_out": 1}},
+            {"variants": [{}], "native": {"skipped": []}},
+        ]
+        self.assertEqual(gate.timeouts_decided(rows), 3)
+        self.assertEqual(gate.timeouts_decided([]), 0)
+        self.assertEqual(gate.MAX_TIMEOUTS_DECIDED, 0)
+
+    def test_the_oracle_and_the_native_pass_flag_every_kill_their_check_decides(self):
+        # The flags `timeouts_decided` reads are the ones the oracle and the native pass set: every
+        # run killed at its limit, its full check accepting, so the gate's ceiling of 0 trips on
+        # one (#818).
+        prog = next(p for p in (OPERATORS["K4"](derive_seed(1, "K4", i), "0.2") for i in range(50))
+                    if p.vary and oracle.observers_for(p.vary)
+                    and not oracle.releases_to_public(p.files))
+        variants = sum(len(oracle.values(v["type"], v["literal"], prog.files)) for v in prog.vary)
+        self.assertGreater(variants, 0)
+        core = json.dumps({"complete": True, "modules": []})
+        decided = json.dumps({"schema": "una.diagnostics/1", "diagnostics": []})
+        killed = Run(None, "", "", True, 20.0)
+
+        def answer(argv):
+            if "core" in argv:
+                return Run(0, core, "", False, 0.1)
+            if "check" in argv:
+                return Run(0, decided, "", False, 0.1)
+            return killed
+        seen, restore = self.fake(answer)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = io.StringIO()
+                oracle.oracle([prog.manifest()], "una", tmp, 1, out, lambda row: prog)
+                row = json.loads(out.getvalue())
+                result = {"error": None, "native": {"sampled": True, "stratum": False,
+                                                    "compared": 0, "divergences": [],
+                                                    "skipped": [], "not_compiled": None}}
+                oracle.native_pass(prog, "una", tmp, 1, result)
+        finally:
+            restore()
+        self.assertIsNone(row["error"], row)
+        self.assertTrue(row["base_timed_out"])
+        self.assertEqual(sum(1 for v in row["variants"] if v.get("timed_out")), variants)
+        self.assertEqual(row["native"].get("pass_timed_out", 0), 0)
+        self.assertIsNone(result["error"], result)
+        self.assertEqual(result["native"]["pass_timed_out"], 1 + variants)
+        self.assertEqual(gate.timeouts_decided([row]), 1 + variants)
+        self.assertEqual(gate.timeouts_decided([{"native": result["native"]}]), 1 + variants)
+        self.assertGreater(gate.timeouts_decided([row]), gate.MAX_TIMEOUTS_DECIDED)
+
+    def test_a_check_document_with_an_entry_that_is_not_an_object_is_a_clean_error(self):
+        for stdout in ('{"schema": "una.diagnostics/1", "diagnostics": ["U5002"]}',
+                       '{"schema": "una.diagnostics/1", "diagnostics": {}}',
+                       '{"schema": "una.diagnostic/1", "diagnostics": []}'):
+            seen, restore = self.fake(lambda argv, s=stdout: Run(0, s, "", False, 0.1))
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    why = native.undecided("una", {"una.toml": "x\n"}, "p", tmp)
+            finally:
+                restore()
+            self.assertIn("not a document", why or "", stdout)
 
     def test_the_gate_has_a_time_budget(self):
         self.assertEqual(gate.TIME_BUDGET, 270)
@@ -1583,6 +1710,93 @@ class Native(unittest.TestCase):
         # A family whose lowest program is already in the hashed sample adds nothing.
         lowest["native"]["sampled"] = True
         self.assertEqual(gate.native_strata(rows), [])
+
+
+class Sample03(unittest.TestCase):
+    """The edition 0.3 sample of every operator that does not run edition 0.3 (#818)."""
+
+    def test_the_first_seeds_of_each_operator_also_run_in_0_3(self):
+        self.assertEqual(editions_for("T1", 0), ("0.1", "0.2", "0.3"))
+        self.assertEqual(editions_for("T1", SAMPLE_COUNT - 1), ("0.1", "0.2", "0.3"))
+        self.assertEqual(editions_for("T1", SAMPLE_COUNT), ("0.1", "0.2"))
+        self.assertEqual(editions_for("B1", 0), ("0.2", "0.3"))
+
+    def test_the_sample_leaves_every_other_program_unchanged(self):
+        # The run without the sample is the run of the operators' own editions, program by
+        # program, in the same order, so the sample adds programs and changes none.
+        without = [p for p in gate.programs()
+                   if p.edition != "0.3" or "0.3" in editions_of(p.op)]
+        own = [OPERATORS[op](derive_seed(gate.SEED, op, i), ed)
+               for op in sorted(OPERATORS) for i in range(gate.COUNT) for ed in editions_of(op)]
+        self.assertEqual([p.digest() for p in without], [p.digest() for p in own])
+
+    def sample_programs(self):
+        return [p for p in gate.programs() if p.edition == "0.3" and "0.3" not in editions_of(p.op)]
+
+    def test_every_sample_program_is_its_0_2_twin_in_edition_0_3(self):
+        # Every one, not a probe's: every field of the edition 0.2 program with the same seed
+        # (class, expected codes, rule, form, varied literals, the re-check's expectation, `prove`,
+        # and any field added later), and its files, but for the edition field of `una.toml`. A
+        # generator that gives edition 0.3 other forms or expectations than 0.2 fails here.
+        progs = self.sample_programs()
+        self.assertGreater(len(progs), 510)
+        own = [f.name for f in dataclasses.fields(Program) if f.name not in ("edition", "files")]
+        self.assertIn("recheck", own)
+        self.assertIn("prove", own)
+        for p in progs:
+            twin = OPERATORS[p.op](p.seed, "0.2")
+            self.assertEqual({k: getattr(p, k) for k in own}, {k: getattr(twin, k) for k in own},
+                             p.name)
+            files = dict(p.files)
+            self.assertIn('edition = "0.3"\n', files["una.toml"], p.name)
+            files["una.toml"] = files["una.toml"].replace('edition = "0.3"\n', 'edition = "0.2"\n')
+            self.assertEqual(files, twin.files, p.name)
+
+    def test_the_sample_runs_every_form_of_every_operator(self):
+        # Each form (variant) the fixed run gives an operator, in any of its editions, is also run
+        # in 0.3, and the first SAMPLE_COUNT seeds are always in the sample; no form is left out.
+        progs = gate.programs()
+        for op in sorted(OPERATORS):
+            if "0.3" in editions_of(op):
+                continue
+            forms = {p.variant for p in progs if p.op == op and p.edition != "0.3"}
+            forms_03 = {p.variant for p in progs if p.op == op and p.edition == "0.3"}
+            self.assertEqual(forms_03, forms, op)
+            seeds_03 = {p.seed for p in progs if p.op == op and p.edition == "0.3"}
+            first = {derive_seed(gate.SEED, op, i) for i in range(SAMPLE_COUNT)}
+            self.assertTrue(first <= seeds_03, op)
+
+    def test_the_sample_finds_a_seed_for_every_form_only_another_edition_has(self):
+        # Pinned: no form of the fixed run is out of the sample's reach, and the forms that only
+        # edition 0.1's programs have (by the draw of their seeds, not by an edition rule) run in
+        # 0.3 from seeds past the run's, as edition 0.3 programs only.
+        beyond = {}
+        for op in sorted(OPERATORS):
+            def seed_of(i, op=op):
+                return derive_seed(gate.SEED, op, i)
+            chosen, missing = sample_forms(op, seed_of, gate.COUNT)
+            self.assertEqual(missing, set(), op)
+            extra = sorted(i for i in chosen if i >= gate.COUNT)
+            if extra:
+                beyond[op] = sorted(OPERATORS[op](seed_of(i), "0.2").variant for i in extra)
+        self.assertEqual(beyond, {"F7": ["abs-secret-result", "or-else-default-print"],
+                                  "T4": ["lambda-value"]})
+        progs = gate.programs()
+        for op, forms in beyond.items():
+            own = {p.seed for p in progs if p.op == op and p.edition != "0.3"}
+            extra = [p for p in progs if p.op == op and p.edition == "0.3" and p.seed not in own]
+            self.assertEqual(sorted(p.variant for p in extra), forms, op)
+
+    def test_the_fixed_run_fails_closed_when_a_form_has_no_seed(self):
+        # Without the search past the run's seeds, F7's and T4's forms of edition 0.1 have none:
+        # the gate's programs() raises rather than run a sample without them.
+        saved = families.SAMPLE_SEARCH
+        families.SAMPLE_SEARCH = 0
+        try:
+            with self.assertRaisesRegex(ValueError, "sample of F7 has no seed"):
+                gate.programs()
+        finally:
+            families.SAMPLE_SEARCH = saved
 
 
 if __name__ == "__main__":

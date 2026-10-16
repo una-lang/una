@@ -93,7 +93,7 @@ def k3(seed, edition):
 def k4(seed, edition):
     rng = rng_for(seed)
     # Edition 0.1 interpolates only `Int`, `Bool` and `Text` (U2001 in campaigns 2 and 3).
-    form = rng.choice(["record", "list", "text"] if edition == "0.2" else ["text"])
+    form = rng.choice(["record", "list", "text"] if edition != "0.1" else ["text"])
     v = Varied()
     lit = v.lit("Text", "secret[PII]", '"0612345678"')
     kinds = "kind Card\n  holder: Text\n  number: secret[PII] Text"
