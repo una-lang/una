@@ -1,12 +1,12 @@
 # 0114. Floating point: `F64`
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-15
-- Deciders: Una project (pending)
+- Deciders: Una project (accepted on 2026-10-16)
 - Resolves: issue #819
 - Target: edition `0.3`. Editions `0.1` and `0.2` do not change, and the Gate 1 pin does not move.
-- Loosens: edition `0.3` gains a type that does not erase to edition `0.2`. This needs a carve-out from the preview rule of `spec/13 §7` (ADR 0056, second amendment of 2026-10-13), which this record proposes with it (rule 15, Appendix A).
-- Amends, once accepted: `spec/01 §6` (literals); `spec/02 §2` (grammar); `spec/03 §1`, `§3`; `spec/09` (a float literal and the float operations in Core IR); `spec/10` (static semantics, `§5` method resolution); `spec/11 §4` (evaluation) and `§5` (the Una form); `spec/12 §2`, `§3` (slicing), `§4`, `§5` (preamble), `§6`, `§7`, `§9` (the meaning of the lock's `logic`); `spec/13 §4` (codes), `§5` (U6006), `§7` (editions), `§8` (the Core export); `spec/14 §1`; `spec/15` (float literals); `spec/16 §1` (targets) and `§4`; `spec/17` (no `for` over `F64`); `spec/18 §2` rule 4 (clauses) and `§4`; `spec/20 §1`, `§5`, `§7`; `spec/21 §1`; `spec/22`; `spec/23`; `spec/25 §2`, `§3`, `§5`. A new chapter, `spec/26`, holds the rules. A dated amendment of ADR 0106 (Appendix C) and dated notes on ADRs 0053, 0054, 0066, 0068 (D5), 0073, 0104, 0107 and 0108 (Appendix B).
+- Loosens: edition `0.3` gains a type that does not erase to edition `0.2`. This needs a carve-out from the preview rule of `spec/13 §7` (ADR 0056, second amendment of 2026-10-13), which this record makes with it (rule 15, Appendix A).
+- Amends: `spec/01 §6` (literals); `spec/02 §2` (grammar); `spec/03 §1`, `§3`; `spec/09` (a float literal and the float operations in Core IR); `spec/10` (static semantics, `§5` method resolution); `spec/11 §4` (evaluation) and `§5` (the Una form); `spec/12 §2`, `§3` (slicing), `§4`, `§5` (preamble), `§6`, `§7`, `§9` (the meaning of the lock's `logic`); `spec/13 §4` (codes), `§5` (U6006), `§7` (editions), `§8` (the Core export); `spec/14 §1`; `spec/15` (float literals); `spec/16 §1` (targets) and `§4`; `spec/17` (no `for` over `F64`); `spec/18 §2` rule 4 (clauses) and `§4`; `spec/20 §1`, `§5`, `§7`; `spec/21 §1`; `spec/22`; `spec/23`; `spec/25 §2`, `§3`, `§5`. A new chapter, `spec/26`, holds the rules. A dated amendment of ADR 0106 (Appendix C) and dated notes on ADRs 0053, 0054, 0066, 0068 (D5), 0073, 0104, 0107 and 0108 (Appendix B).
 
 ## Context
 
@@ -477,7 +477,7 @@ The functions of rule 3.7 are added by a later record, under these rules, which 
 - **A decimal type instead of binary floats.** Not chosen: no hardware support, slow for the numeric kernels that need floats, and it does not interoperate with what JSON producers and numeric libraries mean by a number. It stays possible later, as ADR 0073 foresaw for `Decimal`.
 - **`F32` in the same record.** Deferred by the project: one width first, with every rule of determinism settled on it.
 
-## Appendix A. Proposed amendment to ADR 0056, appended on acceptance
+## Appendix A. Amendment to ADR 0056, appended on acceptance (2026-10-16)
 
 > ## Amendment (date of acceptance): a type that does not erase (ADR 0114)
 >
@@ -489,7 +489,7 @@ The functions of rule 3.7 are added by a later record, under these rules, which 
 
 The text of `spec/13 §7` gains, after the sentence of ADR 0103: "(ADR 0114.) A later `0.3.x` release MAY also accept the type `F64` and the constructs of `spec/26`, in a package of edition `0.3`; they do not erase to edition `0.2`. A program that edition `0.2` can express gains from them only U1002, for a declaration named `F64` and for a package function `to_f64` on integers, which the built-in conversion resolves ahead of."
 
-## Appendix B. Proposed notes on other records, appended on acceptance
+## Appendix B. Notes on other records, appended on acceptance (2026-10-16)
 
 - **ADR 0053:** "Note (date of acceptance): the model check also applies to the uninterpreted float functions of ADR 0114 (`i!to_f64!Int`, and the transcendental functions of a later record): each value in the model equals the runtime's result on the model's arguments."
 - **ADR 0066:** "Note (date of acceptance): the type descriptor gains a kind for `F64` (ADR 0114 rule 9.4): equality by bits, order by the totalOrder key."
@@ -500,7 +500,7 @@ The text of `spec/13 §7` gains, after the sentence of ADR 0103: "(ADR 0114.) A 
 - **ADR 0107:** "Note (date of acceptance): `F64` (ADR 0114) has a raw representation: a raw cell marked `F64`, a packed list with its own layout id, and a boxed 8-byte object at a uniform position. Every stored `F64` is canonical (ADR 0114 rule 6.1), so rule 3's comparison of raw cells as integers is `==` for `F64` cells; their order is the totalOrder key, never the signed integer."
 - **ADR 0108:** "Note (date of acceptance): an `F64` field of an unboxed record is canonical when stored (ADR 0114 rule 6.1); the cell-by-cell equality compares its bits, and the ordering uses the totalOrder key of ADR 0114 rule 9.4, not the raw signed integer."
 
-## Appendix C. Proposed amendment to ADR 0106, appended on acceptance
+## Appendix C. Amendment to ADR 0106, appended on acceptance (2026-10-16)
 
 > ## Amendment (date of acceptance): floating point in the release backend (ADR 0114)
 >

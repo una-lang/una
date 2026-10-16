@@ -117,3 +117,5 @@ Leonardo, 2026-10-06, on the independent check of #229:
 
 - **`Hashed` through a type parameter.** `Hashed` satisfies `Eq`, so a function that interpolates a value of `T: Eq` could write a hash's bytes when `T` is `Hashed` or holds one. Interpolation now writes every `Hashed`, at any position and through `T`, as the fixed text `<hashed>`, in every engine. Traces and diagnostics keep `hashed:<hex>`. A direct `"{h}"` stays U2001 (D4). The bytes stay opaque, as D4 intends. `spec/11 §5` states it.
 - **Type parameters inside a structure, natively.** A value whose type holds a type parameter, such as `Box[T]`, `List[T]` or `Option[T]`, is written through a composite descriptor. The composite is the type's description with a slot at each parameter, plus the caller's descriptor of each. It is interned for the process, so it stays an immediate word, the same in every task, with memory that `--max-memory` counts. This makes D6's byte-identical output hold in generic code too.
+
+Note (2026-10-16): in edition `0.3`, `F64` (ADR 0114) renders as `spec/11 §5` states, by the shortest round-trip text; the text stays a function of the value alone.

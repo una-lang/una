@@ -173,3 +173,5 @@ F1 imports Core through `una.core/1`, which keeps magnitudes only: the `unit` fi
 - **Rendering the unit in `to_text`**: rejected for this design. It changes a program's output when units are added, which the preview rule forbids, and a unit name in output is a presentation choice that a program can make itself.
 
 Note (2026-10-15): the Core export carries the erased program E, with no `unit` field; units never reach Core or the verifier.
+
+Note (2026-10-16): in edition `0.3`, `F64` takes `of` as the integer types do, with the rules of ADR 0114 rule 12; its erasure is stated against edition `0.3` without units.

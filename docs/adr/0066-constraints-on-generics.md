@@ -170,3 +170,5 @@ Besides the B and C options under each decision:
 - **Operators defined by traits.** Excluded by charter §6.
 - **Type classes with default methods and superclasses.** Not chosen: inheritance is a non-goal (charter §6), and nothing in v0.2 needs defaults.
 - **Arithmetic on `T: Integer`** with an overflow obligation per instantiation, checked at each call. Not chosen for v0.2: the obligation would depend on values inside the generic body, which no caller sees, so it could not be discharged at the call.
+
+Note (2026-10-16): the type descriptor gains a kind for `F64` (ADR 0114 rule 9.4): equality by bits, order by the totalOrder key.

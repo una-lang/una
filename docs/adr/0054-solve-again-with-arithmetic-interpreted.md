@@ -54,3 +54,4 @@ It also counted a zero divisor as disagreeing, even in an arm the model never ta
 - The status of every obligation is unchanged. Only the counterexample and the repairs of these diagnostics change.
 - The cost is a scan of the divisions on the model's path for each refuted obligation.
 
+Note (2026-10-16): on a query with an `F64` term, whose logic is `ALL`, the interpreted re-solve leaves the logic line as it is and still replaces the declarations of `i!mul!Int`, `i!div!Int` and `i!mod!Int` by their definitions; it runs as on any query (ADR 0114 rule 8.2).
