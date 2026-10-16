@@ -75,7 +75,9 @@ The body calls `@console.print`. Because the operation is named in the header, a
 There is nothing for the solver to prove: the program has no contract. The checker still confirms its authority by typing. `main` may print on the console and do nothing else, and a call to any other operation is an error. `una report .` states that authority in one line:
 
 ```text una="report ."
+...
   hello.main (pub): @console: Console[print]
+...
 ```
 
 ## Common mistakes

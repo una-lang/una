@@ -182,6 +182,7 @@ The examples install fake stores with `given`. The second example checks a negat
 `una report .` lists what a reviewer must still read or trust. Among its lines:
 
 ```text una="report ."
+...
 information:
   events.keys.attendee_key at src/events/checkin.una:30:13, purpose "attendee lookup and audit correlation", owner privacy
 escapes:
@@ -189,13 +190,16 @@ escapes:
 assumptions:
   events.checkin.Audit: record
   events.checkin.Registrations: find
+...
 ```
 
 and, in the trusted base:
 
 ```text una="report ."
+...
   trusted modules: events.keys (17 lines)
   host capabilities: Console, Keys
+...
 ```
 
 The assumptions are the stores: what a real `Registrations` returns is given by its signature, not proven. The trusted module is 17 lines: the only code in the package that can lower a label.

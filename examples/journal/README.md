@@ -129,15 +129,19 @@ The read can fail, and here a failure must not leave `main`. The program also wr
 The guarantee is noninterference: two runs whose entries differ only in their private text print the same thing, unless a policy released the difference. `una report .` shows each release, and what the guarantee rests on. Among its lines:
 
 ```text una="report ."
+...
 information:
   journal.release.length_band at src/journal/main.una:18:18, purpose "show how much was written without showing what", owner journal_owner
+...
 ```
 
 and, in the trusted base:
 
 ```text una="report ."
+...
   trusted modules: journal.release (11 lines)
   host capabilities: Console, Env, Files
+...
 ```
 
 ## Common mistakes

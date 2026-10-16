@@ -136,6 +136,7 @@ pub warmest() -> Celsius
 `una report .` shows the rest of the picture. Among its lines, with `...` where lines are left out:
 
 ```text una="report ."
+...
 handler authority:
   greenhouse.climate.printed_vent for greenhouse.climate.Vent (pub): @console: Console[print]
 ...
@@ -145,6 +146,7 @@ assumptions:
 ...
 requirements:
   GREENHOUSE_1 (active): greenhouse.climate.opening
+...
 ```
 
 The assumptions are what the proofs rest on and nothing proves: what a real `Sensor` and `Vent` do, given by their signatures. `una trace GREENHOUSE_1` lists the function derived from the requirement, its clauses, and the status of each of its obligations.
