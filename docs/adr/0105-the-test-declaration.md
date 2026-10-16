@@ -1,8 +1,8 @@
 # 0105. The test declaration is written `test` in edition 0.3
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-14
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #740
 - Target: edition `0.3`. Editions `0.1` and `0.2` do not change: they keep `example`, their keyword tables and `una.test/1`. The Gate 1 pin (v0.1.9, edition `0.1`) does not move.
 - Amends, in edition `0.3`: `spec/01 §5` (keywords), `spec/02 §5` (`example_decl`), `spec/08 §2`, `spec/13 §5` (`una test`), and the wording of the rules that name examples (`spec/05`, `spec/07 §4`, `spec/14 §4`); `docs/guide`
