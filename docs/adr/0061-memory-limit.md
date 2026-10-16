@@ -58,3 +58,7 @@ The native runtime's heap budget depends on the `cap` allocator crate (rule 4), 
 ## Amendment (2026-10-15, ADR 0113)
 
 Rule 2 gains a check point in native code only: each step of the copies a `together` block makes checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
+
+## Amendment (2026-10-16, ADR 0113)
+
+The check point of the Amendment of 2026-10-15 also covers, in native code, each allocation of a `together` block's bookkeeping (its result list, the state of each batch of its tasks and each adoption of a batch's events) and each start of its task threads: each checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.

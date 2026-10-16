@@ -10,6 +10,106 @@ use std::ffi::{CStr, c_char, c_int};
 
 use crate::{generic, host, json, runtime, tasks, values};
 
+/// The allocator of a debug build (ADR 0113, I3): the release build's [`cap::Cap`], wrapped to
+/// keep the most bytes the process ever held, its high-water mark, and the bytes each thread
+/// allocated, so that the tests check the bound of the copies by counters rather than by
+/// sampling. A release build uses `Cap<System>` itself, unchanged (`lib.rs`).
+#[cfg(debug_assertions)]
+pub(crate) struct Peak {
+    inner: cap::Cap<std::alloc::System>,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// The bytes this thread allocated, never decreased by a deallocation. A constant
+    /// initializer and no destructor, so reading it in the allocator allocates nothing and is
+    /// valid at any point of the thread's life.
+    static THREAD_ALLOCATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(debug_assertions)]
+impl Peak {
+    /// The wrapper of `inner`, with no peak yet.
+    pub(crate) const fn new(inner: cap::Cap<std::alloc::System>) -> Peak {
+        Peak {
+            inner,
+            peak: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// The allocator it wraps, which counts the bytes held and enforces the ceiling.
+    pub(crate) fn inner(&self) -> &cap::Cap<std::alloc::System> {
+        &self.inner
+    }
+
+    /// The most bytes the process held at any point so far, in tests.
+    #[cfg(test)]
+    pub(crate) fn peak(&self) -> usize {
+        // A monotone maximum: `Relaxed` suffices, since no other memory is published through it.
+        self.peak.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records an allocation of `size` bytes that the inner allocator made: the bytes held now,
+    /// read after it, raise the peak, and the thread's own count grows. A deallocation on
+    /// another thread between the two may hide a peak, so with several threads allocating the
+    /// mark is a lower bound; in a quiet phase (ADR 0113, I3) it is exact.
+    fn note(&self, size: usize) {
+        // A monotone maximum: `Relaxed` suffices, since no other memory is published through it.
+        self.peak
+            .fetch_max(self.inner.allocated(), std::sync::atomic::Ordering::Relaxed);
+        THREAD_ALLOCATED.with(|bytes| bytes.set(bytes.get().saturating_add(size)));
+    }
+}
+
+/// The bytes the calling thread allocated so far, in a debug build.
+#[cfg(debug_assertions)]
+pub(crate) fn thread_allocated() -> usize {
+    THREAD_ALLOCATED.with(std::cell::Cell::get)
+}
+
+// SAFETY: every method forwards to `Cap<System>`, a `GlobalAlloc`, with the caller's arguments
+// unchanged, so each keeps the contract the caller met for it; the wrapper only reads counters
+// after the inner call returns, and allocates nothing itself.
+#[cfg(debug_assertions)]
+unsafe impl std::alloc::GlobalAlloc for Peak {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: the caller's `layout` meets `alloc`'s contract, which `Cap::alloc` has too.
+        let ptr = unsafe { self.inner.alloc(layout) };
+        if !ptr.is_null() {
+            self.note(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: the caller's `layout` meets `alloc_zeroed`'s contract, which `Cap`'s has too.
+        let ptr = unsafe { self.inner.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            self.note(layout.size());
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: the caller passes a block this allocator returned with `layout`, and every
+        // block this allocator returns is the inner allocator's, so `Cap::dealloc`'s contract
+        // holds.
+        unsafe { self.inner.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller passes a block this allocator returned with `layout`, which is the
+        // inner allocator's, and a `new_size` that meets `realloc`'s contract, so
+        // `Cap::realloc`'s contract holds.
+        let moved = unsafe { self.inner.realloc(ptr, layout, new_size) };
+        if !moved.is_null() {
+            self.note(new_size.saturating_sub(layout.size()));
+        }
+        moved
+    }
+}
+
 /// The address of a compiled lambda, as a closure holds it. Its field is private to this
 /// module, so only this module makes one: [`una_rt_closure`], from what the generated code
 /// passes, and [`Code::NONE`]. A task's thread receives a copy of it. So no other code of the
@@ -515,6 +615,25 @@ mod tests {
 
     fn one() -> Code {
         Code(i64::try_from(one_parameter as extern "C" fn(i64, i64) -> Returned as usize).unwrap())
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn i3_the_debug_high_water_mark_rises_with_an_allocation_and_never_falls() {
+        // ADR 0113, I3: the debug allocator keeps the most the process held, and each thread's
+        // own allocations. A block of 1 MiB adds at least that to this thread's count, the mark
+        // never falls, freeing the block included, and it is at least the block. (What other
+        // tests allocate at once only raises the mark.)
+        let (before, mine) = (crate::peak(), super::thread_allocated());
+        let block: Vec<u8> = Vec::with_capacity(1 << 20);
+        assert!(super::thread_allocated() - mine >= 1 << 20);
+        let during = crate::peak();
+        assert!(
+            during >= before && during >= 1 << 20,
+            "{during} after {before}"
+        );
+        drop(block);
+        assert!(crate::peak() >= during);
     }
 
     #[test]
@@ -1619,29 +1738,36 @@ mod tests {
     /// Runs `main` with a trace for `scenario`: a `together` of the closures of `lambdas`, then
     /// says on stderr how the block ended.
     fn block_scenario(scenario: &str, lambdas: Vec<extern "C" fn(i64) -> Returned>) {
+        block_scenario_under(scenario, &[], lambdas);
+    }
+
+    /// [`block_scenario`], with the further command-line arguments `args`.
+    fn block_scenario_under(
+        scenario: &str,
+        args: &[&str],
+        lambdas: Vec<extern "C" fn(i64) -> Returned>,
+    ) {
         let trace = limit_trace(scenario);
-        runtime::start(
-            &["--trace".to_owned(), trace.to_string_lossy().into_owned()],
-            BATCH_META,
-            move || {
-                let closures = values::list();
-                for lambda in lambdas {
-                    let closure = values::closure(code0(lambda), 0);
-                    values::push(closures, closure);
-                    values::release(closure);
-                }
-                let value = tasks::together(closures, 0);
-                let status = tasks::status();
-                if status == 1 {
-                    eprintln!("{MARK_END}: failed with {}", values::text_value(value));
-                } else {
-                    eprintln!("{MARK_END}: status {status}");
-                }
-                values::release(value);
-                values::release(closures);
-                0
-            },
-        );
+        let mut arguments = vec!["--trace".to_owned(), trace.to_string_lossy().into_owned()];
+        arguments.extend(args.iter().map(|&arg| arg.to_owned()));
+        runtime::start(&arguments, BATCH_META, move || {
+            let closures = values::list();
+            for lambda in lambdas {
+                let closure = values::closure(code0(lambda), 0);
+                values::push(closures, closure);
+                values::release(closure);
+            }
+            let value = tasks::together(closures, 0);
+            let status = tasks::status();
+            if status == 1 {
+                eprintln!("{MARK_END}: failed with {}", values::text_value(value));
+            } else {
+                eprintln!("{MARK_END}: status {status}");
+            }
+            values::release(value);
+            values::release(closures);
+            0
+        });
     }
 
     /// What a block scenario's `main` says once its block ended.
@@ -1857,6 +1983,85 @@ mod tests {
         assert_eq!(tasks, ["1", "2 cancelled"]);
     }
 
+    std::thread_local! {
+        /// What [`fills_after_cancel`] holds on its thread until the thread ends.
+        static FILLER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A lambda with one parameter that records one event, says it started, waits until its
+    /// task is cancelled, then holds all but 4 bytes of what the budget leaves until its thread
+    /// ends, and returns a small text.
+    extern "C" fn fills_after_cancel(_closure: i64, _arg: i64) -> Returned {
+        let instance = values::instance("console".to_owned());
+        host::event(0, instance);
+        values::release(instance);
+        INNER_STARTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        while runtime::poll() == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let room = runtime::test_room().saturating_sub(4);
+        FILLER.with(|filler| *filler.borrow_mut() = Vec::with_capacity(room));
+        Returned {
+            value: values::text_word("full".to_owned()),
+            status: 0,
+        }
+    }
+
+    /// A lambda with no parameter that runs a block of one [`fills_after_cancel`] task.
+    extern "C" fn inner_fills_after_cancel(_closure: i64) -> Returned {
+        let items = values::list();
+        values::push(items, 1);
+        let code = Code(
+            i64::try_from(fills_after_cancel as extern "C" fn(i64, i64) -> Returned as usize)
+                .unwrap(),
+        );
+        let closure = values::closure(code, 1);
+        let value = tasks::together_for(closure, items, 0);
+        let status = tasks::status();
+        values::release(closure);
+        values::release(items);
+        Returned { value, status }
+    }
+
+    /// A lambda with no parameter that fails, with its event, once the task of
+    /// [`inner_fills_after_cancel`]'s block started.
+    extern "C" fn fails_after_one_inner_started(closure: i64) -> Returned {
+        while INNER_STARTED.load(std::sync::atomic::Ordering::SeqCst) < 1 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        fails_small(closure)
+    }
+
+    #[test]
+    #[ignore = "run by `i10_a_block_cancelled_near_the_budget_keeps_its_batch_s_events_and_its_cancelled_event`"]
+    fn i10_cancelled_block_near_budget_scenario() {
+        block_scenario_under(
+            "ffi::tests::i10_cancelled_block_near_budget_scenario",
+            &["--max-memory", "8"],
+            vec![fails_after_one_inner_started, inner_fills_after_cancel],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i10_a_block_cancelled_near_the_budget_keeps_its_batch_s_events_and_its_cancelled_event() {
+        // ADR 0113 rule 3 and its Amendment of 2026-10-16, I10: task 1 fails while task 2's
+        // inner block runs, which cancels task 2. The inner task then holds all but 4 bytes of
+        // the budget's rest in its heap and returns. Its block's own task was cancelled, so its
+        // thread exits, its heap freed, before the adoption reserves: the adoption fits, the
+        // inner task's event is kept, task 2 ends as cancelled with its `cancelled` event, and
+        // the outer block fails with task 1's value.
+        let (status, stderr, tasks) =
+            run_block_scenario("ffi::tests::i10_cancelled_block_near_budget_scenario");
+        assert_eq!(status, Some(0), "{stderr}");
+        assert!(!stderr.contains("U6003"), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{MARK_END}: failed with small")),
+            "{stderr}"
+        );
+        assert_eq!(tasks, ["1", "2.1", "2 cancelled"]);
+    }
+
     #[test]
     #[ignore = "run by `i11_a_defect_ends_the_run_while_a_lower_task_would_run_on`"]
     fn i11_defect_cancels_lower_scenario() {
@@ -1940,6 +2145,112 @@ mod tests {
             .and_then(|runs| runs.parse().ok())
             .unwrap_or_else(|| panic!("{stderr}"));
         assert!((1..=64).contains(&runs), "{runs} runs");
+    }
+
+    /// The meta of the budget scenarios: the block's site.
+    const BUDGET_META: &str = LIMIT_META;
+
+    #[test]
+    #[ignore = "run by `i1_i3_a_fork_past_its_budget_stops_with_u6003_and_held_never_passes_the_ceiling`"]
+    fn i3_fork_past_budget_scenario() {
+        // A closure that holds a list of 400000 integers, forked under `--max-memory 8`: its
+        // portable form alone takes 6.4 MB, past what the budget leaves.
+        runtime::TEST_PRINT_PEAK.store(true, std::sync::atomic::Ordering::SeqCst);
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        runtime::start(
+            &["--max-memory".to_owned(), "8".to_owned()],
+            BUDGET_META,
+            move || {
+                let list = values::list();
+                for number in 0..400_000 {
+                    values::push(list, (number << 1) | 1);
+                }
+                let closure = values::closure(marked, 1);
+                values::push(closure, list);
+                values::release(list);
+                let items = values::list();
+                values::push(items, 1);
+                let value = tasks::together_for(closure, items, 0);
+                values::release(items);
+                values::release(closure);
+                value
+            },
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i1_i3_a_fork_past_its_budget_stops_with_u6003_and_held_never_passes_the_ceiling() {
+        // ADR 0113, I1 and I3: every step of the fork is reserved and checked before it
+        // allocates, so the copy that would pass the budget stops with U6003 at the block, before
+        // any task runs, and the debug high-water mark of the heap never passed the ceiling.
+        let (status, stderr) = run_scenario("ffi::tests::i3_fork_past_budget_scenario");
+        assert_eq!(status, Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 8 MiB"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains(MARK), "a task ran: {stderr}");
+        let (peak, ceiling) = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("una-rt test: peak "))
+            .and_then(|rest| rest.split_once(" ceiling "))
+            .map(|(peak, ceiling)| {
+                (
+                    peak.parse::<usize>().unwrap(),
+                    ceiling.parse::<usize>().unwrap(),
+                )
+            })
+            .unwrap_or_else(|| panic!("{stderr}"));
+        assert!(
+            peak <= ceiling,
+            "the peak {peak} passed the ceiling {ceiling}"
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i1_a_block_whose_starts_pass_the_budget_stops_with_u6003_before_any_task_runs`"]
+    fn i1_starts_past_budget_scenario() {
+        // A `together for` of 64 tasks under `--max-memory 1`, with all but 40 KiB of the budget
+        // held: each start, and what its thread keeps while the batch forks, eats into the rest.
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        runtime::start(
+            &["--max-memory".to_owned(), "1".to_owned()],
+            BUDGET_META,
+            move || {
+                let room = runtime::test_room();
+                let filler: Vec<u8> = Vec::with_capacity(room.saturating_sub(40 * 1024));
+                let items = values::list();
+                for number in 0..64 {
+                    values::push(items, (number << 1) | 1);
+                }
+                let closure = values::closure(marked, 1);
+                let value = tasks::together_for(closure, items, 0);
+                drop(filler);
+                values::release(items);
+                values::release(closure);
+                value
+            },
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i1_a_block_whose_starts_pass_the_budget_stops_with_u6003_before_any_task_runs() {
+        // ADR 0113 rules 2 and 5, with a real budget: the block's bookkeeping and its tasks'
+        // starts, which the threads keep while the batch forks, pass what the budget leaves; a
+        // step is refused, U6003 at the block, and no task runs. (Whether the step refused is a
+        // start or the next fork's export depends on how much each start's thread keeps.)
+        let (status, stderr) = run_scenario("ffi::tests::i1_starts_past_budget_scenario");
+        assert_eq!(status, Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 1 MiB"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/c.una:2:3"), "at the block: {stderr}");
+        assert!(!stderr.contains(MARK), "a task ran: {stderr}");
     }
 
     #[test]

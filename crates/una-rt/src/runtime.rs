@@ -518,6 +518,23 @@ pub(crate) struct State {
     pub(crate) stopped: Option<(Code, Location, String)>,
 }
 
+/// Makes an abort say, on stderr, the debug high-water mark of the heap and the run's ceiling, in
+/// the tests that compare them (ADR 0113, I3).
+#[cfg(test)]
+pub(crate) static TEST_PRINT_PEAK: AtomicBool = AtomicBool::new(false);
+
+/// The decimal digits of `n`.
+pub(crate) fn digits(n: usize) -> usize {
+    n.checked_ilog10().map_or(1, |log| log as usize + 1)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times adoptions on this thread grew the trace, in tests: O(log n) over n
+    /// adoptions (ADR 0113 rule 5).
+    pub(crate) static TRACE_GROWTHS: Cell<usize> = const { Cell::new(0) };
+}
+
 /// What a task's state starts from: the run's settings, and the block's depth, path and
 /// cancellation flags.
 #[derive(Clone)]
@@ -549,6 +566,15 @@ impl TaskTemplate {
     /// Whether the task that runs the block, or one that runs it, was cancelled.
     pub(crate) fn cancelled(&self) -> bool {
         unshielded(&self.cancel, self.shielded)
+    }
+
+    /// The bytes the template owns: its path, its cancellation entries and its location's file
+    /// (ADR 0113 rule 2, `T`).
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.path
+            .len()
+            .saturating_add(self.location.file.len())
+            .saturating_add(self.cancel.len().saturating_mul(size_of::<Cancel>()))
     }
 }
 
@@ -602,11 +628,24 @@ impl State {
     /// (`spec/19 §7` rule 2): `with:<name>#<count>` in `main`'s; in a task, an id with the
     /// task's path that its block renumbers when it adopts the task's events.
     pub(crate) fn install_id(&self, name: &str, count: usize) -> String {
-        if self.path.is_empty() {
-            format!("with:{name}#{count}")
+        // Made at its exact size, so that what an adoption allocates for it is its length (ADR
+        // 0113 rule 3).
+        let local = if self.path.is_empty() {
+            0
         } else {
-            format!("with:{name}#@{}#{count}", self.path)
+            self.path.len() + 2
+        };
+        let mut id = String::with_capacity(6 + name.len() + local + digits(count));
+        id.push_str("with:");
+        id.push_str(name);
+        id.push('#');
+        if !self.path.is_empty() {
+            id.push('@');
+            id.push_str(&self.path);
+            id.push('#');
         }
+        let _ = std::fmt::Write::write_fmt(&mut id, format_args!("{count}"));
+        id
     }
 
     /// Appends the events of the task `task` of a block, in task order (`spec/19 §7` rule 2):
@@ -618,15 +657,21 @@ impl State {
         events: Vec<Event>,
         installs: &BTreeMap<String, usize>,
     ) {
-        let local = format!("#@{task}#");
-        let bases = self.installs.clone();
         if self.trace.is_some() {
+            // The pattern of the task's ids, made at its exact size (ADR 0113 rule 3).
+            let mut local = String::with_capacity(task.len() + 3);
+            local.push_str("#@");
+            local.push_str(task);
+            local.push('#');
             for mut event in events {
+                // The handlers the task installed are added after its events, so the counts
+                // read here are the block's as they stand: no copy of them is made (ADR 0113
+                // rule 3).
                 if let Some(rest) = event.instance.strip_prefix("with:")
                     && let Some((name, count)) = rest.split_once(&local)
                     && let Ok(count) = count.parse::<usize>()
                 {
-                    let base = bases.get(name).copied().unwrap_or(0);
+                    let base = self.installs.get(name).copied().unwrap_or(0);
                     event.instance = self.install_id(name, base + count);
                 }
                 if let Some(trace) = self.trace.as_mut() {
@@ -636,8 +681,39 @@ impl State {
             }
         }
         for (name, &count) in installs {
-            *self.installs.entry(name.clone()).or_insert(0) += count;
+            // A name the block already installed adds no entry, and no copy of the name.
+            match self.installs.get_mut(name) {
+                Some(installed) => *installed += count,
+                None => {
+                    self.installs.insert(name.clone(), count);
+                }
+            }
         }
+    }
+
+    /// The growth of the trace, when the run records one, that `events` more events need, under
+    /// the slot table's policy (ADR 0113 rule 5): its capacity, the doubled target, and the exact
+    /// one; `None` when it has room.
+    pub(crate) fn trace_growth(&self, events: usize) -> Option<(usize, usize, usize)> {
+        let trace = self.trace.as_ref()?;
+        let needed = trace.len().saturating_add(events);
+        let capacity = trace.capacity();
+        (needed > capacity).then(|| (capacity, needed.max(capacity.saturating_mul(2)), needed))
+    }
+
+    /// Grows the trace to hold `target` events, the growth an adoption reserved.
+    pub(crate) fn grow_trace(&mut self, target: usize) {
+        if let Some(trace) = self.trace.as_mut() {
+            trace.reserve_exact(target.saturating_sub(trace.len()));
+            #[cfg(test)]
+            TRACE_GROWTHS.with(|growths| growths.set(growths.get() + 1));
+        }
+    }
+
+    /// Whether the block has installed a handler `name` so far, so that an adoption adds no new
+    /// entry for it.
+    pub(crate) fn installed(&self, name: &str) -> bool {
+        self.installs.contains_key(name)
     }
 
     /// Appends the event that ends the task `task`, started and then cancelled
@@ -874,14 +950,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                     values::live() + crate::tasks::TASK_LEAKS.load(Ordering::SeqCst),
                     values::copies() + crate::tasks::TASK_COPIES.load(Ordering::SeqCst),
                     values::fallbacks() + crate::tasks::TASK_FALLBACKS.load(Ordering::SeqCst),
+                    crate::tasks::BLOCK_CHECKS.load(Ordering::SeqCst),
                 )
             } else {
-                (0, 0, 0, 0)
+                (0, 0, 0, 0, 0)
             };
             let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
             (status, state, faults)
         });
-    let (status, state, (faults, leaked, copies, fallbacks)) =
+    let (status, state, (faults, leaked, copies, fallbacks, block_checks)) =
         match worker.map(std::thread::JoinHandle::join) {
             Ok(Ok(result)) => result,
             _ => {
@@ -927,6 +1004,13 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         let _ = writeln!(
             stderr,
             "error: internal error: values still referenced after `main` returned: {leaked}"
+        );
+        code = 3;
+    }
+    if block_checks > 0 {
+        let _ = writeln!(
+            stderr,
+            "error: internal error: checks of the copies and bookkeeping of `together` blocks failed: {block_checks}"
         );
         code = 3;
     }
@@ -1273,7 +1357,9 @@ pub(crate) fn abort_at(site: usize, code: Code, message: String) -> i64 {
 /// Starts the state of a task, on its thread, from `template`, with its path and its own
 /// cancellation entry, for its block.
 pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
-    let mut cancel = template.cancel.clone();
+    // Made at its exact size, so that a start allocates what it reserved (ADR 0113 rule 2).
+    let mut cancel = Vec::with_capacity(template.cancel.len() + 1);
+    cancel.extend_from_slice(&template.cancel);
     cancel.push(entry);
     let mut state = State {
         trace: template.tracing.then(Vec::new),
@@ -1325,26 +1411,44 @@ pub(crate) fn take_report() -> Option<Report> {
     })
 }
 
-/// Installs on this thread the state of a run with the default options and no trace, with the
-/// task path `path`, so that a test can run a block in process; [`leave_task`] ends it. With a
-/// path, a stop is recorded in the state, as a task's is, instead of ending the process.
+/// Installs on this thread the state of a run with the default options, with the task path
+/// `path`, a trace when `tracing`, and one site whose file is `file`, so that a test can run a
+/// block in process; [`leave_task`] ends it. With a path, a stop is recorded in the state, as a
+/// task's is, instead of ending the process.
 #[cfg(test)]
-pub(crate) fn install_test_state_as(path: String) {
-    let Ok(options) = parse_args(&[]) else {
+pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
+    // A small call depth, so that a test's task threads, which blocks nest, take small stacks.
+    let Ok(options) = parse_args(&["--max-depth".to_owned(), "64".to_owned()]) else {
         return;
     };
+    let at = Position { line: 1, col: 1 };
     let mut state = State {
-        trace: None,
+        trace: tracing.then(Vec::new),
         trace_path: None,
         failed_write: None,
         max_depth: options.max_depth,
-        sites: Arc::new(Vec::new()),
+        sites: Arc::new(vec![Location {
+            file,
+            start: at,
+            end: at,
+        }]),
         failure: None,
         grants: Arc::new(Vec::new()),
         keys: Arc::new(BTreeMap::new()),
         http: options.http,
         types: Arc::new(Types::default()),
-        ops: Arc::new(Vec::new()),
+        // One operation, which the tasks of a traced test record events of.
+        ops: Arc::new(vec![OpSite {
+            capability: "Log".to_owned(),
+            op: "write".to_owned(),
+            params: Vec::new(),
+            args: Vec::new(),
+            result: crate::host::Shown {
+                ty: 0,
+                redacted: None,
+            },
+            error: None,
+        }]),
         host_failed: false,
         installs: BTreeMap::new(),
         stack_base: 0,
@@ -1370,6 +1474,28 @@ pub(crate) fn cancel_test_task(count: Arc<AtomicUsize>) {
         state.cancel.push((count, 1));
         HOT.with(|hot| hot.flags.set(state.cancel.len()));
     });
+}
+
+/// The instance ids of the events of the test run's trace, in order.
+#[cfg(test)]
+pub(crate) fn test_trace() -> Vec<String> {
+    with_state(|state| {
+        state
+            .trace
+            .iter()
+            .flatten()
+            .map(|event| event.instance.clone())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The bytes the test task the thread runs may still allocate before a check refuses a step: its
+/// ceiling less what the process holds.
+#[cfg(test)]
+pub(crate) fn test_room() -> usize {
+    HOT.with(|hot| hot.mem_ceiling.get())
+        .saturating_sub(crate::held())
 }
 
 /// The abort that stopped the test task the thread runs, if any: its code and message.
@@ -1423,6 +1549,15 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
         "{}",
         render_human(&[diagnostic], &Default::default(), false)
     );
+    #[cfg(all(test, debug_assertions))]
+    if TEST_PRINT_PEAK.load(Ordering::SeqCst) {
+        let _ = writeln!(
+            io::stderr(),
+            "una-rt test: peak {} ceiling {}",
+            crate::peak(),
+            mem_ceiling(state.baseline, state.max_memory)
+        );
+    }
     let mut code = finish(state).max(least);
     if written.is_err() {
         code = USAGE;
