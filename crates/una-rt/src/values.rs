@@ -135,6 +135,9 @@ impl Object {
 #[derive(Debug, Default)]
 struct Slot {
     count: u32,
+    /// The mark of the export in progress: the object's node index plus 1, or 0 outside an
+    /// export (ADR 0113 rule 5).
+    mark: u32,
     object: Option<Object>,
 }
 
@@ -161,8 +164,9 @@ fn count_limit() -> u32 {
 
 /// How many freed slots a debug build keeps unused before it reuses the oldest: a use of an
 /// object freed since is a fault rather than a read of another object, and a long run still
-/// holds a bounded heap (#201).
-const QUARANTINE: usize = 1 << 16;
+/// holds a bounded heap (#201). Under Miri it is small, so that the tests of slot reuse run there
+/// in reasonable time and Miri checks the reuse itself.
+const QUARANTINE: usize = if cfg!(miri) { 64 } else { 1 << 16 };
 
 #[derive(Default)]
 struct Heap {
@@ -189,6 +193,8 @@ struct Heap {
     /// the dying one (#30). Each is a constant cost, the fields being pushed in any case, so it
     /// is counted apart from the copies, which scaling tests bound (#292).
     fallbacks: usize,
+    /// How many times the imports grew the slot table (ADR 0113 rule 5).
+    slot_growths: usize,
 }
 
 thread_local! {
@@ -234,6 +240,7 @@ fn alloc(object: Object) -> i64 {
         if let Some(slot) = heap.slots.get_mut(index) {
             *slot = Slot {
                 count: 1,
+                mark: 0,
                 object: Some(object),
             };
         }
@@ -880,34 +887,138 @@ enum Node {
     Map(Vec<(Cell, Cell)>),
 }
 
-/// The value of `word` and everything it holds, copied out of this heap. The walk uses a stack
-/// of its own, never the native stack, since a value can nest deeper than any call (ADR 0060).
-/// The memory budget is checked before each object is copied, at the block's `site` (#775):
-/// `None` when it stops the run or the task, so no copy grows past the allocator's ceiling in
-/// one step where the interpreter, which shares the value, would not.
-pub fn export(word: i64, site: usize) -> Option<Portable> {
-    let mut nodes = Vec::new();
-    let mut index: BTreeMap<i64, usize> = BTreeMap::new();
-    let mut pending = vec![(word, false)];
-    while let Some((word, children_done)) = pending.pop() {
-        if !is_handle(word) || index.contains_key(&word) {
-            continue;
+/// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
+const SEGMENT: usize = 1024;
+
+/// A bound on the bytes one insertion into a map's tree allocates beyond its key: the splits of
+/// its nodes up to the tree's greatest height, which the step of each entry counts (ADR 0113
+/// rule 5, `S`).
+pub(crate) const MAP_INSERT_BOUND: usize = 16 * 1024;
+
+/// The message of an export that would hold more objects than its marks can number.
+pub(crate) const EXPORT_LIMIT_MESSAGE: &str =
+    "this copy holds more objects than the native runtime copies at once (4294967295)";
+
+/// The most objects one export copies: its marks are 32 bits, the node index plus 1, with 0
+/// for unmarked (ADR 0113 rule 5).
+const EXPORT_LIMIT: u32 = u32::MAX;
+
+/// The export limit, which the tests lower to reach it.
+#[cfg(test)]
+pub(crate) static TEST_EXPORT_LIMIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(EXPORT_LIMIT);
+
+fn export_limit() -> u32 {
+    #[cfg(test)]
+    {
+        TEST_EXPORT_LIMIT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        EXPORT_LIMIT
+    }
+}
+
+/// The pending stack of a copy's walks, in segments of [`SEGMENT`] entries (ADR 0113 rule 5): a
+/// push that needs a new segment is a checked step of its size, and the segments stay for the
+/// export's next walk, which reuses them.
+struct Pending {
+    segments: Vec<Vec<(i64, bool)>>,
+    /// How many segments are in use; the last of them holds the top.
+    used: usize,
+}
+
+impl Pending {
+    fn new() -> Pending {
+        Pending {
+            segments: Vec::new(),
+            used: 0,
         }
-        if !children_done {
-            pending.push((word, true));
-            let children = with(word, Object::children).unwrap_or_default();
-            pending.extend(children.into_iter().map(|child| (child, false)));
-            continue;
+    }
+
+    /// Pushes `entry`; `None` when the step of a new segment is refused, which stops the run or
+    /// the task at the block `site`.
+    fn push(&mut self, site: usize, entry: (i64, bool)) -> Option<()> {
+        let full = self
+            .used
+            .checked_sub(1)
+            .and_then(|top| self.segments.get(top))
+            .is_none_or(|top| top.len() == SEGMENT);
+        if full {
+            if self.used == self.segments.len() {
+                let capacity = self.segments.capacity();
+                let grown = if self.segments.len() == capacity {
+                    capacity.max(4).saturating_mul(2)
+                } else {
+                    capacity
+                };
+                let bytes = SEGMENT * size_of::<(i64, bool)>()
+                    + (grown - capacity) * size_of::<Vec<(i64, bool)>>();
+                let _step = crate::runtime::reserve(site, bytes)?;
+                self.segments.reserve_exact(grown - self.segments.len());
+                self.segments.push(Vec::with_capacity(SEGMENT));
+            }
+            self.used += 1;
         }
-        if !crate::runtime::within_budget(site) {
-            return None;
+        self.segments.get_mut(self.used - 1)?.push(entry);
+        Some(())
+    }
+
+    fn pop(&mut self) -> Option<(i64, bool)> {
+        while self.used > 0 {
+            if let Some(entry) = self.segments.get_mut(self.used - 1).and_then(Vec::pop) {
+                return Some(entry);
+            }
+            self.used -= 1;
         }
-        let cell = |child: &i64| match index.get(child) {
-            Some(&node) => Cell::Node(node),
-            None => Cell::Word(*child),
-        };
-        let cells = |words: &[i64]| words.iter().map(cell).collect::<Vec<_>>();
-        let Some(node) = with(word, |object| match object {
+        None
+    }
+}
+
+impl Object {
+    /// Calls `f` on each word the object references, a map's keys and values included, in
+    /// place: no list of them is made. Stops at the first `None`.
+    fn each_child(&self, mut f: impl FnMut(i64) -> Option<()>) -> Option<()> {
+        match self {
+            Object::Map(entries) => {
+                for (key, value) in entries.values() {
+                    f(*key)?;
+                    f(*value)?;
+                }
+            }
+            other => {
+                for &child in other.cells() {
+                    f(child)?;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// The bytes the portable node of the object allocates: its cells, its text or bytes, its
+    /// digits.
+    fn node_bytes(&self) -> usize {
+        let cells = |n: usize| n * size_of::<Cell>();
+        match self {
+            Object::Int(value) => value.iter_u64_digits().len() * 8,
+            Object::Text(text) => text.as_str().len(),
+            Object::Hashed(bytes) => bytes.len(),
+            Object::Data { fields, .. } => cells(fields.len()),
+            Object::List(items) => cells(items.len()),
+            Object::Closure { env, .. } => cells(env.len()),
+            Object::Instance {
+                id,
+                code,
+                cells: held,
+            } => id.len() + code.len() * size_of::<i64>() + cells(held.len()),
+            Object::Map(entries) => entries.len() * size_of::<(Cell, Cell)>(),
+        }
+    }
+
+    /// The portable node of the object, its words made cells by `cell`.
+    fn node(&self, cell: impl Fn(i64) -> Cell) -> Node {
+        let cells = |words: &[i64]| words.iter().map(|&word| cell(word)).collect::<Vec<_>>();
+        match self {
             Object::Int(value) => Node::Int(value.clone()),
             Object::Text(text) => Node::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
@@ -933,84 +1044,281 @@ pub fn export(word: i64, site: usize) -> Option<Portable> {
             Object::Map(entries) => Node::Map(
                 entries
                     .values()
-                    .map(|(key, value)| (cell(key), cell(value)))
+                    .map(|(key, value)| (cell(*key), cell(*value)))
                     .collect(),
             ),
-        }) else {
-            continue;
-        };
-        index.insert(word, nodes.len());
-        nodes.push(node);
+        }
     }
-    let root = match index.get(&word) {
-        Some(&node) => Cell::Node(node),
-        None => Cell::Word(word),
-    };
+}
+
+/// The value of `word` and everything it holds, copied out of this heap (ADR 0113 rule 5). The
+/// walks use a stack of their own, never the native stack, since a value can nest deeper than any
+/// call (ADR 0060), and read each object's children in place, holding the heap through the walk:
+/// no code runs on this heap while it copies.
+///
+/// - **The counting pass** marks each object with its node index plus 1, children first, so
+///   that an object several others hold is listed once and sharing survives the copy.
+/// - **The nodes** are then reserved exactly, as one step.
+/// - **The copy pass** walks again in the same order and makes each object's node, each a step.
+/// - **The reset pass** sets every mark back to 0, reusing the stack's segments.
+///
+/// Every step is announced and checked before it allocates ([`crate::runtime::reserve`]), at the
+/// block's `site`: `None` when one is refused, which stops the run or the task. A refused export
+/// leaves its marks: that stop ends the run, so no later export reads them.
+pub fn export(word: i64, site: usize) -> Option<Portable> {
+    if !is_handle(word) {
+        return Some(Portable {
+            nodes: Vec::new(),
+            root: Cell::Word(word),
+        });
+    }
+    let mut pending = Pending::new();
+    let count = HEAP.with(|heap| {
+        let mut heap = heap.borrow_mut();
+        let heap = &mut *heap;
+        let mut count: u32 = 0;
+        pending.push(site, (word, false))?;
+        while let Some((word, children_done)) = pending.pop() {
+            let Some(index) = slot(word) else {
+                continue;
+            };
+            let Some(found) = heap.slots.get(index).filter(|slot| slot.object.is_some()) else {
+                heap.faults += 1;
+                continue;
+            };
+            if found.mark != 0 {
+                continue;
+            }
+            if !children_done {
+                pending.push(site, (word, true))?;
+                let object = found.object.as_ref()?;
+                let slots = &heap.slots;
+                object.each_child(|child| {
+                    let unmarked = slot(child)
+                        .and_then(|index| slots.get(index))
+                        .is_some_and(|slot| slot.mark == 0 && slot.object.is_some());
+                    if unmarked {
+                        pending.push(site, (child, false))
+                    } else {
+                        Some(())
+                    }
+                })?;
+                continue;
+            }
+            if count >= export_limit() {
+                crate::runtime::refuse(site, Some(EXPORT_LIMIT_MESSAGE.to_owned()));
+                return None;
+            }
+            count += 1;
+            if let Some(slot) = heap.slots.get_mut(index) {
+                slot.mark = count;
+            }
+        }
+        Some(count)
+    })?;
+    if count == 0 {
+        // The root names no live object, a fault the walk counted: the word is carried as is.
+        return Some(Portable {
+            nodes: Vec::new(),
+            root: Cell::Word(word),
+        });
+    }
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    let reserved = crate::runtime::reserve(site, count.saturating_mul(size_of::<Node>()))?;
+    let mut nodes: Vec<Node> = Vec::with_capacity(count);
+    drop(reserved);
+    HEAP.with(|heap| {
+        let heap = heap.borrow();
+        let slots = &heap.slots;
+        let position = |word: i64| {
+            slot(word)
+                .and_then(|index| slots.get(index))
+                .filter(|slot| slot.mark != 0 && slot.object.is_some())
+                .map(|slot| (slot.mark - 1) as usize)
+        };
+        pending.push(site, (word, false))?;
+        while let Some((word, children_done)) = pending.pop() {
+            let Some(at) = position(word) else {
+                continue;
+            };
+            if at < nodes.len() {
+                continue;
+            }
+            let object = slot(word)
+                .and_then(|index| slots.get(index))
+                .and_then(|slot| slot.object.as_ref())?;
+            if !children_done {
+                pending.push(site, (word, true))?;
+                object.each_child(|child| match position(child) {
+                    Some(at) if at >= nodes.len() => pending.push(site, (child, false)),
+                    _ => Some(()),
+                })?;
+                continue;
+            }
+            // INVARIANT: the copy pass finishes the objects in the counting pass's order, so
+            // the object finished now is the next node.
+            debug_assert_eq!(at, nodes.len());
+            let _step = crate::runtime::reserve(site, object.node_bytes())?;
+            nodes.push(object.node(|child| match position(child) {
+                Some(at) => Cell::Node(at),
+                None => Cell::Word(child),
+            }));
+        }
+        Some(())
+    })?;
+    HEAP.with(|heap| {
+        let mut heap = heap.borrow_mut();
+        let heap = &mut *heap;
+        pending.push(site, (word, false))?;
+        while let Some((word, _)) = pending.pop() {
+            let Some(index) = slot(word) else {
+                continue;
+            };
+            let Some(found) = heap.slots.get_mut(index).filter(|slot| slot.mark != 0) else {
+                continue;
+            };
+            found.mark = 0;
+            let Some(object) = heap.slots.get(index).and_then(|slot| slot.object.as_ref()) else {
+                continue;
+            };
+            let slots = &heap.slots;
+            object.each_child(|child| {
+                let marked = slot(child)
+                    .and_then(|index| slots.get(index))
+                    .is_some_and(|slot| slot.mark != 0);
+                if marked {
+                    pending.push(site, (child, false))
+                } else {
+                    Some(())
+                }
+            })?;
+        }
+        Some(())
+    })?;
+    // The root finishes last, children first.
+    let root = Cell::Node(nodes.len() - 1);
     Some(Portable { nodes, root })
 }
 
-/// A portable value made into this heap: a word the caller owns. The memory budget is checked
-/// before each object is made, at the block's `site` (#775): `None` when it stops the run or
-/// the task, with what was made released.
-pub fn import(portable: &Portable, site: usize) -> Option<i64> {
-    let mut words: Vec<i64> = Vec::with_capacity(portable.nodes.len());
-    let word_of = |cell: &Cell, words: &[i64]| match *cell {
-        Cell::Word(word) => word,
-        Cell::Node(node) => words.get(node).copied().unwrap_or(0),
+/// How many free slots an allocation can reuse: every one in a release build, and those past
+/// the quarantine in a debug build.
+fn reusable(free: usize) -> usize {
+    if cfg!(debug_assertions) {
+        free.saturating_sub(QUARANTINE)
+    } else {
+        free
+    }
+}
+
+/// Makes room in the heap's slot table for `objects` new objects, as one step (ADR 0113 rule
+/// 5): to at least twice its capacity, so that the imports of a join grow it O(log n) times, or,
+/// when that step is refused, to exactly what they need. `None` when that is refused too.
+fn reserve_slots(site: usize, objects: usize) -> Option<()> {
+    let (len, capacity, free) = HEAP.with(|heap| {
+        let heap = heap.borrow();
+        (heap.slots.len(), heap.slots.capacity(), heap.free.len())
+    });
+    let pushed = objects.saturating_sub(reusable(free));
+    let needed = len.saturating_add(pushed);
+    if needed <= capacity {
+        return Some(());
+    }
+    let grow = |target: usize, step: crate::runtime::Reservation| {
+        HEAP.with(|heap| {
+            let mut heap = heap.borrow_mut();
+            heap.slots.reserve_exact(target - len);
+            heap.slot_growths += 1;
+        });
+        drop(step);
     };
+    let geometric = needed.max(capacity.saturating_mul(2));
+    if let Some(step) =
+        crate::runtime::try_reserve((geometric - capacity).saturating_mul(size_of::<Slot>()))
+    {
+        grow(geometric, step);
+        return Some(());
+    }
+    let step =
+        crate::runtime::reserve(site, (needed - capacity).saturating_mul(size_of::<Slot>()))?;
+    grow(needed, step);
+    Some(())
+}
+
+/// Makes every import refuse its first step, in tests.
+#[cfg(test)]
+pub(crate) static TEST_REFUSE_IMPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Makes every import panic, in tests.
+#[cfg(test)]
+pub(crate) static TEST_PANIC_IN_IMPORT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether every slot of this thread's heap is unmarked, as between two exports.
+#[cfg(test)]
+fn marks_clear() -> bool {
+    HEAP.with(|heap| heap.borrow().slots.iter().all(|slot| slot.mark == 0))
+}
+
+/// Marks the object of `word` as an export would, in tests.
+#[cfg(test)]
+fn set_mark_for_test(word: i64, mark: u32) {
+    if let Some(index) = slot(word) {
+        HEAP.with(|heap| {
+            if let Some(slot) = heap.borrow_mut().slots.get_mut(index) {
+                slot.mark = mark;
+            }
+        });
+    }
+}
+
+/// The mark of the object of `word`, in tests.
+#[cfg(test)]
+fn mark_for_test(word: i64) -> Option<u32> {
+    let index = slot(word)?;
+    HEAP.with(|heap| heap.borrow().slots.get(index).map(|slot| slot.mark))
+}
+
+/// How many times the imports grew the heap's slot table, in tests.
+#[cfg(test)]
+fn slot_growths() -> usize {
+    HEAP.with(|heap| heap.borrow().slot_growths)
+}
+
+/// A portable value made into this heap: a word the caller owns (ADR 0113 rule 5). The slot
+/// table and the index of the words made are reserved before the first object, each object is a
+/// step of its exact size, and a map's entries a step each. `None` when a step is refused, which
+/// stops the run or the task at the block's `site`, with what was made released.
+pub fn import(portable: &Portable, site: usize) -> Option<i64> {
+    #[cfg(test)]
+    {
+        use std::sync::atomic::Ordering;
+        if TEST_REFUSE_IMPORT.load(Ordering::SeqCst) {
+            crate::runtime::refuse(site, None);
+            return None;
+        }
+        if TEST_PANIC_IN_IMPORT.load(Ordering::SeqCst) {
+            #[allow(clippy::panic)]
+            {
+                panic!("a test made the import panic");
+            }
+        }
+    }
+    let objects = portable.nodes.len();
+    reserve_slots(site, objects)?;
+    let reserved = crate::runtime::reserve(site, objects.saturating_mul(size_of::<i64>()))?;
+    let mut words: Vec<i64> = Vec::with_capacity(objects);
+    drop(reserved);
     for node in &portable.nodes {
-        if !crate::runtime::within_budget(site) {
+        let Some(made) = import_node(node, &words, site) else {
             for &word in &words {
                 release(word);
             }
             return None;
-        }
-        let made = match node {
-            Node::Int(value) => alloc(Object::Int(value.clone())),
-            Node::Text(text) => alloc(Object::Text(Text::new(text.clone()))),
-            Node::Hashed(bytes) => alloc(Object::Hashed(bytes.clone())),
-            Node::Data { tag, fields } => {
-                let object = data(*tag);
-                for field in fields {
-                    push(object, word_of(field, &words));
-                }
-                object
-            }
-            Node::List(items) => {
-                let object = list();
-                for item in items {
-                    push(object, word_of(item, &words));
-                }
-                object
-            }
-            Node::Closure { code, arity, env } => {
-                let object = closure(*code, i64::try_from(*arity).unwrap_or(-1));
-                for cell in env {
-                    push(object, word_of(cell, &words));
-                }
-                object
-            }
-            Node::Instance { id, code, cells } => {
-                let object = instance(id.clone());
-                for &op in code {
-                    push_op(object, op);
-                }
-                for cell in cells {
-                    push(object, word_of(cell, &words));
-                }
-                object
-            }
-            Node::Map(entries) => {
-                let object = map_empty();
-                for (key, value) in entries {
-                    map_insert(object, word_of(key, &words), word_of(value, &words));
-                }
-                object
-            }
         };
         words.push(made);
     }
-    let root = word_of(&portable.root, &words);
+    let root = cell_word(&portable.root, &words);
     // Each object was made with the reference its builder held, and is held by its parents
     // now: the builder's references go, but the root's, which the caller owns.
     retain(root);
@@ -1018,6 +1326,101 @@ pub fn import(portable: &Portable, site: usize) -> Option<i64> {
         release(word);
     }
     Some(root)
+}
+
+/// The word of `cell` among the `words` an import made.
+fn cell_word(cell: &Cell, words: &[i64]) -> i64 {
+    match *cell {
+        Cell::Word(word) => word,
+        Cell::Node(node) => words.get(node).copied().unwrap_or(0),
+    }
+}
+
+/// The object of `node`, made in this heap from the `words` made before it, as one step: its
+/// cells are made at their exact size and hold their words.
+fn import_node(node: &Node, words: &[i64], site: usize) -> Option<i64> {
+    let held = |cells: &[Cell]| {
+        let mut out = Vec::with_capacity(cells.len());
+        for cell in cells {
+            let word = cell_word(cell, words);
+            retain(word);
+            out.push(word);
+        }
+        out
+    };
+    let cells = |n: usize| n * size_of::<i64>();
+    let made = match node {
+        Node::Int(value) => {
+            let _step = crate::runtime::reserve(site, value.iter_u64_digits().len() * 8)?;
+            alloc(Object::Int(value.clone()))
+        }
+        Node::Text(text) => {
+            let _step = crate::runtime::reserve(site, text.len())?;
+            alloc(Object::Text(Text::new(text.clone())))
+        }
+        Node::Hashed(bytes) => {
+            let _step = crate::runtime::reserve(site, bytes.len())?;
+            alloc(Object::Hashed(bytes.clone()))
+        }
+        Node::Data { tag, fields } => {
+            let _step = crate::runtime::reserve(site, cells(fields.len()))?;
+            alloc(Object::Data {
+                tag: *tag,
+                fields: held(fields),
+            })
+        }
+        Node::List(items) => {
+            let _step = crate::runtime::reserve(site, cells(items.len()))?;
+            alloc(Object::List(held(items)))
+        }
+        Node::Closure { code, arity, env } => {
+            let _step = crate::runtime::reserve(site, cells(env.len()))?;
+            alloc(Object::Closure {
+                code: *code,
+                arity: *arity,
+                env: held(env),
+            })
+        }
+        Node::Instance {
+            id,
+            code,
+            cells: own,
+        } => {
+            let _step =
+                crate::runtime::reserve(site, id.len() + cells(code.len()) + cells(own.len()))?;
+            alloc(Object::Instance {
+                id: id.clone(),
+                code: code.clone(),
+                cells: held(own),
+            })
+        }
+        Node::Map(entries) => {
+            let map = map_empty();
+            for (key, value) in entries {
+                let key = cell_word(key, words);
+                let Some(step) =
+                    crate::runtime::reserve(site, key_bytes(key).saturating_add(MAP_INSERT_BOUND))
+                else {
+                    release(map);
+                    return None;
+                };
+                map_insert(map, key, cell_word(value, words));
+                drop(step);
+            }
+            map
+        }
+    };
+    Some(made)
+}
+
+/// The bytes a map's copy of the key `word` takes: a text's bytes, or an integer's digits.
+fn key_bytes(word: i64) -> usize {
+    with(word, |object| match object {
+        Object::Text(text) => text.as_str().len(),
+        Object::Int(value) => value.iter_u64_digits().len() * 8,
+        _ => 0,
+    })
+    .unwrap_or(0)
 }
 
 /// The list of the integers from `low` to `high`, with `high` when `inclusive` is 1: the
@@ -1674,6 +2077,186 @@ pub(crate) fn map_words(map: i64) -> Vec<(i64, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record of two fields, made in this thread's heap.
+    fn record(a: i64, b: i64) -> i64 {
+        let word = data(0);
+        push(word, a);
+        push(word, b);
+        word
+    }
+
+    #[test]
+    fn i2_every_mark_is_0_after_each_export() {
+        // ADR 0113 rule 5: a reset pass clears the marks the counting pass set, so that no mark
+        // outlives its export. A value with sharing at several levels, a map and a text.
+        let text = text_word("shared".to_owned());
+        let shared = record(text, n(1));
+        let xs = list();
+        for _ in 0..3 {
+            push(xs, shared);
+        }
+        let map = map_empty();
+        map_insert(map, text, shared);
+        let top = record(xs, map);
+        for _ in 0..3 {
+            let portable = export(top, 0).unwrap();
+            assert!(marks_clear(), "a mark outlived its export");
+            drop(portable);
+        }
+        for word in [top, map, xs, shared, text] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i2_an_object_exported_after_a_million_exports_copies_right() {
+        // ADR 0113, round 3's H1: a mark is the node index of the export in progress, never an
+        // identity that wraps, so a value exported after many exports reads no stale mark.
+        // Miri runs a thousand: the same paths, in the time it has.
+        let exports = if cfg!(miri) { 1_000 } else { 1_000_000 };
+        let one = text_word("x".to_owned());
+        for _ in 0..exports {
+            drop(export(one, 0).unwrap());
+        }
+        let pair = record(one, one);
+        let copy = import(&export(pair, 0).unwrap(), 0).unwrap();
+        assert_eq!(equal(copy, pair), 1);
+        assert_eq!(field(copy, 0), field(copy, 1), "sharing survives");
+        assert!(marks_clear());
+        for word in [copy, pair, one] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i2_a_slot_alloc_hands_out_starts_unmarked() {
+        // ADR 0113 rule 5: a slot `alloc` reuses has mark 0, whatever the object before it had.
+        // A debug build reuses a slot only past its quarantine, so more than that are freed.
+        // Only the reused slots are checked: the freed slots still in quarantine keep their mark,
+        // which nothing reads, since every reader of a mark asks for a live object first.
+        let words: Vec<i64> = (0..QUARANTINE + 8)
+            .map(|i| text_word(i.to_string()))
+            .collect();
+        let marked: std::collections::BTreeSet<usize> =
+            words.iter().filter_map(|&word| slot(word)).collect();
+        for &word in &words {
+            set_mark_for_test(word, 7);
+            release(word);
+        }
+        let fresh: Vec<i64> = (0..8).map(|i| text_word(format!("fresh {i}"))).collect();
+        for &word in &fresh {
+            let index = slot(word).unwrap();
+            assert!(marked.contains(&index), "slot {index} is not a reused one");
+            assert_eq!(
+                mark_for_test(word),
+                Some(0),
+                "reused slot {index} kept its mark"
+            );
+        }
+        for word in fresh {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i9_an_import_of_an_export_has_the_values_and_the_sharing_of_the_original() {
+        // ADR 0113, I9: the same values, and two references to one object in the original are
+        // two references to one object in the copy. Shared sublists, a map whose values share
+        // one record, and levels each holding the level below twice, to a depth of 40.
+        let inner = list();
+        push(inner, n(1));
+        let outer = list();
+        push(outer, inner);
+        push(outer, inner);
+        let shared = record(n(2), text_word("t".to_owned()));
+        let map = map_empty();
+        let (one, two) = (text_word("a".to_owned()), text_word("b".to_owned()));
+        map_insert(map, one, shared);
+        map_insert(map, two, shared);
+        let mut level = n(0);
+        for _ in 0..40 {
+            let next = record(level, level);
+            release(level);
+            level = next;
+        }
+        let top = list();
+        for word in [outer, map, level] {
+            push(top, word);
+        }
+        let copy = import(&export(top, 0).unwrap(), 0).unwrap();
+        // `equal` walks every path (#815), so the chain, with 2^40 paths, is checked level by
+        // level: its sharing at each level and its last value.
+        assert_eq!(equal(field(copy, 0), outer), 1);
+        assert_eq!(equal(field(copy, 1), map), 1);
+        let copied_outer = field(copy, 0);
+        assert_eq!(field(copied_outer, 0), field(copied_outer, 1));
+        let mut copied_level = field(copy, 2);
+        for _ in 0..40 {
+            assert_eq!(field(copied_level, 0), field(copied_level, 1));
+            copied_level = field(copied_level, 0);
+        }
+        assert_eq!(equal(copied_level, n(0)), 1);
+        assert!(marks_clear());
+        for word in [copy, top, level, two, one, map, shared, outer, inner] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn i1_the_imports_grow_the_slot_table_a_logarithmic_number_of_times() {
+        // ADR 0113 rule 5: the slot table grows geometrically, so N imports of one object each
+        // into one heap grow it O(log N) times; exact growth would grow it N times.
+        // Miri runs smaller sizes: the same growth, in the time it has.
+        let sizes: &[usize] = if cfg!(miri) {
+            &[100, 1_000]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &size in sizes {
+            let growths = std::thread::spawn(move || {
+                let one = record(n(1), n(2));
+                let portable = export(one, 0).unwrap();
+                release(one);
+                let mut held = Vec::with_capacity(size);
+                let before = slot_growths();
+                for _ in 0..size {
+                    held.push(import(&portable, 0).unwrap());
+                }
+                let growths = slot_growths() - before;
+                for word in held {
+                    release(word);
+                }
+                growths
+            })
+            .join()
+            .unwrap();
+            let bound = usize::BITS - size.leading_zeros() + 2;
+            assert!(
+                growths <= bound as usize,
+                "{size} imports grew the table {growths} times"
+            );
+        }
+    }
+
+    #[test]
+    fn i1_a_value_deeper_than_any_stack_segment_is_copied() {
+        // ADR 0113 rule 5: the walks' pending stack grows a segment at a time, never on the
+        // native stack: a list nested 100000 deep is exported and imported whole. Miri runs
+        // three segments deep, which still crosses from one segment to the next.
+        let depth = if cfg!(miri) { 3 * SEGMENT } else { 100_000 };
+        let mut value = list();
+        for _ in 0..depth {
+            let outer = list();
+            push(outer, value);
+            release(value);
+            value = outer;
+        }
+        let copy = import(&export(value, 0).unwrap(), 0).unwrap();
+        assert_eq!(equal(copy, value), 1);
+        release(copy);
+        release(value);
+    }
 
     #[test]
     fn i2_the_count_and_a_mark_fit_the_word_a_64_bit_count_took() {

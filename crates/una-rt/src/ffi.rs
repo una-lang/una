@@ -1142,8 +1142,8 @@ mod tests {
         )
     }
 
-    const INTERNAL: &str = "[U8001] error: internal error: a reference count of the native runtime reached its limit (4294967295) with less memory held than that many references take";
-    const OVER: &str = "[U6003] error: the native runtime's reference count of a value reached its limit (4294967295)";
+    const INTERNAL: &str = "[U8001] Error: internal error: a reference count of the native runtime reached its limit (4294967295) with less memory held than that many references take";
+    const OVER: &str = "[U6003] Error: the native runtime's reference count of a value reached its limit (4294967295)";
 
     #[test]
     #[ignore = "run by `i2_a_count_at_its_limit_ends_the_process_and_never_returns`"]
@@ -1326,5 +1326,163 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A block of one `together for` task over a list of three texts, whose lambda says it ran:
+    /// the fork's scenarios, each with a hook set before `main`.
+    fn fork_scenario(before: impl FnOnce()) {
+        before();
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        runtime::start(&[], LIMIT_META, move || {
+            let items = values::list();
+            let element = values::list();
+            for text in ["a", "b", "c"] {
+                let word = values::text_word(text.to_owned());
+                values::push(element, word);
+                values::release(word);
+            }
+            values::push(items, element);
+            values::release(element);
+            let closure = values::closure(marked, 1);
+            let value = tasks::together_for(closure, items, 0);
+            eprintln!("{MARK}: the block returned");
+            value
+        });
+    }
+
+    #[test]
+    #[ignore = "run by `i6_i11_a_failed_fork_ends_the_block_and_runs_no_task`"]
+    fn i6_fork_spawn_failure_scenario() {
+        fork_scenario(|| tasks::TEST_FAIL_SPAWN.store(true, std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    #[ignore = "run by `i6_i11_a_failed_fork_ends_the_block_and_runs_no_task`"]
+    fn i6_fork_import_refused_scenario() {
+        fork_scenario(|| {
+            values::TEST_REFUSE_IMPORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    #[test]
+    #[ignore = "run by `i6_i11_a_failed_fork_ends_the_block_and_runs_no_task`"]
+    fn i11_fork_import_panic_scenario() {
+        fork_scenario(|| {
+            values::TEST_PANIC_IN_IMPORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    #[test]
+    #[ignore = "run by `i6_i11_a_failed_fork_ends_the_block_and_runs_no_task`"]
+    fn i6_fork_export_limit_scenario() {
+        // The element holds four objects, past a limit of 2.
+        fork_scenario(|| values::TEST_EXPORT_LIMIT.store(2, std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    #[ignore = "run by `i11_a_panic_outside_a_copy_prints_as_before`"]
+    fn i11_panic_outside_a_copy_scenario() {
+        runtime::start(&[], LIMIT_META, || {
+            let _ = std::thread::spawn(|| {
+                #[allow(clippy::panic)]
+                {
+                    panic!("una-rt test: a panic outside a copy");
+                }
+            })
+            .join();
+            0
+        });
+    }
+
+    /// Runs `scenario` in a process of its own: its exit code and its stderr.
+    /// Runs `scenario` in a process of its own. A scenario that runs past a minute is killed
+    /// and fails the test, so a hang never holds the run. Its stderr goes to a file, which a
+    /// full pipe cannot block.
+    fn run_scenario(scenario: &str) -> (Option<i32>, String) {
+        let exe = std::env::current_exe().unwrap();
+        let path = exe.with_file_name(format!("{scenario}.stderr"));
+        let mut child = Command::new(&exe)
+            .args([
+                "--ignored",
+                "--exact",
+                scenario,
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&path).unwrap())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{scenario} ran past a minute");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let stderr = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        (status.code(), stderr)
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i6_i11_a_failed_fork_ends_the_block_and_runs_no_task() {
+        // ADR 0113 rule 2: a thread that cannot start, a refused step of an import or of an
+        // export, and a panic during a copy each end the block before any task runs, with no
+        // thread left waiting: U6003 at the block for the first three, with the message that
+        // names the cause, and U8001 for the panic, whose message the panic hook keeps.
+        let cases = [
+            (
+                "ffi::tests::i6_fork_spawn_failure_scenario",
+                1,
+                "[U6003] Error: a task of `together` could not run",
+            ),
+            (
+                "ffi::tests::i6_fork_import_refused_scenario",
+                1,
+                "[U6003] Error: this call exceeds the memory limit of 4096 MiB",
+            ),
+            (
+                "ffi::tests::i6_fork_export_limit_scenario",
+                1,
+                "[U6003] Error: this copy holds more objects than the native runtime copies at once (4294967295)",
+            ),
+            (
+                "ffi::tests::i11_fork_import_panic_scenario",
+                3,
+                "[U8001] Error: internal error: the runtime panicked while it copied a value: a test made the import panic",
+            ),
+        ];
+        for (scenario, code, first) in cases {
+            let (status, stderr) = run_scenario(scenario);
+            assert_eq!(status, Some(code), "{scenario}: {stderr}");
+            assert!(stderr.starts_with(first), "{scenario}: {stderr}");
+            assert!(
+                stderr.contains("src/c.una:2:3"),
+                "{scenario}: at the block: {stderr}"
+            );
+            assert!(!stderr.contains(MARK), "{scenario}: a task ran: {stderr}");
+            assert!(!stderr.contains("panicked at"), "{scenario}: {stderr}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i11_a_panic_outside_a_copy_prints_as_before() {
+        // ADR 0113 rule 5: the runtime's panic hook keeps a panic's message only inside a copy,
+        // and passes every other panic to the hook before it, which prints it.
+        let (_, stderr) = run_scenario("ffi::tests::i11_panic_outside_a_copy_scenario");
+        assert!(
+            stderr.contains("una-rt test: a panic outside a copy"),
+            "{stderr}"
+        );
     }
 }

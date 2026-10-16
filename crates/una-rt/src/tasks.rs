@@ -104,6 +104,12 @@ struct Outcome {
 /// Runs a block's tasks: closures and their arguments, words of the calling task's heap
 /// that the caller keeps. Returns the block's value, a word the caller owns, and its status:
 /// 0, 1 when the value is the block's failure, or 2 when the calling task must stop.
+///
+/// The tasks start in batches of [`WAVE`], each forked in its own phase (ADR 0113 rule 2):
+/// task by task, the block's task copies the task's inputs out, starts its thread, and waits
+/// until the thread has copied them in; only when the whole batch has, does each task get its
+/// signal to run. So no copy of the block is made while one of its tasks runs code, and the
+/// site of a copy's stop does not depend on how threads are scheduled (#777).
 fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -> (i64, i64) {
     // #773: a task that a check already stopped, such as the budget while a range was made
     // for this block, runs no task and stops at once, as the interpreter's does.
@@ -113,143 +119,292 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
     let Some(template) = with_state(|state| state.for_tasks(site)) else {
         return (0, 2);
     };
-    // #775: the copies out of this heap check the budget as they grow; a stop there stops the
-    // block before any task runs.
-    let mut exported: Vec<(Portable, Option<Portable>)> = Vec::with_capacity(tasks.len());
-    for &(closure, arg) in tasks {
-        let Some(closure) = values::export(closure, site) else {
-            return (0, 2);
-        };
-        let arg = match arg.map(|arg| values::export(arg, site)) {
-            Some(None) => return (0, 2),
-            Some(Some(arg)) => Some(arg),
-            None => None,
-        };
-        exported.push((closure, arg));
-    }
     let flags: Vec<Arc<AtomicBool>> = (0..tasks.len())
         .map(|_| Arc::new(AtomicBool::new(false)))
         .collect();
     let mut outcomes: Vec<Outcome> = Vec::with_capacity(tasks.len());
-    let indexed: Vec<(usize, (Portable, Option<Portable>))> =
-        exported.into_iter().enumerate().collect();
-    let mut remaining = indexed.into_iter();
-    loop {
-        let wave: Vec<_> = remaining.by_ref().take(WAVE).collect();
-        if wave.is_empty() {
-            break;
-        }
-        let ended = std::thread::scope(|scope| {
-            let handles: Vec<_> = wave
-                .into_iter()
-                .map(|(index, (closure, arg))| {
-                    let template = template.clone();
-                    let flags = &flags;
-                    std::thread::Builder::new()
-                        .name(format!("una-task-{}", index + 1))
-                        .stack_size(template.stack)
-                        .spawn_scoped(scope, move || {
-                            let _stack = runtime::StackCount::new(template.stack);
-                            task(
-                                index,
-                                &closure,
-                                arg.as_ref(),
-                                &template,
-                                flags,
-                                site,
-                                invoke,
-                            )
-                        })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| match handle.map(|h| h.join()) {
-                    Ok(Ok(outcome)) => outcome,
-                    // A thread that cannot start, or that panicked, stops the task.
-                    _ => Outcome {
-                        ended: Ended::Stopped,
-                        events: Vec::new(),
-                        installs: BTreeMap::new(),
-                        failed_write: None,
-                        abort: Some((Code::U6003, template.location.clone(), stopped_message())),
-                    },
-                })
-                .collect::<Vec<_>>()
-        });
+    for (number, batch) in tasks.chunks(WAVE).enumerate() {
+        let first = number * WAVE;
+        let (ended, fork) = fork_batch(batch, first, &template, &flags, site, invoke);
         outcomes.extend(ended);
+        match fork {
+            Fork::Ran => {}
+            // A task's thread did not start, or stopped while it copied its inputs in: its
+            // outcome decides the block.
+            Fork::TaskStopped => break,
+            // A copy out of the block's heap was refused: the block's task stopped, at the
+            // block, after the events of the tasks that ran.
+            Fork::BlockStopped => return join(outcomes, tuple, &template, site, true),
+        }
     }
-    join(outcomes, tuple, &template, site)
+    join(outcomes, tuple, &template, site, false)
 }
+
+/// How a batch's fork phase ended.
+enum Fork {
+    /// Every task of the batch that was not cancelled imported its inputs and ran.
+    Ran,
+    /// A task's thread could not start, panicked, or was refused a step of its import: no task
+    /// of the batch ran, and that task's outcome holds the abort.
+    TaskStopped,
+    /// A step of a copy out of the block's heap was refused, which stopped the block's task: no
+    /// task of the batch ran.
+    BlockStopped,
+}
+
+/// The outcome of a task that never started: no event, no value.
+fn not_started() -> Outcome {
+    Outcome {
+        ended: Ended::NotStarted,
+        events: Vec::new(),
+        installs: BTreeMap::new(),
+        failed_write: None,
+        abort: None,
+    }
+}
+
+/// The outcome of a task that stopped with `code` and `message` at the block.
+fn aborted(template: &TaskTemplate, code: Code, message: String) -> Outcome {
+    Outcome {
+        ended: Ended::Stopped,
+        events: Vec::new(),
+        installs: BTreeMap::new(),
+        failed_write: None,
+        abort: Some((code, template.location.clone(), message)),
+    }
+}
+
+/// The fork phase of one batch, whose first task is the block's task `first` (ADR 0113 rule 2),
+/// then its run: the outcome of each of its tasks, in task order, and how the fork ended.
+fn fork_batch(
+    batch: &[(i64, Option<i64>)],
+    first: usize,
+    template: &TaskTemplate,
+    flags: &[Arc<AtomicBool>],
+    site: usize,
+    invoke: Invoke,
+) -> (Vec<Outcome>, Fork) {
+    std::thread::scope(|scope| {
+        let mut forked = Vec::with_capacity(batch.len());
+        let mut early: Vec<(usize, Outcome)> = Vec::new();
+        let mut fork = Fork::Ran;
+        for (offset, &(closure, arg)) in batch.iter().enumerate() {
+            let index = first + offset;
+            // A task cancelled before its fork never starts (`spec/19 §6` rule 4).
+            let cancelled = flags
+                .get(index)
+                .is_some_and(|flag| flag.load(Ordering::SeqCst));
+            if cancelled || template.cancelled() {
+                early.push((offset, not_started()));
+                continue;
+            }
+            let forms = runtime::guarded(|| {
+                let closure = values::export(closure, site)?;
+                let arg = match arg {
+                    Some(arg) => Some(values::export(arg, site)?),
+                    None => None,
+                };
+                Some((closure, arg))
+            });
+            let (closure, arg) = match forms {
+                Ok(Some(forms)) => forms,
+                Ok(None) => {
+                    fork = Fork::BlockStopped;
+                    break;
+                }
+                Err(message) => {
+                    early.push((offset, aborted(template, Code::U8001, message)));
+                    fork = Fork::TaskStopped;
+                    break;
+                }
+            };
+            let (answer, answered) = std::sync::mpsc::sync_channel::<bool>(1);
+            let (go, wait_go) = std::sync::mpsc::sync_channel::<bool>(1);
+            let task_template = template.clone();
+            #[cfg(test)]
+            if TEST_FAIL_SPAWN.load(Ordering::SeqCst) {
+                early.push((offset, aborted(template, Code::U6003, stopped_message())));
+                fork = Fork::TaskStopped;
+                break;
+            }
+            let spawned = std::thread::Builder::new()
+                .name(format!("una-task-{}", index + 1))
+                .stack_size(template.stack)
+                .spawn_scoped(scope, move || {
+                    let _stack = runtime::StackCount::new(task_template.stack);
+                    task(
+                        index,
+                        Inputs { closure, arg },
+                        &task_template,
+                        flags,
+                        site,
+                        invoke,
+                        (answer, wait_go),
+                    )
+                });
+            match spawned {
+                Ok(handle) => {
+                    // The thread answers once it imported, or drops its sender on a stop or a
+                    // panic: the wait always ends.
+                    let imported = answered.recv().unwrap_or(false);
+                    forked.push((offset, handle, go));
+                    if !imported {
+                        fork = Fork::TaskStopped;
+                        break;
+                    }
+                }
+                Err(_) => {
+                    early.push((offset, aborted(template, Code::U6003, stopped_message())));
+                    fork = Fork::TaskStopped;
+                    break;
+                }
+            }
+        }
+        // Each task forked gets its own signal: to run when the whole batch imported, to exit
+        // without running otherwise. No barrier, so no failure leaves a thread waiting.
+        let run = matches!(fork, Fork::Ran);
+        for (_, _, go) in &forked {
+            let _ = go.send(run);
+        }
+        let mut ended: Vec<Option<Outcome>> = (0..batch.len()).map(|_| None).collect();
+        for (offset, handle, _) in forked {
+            let outcome = handle.join().unwrap_or_else(|_| {
+                aborted(
+                    template,
+                    Code::U8001,
+                    "internal error: the thread of a task of `together` panicked".to_owned(),
+                )
+            });
+            if let Some(cell) = ended.get_mut(offset) {
+                *cell = Some(outcome);
+            }
+        }
+        for (offset, outcome) in early {
+            if let Some(cell) = ended.get_mut(offset) {
+                *cell = Some(outcome);
+            }
+        }
+        // The tasks after a stopped fork never started.
+        let ended = ended
+            .into_iter()
+            .map(|outcome| outcome.unwrap_or_else(not_started))
+            .collect();
+        (ended, fork)
+    })
+}
+
+/// Makes every task's thread fail to start, in tests: a spawn error, as when the system has no
+/// thread left to give.
+#[cfg(test)]
+pub(crate) static TEST_FAIL_SPAWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn stopped_message() -> String {
     "a task of `together` could not run".to_owned()
 }
 
-/// One task, on its own thread.
+/// A task's inputs, copied out of the block's heap: its closure, and its element for
+/// `together for`. The task drops them once it has copied them into its own heap.
+struct Inputs {
+    closure: Portable,
+    arg: Option<Portable>,
+}
+
+/// The two signals of a task's fork: its answer to the block, sent once it imported (dropped
+/// on a stop or a panic), and the block's signal to run (`true`) or to exit (`false`).
+type Handshake = (
+    std::sync::mpsc::SyncSender<bool>,
+    std::sync::mpsc::Receiver<bool>,
+);
+
+/// One task, on its own thread: imports its inputs, answers the block, waits for its signal,
+/// and runs.
 fn task(
     index: usize,
-    closure: &Portable,
-    arg: Option<&Portable>,
+    inputs: Inputs,
     template: &TaskTemplate,
     flags: &[Arc<AtomicBool>],
     site: usize,
     invoke: Invoke,
+    (answer, wait_go): Handshake,
 ) -> Outcome {
     let flag = flags.get(index).cloned().unwrap_or_default();
-    if flag.load(Ordering::SeqCst) || template.cancelled() {
-        return Outcome {
-            ended: Ended::NotStarted,
-            events: Vec::new(),
-            installs: BTreeMap::new(),
-            failed_write: None,
-            abort: None,
-        };
-    }
     let path = if template.path.is_empty() {
         (index + 1).to_string()
     } else {
         format!("{}.{}", template.path, index + 1)
     };
-    runtime::enter_task(template, path, flag);
-    // #775: the copies into and out of the task's heap check the budget as they grow, at the
-    // block; a stop there stops the task, which its block reports.
-    let started = values::import(closure, site).and_then(|closure| match arg {
-        None => Some((closure, None)),
-        Some(arg) => match values::import(arg, site) {
-            Some(arg) => Some((closure, Some(arg))),
-            None => {
-                values::release(closure);
-                None
-            }
-        },
-    });
-    let ended = match started {
-        None => Ended::Stopped,
-        Some((closure, arg)) => {
-            let (value, status) = invoke(closure, arg, site);
-            let ended = match status {
-                0 | 1 => match values::export(value, site) {
-                    Some(portable) if status == 0 => Ended::Returned(portable),
-                    Some(portable) => Ended::Failed(portable),
-                    None => Ended::Stopped,
-                },
-                _ => Ended::Stopped,
-            };
-            if status != 2 {
-                values::release(value);
-                values::release(closure);
-                // The task's argument went to the lambda, which owns its parameters. A debug
-                // build checks that nothing stays referenced, as for `main`
-                // (`runtime::start`); a task that stopped ended in the middle of its body, so
-                // what it held is not counted.
-                if cfg!(debug_assertions) {
-                    TASK_LEAKS.fetch_add(values::live(), Ordering::SeqCst);
+    runtime::enter_task(template, path, Arc::clone(&flag));
+    // ADR 0113 rule 5: the copies into the task's heap check each step, at the block; a refused
+    // step stops the task, which its block reports.
+    let imported = runtime::guarded(|| {
+        let closure = values::import(&inputs.closure, site)?;
+        match &inputs.arg {
+            None => Some((closure, None)),
+            Some(arg) => match values::import(arg, site) {
+                Some(arg) => Some((closure, Some(arg))),
+                None => {
+                    values::release(closure);
+                    None
                 }
-            }
-            ended
+            },
+        }
+    });
+    drop(inputs);
+    let (closure, arg) = match imported {
+        Ok(Some(words)) => words,
+        Ok(None) => {
+            drop(answer);
+            return ended_task(index, flags, Ended::Stopped);
+        }
+        Err(message) => {
+            drop(answer);
+            runtime::abort_from_task(Code::U8001, template.location.clone(), message);
+            return ended_task(index, flags, Ended::Stopped);
         }
     };
+    let _ = answer.send(true);
+    // A task starts when it receives its signal to run; one told to exit, or cancelled since
+    // it imported, never starts and leaves no event.
+    let go = wait_go.recv().unwrap_or(false);
+    if !go || flag.load(Ordering::SeqCst) || template.cancelled() {
+        values::release(closure);
+        if let Some(arg) = arg {
+            values::release(arg);
+        }
+        let _ = runtime::leave_task();
+        return not_started();
+    }
+    let (value, status) = invoke(closure, arg, site);
+    let ended = match status {
+        0 | 1 => match runtime::guarded(|| values::export(value, site)) {
+            Ok(Some(portable)) if status == 0 => Ended::Returned(portable),
+            Ok(Some(portable)) => Ended::Failed(portable),
+            Ok(None) => Ended::Stopped,
+            Err(message) => {
+                runtime::abort_from_task(Code::U8001, template.location.clone(), message);
+                Ended::Stopped
+            }
+        },
+        _ => Ended::Stopped,
+    };
+    if status != 2 {
+        values::release(value);
+        values::release(closure);
+        // The task's argument went to the lambda, which owns its parameters. A debug
+        // build checks that nothing stays referenced, as for `main`
+        // (`runtime::start`); a task that stopped ended in the middle of its body, so
+        // what it held is not counted.
+        if cfg!(debug_assertions) {
+            TASK_LEAKS.fetch_add(values::live(), Ordering::SeqCst);
+        }
+    }
+    ended_task(index, flags, ended)
+}
+
+/// Ends the state of the task `index` that `ended` so: cancels the tasks after it when it
+/// failed or aborted, counts its heap's faults in a debug build, and returns its outcome.
+fn ended_task(index: usize, flags: &[Arc<AtomicBool>], ended: Ended) -> Outcome {
     let state = runtime::leave_task();
     let aborted = state.as_ref().is_some_and(|state| state.stopped.is_some());
     if matches!(ended, Ended::Failed(_)) || aborted {
@@ -285,8 +440,16 @@ fn task(
 }
 
 /// The join (`spec/19 §6` rule 5, `§7`): the tasks' events in task order, the outcome of the
-/// lowest-indexed task that failed or aborted, else the values of all.
-fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate, site: usize) -> (i64, i64) {
+/// lowest-indexed task that failed or aborted, else the values of all. When `stopped_at_fork`,
+/// a copy out of the block's heap was refused and the block's task already stopped: the events
+/// of the tasks that ran are adopted, and the block stops.
+fn join(
+    outcomes: Vec<Outcome>,
+    tuple: bool,
+    template: &TaskTemplate,
+    site: usize,
+    stopped_at_fork: bool,
+) -> (i64, i64) {
     let mut decided: Option<(usize, bool)> = None;
     for (index, outcome) in outcomes.iter().enumerate() {
         let decides = match outcome.ended {
@@ -339,6 +502,9 @@ fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate, site: usiz
             }
         }
     });
+    if stopped_at_fork {
+        return (0, 2);
+    }
     if let Some((code, location, message)) = abort {
         return (runtime::abort_from_task(code, location, message), 2);
     }

@@ -996,7 +996,7 @@ fn a_json_parse_over_its_memory_budget_is_u6003_in_both_engines() {
 }
 
 #[test]
-fn a_json_parse_over_its_memory_budget_in_a_task_is_u6003_in_both_engines() {
+fn i3_i4_a_json_parse_over_its_memory_budget_in_a_task_stops_at_one_site_in_both_engines() {
     // #314: in a task of `together`, the parse that finds the run over its budget stops
     // the task, natively through `una_rt_json_stopped`, and the block ends the run with U6003
     // at that call, as the interpreter does; the line after the block never prints.
@@ -1022,17 +1022,31 @@ fn a_json_parse_over_its_memory_budget_in_a_task_is_u6003_in_both_engines() {
     assert_eq!(native.status.code(), Some(1), "{native:?}");
     assert_eq!(String::from_utf8_lossy(&native.stdout), "");
     let stderr = String::from_utf8_lossy(&native.stderr);
-    // Native code copies `t` into the tasks at the fork, where the interpreter shares it, and
-    // since #775 the copy checks the budget as it grows. Where the run first finds itself over
-    // its budget is not exact (ADR 0061 rule 3), so natively the U6003 is at the parse or at
-    // the block's copy, and nowhere else. #777 makes the copy's charge the same on every
-    // platform, after which this is one site again.
-    let at = |site: &str| {
-        stderr.starts_with(&format!(
-            "[U6003] Error: this call exceeds the memory limit of 64 MiB\n  at src/hog.una:{site}"
-        ))
-    };
-    assert!(at("10:15") || at("9:3"), "{stderr}");
+    // Native code copies `t` into the tasks at the fork, where the interpreter shares it. Since
+    // ADR 0113 the block's copies are made while none of its tasks runs code, and its fork peaks
+    // under the budget, so the first task's parse is where the run stops, on every run, as in
+    // `una run` (#777).
+    assert!(
+        stderr.starts_with(
+            "[U6003] Error: this call exceeds the memory limit of 64 MiB\n  at src/hog.una:10:15"
+        ),
+        "{stderr}"
+    );
+    // The stress variant: the site is the same on 50 runs in a row (ADR 0113, I3 and I4).
+    for run in 0..50 {
+        let again = Command::new(dir.join("target/una/json-task-hog"))
+            .args(["--max-memory", "64"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&again.stderr);
+        assert!(
+            stderr.starts_with(
+                "[U6003] Error: this call exceeds the memory limit of 64 MiB\n  at src/hog.una:10:15"
+            ),
+            "run {run}: {stderr}"
+        );
+    }
     let interpreted = una(&dir, &["run", "--max-memory", "64"]);
     assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "");
