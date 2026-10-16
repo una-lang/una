@@ -57,7 +57,7 @@ pub kind Slug = Text where valid_slug(it)
 pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t, prefix: "-")
 ```
 
-A predicate comes in two forms. The solver sees the body of a `reflect` predicate, so it can prove the fact from other facts. It sees only the name of an `opaque` one, so a value can get the fact only from a test at run time. `valid_slug` is opaque because a slug comes from a user: no proof can show that a typed string is valid, so the program has to look at it.
+A predicate comes in two forms. The solver sees the body of a `reflect` predicate, so it can prove the fact from other facts. It sees only the name of an `opaque` one, so a value can get the fact only from a test at run time, or from the `ensures` of a capability operation. This package uses the test. `valid_slug` is opaque because a slug comes from a user: no proof can show that a typed string is valid, so the program has to look at it.
 
 ### The only way in: `parse_slug`
 
@@ -104,7 +104,7 @@ A caller of `resolve` handles only `LinkError`. It never sees the error kinds of
 
 ### Handling now, or keeping the failure as a value
 
-The module has three callers of the store, and each handles failure in a different way:
+The module shows three ways to handle a failure of the store:
 
 - `try_resolve` writes `attempt resolve(raw)`, which turns the outcome into a `Result[Text, LinkError]`: `Ok(target)` or `Err(failure)`. It does not fail itself, so it needs no `fails`.
 - `resolve_or_home` matches on that `Result` with `when` and returns `/` for any `Err`.
@@ -168,7 +168,7 @@ The fix is already in scope: pass `slug`, which `parse_slug` returned.
 
 ### A second run-time check instead of the parser
 
-In `shorten`, check the text inline instead of calling `parse_slug`: `let slug = checked(raw, valid_slug(it)) else fail BadSlug`. The module now uses `checked` twice:
+In `shorten`, replace the two lines that parse the slug, `let slug = parse_slug(raw)` and its `if error fail BadSlug`, with one inline check: `let slug = checked(raw, valid_slug(it)) else fail BadSlug`. The module now uses `checked` twice:
 
 ```text
 [U7003] Error: module `shortlinks.links` uses `checked` 2 times, and `[escape_budget] checked_per_module` allows 1
@@ -219,8 +219,8 @@ Change `status proposed` to `status active` in `LINKS_1`:
 
 - Construct pages: [predicates](../../docs/guide/language/types/predicate.md), [`where`](../../docs/guide/language/types/where.md), [`checked`](../../docs/guide/language/errors/checked.md), [`fails`](../../docs/guide/language/errors/fails.md), [`fail`](../../docs/guide/language/errors/fail.md), [`if error`](../../docs/guide/language/errors/if-error.md), [`attempt`](../../docs/guide/language/errors/attempt.md), [`requirement`](../../docs/guide/language/requirements/requirement.md), [`handler`](../../docs/guide/language/capabilities/handler.md).
 - Configuration: [`checked_per_module`](../../docs/guide/configure/escape-budget/checked-per-module.md).
-- In the Learn section of the website: chapter 6, "Failure", and chapter 7, "Contracts and the verifier".
-- Specification: [predicates](../../docs/spec/03-types.md#s4), [handling clauses](../../docs/spec/06-errors.md#s3), [`attempt`](../../docs/spec/06-errors.md#s5), [`checked`](../../docs/spec/06-errors.md#s6), [requirements](../../docs/spec/08-requirements-and-examples.md#s1).
+- Learn, the tutorial on the Una website: chapter 6, "Failure"; chapter 7, "Contracts and the verifier".
+- Specification: [predicates (spec/03 §4)](../../docs/spec/03-types.md), [handling clauses (spec/06 §3)](../../docs/spec/06-errors.md), [`attempt` (spec/06 §5)](../../docs/spec/06-errors.md), [`checked` (spec/06 §6)](../../docs/spec/06-errors.md), [requirements (spec/08 §1)](../../docs/spec/08-requirements-and-examples.md).
 
 ## Edition
 

@@ -32,7 +32,15 @@ vent at 66%
 the warmer side asks for 66% open
 ```
 
-`main` reads two fixed sensors, 24 and 31 degrees. The warmer side is 31 degrees, which is 11 degrees above 20, so the vent opens 11 × 6 = 66 percent. The first line comes from the vent handler, the second from `main`.
+`main` reads two fixed sensors, 24 and 31 degrees. The warmer side is 31 degrees, which is 11 degrees above 20, so the vent opens 11 × 6 = 66 percent. The first line comes from the vent handler, the second from `main`. `una test .` runs the three examples of `greenhouse.climate`:
+
+```text
+example greenhouse.climate "above 35 degrees the vent opens fully" ... ok
+example greenhouse.climate "a cold greenhouse stays closed" ... ok
+example greenhouse.climate "the vent follows the warmer side" ... ok
+
+3 examples: 3 passed, 0 failed
+```
 
 ## How it works
 
@@ -122,14 +130,16 @@ pub warmest() -> Celsius
 - every opening handed to `@vent.set` is in `0..100`, as `set` requires, and every reading is a `Celsius`;
 - each handler keeps the promise of its operation: `fixed_sensor` reads in range.
 
-`una report .` shows the rest of the picture. Among its lines:
+`una report .` shows the rest of the picture. Among its lines, with `...` where lines are left out:
 
 ```text
 handler authority:
   greenhouse.climate.printed_vent for greenhouse.climate.Vent (pub): @console: Console[print]
+...
 assumptions:
   greenhouse.climate.Sensor: read; ensures read: result >= -40 and result <= 80
   greenhouse.climate.Vent: set
+...
 requirements:
   GREENHOUSE_1 (active): greenhouse.climate.opening
 ```
@@ -229,8 +239,8 @@ A fake is checked like any other code. A test that passes against a fake therefo
 ## Learn more
 
 - Construct pages: [`requirement`](../../docs/guide/language/requirements/requirement.md), [`where` and ranges](../../docs/guide/language/types/where.md), [`capability`](../../docs/guide/language/capabilities/capability.md), [`handler`](../../docs/guide/language/capabilities/handler.md), [`uses`](../../docs/guide/language/capabilities/uses.md), [`with`](../../docs/guide/language/capabilities/with.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`when`](../../docs/guide/language/control-flow/when.md), [`example`](../../docs/guide/language/examples/example.md).
-- In the Learn section of the website: chapter 7, "Contracts and the verifier", chapter 8, "Capabilities", and chapter 10, "Testing".
-- Specification: [capability declarations](../../docs/spec/05-capabilities-and-effects.md#s2), [passing capabilities](../../docs/spec/05-capabilities-and-effects.md#s4), [handlers](../../docs/spec/05-capabilities-and-effects.md#s5), [requirements](../../docs/spec/08-requirements-and-examples.md#s1), [examples](../../docs/spec/08-requirements-and-examples.md#s2), [the build report](../../docs/spec/13-diagnostics-and-abi.md#s6).
+- Learn, the tutorial on the Una website: chapter 7, "Contracts and the verifier"; chapter 8, "Capabilities"; chapter 10, "Testing".
+- Specification: [capability declarations (spec/05 §2)](../../docs/spec/05-capabilities-and-effects.md), [passing capabilities (spec/05 §4)](../../docs/spec/05-capabilities-and-effects.md), [handlers (spec/05 §5)](../../docs/spec/05-capabilities-and-effects.md), [requirements (spec/08 §1)](../../docs/spec/08-requirements-and-examples.md), [examples (spec/08 §2)](../../docs/spec/08-requirements-and-examples.md), [the build report (spec/13 §6)](../../docs/spec/13-diagnostics-and-abi.md).
 
 ## Edition
 

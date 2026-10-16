@@ -88,7 +88,7 @@ Remove the `uses` line and write `main` as a one-line function:
 pub main() -> Unit = @console.print("Hello, Una")
 ```
 
-`una check .` rejects it:
+`una check .` rejects it. Here and in the other READMEs, a diagnostic is shown as `una check .` prints it in a terminal without colors, except that trailing spaces are removed:
 
 ```text
 [U3004] Error: `@console` is used here, but this code declares no `uses`, so it is pure
@@ -147,8 +147,9 @@ There is no ambient authority. A host capability that is not granted is not ther
 
 - Construct pages: [`uses`](../../docs/guide/language/capabilities/uses.md), [host capabilities](../../docs/guide/language/capabilities/host.md), [capabilities](../../docs/guide/language/capabilities/capability.md), [`example`](../../docs/guide/language/examples/example.md).
 - Configuration: [`entry`](../../docs/guide/configure/run/entry.md), [`grants`](../../docs/guide/configure/run/grants.md), [`edition`](../../docs/guide/configure/package/edition.md), [`verification.lock`](../../docs/guide/configure/verification-lock.md).
-- Tutorial: [Getting started](../../docs/guide/getting-started.md), and in the Learn section of the website, chapter 1, "Hello, Una", and chapter 8, "Capabilities".
-- Specification: [capabilities and effects](../../docs/spec/05-capabilities-and-effects.md#s3), [host capabilities](../../docs/spec/05-capabilities-and-effects.md#s7), [the entry point](../../docs/spec/04-functions-and-contracts.md#s8), [the command line](../../docs/spec/13-diagnostics-and-abi.md#s5).
+- Tutorial: [Getting started](../../docs/guide/getting-started.md).
+- Learn, the tutorial on the Una website: chapter 1, "Hello, Una"; chapter 8, "Capabilities".
+- Specification: [capabilities and effects (spec/05 §3)](../../docs/spec/05-capabilities-and-effects.md), [host capabilities (spec/05 §7)](../../docs/spec/05-capabilities-and-effects.md), [the entry point (spec/04 §8)](../../docs/spec/04-functions-and-contracts.md), [the command line (spec/13 §5)](../../docs/spec/13-diagnostics-and-abi.md).
 
 ## Edition
 

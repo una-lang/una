@@ -251,13 +251,13 @@ The rule is enforced where the value enters, in another module, with a pointer b
 
 1. **Both shelves down.** Add an example to `desk.una` where both shelves are `offline_shelf()`, and expect `fails ShelfDown`. *Hint:* import `offline_shelf` from `toolshelf.tools`.
 2. **A late fee.** Add `pub late_fee(checkout: Checkout, today: Day) -> Nat`, three units for each late day, with `ensures not overdue(checkout, today) implies result == 0`. *Hint:* reuse `late_days`. Add an example: a checkout due on day 10 and returned on day 16 costs 18.
-3. **A fee the solver cannot prove.** Make the fee a tenth of the tool's deposit for each late day: `late_days(checkout, today) * (checkout.tool.deposit / 10)`. `una check .` now reports U5002, not U5001: the obligations are *unknown*, because the solver leaves a product of two values uninterpreted. Unknown is not refuted. It means that the proof needs a different shape, such as a fee per day that is a constant, or a fee table chosen with `when`.
+3. **A fee the solver cannot prove.** Make the fee a tenth of the tool's deposit for each late day: `late_days(checkout, today) * (checkout.tool.deposit / 10)`. `una check .` now reports U5002, not U5001: the obligations are *unknown*, because the encoding of the solver's arithmetic (spec/12 §2) leaves a product of two values uninterpreted, as the diagnostic says. Unknown is not refuted. It means that the proof needs a different shape, such as a fee per day that is a constant, or a fee table chosen with `when`.
 
 ## Learn more
 
 - Construct pages: [`requirement`](../../docs/guide/language/requirements/requirement.md), [predicates](../../docs/guide/language/types/predicate.md), [`where` and ranges](../../docs/guide/language/types/where.md), [`requires`](../../docs/guide/language/functions/requires.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`attempt`](../../docs/guide/language/errors/attempt.md), [`with`](../../docs/guide/language/capabilities/with.md), [`if error`](../../docs/guide/language/errors/if-error.md), [host capabilities](../../docs/guide/language/capabilities/host.md).
-- In the Learn section of the website: chapter 6, "Failure", chapter 7, "Contracts and the verifier", and chapter 10, "Testing".
-- Specification: [refinements](../../docs/spec/03-types.md#s3), [predicates](../../docs/spec/03-types.md#s4), [clauses](../../docs/spec/04-functions-and-contracts.md#s2), [passing capabilities](../../docs/spec/05-capabilities-and-effects.md#s4), [`attempt`](../../docs/spec/06-errors.md#s5), [requirements](../../docs/spec/08-requirements-and-examples.md#s1).
+- Learn, the tutorial on the Una website: chapter 6, "Failure"; chapter 7, "Contracts and the verifier"; chapter 10, "Testing".
+- Specification: [refinements (spec/03 §3)](../../docs/spec/03-types.md), [predicates (spec/03 §4)](../../docs/spec/03-types.md), [clauses (spec/04 §2)](../../docs/spec/04-functions-and-contracts.md), [passing capabilities (spec/05 §4)](../../docs/spec/05-capabilities-and-effects.md), [`attempt` (spec/06 §5)](../../docs/spec/06-errors.md), [requirements (spec/08 §1)](../../docs/spec/08-requirements-and-examples.md).
 
 ## Edition
 

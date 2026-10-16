@@ -85,7 +85,7 @@ pub use_up(item: Item, used: Nat) -> Item
   Item(name: item.name, amount: item.amount - used, measure: item.measure)
 ```
 
-`item.amount - used` must be a `Nat`, since `amount` is one. The solver proves it from the `requires`: whoever calls `use_up` must show that there is enough. `restock` has the matching `ensures` for addition. `missing`, `shopping_list` and `count_where` promise a result no longer than their input (`ensures result.len <= items.len`), which a caller can rely on without reading their bodies.
+`item.amount - used` must be a `Nat`, since `amount` is one. The solver proves it from the `requires`: whoever calls `use_up` must show that there is enough. `restock` has the matching `ensures` for addition. `missing` and `shopping_list` promise a result no longer than their input (`ensures result.len <= items.len`), and `count_where` a count no larger than its bin (`ensures result <= bin.entries.len`). A caller can rely on these without reading the bodies.
 
 ### A division that cannot be by zero
 
@@ -124,7 +124,7 @@ The type checker adds the rest without the solver: every `when` on a choice cove
 
 ### Taking more than there is
 
-Delete the `requires used <= item.amount` line of `use_up`. `una check .` reports that the new amount may be negative:
+Delete the `requires used <= item.amount` line of `use_up`. `una check .` reports that the new amount may be negative (first line shown):
 
 ```text
 [U5001] Error: refinement `(item.amount - used) >= 0` is refuted
@@ -183,8 +183,8 @@ Delete the `is None -> 0` arm of `amount_of`:
 ## Learn more
 
 - Construct pages: [`kind`](../../docs/guide/language/types/kind.md), [`where`](../../docs/guide/language/types/where.md), [`requires`](../../docs/guide/language/functions/requires.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`when`](../../docs/guide/language/control-flow/when.md), [`example`](../../docs/guide/language/examples/example.md).
-- In the Learn section of the website: chapter 4, "Kinds", chapter 5, "Collections and the prelude", and chapter 7, "Contracts and the verifier".
-- Specification: [kinds](../../docs/spec/03-types.md#s2), [refinements](../../docs/spec/03-types.md#s3), [clauses](../../docs/spec/04-functions-and-contracts.md#s2), [obligation generation](../../docs/spec/12-verification.md#s3), [the prelude](../../docs/spec/14-standard-library.md#s1).
+- Learn, the tutorial on the Una website: chapter 4, "Kinds"; chapter 5, "Collections and the prelude"; chapter 7, "Contracts and the verifier".
+- Specification: [kinds (spec/03 §2)](../../docs/spec/03-types.md), [refinements (spec/03 §3)](../../docs/spec/03-types.md), [clauses (spec/04 §2)](../../docs/spec/04-functions-and-contracts.md), [obligation generation (spec/12 §3)](../../docs/spec/12-verification.md), [the prelude (spec/14 §1)](../../docs/spec/14-standard-library.md).
 
 ## Edition
 

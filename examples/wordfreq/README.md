@@ -69,7 +69,7 @@ pub initial(word: Text) -> Text
 - `ensures result.len == 1` is a promise that the function keeps. The solver proves it from the body and from what `slice` promises.
 - `slice` has its own precondition: both positions lie inside the text. It holds because of the `requires`.
 
-`una obligations .` lists every obligation of the package and its status:
+`una obligations .` lists every obligation of the package and its status. Each line says `(cached)` because the `una check .` above already proved it; on a fresh copy the listing has no `(cached)`:
 
 ```text
 proven   ob-ee99f1a645a5 precondition  src/wordfreq.una:7:3 space.len > 0 (cached)
@@ -93,7 +93,7 @@ pub counts(words: List[Text]) -> Map[Text, Int]
   counts
 ```
 
-Una has values, not references. `let edit` declares a binding that the function may change, and `edit counts.set(...)` gives `counts` a new map. The map is updated in place when nothing else holds it, so the loop does not copy the map on each word.
+Una has values, not references. `let edit` declares a binding that the function may change, and `edit counts.set(...)` gives `counts` a new map. A backend may update a value in place when nothing else holds it, so the loop need not copy the map on each word. The specification allows this and makes it unobservable: the program means the same either way (spec/17 §7, rule 3).
 
 `counts.get(key: word)` returns an `Option[Int]`: a word seen for the first time has no entry. `if none use 0` handles that case on the line below the call, so `seen` is a plain `Int`. Una asks for one effect per line: each call that can be absent or fail is handled right under it.
 
@@ -135,7 +135,7 @@ Delete the `requires word.len >= 1` line from `initial`. `una check .` cannot pr
 ────╯
 ```
 
-Read the counterexample first: `word.len = 0`, an empty word. `Text#0` stands for some text that the solver does not spell out. The repairs are ranked. A `requires` (or a refined parameter type, repair 1) moves the duty to the callers, where the solver can check it. A `checked` (repair 3) would test it at run time instead, and costs part of the escape budget.
+Read the counterexample first: `word.len = 0`, an empty word. `Text#0` stands for some text that the solver does not spell out. The repairs are ranked, and they change only the function's own code. The fix that the example uses, a `requires`, is not among them. Repair 1, a refined parameter type, moves the duty to the callers in the same way, where the solver can check it. A `checked` (repair 3) would test it at run time instead, and costs part of the escape budget.
 
 ### A caller that breaks the contract
 
@@ -182,13 +182,14 @@ Delete the `if none use 0` line in `counts`. `seen` is then an `Option[Int]`, an
 
 1. **Ignore case.** Make "The" and "the" the same word: call `to_lower` on the line before you split it, `words(to_lower(text))`, and change the text in `main` to mix cases. The output stays the same. `to_lower` exists from edition `0.2`, and it promises `result.len == t.len`.
 2. **Keep the repeated words.** Add `pub repeated(counts: Map[Text, Int]) -> List[Text]`, which keeps the keys whose count is above 1. *Hint:* `counts.entries()` is a list of entries with `key` and `value`, so `filter` and `map` do the job in one line. Add an example: `do repeated(counts(words("a b a")))` and `expect result == ["a"]`.
-3. **Count a file.** Read the line from a file instead of a literal. Declare `uses @files: Files[read]` on `main`, grant `"files:input:read"` in `una.toml`, and read `@files.read("line.txt")`. The read can fail, so handle it on the line below, for example with `if error use ""`. Then run `una check .`: the text that `Files.read` returns is labeled `internal`, and `words` takes an unlabeled, that is `public`, `Text`, so the call is a U4001, a flow from `internal` to `public`. File contents do not reach the console by accident. The `journal` example shows how a package releases such data on purpose, through a policy.
+3. **Count a file.** Read the line from a file instead of a literal. Declare `uses @files: Files[read]` on `main`, grant `"files:input:read"` in `una.toml`, and read `@files.read("line.txt")`. Paths are relative to the granted directory, so create `input/line.txt` with a line of words. The read can fail, so handle it on the line below, for example with `if error use ""`. Then run `una check .`: the text that `Files.read` returns is labeled `internal`, and `words` takes an unlabeled, that is `public`, `Text`, so the call is a U4001, a flow from `internal` to `public`. File contents do not reach the console by accident. The `journal` example shows how a package releases such data on purpose, through a policy.
 
 ## Learn more
 
 - Construct pages: [`requires`](../../docs/guide/language/functions/requires.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`let edit`](../../docs/guide/language/control-flow/let-edit.md), [`for`](../../docs/guide/language/control-flow/for.md), [`if none use`](../../docs/guide/language/errors/if-error.md), [`example`](../../docs/guide/language/examples/example.md).
-- Tutorial: [Getting started](../../docs/guide/getting-started.md#3-a-contract-and-a-proof-that-fails), and in the Learn section of the website, chapter 5, "Collections and the prelude", and chapter 7, "Contracts and the verifier".
-- Specification: [clauses](../../docs/spec/04-functions-and-contracts.md#s2), [one effect per line](../../docs/spec/04-functions-and-contracts.md#s4), [counterexamples](../../docs/spec/12-verification.md#s7), [the memory model](../../docs/spec/17-memory-model.md#s2), [maps](../../docs/spec/21-maps.md), [JSON](../../docs/spec/23-json.md).
+- Tutorial: [Getting started](../../docs/guide/getting-started.md#3-a-contract-and-a-proof-that-fails).
+- Learn, the tutorial on the Una website: chapter 5, "Collections and the prelude"; chapter 7, "Contracts and the verifier".
+- Specification: [clauses (spec/04 §2)](../../docs/spec/04-functions-and-contracts.md), [one effect per line (spec/04 §4)](../../docs/spec/04-functions-and-contracts.md), [counterexamples (spec/12 §7)](../../docs/spec/12-verification.md), [editable bindings (spec/17 §2)](../../docs/spec/17-memory-model.md), [backend freedom (spec/17 §7)](../../docs/spec/17-memory-model.md), [maps](../../docs/spec/21-maps.md), [JSON](../../docs/spec/23-json.md).
 
 ## Edition
 
