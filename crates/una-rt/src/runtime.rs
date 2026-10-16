@@ -85,6 +85,141 @@ fn report_parked() {
     let _ = io::stdout().flush();
 }
 
+/// The bytes that the steps of copies have announced and not yet allocated, process-wide
+/// (ADR 0113 rule 4): a step checks `held() + reserved` before it allocates, so that copies made
+/// at once, by blocks in sibling tasks, see each other.
+static RESERVED: AtomicUsize = AtomicUsize::new(0);
+
+/// The bytes of one step, counted in [`RESERVED`] until the value is dropped: after the step
+/// allocated, or while a panic unwinds. Between the allocation and the drop, the bytes are counted
+/// twice, in `held()` too, which only makes a concurrent step stricter.
+#[must_use = "a reservation counts until it is dropped, after the allocation it announces"]
+pub(crate) struct Reservation(usize);
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        RESERVED.fetch_sub(self.0, Ordering::SeqCst);
+        #[cfg(test)]
+        LIVE_RESERVATIONS.with(|live| live.set(live.get() - 1));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The reservations this thread holds, in tests: 0 again after every copy, a refused or a
+    /// panicked one included.
+    pub(crate) static LIVE_RESERVATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Refuses steps of this thread, in tests: `Some((k, n))` lets k steps pass and refuses the
+    /// next n, as a heap at its ceiling would, then lets the later ones pass.
+    pub(crate) static REFUSE_STEP: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+}
+
+/// Announces a step of `bytes` and checks it: the reservation, when `held() + reserved` stays
+/// within the run's ceiling, or `None` when it would not, with nothing announced. A step larger
+/// than any allocation can be (`isize::MAX` bytes) is refused before it is announced, so the
+/// process-wide sum never wraps.
+pub(crate) fn try_reserve(bytes: usize) -> Option<Reservation> {
+    #[cfg(test)]
+    {
+        let refused = REFUSE_STEP.with(|cell| match cell.get() {
+            Some((0, refuse)) => {
+                cell.set((refuse > 1).then(|| (0, refuse - 1)));
+                true
+            }
+            Some((pass, refuse)) => {
+                cell.set(Some((pass - 1, refuse)));
+                false
+            }
+            None => false,
+        });
+        if refused {
+            return None;
+        }
+    }
+    if bytes > isize::MAX as usize {
+        return None;
+    }
+    let reserved = RESERVED
+        .fetch_add(bytes, Ordering::SeqCst)
+        .saturating_add(bytes);
+    let reservation = Reservation(bytes);
+    #[cfg(test)]
+    LIVE_RESERVATIONS.with(|live| live.set(live.get() + 1));
+    let held = crate::held();
+    HOT.with(|hot| !hot.active.get() || held.saturating_add(reserved) <= hot.mem_ceiling.get())
+        .then_some(reservation)
+}
+
+/// The message of a copy's refused step: `message`, or the message of a call over the memory
+/// budget.
+pub(crate) fn refusal_message(message: Option<String>) -> String {
+    message.unwrap_or_else(|| {
+        let max_memory = with_state(|state| state.max_memory).unwrap_or_default();
+        format!("this call exceeds the memory limit of {max_memory} MiB")
+    })
+}
+
+/// Stops the run or the task with U6003 at the block `site`, for a copy's refused step (ADR 0113
+/// rule 4): with `message`, or the message of a call over the memory budget. The caller holds no
+/// borrow of the heap, since a stop of `main` ends the process.
+pub(crate) fn refuse(site: usize, message: Option<String>) {
+    let message = refusal_message(message);
+    let abort = STATE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let location = cell.as_ref().map(|state| site_location(state, site))?;
+        stop_or_abort(&mut cell, Code::U6003, location, message)
+    });
+    if let Some((state, code, location, message)) = abort {
+        abort_run(state, code, location, message);
+    }
+}
+
+thread_local! {
+    /// Whether the thread runs a copy inside [`guarded`]: a panic there is reported as U8001 by
+    /// the copy's caller, so the panic hook keeps its message instead of printing it.
+    static GUARDED: Cell<bool> = const { Cell::new(false) };
+    /// The message of the last panic inside [`guarded`] on this thread.
+    static PANICKED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Installs, once, the panic hook of the runtime, chained to the hook in place: inside
+/// [`guarded`] it keeps the panic's message for U8001; anywhere else it passes the panic on, so
+/// every other panic prints as before (ADR 0113 rule 5).
+pub(crate) fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if GUARDED.with(Cell::get) {
+                let message = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_owned())
+                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                PANICKED.with(|cell| *cell.borrow_mut() = Some(message));
+            } else {
+                previous(info);
+            }
+        }));
+    });
+}
+
+/// Runs `f`, a copy, catching a panic: `Err` with the panic's message when it panicked, which
+/// is a defect of the runtime that the caller reports as U8001 (ADR 0113 rule 2). No panic
+/// unwinds out of a copy, so none reaches the generated code's `extern "C"` frames.
+pub(crate) fn guarded<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+    let outer = GUARDED.with(|cell| cell.replace(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    GUARDED.with(|cell| cell.set(outer));
+    result.map_err(|_| {
+        let message = PANICKED
+            .with(|cell| cell.borrow_mut().take())
+            .unwrap_or_default();
+        format!("internal error: the runtime panicked while it copied a value: {message}")
+    })
+}
+
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
 /// in the heap and the stacks cannot be the program's (ADR 0113 rule 5).
 const COUNT_LIMIT_BYTES: usize = (values::COUNT_LIMIT as usize).saturating_mul(8);
@@ -128,7 +263,7 @@ pub(crate) fn count_limit_reached() -> ! {
             3,
         )
     };
-    let written = writeln!(io::stderr(), "[{code}] error: {message}");
+    let written = writeln!(io::stderr(), "[{code}] Error: {message}");
     #[cfg(test)]
     report_parked();
     // Nothing unwinds through the compiled frames (spec/16 §4 rule 3).
@@ -619,6 +754,7 @@ pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 /// grants, calls `entry`, the compiled `main`, on a thread with the stack that `--max-depth`
 /// needs, and writes the trace. Returns the exit code.
 pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + 'static) -> i32 {
+    install_panic_hook();
     let mut stderr = io::stderr();
     let Some(meta) = Meta::parse(meta) else {
         let _ = writeln!(

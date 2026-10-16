@@ -54,3 +54,7 @@ The native backend (ADR 0055) sizes the stack of its `main` the same way, and it
 ## Amendment (2026-10-06)
 
 The native runtime's heap budget depends on the `cap` allocator crate (rule 4), which is `unsafe` code outside ADR 0058's single `unsafe` module, `crates/una-rt/src/ffi.rs`. The repository still writes no `unsafe` for it, but the crate's allocator wraps every allocation of `una` and of every native executable, so `cap` is part of the trusted base, with the runtime (Leonardo, 2026-10-06, on MEM-4 of the independent v0.2 native review #176, issue #185). `spec/16 §4` and the Trusted row of charter §3 name it.
+
+## Amendment (2026-10-15, ADR 0113)
+
+Rule 2 gains a check point in native code only: each step of the copies a `together` block makes checks `held() + reserved` against the budget before it allocates, and a refusal stops the run with U6003 at the block. The interpreter's checks do not change.
