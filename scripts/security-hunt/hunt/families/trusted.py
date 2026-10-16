@@ -188,7 +188,7 @@ def t4_forms(s, edition):
         ("import", [], [f"pub leak(t: {F}) -> {T} = masked(t)"]),
         ("import-value", [], [f"pub leak() -> fn({F}) -> {T} = masked"]),
     ]
-    if edition == "0.2":
+    if edition != "0.1":
         forms.append(("together", [
             f"pub leak(t: {F}) -> {T}\n=\n  together\n    let x = masked(t)\n    let y = 1\n  x"],
             None))
@@ -371,7 +371,7 @@ def t10(seed, edition):
                     f"handler probing() for Probe\n  op probe(flag, t) = "
                     f"if flag then mask(t) else {d}"),
     }
-    if edition == "0.2":
+    if edition != "0.1":
         forms["together"] = (f"pub pick(flag: {flag} Bool, t: {F}) -> {flag} {s.base}\n=\n"
                              f"  together\n    let x = if flag then mask(t) else {d}\n"
                              "    let y = 1\n  x")

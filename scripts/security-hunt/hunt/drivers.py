@@ -280,8 +280,9 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             # needs the solver (`judge_residual`).
             fv = None
             if z3:
-                fv = parse_check(sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
-                                             timeout=timeout, env_extra=solver_env(z3)))
+                fv = parse_check(sandbox.run(
+                    [una, "--json", "check", ".", "--solver-wallclock", str(FULL_CHECK_WALLCLOCK)],
+                    cwd=pkg, writable=root, timeout=timeout, env_extra=solver_env(z3)))
             r = judge_residual(v.kind, fv, prog.variant, prog.expect, prog.prove)
             result.update(full=None if fv is None else fv.row(), **r)
             tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + r["full_kind"])] += 1
@@ -323,16 +324,23 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
     return tally
 
 
-# The full check's codes that decide a residual program: its obligation refuted or unknown.
-OBLIGATION_CODES = {"U5001", "U5002"}
+# The full check's code that decides a residual program: its obligation refuted. An obligation
+# left unknown (U5002) decides nothing, so a row with it is invalid (#818).
+OBLIGATION_CODES = {"U5001"}
+# The solver's wall clock per query in that check, half its time limit (`gate.CHECK_TIMEOUT`, 60
+# seconds): a single query the solver does not decide ends as U5002, an invalid row. A check slower
+# in total, from several slow queries, still reaches the limit, and its timeout is invalid too, so
+# either way the row fails the gate.
+FULL_CHECK_WALLCLOCK = 30
 
 
 def judge_residual(tier0, full, variant, expect=(), prove=False):
     """A residual program's verdicts (#548), fail-closed. `tier0` is `una check --tier 0`'s
     kind, `full` the full check's `Verdict`, or None when no solver was given. The row is invalid,
     and the batch is rerun, unless the full check ran with the solver to an acceptance or to a
-    rejection by an obligation: no solver, U5003, a timeout, an ICE, a usage error, an unreadable
-    or inconsistent output, or a rejection by other codes, which tests nothing of the channel. A
+    rejection by a refuted obligation: no solver, U5003, an obligation left unknown (U5002), a
+    timeout, an ICE, a usage error, an unreadable or inconsistent output, or a rejection by other
+    codes, which tests nothing of the channel. A
     public print after the step goes to triage when either check accepts it.
 
     A row with `expect` (family Q, #813) is one the full check must reject with those codes and no
@@ -347,6 +355,8 @@ def judge_residual(tier0, full, variant, expect=(), prove=False):
         kind = "invalid (no solver)"
     elif any(c[0] == "U5003" for c in full.codes):
         kind = "invalid (U5003)"
+    elif any(c[0] == "U5002" for c in full.codes):
+        kind = "invalid (U5002, the solver did not decide)"
     elif full.kind not in ("accepted", "rejected"):
         kind = f"invalid ({full.kind})"
     elif full.kind == "rejected" and prove:

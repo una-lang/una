@@ -432,6 +432,8 @@ def native_pass(prog, una, root, timeout, result):
             if why:
                 result["error"] = result["error"] or f"native {why}"
                 return
+            # Counted here, once: this run is the native pass's own, not one of the oracle's.
+            result["native"]["pass_timed_out"] = result["native"].get("pass_timed_out", 0) + 1
             native_check(result, una, files, name, root, timeout, ("abort", None), run)
             continue
         try:
@@ -527,6 +529,7 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             result["error"] = "base: " + base[1]
         native_check(result, una, prog.files, prog.name + "-base", root, timeout, base, base_run,
                      native_plant(prog.files) if native_plant else None)
+        result["base_timed_out"] = base == ("abort", ["timeout"])
         ref = base if base[0] == "complete" else None
         completes = [base] if base[0] == "complete" else []
         for i, pos in enumerate(prog.vary):
@@ -542,6 +545,10 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
                     end = ("error", "a variant is rejected by the checks: " + ", ".join(end[1]))
                 verdict = judge(ref, end)
                 entry = {"position": i, "value": text, "verdict": verdict}
+                if end == ("abort", ["timeout"]):
+                    # Killed at its limit, its full check deciding (`native.undecided`): counted,
+                    # so a drift in such kills shows before it reaches a floor (#818).
+                    entry["timed_out"] = True
                 if verdict == "first":
                     # The first complete end: the reference of the rest. Against an aborted
                     # base, the pair is a termination pair.

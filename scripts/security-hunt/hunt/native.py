@@ -72,12 +72,16 @@ def undecided(una, files, name, root):
     try:
         doc = json.loads(r.stdout)
     except ValueError:
+        doc = None
+    diags = doc.get("diagnostics") if isinstance(doc, dict) else None
+    if (not isinstance(doc, dict) or doc.get("schema") != "una.diagnostics/1"
+            or not isinstance(diags, list) or not all(isinstance(d, dict) for d in diags)):
         return f"{name}: the run reached its time limit, and its full check is not a document"
-    codes = sorted({d.get("code") for d in doc.get("diagnostics", [])})
+    codes = sorted({str(d.get("code")) for d in diags})
     if set(codes) & SOLVER_CODES:
         return (f"{name}: the run reached its time limit, and its full check did not decide: "
                 + ", ".join(sorted(set(codes) & SOLVER_CODES)))
-    if r.code != 0 or any(d.get("severity") == "error" for d in doc.get("diagnostics", [])):
+    if r.code != 0 or any(d.get("severity") == "error" for d in diags):
         return (f"{name}: the run reached its time limit, and its full check rejects it: "
                 + ", ".join(codes))
     return None

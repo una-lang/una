@@ -12,6 +12,7 @@ It fails closed. The gate passes only when all of these hold:
   (`PINNED_FALLBACK`, `PINNED_NOT_RECHECKED`); its residual comparisons are the pinned count and
   each is clean; the programs it compares and the declarations it accepts meet their floors;
 - each driver judged exactly the cases the fixed run generates, and none of those counts is zero;
+  the edition 0.3 sample has a seed for every form of the fixed run (`programs` raises otherwise);
   the oracle's complete-against-complete comparisons, the programs that have one, and the programs
   whose variants differ at the literal's own level (liveness) meet their floors, and so do those
   of families B, C and Q (`MIN_FAMILY_COMPARED`);
@@ -19,8 +20,10 @@ It fails closed. The gate passes only when all of these hold:
   program, rejected with one of its expected codes, and their count per family is the pinned one;
 - the solver decides every run and build of the oracle and the native sample (U5002 and U5003
   are errors), and a run killed at its time limit counts as an abort only when its full check,
-  run on its own, decides (`native.undecided`);
-- the whole gate ends within its time budget (`TIME_BUDGET`), a guard against a hang;
+  run on its own, decides (`native.undecided`); and no such run is killed, its check deciding
+  (`MAX_TIMEOUTS_DECIDED`, 0), since each is a comparison not made;
+- the whole gate ends within its time budget (`TIME_BUDGET`), a guard against a gate slowed as a
+  whole;
 - every canary is caught (`CANARIES`): a must-reject program that is in fact accepted; a program
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; an
@@ -51,7 +54,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from . import drivers, native, oracle, sandbox
-from .families import DEFAULT_EDITIONS, OPERATOR_EDITIONS, OPERATORS, editions_of, family_of
+from .families import (DEFAULT_EDITIONS, OPERATOR_EDITIONS, OPERATORS, SAMPLE_COUNT,
+                       SAMPLE_EDITION, editions_for, family_of, sample_forms)
 from .families import conditions
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
@@ -67,7 +71,7 @@ EDITIONS = DEFAULT_EDITIONS
 REFACTOR_IDS = ("R6", "R9")
 # The fixed run's sizes, pinned: a change of the generators that changes them fails the gate
 # until this table and docs/release-gates.md say so.
-PINNED = {"programs": 5600, "reject": 5600, "keep": 9714, "oracle": 581, "differ": 5600}
+PINNED = {"programs": 6288, "reject": 6288, "keep": 10851, "oracle": 637, "differ": 6288}
 # The re-check comparison's expected `unknown` outcomes, by program, each with its reason: any
 # other `unknown` is an error, and so is a pinned one that is no longer unknown (#791).
 PINNED_UNKNOWN = {
@@ -75,15 +79,18 @@ PINNED_UNKNOWN = {
     "F8-0.2-7c392c87affef562-saturating-secret-result": "out of F1 (expected): the primitive `fixed`",
     "F8-0.2-8fcd886c54b655f1-saturating-secret-result": "out of F1 (expected): the primitive `fixed`",
     "F8-0.2-f3c36fb985e9ab24-bit-secret-branch": "out of F1 (expected): the primitive `fixed`",
+    "F8-0.3-17ae8812afd2af8b-wrapping-secret-result": "out of F1 (expected): the primitive `fixed`",
+    "F8-0.3-8fcd886c54b655f1-saturating-secret-result": "out of F1 (expected): the primitive `fixed`",
+    "F8-0.3-f3c36fb985e9ab24-bit-secret-branch": "out of F1 (expected): the primitive `fixed`",
 }
 # The residual programs the re-check compares (a step a secret may abort, which the full check's
-# obligations guard): their count is pinned, so a silent drop fails.
-PINNED_RESIDUAL = 59
+# obligations guard): their count is pinned, so a silent drop fails: 13 of F8 and 50 of Q2.
+PINNED_RESIDUAL = 63
 # What the re-check compares, as the measured run found it. A program is compared when at least
 # one of its own (`app.*`) functions is accepted by the re-check; the floors are about 90% of the
-# measured run's 962 compared programs and 1,570 accepted declarations (#813).
-MIN_DIFFER_COMPARED = 865
-MIN_ACCEPTED_DECLARATIONS = 1413
+# measured run's 1,114 compared programs and 1,776 accepted declarations (#818).
+MIN_DIFFER_COMPARED = 1002
+MIN_ACCEPTED_DECLARATIONS = 1598
 # Documents the re-check reads as a whole fallback (every line `not re-checked` for one reason):
 # nothing in them is compared, so their count is pinned per reason, exactly.
 PINNED_FALLBACK = {
@@ -97,29 +104,29 @@ PINNED_FALLBACK = {
 # The program's own declarations the re-check does not re-check, outside those documents, per
 # reason, exactly: a change in what it reads is visible.
 PINNED_NOT_RECHECKED = {
-    "B1 restriction (impure via): `app.keys.masked`": 34,
-    "F1 restriction (`div` on operands of mixed or unknown integer types)": 1,
-    "a `case` on `app.main.Either`": 4,
-    "a `case` on `app.main.Maybe`": 3,
-    "a `handler` declaration": 317,
-    "a `via` function, which no label rule checks": 436,
+    "B1 restriction (impure via): `app.keys.masked`": 38,
+    "F1 restriction (`div` on operands of mixed or unknown integer types)": 2,
+    "a `case` on `app.main.Either`": 6,
+    "a `case` on `app.main.Maybe`": 5,
+    "a `handler` declaration": 340,
+    "a `via` function, which no label rule checks": 490,
     "a `with` of a source other than a handler": 28,
     "a call of `app.edge.stash`, whose handler of `Vault.note` no `with` scope installs here": 8,
-    "a call of `prelude.sort`": 10,
+    "a call of `prelude.sort`": 14,
     "a conditioned operation (ADR 0092)": 76,
-    "reaches `app.main.block`, which is not re-checked (the form `together`)": 4,
-    "reaches `app.main.both`, which is not re-checked (the form `together`)": 7,
-    "reaches `app.main.fan`, which is not re-checked (the form `together_for`)": 6,
-    "the constraint `integer`": 14,
-    "the constraint `ord`": 4,
-    "the form `together_for`": 88,
-    "the form `together`": 102,
-    "the type `app.main.Bad`": 16,
-    "the type `app.main.Box` with type arguments": 46,
-    "the type `app.main.Chain` with type arguments": 14,
-    "the type `app.main.Maybe` with type arguments": 6,
-    "the type `app.main.Outer` with type arguments": 18,
-    "the type `app.main.Sink` with type arguments": 44,
+    "reaches `app.main.block`, which is not re-checked (the form `together`)": 5,
+    "reaches `app.main.both`, which is not re-checked (the form `together`)": 9,
+    "reaches `app.main.fan`, which is not re-checked (the form `together_for`)": 7,
+    "the constraint `integer`": 16,
+    "the constraint `ord`": 6,
+    "the form `together_for`": 105,
+    "the form `together`": 126,
+    "the type `app.main.Bad`": 19,
+    "the type `app.main.Box` with type arguments": 54,
+    "the type `app.main.Chain` with type arguments": 16,
+    "the type `app.main.Maybe` with type arguments": 7,
+    "the type `app.main.Outer` with type arguments": 20,
+    "the type `app.main.Sink` with type arguments": 54,
 }
 ACCEPTED = ("accepted", "accepted, conditional on A3")
 # The planted Core documents of the re-check comparison (docs/reviews/formal-m2-replay/core-s27):
@@ -134,16 +141,16 @@ DIFFER_CANARIES = {
 }
 DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
-# literals that decide nothing: about 90% of the measured run's 440 programs and 1,732
-# complete-against-complete comparisons, and of its 106 live programs (#813, docs/release-gates.md).
-MIN_ORACLE_COMPARED = 396
-MIN_VARIANTS_COMPARED = 1558
-MIN_LIVE = 95
+# literals that decide nothing: about 90% of the measured run's 481 programs and 1,889
+# complete-against-complete comparisons, and of its 117 live programs (#818, docs/release-gates.md).
+MIN_ORACLE_COMPARED = 432
+MIN_VARIANTS_COMPARED = 1700
+MIN_LIVE = 105
 # The same floors per family for the families whose oracle programs are few beside the others'
 # (B, C and Q), about 90% of the measured run's compared programs and comparisons: 36 and 180 of
-# B, 32 and 160 of C, 38 and 190 of Q (#813). Above the global floors, these families could lose
+# B, 39 and 195 of C, 38 and 190 of Q (#818). Above the global floors, these families could lose
 # most of their comparisons unseen.
-MIN_FAMILY_COMPARED = {"B": (32, 162), "C": (28, 144), "Q": (34, 171)}
+MIN_FAMILY_COMPARED = {"B": (32, 162), "C": (35, 175), "Q": (34, 171)}
 # What the oracle compares and finds live, by operator and form, pinned exactly: losing a whole
 # form, or every live program of one, fails even above the floors; and the programs it sets aside
 # because the checks reject them, among them the closed calls of B2, C6 and Q3 that a correct
@@ -155,33 +162,52 @@ ORACLE_FORMS = (
     "Q3:guarded-dry", "Q3:guarded-live", "T8:effect-public", "T8:via-calls-policy",
 )
 LIVE_FORMS = ("C6:secret-fan-out", "H3:install-under-pc", "H3:reach-under-pc")
-PINNED_SET_ASIDE_REJECTED = {"B": 14, "C": 15, "Q": 12, "T": 26}
+PINNED_SET_ASIDE_REJECTED = {"B": 14, "C": 20, "Q": 12, "T": 29}
 # The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
 # programs it compares, about 90% of the measured run's (docs/release-gates.md).
-NATIVE_SAMPLE = 40
+NATIVE_SAMPLE = 45
 NATIVE_FAMILIES = ("B", "C", "H", "K", "P", "Q", "T")
-MIN_NATIVE_COMPARED = 32
-MIN_NATIVE_VARIANTS = 145
+MIN_NATIVE_COMPARED = 36
+MIN_NATIVE_VARIANTS = 165
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
-# The whole gate's time budget, in seconds: a guard against a hang, never a limit on coverage. The
-# fixed run of 5,600 programs took 205 to 215 seconds under a load average of 3.6 to 20 from other
-# work (2026-10-16), so 270 seconds leaves 55 to 65 seconds, about 25%.
+# The whole gate's time budget, in seconds, never a limit on coverage. Every check and run has a
+# time limit of its own, so a hang ends there; the budget guards against slowness that adds up
+# over the run, from a regression or a machine too loaded to measure on. The fixed run of 6,288
+# programs, the edition 0.3 sample included, took 226 to 253 seconds in four runs (2026-10-16),
+# the slower ones under more load (load average at the start and the end): 228 (1.9, 3.8), 226
+# (2.2, 4.4), 247 (3.5, 6.3) and 253 (4.9, 8.3), the same programs and the same compiler, so
+# 270 seconds leaves 17 seconds above the slowest, about 6%. A run over it is resolved by
+# measuring again, on a quieter machine, or by raising the budget on a measurement, never by
+# shrinking the run or its sample.
 TIME_BUDGET = 270
+# The most runs killed at their time limit, their full check deciding, that the gate allows: the
+# measured run had none, and each such kill is a comparison the oracle does not make (#818).
+MAX_TIMEOUTS_DECIDED = 0
 
 MOD = "app.main"
 CONSOLE_MAIN = "pub main() -> Unit\n  uses @console: Console[print]\n=\n"
 
 
 def programs():
-    """Every program of the fixed run, in a fixed order."""
+    """Every program of the fixed run, in a fixed order. Raises when the edition 0.3 sample has no
+    seed for a form of the fixed run (`sample_forms`), so the gate fails closed."""
     out = []
     for op in sorted(OPERATORS):
+        def seed_of(i, op=op):
+            return derive_seed(SEED, op, i)
+        sample, missing = sample_forms(op, seed_of, COUNT)
+        if missing:
+            raise ValueError(f"the edition 0.3 sample of {op} has no seed for the forms "
+                             f"{', '.join(sorted(missing))}")
         for i in range(COUNT):
-            seed = derive_seed(SEED, op, i)
-            for edition in editions_of(op):
-                out.append(OPERATORS[op](seed, edition))
+            for edition in editions_for(op, i, sample):
+                out.append(OPERATORS[op](seed_of(i), edition))
+        # The sample's seeds past the run's, for the forms only another edition had: edition 0.3
+        # only.
+        for i in sorted(j for j in sample if j >= COUNT):
+            out.append(OPERATORS[op](seed_of(i), SAMPLE_EDITION))
     return out
 
 
@@ -266,11 +292,21 @@ def oracle_family_errors(oracle_rows):
     return errors
 
 
+def timeouts_decided(oracle_rows):
+    """The runs killed at their time limit whose full check, run on its own, decided: the oracle's
+    base runs and variants (`base_timed_out`, `timed_out`) and the native pass's own runs
+    (`pass_timed_out`). A sampled program's native comparison reuses the oracle's run, so its
+    `skipped` entry is not counted again."""
+    return sum(int(bool(r.get("base_timed_out")))
+               + sum(1 for v in r.get("variants", []) if v.get("timed_out"))
+               + r.get("native", {}).get("pass_timed_out", 0) for r in oracle_rows)
+
+
 def budget_error(elapsed):
     """The error of a gate that took `elapsed` seconds, over `TIME_BUDGET`, or None."""
     if elapsed > TIME_BUDGET:
-        return (f"the gate took {elapsed:.0f} seconds, over its budget of {TIME_BUDGET}: a hang, "
-                "or a machine too loaded to measure on")
+        return (f"the gate took {elapsed:.0f} seconds, over its budget of {TIME_BUDGET}: a "
+                "slower toolchain, or a machine too loaded to measure on")
     return None
 
 
@@ -663,6 +699,12 @@ def run(una, out_dir, tip, core_check, z3):
         if r["native"]["divergences"]:
             r["finding"] = True
     termination = []
+    # Runs killed at their time limit whose full check, run on its own, decided
+    # (`native.undecided`): each removes a comparison, so their count has a ceiling.
+    killed = timeouts_decided(oracle_rows)
+    if killed > MAX_TIMEOUTS_DECIDED:
+        errors.append(f"oracle: {killed} runs killed at their time limit, their full check "
+                      f"deciding, and the gate allows {MAX_TIMEOUTS_DECIDED}")
     for r in oracle_rows:
         if r.get("error"):
             errors.append(f"oracle {r['name']}: {r['error']}")
@@ -861,7 +903,8 @@ def run(una, out_dir, tip, core_check, z3):
                    "set_aside": sum(1 for r in oracle_rows if r.get("set_aside")),
                    "programs_compared": programs_compared, "variants_compared": compared,
                    "live": live, "compared_forms": compared_forms, "live_forms": live_forms,
-                   "set_aside_rejected": set_aside_rejected},
+                   "set_aside_rejected": set_aside_rejected,
+                   "timeouts_decided": killed},
         "differ": {"expected": len(rows), "judged": len(differ_rows), "clean": differ_clean,
                    "compared": compared_rows, "accepted_declarations": accepted_decls,
                    "fallbacks": dict(sorted(fallbacks.items())),
@@ -920,6 +963,9 @@ def run(una, out_dir, tip, core_check, z3):
         "verdict": verdict, "seed": SEED, "count_per_operator": COUNT,
         "editions": list(EDITIONS),
         "operator_editions": {op: list(e) for op, e in sorted(OPERATOR_EDITIONS.items())},
+        "sample": {"edition": SAMPLE_EDITION, "first_per_operator": SAMPLE_COUNT,
+                   "and": "the first program of each further form of its 0.2 programs, and of "
+                          "each form only its programs of another edition have"},
         "refactors": list(REFACTOR_IDS), "tip": tip,
         "una": _version(una), "sizes": sizes, "canaries": canaries,
         "findings": findings, "errors": errors,
@@ -950,6 +996,7 @@ def run(una, out_dir, tip, core_check, z3):
     print(f"  canaries: " + ", ".join(f"{k} {'caught' if v else 'MISSED'}"
                                       for k, v in sorted(canaries.items())))
     print(f"  termination pairs (outside T6, recorded): {len(termination)}")
+    print(f"  runs killed at their time limit, their full check deciding: {killed}")
     for t in termination:
         print(f"    {t['name']} value {t['value']}: {t['base']} vs {t['variant']}")
     print(f"  notes (over-strict, not failures): {len(notes)}")
