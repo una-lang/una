@@ -1480,6 +1480,468 @@ mod tests {
         assert!(!stderr.contains("panicked at"), "{stderr}");
     }
 
+    /// A lambda with no parameter that returns a list of three texts: four objects, past an
+    /// export limit of 2, so that a transfer of its value is refused.
+    extern "C" fn returns_big(_closure: i64) -> Returned {
+        let value = values::list();
+        for text in ["a", "b", "c"] {
+            let word = values::text_word(text.to_owned());
+            values::push(value, word);
+            values::release(word);
+        }
+        Returned { value, status: 0 }
+    }
+
+    /// A lambda with no parameter that records one event of [`BATCH_META`]'s operation, then
+    /// fails with a small text.
+    extern "C" fn fails_small(_closure: i64) -> Returned {
+        let instance = values::instance("console".to_owned());
+        host::event(0, instance);
+        values::release(instance);
+        Returned {
+            value: values::text_word("small".to_owned()),
+            status: 1,
+        }
+    }
+
+    /// A lambda with no parameter that aborts its task with U6004 at the block's site.
+    extern "C" fn aborts(_closure: i64) -> Returned {
+        runtime::abort_at(
+            0,
+            una_diag::Code::U6004,
+            "una-rt test: the task aborted".to_owned(),
+        );
+        Returned {
+            value: 0,
+            status: 2,
+        }
+    }
+
+    /// Whether [`waits_for_cancel`] recorded its event, in the process of a scenario.
+    static RECORDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// A lambda with no parameter that waits until [`waits_for_cancel`] has started and
+    /// recorded its event, then fails as [`fails_small`] does: so the task after it is started
+    /// when the failure cancels it, whatever the scheduling.
+    extern "C" fn fails_after_recorded(closure: i64) -> Returned {
+        while !RECORDED.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        fails_small(closure)
+    }
+
+    /// A lambda with no parameter that records one event, then waits until its task is
+    /// cancelled, and stops.
+    extern "C" fn waits_for_cancel(_closure: i64) -> Returned {
+        let instance = values::instance("console".to_owned());
+        host::event(0, instance);
+        values::release(instance);
+        RECORDED.store(true, std::sync::atomic::Ordering::SeqCst);
+        while runtime::poll() == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Returned {
+            value: 0,
+            status: 2,
+        }
+    }
+
+    /// A lambda with no parameter that records one event and returns.
+    extern "C" fn records(_closure: i64) -> Returned {
+        let instance = values::instance("console".to_owned());
+        host::event(0, instance);
+        values::release(instance);
+        Returned {
+            value: values::text_word("r".to_owned()),
+            status: 0,
+        }
+    }
+
+    /// A lambda with no parameter that waits until [`waits_for_cancel`] has started and recorded
+    /// its event, then runs [`inner_import_panics`]: so the lower task is started when the
+    /// defect cancels it, whatever the scheduling.
+    extern "C" fn inner_import_panics_after_recorded(closure: i64) -> Returned {
+        while !RECORDED.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        inner_import_panics(closure)
+    }
+
+    /// Whether [`inner_import_panics`]'s block ended, in the process of a scenario.
+    static INNER_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Whether [`fails_after_inner`] started, in the process of a scenario.
+    static FIRST_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// A lambda with no parameter that waits until [`fails_after_inner`] has started, then runs
+    /// [`inner_import_panics`]: so its defect never cancels that task before it starts.
+    extern "C" fn inner_import_panics_after_first(closure: i64) -> Returned {
+        while !FIRST_STARTED.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        inner_import_panics(closure)
+    }
+
+    /// A lambda with no parameter that waits until [`inner_import_panics`]'s block ended, then
+    /// fails: so the task after it is not cancelled before its defect, whatever the scheduling.
+    extern "C" fn fails_after_inner(closure: i64) -> Returned {
+        FIRST_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        while !INNER_ENDED.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        fails_small(closure)
+    }
+
+    /// A lambda with no parameter that runs a block of its own whose fork import panics.
+    extern "C" fn inner_import_panics(_closure: i64) -> Returned {
+        values::TEST_PANIC_IN_IMPORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        let items = values::list();
+        values::push(items, 1);
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        let closure = values::closure(marked, 1);
+        let value = tasks::together_for(closure, items, 0);
+        let status = tasks::status();
+        // Cleared at once, so that no later copy panics: the defect is this block's alone, and
+        // only its precedence can decide the outer block.
+        values::TEST_PANIC_IN_IMPORT.store(false, std::sync::atomic::Ordering::SeqCst);
+        values::release(closure);
+        values::release(items);
+        INNER_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
+        Returned { value, status }
+    }
+
+    /// The code of a lambda with no parameter.
+    fn code0(lambda: extern "C" fn(i64) -> Returned) -> Code {
+        Code(i64::try_from(lambda as usize).unwrap())
+    }
+
+    /// Runs `main` with a trace for `scenario`: a `together` of the closures of `lambdas`, then
+    /// says on stderr how the block ended.
+    fn block_scenario(scenario: &str, lambdas: Vec<extern "C" fn(i64) -> Returned>) {
+        let trace = limit_trace(scenario);
+        runtime::start(
+            &["--trace".to_owned(), trace.to_string_lossy().into_owned()],
+            BATCH_META,
+            move || {
+                let closures = values::list();
+                for lambda in lambdas {
+                    let closure = values::closure(code0(lambda), 0);
+                    values::push(closures, closure);
+                    values::release(closure);
+                }
+                let value = tasks::together(closures, 0);
+                let status = tasks::status();
+                if status == 1 {
+                    eprintln!("{MARK_END}: failed with {}", values::text_value(value));
+                } else {
+                    eprintln!("{MARK_END}: status {status}");
+                }
+                values::release(value);
+                values::release(closures);
+                0
+            },
+        );
+    }
+
+    /// What a block scenario's `main` says once its block ended.
+    const MARK_END: &str = "una-rt test: the block ended";
+
+    /// Runs a block scenario in a process of its own: its exit code, its stderr, and the tasks
+    /// of its trace's events, in order, with `cancelled` after a cancelled task's.
+    fn run_block_scenario(scenario: &str) -> (Option<i32>, String, Vec<String>) {
+        let trace = limit_trace(scenario);
+        let _ = std::fs::remove_file(&trace);
+        let (status, stderr) = run_scenario(scenario);
+        let written = std::fs::read_to_string(&trace).unwrap_or_default();
+        let _ = std::fs::remove_file(&trace);
+        let events: serde_json::Value = serde_json::from_str(&written).unwrap_or_default();
+        let tasks = events
+            .as_array()
+            .map(|events| {
+                events
+                    .iter()
+                    .map(|event| {
+                        let task = event["task"].as_str().unwrap_or("").to_owned();
+                        if event["outcome"]["kind"] == "cancelled" {
+                            format!("{task} cancelled")
+                        } else {
+                            task
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (status, stderr, tasks)
+    }
+
+    #[test]
+    #[ignore = "run by `i7_a_deciding_abort_or_failure_copies_no_other_task_s_value`"]
+    fn i7_abort_scenario() {
+        values::TEST_EXPORT_LIMIT.store(2, std::sync::atomic::Ordering::SeqCst);
+        block_scenario("ffi::tests::i7_abort_scenario", vec![returns_big, aborts]);
+    }
+
+    #[test]
+    #[ignore = "run by `i7_a_deciding_abort_or_failure_copies_no_other_task_s_value`"]
+    fn i7_failure_scenario() {
+        values::TEST_EXPORT_LIMIT.store(2, std::sync::atomic::Ordering::SeqCst);
+        block_scenario(
+            "ffi::tests::i7_failure_scenario",
+            vec![returns_big, fails_small],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i7_a_deciding_abort_or_failure_copies_no_other_task_s_value() {
+        // ADR 0113 rule 3, I7: a block that aborts copies nothing at its join, and a failing
+        // block copies only the deciding failure value. The first task's value is past the
+        // export limit, so a copy of it would stop the run with that limit's U6003 instead.
+        let (status, stderr, _) = run_block_scenario("ffi::tests::i7_abort_scenario");
+        assert_eq!(status, Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with("[U6004] Error: una-rt test: the task aborted"),
+            "{stderr}"
+        );
+        let (status, stderr, _) = run_block_scenario("ffi::tests::i7_failure_scenario");
+        assert_eq!(status, Some(0), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{MARK_END}: failed with small")),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i10_a_refused_transfer_stops_at_the_block_with_every_task_s_events`"]
+    fn i10_refused_transfer_scenario() {
+        values::TEST_EXPORT_LIMIT.store(2, std::sync::atomic::Ordering::SeqCst);
+        block_scenario(
+            "ffi::tests::i10_refused_transfer_scenario",
+            vec![records, returns_big, records],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i10_a_refused_transfer_stops_at_the_block_with_every_task_s_events() {
+        // ADR 0113 rule 3: every task returned, the batch's events are adopted first, then the
+        // second task's transfer is refused: U6003 at the block, with the events of all three.
+        let (status, stderr, tasks) =
+            run_block_scenario("ffi::tests::i10_refused_transfer_scenario");
+        assert_eq!(status, Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with("[U6003] Error: this copy holds more objects"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/c.una:2:3"), "at the block: {stderr}");
+        assert_eq!(
+            tasks,
+            ["1", "3"],
+            "the events of the tasks that recorded one"
+        );
+    }
+
+    #[test]
+    #[ignore = "run by `i10_the_trace_holds_a_cancelled_task_s_events_then_its_cancelled_event`"]
+    fn i10_cancelled_task_scenario() {
+        block_scenario(
+            "ffi::tests::i10_cancelled_task_scenario",
+            vec![records, fails_after_recorded, waits_for_cancel],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i10_the_trace_holds_a_cancelled_task_s_events_then_its_cancelled_event() {
+        // ADR 0113 I10, `spec/19 §6` rules 3 to 5: task 2 fails, task 3, already started, is
+        // cancelled. The trace holds the events of tasks 1, 2 and 3 in task order, then task 3's
+        // `cancelled` event, and the block fails with task 2's value.
+        let (status, stderr, tasks) = run_block_scenario("ffi::tests::i10_cancelled_task_scenario");
+        assert_eq!(status, Some(0), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{MARK_END}: failed with small")),
+            "{stderr}"
+        );
+        assert_eq!(tasks, ["1", "2", "3", "3 cancelled"]);
+    }
+
+    #[test]
+    #[ignore = "run by `i11_a_copy_s_panic_decides_its_block_before_a_lower_indexed_failure`"]
+    fn i11_outranked_panic_scenario() {
+        block_scenario(
+            "ffi::tests::i11_outranked_panic_scenario",
+            vec![fails_after_inner, inner_import_panics_after_first],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i11_a_copy_s_panic_decides_its_block_before_a_lower_indexed_failure() {
+        // ADR 0113 I11: a panic during a copy ends the run with U8001, exit code 3, even when a
+        // lower-indexed task of an enclosing block failed: the defect decides the block first.
+        let (status, stderr, _) = run_block_scenario("ffi::tests::i11_outranked_panic_scenario");
+        assert_eq!(status, Some(3), "{stderr}");
+        assert!(
+            stderr.starts_with("[U8001] Error: internal error: the runtime panicked while it copied a value: a test made the import panic"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains(MARK_END), "{stderr}");
+    }
+
+    /// How many tasks of [`inner_big_after_cancel`]'s block started, in the process of a
+    /// scenario.
+    static INNER_STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A lambda with one parameter that says it started, waits until its task is cancelled, then
+    /// returns a value past an export limit of 2, as a task that ignored the cancellation would.
+    extern "C" fn big_after_cancel(closure: i64, _arg: i64) -> Returned {
+        INNER_STARTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        while runtime::poll() == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        returns_big(closure)
+    }
+
+    /// A lambda with no parameter that runs a block of two [`big_after_cancel`] tasks.
+    extern "C" fn inner_big_after_cancel(_closure: i64) -> Returned {
+        let items = values::list();
+        values::push(items, 1);
+        values::push(items, 3);
+        let code = Code(
+            i64::try_from(big_after_cancel as extern "C" fn(i64, i64) -> Returned as usize)
+                .unwrap(),
+        );
+        let closure = values::closure(code, 1);
+        let value = tasks::together_for(closure, items, 0);
+        let status = tasks::status();
+        values::release(closure);
+        values::release(items);
+        Returned { value, status }
+    }
+
+    /// A lambda with no parameter that fails once both of [`inner_big_after_cancel`]'s tasks
+    /// started, so that both return their values after the cancellation, whatever the
+    /// scheduling.
+    extern "C" fn fails_after_inner_started(closure: i64) -> Returned {
+        while INNER_STARTED.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        fails_small(closure)
+    }
+
+    #[test]
+    #[ignore = "run by `i7_i10_a_block_whose_own_task_was_cancelled_copies_nothing_and_ends_as_cancelled`"]
+    fn i7_cancelled_block_scenario() {
+        values::TEST_EXPORT_LIMIT.store(2, std::sync::atomic::Ordering::SeqCst);
+        block_scenario(
+            "ffi::tests::i7_cancelled_block_scenario",
+            vec![fails_after_inner_started, inner_big_after_cancel],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i7_i10_a_block_whose_own_task_was_cancelled_copies_nothing_and_ends_as_cancelled() {
+        // ADR 0113 rule 3, I7 and I10: task 1 fails while task 2's inner block runs, which
+        // cancels task 2. The inner tasks return values past the export limit, but the inner
+        // join sees its block's task cancelled and copies nothing, so no U6003; task 2 ends as
+        // cancelled, with its `cancelled` event, and the outer block fails with task 1's value.
+        let (status, stderr, tasks) = run_block_scenario("ffi::tests::i7_cancelled_block_scenario");
+        assert_eq!(status, Some(0), "{stderr}");
+        assert!(!stderr.contains("U6003"), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{MARK_END}: failed with small")),
+            "{stderr}"
+        );
+        assert_eq!(tasks, ["1", "2 cancelled"]);
+    }
+
+    #[test]
+    #[ignore = "run by `i11_a_defect_ends_the_run_while_a_lower_task_would_run_on`"]
+    fn i11_defect_cancels_lower_scenario() {
+        block_scenario(
+            "ffi::tests::i11_defect_cancels_lower_scenario",
+            vec![waits_for_cancel, inner_import_panics_after_recorded],
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i11_a_defect_ends_the_run_while_a_lower_task_would_run_on() {
+        // ADR 0113 I11: task 1 would run until cancelled; task 2's inner block panics in a copy.
+        // The defect cancels task 1, a lower one, so the run ends with U8001, exit code 3, and the
+        // trace holds task 1's event and its `cancelled` event.
+        let (status, stderr, tasks) =
+            run_block_scenario("ffi::tests::i11_defect_cancels_lower_scenario");
+        assert_eq!(status, Some(3), "{stderr}");
+        assert!(
+            stderr.starts_with("[U8001] Error: internal error: the runtime panicked while it copied a value: a test made the import panic"),
+            "{stderr}"
+        );
+        assert_eq!(tasks, ["1", "1 cancelled"]);
+    }
+
+    /// How many times [`counted`] ran, in the process of a scenario.
+    static COUNTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A lambda with one parameter that counts its runs and fails on the first element.
+    extern "C" fn counted(_closure: i64, arg: i64) -> Returned {
+        COUNTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if arg == 1 {
+            Returned {
+                value: values::text_word("first".to_owned()),
+                status: 1,
+            }
+        } else {
+            Returned {
+                value: 0,
+                status: 0,
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "run by `i8_a_failure_in_the_first_batch_leaves_the_later_batches_unforked`"]
+    fn i8_first_batch_failure_scenario() {
+        let counted =
+            Code(i64::try_from(counted as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        runtime::start(&[], LIMIT_META, move || {
+            let items = values::list();
+            for number in 0..200 {
+                values::push(items, (number << 1) | 1);
+            }
+            let closure = values::closure(counted, 1);
+            let value = tasks::together_for(closure, items, 0);
+            eprintln!(
+                "{MARK_END}: status {} after {} runs",
+                tasks::status(),
+                COUNTED.load(std::sync::atomic::Ordering::SeqCst)
+            );
+            values::release(value);
+            values::release(closure);
+            values::release(items);
+            0
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i8_a_failure_in_the_first_batch_leaves_the_later_batches_unforked() {
+        // ADR 0113 rules 1 and 3, I8: the first element's task fails, so the block fails with
+        // its value and no task of a later batch is forked: at most the first batch's 64 tasks
+        // ran, of 200.
+        let (status, stderr) = run_scenario("ffi::tests::i8_first_batch_failure_scenario");
+        assert_eq!(status, Some(0), "{stderr}");
+        let runs: usize = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{MARK_END}: status 1 after ")))
+            .and_then(|rest| rest.strip_suffix(" runs"))
+            .and_then(|runs| runs.parse().ok())
+            .unwrap_or_else(|| panic!("{stderr}"));
+        assert!((1..=64).contains(&runs), "{runs} runs");
+    }
+
     #[test]
     #[ignore = "run by `i11_a_panic_outside_a_copy_prints_as_before`"]
     fn i11_panic_outside_a_copy_scenario() {

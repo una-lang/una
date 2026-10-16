@@ -205,10 +205,18 @@ pub(crate) fn install_panic_hook() {
     });
 }
 
-/// Runs `f`, a copy, catching a panic: `Err` with the panic's message when it panicked, which
-/// is a defect of the runtime that the caller reports as U8001 (ADR 0113 rule 2). No panic
-/// unwinds out of a copy, so none reaches the generated code's `extern "C"` frames.
-pub(crate) fn guarded<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+/// What a [`guarded`] region of a `together` block does, for the message of a panic in it.
+pub(crate) const COPY: &str = "copied a value";
+/// A task's start, for [`guarded`].
+pub(crate) const START: &str = "started a task";
+/// An adoption of a batch's events, for [`guarded`].
+pub(crate) const ADOPTION: &str = "adopted the events of a batch";
+
+/// Runs `f`, a copy or another step of a `together` block, `doing` what it says, catching a
+/// panic: `Err` with the panic's message when it panicked, which is a defect of the runtime that
+/// the caller reports as U8001 (ADR 0113 rule 2). No panic unwinds out of such a step, so none
+/// reaches the generated code's `extern "C"` frames.
+pub(crate) fn guarded<R>(doing: &str, f: impl FnOnce() -> R) -> Result<R, String> {
     let outer = GUARDED.with(|cell| cell.replace(true));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     GUARDED.with(|cell| cell.set(outer));
@@ -216,7 +224,7 @@ pub(crate) fn guarded<R>(f: impl FnOnce() -> R) -> Result<R, String> {
         let message = PANICKED
             .with(|cell| cell.borrow_mut().take())
             .unwrap_or_default();
-        format!("internal error: the runtime panicked while it copied a value: {message}")
+        format!("internal error: the runtime panicked while it {doing}: {message}")
     })
 }
 
@@ -498,8 +506,8 @@ pub(crate) struct State {
     baseline: usize,
     /// The path of the task the thread runs, empty for `main`'s (`spec/19 §6` rule 1).
     pub(crate) path: String,
-    /// The cancellation flags of the task and of the tasks that run it.
-    cancel: Vec<Arc<AtomicBool>>,
+    /// The cancellation entries of the task and of the tasks that run it (ADR 0113 rule 1).
+    cancel: Vec<Cancel>,
     /// How many of `cancel`'s flags an operation in progress shields: those set before it
     /// began, which it completes despite (`spec/19 §6` rule 4). Flags of tasks the operation
     /// starts come after them and still count.
@@ -528,8 +536,8 @@ pub(crate) struct TaskTemplate {
     baseline: usize,
     /// The path of the task that runs the block.
     pub(crate) path: String,
-    cancel: Vec<Arc<AtomicBool>>,
-    /// The flags of `cancel` that an operation in progress shields (`State::shielded`).
+    cancel: Vec<Cancel>,
+    /// The entries of `cancel` that an operation in progress shields (`State::shielded`).
     shielded: usize,
     /// The stack of a task's thread.
     pub(crate) stack: usize,
@@ -544,12 +552,18 @@ impl TaskTemplate {
     }
 }
 
-/// Whether one of `cancel`'s flags past the first `shielded` is set.
-fn unshielded(cancel: &[Arc<AtomicBool>], shielded: usize) -> bool {
+/// A cancellation entry of a task, for its own block or a block above it (ADR 0113 rule 1): that
+/// block's count, the lowest entry of a task of it that failed or aborted (0 after a U8001), and
+/// the entry of the task on this task's path, its index among that block's tasks plus 1. The task
+/// is cancelled when the count is below its entry.
+pub(crate) type Cancel = (Arc<AtomicUsize>, usize);
+
+/// Whether one of `cancel`'s entries past the first `shielded` cancels the task.
+fn unshielded(cancel: &[Cancel], shielded: usize) -> bool {
     cancel
         .iter()
         .skip(shielded)
-        .any(|flag| flag.load(Ordering::SeqCst))
+        .any(|(count, index)| count.load(Ordering::SeqCst) < *index)
 }
 
 impl State {
@@ -1257,10 +1271,10 @@ pub(crate) fn abort_at(site: usize, code: Code, message: String) -> i64 {
 }
 
 /// Starts the state of a task, on its thread, from `template`, with its path and its own
-/// cancellation flag.
-pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<AtomicBool>) {
+/// cancellation entry, for its block.
+pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
     let mut cancel = template.cancel.clone();
-    cancel.push(flag);
+    cancel.push(entry);
     let mut state = State {
         trace: template.tracing.then(Vec::new),
         trace_path: None,
@@ -1287,6 +1301,87 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<Atomic
     };
     state.stack_base = stack_position(&state);
     install(state, template.depth);
+}
+
+/// What a task reports to its block when its code has ended (ADR 0113 rule 3): its events, the
+/// handlers it installed, its first failed write and the abort that stopped it, taken from its
+/// state, which stays installed for the export of its value.
+pub(crate) type Report = (
+    Vec<Event>,
+    BTreeMap<String, usize>,
+    Option<io::Error>,
+    Option<(Code, Location, String)>,
+);
+
+/// Takes the report of the task the thread runs out of its state.
+pub(crate) fn take_report() -> Option<Report> {
+    with_state(|state| {
+        (
+            state.trace.as_mut().map(std::mem::take).unwrap_or_default(),
+            std::mem::take(&mut state.installs),
+            state.failed_write.take(),
+            state.stopped.clone(),
+        )
+    })
+}
+
+/// Installs on this thread the state of a run with the default options and no trace, with the
+/// task path `path`, so that a test can run a block in process; [`leave_task`] ends it. With a
+/// path, a stop is recorded in the state, as a task's is, instead of ending the process.
+#[cfg(test)]
+pub(crate) fn install_test_state_as(path: String) {
+    let Ok(options) = parse_args(&[]) else {
+        return;
+    };
+    let mut state = State {
+        trace: None,
+        trace_path: None,
+        failed_write: None,
+        max_depth: options.max_depth,
+        sites: Arc::new(Vec::new()),
+        failure: None,
+        grants: Arc::new(Vec::new()),
+        keys: Arc::new(BTreeMap::new()),
+        http: options.http,
+        types: Arc::new(Types::default()),
+        ops: Arc::new(Vec::new()),
+        host_failed: false,
+        installs: BTreeMap::new(),
+        stack_base: 0,
+        stack_budget: usize::MAX,
+        max_memory: options.max_memory,
+        baseline: 0,
+        path,
+        cancel: Vec::new(),
+        shielded: 0,
+        operations: Vec::new(),
+        stopped: None,
+    };
+    state.stack_base = stack_position(&state);
+    install(state, 0);
+}
+
+/// Gives the test task the thread runs an ancestor's cancellation entry whose count is `count`,
+/// with entry 1: the task, and the blocks it runs, are cancelled once `count` is 0, as after a
+/// failure of the ancestor's first task. `Hot` mirrors the entries, as `install` keeps it.
+#[cfg(test)]
+pub(crate) fn cancel_test_task(count: Arc<AtomicUsize>) {
+    with_state(|state| {
+        state.cancel.push((count, 1));
+        HOT.with(|hot| hot.flags.set(state.cancel.len()));
+    });
+}
+
+/// The abort that stopped the test task the thread runs, if any: its code and message.
+#[cfg(test)]
+pub(crate) fn test_stopped() -> Option<(Code, String)> {
+    with_state(|state| {
+        state
+            .stopped
+            .as_ref()
+            .map(|(code, _, message)| (*code, message.clone()))
+    })
+    .flatten()
 }
 
 /// Ends the state of the task the thread runs, and returns it.
@@ -1665,12 +1760,14 @@ mod tests {
     fn a_cancellation_from_another_thread_scenario() {
         start(&[], SITE_META, || {
             let template = with_state(|state| state.for_tasks(0)).unwrap();
-            let flag = Arc::new(AtomicBool::new(false));
+            // The task is the second of a block of two, entry 2; the first's failure, which
+            // lowers the count to its own entry, 1, cancels it.
+            let count = Arc::new(AtomicUsize::new(3));
             let (ready, wait_ready) = std::sync::mpsc::channel();
             let (set, wait_set) = std::sync::mpsc::channel();
-            let task_flag = Arc::clone(&flag);
+            let entry = (Arc::clone(&count), 2);
             let task = std::thread::spawn(move || {
-                enter_task(&template, "1".to_owned(), task_flag);
+                enter_task(&template, "2".to_owned(), entry);
                 // On the fast path: no flag set.
                 let clear = (poll(), budget(0), enter(0));
                 leave();
@@ -1687,7 +1784,7 @@ mod tests {
                 (clear, stopped, shielded, after)
             });
             wait_ready.recv().unwrap();
-            flag.store(true, Ordering::SeqCst);
+            count.fetch_min(1, Ordering::SeqCst);
             set.send(()).unwrap();
             let (clear, stopped, shielded, after) = task.join().unwrap();
             eprintln!("{STEP} {clear:?} {stopped:?} {shielded} {after}");
