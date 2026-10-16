@@ -1,8 +1,8 @@
 # 0112. Eliding the run-time checks the verifier proves
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-15
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #737
 - Target: the release backend of ADR 0106 only. `una build` without `--release` (Cranelift, ADR 0055) keeps every check. No edition changes: elision is not observable for a correct proof (`spec/16 §4`).
 - Amends, once accepted: `spec/16 §4` rule 2, the build report's `native` section (`spec/13 §6`), `docs/release-gates.md` §2.
