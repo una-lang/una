@@ -274,3 +274,5 @@ So, plainly: with this ADR, #737, #738 and #522, parity is plausible for loops o
 **D. Pass records by value as C structs.** Saves an allocation for short-lived small records. Not chosen: it splits a value into a stack copy and a heap copy whose counts and in-place updates would need a second set of rules, and ADR 0106 asks for one explicit convention. Escape analysis for small records can come with regions (rule 8).
 
 **E. Pack record fields at their own widths.** Saves memory on records with several narrow fields. Deferred (rule 3): every runtime walk would need per-field offsets, and the gain is small next to the call and allocation costs removed here.
+
+Note (2026-10-16): `F64` (ADR 0114) has a raw representation: a raw cell marked `F64`, a packed list with its own layout id, and a boxed 8-byte object at a uniform position. Every stored `F64` is canonical (ADR 0114 rule 6.1), so rule 3's comparison of raw cells as integers is `==` for `F64` cells; their order is the totalOrder key, never the signed integer.

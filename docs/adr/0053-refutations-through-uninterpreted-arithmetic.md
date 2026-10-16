@@ -39,3 +39,5 @@ Rejection is right either way: an obligation the verifier cannot prove is an err
 - **B. Always `unknown` when the query uses uninterpreted arithmetic and is satisfiable.** Simpler, but a real counterexample through a product is lost, which costs agents the most useful evidence.
 - **C. Keep `refuted`, and mark the counterexample in the ABI (`"exact": false`).** This changes `una.diagnostic/1`, whose schema versions D-148 froze at v0.1.0.
 - **D. Keep v0.1.0's behavior,** where the message carries the caveat. Not chosen: the status and the JSON still present the model as an execution.
+
+Note (2026-10-16): the model check also applies to the uninterpreted float functions of ADR 0114 (`i!to_f64!Int`, and the transcendental functions of a later record): each value in the model equals the runtime's result on the model's arguments.
