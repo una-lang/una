@@ -66,12 +66,12 @@ PINNED_UNKNOWN = {
 }
 # The residual programs the re-check compares (a step a secret may abort, which the full check's
 # obligations guard): their count is pinned, so a silent drop fails.
-PINNED_RESIDUAL = 9
+PINNED_RESIDUAL = 59
 # What the re-check compares, as the measured run found it. A program is compared when at least
 # one of its own (`app.*`) functions is accepted by the re-check; the floors are about 90% of the
-# measured run's 888 compared programs and 1,378 accepted declarations.
-MIN_DIFFER_COMPARED = 799
-MIN_ACCEPTED_DECLARATIONS = 1240
+# measured run's 962 compared programs and 1,570 accepted declarations (#813).
+MIN_DIFFER_COMPARED = 865
+MIN_ACCEPTED_DECLARATIONS = 1413
 # Documents the re-check reads as a whole fallback (every line `not re-checked` for one reason):
 # nothing in them is compared, so their count is pinned per reason, exactly.
 PINNED_FALLBACK = {
@@ -89,9 +89,12 @@ PINNED_NOT_RECHECKED = {
     "F1 restriction (`div` on operands of mixed or unknown integer types)": 1,
     "a `case` on `app.main.Either`": 4,
     "a `case` on `app.main.Maybe`": 3,
-    "a `handler` declaration": 205,
+    "a `handler` declaration": 317,
     "a `via` function, which no label rule checks": 436,
+    "a `with` of a source other than a handler": 28,
+    "a call of `app.edge.stash`, whose handler of `Vault.note` no `with` scope installs here": 8,
     "a call of `prelude.sort`": 10,
+    "a conditioned operation (ADR 0092)": 76,
     "reaches `app.main.block`, which is not re-checked (the form `together`)": 4,
     "reaches `app.main.both`, which is not re-checked (the form `together`)": 7,
     "reaches `app.main.fan`, which is not re-checked (the form `together_for`)": 6,
@@ -119,28 +122,29 @@ DIFFER_CANARIES = {
 }
 DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
-# literals that decide nothing: about 90% of the measured run's 366 programs and 1,362
-# complete-against-complete comparisons, and of its 106 live programs (docs/release-gates.md).
-MIN_ORACLE_COMPARED = 329
-MIN_VARIANTS_COMPARED = 1225
+# literals that decide nothing: about 90% of the measured run's 440 programs and 1,732
+# complete-against-complete comparisons, and of its 106 live programs (#813, docs/release-gates.md).
+MIN_ORACLE_COMPARED = 396
+MIN_VARIANTS_COMPARED = 1558
 MIN_LIVE = 95
 # What the oracle compares and finds live, by operator and form, pinned exactly: losing a whole
 # form, or every live program of one, fails even above the floors; and the programs it sets aside
-# because the checks reject them, among them the closed calls of C6 that a correct checker
-# rejects (docs/release-gates.md).
+# because the checks reject them, among them the closed calls of B2, C6 and Q3 that a correct
+# checker rejects (docs/release-gates.md).
 ORACLE_FORMS = (
-    "C6:branch-value", "C6:for-elements", "C6:secret-fan-out", "C6:secret-sink",
-    "C6:under-public-pc", "H3:install-under-pc", "H3:reach-under-pc", "K4:list", "K4:record",
-    "K4:text", "P1:list", "P1:option", "P1:scalar", "T8:effect-public", "T8:via-calls-policy",
+    "B2:function-value", "B2:grant-handler", "B2:narrowed", "C6:branch-value", "C6:for-elements",
+    "C6:secret-fan-out", "C6:secret-sink", "C6:under-public-pc", "H3:install-under-pc",
+    "H3:reach-under-pc", "K4:list", "K4:record", "K4:text", "P1:list", "P1:option", "P1:scalar",
+    "Q3:guarded-dry", "Q3:guarded-live", "T8:effect-public", "T8:via-calls-policy",
 )
 LIVE_FORMS = ("C6:secret-fan-out", "H3:install-under-pc", "H3:reach-under-pc")
-PINNED_SET_ASIDE_REJECTED = 41
+PINNED_SET_ASIDE_REJECTED = 67
 # The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
 # programs it compares, about 90% of the measured run's (docs/release-gates.md).
-NATIVE_SAMPLE = 32
-NATIVE_FAMILIES = ("C", "H", "K", "P", "T")
-MIN_NATIVE_COMPARED = 27
-MIN_NATIVE_VARIANTS = 113
+NATIVE_SAMPLE = 40
+NATIVE_FAMILIES = ("B", "C", "H", "K", "P", "Q", "T")
+MIN_NATIVE_COMPARED = 32
+MIN_NATIVE_VARIANTS = 145
 CHECK_TIMEOUT = 60
 RUN_TIMEOUT = 20
 WORKERS = 4
