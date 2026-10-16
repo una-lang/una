@@ -24,7 +24,7 @@ una build .
 
 `una run .` and the native executable both print:
 
-```text
+```text una="run ."
 Hello, Una
 ```
 
@@ -34,7 +34,7 @@ Hello, Una
 
 ### The manifest: `una.toml`
 
-```text
+```text file="una.toml"
 [package]
 name = "hello"
 version = "0.1.0"
@@ -49,7 +49,7 @@ grants = ["console"]
 
 ### The module: `src/hello.una`
 
-```text
+```text file="src/hello.una"
 module hello
 
 pub main() -> Unit
@@ -74,8 +74,10 @@ The body calls `@console.print`. Because the operation is named in the header, a
 
 There is nothing for the solver to prove: the program has no contract. The checker still confirms its authority by typing. `main` may print on the console and do nothing else, and a call to any other operation is an error. `una report .` states that authority in one line:
 
-```text
+```text una="report ."
+...
   hello.main (pub): @console: Console[print]
+...
 ```
 
 ## Common mistakes
@@ -84,13 +86,13 @@ There is nothing for the solver to prove: the program has no contract. The check
 
 Remove the `uses` line and write `main` as a one-line function:
 
-```text
+```text file="src/hello.una" after="mistakes/1"
 pub main() -> Unit = @console.print("Hello, Una")
 ```
 
-`una check .` rejects it. Here and in the other READMEs, a diagnostic is shown as `una check .` prints it in a terminal without colors, except that trailing spaces are removed:
+`una check .` rejects it. Here and in the other READMEs, a diagnostic is shown as `una check .` prints it in a terminal without colors, except that trailing spaces are removed, and a line `...` in an excerpt of a file or of an output stands for lines left out:
 
-```text
+```text una="check ." after="mistakes/1"
 [U3004] Error: `@console` is used here, but this code declares no `uses`, so it is pure
    ╭─[ src/hello.una:3:22 ]
    │
@@ -110,7 +112,7 @@ A function without `uses` is pure. The repair says what it costs: the authority 
 
 Give `main` a clock as well, but leave `grants` as it is:
 
-```text
+```text file="src/hello.una" after="mistakes/2"
 pub main() -> Unit
   uses @console: Console[print]
   uses @clock: Clock[now]
@@ -121,7 +123,7 @@ pub main() -> Unit
 
 `una check .` reports the missing grant:
 
-```text
+```text una="check ." after="mistakes/2"
 [U3012] Error: `main` uses `now` of `Clock`, which `[run] grants` does not grant
    ╭─[ src/hello.una:5:3 ]
    │
