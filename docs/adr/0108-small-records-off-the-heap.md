@@ -1,8 +1,8 @@
 # 0108. Small records off the heap
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-15
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #750
 - Builds on: ADR 0107 (data layout, Proposed), whose rules 1 to 7 this ADR assumes. It amends ADR 0107 rule 7 item 3 for the records it calls flat.
 - Target: the native backend (`spec/16`), both backends. No edition changes: the representation is not observable (`spec/16 §4`).
