@@ -107,6 +107,27 @@ As built (`hunt/families/concurrency.py`); in edition 0.1 every program is must-
 
 Not generated: the relative order of the effects of different tasks, and how far a cancelled task got, depend on timing, which is outside the model (`spec/07 §1`, `spec/19 §3` rule 3). The two-run oracle compares each task's events alone, never their interleaving.
 
+### B. Authority boundaries (ADR 0093, `spec/05 §4`, `spec/07 §6`)
+
+As built (`hunt/families/boundaries.py`, #813). `[boundaries]` is a table of edition 0.3, so the fixed run generates B in editions 0.2 and 0.3 (`OPERATOR_EDITIONS`): in 0.2 every program is a must-reject probe of the edition gate, an unknown table (U7002), with a parse error (U0101) where it narrows a binding (`@console[print]`), and nothing of it runs.
+
+| Id | Program | Class |
+|---|---|---|
+| B1 | A call into a boundary module that takes a capability from the caller by name (U3020), grants a binding, a functional argument or a handler beyond the ceiling (U3021), uses a function of it as a value without a grant (U3020), installs a handler of it whose `uses` the installer's header would give by name (U3020), or reaches a release through its private helpers (U3024) | must-reject |
+| B2 | Calls into a boundary granted within its ceiling (a handler, a narrowed rebinding `@console[print]`, a function of it as a value), while the caller holds a secret that reaches only an operation that accepts it | open, for the oracle; a closed call grants a public operation into the boundary from a function called under a secret branch (U4002), which the oracle sets aside |
+
+### Q. Conditions on allowed effects and contract locks (ADR 0092, `spec/05 §3`)
+
+As built (`hunt/families/conditions.py`, #813), in editions 0.2 and 0.3 like B: in 0.2 every program is a must-reject probe of the edition gate, `where` in a `uses` (U0101) or an unknown table (U7002).
+
+| Id | Program | Class |
+|---|---|---|
+| Q1 | What tier 0 rejects: a condition in a function type (U0101), with `result` (U2012), `it` (U2013), an operation (U2014) or an opaque predicate (U2016); a conditioned function used as a value (U3006); a header that grants an operation its `[contracts]` lock does not list, with a condition or without one (U3023); a condition in a `[boundaries]` ceiling (U7002), in a package where everything else resolves (the gate's `ceiling-control` canary) | must-reject; in edition 0.2 the plain lock is the probe of `[contracts]` alone (U7002) |
+| Q2 | What only the full check decides: a conditioned operation used where its condition may be false, directly, in a lambda, through an unconditioned helper, through a callee that promises less, or after reassigning an `edit` parameter (U5001); a header condition that does not imply its lock's (U3023, through the solver) | residual, with an expected code: tier 0 accepts them, and the full check, with the pinned solver, must reject each with its code and no other (`judge_residual`); an acceptance is a finding, a rejection by another code an error. Twins (guarded, under `requires`, a callee that promises the condition) are residual rows the full check must prove (`prove`): a rejection of one is an error |
+| Q3 | A conditioned public operation whose condition is on a public parameter, while a secret goes to an operation that accepts it | open, for the oracle; a closed call puts the condition on a secret, so the public operation runs under a secret branch (U4003), which the oracle sets aside: a checker that took the condition for a guard would let the number of public events show the secret |
+
+Not generated yet (#813's second part): units (ADR 0104), refined elements (ADR 0103), U3025 and U3026 (ADR 0100), and an edition 0.3 sample of every older family.
+
 ### S. User sum types, and `is` / `in` (§3 rule 2, §7 rule 3)
 
 | Id | Program | Class |

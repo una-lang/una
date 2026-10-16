@@ -13,6 +13,7 @@ They are Python 3 with the standard library only.
 - `hunt/families/handlers.py` and `keys.py`: families H (handler bodies and the effect floor, H1 to H6) and K (`Keys.hmac`, K1 to K4).
 - `hunt/families/payloads.py`, `generics.py`, `concurrency.py`, `sums.py` and `ordering.py`: families P (failure payloads), G (kind parameters and invariance), C (`together`, edition 0.2), S (user sum types, `is` and `in`) and O (`Ord`, `sort`, `min`, `max`), the blind rows of `docs/reviews/security-hunt/coverage.md`.
 - `hunt/families/composed.py` and `composed2.py`: the composed families, two blind rows at once: CS (`together` over user sum types), PG (payloads of generic kinds), TC (policies in tasks), CP (payload failures in tasks) and GS (generic sums at secret instances).
+- `hunt/families/boundaries.py` and `conditions.py`: families B (authority boundaries, ADR 0093) and Q (conditions on allowed effects and contract locks, ADR 0092), the rules of edition 0.3, generated in editions 0.2, as the edition gate's probe, and 0.3 (`OPERATOR_EDITIONS`).
 - `hunt/families/fragment.py`: family F, programs inside the formal re-check's vocabulary, for part (b).
 - `hunt/refactor.py`: family R, refactors that keep every label. R6 renames, interpolations included; R9 reorders declarations.
 - `hunt/drivers.py`: two judges that need only `una check --tier 0`:

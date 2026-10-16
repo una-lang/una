@@ -25,14 +25,20 @@ def module_file(module):
     return "src/" + module.replace(".", "/") + ".una"
 
 
-def toml(name, edition, categories=(), trusted=None, entry=None, grants=()):
+def toml(name, edition, categories=(), trusted=None, entry=None, grants=(), tables=()):
     """`una.toml`. `trusted` is the raw list of module names written under `[trusted]`,
-    so that operator T3 can write any spelling; `None` leaves the section out."""
+    so that operator T3 can write any spelling; `None` leaves the section out. `tables` adds
+    edition 0.3's tables, each a (table, entries) pair whose entries map a module or a
+    function to its list of strings: `[boundaries]` (ADR 0093) and `[contracts]` (ADR 0092)."""
     lines = ["[package]", f'name = "{name}"', 'version = "0.1.0"', f'edition = "{edition}"']
     if categories:
         lines += ["", "[labels]", "categories = " + json.dumps(list(categories))]
     if trusted is not None:
         lines += ["", "[trusted]", "modules = " + json.dumps(list(trusted), ensure_ascii=False)]
+    for table, entries in tables:
+        lines += ["", f"[{table}]"]
+        lines += [json.dumps(key) + " = " + json.dumps(list(value), ensure_ascii=False)
+                  for key, value in entries]
     if entry is not None:
         lines += ["", "[run]", f'entry = "{entry}"']
         if grants:
@@ -95,10 +101,11 @@ class Varied:
         return out, positions
 
 
-def package(name, edition, modules, categories=(), trusted=None, entry=None, grants=()):
+def package(name, edition, modules, categories=(), trusted=None, entry=None, grants=(),
+            tables=()):
     """The files of a package: `una.toml`, `verification.lock` and each module."""
     files = {
-        "una.toml": toml(name, edition, categories, trusted, entry, grants),
+        "una.toml": toml(name, edition, categories, trusted, entry, grants, tables),
         "verification.lock": LOCK,
     }
     for module, text in modules.items():
