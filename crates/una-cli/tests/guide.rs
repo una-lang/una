@@ -834,8 +834,9 @@ fn every_example_has_a_readme_whose_commands_run() {
     assert!(!names.is_empty(), "no example packages");
     // Every excerpt that does not match, so one run lists them all.
     let mut mismatches: Vec<String> = Vec::new();
-    // The changes the READMEs show, as NAME/mistakes/N.
+    // The changes the READMEs show, as NAME/mistakes/N, and the pinned change files used.
     let mut shown_changes: BTreeSet<String> = BTreeSet::new();
+    let mut pinned_used: BTreeSet<String> = BTreeSet::new();
     for (index, name) in names.iter().enumerate() {
         let package = root.join("examples").join(name);
         let relative = format!("examples/{name}/README.md");
@@ -1064,10 +1065,17 @@ fn every_example_has_a_readme_whose_commands_run() {
                 // fails here rather than leaving the README checked against an old copy.
                 let original = std::fs::read_to_string(package.join(file)).unwrap();
                 let replacement = std::fs::read_to_string(overlay.join(file)).unwrap();
+                let key = format!("{name}/{after}/{file}");
+                let pinned = CHANGES.iter().find(|(change, _, _)| *change == key);
+                let region = change_region(&original, &replacement);
                 assert!(
-                    one_change(&original, &replacement, CHANGE_LINES),
-                    "tests/fixtures/examples/{name}/{after}/{file}: not the package's file with one change of at most {CHANGE_LINES} lines; make the change again on the current file"
+                    pinned.is_some_and(|(_, removed, added)| region == (*removed, *added)),
+                    "tests/fixtures/examples/{key}: replaces {} line(s) of the package's file with {}, where CHANGES pins {:?}; if the example changed, make the change again on the current file",
+                    region.0,
+                    region.1,
+                    pinned.map(|(_, removed, added)| (removed, added))
                 );
+                pinned_used.insert(key);
                 std::fs::copy(overlay.join(file), dir.join(file)).unwrap();
             }
             let output = Command::new(env!("CARGO_BIN_EXE_una"))
@@ -1206,25 +1214,65 @@ fn every_example_has_a_readme_whose_commands_run() {
     for entry in std::fs::read_dir(&fixtures).unwrap() {
         let name = entry.unwrap().file_name().to_str().unwrap().to_owned();
         assert!(
+            !name.starts_with('.'),
+            "tests/fixtures/examples/{name}: a hidden file among the examples' changes, such as .DS_Store; remove it"
+        );
+        assert!(
             names.contains(&name),
             "tests/fixtures/examples/{name}: no such example"
         );
         for change in std::fs::read_dir(fixtures.join(&name).join("mistakes")).unwrap() {
-            let after = format!("mistakes/{}", change.unwrap().file_name().to_str().unwrap());
+            let number = change.unwrap().file_name().to_str().unwrap().to_owned();
+            assert!(
+                !number.starts_with('.'),
+                "tests/fixtures/examples/{name}/mistakes/{number}: a hidden file among the changes, such as .DS_Store; remove it"
+            );
+            let after = format!("mistakes/{number}");
             assert!(
                 shown_changes.contains(&format!("{name}/{after}")),
                 "tests/fixtures/examples/{name}/{after}: no block of its README shows it"
             );
         }
     }
+    for (change, _, _) in CHANGES {
+        assert!(
+            pinned_used.contains(*change),
+            "CHANGES pins tests/fixtures/examples/{change}, which no change holds"
+        );
+    }
 }
 
-/// How many lines a change may replace, and hold, in one region (#827).
-const CHANGE_LINES: usize = 6;
+/// Each change file of `tests/fixtures/examples` (#827): how many lines of the package's file it
+/// replaces, and with how many, in its one region. Pinned, so an edit of the example anywhere,
+/// next to the change too, fails until the change is made again on the current file.
+const CHANGES: &[(&str, usize, usize)] = &[
+    ("events/mistakes/1/src/events/checkin.una", 1, 1),
+    ("events/mistakes/2/src/events/checkin.una", 1, 1),
+    ("events/mistakes/3/src/events/keys.una", 1, 2),
+    ("greenhouse/mistakes/1/src/greenhouse/climate.una", 1, 1),
+    ("greenhouse/mistakes/2/src/greenhouse/climate.una", 1, 1),
+    ("greenhouse/mistakes/3/src/greenhouse/climate.una", 1, 1),
+    ("hello/mistakes/1/src/hello.una", 4, 1),
+    ("hello/mistakes/2/src/hello.una", 2, 4),
+    ("journal/mistakes/1/src/journal/main.una", 1, 1),
+    ("journal/mistakes/2/src/journal/main.una", 1, 1),
+    ("pantry/mistakes/1/src/pantry/stock.una", 1, 0),
+    ("pantry/mistakes/2/src/pantry/stock.una", 1, 1),
+    ("pantry/mistakes/3/src/pantry/stock.una", 1, 0),
+    ("shortlinks/mistakes/1/src/shortlinks/links.una", 1, 1),
+    ("shortlinks/mistakes/2/src/shortlinks/links.una", 2, 1),
+    ("shortlinks/mistakes/3/src/shortlinks/links.una", 1, 1),
+    ("toolshelf/mistakes/1/src/toolshelf/tools.una", 1, 0),
+    ("toolshelf/mistakes/2/src/toolshelf/tools.una", 1, 1),
+    ("toolshelf/mistakes/3/src/toolshelf/main.una", 1, 1),
+    ("wordfreq/mistakes/1/src/wordfreq.una", 1, 0),
+    ("wordfreq/mistakes/2/src/wordfreq.una", 1, 1),
+    ("wordfreq/mistakes/3/src/wordfreq.una", 1, 0),
+];
 
-/// Whether `changed` is `original` with one change: they differ, and outside one region of at
-/// most `limit` lines on each side they are the same, line for line.
-fn one_change(original: &str, changed: &str, limit: usize) -> bool {
+/// The one region in which `changed` differs from `original`: how many of `original`'s lines it
+/// replaces, and with how many, with the lines before and after it the same in both.
+fn change_region(original: &str, changed: &str) -> (usize, usize) {
     let a: Vec<&str> = original.split('\n').collect();
     let b: Vec<&str> = changed.split('\n').collect();
     let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
@@ -1236,32 +1284,22 @@ fn one_change(original: &str, changed: &str, limit: usize) -> bool {
         .take(room)
         .take_while(|(x, y)| x == y)
         .count();
-    let (left, right) = (a.len() - prefix - suffix, b.len() - prefix - suffix);
-    (left > 0 || right > 0) && left <= limit && right <= limit
+    (a.len() - prefix - suffix, b.len() - prefix - suffix)
 }
 
 #[test]
-fn a_change_is_one_region_of_a_few_lines() {
+fn a_change_region_counts_the_lines_replaced_and_their_replacement() {
     let original = "module a\n\npub f() -> Int = 1\n\npub g() -> Int = 2\n";
-    assert!(one_change(
-        original,
-        "module a\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n",
-        6
-    ));
-    assert!(one_change(original, "module a\n\npub g() -> Int = 2\n", 6));
-    assert!(!one_change(original, original, 6), "no change");
-    assert!(
-        !one_change(
-            original,
-            "module b\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n",
-            2
-        ),
-        "two regions"
+    let one = "module a\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n";
+    assert_eq!(change_region(original, one), (1, 1));
+    assert_eq!(
+        change_region(original, "module a\n\npub g() -> Int = 2\n"),
+        (2, 0)
     );
-    assert!(
-        !one_change(original, "x\ny\nz\nw\n", 2),
-        "too large a region"
-    );
+    assert_eq!(change_region(original, original), (0, 0));
+    // Two changes apart make one region that holds both.
+    let two = "module b\n\npub f() -> Int = 3\n\npub g() -> Int = 2\n";
+    assert_eq!(change_region(original, two), (3, 3));
 }
 
 /// The files under `dir`, as paths relative to `root` with `/` between their parts, sorted.
