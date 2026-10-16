@@ -131,6 +131,7 @@ Delete the `requires used <= item.amount` line of `use_up`. `una check .` report
 
 ```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `(item.amount - used) >= 0` is refuted
+...
 ```
 
 The diagnostic points at `item.amount - used` on line 32. Its repairs are a guard, or a `checked` that tests the value at run time. Here the right fix is the `requires`: running out is the caller's decision, not something `use_up` can repair.
