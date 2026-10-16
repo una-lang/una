@@ -1,1 +1,0 @@
-- **The release gate builds the website with Learn's translations** (#789). `site/website.lock` pins una-lang/website at a816a764, which publishes a page of Una by Example in Brazilian Portuguese or Spanish only when its translation is approved for the pinned English text, and pins una-lang/una-by-example at 6483a62c, whose `scripts/check.py` checks the translations.
