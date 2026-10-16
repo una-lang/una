@@ -121,6 +121,9 @@ export UNA_RELEASED_SECTIONS_SCOPE=ancestors
 # documents' links (#708), whatever the caller's shell exports.
 unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST \
     UNA_LOCAL_CI_DOC_LINKS_ON_HOST
+# Nor does the site gate build or compare anything but what the locks pin: the website and Una by
+# Example from their repositories, and the Learn release as published (#831).
+unset UNA_SITE_WEBSITE_SOURCE UNA_SITE_LEARN_SOURCE UNA_SITE_LEARN_RELEASE_DIR
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -292,6 +295,7 @@ gate_site() {
     run site sh -c '
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
+            && scripts/site-learn-release.sh --self-test \
             && scripts/doc-links.py \
             && UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
             && UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'

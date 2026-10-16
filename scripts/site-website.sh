@@ -12,8 +12,9 @@
 # scripts/check.py checks every example, each Try it change and the archives with this
 # checkout's `una`, before the website builds /learn/ from the clone. When the lock names a
 # release, the one whose archives the Learn pages link to, that release must hold exactly the
-# files the build makes, the archives and SHA256SUMS, byte for byte (una#831); it is read with
-# `gh release download`. The build must then report its Learn pages. A website without
+# files the build makes, the archives and SHA256SUMS, byte for byte (una#831,
+# scripts/site-learn-release.sh, which reads it with `gh release download`), and the website's
+# own reading of learn.lock must name that release. The build must then report its Learn pages. A website without
 # learn.lock is built without them, and this says so.
 #
 # It needs git access to the website's repository (and to una-by-example when the website pins it), Node.js (>= 20.19) with npm, and Python 3. It installs
@@ -90,40 +91,9 @@ if [ -f "$website/learn.lock" ]; then
     python3 -B "$learn/scripts/check.py" --una "$una" --una-version-from-binary --archives "$archives" \
         || fail "an example of una-by-example does not check with this una"
     # The release the Learn pages link their downloads to (una#831): when learn.lock names one,
-    # it must hold exactly the files this build makes, the archives and SHA256SUMS, byte for
-    # byte, and no other file.
-    learn_release=$(sed -n 's/^release = "\(.*\)"$/\1/p' "$website/learn.lock")
-    if [ -n "$learn_release" ]; then
-        printf '%s\n' "$learn_release" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' \
-            || fail "the website's learn.lock names a release that is not a plain tag name"
-        released=$out/una-by-example-release
-        rm -rf "${released:?}"
-        if [ -n "${UNA_SITE_LEARN_RELEASE_DIR:-}" ]; then
-            [ -d "$UNA_SITE_LEARN_RELEASE_DIR" ] || fail "UNA_SITE_LEARN_RELEASE_DIR is not a directory"
-            cp -R "$UNA_SITE_LEARN_RELEASE_DIR" "$released"
-        else
-            command -v gh >/dev/null 2>&1 || fail "gh is needed to read the release $learn_release"
-            slug=$(printf '%s\n' "$learn_repository" \
-                | sed -n 's#^https://github\.com/\([A-Za-z0-9._-]*/[A-Za-z0-9._-]*\)\.git$#\1#p')
-            [ -n "$slug" ] || fail "the website's learn.lock does not name a GitHub repository as https://github.com/OWNER/NAME.git"
-            mkdir -p "$released"
-            gh release download "$learn_release" -R "$slug" -D "$released" \
-                || fail "cannot download the release $learn_release of $slug"
-        fi
-        (cd "$archives" && find . -type f | LC_ALL=C sort) >"$out/una-by-example-built.txt"
-        (cd "$released" && find . -type f | LC_ALL=C sort) >"$out/una-by-example-released.txt"
-        [ -s "$out/una-by-example-built.txt" ] || fail "the build made no una-by-example archives"
-        grep -qx './SHA256SUMS' "$out/una-by-example-built.txt" || fail "the build made no SHA256SUMS"
-        diff "$out/una-by-example-built.txt" "$out/una-by-example-released.txt" >&2 \
-            || fail "the release $learn_release does not hold exactly the files the build makes (< built only, > released only)"
-        while IFS= read -r file; do
-            cmp -s "$archives/$file" "$released/$file" \
-                || fail "the release $learn_release has another ${file#./} than the build makes"
-        done <"$out/una-by-example-built.txt"
-        echo "una-by-example release $learn_release: the $(wc -l <"$out/una-by-example-built.txt" | tr -d ' ') files the build makes, byte for byte"
-    else
-        echo "una-by-example: no release named (the website's learn.lock has no release line)"
-    fi
+    # it must hold exactly the files this build makes, byte for byte (scripts/site-learn-release.sh).
+    learn_release=$(scripts/site-learn-release.sh --release-of "$website/learn.lock") || fail "the website's learn.lock"
+    scripts/site-learn-release.sh "$website/learn.lock" "$archives" "$out" || fail "the Learn release"
 else
     echo "una-by-example: skipped (the website at $commit has no learn.lock)"
 fi
@@ -137,6 +107,14 @@ cd "$website"
 [ -f scripts/deps-audit.mjs ] || fail "the website at $commit has no scripts/deps-audit.mjs (#783)"
 node scripts/deps-audit.mjs || fail "the website's dependency audit"
 npm ci --ignore-scripts --no-audit --no-fund --loglevel=error || fail "npm ci"
+if [ -n "$learn" ]; then
+    # The website's own reading of learn.lock (scripts/preview/learn.mjs, readLock) must name the
+    # release the comparison above read, or none when it read none (una#831).
+    website_release=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; import { readLock } from "./scripts/preview/learn.mjs"; process.stdout.write(readLock(readFileSync("learn.lock", "utf8")).release ?? "")') \
+        || fail "the website cannot read its learn.lock"
+    [ "$website_release" = "$learn_release" ] \
+        || fail "the website reads the release of learn.lock as '$website_release', but the gate read '$learn_release'"
+fi
 node "$root/scripts/doc-links/website-anchors.mjs" "$out/anchors/ids.json" "$root" \
     || fail "the heading ids of scripts/doc-links.py are not the website's"
 UNA_BUNDLE=$bundle UNA_BY_EXAMPLE=$learn npm run --silent build >"$out/website-build.log" 2>&1 \
