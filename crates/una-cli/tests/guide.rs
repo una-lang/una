@@ -850,6 +850,17 @@ fn every_example_has_a_readme_whose_commands_run() {
         let relative = format!("examples/{name}/README.md");
         let text = std::fs::read_to_string(package.join("README.md"))
             .unwrap_or_else(|_| panic!("{relative} is missing"));
+        // Only fences of backticks at the start of a line are read as blocks: a fence of tildes,
+        // or an indented one, would be skipped, so it fails (#827).
+        for (number, line) in text.lines().enumerate() {
+            let fence = line.trim_start();
+            assert!(
+                !(fence.starts_with("~~~")
+                    || (fence.starts_with("```") && fence.len() != line.len())),
+                "{relative}, line {}: a fence of tildes, or an indented fence, is not read; write ``` at the start of the line",
+                number + 1
+            );
+        }
         let readme_blocks = blocks(&text);
         for block in &readme_blocks {
             assert!(
@@ -978,7 +989,11 @@ fn every_example_has_a_readme_whose_commands_run() {
             if let Some(after) = value(attributes, "after") {
                 let number = after
                     .strip_prefix("mistakes/")
-                    .filter(|n| !n.starts_with('0'))
+                    .filter(|n| {
+                        !n.is_empty()
+                            && !n.starts_with('0')
+                            && n.chars().all(|c| c.is_ascii_digit())
+                    })
                     .and_then(|n| n.parse::<usize>().ok());
                 assert!(
                     number.is_some_and(|n| (1..=mistakes).contains(&n)),
