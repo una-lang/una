@@ -470,7 +470,7 @@ mod tests {
     use std::process::Command;
 
     use super::{Code, Returned, invoke};
-    use crate::{runtime, tasks, values};
+    use crate::{host, runtime, tasks, values};
 
     thread_local! {
         /// How many times the test lambdas below ran on this thread.
@@ -1381,6 +1381,106 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run by `i11_a_panic_in_the_join_s_import_is_u8001_at_the_block`"]
+    fn i11_join_import_panic_scenario() {
+        fork_scenario(|| {
+            tasks::TEST_PANIC_IN_JOIN.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+    }
+
+    /// The meta of the scenario of a refused export in a later batch: the block's site, and one
+    /// operation that each task records in the trace.
+    const BATCH_META: &str = r#"{"grants":[],"uses":[],"sites":[{"file":"src/c.una","start":{"line":2,"col":3},"end":{"line":2,"col":9}}],"ops":[{"capability":"Console","op":"print","params":[],"args":[],"result":{"type":0}}]}"#;
+
+    /// A lambda that records one event of the operation of [`BATCH_META`].
+    extern "C" fn evented(_closure: i64, _arg: i64) -> Returned {
+        let instance = values::instance("console".to_owned());
+        host::event(0, instance);
+        values::release(instance);
+        Returned {
+            value: 0,
+            status: 0,
+        }
+    }
+
+    #[test]
+    #[ignore = "run by `i6_a_refused_export_of_a_later_batch_keeps_the_events_of_the_tasks_that_ran`"]
+    fn i6_later_batch_export_refused_scenario() {
+        // 65 tasks: 64 over integers, which the first batch forks and runs, and a last one over a
+        // list of two texts, three objects, past an export limit of 2.
+        values::TEST_EXPORT_LIMIT.store(2, std::sync::atomic::Ordering::SeqCst);
+        let trace = limit_trace("ffi::tests::i6_later_batch_export_refused_scenario");
+        let evented =
+            Code(i64::try_from(evented as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        runtime::start(
+            &["--trace".to_owned(), trace.to_string_lossy().into_owned()],
+            BATCH_META,
+            move || {
+                let items = values::list();
+                for number in 0..64 {
+                    values::push(items, (number << 1) | 1);
+                }
+                let element = values::list();
+                for text in ["a", "b"] {
+                    let word = values::text_word(text.to_owned());
+                    values::push(element, word);
+                    values::release(word);
+                }
+                values::push(items, element);
+                values::release(element);
+                let closure = values::closure(evented, 1);
+                tasks::together_for(closure, items, 0)
+            },
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i6_a_refused_export_of_a_later_batch_keeps_the_events_of_the_tasks_that_ran() {
+        // ADR 0113 rule 2: a refused export does not end `main` inside the copy. The block's
+        // fork turns it into the outcome of the task it was for, and the join adopts the events
+        // of the tasks of earlier batches, which ran, before the stop ends the run at the block.
+        let scenario = "ffi::tests::i6_later_batch_export_refused_scenario";
+        let trace = limit_trace(scenario);
+        let _ = std::fs::remove_file(&trace);
+        let (status, stderr) = run_scenario(scenario);
+        let written = std::fs::read_to_string(&trace).unwrap_or_default();
+        let _ = std::fs::remove_file(&trace);
+        assert_eq!(status, Some(1), "{stderr}");
+        assert!(
+            stderr.starts_with("[U6003] Error: this copy holds more objects"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/c.una:2:3"), "at the block: {stderr}");
+        let events: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let tasks: std::collections::BTreeSet<String> = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event["task"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(tasks.len(), 64, "the first batch's events: {written}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn i11_a_panic_in_the_join_s_import_is_u8001_at_the_block() {
+        // ADR 0113 rule 2 and I11: the join's copies run inside `guarded` too, so a panic there
+        // ends the run with U8001 at the block, exit code 3, never an abort through the
+        // generated code's `extern "C"` frames.
+        let (status, stderr) = run_scenario("ffi::tests::i11_join_import_panic_scenario");
+        assert_eq!(status, Some(3), "{stderr}");
+        // The task ran, and said so, before its value reached the join.
+        assert!(stderr.starts_with(MARK), "{stderr}");
+        assert!(
+            stderr.contains("\n[U8001] Error: internal error: the runtime panicked while it copied a value: a test made the join's import panic\n"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/c.una:2:3"), "at the block: {stderr}");
+        assert!(!stderr.contains("panicked at"), "{stderr}");
+    }
+
+    #[test]
     #[ignore = "run by `i11_a_panic_outside_a_copy_prints_as_before`"]
     fn i11_panic_outside_a_copy_scenario() {
         runtime::start(&[], LIMIT_META, || {
@@ -1395,7 +1495,6 @@ mod tests {
         });
     }
 
-    /// Runs `scenario` in a process of its own: its exit code and its stderr.
     /// Runs `scenario` in a process of its own. A scenario that runs past a minute is killed
     /// and fails the test, so a hang never holds the run. Its stderr goes to a file, which a
     /// full pipe cannot block.

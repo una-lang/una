@@ -99,45 +99,74 @@ pub(crate) struct Reservation(usize);
 impl Drop for Reservation {
     fn drop(&mut self) {
         RESERVED.fetch_sub(self.0, Ordering::SeqCst);
+        #[cfg(test)]
+        LIVE_RESERVATIONS.with(|live| live.set(live.get() - 1));
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The reservations this thread holds, in tests: 0 again after every copy, a refused or a
+    /// panicked one included.
+    pub(crate) static LIVE_RESERVATIONS: Cell<usize> = const { Cell::new(0) };
+    /// Refuses one step of this thread, in tests: `Some(k)` lets k steps pass and refuses the
+    /// next, as a heap at its ceiling would, then lets the later ones pass.
+    pub(crate) static REFUSE_STEP: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
 /// Announces a step of `bytes` and checks it: the reservation, when `held() + reserved` stays
-/// within the run's ceiling, or `None` when it would not, with nothing announced.
+/// within the run's ceiling, or `None` when it would not, with nothing announced. A step larger
+/// than any allocation can be (`isize::MAX` bytes) is refused before it is announced, so the
+/// process-wide sum never wraps.
 pub(crate) fn try_reserve(bytes: usize) -> Option<Reservation> {
+    #[cfg(test)]
+    {
+        let refused = REFUSE_STEP.with(|cell| match cell.get() {
+            Some(0) => {
+                cell.set(None);
+                true
+            }
+            Some(left) => {
+                cell.set(Some(left - 1));
+                false
+            }
+            None => false,
+        });
+        if refused {
+            return None;
+        }
+    }
+    if bytes > isize::MAX as usize {
+        return None;
+    }
     let reserved = RESERVED
         .fetch_add(bytes, Ordering::SeqCst)
         .saturating_add(bytes);
     let reservation = Reservation(bytes);
+    #[cfg(test)]
+    LIVE_RESERVATIONS.with(|live| live.set(live.get() + 1));
     let held = crate::held();
     HOT.with(|hot| !hot.active.get() || held.saturating_add(reserved) <= hot.mem_ceiling.get())
         .then_some(reservation)
 }
 
-/// Announces a step of `bytes` of a copy made at the block `site`, and checks it (ADR 0113 rule
-/// 4). Over the ceiling, the run or the task stops with U6003 at the block, with the message of
-/// a call over the budget, and the result is `None`.
-pub(crate) fn reserve(site: usize, bytes: usize) -> Option<Reservation> {
-    let reservation = try_reserve(bytes);
-    if reservation.is_none() {
-        refuse(site, None);
-    }
-    reservation
+/// The message of a copy's refused step: `message`, or the message of a call over the memory
+/// budget.
+pub(crate) fn refusal_message(message: Option<String>) -> String {
+    message.unwrap_or_else(|| {
+        let max_memory = with_state(|state| state.max_memory).unwrap_or_default();
+        format!("this call exceeds the memory limit of {max_memory} MiB")
+    })
 }
 
-/// Stops the run or the task with U6003 at the block `site`: with `message`, or the message of a
-/// call over the memory budget.
+/// Stops the run or the task with U6003 at the block `site`, for a copy's refused step (ADR 0113
+/// rule 4): with `message`, or the message of a call over the memory budget. The caller holds no
+/// borrow of the heap, since a stop of `main` ends the process.
 pub(crate) fn refuse(site: usize, message: Option<String>) {
+    let message = refusal_message(message);
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
-        let state = cell.as_mut()?;
-        let message = message.unwrap_or_else(|| {
-            format!(
-                "this call exceeds the memory limit of {} MiB",
-                state.max_memory
-            )
-        });
-        let location = site_location(state, site);
+        let location = cell.as_ref().map(|state| site_location(state, site))?;
         stop_or_abort(&mut cell, Code::U6003, location, message)
     });
     if let Some((state, code, location, message)) = abort {

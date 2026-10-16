@@ -127,29 +127,24 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
         let first = number * WAVE;
         let (ended, fork) = fork_batch(batch, first, &template, &flags, site, invoke);
         outcomes.extend(ended);
-        match fork {
-            Fork::Ran => {}
-            // A task's thread did not start, or stopped while it copied its inputs in: its
-            // outcome decides the block.
-            Fork::TaskStopped => break,
-            // A copy out of the block's heap was refused: the block's task stopped, at the
-            // block, after the events of the tasks that ran.
-            Fork::BlockStopped => return join(outcomes, tuple, &template, site, true),
+        // A copy of the fork was refused or panicked, or a task's thread did not start: that
+        // task's outcome holds the abort, which decides the block at the join, after the events
+        // of the batches that ran (ADR 0113 rule 2).
+        if matches!(fork, Fork::Stopped) {
+            break;
         }
     }
-    join(outcomes, tuple, &template, site, false)
+    join(outcomes, tuple, &template, site)
 }
 
 /// How a batch's fork phase ended.
 enum Fork {
     /// Every task of the batch that was not cancelled imported its inputs and ran.
     Ran,
-    /// A task's thread could not start, panicked, or was refused a step of its import: no task
-    /// of the batch ran, and that task's outcome holds the abort.
-    TaskStopped,
-    /// A step of a copy out of the block's heap was refused, which stopped the block's task: no
-    /// task of the batch ran.
-    BlockStopped,
+    /// A step of a copy of the fork was refused or panicked, or a task's thread could not
+    /// start: no task of the batch ran, and the outcome of the task whose fork stopped holds the
+    /// abort.
+    Stopped,
 }
 
 /// The outcome of a task that never started: no event, no value.
@@ -199,22 +194,26 @@ fn fork_batch(
                 continue;
             }
             let forms = runtime::guarded(|| {
-                let closure = values::export(closure, site)?;
+                let closure = values::export(closure)?;
                 let arg = match arg {
-                    Some(arg) => Some(values::export(arg, site)?),
+                    Some(arg) => Some(values::export(arg)?),
                     None => None,
                 };
-                Some((closure, arg))
+                Ok((closure, arg))
             });
+            // A refused export does not stop the block's task in place: the tasks of earlier
+            // batches ran, and their events are adopted at the join before the abort ends it.
             let (closure, arg) = match forms {
-                Ok(Some(forms)) => forms,
-                Ok(None) => {
-                    fork = Fork::BlockStopped;
+                Ok(Ok(forms)) => forms,
+                Ok(Err(values::Refused(message))) => {
+                    let message = runtime::refusal_message(message);
+                    early.push((offset, aborted(template, Code::U6003, message)));
+                    fork = Fork::Stopped;
                     break;
                 }
                 Err(message) => {
                     early.push((offset, aborted(template, Code::U8001, message)));
-                    fork = Fork::TaskStopped;
+                    fork = Fork::Stopped;
                     break;
                 }
             };
@@ -224,7 +223,7 @@ fn fork_batch(
             #[cfg(test)]
             if TEST_FAIL_SPAWN.load(Ordering::SeqCst) {
                 early.push((offset, aborted(template, Code::U6003, stopped_message())));
-                fork = Fork::TaskStopped;
+                fork = Fork::Stopped;
                 break;
             }
             let spawned = std::thread::Builder::new()
@@ -249,13 +248,13 @@ fn fork_batch(
                     let imported = answered.recv().unwrap_or(false);
                     forked.push((offset, handle, go));
                     if !imported {
-                        fork = Fork::TaskStopped;
+                        fork = Fork::Stopped;
                         break;
                     }
                 }
                 Err(_) => {
                     early.push((offset, aborted(template, Code::U6003, stopped_message())));
-                    fork = Fork::TaskStopped;
+                    fork = Fork::Stopped;
                     break;
                 }
             }
@@ -338,23 +337,24 @@ fn task(
     // ADR 0113 rule 5: the copies into the task's heap check each step, at the block; a refused
     // step stops the task, which its block reports.
     let imported = runtime::guarded(|| {
-        let closure = values::import(&inputs.closure, site)?;
+        let closure = values::import(&inputs.closure)?;
         match &inputs.arg {
-            None => Some((closure, None)),
-            Some(arg) => match values::import(arg, site) {
-                Some(arg) => Some((closure, Some(arg))),
-                None => {
+            None => Ok((closure, None)),
+            Some(arg) => match values::import(arg) {
+                Ok(arg) => Ok((closure, Some(arg))),
+                Err(refused) => {
                     values::release(closure);
-                    None
+                    Err(refused)
                 }
             },
         }
     });
     drop(inputs);
     let (closure, arg) = match imported {
-        Ok(Some(words)) => words,
-        Ok(None) => {
+        Ok(Ok(words)) => words,
+        Ok(Err(values::Refused(message))) => {
             drop(answer);
+            runtime::refuse(site, message);
             return ended_task(index, flags, Ended::Stopped);
         }
         Err(message) => {
@@ -377,10 +377,13 @@ fn task(
     }
     let (value, status) = invoke(closure, arg, site);
     let ended = match status {
-        0 | 1 => match runtime::guarded(|| values::export(value, site)) {
-            Ok(Some(portable)) if status == 0 => Ended::Returned(portable),
-            Ok(Some(portable)) => Ended::Failed(portable),
-            Ok(None) => Ended::Stopped,
+        0 | 1 => match runtime::guarded(|| values::export(value)) {
+            Ok(Ok(portable)) if status == 0 => Ended::Returned(portable),
+            Ok(Ok(portable)) => Ended::Failed(portable),
+            Ok(Err(values::Refused(message))) => {
+                runtime::refuse(site, message);
+                Ended::Stopped
+            }
             Err(message) => {
                 runtime::abort_from_task(Code::U8001, template.location.clone(), message);
                 Ended::Stopped
@@ -440,16 +443,8 @@ fn ended_task(index: usize, flags: &[Arc<AtomicBool>], ended: Ended) -> Outcome 
 }
 
 /// The join (`spec/19 §6` rule 5, `§7`): the tasks' events in task order, the outcome of the
-/// lowest-indexed task that failed or aborted, else the values of all. When `stopped_at_fork`,
-/// a copy out of the block's heap was refused and the block's task already stopped: the events
-/// of the tasks that ran are adopted, and the block stops.
-fn join(
-    outcomes: Vec<Outcome>,
-    tuple: bool,
-    template: &TaskTemplate,
-    site: usize,
-    stopped_at_fork: bool,
-) -> (i64, i64) {
+/// lowest-indexed task that failed or aborted, else the values of all.
+fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate, site: usize) -> (i64, i64) {
     let mut decided: Option<(usize, bool)> = None;
     for (index, outcome) in outcomes.iter().enumerate() {
         let decides = match outcome.ended {
@@ -502,17 +497,21 @@ fn join(
             }
         }
     });
-    if stopped_at_fork {
-        return (0, 2);
-    }
     if let Some((code, location, message)) = abort {
         return (runtime::abort_from_task(code, location, message), 2);
     }
     if let Some(failure) = failure {
         // #775: the copies into this heap check the budget as they grow.
-        return match values::import(&failure, site) {
-            Some(word) => (word, 1),
-            None => (0, 2),
+        return match join_import(&failure) {
+            Ok(Ok(word)) => (word, 1),
+            Ok(Err(values::Refused(message))) => {
+                runtime::refuse(site, message);
+                (0, 2)
+            }
+            Err(message) => (
+                runtime::abort_from_task(Code::U8001, template.location.clone(), message),
+                2,
+            ),
         };
     }
     if stopped {
@@ -524,12 +523,43 @@ fn join(
         values::list()
     };
     for value in &values_out {
-        let Some(word) = values::import(value, site) else {
-            values::release(block);
-            return (0, 2);
+        let word = match join_import(value) {
+            Ok(Ok(word)) => word,
+            Ok(Err(values::Refused(message))) => {
+                values::release(block);
+                runtime::refuse(site, message);
+                return (0, 2);
+            }
+            Err(message) => {
+                values::release(block);
+                let stopped =
+                    runtime::abort_from_task(Code::U8001, template.location.clone(), message);
+                return (stopped, 2);
+            }
         };
         values::push(block, word);
         values::release(word);
     }
     (block, 0)
 }
+
+/// A task's value copied into the block's heap at the join, inside [`runtime::guarded`]: a panic
+/// there is U8001 at the block, never an unwind through the generated code's `extern "C"`
+/// frames (ADR 0113 rule 2).
+fn join_import(value: &Portable) -> Result<Result<i64, values::Refused>, String> {
+    runtime::guarded(|| {
+        #[cfg(test)]
+        if TEST_PANIC_IN_JOIN.load(Ordering::SeqCst) {
+            #[allow(clippy::panic)]
+            {
+                panic!("a test made the join's import panic");
+            }
+        }
+        values::import(value)
+    })
+}
+
+/// Makes every import of the join panic, in tests.
+#[cfg(test)]
+pub(crate) static TEST_PANIC_IN_JOIN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
