@@ -1,8 +1,8 @@
 # 0107. Data layout
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-15
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-15)
 - Resolves: issue #736
 - Target: the native backend (`spec/16`), both its debug backend (Cranelift) and its optimized backend (ADR 0106, #522). No edition changes: the representation is not observable (`spec/16 §4`), and no program, output, failure, abort or trace changes.
 - Amends, once accepted: `spec/16 §4` rules 1 and 2, `spec/18 §7`; a dated note on ADR 0055 and ADR 0066.
