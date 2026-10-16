@@ -77,7 +77,9 @@ def must_reject(rows, una, root, timeout, out, build=None):
         prog = (build or rebuild)(row)
         v = check(una, prog.write(root), root, timeout)
         result = dict(row, **v.row())
-        if row["class"] == MUST_REJECT:
+        if row["class"] == MUST_REJECT or (row["class"] == OPEN and row["expect"]):
+            # An open program with an expected code is a closed call (#813): a correct checker
+            # rejects it with that code, so an acceptance is a finding, as for must-reject.
             result["finding"] = v.kind == "accepted"
             got = {c[0] for c in v.codes}
             result["expect_seen"] = bool(got & set(row["expect"])) if row["expect"] else None
@@ -280,7 +282,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             if z3:
                 fv = parse_check(sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
                                              timeout=timeout, env_extra=solver_env(z3)))
-            r = judge_residual(v.kind, fv, prog.variant, prog.expect)
+            r = judge_residual(v.kind, fv, prog.variant, prog.expect, prog.prove)
             result.update(full=None if fv is None else fv.row(), **r)
             tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + r["full_kind"])] += 1
         if v.kind == "accepted":
@@ -325,7 +327,7 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
 OBLIGATION_CODES = {"U5001", "U5002"}
 
 
-def judge_residual(tier0, full, variant, expect=()):
+def judge_residual(tier0, full, variant, expect=(), prove=False):
     """A residual program's verdicts (#548), fail-closed. `tier0` is `una check --tier 0`'s
     kind, `full` the full check's `Verdict`, or None when no solver was given. The row is invalid,
     and the batch is rerun, unless the full check ran with the solver to an acceptance or to a
@@ -333,8 +335,11 @@ def judge_residual(tier0, full, variant, expect=()):
     or inconsistent output, or a rejection by other codes, which tests nothing of the channel. A
     public print after the step goes to triage when either check accepts it.
 
-    A row with `expect` (family Q, #813) is one the full check must reject with one of those codes:
-    a rejection by others is invalid, and an acceptance is `missed`, a finding."""
+    A row with `expect` (family Q, #813) is one the full check must reject with those codes and no
+    other, U5002 included: a rejection by any other code is invalid, and an acceptance is `missed`,
+    a finding. A row with `prove`, the twin of such a row, is one the full check must accept: any
+    rejection of it is invalid, so a full check that rejected every conditioned use, or left one
+    unknown, fails the gate."""
     after = variant.endswith("-print-after")
     allowed = OBLIGATION_CODES | set(expect)
     codes = {c[0] for c in full.codes} if full is not None else set()
@@ -344,11 +349,14 @@ def judge_residual(tier0, full, variant, expect=()):
         kind = "invalid (U5003)"
     elif full.kind not in ("accepted", "rejected"):
         kind = f"invalid ({full.kind})"
+    elif full.kind == "rejected" and prove:
+        kind = ("invalid (a twin the full check must prove, rejected by "
+                + ", ".join(sorted(codes)) + ")")
+    elif full.kind == "rejected" and expect and (not codes or not codes <= set(expect)):
+        kind = ("invalid (rejected by " + ", ".join(sorted(codes)) + ", not only "
+                + ", ".join(expect) + ")")
     elif full.kind == "rejected" and not codes <= allowed:
         kind = "invalid (rejected by " + ", ".join(sorted(codes)) + ")"
-    elif full.kind == "rejected" and expect and not codes & set(expect):
-        kind = ("invalid (rejected by " + ", ".join(sorted(codes)) + ", not "
-                + ", ".join(expect) + ")")
     else:
         kind = full.kind
     return {"full_kind": kind, "invalid": kind.startswith("invalid"),

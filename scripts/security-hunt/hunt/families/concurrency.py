@@ -211,7 +211,7 @@ def c5(seed, edition):
 #
 # Two kinds. The first six forms are accepted, and print what the secret cannot decide: the oracle
 # checks that the checks' acceptance is sound for them. The last three, `shape-length`,
-# `public-fan-out` and `element-fail`, are closed calls that a correct checker rejects (U4001,
+# `public-fan-out` and `element-fail`, are closed calls that a correct checker rejects (U4003,
 # U4003, U4002), so the oracle sets them aside, a count the gate pins; a checker that wrongly
 # accepted one would let the oracle see the secret in public output or public events, a finding.
 VAULT = ("capability Vault\n  op note(x: Int) -> Unit\n    accepts secret\n\n"
@@ -308,14 +308,14 @@ def c6(seed, edition):
             # Edition 0.1 also refuses this `fail` block's form, U0101, besides `together`.
             prog.expect.append("U0101")
         return prog
-    closed = {"shape-length": "U4001", "public-fan-out": "U4003", "element-fail": "U4002"}
+    closed = {"shape-length": "U4003", "public-fan-out": "U4003", "element-fail": "U4002"}
     note = (f"a closed call: a correct checker rejects it ({closed[form]}), and the oracle sets it "
             "aside; a checker that accepted it would let the oracle see the secret"
             if form in closed else
             "expected accepted; the oracle checks that what an observer below the secret sees "
             "does not depend on it")
-    prog = _make("C6", edition, seed, OPEN, join_decls(*decls), variant=form, note=note,
-                 varied=v)
+    prog = _make("C6", edition, seed, OPEN, join_decls(*decls),
+                 [closed[form]] if form in closed else [], variant=form, note=note, varied=v)
     if edition == "0.1" and "fail Bad" in prog.files["src/app/main.una"]:
         # Edition 0.1 also refuses a `fail` block of this form, U0101, besides `together`.
         prog.expect.append("U0101")

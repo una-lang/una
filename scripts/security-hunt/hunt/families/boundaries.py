@@ -181,7 +181,7 @@ def b2(seed, edition):
     note = ("a closed call: a correct checker rejects it (U4002), and the oracle sets it aside"
             if closed else "expected accepted; the oracle checks that no observer below the "
             "secret sees it")
-    cls, expect, note = _gated(edition, OPEN, [], note, ("U7002", "U0101"))
+    cls, expect, note = _gated(edition, OPEN, ["U4002"] if closed else [], note, ("U7002", "U0101"))
     if cls == MUST_REJECT:
         # The probe is a check only: nothing of it runs.
         vary = []

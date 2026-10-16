@@ -46,6 +46,41 @@ from .program import Program
 # has obligations for the solver. The gate sets it to the pinned solver's `PATH`
 # (`drivers.solver_env`) before it runs anything; a program without obligations never calls it.
 RUN_ENV = {}
+# The solver's wall clock per query in those runs and builds, well below the run's own limit
+# (`gate.RUN_TIMEOUT`, 20 seconds): a query the solver does not decide in 10 seconds ends as U5002,
+# a gate error, before the run's limit can kill the run and make it look like an abort. A run
+# killed at its limit anyway, its check slower in total, has its full check run on its own
+# (`undecided`): only a check that decides every obligation lets the kill count as an abort.
+SOLVER_WALLCLOCK = 10
+SOLVER_FLAGS = ["--solver-wallclock", str(SOLVER_WALLCLOCK)]
+FULL_CHECK_TIMEOUT = 60
+SOLVER_CODES = {"U5002", "U5003"}
+
+
+def undecided(una, files, name, root):
+    """Why the full check of the variant `files` does not show that the solver decided it, or None
+    when the check accepts it: a timeout, an output that is not a check document, a rejection, or
+    U5002 or U5003 among its diagnostics. For a run killed at its time limit, whose check may have
+    been what took the time."""
+    rundir = sandbox.fresh_dir(root, f"{name}-c-")
+    pkg = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
+                  variant=name).write(rundir)
+    r = sandbox.run([una, "--json", "check", ".", *SOLVER_FLAGS], cwd=pkg, writable=rundir,
+                    timeout=FULL_CHECK_TIMEOUT, env_extra=RUN_ENV)
+    if r.timed_out:
+        return f"{name}: the run reached its time limit, and so did its full check"
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        return f"{name}: the run reached its time limit, and its full check is not a document"
+    codes = sorted({d.get("code") for d in doc.get("diagnostics", [])})
+    if set(codes) & SOLVER_CODES:
+        return (f"{name}: the run reached its time limit, and its full check did not decide: "
+                + ", ".join(sorted(set(codes) & SOLVER_CODES)))
+    if r.code != 0 or any(d.get("severity") == "error" for d in doc.get("diagnostics", [])):
+        return (f"{name}: the run reached its time limit, and its full check rejects it: "
+                + ", ".join(codes))
+    return None
 
 # The sample is stratified, a fixed function of the fixed run's names:
 # - the oracle's programs whose name's SHA-256 starts with a byte below SAMPLE_BELOW, 20 of 256,
@@ -276,8 +311,8 @@ def build_and_run(una, files, name, root, timeout, limits):
     p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files, variant=name)
     pkg = p.write(rundir)
     exe = os.path.join(rundir, "native-exe")
-    built = sandbox.run([una, "--json", "build", ".", "--out", exe], cwd=pkg, writable=rundir,
-                        timeout=timeout * 6, env_extra=RUN_ENV)
+    built = sandbox.run([una, "--json", "build", ".", "--out", exe, *SOLVER_FLAGS], cwd=pkg,
+                        writable=rundir, timeout=timeout * 6, env_extra=RUN_ENV)
     if built.timed_out or built.code != 0:
         why = "timed out" if built.timed_out else built.stderr.strip()[-300:]
         return ("not compiled" if NOT_COMPILED in built.stderr else "build failed", why)
@@ -299,8 +334,8 @@ def pair(una, root, timeout, limits, interpreted_files, native_files, name):
     p = Program(op="canary", rule="", edition="", seed=0, cls="open", files=interpreted_files,
                 variant=name)
     pkg = p.write(rundir)
-    interp = sandbox.run([una, "--json", "run", ".", *limits], cwd=pkg, writable=rundir,
-                         timeout=timeout, env_extra=RUN_ENV)
+    interp = sandbox.run([una, "--json", "run", ".", *limits, *SOLVER_FLAGS], cwd=pkg,
+                         writable=rundir, timeout=timeout, env_extra=RUN_ENV)
     try:
         doc = json.loads(interp.stdout)
     except ValueError:

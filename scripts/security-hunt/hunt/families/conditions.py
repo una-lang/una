@@ -31,9 +31,30 @@ def _gate(edition, cls, expect, note, codes=("U0101",)):
 # Q1. What tier 0 rejects of a condition: one in a function type (U0101), one with `result`
 # (U2012), `it` (U2013), an operation (U2014) or an opaque predicate (U2016), a conditioned
 # function used as a value (U3006), a header granting an operation its lock does not list
-# (U3023), and a condition in a `[boundaries]` ceiling (U7002).
+# (U3023), with a condition or without one, and a condition in a `[boundaries]` ceiling (U7002).
+# The plain lock, with no `where` anywhere, is the edition gate's probe of `[contracts]` alone: in
+# edition 0.2 it is U7002 and nothing else can satisfy it.
 Q1_FORMS = ("fn-type", "result", "it", "operation", "opaque", "not-a-value", "lock-added",
-            "ceiling")
+            "lock-plain", "ceiling")
+
+
+def ceiling_package(p, ops):
+    """The modules and tables of Q1's `ceiling` form, a ceiling `Log[<ops>]` on the boundary
+    `app.edge`, where everything else resolves: `Log` is public, in `app.log`, and both modules
+    import it, so with `ops` a plain `write` the package is accepted (the gate's
+    `ceiling-control` canary), and a `where` in it is the only error left."""
+    log = LOG.replace("capability Log", "pub capability Log", 1)
+    modules = {
+        "app.log": join_decls(header("app.log"), log),
+        "app.edge": join_decls(
+            header("app.edge", imports=[("app.log", ["Log"])]),
+            "pub note(n: Int) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(n)"),
+        MOD: join_decls(
+            header(MOD, imports=[("app.log", ["Log"])]),
+            f"pub update(n: Int, {p}: Bool) -> Unit\n  uses @log: Log[write]\n=\n"
+            "  @log.write(n)"),
+    }
+    return modules, [("boundaries", [("app.edge", [f"Log[{ops}]"])])]
 
 
 def q1(seed, edition):
@@ -77,11 +98,15 @@ def q1(seed, edition):
         tables = [("contracts", [(f"{MOD}.update", [f"@log: Log[write where not {p}]"])])]
         expect = ["U3023"]
         gate_codes = ("U0101", "U7002")
-    else:
-        modules["app.edge"] = join_decls(header("app.edge"), "pub size_of(n: Int) -> Int = n")
-        decls.append(f"pub update(n: Int, {p}: Bool) -> Unit\n  uses @log: Log[write]\n=\n"
+    elif form == "lock-plain":
+        decls.append(f"pub update(n: Int, {p}: Bool) -> Unit\n  uses @log: Log[write, count]\n=\n"
                      "  @log.write(n)")
-        tables = [("boundaries", [("app.edge", [f"Log[write where n > {k}]"])])]
+        tables = [("contracts", [(f"{MOD}.update", ["@log: Log[write]"])])]
+        expect = ["U3023"]
+        gate_codes = ("U7002",)
+    else:
+        modules, tables = ceiling_package(p, f"write where n > {k}")
+        decls = [modules.pop(MOD)]
         expect = ["U7002"]
         gate_codes = ("U7002",)
     modules[MOD] = join_decls(*decls)
@@ -95,7 +120,7 @@ def q1(seed, edition):
 # false (U5001), through a lambda, an unconditioned helper, a callee that promises less, or a
 # reassigned parameter, and a header whose condition does not imply its lock's (U3023). Tier 0
 # accepts them all, so they are residual rows the full check must reject with the expected code
-# (`judge_residual`); their twins prove, and are recorded.
+# (`judge_residual`), with that code alone; their twins the full check must prove (`prove`).
 Q2_REFUTED = {"unguarded": "U5001", "lambda": "U5001", "helper": "U5001",
               "promise-wrong": "U5001", "reassigned": "U5001", "lock-weakened": "U3023"}
 Q2_PROVEN = ("guarded", "required", "promise")
@@ -139,11 +164,12 @@ def q2(seed, edition):
                      f"  uses @log: Log[write where not {p}]\n=\n  @log.write(n)")
     expect = [Q2_REFUTED[form]] if form in Q2_REFUTED else []
     note = ("the full check must reject it with " + expect[0] if expect else
-            "the full check proves it; recorded")
+            "the full check must prove it")
     cls, expect, note = _gate(edition, RESIDUAL, expect, note, gate_codes)
     files = package("hunt", edition, {MOD: join_decls(*decls)}, tables=tables)
     return Program(op="Q2", rule=RULE + ", spec/12 §3", edition=edition, seed=seed, cls=cls,
-                   files=files, expect=expect, variant=f"{form}-{p}", note=note)
+                   files=files, expect=expect, variant=f"{form}-{p}", note=note,
+                   prove=cls == RESIDUAL and form in Q2_PROVEN)
 
 
 CATALOG = ("capability Catalog\n  op journal(n: Int) -> Unit\n\n"
@@ -188,7 +214,7 @@ def q3(seed, edition):
     note = ("a closed call: a correct checker rejects it (U4003), and the oracle sets it aside"
             if closed else "expected accepted; the oracle checks that no observer below the "
             "secret sees it")
-    cls, expect, note = _gate(edition, OPEN, [], note)
+    cls, expect, note = _gate(edition, OPEN, ["U4003"] if closed else [], note)
     if cls == MUST_REJECT:
         vary = []
     return Program(op="Q3", rule=RULE + ", spec/07 §3", edition=edition, seed=seed, cls=cls,

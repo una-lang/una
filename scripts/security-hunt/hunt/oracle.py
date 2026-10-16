@@ -362,10 +362,16 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
         p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
                     variant=name)
         pkg = p.write(rundir)
-        runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg,
-                                writable=rundir, timeout=timeout, env_extra=native.RUN_ENV))
+        runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS, *native.SOLVER_FLAGS],
+                                cwd=pkg, writable=rundir, timeout=timeout,
+                                env_extra=native.RUN_ENV))
     if raw(runs[0]) != raw(runs[1]):
         return ("error", "nondeterministic: two runs of one variant differ"), runs[0]
+    if runs[0].timed_out:
+        # A run killed at its limit is an abort only when its full check decides (#813).
+        why = native.undecided(una, files, name, root)
+        if why:
+            return ("error", why), runs[0]
     return observe(runs[0], observers, table, live_level), runs[0]
 
 
@@ -417,18 +423,38 @@ def native_pass(prog, una, root, timeout, result):
         p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
                     variant=name)
         pkg = p.write(rundir)
-        run = sandbox.run([una, "--json", "run", ".", *RUN_LIMITS], cwd=pkg, writable=rundir,
-                          timeout=timeout, env_extra=native.RUN_ENV)
+        run = sandbox.run([una, "--json", "run", ".", *RUN_LIMITS, *native.SOLVER_FLAGS], cwd=pkg,
+                          writable=rundir, timeout=timeout, env_extra=native.RUN_ENV)
+        if run.timed_out:
+            # As in the oracle's runs: an abort only when the full check decides; `native_check`
+            # then lists the variant as not compared.
+            why = native.undecided(una, files, name, root)
+            if why:
+                result["error"] = result["error"] or f"native {why}"
+                return
+            native_check(result, una, files, name, root, timeout, ("abort", None), run)
+            continue
         try:
-            status = json.loads(run.stdout).get("status")
+            doc = json.loads(run.stdout)
+            status = doc.get("status")
+            codes = {d.get("code") for d in doc.get("diagnostics", [])}
         except (ValueError, AttributeError):
-            status = None
+            doc, status, codes = None, None, set()
+        if codes & SOLVER_CODES:
+            # The run's full check did not decide: a gate error, never a run left out (#813).
+            undecided_codes = ", ".join(sorted(codes & SOLVER_CODES))
+            result["error"] = result["error"] or (
+                f"native {name}: the solver did not decide: {undecided_codes}")
+            return
         if status in ("ok", "failed"):
             end = ("complete", None)
         elif status == "aborted":
             end = ("abort", None)
         else:
-            continue
+            result["error"] = result["error"] or (
+                f"native {name}: the interpreter's run ends {status!r}, exit {run.code}"
+                if doc is not None else f"native {name}: the interpreter's run is not a document")
+            return
         native_check(result, una, files, name, root, timeout, end, run)
 
 
@@ -476,7 +502,13 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             # A program the checks reject has no complete export: the base run says so.
             base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers,
                              {k: {v} for k, v in HOST_ACCEPTS.items()}, live_level)
-            if base[0] == "rejected":
+            if base[0] == "rejected" and not set(base[1]) & set(prog.expect):
+                # Only a closed call or a must-reject program is set aside as rejected, and only
+                # with one of its expected codes: another rejection tests nothing of its rule.
+                result["error"] = ("rejected by " + (", ".join(base[1]) or "no code") + ", not "
+                                   + (", ".join(prog.expect) or "an expected code"))
+                tally["program error"] += 1
+            elif base[0] == "rejected":
                 result["set_aside"] = "rejected by the checks: " + ", ".join(base[1])
                 tally["set aside (rejected)"] += 1
             else:

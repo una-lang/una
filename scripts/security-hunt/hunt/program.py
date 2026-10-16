@@ -64,6 +64,9 @@ class Program:
     # or "outside"; empty for the other operators, which `differ` judges as before. The manifest
     # writes it as `expect_recheck`: `differ`'s rows use `recheck` for the re-check's lines.
     recheck: str = ""
+    # A residual program the full check must prove (family Q's twins, #813): any rejection of it
+    # is an error (`drivers.judge_residual`).
+    prove: bool = False
 
     def __post_init__(self):
         if self.cls not in CLASSES:
@@ -98,6 +101,7 @@ class Program:
             "variant": self.variant,
             "vary": self.vary,
             **({"expect_recheck": self.recheck} if self.recheck else {}),
+            **({"prove": True} if self.prove else {}),
         }
 
     def digest(self):

@@ -1129,7 +1129,7 @@ class Edition03(unittest.TestCase):
                 seen.setdefault(op, {})[p.variant.rsplit("-", 1)[0] if op in ("B1", "Q1", "Q2")
                                        else p.variant] = (p.cls, tuple(p.expect))
         self.assertEqual(len(seen["B1"]), 7)
-        self.assertEqual(len(seen["Q1"]), 8)
+        self.assertEqual(len(seen["Q1"]), 9)
         self.assertEqual(seen["Q1"]["ceiling"], (MUST_REJECT, ("U7002",)))
         self.assertTrue(all(cls == MUST_REJECT and e for cls, e in seen["B1"].values()))
         self.assertEqual(seen["B1"]["release"][1], ("U3024",))
@@ -1148,7 +1148,7 @@ class Edition03(unittest.TestCase):
                  if OPERATORS["B1"](derive_seed(1, "B1", i), "0.3").variant.startswith("ceiling"))
         self.assertIn('[boundaries]\n"app.edge" = ["', p.files["una.toml"])
         q = next(OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.3") for i in range(200)
-                 if OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.3").variant.startswith("lock"))
+                 if OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.3").variant.startswith("lock-added"))
         self.assertIn('[contracts]\n"app.main.update" = ["@log: Log[write where not ',
                       q.files["una.toml"])
         # No table, no change: the files of the older operators are as before.
@@ -1208,6 +1208,227 @@ class Edition03(unittest.TestCase):
         self.assertTrue(gate.caught("oracle-condition", {
             "finding": True, "error": None, "variants": [{"observers": ["public"]}],
             "violations": []}))
+
+
+class Edition03Guards(unittest.TestCase):
+    """What keeps the edition 0.3 families' checks from passing on a fault they do not test
+    (#813): the solver in runs, closed calls' codes, per-family pins and floors, the twins of Q2,
+    the ceiling probe, and the time budget."""
+
+    TABLE = {("Console", "print"): {"public"}}
+
+    def fake(self, answer):
+        """Replaces `sandbox.run` and `sandbox.fresh_dir` with `answer(argv)` and temporary
+        directories; returns the list of argv seen and a function that restores both."""
+        seen = []
+        saved = sandbox.run, sandbox.fresh_dir
+
+        def run(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
+            seen.append(list(argv))
+            return answer(argv)
+        sandbox.run = run
+        sandbox.fresh_dir = lambda root, prefix: tempfile.mkdtemp(prefix=prefix, dir=root)
+
+        def restore():
+            sandbox.run, sandbox.fresh_dir = saved
+        return seen, restore
+
+    def test_every_run_and_build_bounds_the_solver_below_the_run_limit(self):
+        self.assertEqual(native.SOLVER_FLAGS, ["--solver-wallclock", "10"])
+        self.assertLess(native.SOLVER_WALLCLOCK * 2, gate.RUN_TIMEOUT + 1)
+        killed = Run(None, "", "", True, 20.0)
+        seen, restore = self.fake(lambda argv: killed)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                oracle.run_twice("una", {"una.toml": "x\n"}, "p", tmp, 1, ["public"], self.TABLE,
+                                 "secret")
+        finally:
+            restore()
+        runs = [a for a in seen if "run" in a]
+        self.assertTrue(runs and all("--solver-wallclock" in a for a in runs))
+        checks = [a for a in seen if "check" in a]
+        self.assertEqual(len(checks), 1)
+        self.assertIn("--solver-wallclock", checks[0])
+
+    def test_a_run_killed_at_its_limit_is_an_abort_only_when_its_check_decides(self):
+        killed = Run(None, "", "", True, 20.0)
+        undecided = Run(1, json.dumps({"diagnostics": [diag("U5002")]}), "", False, 10.0)
+        decided = Run(0, json.dumps({"diagnostics": []}), "", False, 1.0)
+        for check, want in ((undecided, "error"), (killed, "error"), (decided, "abort")):
+            seen, restore = self.fake(lambda argv, c=check: c if "check" in argv else killed)
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    end = oracle.run_twice("una", {"una.toml": "x\n"}, "p", tmp, 1, ["public"],
+                                           self.TABLE, "secret")
+            finally:
+                restore()
+            self.assertEqual(end[0], want, (check, end))
+        self.assertEqual(end, ("abort", ["timeout"]))
+
+    def test_a_native_pass_run_the_solver_did_not_decide_is_an_error(self):
+        prog = OPERATORS["T12"](derive_seed(1, "T12", 0), "0.2")
+        prog.vary = []
+        for doc in (run_doc("rejected", diagnostics=[diag("U5002")]), run_doc("rejected"),
+                    "not a document"):
+            result = {"error": None, "native": {"sampled": True, "stratum": False, "compared": 0,
+                                                "divergences": [], "skipped": [],
+                                                "not_compiled": None}}
+            seen, restore = self.fake(lambda argv, d=doc: Run(1, d, "", False, 0.1))
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    oracle.native_pass(prog, "una", tmp, 1, result)
+            finally:
+                restore()
+            self.assertTrue(result["error"], doc)
+            self.assertEqual(result["native"]["compared"], 0)
+
+    def test_closed_calls_carry_their_code(self):
+        def form_of(op, form, edition="0.3"):
+            for i in range(200):
+                p = OPERATORS[op](derive_seed(1, op, i), edition)
+                if p.variant == form:
+                    return p
+            raise AssertionError(f"no {op} {form}")
+        self.assertEqual(form_of("B2", "under-secret-pc").expect, ["U4002"])
+        self.assertEqual(form_of("Q3", "secret-condition").expect, ["U4003"])
+        self.assertEqual(form_of("C6", "shape-length", "0.2").expect, ["U4003"])
+        self.assertEqual(form_of("C6", "public-fan-out", "0.2").expect, ["U4003"])
+        self.assertEqual(form_of("C6", "element-fail", "0.2").expect, ["U4002"])
+        for op, form in (("B2", "grant-handler"), ("Q3", "guarded-live")):
+            self.assertEqual(form_of(op, form).expect, [], form)
+
+    def test_a_closed_call_accepted_is_a_finding_and_another_code_an_error(self):
+        prog = OPERATORS["Q3"](derive_seed(1, "Q3", 0), "0.3")
+        prog.expect = ["U4003"]
+        row = dict(prog.manifest(), digest=prog.digest())
+        accepted = Run(0, json.dumps({"diagnostics": []}), "", False, 0.1)
+        other = Run(1, json.dumps({"diagnostics": [diag("U4001")]}), "", False, 0.1)
+        for got, finding, error in ((accepted, True, False), (other, False, True)):
+            buf = io.StringIO()
+            seen, restore = self.fake(lambda argv, g=got: g)
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    drivers.must_reject([row], "una", tmp, 1, buf, build=lambda r: prog)
+            finally:
+                restore()
+            out = json.loads(buf.getvalue())
+            self.assertEqual(bool(out["finding"]), finding)
+            self.assertEqual(bool(gate.generator_errors([out])), error)
+
+    def test_the_oracle_sets_aside_a_rejection_only_with_an_expected_code(self):
+        prog = OPERATORS["Q3"](derive_seed(1, "Q3", 0), "0.3")
+        prog.expect = ["U4003"]
+        row = dict(prog.manifest(), digest=prog.digest())
+        for code, set_aside in (("U4003", True), ("U4001", False)):
+            def answer(argv, c=code):
+                if "core" in argv:
+                    return Run(1, "", "", False, 0.1)
+                return Run(1, run_doc("rejected", diagnostics=[diag(c)]), "", False, 0.1)
+            buf = io.StringIO()
+            seen, restore = self.fake(answer)
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    oracle.oracle([row], "una", tmp, 1, buf, lambda r: prog)
+            finally:
+                restore()
+            out = json.loads(buf.getvalue())
+            self.assertEqual(bool(out.get("set_aside")), set_aside, code)
+            self.assertEqual(bool(out.get("error")), not set_aside, code)
+
+    def test_set_asides_are_pinned_and_floors_kept_per_family(self):
+        rows = [{"op": op, "set_aside": "rejected by the checks: U4003"}
+                for op, n in (("B2", 14), ("C6", 15), ("Q3", 12), ("T12", 26)) for _ in range(n)]
+        full = rows + [{"op": op, "compared": 5}
+                       for op, n in (("B2", 36), ("C6", 32), ("Q3", 38)) for _ in range(n)]
+        self.assertEqual(gate.oracle_family_errors(full), [])
+        errors = gate.oracle_family_errors(full[1:])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("family B set aside", errors[0])
+        thin = rows + [{"op": "B2", "compared": 5}] * 36 + [{"op": "C6", "compared": 5}] * 32 \
+            + [{"op": "Q3", "compared": 5}] * 10
+        errors = gate.oracle_family_errors(thin)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("family Q has 10 programs", errors[0])
+
+    def test_a_twin_of_q2_must_be_proven_and_a_refuted_row_has_its_code_alone(self):
+        V = drivers.Verdict
+        u5001 = V("rejected", [["U5001", "a", 1, 1]], 0.1)
+        u5002 = V("rejected", [["U5002", "a", 1, 1]], 0.1)
+        both = V("rejected", [["U5001", "a", 1, 1], ["U5002", "a", 2, 1]], 0.1)
+        ok = V("accepted", [], 0.1)
+        r = drivers.judge_residual("accepted", ok, "guarded-dry", prove=True)
+        self.assertFalse(r["invalid"])
+        for full in (u5001, u5002):
+            self.assertTrue(drivers.judge_residual("accepted", full, "guarded-dry",
+                                                   prove=True)["invalid"])
+        self.assertTrue(drivers.judge_residual("accepted", both, "unguarded-dry",
+                                               ["U5001"])["invalid"])
+        self.assertFalse(drivers.judge_residual("accepted", u5001, "unguarded-dry",
+                                                ["U5001"])["invalid"])
+        # The generator marks exactly the twins of edition 0.3.
+        for i in range(60):
+            for edition in ("0.2", "0.3"):
+                p = OPERATORS["Q2"](derive_seed(1, "Q2", i), edition)
+                form = p.variant.rsplit("-", 1)[0]
+                proven = edition == "0.3" and form in ("guarded", "required", "promise")
+                self.assertEqual(p.prove, proven, p.name)
+                self.assertEqual(p.manifest().get("prove", False), proven)
+
+    def test_a_missed_residual_row_is_a_finding(self):
+        r = {"name": "Q2-x", "expect": ["U5001"], "invalid": False, "missed": True,
+             "full_kind": "accepted", "triage": False, "triage_tier0": False}
+        errors, findings, notes = gate.residual_verdicts(r)
+        self.assertEqual((errors, notes), ([], []))
+        self.assertEqual(len(findings), 1)
+        self.assertIn("must reject it with U5001", findings[0])
+        errors, findings, notes = gate.residual_verdicts(dict(r, missed=False, invalid=True))
+        self.assertEqual((len(errors), findings), (1, []))
+
+    def test_the_ceiling_probe_differs_from_its_control_only_by_the_where(self):
+        control = gate.canary_ceiling_control()
+        self.assertEqual((control.cls, control.expect, control.edition),
+                         (MUST_REJECT, ["U7002"], "0.3"))
+        self.assertIn("pub capability Log", control.files["src/app/log.una"])
+        self.assertIn("import app.log (Log)", control.files["src/app/edge.una"])
+        for i in range(200):
+            p = OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.3")
+            if p.variant.startswith("ceiling-"):
+                break
+        self.assertEqual(p.expect, ["U7002"])
+        self.assertIn("where n >", p.files["una.toml"])
+        self.assertEqual(set(p.files), set(control.files))
+        for rel in p.files:
+            if rel.endswith(".una"):
+                self.assertEqual(p.files[rel], control.files[rel].replace("dry", p.variant[8:]),
+                                 rel)
+        plain = re.sub(r"Log\[write where n > \d+\]", "Log[write]", p.files["una.toml"])
+        self.assertEqual(plain.replace('name = "hunt"', 'name = "canary"'),
+                         control.files["una.toml"])
+
+    def test_the_plain_lock_probe_of_edition_0_2_expects_u7002_alone(self):
+        for i in range(200):
+            p = OPERATORS["Q1"](derive_seed(1, "Q1", i), "0.2")
+            if p.variant.startswith("lock-plain-"):
+                break
+        self.assertEqual(p.expect, ["U7002"])
+        self.assertIn("[contracts]", p.files["una.toml"])
+        self.assertFalse(any("where" in t for t in p.files.values()))
+        twin = OPERATORS["Q1"](p.seed, "0.3")
+        self.assertEqual(twin.expect, ["U3023"])
+
+    def test_the_condition_canary_is_caught_only_on_a_public_leak(self):
+        good = {"finding": True, "error": None, "variants": [{"observers": ["public"]}],
+                "violations": []}
+        self.assertTrue(gate.caught("oracle-condition", good))
+        self.assertFalse(gate.caught("oracle-condition", dict(good, error="base: x")))
+        self.assertFalse(gate.caught("oracle-condition",
+                                     dict(good, variants=[{"observers": ["internal"]}])))
+        self.assertFalse(gate.caught("oracle-condition", dict(good, finding=False)))
+
+    def test_the_gate_has_a_time_budget(self):
+        self.assertEqual(gate.TIME_BUDGET, 270)
+        self.assertIsNone(gate.budget_error(215))
+        self.assertIn("over its budget of 270", gate.budget_error(271))
 
 
 class Native(unittest.TestCase):
