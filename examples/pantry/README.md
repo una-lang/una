@@ -27,14 +27,14 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 to buy: rice, oil
 grams in stock: 700
 ```
 
 The pantry holds no rice and no oil, so they are on the list. Rice (0 g) and flour (700 g) are the items measured in grams. `una test .` runs the seven examples of `src/pantry/stock.una`:
 
-```text
+```text una="test ."
 example pantry.stock "restocking adds to the amount" ... ok
 example pantry.stock "using up takes from the amount" ... ok
 example pantry.stock "the shopping list names what ran out" ... ok
@@ -52,9 +52,10 @@ The package has two modules. `pantry.stock` holds the types and the functions, w
 
 ### The types
 
-```text
+```text file="src/pantry/stock.una"
 pub kind Measure = Grams | Pieces | Milliliters
 
+...
 pub kind Label = Text
 
 pub kind Item
@@ -62,10 +63,12 @@ pub kind Item
   amount: Nat
   measure: Measure
 
+...
 pub kind Bin[T]
   label: Label
   entries: List[T]
 
+...
 pub kind NonEmpty[T] = List[T] where it.len > 0
 ```
 
@@ -77,7 +80,7 @@ pub kind NonEmpty[T] = List[T] where it.len > 0
 
 ### Contracts that keep amounts honest
 
-```text
+```text file="src/pantry/stock.una"
 pub use_up(item: Item, used: Nat) -> Item
   requires used <= item.amount
   ensures result.amount == item.amount - used
@@ -89,7 +92,7 @@ pub use_up(item: Item, used: Nat) -> Item
 
 ### A division that cannot be by zero
 
-```text
+```text file="src/pantry/stock.una"
 pub average(counts: NonEmpty[Int]) -> Int = counts.sum() / counts.len
 ```
 
@@ -99,7 +102,7 @@ Every division carries an obligation: the divisor is not zero. The parameter typ
 
 `find` returns an `Option[Item]` from `first_where`, and `amount_of` matches on it:
 
-```text
+```text file="src/pantry/stock.una"
 pub amount_of(items: List[Item], name: Text) -> Nat
 =
   when find(items, name)
@@ -126,7 +129,7 @@ The type checker adds the rest without the solver: every `when` on a choice cove
 
 Delete the `requires used <= item.amount` line of `use_up`. `una check .` reports that the new amount may be negative (first line shown):
 
-```text
+```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `(item.amount - used) >= 0` is refuted
 ```
 
@@ -136,7 +139,7 @@ The diagnostic points at `item.amount - used` on line 32. Its repairs are a guar
 
 Change the parameter of `average` to `counts: List[Int]`. The solver finds the empty list:
 
-```text
+```text una="check ." after="mistakes/2"
 [U5001] Error: division obligation `counts.len != 0` is refuted
     ╭─[ src/pantry/stock.una:67:41 ]
     │
@@ -160,7 +163,7 @@ The repair offers a guard. The example prefers a type, `NonEmpty[Int]`, because 
 
 Delete the `is None -> 0` arm of `amount_of`:
 
-```text
+```text una="check ." after="mistakes/3"
 [U2007] Error: `when` does not match variant `None` of `Option`
     ╭─[ src/pantry/stock.una:56:3 ]
     │

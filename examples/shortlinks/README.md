@@ -27,14 +27,14 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 docs leads to https://example.org/docs
 blog leads to /
 ```
 
 `main` uses a store that holds one link, `docs`. The slug `blog` is valid but unknown, so `resolve_or_home` falls back to the home page, `/`. `una test .` runs six examples, one for each path through the module:
 
-```text
+```text una="test ."
 example shortlinks.links "a short link leads to its target" ... ok
 example shortlinks.links "a malformed slug is rejected before the store is asked" ... ok
 example shortlinks.links "an unknown slug fails" ... ok
@@ -51,9 +51,10 @@ example shortlinks.links "a slug is stored" ... ok
 
 ### A slug is a checked text
 
-```text
+```text file="src/shortlinks/links.una"
 pub kind Slug = Text where valid_slug(it)
 
+...
 pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t, prefix: "-")
 ```
 
@@ -61,7 +62,7 @@ A predicate comes in two forms. The solver sees the body of a `reflect` predicat
 
 ### The only way in: `parse_slug`
 
-```text
+```text file="src/shortlinks/links.una"
 pub parse_slug(raw: Text) -> Slug
   fails SlugError
   derived from LINKS_1
@@ -72,7 +73,7 @@ pub parse_slug(raw: Text) -> Slug
 
 `checked(text, valid_slug(it))` evaluates the predicate at run time. When it holds, the result is `text` with the type `Slug`. When it does not, `parse_slug` fails with `Malformed`. Since `checked` replaces a proof with a test, every use costs part of the module's escape budget, which `una.toml` sets to 1:
 
-```text
+```text file="una.toml"
 [escape_budget]
 checked_per_module = 1
 ```
@@ -81,7 +82,7 @@ The default budget is 0, so a reviewer always sees in the manifest that a packag
 
 ### One error kind per layer
 
-```text
+```text file="src/shortlinks/links.una"
 pub resolve(raw: Text) -> Text
   uses @links: Links[get]
   fails LinkError
@@ -114,7 +115,7 @@ Use a handling clause when the caller can decide at once, and `attempt` when it 
 
 ### A requirement that a tool proposed
 
-```text
+```text file="src/shortlinks/links.una"
 requirement LINKS_1
   text "A slug has 3 to 16 characters and never starts with a dash"
   source generated "task 17: short link rules"
@@ -138,7 +139,7 @@ The proof that a slug is valid rests on one run-time test, in one place. That is
 
 In `resolve`, call the store with the raw text, `@links.get(raw)`:
 
-```text
+```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `valid_slug(raw)` is refuted
     ╭─[ src/shortlinks/links.una:54:27 ]
     │
@@ -170,7 +171,7 @@ The fix is already in scope: pass `slug`, which `parse_slug` returned.
 
 In `shorten`, replace the two lines that parse the slug, `let slug = parse_slug(raw)` and its `if error fail BadSlug`, with one inline check: `let slug = checked(raw, valid_slug(it)) else fail BadSlug`. The module now uses `checked` twice:
 
-```text
+```text una="check ." after="mistakes/2"
 [U7003] Error: module `shortlinks.links` uses `checked` 2 times, and `[escape_budget] checked_per_module` allows 1
     ╭─[ src/shortlinks/links.una:41:14 ]
     │
@@ -194,7 +195,7 @@ The budget keeps validation in one place. Note also what the inline version lose
 
 Change `status proposed` to `status active` in `LINKS_1`:
 
-```text
+```text una="check ." after="mistakes/3"
 [U1007] Error: requirement `LINKS_1` has source `generated`, so its status must be `proposed`
    ╭─[ src/shortlinks/links.una:7:10 ]
    │

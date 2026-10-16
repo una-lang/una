@@ -27,13 +27,13 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 availability of Launch: open
 ```
 
 `main` shows the availability of one event with 820 seats left. The check-in itself needs a registration store, an audit log and a key store, so it runs in the examples, against fakes. `una test .` runs the examples of the three modules that have them:
 
-```text
+```text una="test ."
 example events.checkin "a registered attendee is checked in and audited" ... ok
 example events.checkin "an unknown attendee fails and is not audited" ... ok
 example events.seating "an event without seats is sold out" ... ok
@@ -58,7 +58,7 @@ The package has five modules, one per concern:
 
 ### The manifest
 
-```text
+```text file="una.toml"
 [labels]
 categories = ["PII", "Location"]
 
@@ -73,11 +73,13 @@ The categories are the kinds of sensitive data that the package's labels may nam
 
 ### A phone, validated once
 
-```text
+```text file="src/events/types.una"
 pub kind Phone = Text where valid_phone(it)
 
+...
 pub predicate opaque valid_phone(t: Text) -> Bool = t.len == 11 and is_digits(t)
 
+...
 pub parse_phone(raw: Text) -> Phone
   fails PhoneError
 =
@@ -88,7 +90,7 @@ The predicate is `opaque`: the solver sees only its name, so a `Phone` can only 
 
 ### A rule with a proof
 
-```text
+```text file="src/events/seating.una"
 requirement EVENTS_3
   text "An event with no remaining seats is always shown as sold out"
   source policy "Box Office Handbook 2.1"
@@ -96,9 +98,10 @@ requirement EVENTS_3
   status active
 ```
 
-```text
+```text file="src/events/seating.una"
 pub kind Seats = Int in 0..5000
 
+...
 pub availability(e: Event) -> Availability
   ensures e.remaining < 1 implies result is SoldOut
   derived from EVENTS_3
@@ -113,7 +116,7 @@ The `ensures` is the requirement in logic, and `derived from` links the two. `1.
 
 ### Releasing a keyed hash: the policy
 
-```text
+```text file="src/events/keys.una"
 trusted module events.keys
 
 import events.types (Phone)
@@ -139,7 +142,7 @@ The policy can fail, for example when the host has no key of that name. A failur
 
 ### The check-in service
 
-```text
+```text file="src/events/checkin.una"
 pub capability Registrations
   op find(key: internal Hashed) -> Option[Registration]
     fails StoreError
@@ -148,7 +151,7 @@ pub capability Registrations
 
 The store's operation accepts `internal` data, so it may receive the hash. It is declared to take a `Hashed`, so it cannot receive the phone.
 
-```text
+```text file="src/events/checkin.una"
 pub check_in(phone: secret[PII] Phone) -> Availability
   uses @registrations: Registrations[find]
   uses @audit: Audit[record]
@@ -178,7 +181,7 @@ The examples install fake stores with `given`. The second example checks a negat
 
 `una report .` lists what a reviewer must still read or trust. Among its lines:
 
-```text
+```text una="report ."
 information:
   events.keys.attendee_key at src/events/checkin.una:30:13, purpose "attendee lookup and audit correlation", owner privacy
 escapes:
@@ -190,7 +193,7 @@ assumptions:
 
 and, in the trusted base:
 
-```text
+```text una="report ."
   trusted modules: events.keys (17 lines)
   host capabilities: Console, Keys
 ```
@@ -203,7 +206,7 @@ The assumptions are the stores: what a real `Registrations` returns is given by 
 
 A tempting change for debugging: say which phone was not found. Replace `if none fail NotRegistered` with `if none fail Unavailable(reason: "no registration for {phone}")`:
 
-```text
+```text una="check ." after="mistakes/1"
 [U4001] Error: field `reason` of `Unavailable` is `Text`, and this value is `secret[PII] Text`: a flow from `secret[PII]` to `public`
     ╭─[ src/events/checkin.una:34:38 ]
     │
@@ -221,7 +224,7 @@ Error messages end up in logs. The checker treats them like any other output.
 
 Call the store with the phone, `@registrations.find(phone)`. The capability's signature already stops it, before any label is checked:
 
-```text
+```text una="check ." after="mistakes/2"
 [U2001] Error: argument `key` of operation `Registrations.find` must be `Hashed`, found `Text`
     ╭─[ src/events/checkin.una:32:42 ]
     │
@@ -237,7 +240,7 @@ Call the store with the phone, `@registrations.find(phone)`. The capability's si
 
 In `hmac_phone`, move the key name into a binding: `let pepper = "phone_pepper"`, then `@keys.hmac(key_name: pepper, data: phone)`. The `via` function no longer has the shape described above, so the policy's failure carries the policy's result label, `internal`, and `check_in` may not turn it into a public failure:
 
-```text
+```text una="check ." after="mistakes/3"
 [U4002] Error: `if error fail` depends on `internal` data, so its failure would reveal it; return a labeled value instead of failing
     ╭─[ src/events/checkin.una:31:5 ]
     │

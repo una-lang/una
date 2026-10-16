@@ -66,6 +66,90 @@ struct Block {
     package: Option<usize>,
 }
 
+impl Block {
+    /// The block's language: the first word after its opening fence.
+    fn kind(&self) -> &str {
+        self.lang.split_whitespace().next().unwrap_or("")
+    }
+
+    /// The attributes after the language, `key="value"` words separated by spaces (#827), or a
+    /// message saying what does not have that form.
+    fn attributes(&self) -> Result<Vec<(&str, &str)>, String> {
+        let mut rest = self.lang.trim_start()[self.kind().len()..].trim_start();
+        let mut out = Vec::new();
+        while !rest.is_empty() {
+            let (key, after) = rest
+                .split_once("=\"")
+                .ok_or_else(|| format!("`{rest}` is not key=\"value\""))?;
+            let (value, after) = after
+                .split_once('"')
+                .ok_or_else(|| format!("the value of `{key}` has no closing quote"))?;
+            if key.is_empty() || !key.chars().all(|c| c.is_ascii_lowercase()) {
+                return Err(format!("`{key}` is not an attribute name"));
+            }
+            if !(after.is_empty() || after.starts_with(' ')) {
+                return Err(format!("`{after}` follows the value of `{key}`"));
+            }
+            out.push((key, value));
+            rest = after.trim_start();
+        }
+        Ok(out)
+    }
+}
+
+/// Whether `excerpt` is an excerpt of `whole` (`compiler/testing.md §6`): with trailing spaces
+/// removed from every line, its lines are a run of consecutive lines of `whole`, except that a
+/// line that is exactly `...` stands for any number of lines, none included.
+fn is_excerpt(excerpt: &str, whole: &str) -> bool {
+    let lines: Vec<&str> = whole.lines().map(str::trim_end).collect();
+    let mut from = 0;
+    for segment in excerpt
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .split(|line| *line == "...")
+    {
+        if segment.is_empty() {
+            continue;
+        }
+        // The earliest place for each run leaves the most room for the runs after it.
+        match (from..=lines.len().saturating_sub(segment.len())).find(|&at| {
+            lines.len() >= at + segment.len() && lines[at..at + segment.len()] == *segment
+        }) {
+            Some(at) => from = at + segment.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+#[test]
+fn an_excerpt_is_a_run_of_lines_with_dots_for_the_lines_left_out() {
+    let whole = "a\nb  \nc\nd\ne\n";
+    for excerpt in [
+        "a\nb\n",
+        "b\nc\n",
+        "e\n",
+        "a\n...\nd\n",
+        "...\nc\n...\n",
+        "b \n...\ne\n",
+        "",
+    ] {
+        assert!(is_excerpt(excerpt, whole), "{excerpt:?}");
+    }
+    for excerpt in [
+        "a\nc\n",
+        "d\nc\n",
+        "c\n...\nb\n",
+        "f\n",
+        "a\n..\nd\n",
+        "e\nf\n",
+        "a\n ...\nd\n",
+    ] {
+        assert!(!is_excerpt(excerpt, whole), "{excerpt:?}");
+    }
+}
+
 /// The blocks of `text`. A line holding only a path in backticks names the file of the next
 /// block; path blocks separated only by blank lines form one package.
 fn blocks(text: &str) -> Vec<Block> {
@@ -299,11 +383,11 @@ fn check_guide(path: &str, scratch_base: usize) -> [usize; 4] {
         }
         let at = block.line;
         assert!(
-            ["una", "json", "sh", "text", "ebnf"].contains(&block.lang.as_str()),
+            ["una", "json", "sh", "text", "ebnf"].contains(&block.kind()),
             "{path}, block at line {at}: a `{}` block outside a package is not checked",
             block.lang
         );
-        match block.lang.as_str() {
+        match block.kind() {
             "una" => {
                 let (fails, edition) = directives(&block.body);
                 let dir = scratch(scratch_base + at);
@@ -700,6 +784,10 @@ fn every_example_has_a_readme_whose_commands_run() {
         .collect();
     names.sort();
     assert!(!names.is_empty(), "no example packages");
+    let mut excerpts_checked = 0;
+    let mut after_change = 0;
+    // Every excerpt that does not match, so one run lists them all.
+    let mut mismatches: Vec<String> = Vec::new();
     for (index, name) in names.iter().enumerate() {
         let package = root.join("examples").join(name);
         let relative = format!("examples/{name}/README.md");
@@ -708,19 +796,59 @@ fn every_example_has_a_readme_whose_commands_run() {
         let readme_blocks = blocks(&text);
         for block in &readme_blocks {
             assert!(
-                ["sh", "text"].contains(&block.lang.as_str()),
+                ["sh", "text"].contains(&block.kind()),
                 "{relative}, block at line {}: a `{}` block is not checked",
                 block.line,
                 block.lang
             );
         }
+        // Each `text` block says what it shows (#827): the output of a command run in the
+        // package, `una="ARGS"`; an excerpt of one of its files, `file="PATH"`; or, with
+        // `after="mistakes/N"`, what a change to the package shows.
+        let excerpts: Vec<(&Block, Vec<(&str, &str)>)> = readme_blocks
+            .iter()
+            .filter(|block| block.kind() == "text")
+            .map(|block| {
+                let attributes = block.attributes().unwrap_or_else(|why| {
+                    panic!("{relative}, block at line {}: {why}", block.line)
+                });
+                for (key, _) in &attributes {
+                    assert!(
+                        ["una", "file", "after"].contains(key),
+                        "{relative}, block at line {}: no attribute `{key}`",
+                        block.line
+                    );
+                }
+                let shows = attributes.iter().filter(|(key, _)| *key != "after").count();
+                assert_eq!(
+                    shows,
+                    1,
+                    "{relative}, block at line {}: a `text` block names what it shows, una=\"ARGS\" or file=\"PATH\", once",
+                    block.line
+                );
+                (block, attributes)
+            })
+            .collect();
+        let value = |attributes: &[(&str, &str)], wanted: &str| {
+            attributes
+                .iter()
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, value)| value.to_string())
+        };
         let checked = check_guide(&relative, 2_000_000 + index * 10_000);
         assert!(checked[2] > 0, "{relative}: no commands");
 
-        let printed = readme_blocks
+        let runs: Vec<&Block> = excerpts
             .iter()
-            .find(|block| block.lang == "text")
-            .unwrap_or_else(|| panic!("{relative}: no `text` block of what `una run` prints"));
+            .filter(|(_, attributes)| value(attributes, "una").as_deref() == Some("run ."))
+            .map(|(block, _)| *block)
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "{relative}: one `text una=\"run .\"` block of what `una run` prints"
+        );
+        let printed = runs[0];
         // `[package]` requires `name` and `edition` (`spec/13 §7`).
         let manifest = std::fs::read_to_string(package.join("una.toml")).unwrap();
         let key = |wanted: &str| -> String {
@@ -767,6 +895,52 @@ fn every_example_has_a_readme_whose_commands_run() {
             printed.body,
             "{relative}: what the native executable prints"
         );
+        // The other excerpts, in the README's order, in the same copy, after `una check .` (so
+        // `una obligations .` reads the cache the README says it reads). A block `after` a change
+        // is checked by its own test (#827, step 2); this one counts them.
+        let clean = una(&["--color", "never", "check", "."]);
+        assert!(clean.status.success(), "{relative}: `una check .` fails");
+        for (block, attributes) in &excerpts {
+            if value(attributes, "after").is_some() {
+                after_change += 1;
+                continue;
+            }
+            let at = block.line;
+            if let Some(file) = value(attributes, "file") {
+                let whole = std::fs::read_to_string(package.join(&file))
+                    .unwrap_or_else(|_| panic!("{relative}, block at line {at}: no file {file}"));
+                if !is_excerpt(&block.body, &whole) {
+                    mismatches.push(format!(
+                        "{relative}, block at line {at}: not an excerpt of {file}:\n{}",
+                        block.body
+                    ));
+                }
+                excerpts_checked += 1;
+                continue;
+            }
+            let args = value(attributes, "una").unwrap();
+            if args == "run ." {
+                continue;
+            }
+            let words: Vec<&str> = args.split_whitespace().collect();
+            let mut command = vec!["--color", "never"];
+            command.extend(&words);
+            let output = una(&command);
+            assert!(
+                output.status.success(),
+                "{relative}, block at line {at}: `una {args}` fails: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let shown = String::from_utf8_lossy(&output.stdout);
+            if !is_excerpt(&block.body, &shown) {
+                mismatches.push(format!(
+                    "{relative}, block at line {at}: not an excerpt of what `una {args}` prints:\n{}\nIt prints:\n{shown}",
+                    block.body
+                ));
+            }
+            excerpts_checked += 1;
+        }
+
         let part = text
             .split("\n## Edition\n")
             .nth(1)
@@ -798,6 +972,17 @@ fn every_example_has_a_readme_whose_commands_run() {
         );
         assert!(links > 0, "{relative}: no links");
     }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n\n"));
+    // Pinned, so a block that stops being checked fails here: 52 excerpts of a file or of what
+    // a command prints, besides the `una run` outputs, and 24 blocks after a change (#827).
+    assert_eq!(
+        excerpts_checked, 52,
+        "the example READMEs' checked excerpts"
+    );
+    assert_eq!(
+        after_change, 24,
+        "the example READMEs' blocks after a change"
+    );
 }
 
 /// The repository paths that `text` writes in inline code outside fenced blocks (#651): a code

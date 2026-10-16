@@ -27,14 +27,14 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 vent at 66%
 the warmer side asks for 66% open
 ```
 
 `main` reads two fixed sensors, 24 and 31 degrees. The warmer side is 31 degrees, which is 11 degrees above 20, so the vent opens 11 × 6 = 66 percent. The first line comes from the vent handler, the second from `main`. `una test .` runs the three examples of `greenhouse.climate`:
 
-```text
+```text una="test ."
 example greenhouse.climate "above 35 degrees the vent opens fully" ... ok
 example greenhouse.climate "a cold greenhouse stays closed" ... ok
 example greenhouse.climate "the vent follows the warmer side" ... ok
@@ -48,7 +48,7 @@ The package has two modules. `greenhouse.climate` holds the rule, the capabiliti
 
 ### The requirement
 
-```text
+```text file="src/greenhouse/climate.una"
 requirement GREENHOUSE_1
   text "Vents open fully whenever the air is above 35 degrees"
   source regulation "Greenhouse Ventilation Code 4.2"
@@ -60,9 +60,10 @@ A requirement records a statement made by people, where it comes from, and who a
 
 ### Types that carry the physical limits
 
-```text
+```text file="src/greenhouse/climate.una"
 pub kind Celsius = Int in -40..80
 
+...
 pub kind Percent = Int in 0..100
 ```
 
@@ -70,11 +71,12 @@ A `Celsius` is any integer from -40 to 80, the range of the sensors. A `Percent`
 
 ### Capabilities with contracts
 
-```text
+```text file="src/greenhouse/climate.una"
 pub capability Sensor
   op read() -> Int
     ensures result >= -40 and result <= 80
 
+...
 pub capability Vent
   op set(open: Int) -> Unit
     requires open in 0..100
@@ -84,7 +86,7 @@ A capability is an interface to the outside world. Its operations can carry cont
 
 ### The rule, as a function
 
-```text
+```text file="src/greenhouse/climate.una"
 pub opening(temperature: Celsius) -> Percent
   ensures temperature > 35 implies result == 100
   ensures temperature <= 20 implies result == 0
@@ -100,9 +102,10 @@ The first `ensures` is the regulation. The second is a design choice: no ventila
 
 ### Using two sensors as one
 
-```text
+```text file="src/greenhouse/climate.una"
 reading() -> Celsius = @sensor.read()
 
+...
 pub warmest() -> Celsius
   uses @north: Sensor[read]
   uses @south: Sensor[read]
@@ -118,7 +121,7 @@ pub warmest() -> Celsius
 
 `fixed_sensor` always reads the degrees it was given. Its parameter is a `Celsius`, which is how the solver proves that it keeps `read`'s promise. `printed_vent` prints each setting, so it declares `uses @console: Console[print]` itself. `quiet_vent` does nothing, for the examples. The examples install handlers with `given`, and `main` installs them with `with`:
 
-```text
+```text file="src/greenhouse/main.una"
   let wanted = regulate_warmest() with @north = fixed_sensor(degrees: 24), @south = fixed_sensor(degrees: 31), @vent = printed_vent()
 ```
 
@@ -132,7 +135,7 @@ pub warmest() -> Celsius
 
 `una report .` shows the rest of the picture. Among its lines, with `...` where lines are left out:
 
-```text
+```text una="report ."
 handler authority:
   greenhouse.climate.printed_vent for greenhouse.climate.Vent (pub): @console: Console[print]
 ...
@@ -152,7 +155,7 @@ The assumptions are what the proofs rest on and nothing proves: what a real `Sen
 
 Change the middle arm to `(temperature - 20) * 7`. At 35 degrees that is 105, which is not a `Percent`:
 
-```text
+```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `result in 0..100` is refuted
     ╭─[ src/greenhouse/climate.una:34:18 ]
     │
@@ -182,7 +185,7 @@ The counterexample is a concrete case to read: at 35 degrees the vent would be a
 
 Change the middle arm to `in 21..34`. No arm handles 35 degrees any more:
 
-```text
+```text una="check ." after="mistakes/2"
 [U5001] Error: exhaustiveness of this `when`, `temperature in -40..20 or temperature in 21..34 or temperature in 36..80`, is refuted
     ╭─[ src/greenhouse/climate.una:32:3 ]
     │
@@ -204,7 +207,7 @@ Change the middle arm to `in 21..34`. No arm handles 35 degrees any more:
 
 Give `fixed_sensor` an `Int` parameter instead of a `Celsius`. The handler could then read 81 degrees, which `read` promises never to return:
 
-```text
+```text una="check ." after="mistakes/3"
 [U5001] Error: postcondition of `read` is refuted
     ╭─[ src/greenhouse/climate.una:72:15 ]
     │

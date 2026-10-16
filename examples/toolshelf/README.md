@@ -28,14 +28,14 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 Ana took the ladder for 14 days
 returned 20 days later, it is 6 days late
 ```
 
 The checkout is due 14 days after today, so a return 20 days after today is 6 days late. The output does not depend on the date, although `main` reads the clock. `una test .` runs the examples of both modules:
 
-```text
+```text una="test ."
 example toolshelf.desk "the backup shelf has what the main shelf lacks" ... ok
 example toolshelf.desk "the main shelf is tried first" ... ok
 example toolshelf.tools "a member with room takes a tool for a week" ... ok
@@ -53,7 +53,7 @@ The package has three modules: `toolshelf.tools`, the rules and the shelf; `tool
 
 ### The rules
 
-```text
+```text file="src/toolshelf/tools.una"
 requirement SHELF_1
   text "A member holds at most three tools at a time"
   source human
@@ -69,9 +69,10 @@ requirement SHELF_2
 
 Each rule then appears twice in the code: as a type that makes a wrong value impossible to build, and as a contract on the function that changes the value.
 
-```text
+```text file="src/toolshelf/tools.una"
 pub kind KeepDays = Int in 1..28
 
+...
 pub kind Member
   name: Text
   holding: Int in 0..3
@@ -81,9 +82,10 @@ pub kind Member
 
 ### Predicates the solver can read
 
-```text
+```text file="src/toolshelf/tools.una"
 pub predicate reflect can_check_out(m: Member) -> Bool = m.holding < 3
 
+...
 pub predicate reflect overdue(checkout: Checkout, today: Day) -> Bool = today > checkout.due
 ```
 
@@ -91,7 +93,7 @@ pub predicate reflect overdue(checkout: Checkout, today: Day) -> Bool = today > 
 
 ### Checking a tool out
 
-```text
+```text file="src/toolshelf/tools.una"
 pub check_out(member: Member, name: Text, today: Day, days: KeepDays) -> Checkout
   requires can_check_out(member)
   ensures result.due == today + days
@@ -112,7 +114,7 @@ The header is the whole story for a reviewer: what the function needs, what it p
 
 ### Falling back to a second shelf
 
-```text
+```text file="src/toolshelf/desk.una"
 pub check_out_anywhere(member: Member, name: Text, today: Day, days: KeepDays) -> Checkout
   requires can_check_out(member)
   ensures result.due == today + days
@@ -144,7 +146,7 @@ pub check_out_anywhere(member: Member, name: Text, today: Day, days: KeepDays) -
 
 `una trace SHELF_1` shows the rule with what implements it:
 
-```text
+```text una="trace SHELF_1"
 requirement SHELF_1 (active)
   text "A member holds at most three tools at a time"
   source human
@@ -169,7 +171,7 @@ toolshelf.tools.check_out
 
 Delete the `requires can_check_out(member)` line of `check_out`. A member who already holds three tools could take a fourth:
 
-```text
+```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `(member.holding + 1) in 0..3` is refuted
     ╭─[ src/toolshelf/tools.una:62:61 ]
     │
@@ -199,7 +201,7 @@ The counterexample names the case: `member.holding = 3`.
 
 Put the `requires` back, and in the first example of `tools.una` give Ana three tools, `Member(name: "Ana", holding: 3)`. The call in the example is now refuted:
 
-```text
+```text una="check ." after="mistakes/2"
 [U5001] Error: precondition `can_check_out(Member(name: "Ana", holding: 3))` of this call is refuted
     ╭─[ src/toolshelf/tools.una:96:6 ]
     │
@@ -225,7 +227,7 @@ Put the `requires` back, and in the first example of `tools.una` give Ana three 
 
 In `main`, ask for the ladder for 30 days, `days: 30`:
 
-```text
+```text una="check ." after="mistakes/3"
 [U5001] Error: refinement `30 in 1..28` is refuted
     ╭─[ src/toolshelf/main.una:15:90 ]
     │

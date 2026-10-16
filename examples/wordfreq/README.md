@@ -25,13 +25,13 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 {"and":2,"bat":1,"cat":1,"hat":1,"the":3}
 ```
 
 The keys come out in ascending order because a `Map` keeps its keys sorted. `una test .` runs the two examples at the end of the module:
 
-```text
+```text una="test ."
 example wordfreq "a word's first letter" ... ok
 example wordfreq "each word is counted" ... ok
 
@@ -44,7 +44,7 @@ The program is one module, `src/wordfreq.una`, and reads as a pipeline: `main` s
 
 ### Splitting a line: `words`
 
-```text
+```text file="src/wordfreq.una"
 pub words(line: Text) -> List[Text]
 =
   let space = " "
@@ -55,7 +55,7 @@ pub words(line: Text) -> List[Text]
 
 ### A contract: `initial`
 
-```text
+```text file="src/wordfreq.una"
 pub initial(word: Text) -> Text
   requires word.len >= 1
   ensures result.len == 1
@@ -71,7 +71,7 @@ pub initial(word: Text) -> Text
 
 `una obligations .` lists every obligation of the package and its status. Each line says `(cached)` because the `una check .` above already proved it; on a fresh copy the listing has no `(cached)`:
 
-```text
+```text una="obligations ."
 proven   ob-ee99f1a645a5 precondition  src/wordfreq.una:7:3 space.len > 0 (cached)
 proven   ob-1ef23ba876c5 postcondition src/wordfreq.una:12:11 result.len == 1 (cached)
 proven   ob-bdc97550ae15 precondition  src/wordfreq.una:14:3 0 <= 0 and 0 <= 1 and 1 <= word.len (cached)
@@ -82,7 +82,7 @@ The last line is the example `do initial("una")`: an example is a call like any 
 
 ### Counting: `counts`
 
-```text
+```text file="src/wordfreq.una"
 pub counts(words: List[Text]) -> Map[Text, Int]
 =
   let edit counts: Map[Text, Int] = empty_map()
@@ -113,7 +113,7 @@ Una has values, not references. `let edit` declares a binding that the function 
 
 Delete the `requires word.len >= 1` line from `initial`. `una check .` cannot prove `slice`'s precondition any more, and shows a value that breaks it:
 
-```text
+```text una="check ." after="mistakes/1"
 [U5001] Error: precondition `0 <= 0 and 0 <= 1 and 1 <= word.len` of this call is refuted
     ╭─[ src/wordfreq.una:13:3 ]
     │
@@ -141,7 +141,7 @@ Read the counterexample first: `word.len = 0`, an empty word. `Text#0` stands fo
 
 Put the `requires` back, and change the first example to `do initial("")`. The solver now refutes the call, and points at the clause it breaks:
 
-```text
+```text una="check ." after="mistakes/2"
 [U5001] Error: precondition `"".len >= 1` of this call is refuted
     ╭─[ src/wordfreq.una:41:6 ]
     │
@@ -163,7 +163,7 @@ Put the `requires` back, and change the first example to `do initial("")`. The s
 
 Delete the `if none use 0` line in `counts`. `seen` is then an `Option[Int]`, and the addition does not type:
 
-```text
+```text una="check ." after="mistakes/3"
 [U2001] Error: an operand of `+` must be `Int`, found `Option[Int]`
     ╭─[ src/wordfreq.una:22:39 ]
     │

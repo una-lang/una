@@ -27,13 +27,13 @@ una build .
 
 `una run .` and the native executable print:
 
-```text
+```text una="run ."
 today's entry runs to about 2 hundred characters
 ```
 
 The entry, `entries/today.txt`, has a little over 200 characters, and the program shows only the whole hundreds. `una test .` runs the examples of `src/journal/entries.una`:
 
-```text
+```text una="test ."
 example journal.entries "an entry is kept" ... ok
 example journal.entries "a full diary reports it" ... ok
 example journal.entries "a short entry is a calm day" ... ok
@@ -49,7 +49,7 @@ The package has three modules: `journal.entries`, the data and the diary; `journ
 
 ### The manifest
 
-```text
+```text file="una.toml"
 [labels]
 categories = ["Private"]
 
@@ -67,11 +67,12 @@ grants = ["console", "env", "files:entries:read,write"]
 
 ### Labeled data
 
-```text
+```text file="src/journal/entries.una"
 pub kind Entry
   day: Int
   body: confidential[Private] Text
 
+...
 pub capability Diary
   op keep(entry: Entry) -> Unit
     fails DiaryError
@@ -82,7 +83,7 @@ The body of an entry is `confidential`, in the category `Private`. A capability 
 
 Labels spread to everything computed from labeled data:
 
-```text
+```text file="src/journal/entries.una"
 pub mood(entry: Entry) -> confidential[Private] Mood = if entry.body.len > 280 then Busy else Calm
 ```
 
@@ -90,9 +91,10 @@ pub mood(entry: Entry) -> confidential[Private] Mood = if entry.body.len > 280 t
 
 ### Releasing one fact: the policy
 
-```text
+```text file="src/journal/release.una"
 trusted module journal.release
 
+...
 pub policy length_band
   from confidential[Private] Text
   to public Nat
@@ -107,7 +109,7 @@ A policy is the only way to lower a label. It names the types before and after, 
 
 ### The program, and a failure that would reveal
 
-```text
+```text file="src/journal/main.una"
   let text = @files.read("today.txt")
     if error use ""
   let hundreds = length_band(text)
@@ -126,14 +128,14 @@ The read can fail, and here a failure must not leave `main`. The program also wr
 
 The guarantee is noninterference: two runs whose entries differ only in their private text print the same thing, unless a policy released the difference. `una report .` shows each release, and what the guarantee rests on. Among its lines:
 
-```text
+```text una="report ."
 information:
   journal.release.length_band at src/journal/main.una:18:18, purpose "show how much was written without showing what", owner journal_owner
 ```
 
 and, in the trusted base:
 
-```text
+```text una="report ."
   trusted modules: journal.release (11 lines)
   host capabilities: Console, Env, Files
 ```
@@ -144,7 +146,7 @@ and, in the trusted base:
 
 Change the `print` line of `main` to `@console.print("today: {text}")`:
 
-```text
+```text una="check ." after="mistakes/1"
 [U4003] Error: `@console.print` accepts `public` data, and this argument is `internal`
     ╭─[ src/journal/main.una:19:18 ]
     │
@@ -166,7 +168,7 @@ Interpolation keeps the label of what it interpolates, so the whole line is `int
 
 Change `if error use ""` after the read to `if error pass`:
 
-```text
+```text una="check ." after="mistakes/2"
 [U4002] Error: `if error pass` depends on `internal` data, so its failure would reveal it; return a labeled value instead of failing
     ╭─[ src/journal/main.una:17:5 ]
     │
