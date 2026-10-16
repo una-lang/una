@@ -1142,10 +1142,11 @@ pub fn export(word: i64) -> Result<Portable, Refused> {
         Ok(count)
     })?;
     if count == 0 {
-        // The root names no live object, a fault the walk counted: the word is carried as is.
+        // The root names no live object, a fault the walk counted: the copy carries the word
+        // 0, never a handle of this heap, which would name another object in the destination.
         return Ok(Portable {
             nodes: Vec::new(),
-            root: Cell::Word(word),
+            root: Cell::Word(0),
         });
     }
     let count = usize::try_from(count).unwrap_or(usize::MAX);
@@ -1188,12 +1189,9 @@ pub fn export(word: i64) -> Result<Portable, Refused> {
             // the object finished now is the next node.
             debug_assert_eq!(at, nodes.len());
             let _step = step(object.node_bytes())?;
-            let node = object.node(|child| match position(child) {
-                Some(at) => Cell::Node(at),
-                None => Cell::Word(child),
-            });
+            let node = object.node(|child| carried(child, position(child)));
             // I9, the export's half: the node has the object's contents, and each child is the
-            // node of an object listed before it, by its mark, or the word itself.
+            // node of an object listed before it, by its mark, or the word it carries.
             if cfg!(debug_assertions) && !node_matches(object, &node, position) {
                 mismatches += 1;
             }
@@ -1248,14 +1246,23 @@ pub fn export(word: i64) -> Result<Portable, Refused> {
     Ok(Portable { nodes, root })
 }
 
+/// The cell a copy carries for the word `child` of a copied object, whose node index is
+/// `index`: the node, the immediate itself, or 0 for a handle that names no live object, which
+/// only a fault of the generated code makes, so that no handle of this heap names another
+/// object in the destination.
+fn carried(child: i64, index: Option<usize>) -> Cell {
+    match index {
+        Some(at) => Cell::Node(at),
+        None if is_handle(child) => Cell::Word(0),
+        None => Cell::Word(child),
+    }
+}
+
 /// Whether `node` is the portable form of `object` (ADR 0113, I9): the same kind, contents and
 /// lengths, and each child of the object the cell the node holds for it, `Cell::Node(i)` when
 /// `index(child)` is `Some(i)`, else the word itself. It allocates nothing.
 fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usize>) -> bool {
-    let cell_of = |word: i64| match index(word) {
-        Some(at) => Cell::Node(at),
-        None => Cell::Word(word),
-    };
+    let cell_of = |word: i64| carried(word, index(word));
     let same = |words: &[i64], cells: &[Cell]| {
         words.len() == cells.len()
             && words
@@ -2449,19 +2456,32 @@ mod tests {
         let item = list();
         push(item, text);
         let no_index = |_: i64| None;
+        let first = |word: i64| (word == text).then_some(0);
         with(item, |object| {
             assert!(node_matches(
                 object,
-                &Node::List(vec![Cell::Word(text)]),
+                &Node::List(vec![Cell::Node(0)]),
+                first
+            ));
+            assert!(!node_matches(
+                object,
+                &Node::List(vec![Cell::Node(1)]),
+                first
+            ));
+            assert!(!node_matches(object, &Node::List(Vec::new()), first));
+            assert!(!node_matches(object, &Node::Text("x".to_owned()), first));
+            // A handle with no node, which only a fault makes, is carried as the word 0, never
+            // as a handle of this heap.
+            assert!(node_matches(
+                object,
+                &Node::List(vec![Cell::Word(0)]),
                 no_index
             ));
             assert!(!node_matches(
                 object,
-                &Node::List(vec![Cell::Word(n(1))]),
+                &Node::List(vec![Cell::Word(text)]),
                 no_index
             ));
-            assert!(!node_matches(object, &Node::List(Vec::new()), no_index));
-            assert!(!node_matches(object, &Node::Text("x".to_owned()), no_index));
             assert!(node_matches_made(
                 object,
                 &Node::List(vec![Cell::Node(0)]),
@@ -2471,6 +2491,11 @@ mod tests {
                 object,
                 &Node::List(vec![Cell::Node(0)]),
                 &[n(1)]
+            ));
+            assert!(!node_matches_made(
+                object,
+                &Node::List(vec![Cell::Node(1)]),
+                &[text]
             ));
         });
         release(item);
@@ -2633,7 +2658,7 @@ mod tests {
     fn i4_a_panic_between_a_step_and_its_allocation_leaves_no_reservation() {
         // ADR 0113 rule 4: a reservation is released when a panic unwinds past it.
         std::thread::spawn(|| {
-            let result = crate::runtime::guarded(|| {
+            let result = crate::runtime::guarded(crate::runtime::COPY, || {
                 let _step = step(64).unwrap();
                 #[allow(clippy::panic)]
                 {
