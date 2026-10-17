@@ -643,6 +643,30 @@ pub fn data(tag: i64) -> i64 {
     })
 }
 
+/// The result list of a `together` block of `len` tasks (ADR 0113 rule 5): a record when
+/// `tuple`, else a list, with room for exactly `len` words, reserved as one step with its slot.
+pub(crate) fn result_list(len: usize, tuple: bool) -> Result<i64, Refused> {
+    reserve_slots(1)?;
+    let _step = step(len.saturating_mul(size_of::<i64>()))?;
+    let cells = Vec::with_capacity(len);
+    Ok(alloc(if tuple {
+        Object::Data {
+            tag: 0,
+            fields: cells,
+        }
+    } else {
+        Object::List(cells)
+    }))
+}
+
+/// Tears down this thread's heap whole, its objects freed together rather than released one by
+/// one, so that it does not grow its list of free slots (ADR 0113 rule 5): a task's heap, as its
+/// thread ends.
+pub(crate) fn tear_down() {
+    let heap = HEAP.with(|heap| std::mem::take(&mut *heap.borrow_mut()));
+    drop(heap);
+}
+
 /// A new empty list, whose items [`push`] adds in order.
 pub fn list() -> i64 {
     alloc(Object::List(Vec::new()))
@@ -933,6 +957,32 @@ fn export_limit() -> u32 {
 #[derive(Debug)]
 pub struct Refused(pub(crate) Option<String>);
 
+/// `W` of ADR 0113 rule 5: the most a step that copies one object grows a container by, one
+/// segment of a pending stack and the growth of the list of segments, or `S` for a map entry.
+#[cfg(test)]
+pub(crate) const W: usize = SEGMENT * size_of::<(i64, bool)>() + 4096;
+
+#[cfg(test)]
+thread_local! {
+    /// The steps of this thread's copies that made one object, or one node of a portable form,
+    /// in tests: the scaling tests count them (ADR 0113, I1).
+    static OBJECT_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The largest growth of a pending stack's containers in one step on this thread, in tests.
+    static MOST_GROWTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a step that made one object or node, in tests.
+fn object_step() {
+    #[cfg(test)]
+    OBJECT_STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
+/// The steps this thread's copies made one object or node in, so far.
+#[cfg(test)]
+pub(crate) fn object_steps() -> usize {
+    OBJECT_STEPS.with(std::cell::Cell::get)
+}
+
 /// Announces a step of `bytes` of a copy and checks it ([`crate::runtime::try_reserve`]).
 fn step(bytes: usize) -> Result<crate::runtime::Reservation, Refused> {
     crate::runtime::try_reserve(bytes).ok_or(Refused(None))
@@ -972,6 +1022,8 @@ impl Pending {
                 };
                 let bytes = SEGMENT * size_of::<(i64, bool)>()
                     + (grown - capacity) * size_of::<Vec<(i64, bool)>>();
+                #[cfg(test)]
+                MOST_GROWTH.with(|most| most.set(most.get().max(bytes)));
                 let _step = step(bytes)?;
                 self.segments.reserve_exact(grown - self.segments.len());
                 self.segments.push(Vec::with_capacity(SEGMENT));
@@ -1189,6 +1241,7 @@ pub fn export(word: i64) -> Result<Portable, Refused> {
             // the object finished now is the next node.
             debug_assert_eq!(at, nodes.len());
             let _step = step(object.node_bytes())?;
+            object_step();
             let node = object.node(|child| carried(child, position(child)));
             // I9, the export's half: the node has the object's contents, and each child is the
             // node of an object listed before it, by its mark, or the word it carries.
@@ -1427,6 +1480,10 @@ pub fn import(portable: &Portable) -> Result<i64, Refused> {
         let made = match import_node(node, &words) {
             Ok(made) => made,
             Err(refused) => {
+                // Releasing what was made is no step: what it grows, its pending stack and the
+                // free list, is covered by the checks of `spec/11 §7` and the hard ceiling, as
+                // releasing a block's results on a later failure is (ADR 0113 rule 6), and the
+                // task stops right after.
                 for &word in &words {
                     release(word);
                 }
@@ -1530,6 +1587,7 @@ fn cell_word(cell: &Cell, words: &[i64]) -> i64 {
 /// The object of `node`, made in this heap from the `words` made before it, as one step: its
 /// cells are made at their exact size and hold their words.
 fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
+    object_step();
     let held = |cells: &[Cell]| {
         let mut out = Vec::with_capacity(cells.len());
         for cell in cells {
@@ -2395,6 +2453,49 @@ mod tests {
         }
     }
 
+    /// The steps an export and then an import of `value` make one object or node in.
+    fn steps_of(value: i64) -> (usize, usize) {
+        let before = object_steps();
+        let portable = export(value).unwrap();
+        let exported = object_steps() - before;
+        let copy = import(&portable).unwrap();
+        let imported = object_steps() - before - exported;
+        release(copy);
+        (exported, imported)
+    }
+
+    #[test]
+    fn i1_a_copy_makes_one_step_per_object_however_shared_and_however_many() {
+        // ADR 0113, I1, by counters: the steps a copy makes equal the objects it copies, counted
+        // once each. k levels each holding the level below twice are k + 1 objects, so k + 1
+        // steps each way, not 2^k; a list of n distinct texts is n + 1.
+        for k in [10, 20, 40] {
+            let mut level = text_word("leaf".to_owned());
+            for _ in 0..k {
+                let next = record(level, level);
+                release(level);
+                level = next;
+            }
+            assert_eq!(steps_of(level), (k + 1, k + 1), "k = {k}");
+            release(level);
+        }
+        let sizes: &[usize] = if cfg!(miri) {
+            &[10, 100]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &n in sizes {
+            let items = list();
+            for i in 0..n {
+                let text = text_word(i.to_string());
+                push(items, text);
+                release(text);
+            }
+            assert_eq!(steps_of(items), (n + 1, n + 1), "n = {n}");
+            release(items);
+        }
+    }
+
     #[test]
     fn i9_a_copy_of_every_kind_of_object_has_its_values_and_its_sharing() {
         // ADR 0113, I9, over every kind of node: a big integer, a hash, a variant with a tag, a
@@ -2714,8 +2815,9 @@ mod tests {
     #[test]
     fn i1_a_value_deeper_than_any_stack_segment_is_copied() {
         // ADR 0113 rule 5: the walks' pending stack grows a segment at a time, never on the
-        // native stack: a list nested 100000 deep is exported and imported whole. Miri runs
-        // three segments deep, which still crosses from one segment to the next.
+        // native stack, each step within `W`: a list nested 100000 deep is exported and
+        // imported whole. Miri runs three segments deep, which still crosses from one segment to
+        // the next.
         let depth = if cfg!(miri) { 3 * SEGMENT } else { 100_000 };
         let mut value = list();
         for _ in 0..depth {
@@ -2725,6 +2827,8 @@ mod tests {
             value = outer;
         }
         let copy = import(&export(value).unwrap()).unwrap();
+        let most = MOST_GROWTH.with(std::cell::Cell::get);
+        assert!(most > 0 && most <= W, "{most} > {W}");
         assert_eq!(equal(copy, value), 1);
         release(copy);
         release(value);

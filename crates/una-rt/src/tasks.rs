@@ -49,6 +49,137 @@ pub(crate) static TASK_LEAKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static TASK_COPIES: AtomicUsize = AtomicUsize::new(0);
 /// The records and variants that tasks made anew rather than reused (#292).
 pub(crate) static TASK_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+/// The debug checks of the blocks' copies and bookkeeping that failed (ADR 0113, I1, I4 and
+/// I5): a start or an adoption that allocated more than it reserved, a copy made while a task
+/// of its block ran code, a task heap not torn down before the next transfer. A debug build
+/// reports them at the end of the run as an internal error; a run that ends with an abort
+/// (U6003, U8001 and the like) ends before that report, so its failed checks go unreported.
+pub(crate) static BLOCK_CHECKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts a failed debug check of a block (ADR 0113), and, in tests, the thread's own count.
+fn failed_check() {
+    BLOCK_CHECKS.fetch_add(1, Ordering::SeqCst);
+    #[cfg(test)]
+    CHECKS_HERE.with(|checks| checks.set(checks.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The failed debug checks of the blocks this thread ran, in tests, so that tests running at
+    /// once do not see each other's.
+    static CHECKS_HERE: Cell<usize> = const { Cell::new(0) };
+    /// The most a start of the blocks this thread ran allocated, on both threads, beyond the
+    /// template's part of its reservation (`T`), in tests: what `K` covers. The starts of the
+    /// blocks its tasks ran come up with their outcomes.
+    static MOST_START: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The debug counters of a block (ADR 0113, I4 and I5): its tasks running code, and its task
+/// heaps whose code ended and that are not torn down yet. A release build keeps none, so they
+/// cost it nothing.
+#[derive(Clone)]
+struct Counters {
+    #[cfg(debug_assertions)]
+    running: Arc<AtomicUsize>,
+    #[cfg(debug_assertions)]
+    alive: Arc<AtomicUsize>,
+}
+
+/// A count of [`Counters`] held up, which its drop takes down again, a panic's unwinding
+/// included.
+struct Held<'a> {
+    #[cfg(debug_assertions)]
+    count: &'a AtomicUsize,
+    #[cfg(not(debug_assertions))]
+    count: std::marker::PhantomData<&'a ()>,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        self.count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Counters {
+    fn new() -> Counters {
+        Counters {
+            #[cfg(debug_assertions)]
+            running: Arc::new(AtomicUsize::new(0)),
+            #[cfg(debug_assertions)]
+            alive: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Checks that no task of the block runs code while one of its copies is made (I4).
+    fn no_code_running(&self) {
+        #[cfg(debug_assertions)]
+        if self.running.load(Ordering::SeqCst) != 0 {
+            failed_check();
+        }
+    }
+
+    /// Counts a task running code until the result is dropped.
+    fn running(&self) -> Held<'_> {
+        #[cfg(debug_assertions)]
+        {
+            self.running.fetch_add(1, Ordering::SeqCst);
+            Held {
+                count: &self.running,
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        Held {
+            count: std::marker::PhantomData,
+        }
+    }
+
+    /// Counts a task heap whose code ended until the result is dropped, after its teardown.
+    fn ended(&self) -> Held<'_> {
+        #[cfg(debug_assertions)]
+        {
+            self.alive.fetch_add(1, Ordering::SeqCst);
+            Held { count: &self.alive }
+        }
+        #[cfg(not(debug_assertions))]
+        Held {
+            count: std::marker::PhantomData,
+        }
+    }
+
+    /// The task heaps whose code ended and that are not torn down yet.
+    fn alive(&self) -> usize {
+        #[cfg(debug_assertions)]
+        {
+            self.alive.load(Ordering::SeqCst)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            0
+        }
+    }
+}
+
+/// The bytes the calling thread allocated so far: the debug allocator's count, or 0 in a release
+/// build, which checks nothing.
+fn thread_allocated() -> usize {
+    #[cfg(debug_assertions)]
+    {
+        crate::ffi::thread_allocated()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0
+    }
+}
+
+/// `K` of ADR 0113 rule 2: the bytes a task's start allocates whatever its template, on the
+/// block's task and on the new thread, apart from the template's own bytes. That covers the
+/// standard library's thread (its handle, its result slot and its name), the closure the thread
+/// runs, the five channels of its signals, and the runtime state the thread makes when it enters
+/// the task. A debug build checks each start against `K + T`, and a test requires the largest
+/// start at depth 1 to be at most half `K` (about 4 KiB measured on a 64-bit target).
+const START_FIXED: usize = 16 * 1024;
 
 thread_local! {
     /// How the last block that the thread ran ended: 0, 1 when it failed, 2 when the task
@@ -153,6 +284,14 @@ struct Outcome {
     installs: BTreeMap<String, usize>,
     failed_write: Option<io::Error>,
     abort: Option<(Code, Location, String)>,
+    /// The failed debug checks of the blocks the task ran, in tests: the block's thread adds
+    /// them to its own count, so a test sees every check of the blocks under it.
+    #[cfg(test)]
+    checks: usize,
+    /// The most a start of the blocks the task ran allocated past `T`, in tests, which the
+    /// block's thread carries up as it does `checks`.
+    #[cfg(test)]
+    most_start: usize,
 }
 
 /// The outcome of a task that never started: no event, no value.
@@ -163,6 +302,10 @@ fn not_started() -> Outcome {
         installs: BTreeMap::new(),
         failed_write: None,
         abort: None,
+        #[cfg(test)]
+        checks: 0,
+        #[cfg(test)]
+        most_start: 0,
     }
 }
 
@@ -174,6 +317,10 @@ fn aborted(template: &TaskTemplate, code: Code, message: String) -> Outcome {
         installs: BTreeMap::new(),
         failed_write: None,
         abort: Some((code, template.location.clone(), message)),
+        #[cfg(test)]
+        checks: 0,
+        #[cfg(test)]
+        most_start: 0,
     }
 }
 
@@ -212,9 +359,10 @@ struct Forked<'scope> {
     form: Receiver<Transfer>,
 }
 
-/// The task's ends of the same signals.
+/// The task's ends of the same signals; its answer carries the bytes its start allocated on its
+/// thread, which a debug build checks against the start's reservation.
 struct Signals {
-    answer: SyncSender<bool>,
+    answer: SyncSender<usize>,
     go: Receiver<bool>,
     report: SyncSender<Outcome>,
     order: Receiver<bool>,
@@ -253,11 +401,16 @@ fn run(tasks: Tasks, tuple: bool, site: usize, invoke: Invoke) -> (i64, i64) {
         return (0, 2);
     };
     let count = Arc::new(AtomicUsize::new(limit));
-    let block = if tuple {
-        values::data(0)
-    } else {
-        values::list()
+    // The block's result list is reserved exactly, as one step, before the first batch forks
+    // (ADR 0113 rule 5).
+    let block = match values::result_list(total, tuple) {
+        Ok(block) => block,
+        Err(values::Refused(message)) => {
+            runtime::refuse(site, message);
+            return (0, 2);
+        }
     };
+    let counters = Counters::new();
     let mut first = 0;
     while first < total {
         // The block's own task was cancelled between two batches: the next one never forks,
@@ -271,6 +424,7 @@ fn run(tasks: Tasks, tuple: bool, site: usize, invoke: Invoke) -> (i64, i64) {
             tasks,
             template: &template,
             count: &count,
+            counters: &counters,
             site,
             invoke,
         };
@@ -287,8 +441,20 @@ struct Block<'a> {
     tasks: Tasks,
     template: &'a TaskTemplate,
     count: &'a Arc<AtomicUsize>,
+    /// The block's debug counters (I4, I5).
+    counters: &'a Counters,
     site: usize,
     invoke: Invoke,
+}
+
+/// The bytes a task's start reserves (ADR 0113 rule 2): `K` and `T`, the template's own bytes,
+/// twice, since the block's task clones the template and the thread makes its state from it,
+/// plus the task's path and its own cancellation entry.
+fn start_bytes(template: &TaskTemplate, index: usize) -> usize {
+    START_FIXED
+        .saturating_add(template.owned_bytes().saturating_mul(2))
+        .saturating_add(path_len(template, index))
+        .saturating_add(size_of::<runtime::Cancel>())
 }
 
 /// How a batch's fork phase ended.
@@ -313,8 +479,19 @@ impl Block<'_> {
     /// batch returned, so the next batch forks; else the block's value and status.
     fn batch(&self, first: usize, width: usize, block: i64) -> Option<(i64, i64)> {
         std::thread::scope(|scope| {
+            // The batch's state, its threads and their outcomes, is reserved exactly, as one
+            // step, before the batch forks (ADR 0113 rule 5).
+            let bytes = width.saturating_mul(
+                size_of::<Forked<'static>>().saturating_add(size_of::<Option<Outcome>>()),
+            );
+            let Some(state) = runtime::try_reserve(bytes) else {
+                values::release(block);
+                runtime::refuse(self.site, None);
+                return Some((0, 2));
+            };
             let mut forked: Vec<Forked<'_>> = Vec::with_capacity(width);
-            let mut early: Vec<(usize, Outcome)> = Vec::new();
+            let mut ended: Vec<Option<Outcome>> = (0..width).map(|_| None).collect();
+            drop(state);
             let mut fork = Fork::Ran;
             // The task whose fork stopped, if any: a copy refused by the budget on either side, or
             // a thread that could not start. The join treats it as cancelled when its code is
@@ -324,7 +501,9 @@ impl Block<'_> {
                 let index = first + offset;
                 // A task cancelled before its fork never starts (`spec/19 §6` rule 4).
                 if self.cancelled(index) {
-                    early.push((offset, not_started()));
+                    if let Some(cell) = ended.get_mut(offset) {
+                        *cell = Some(not_started());
+                    }
                     continue;
                 }
                 match self.fork(scope, index, offset) {
@@ -343,7 +522,9 @@ impl Block<'_> {
                         if matches!(&outcome.abort, Some((Code::U6003, _, _))) {
                             refused = Some(offset);
                         }
-                        early.push((offset, *outcome));
+                        if let Some(cell) = ended.get_mut(offset) {
+                            *cell = Some(*outcome);
+                        }
                         fork = Fork::Stopped;
                         break;
                     }
@@ -356,7 +537,6 @@ impl Block<'_> {
             for task in &forked {
                 let _ = task.go.send(go);
             }
-            let mut ended: Vec<Option<Outcome>> = (0..width).map(|_| None).collect();
             for task in &forked {
                 // A thread that panicked outside a copy drops its sender: a defect of the
                 // runtime, U8001.
@@ -371,16 +551,7 @@ impl Block<'_> {
                     *cell = Some(outcome);
                 }
             }
-            for (offset, outcome) in early {
-                if let Some(cell) = ended.get_mut(offset) {
-                    *cell = Some(outcome);
-                }
-            }
-            // The tasks after a stopped fork never started.
-            let ended: Vec<Outcome> = ended
-                .into_iter()
-                .map(|outcome| outcome.unwrap_or_else(not_started))
-                .collect();
+            // The tasks after a stopped fork never started: their cells stay empty.
             self.join(first, ended, forked, block, refused)
         })
     }
@@ -395,6 +566,7 @@ impl Block<'_> {
         offset: usize,
     ) -> Result<(Forked<'scope>, bool), Box<Outcome>> {
         let (closure, arg) = self.tasks.get(index);
+        self.counters.no_code_running();
         let forms = runtime::guarded(runtime::COPY, || {
             let closure = values::export(closure)?;
             let arg = match arg {
@@ -421,7 +593,24 @@ impl Block<'_> {
                 stopped_message(),
             )));
         }
-        let (answer, answered) = sync_channel::<bool>(1);
+        // A task's start is a checked step of `K + T` bytes, held until the thread's answer,
+        // since the thread makes its state after it starts (ADR 0113 rule 2).
+        let reserved = start_bytes(self.template, index);
+        #[cfg(test)]
+        let refused = TEST_REFUSE_START.with(Cell::get);
+        #[cfg(not(test))]
+        let refused = false;
+        let start = if refused {
+            None
+        } else {
+            runtime::try_reserve(reserved)
+        };
+        let Some(start) = start else {
+            let message = runtime::refusal_message(None);
+            return Err(Box::new(aborted(self.template, Code::U6003, message)));
+        };
+        let before = thread_allocated();
+        let (answer, answered) = sync_channel::<usize>(1);
         let (go, wait_go) = sync_channel::<bool>(1);
         let (report, reported) = sync_channel::<Outcome>(1);
         let (order, wait_order) = sync_channel::<bool>(1);
@@ -445,6 +634,7 @@ impl Block<'_> {
             }
             let template = self.template.clone();
             let entry = (Arc::clone(self.count), index + 1);
+            let counters = self.counters.clone();
             let (site, invoke) = (self.site, self.invoke);
             std::thread::Builder::new()
                 .name(format!("una-task-{}", index + 1))
@@ -456,19 +646,34 @@ impl Block<'_> {
                         Inputs { closure, arg },
                         &template,
                         entry,
-                        site,
-                        invoke,
+                        &counters,
+                        (site, invoke),
                         signals,
                     );
                 })
         });
+        let allocated = thread_allocated().saturating_sub(before);
         let spawned = match spawned {
             Ok(spawned) => spawned,
             Err(message) => return Err(Box::new(aborted(self.template, Code::U8001, message))),
         };
         match spawned {
             Ok(handle) => {
-                let imported = answered.recv().unwrap_or(false);
+                let answer = answered.recv().ok();
+                drop(start);
+                // A debug build checks the start's allocations, on this thread and on the new
+                // one, against its reservation.
+                if let Some(thread) = answer {
+                    #[cfg(test)]
+                    MOST_START.with(|most| {
+                        let fixed = (allocated + thread).saturating_sub(reserved - START_FIXED);
+                        most.set(most.get().max(fixed));
+                    });
+                    if cfg!(debug_assertions) && allocated.saturating_add(thread) > reserved {
+                        failed_check();
+                    }
+                }
+                let imported = answer.is_some();
                 Ok((
                     Forked {
                         offset,
@@ -498,8 +703,8 @@ impl Block<'_> {
     fn join(
         &self,
         first: usize,
-        ended: Vec<Outcome>,
-        forked: Vec<Forked<'_>>,
+        ended: Vec<Option<Outcome>>,
+        mut forked: Vec<Forked<'_>>,
         block: i64,
         refused: Option<usize>,
     ) -> Option<(i64, i64)> {
@@ -507,9 +712,81 @@ impl Block<'_> {
         // With no failure and no abort, a task stops only when the task that runs the block was
         // cancelled: the block stops in turn, after recording what its tasks did.
         let stopped = decided.is_none()
-            && ended
-                .iter()
-                .any(|outcome| matches!(outcome.ended, Ended::Stopped | Ended::NotStarted));
+            && ended.iter().any(|outcome| {
+                outcome.as_ref().is_none_or(|outcome| {
+                    matches!(outcome.ended, Ended::Stopped | Ended::NotStarted)
+                })
+            });
+        // The block's own task was cancelled while the batch ran: its result is dropped, so no
+        // value is copied (I7), and it stops as a cancelled task (`spec/19 §6` rule 4). A
+        // cancellation only ever comes once, so what is read here holds below.
+        let stopped = stopped || (!matches!(decided, Some((_, true))) && self.template.cancelled());
+        // The threads whose values will not be copied exit, and are joined, before the adoption
+        // reserves its bound: a task that failed or stopped may hold all the budget left, and
+        // its heap goes with its thread. Only a deciding failure's thread stays, for its value,
+        // and only when the block is not stopped.
+        let mut early = false;
+        if decided.is_some() || stopped {
+            let keep = match decided {
+                Some((at, false)) if !stopped => forked.iter().position(|task| task.offset == at),
+                _ => None,
+            };
+            if let Some(position) = keep {
+                forked.swap(0, position);
+            }
+            for task in forked.drain(usize::from(keep.is_some())..) {
+                early |= exit(task);
+            }
+        }
+        // The adoption is a checked step: its bound is reserved before it, outside the state's
+        // borrow, and a refusal stops the block with none of the batch's events adopted (ADR
+        // 0113 rule 3).
+        let (bytes, growth) = with_state(|state| {
+            let (bytes, events) = adoption(state, self.template, first, &ended);
+            (bytes, state.trace_growth(events))
+        })
+        .unwrap_or((0, None));
+        #[cfg(test)]
+        let refused_adoption = TEST_REFUSE_ADOPTION.with(Cell::get);
+        #[cfg(not(test))]
+        let refused_adoption = false;
+        // The trace grows as the slot table does (ADR 0113 rule 5): to twice its capacity, or,
+        // when that step is refused, to exactly what the batch's events need, so that a run's
+        // adoptions copy its trace O(log n) times.
+        let reserved_trace = |target: usize, capacity: usize| {
+            let bytes = (target - capacity).saturating_mul(size_of::<Event>());
+            runtime::try_reserve(bytes).map(|step| (step, target, bytes))
+        };
+        // The adoption's own bytes are reserved first, so a refused doubling retries exact
+        // growth with them already counted.
+        let adopting = if refused_adoption {
+            None
+        } else {
+            runtime::try_reserve(bytes).and_then(|adopting| {
+                let trace = match growth {
+                    None => None,
+                    Some((capacity, doubled, exact)) => Some(
+                        reserved_trace(doubled, capacity)
+                            .or_else(|| reserved_trace(exact, capacity))?,
+                    ),
+                };
+                Some((adopting, trace))
+            })
+        };
+        let Some((adopting, trace)) = adopting else {
+            let panicked = early | exit_all(forked.into_iter());
+            values::release(block);
+            if panicked {
+                return Some(self.defect());
+            }
+            runtime::refuse(self.site, None);
+            return Some((0, 2));
+        };
+        let (trace_step, target, trace_bytes) = match trace {
+            Some((step, target, bytes)) => (Some(step), Some(target), bytes),
+            None => (None, None, 0),
+        };
+        let before = thread_allocated();
         let mut abort = None;
         // The adoption runs inside `guarded`: a panic there is U8001 at the block (ADR 0113,
         // I11), after every thread of the batch is joined.
@@ -522,7 +799,18 @@ impl Block<'_> {
                 }
             }
             with_state(|state| {
+                if let Some(target) = target {
+                    state.grow_trace(target);
+                }
                 for (offset, outcome) in ended.into_iter().enumerate() {
+                    let Some(outcome) = outcome else {
+                        continue;
+                    };
+                    #[cfg(test)]
+                    {
+                        CHECKS_HERE.with(|checks| checks.set(checks.get() + outcome.checks));
+                        MOST_START.with(|most| most.set(most.get().max(outcome.most_start)));
+                    }
                     let path = task_path(self.template, first + offset);
                     state.adopt(&path, outcome.events, &outcome.installs);
                     if let Some(error) = outcome.failed_write
@@ -540,6 +828,16 @@ impl Block<'_> {
                 }
             });
         });
+        drop(adopting);
+        drop(trace_step);
+        // A debug build checks that a completed adoption allocated no more than it reserved; a
+        // panicked one is U8001 below, its unwinding's own allocations not the adoption's.
+        if cfg!(debug_assertions)
+            && adopted.is_ok()
+            && thread_allocated().saturating_sub(before) > bytes.saturating_add(trace_bytes)
+        {
+            failed_check();
+        }
         if let Err(message) = adopted {
             exit_all(forked.into_iter());
             values::release(block);
@@ -547,8 +845,7 @@ impl Block<'_> {
             return Some((runtime::abort_from_task(Code::U8001, location, message), 2));
         }
         let mut forked = forked.into_iter();
-        // The block's own task was cancelled while the batch ran: its result is dropped, so no
-        // value is copied (I7), and it stops as a cancelled task (`spec/19 §6` rule 4).
+        // A cancellation of the block's own task since the early exit stops it the same way.
         let stopped = stopped || (!matches!(decided, Some((_, true))) && self.template.cancelled());
         // A task's thread that panicked after its report is joined with an error: a defect of
         // the runtime, U8001 at the block, which outranks how the batch would otherwise end.
@@ -561,12 +858,12 @@ impl Block<'_> {
                     && matches!(&abort, Some((Code::U6003, _, _)))
                     && self.template.cancelled() =>
             {
-                Ending::Stopped(exit_all(forked))
+                Ending::Stopped(early | exit_all(forked))
             }
             // An abort, U8001 first: every thread exits without exporting, nothing is copied,
             // and the block aborts as the deciding task did.
             Some((_, true)) => {
-                let panicked = exit_all(forked);
+                let panicked = early | exit_all(forked);
                 match abort {
                     // A deciding U8001 keeps its own message, which names the step that panicked.
                     Some((code, location, message)) if !panicked || code == Code::U8001 => {
@@ -577,12 +874,12 @@ impl Block<'_> {
                     None => Ending::Stopped(panicked),
                 }
             }
-            None | Some((_, false)) if stopped => Ending::Stopped(exit_all(forked)),
+            None | Some((_, false)) if stopped => Ending::Stopped(early | exit_all(forked)),
             // A failure: every other thread exits without exporting, the results so far are
             // released, then the deciding task's value alone is copied in.
             Some((at, false)) => {
                 let mut deciding = None;
-                let mut panicked = false;
+                let mut panicked = early;
                 for task in forked {
                     if task.offset == at {
                         deciding = Some(task);
@@ -606,16 +903,33 @@ impl Block<'_> {
                     None => (0, 2),
                 });
             }
-            // Every task returned: one transfer at a time, in task order.
+            // Every task returned: one transfer at a time, in task order. A debug build checks
+            // that the task heaps whose code ended are at most the batch's, and that each transfer
+            // tears one down before the next one exports (I5).
             None => {
                 let mut ending = None;
+                let mut heaps = self.counters.alive();
+                if cfg!(debug_assertions) && heaps > forked.len() {
+                    failed_check();
+                }
                 while let Some(task) = forked.next() {
                     // A cancellation of the block's own task since the last transfer stops the
                     // copies there.
                     let copied = if self.template.cancelled() {
                         Err(Ending::Stopped(exit(task)))
                     } else {
-                        self.transfer_into(task, block).map_err(Ending::Copy)
+                        let copied = self.transfer_into(task, block).map_err(Ending::Copy);
+                        // Checked only after a transfer that completed: a failed one may have
+                        // ended its thread with a panic.
+                        let now = self.counters.alive();
+                        if cfg!(debug_assertions)
+                            && copied.is_ok()
+                            && now.saturating_add(1) != heaps
+                        {
+                            failed_check();
+                        }
+                        heaps = now;
+                        copied
                     };
                     if let Err(stopped) = copied {
                         // The remaining threads exit and are joined, and the results so far are
@@ -680,6 +994,7 @@ impl Block<'_> {
     /// 3, I5). The word, which the caller owns, or why the copy stopped, which the caller turns
     /// into the block's stop once the batch's other threads are joined.
     fn transfer(&self, task: Forked<'_>) -> Result<i64, Stop> {
+        self.counters.no_code_running();
         let _ = task.order.send(true);
         let transfer = task.form.recv().unwrap_or_else(|_| {
             Transfer::Panicked(
@@ -727,32 +1042,48 @@ fn exit_all<'scope>(tasks: impl Iterator<Item = Forked<'scope>>) -> bool {
 
 /// The path of task `index` of the block that `template` describes.
 fn task_path(template: &TaskTemplate, index: usize) -> String {
+    // Made at its exact size, so that an adoption allocates what its bound counts (ADR 0113 rule
+    // 3).
+    let mut path = String::with_capacity(path_len(template, index));
+    if !template.path.is_empty() {
+        path.push_str(&template.path);
+        path.push('.');
+    }
+    let _ = std::fmt::Write::write_fmt(&mut path, format_args!("{}", index + 1));
+    path
+}
+
+/// The length of the path of task `index` of the block that `template` describes.
+fn path_len(template: &TaskTemplate, index: usize) -> usize {
+    let own = runtime::digits(index + 1);
     if template.path.is_empty() {
-        (index + 1).to_string()
+        own
     } else {
-        format!("{}.{}", template.path, index + 1)
+        template.path.len() + 1 + own
     }
 }
 
 /// The task that decides a batch, by its offset, and whether it aborted: a task that stopped
 /// with U8001, a defect of the runtime, decides whatever its index; else the lowest-indexed task
 /// that failed or aborted (`spec/19 §6` rule 3). A task stopped by a cancellation never decides.
-fn decide(ended: &[Outcome]) -> Option<(usize, bool)> {
+fn decide(ended: &[Option<Outcome>]) -> Option<(usize, bool)> {
     let defect = ended.iter().position(|outcome| {
-        matches!(outcome.ended, Ended::Stopped)
-            && matches!(&outcome.abort, Some((Code::U8001, _, _)))
+        outcome.as_ref().is_some_and(|outcome| {
+            matches!(outcome.ended, Ended::Stopped)
+                && matches!(&outcome.abort, Some((Code::U8001, _, _)))
+        })
     });
     if let Some(at) = defect {
         return Some((at, true));
     }
-    ended
-        .iter()
-        .enumerate()
-        .find_map(|(at, outcome)| match outcome.ended {
+    ended.iter().enumerate().find_map(|(at, outcome)| {
+        let outcome = outcome.as_ref()?;
+        match outcome.ended {
             Ended::Failed => Some((at, false)),
             Ended::Stopped if outcome.abort.is_some() => Some((at, true)),
             _ => None,
-        })
+        }
+    })
 }
 
 /// Makes every task's thread fail to start, in tests: a spawn error, as when the system has no
@@ -780,8 +1111,8 @@ fn task(
     inputs: Inputs,
     template: &TaskTemplate,
     entry: (Arc<AtomicUsize>, usize),
-    site: usize,
-    invoke: Invoke,
+    counters: &Counters,
+    (site, invoke): (usize, Invoke),
     signals: Signals,
 ) {
     let count = Arc::clone(&entry.0);
@@ -790,8 +1121,12 @@ fn task(
     #[cfg(test)]
     let cancel_on_refusal = test_refusal(&path);
     runtime::enter_task(template, path, entry);
+    // What this thread allocated to start, its state included, which the block checks against
+    // the start's reservation in a debug build.
+    let started = thread_allocated();
     // ADR 0113 rule 5: the copies into the task's heap check each step, at the block; a refused
     // step stops the task, which its block reports.
+    counters.no_code_running();
     let imported = runtime::guarded(runtime::COPY, || {
         let closure = values::import(&inputs.closure)?;
         match &inputs.arg {
@@ -825,7 +1160,7 @@ fn task(
             return exit_task();
         }
     };
-    let _ = signals.answer.send(true);
+    let _ = signals.answer.send(started);
     // A task starts when it receives its signal to run; one told to exit, or cancelled since
     // it imported, never starts and leaves no event.
     let go = signals.go.recv().unwrap_or(false);
@@ -838,7 +1173,11 @@ fn task(
         let _ = signals.report.send(not_started());
         return exit_task();
     }
+    let code = counters.running();
     let (value, status) = invoke(closure, arg, site);
+    drop(code);
+    // Held until this function ends, after the heap's teardown, or while a panic unwinds.
+    let _heap = counters.ended();
     let ended = match status {
         0 => Ended::Returned,
         1 => Ended::Failed,
@@ -849,6 +1188,9 @@ fn task(
     // The value waits in this heap until the join orders its export, one task at a time, or
     // this thread's exit (ADR 0113 rule 3).
     if holds {
+        // The block's thread checked I4 just before its order (`transfer`), where a failed check
+        // counts for the test that runs it; no task of the block runs code from there to the
+        // export, since every task of the batch has reported.
         if signals.order.recv().unwrap_or(false) {
             let transfer = match runtime::guarded(runtime::COPY, || values::export(value)) {
                 Ok(Ok(form)) => Transfer::Form(form),
@@ -909,12 +1251,17 @@ fn report(index: usize, count: &AtomicUsize, ended: Ended) -> Outcome {
         installs,
         failed_write,
         abort,
+        #[cfg(test)]
+        checks: CHECKS_HERE.with(|checks| checks.replace(0)),
+        #[cfg(test)]
+        most_start: MOST_START.with(|most| most.replace(0)),
     }
 }
 
-/// Ends the state of the thread's task, and counts its heap's faults, copies and reuse
-/// fallbacks in a debug build, whatever the task's end, a stop included, so that a fault in a
-/// task that stopped is reported (#424).
+/// Ends the state of the thread's task, counts its heap's faults, copies and reuse fallbacks in
+/// a debug build, whatever the task's end, a stop included, so that a fault in a task that
+/// stopped is reported (#424), then tears the heap down whole, its objects freed together
+/// rather than released one by one (ADR 0113 rule 5).
 fn exit_task() {
     let _ = runtime::leave_task();
     if cfg!(debug_assertions) {
@@ -922,6 +1269,7 @@ fn exit_task() {
         TASK_COPIES.fetch_add(values::copies(), Ordering::SeqCst);
         TASK_FALLBACKS.fetch_add(values::fallbacks(), Ordering::SeqCst);
     }
+    values::tear_down();
 }
 
 /// A task's value copied into the block's heap at the join, inside [`runtime::guarded`]: a panic
@@ -973,6 +1321,58 @@ thread_local! {
     static TEST_PANIC_IN_ADOPTION: Cell<bool> = const { Cell::new(false) };
     /// Makes this task's thread panic after it reported, in tests: its code sets it.
     static TEST_PANIC_AFTER_REPORT: Cell<bool> = const { Cell::new(false) };
+    /// Refuses the start of every task of the blocks this thread runs, in tests.
+    static TEST_REFUSE_START: Cell<bool> = const { Cell::new(false) };
+    /// Refuses the adoption of every batch of the blocks this thread runs, in tests.
+    static TEST_REFUSE_ADOPTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The bound on what adopting the batch whose first task is `first` allocates (ADR 0113 rule 3),
+/// apart from the trace's growth, and the events it adds to the trace. Each string an adoption
+/// makes is made at its exact size, so the bound counts lengths: each task's path; when the run
+/// records a trace, the pattern its ids are renumbered by and each renumbered id, whose count may
+/// gain up to 20 digits; and, once per batch, each handler name the block has not installed
+/// yet, plus `S` for its entry. It is O(Σ events + Σ installs · width) and allocates nothing.
+fn adoption(
+    state: &runtime::State,
+    template: &TaskTemplate,
+    first: usize,
+    ended: &[Option<Outcome>],
+) -> (usize, usize) {
+    let tracing = state.trace.is_some();
+    let mut bytes: usize = 0;
+    let mut events: usize = 0;
+    for (offset, outcome) in ended.iter().enumerate() {
+        let Some(outcome) = outcome else {
+            continue;
+        };
+        events = events.saturating_add(outcome.events.len() + usize::from(outcome.abort.is_none()));
+        let path = path_len(template, first + offset);
+        bytes = bytes.saturating_add(path);
+        if tracing {
+            bytes = bytes.saturating_add(path + 3);
+            for event in &outcome.events {
+                if event.instance.starts_with("with:") {
+                    bytes = bytes.saturating_add(event.instance.len() + 20);
+                }
+            }
+        }
+        for name in outcome.installs.keys() {
+            // A name new to the block and to the batch's earlier tasks adds one entry.
+            let earlier = ended
+                .get(..offset)
+                .unwrap_or_default()
+                .iter()
+                .flatten()
+                .any(|earlier| earlier.installs.contains_key(name));
+            if !state.installed(name) && !earlier {
+                bytes = bytes
+                    .saturating_add(name.len())
+                    .saturating_add(values::MAP_INSERT_BOUND);
+            }
+        }
+    }
+    (bytes, events)
 }
 
 #[cfg(test)]
@@ -999,6 +1399,8 @@ mod tests {
                     String::new(),
                 )
             }),
+            checks: 0,
+            most_start: 0,
         }
     }
 
@@ -1036,7 +1438,7 @@ mod tests {
         std::thread::spawn(move || {
             // The runtime's panic hook, as `start` installs it, keeps a copy's panic message.
             runtime::install_panic_hook();
-            runtime::install_test_state_as("1".to_owned());
+            runtime::install_test_state_as("1".to_owned(), false, String::new());
             TEST_WAVE.with(|wave| wave.set(Some(2)));
             let (value, status) = f();
             let texts = match status {
@@ -1245,7 +1647,7 @@ mod tests {
         // with no U6003.
         let ((value, status), stopped) = std::thread::spawn(|| {
             runtime::install_panic_hook();
-            runtime::install_test_state_as("refusing".to_owned());
+            runtime::install_test_state_as("refusing".to_owned(), false, String::new());
             let count = Arc::new(AtomicUsize::new(2));
             runtime::cancel_test_task(Arc::clone(&count));
             if let Ok(mut refusal) = TEST_REFUSAL.lock() {
@@ -1269,21 +1671,23 @@ mod tests {
     /// the code of its stop.
     fn cancelled_join(outcome: Outcome, refused: Option<usize>) -> (i64, Option<Code>) {
         let ((_, status), stopped) = std::thread::spawn(move || {
-            runtime::install_test_state_as("1".to_owned());
+            runtime::install_test_state_as("1".to_owned(), false, String::new());
             runtime::cancel_test_task(Arc::new(AtomicUsize::new(0)));
             let template = with_state(|state| state.for_tasks(0)).unwrap();
             assert!(template.cancelled());
             let count = Arc::new(AtomicUsize::new(2));
+            let counters = Counters::new();
             let block_ctx = Block {
                 tasks: Tasks::Closures(0),
                 template: &template,
                 count: &count,
+                counters: &counters,
                 site: 0,
                 invoke: texts,
             };
             let block = values::list();
             let result = block_ctx
-                .join(0, vec![outcome], Vec::new(), block, refused)
+                .join(0, vec![Some(outcome)], Vec::new(), block, refused)
                 .unwrap();
             let stopped = runtime::test_stopped().map(|(code, _)| code);
             let _ = runtime::leave_task();
@@ -1309,12 +1713,223 @@ mod tests {
         assert_eq!(cancelled_join(refusal(), None), (2, Some(Code::U6003)));
     }
 
+    /// A task's code that runs a block of its own one level down, until `arg`, a tagged depth,
+    /// reaches 0: blocks nested as deep as the first element says.
+    fn nested(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64) {
+        let depth = arg.map_or(0, |word| word >> 1);
+        if let Some(arg) = arg {
+            values::release(arg);
+        }
+        if depth == 0 {
+            return (values::text_word("bottom".to_owned()), 0);
+        }
+        let items = values::list();
+        values::push(items, ((depth - 1) << 1) | 1);
+        let (value, status) = run(Tasks::Over { closure, items }, false, site, nested);
+        values::release(items);
+        (value, status)
+    }
+
+    /// A task's code that installs a handler and records one event on its instance, as a task
+    /// that runs `with` and performs an operation does, then returns.
+    fn installs(_closure: i64, arg: Option<i64>, _site: usize) -> (i64, i64) {
+        if let Some(arg) = arg {
+            values::release(arg);
+        }
+        let name = values::text_word("logger".to_owned());
+        let instance = crate::host::handler_instance(name);
+        crate::host::event(0, instance);
+        values::release(instance);
+        values::release(name);
+        (values::text_word("done".to_owned()), 0)
+    }
+
+    /// A task's code that runs a block nested `arg` deep, as [`nested`] does, whose bottom block
+    /// has two tasks that each run [`installs`].
+    fn nested_installs(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64) {
+        let depth = arg.map_or(0, |word| word >> 1);
+        if let Some(arg) = arg {
+            values::release(arg);
+        }
+        if depth == 0 {
+            return installs(closure, None, site);
+        }
+        let items = values::list();
+        for _ in 0..if depth == 1 { 2 } else { 1 } {
+            values::push(items, ((depth - 1) << 1) | 1);
+        }
+        let (value, status) = run(Tasks::Over { closure, items }, false, site, nested_installs);
+        values::release(items);
+        (value, status)
+    }
+
+    /// Runs `f` on a thread of its own with a test state of task path `path`, a trace when
+    /// `tracing`, and a site in `file`; returns what `f` returns, the abort that stopped it, if
+    /// any, and the instance ids of its trace.
+    fn in_task_as<R: Send + 'static>(
+        path: &str,
+        tracing: bool,
+        file: String,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> (R, Option<(Code, String)>, Vec<String>) {
+        let path = path.to_owned();
+        std::thread::spawn(move || {
+            runtime::install_test_state_as(path, tracing, file);
+            runtime::install_panic_hook();
+            let result = f();
+            let stopped = runtime::test_stopped();
+            let trace = runtime::test_trace();
+            let _ = runtime::leave_task();
+            (result, stopped, trace)
+        })
+        .join()
+        .unwrap()
+    }
+
+    #[test]
+    fn i1_i3_every_start_allocates_within_its_reservation_at_any_depth_and_path() {
+        // ADR 0113 rule 2: the debug counters check each start, on the block's task and on the
+        // new thread, against `K + T`, in blocks nested 1, 10, 50 and 200 deep and with a long
+        // file path; a failed check counts in the test's own count of checks. At every depth,
+        // the largest start, nested ones included, allocates at most half `K` past `T`, the
+        // margin the constant states. Miri runs depths 1 and 3.
+        let depths: &[i64] = if cfg!(miri) {
+            &[1, 3]
+        } else {
+            &[1, 10, 50, 200]
+        };
+        for &depth in depths {
+            let long = "src/".to_owned() + &"a".repeat(4096) + ".una";
+            for file in [String::new(), long] {
+                let ((status, checks, most), stopped, _) = in_task_as("", false, file, move || {
+                    MOST_START.with(|most| most.set(0));
+                    let before = CHECKS_HERE.with(Cell::get);
+                    let (value, status) = over(&[depth], nested);
+                    values::release(value);
+                    let checks = CHECKS_HERE.with(Cell::get) - before;
+                    (status, checks, MOST_START.with(Cell::get))
+                });
+                assert_eq!((status, stopped, checks), (0, None, 0), "depth {depth}");
+                if cfg!(debug_assertions) {
+                    eprintln!(
+                        "una-rt test: the largest start at depth {depth} allocated {most} bytes past T"
+                    );
+                    assert!(
+                        most <= START_FIXED / 2,
+                        "a start at depth {depth} allocated {most} bytes"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn i1_a_refused_start_stops_the_block_with_u6003_and_runs_no_task() {
+        // ADR 0113 rule 2: a task's start is a checked step; refused, it stops the block with
+        // U6003 at the block, with the memory-limit message, before any task runs.
+        let ((value, status), stopped, _) = in_task_as("1", false, String::new(), || {
+            TEST_REFUSE_START.with(|refuse| refuse.set(true));
+            over(&[2, 3], texts)
+        });
+        assert_eq!((value, status), (0, 2));
+        let (code, message) = stopped.unwrap();
+        assert_eq!(code, Code::U6003);
+        assert!(
+            message.starts_with("this call exceeds the memory limit"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn i1_i10_an_adoption_reserves_what_it_allocates_and_renumbers_the_handlers() {
+        // ADR 0113 rule 3: a batch whose tasks each install a handler and record an event adopts
+        // their events in task order, the handlers renumbered from the block's counts, within
+        // the bytes it reserved (a debug check), and so do traced blocks nested 5 deep; refused,
+        // an adoption stops the block with U6003 and adopts none of the batch's events.
+        let ((checks, status), stopped, trace) = in_task_as("", true, String::new(), || {
+            let before = CHECKS_HERE.with(Cell::get);
+            let (value, status) = over(&[0, 0, 0], installs);
+            values::release(value);
+            let (value, nested_status) = over(&[5], nested);
+            values::release(value);
+            let checks = CHECKS_HERE.with(Cell::get) - before;
+            (checks, status.max(nested_status))
+        });
+        assert_eq!((status, stopped, checks), (0, None, 0));
+        assert_eq!(trace, ["with:logger#1", "with:logger#2", "with:logger#3"]);
+        let ((value, status), stopped, trace) = in_task_as("1", true, String::new(), || {
+            TEST_REFUSE_ADOPTION.with(|refuse| refuse.set(true));
+            over(&[0, 0, 0], installs)
+        });
+        assert_eq!((value, status), (0, 2));
+        assert_eq!(stopped.map(|(code, _)| code), Some(Code::U6003));
+        assert!(trace.is_empty(), "{trace:?}");
+    }
+
+    #[test]
+    fn i1_i10_an_adoption_inside_nested_blocks_renumbers_within_what_it_reserved() {
+        // ADR 0113 rule 3, where the block's path is not empty: blocks nested 4 deep in a traced
+        // task whose bottom block's two tasks each install a handler and record an event. Each
+        // adoption on the way up renumbers the ids within the bytes it reserved (a debug check),
+        // and the run's trace holds both events, numbered from the run's counts.
+        let ((checks, status), stopped, trace) = in_task_as("", true, String::new(), || {
+            let before = CHECKS_HERE.with(Cell::get);
+            let (value, status) = over(&[4], nested_installs);
+            values::release(value);
+            (CHECKS_HERE.with(Cell::get) - before, status)
+        });
+        assert_eq!((status, stopped, checks), (0, None, 0));
+        assert_eq!(trace, ["with:logger#1", "with:logger#2"]);
+    }
+
+    #[test]
+    fn i1_a_traced_run_grows_its_trace_a_logarithmic_number_of_times() {
+        // ADR 0113 rule 5, by counter: the trace grows as the slot table does, to twice its
+        // capacity, so k blocks whose tasks each record an event grow it O(log k) times, not k
+        // times.
+        let sizes: &[usize] = if cfg!(miri) { &[4, 8] } else { &[16, 64, 256] };
+        for &blocks in sizes {
+            let ((growths, status), _, trace) = in_task_as("", true, String::new(), move || {
+                let before = runtime::TRACE_GROWTHS.with(Cell::get);
+                let mut status = 0;
+                for _ in 0..blocks {
+                    let (value, ended) = over(&[0, 0], installs);
+                    values::release(value);
+                    status = status.max(ended);
+                }
+                (runtime::TRACE_GROWTHS.with(Cell::get) - before, status)
+            });
+            assert_eq!(status, 0);
+            assert_eq!(trace.len(), 2 * blocks);
+            let bound = (usize::BITS - (2 * blocks).leading_zeros()) as usize + 2;
+            assert!(
+                growths <= bound,
+                "{blocks} blocks grew the trace {growths} times"
+            );
+        }
+    }
+
+    #[test]
+    fn i1_a_block_s_copies_make_the_sum_of_its_tasks_steps() {
+        // ADR 0113, I1, by counters: on the block's thread, a block of t tasks over integers
+        // exports t closures, one object each, and imports t results, one text each.
+        let ((steps, status), _, _) = in_task_as("", false, String::new(), || {
+            let before = values::object_steps();
+            let (value, status) = over(&[2, 4, 5, 6, 7], texts);
+            let steps = values::object_steps() - before;
+            values::release(value);
+            (steps, status)
+        });
+        assert_eq!((steps, status), (10, 0));
+    }
+
     #[test]
     fn i10_i11_a_batch_is_decided_by_its_lowest_failure_or_abort_and_first_by_a_defect() {
         // `spec/19 §6` rule 3: the lowest-indexed task that failed or aborted decides; a task
         // stopped by a cancellation never does. ADR 0113 I11: a task stopped with U8001, a
         // defect of the runtime, decides before any of them.
-        let returned = || ended(Ended::Returned, None);
+        let returned = || Some(ended(Ended::Returned, None));
+        let ended = |kind, abort| Some(ended(kind, abort));
         assert_eq!(decide(&[returned(), returned()]), None);
         assert_eq!(
             decide(&[ended(Ended::Stopped, None), returned()]),

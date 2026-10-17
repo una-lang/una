@@ -781,6 +781,86 @@ fn copies_program(name: &str, body: &str) -> PathBuf {
     dir
 }
 
+/// Runs the native executable `name` of `dir` with `--max-memory` `mib`: its output.
+fn native_run(dir: &Path, name: &str, mib: &str) -> Output {
+    Command::new(dir.join(format!("target/una/{name}")))
+        .args(["--max-memory", mib])
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+/// Asserts that a native run completed, exit code 0, or stopped with U6003 over its budget, exit
+/// code 1, and never ended on a signal or at the allocator's hard ceiling.
+fn completes_or_u6003(name: &str, output: &Output) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match output.status.code() {
+        Some(1) => assert!(
+            stderr.starts_with("[U6003] Error: this call exceeds the memory limit"),
+            "{name}: {stderr}"
+        ),
+        other => assert_eq!(other, Some(0), "{name}: {stderr}"),
+    }
+    assert!(!stderr.contains("memory allocation"), "{name}: {stderr}");
+}
+
+#[test]
+fn i1_i8_a_block_of_a_million_tasks_completes_or_stops_with_u6003() {
+    // ADR 0113 rules 1, 2 and 5: a `together for` over 10^6 small integers under `--max-memory
+    // 64` reserves its result list exactly, each batch's state and each task's start, so it
+    // either completes or stops with U6003 at the block, and never aborts the process.
+    let main = "pub main() -> Unit\n  uses @console: Console[print]\n=\n";
+    let name = "million_tasks";
+    let dir = copies_program(
+        name,
+        &format!(
+            "{main}  let xs = together for i in 0..<1000000\n    i\n  @console.print(\"{{xs.len}}\")\n"
+        ),
+    );
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let output = native_run(&dir, name, "64");
+    completes_or_u6003(name, &output);
+    if output.status.code() == Some(0) {
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "1000000\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn i1_sibling_blocks_whose_copies_pass_alone_and_not_together_stop_with_u6003() {
+    // ADR 0113 rule 4: four sibling tasks each run a block that copies a list of 400000
+    // integers into two tasks under `--max-memory 64`. One such block fits the budget, with
+    // more than half of it to spare (it needs under 28 MiB), which the test checks; four at
+    // once need more than the budget. Which step of which block meets the budget first depends
+    // on scheduling, so the test checks only how each of three runs ends: it completes or
+    // stops with U6003, never on a signal or at the allocator's hard ceiling.
+    let main = "pub main() -> Unit\n  uses @console: Console[print]\n=\n";
+    let name = "sibling_copies";
+    let body = format!(
+        "inner() -> Int\n=\n  let xs = make(400000)\n  let ys = together for i in 0..<2\n    xs.len + i\n  ys.len\n\n{main}  together\n    let a = inner()\n    let b = inner()\n    let c = inner()\n    let d = inner()\n  @console.print(\"{{a}} {{b}} {{c}} {{d}}\")\n"
+    );
+    let dir = copies_program(name, &body);
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let alone = copies_program(
+        "sibling_copy_alone",
+        &format!(
+            "inner() -> Int\n=\n  let xs = make(400000)\n  let ys = together for i in 0..<2\n    xs.len + i\n  ys.len\n\n{main}  let a = inner()\n  @console.print(\"{{a}}\")\n"
+        ),
+    );
+    let built = una(&alone, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let one = native_run(&alone, "sibling_copy_alone", "64");
+    assert_eq!(one.status.code(), Some(0), "one block alone fits: {one:?}");
+    for run in 0..3 {
+        let output = native_run(&dir, name, "64");
+        completes_or_u6003(&format!("{name} run {run}"), &output);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&alone);
+}
+
 #[test]
 fn a_copy_between_tasks_over_the_budget_is_u6003_in_both_backends() {
     // #775: native code copies a value between the heaps of a block's tasks (`spec/16 §4`

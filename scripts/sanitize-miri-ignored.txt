@@ -13,7 +13,9 @@ ffi::tests::a_slice_ending_before_it_starts_scenario
 ffi::tests::a_slice_past_the_text_scenario
 ffi::tests::a_text_call_outside_its_precondition_aborts_the_run
 ffi::tests::every_entry_point_takes_any_word_in_a_run
+ffi::tests::i10_a_block_cancelled_near_the_budget_keeps_its_batch_s_events_and_its_cancelled_event
 ffi::tests::i10_a_refused_transfer_stops_at_the_block_with_every_task_s_events
+ffi::tests::i10_cancelled_block_near_budget_scenario
 ffi::tests::i10_cancelled_task_scenario
 ffi::tests::i10_refused_transfer_scenario
 ffi::tests::i10_the_trace_holds_a_cancelled_task_s_events_then_its_cancelled_event
@@ -26,6 +28,9 @@ ffi::tests::i11_fork_import_panic_scenario
 ffi::tests::i11_join_import_panic_scenario
 ffi::tests::i11_outranked_panic_scenario
 ffi::tests::i11_panic_outside_a_copy_scenario
+ffi::tests::i1_a_block_whose_starts_pass_the_budget_stops_with_u6003_before_any_task_runs
+ffi::tests::i1_i3_a_fork_past_its_budget_stops_with_u6003_and_held_never_passes_the_ceiling
+ffi::tests::i1_starts_past_budget_scenario
 ffi::tests::i2_a_count_at_its_limit_ends_the_process_and_never_returns
 ffi::tests::i2_count_limit_during_an_import_scenario
 ffi::tests::i2_count_limit_in_a_task_scenario
@@ -33,6 +38,7 @@ ffi::tests::i2_count_limit_in_main_scenario
 ffi::tests::i2_count_limit_in_two_tasks_at_once_scenario
 ffi::tests::i2_count_limit_shipped_scenario
 ffi::tests::i2_count_limit_with_the_memory_it_needs_scenario
+ffi::tests::i3_fork_past_budget_scenario
 ffi::tests::i6_a_refused_export_of_a_later_batch_keeps_the_events_of_the_tasks_that_ran
 ffi::tests::i6_fork_export_limit_scenario
 ffi::tests::i6_fork_import_refused_scenario
