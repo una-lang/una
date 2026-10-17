@@ -9,13 +9,13 @@ codes: [U5003, U7004]
 
 ## What it does
 
-`verification.lock` pins the solver and its settings, so that a proof means the same on every machine (`spec/12 §9`). It sits at the package root, beside `una.toml`, and is committed. The proof cache is keyed by its contents, so changing it verifies every obligation again (`spec/12 §9`).
+`verification.lock` pins the solver and its settings, so that a proof means the same on every machine. It sits at the package root, beside `una.toml`, and is committed. The proof cache is keyed by its contents, so changing it verifies every obligation again.
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
@@ -31,10 +31,10 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
-module demo
+module shop
 
 pub kind Seats = Int in 0..5000
 
@@ -52,17 +52,17 @@ step_budget      = <an integer of at least 1>
 random_seed      = <an integer of at least 0>
 ```
 
-Exactly these six keys (`spec/13 §7`, `spec/12 §9`).
+Exactly these six keys.
 
 ## Examples
 
-A solver at another version than the lock names is rejected once there is something to prove. Verification never passes silently (`spec/12 §5`):
+A solver at another version than the lock names is rejected once there is something to prove. Verification never passes silently:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
@@ -78,11 +78,11 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U5003
-module demo
+module shop
 
 pub kind Seats = Int in 0..5000
 
@@ -91,13 +91,13 @@ pub cap(raw: Int) -> Seats = if raw < 0 then 0 else if raw > 5000 then 5000 else
 
 ## Edge cases
 
-**Exactly the six keys** (`spec/13 §7`):
+**Exactly the six keys**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
@@ -112,11 +112,11 @@ logic            = "QF_UFLIA"
 step_budget      = 5000000
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U7004
-module demo
+module shop
 
 pub kind Seats = Int in 0..5000
 
@@ -125,8 +125,8 @@ pub cap(raw: Int) -> Seats = if raw < 0 then 0 else if raw > 5000 then 5000 else
 
 Further rules:
 
-- **A single file** uses the default lock, which holds the values of the repository's `verification.lock` (`spec/13 §7`).
-- **Determinism.** For identical sources, `una.toml` and `verification.lock`, checking produces identical diagnostics, statuses and reports, except obligations that ran out of wall-clock time (`spec/12 §10`).
+- **A single file** uses the default lock, which holds the values of the repository's `verification.lock`.
+- **Determinism.** For identical sources, `una.toml` and `verification.lock`, checking produces identical diagnostics, statuses and reports, except obligations that ran out of wall-clock time.
 
 ## Diagnostics
 

@@ -9,7 +9,7 @@ codes: [U7005]
 
 ## What it does
 
-`modules` lists the package's trusted modules: the modules that may hold declassification policies (`spec/13 §7`, `spec/07 §6`). A module is trusted only when it is listed here **and** its header says `trusted module`.
+`modules` lists the package's trusted modules: the modules that may hold declassification policies. A module is trusted only when it is listed here **and** its header says `trusted module`.
 
 `una.toml`
 
@@ -48,40 +48,40 @@ hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 modules = ["<module path>", ...]
 ```
 
-An array of module paths, each a module of the package whose header says `trusted module` (`spec/13 §7`).
+An array of module paths, each a module of the package whose header says `trusted module`.
 
 ## Examples
 
-Listing a module whose header is not `trusted module` is rejected, as is the reverse (`spec/07 §6`):
+Listing a module whose header is not `trusted module` is rejected, as is the reverse:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [trusted]
-modules = ["demo"]
+modules = ["shop"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U7005
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
 ## Edge cases
 
 Further rules:
 
-- **Policies only there.** A `policy` outside a trusted module is U4004 (`spec/07 §6`). See [`policy`](../../language/information-flow/policy.md).
-- **Everything else is checked.** Only the `via` functions of policies skip label checks (`spec/07 §5` rule 3).
-- **Reported.** Trusted modules and their line counts are listed in the build report's trusted base (`spec/07 §6`).
+- **Policies only there.** A `policy` outside a trusted module is U4004. See [`policy`](../../language/information-flow/policy.md).
+- **Everything else is checked.** Only the `via` functions of policies skip label checks.
+- **Reported.** Trusted modules and their line counts are listed in the build report's trusted base.
 
 ## Diagnostics
 

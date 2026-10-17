@@ -9,7 +9,7 @@ codes: [U3012, U7002]
 
 ## What it does
 
-`entry` names the module whose `main` `una run` and `una build` start (`spec/13 §5, §7`). `main` is `pub main() -> Unit`, and it receives host capabilities from the runtime through its `uses` clauses (`spec/04 §8`, `spec/05 §7`).
+`entry` names the module whose `main` `una run` and `una build` start. `main` is `pub main() -> Unit`, and it receives host capabilities from the runtime through its `uses` clauses.
 
 `una.toml`
 
@@ -42,17 +42,17 @@ pub main() -> Unit
 entry = "<module path>"
 ```
 
-The path of a module of the package (`spec/13 §7`).
+The path of a module of the package.
 
 ## Examples
 
-An entry that names no module of the package is rejected (`spec/13 §7`):
+An entry that names no module of the package is rejected:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -61,37 +61,37 @@ entry = "missing"
 grants = ["console"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U7002
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
 ## Edge cases
 
-**`main` takes host capabilities only.** No grant can provide a capability that is not a host capability, so `una check` reports it (`spec/13 §5`):
+**`main` takes host capabilities only.** No grant can provide a capability that is not a host capability, so `una check` reports it:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [run]
-entry = "demo"
+entry = "shop"
 grants = ["console"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U3012
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -99,13 +99,13 @@ pub capability Log
 pub main() -> Unit
   uses @log: Log[write]
 =
-  @log.write("x")
+  @log.write("order 42 shipped")
 ```
 
 Further rules:
 
-- **Usage errors at run time.** A package without an entry, or an entry without `pub main() -> Unit`, makes `una run` stop with a usage error, exit code 2 (`spec/13 §5`).
-- **A single file** runs its own module, as if it were the entry (`spec/13 §5`).
+- **Usage errors at run time.** A package without an entry, or an entry without `pub main() -> Unit`, makes `una run` stop with a usage error, exit code 2.
+- **A single file** runs its own module, as if it were the entry.
 - **Grants.** See [`[run] grants`](grants.md).
 
 ## Diagnostics

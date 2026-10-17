@@ -1,0 +1,1 @@
+- **Configuration guide pages read as guides** (#859). The pages for the keys of `una.toml`, `[boundaries]` and `verification.lock` use a store package instead of placeholders, keep their spec citations in the "Normative source" part, and name decision records only there.

@@ -9,7 +9,7 @@ codes: [U1002, U1005, U4007]
 
 ## What it does
 
-`categories` declares the label categories the package's code may use, such as `secret[PII]` (`spec/13 §7`, `spec/07 §2`). A label is a level and a set of categories, and a value flows only to labels at least as high in both.
+`categories` declares the label categories the package's code may use, such as `secret[PII]`. A label is a level and a set of categories, and a value flows only to labels at least as high in both.
 
 `una.toml`
 
@@ -28,9 +28,9 @@ categories = ["PII", "Location"]
 ```una
 module people
 
-pub tagged(n: secret[PII] Int) -> secret[PII] Int = n
+pub tagged(birth_year: secret[PII] Int) -> secret[PII] Int = birth_year
 
-pub wider(n: secret[PII] Int) -> restricted[PII, Location] Int = n
+pub wider(birth_year: secret[PII] Int) -> restricted[PII, Location] Int = birth_year
 ```
 
 ## Forms
@@ -40,11 +40,11 @@ pub wider(n: secret[PII] Int) -> restricted[PII, Location] Int = n
 categories = ["<UpperCamelCase name>", ...]
 ```
 
-An array of category names, each in UpperCamelCase and unique (`spec/13 §7`). Without the table, a package declares no categories (`spec/13 §7`).
+An array of category names, each in UpperCamelCase and unique. Without the table, a package declares no categories.
 
 ## Examples
 
-A label may name only declared categories (`spec/07 §2`):
+A label may name only declared categories:
 
 `una.toml`
 
@@ -61,18 +61,18 @@ edition = "0.2"
 -- fails with U4007
 module people
 
-pub tagged(n: secret[PII] Int) -> secret[PII] Int = n
+pub tagged(birth_year: secret[PII] Int) -> secret[PII] Int = birth_year
 ```
 
 ## Edge cases
 
-**Names are UpperCamelCase** (`spec/13 §7`):
+**Names are UpperCamelCase**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -80,22 +80,22 @@ edition = "0.2"
 categories = ["pii"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U1005
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
-**Each name once** (`spec/13 §7`):
+**Each name once**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -103,18 +103,18 @@ edition = "0.2"
 categories = ["PII", "PII"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U1002
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
 Further rules:
 
-- **Order.** A label is below another when its level is not higher and its categories are a subset (`spec/07 §2`). See [labels](../../language/information-flow/labels.md).
+- **Order.** A label is below another when its level is not higher and its categories are a subset. See [labels](../../language/information-flow/labels.md).
 
 ## Diagnostics
 
