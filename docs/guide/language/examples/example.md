@@ -9,29 +9,29 @@ codes: [U1001, U1002, U3001, U3014]
 
 ## What it does
 
-An `example` is executable evidence of behavior. It lives next to the code it exercises, and `una test` runs it (`spec/08 §2`):
+An `example` is executable evidence of behavior. It lives next to the code it exercises, and `una test` runs it:
 
 - **`given`** lines install handlers for the capabilities the code needs;
 - **`do`** runs the expression under test;
 - **`expect`** lines state what must hold: of its result, of its failure, or of the effects it performed.
 
 ```una
-module demo
+module shop
 
-pub kind Oops = | TooLarge
+pub kind OrderError = | TooMany
 
-pub bump(n: Int) -> Int
-  fails Oops
+pub add_units(units: Int) -> Int
+  fails OrderError
 =
-  if n > 100 then fail TooLarge else n + 1
+  if units > 100 then fail TooMany else units + 1
 
-example "bump adds one"
-  do bump(1)
+example "adding a unit"
+  do add_units(1)
   expect result == 2
 
-example "bump refuses large values"
-  do bump(101)
-  expect fails TooLarge
+example "too many units"
+  do add_units(101)
+  expect fails TooMany
 ```
 
 ## Forms
@@ -48,7 +48,7 @@ expectation     = "expect" ( "fails" upper_ident
                            | line_expr ) NEWLINE ;
 ```
 
-This is `spec/02 §5`. The lines mean (`spec/08 §2`):
+The lines mean:
 
 | Line | Meaning |
 | --- | --- |
@@ -59,14 +59,14 @@ This is `spec/02 §5`. The lines mean (`spec/08 §2`):
 | `expect performed @x.op` | The trace contains at least one completed or failed `op` on binding `@x` |
 | `expect not performed @x.op` | The trace contains no `op` on binding `@x` |
 
-An example has at least one `expect` line (`spec/02 §5`).
+An example has at least one `expect` line.
 
 ## Examples
 
-A handler stands in for a capability, and the trace shows what the code did (`spec/08 §2`):
+A handler stands in for a capability, and the trace shows what the code did:
 
 ```una
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -81,15 +81,15 @@ handler quiet() for Log
 
 example "notes once"
   given @log = quiet()
-  do note("x")
+  do note("order 42 shipped")
   expect performed @log.write
 ```
 
-Examples cannot use host capabilities, so they are deterministic. A capability the code needs comes from `given` (`spec/08 §2` rule 1, `spec/05 §9` rule 5):
+Examples cannot use host capabilities, so they are deterministic. A capability the code needs comes from `given`:
 
 ```una
 -- fails with U3014
-module demo
+module shop
 
 pub greet(name: Text) -> Unit
   uses @console: Console[print]
@@ -103,11 +103,11 @@ example "greets"
 
 ## Edge cases
 
-**Every capability `do` needs has a `given`** (`spec/08 §2` rule 1):
+**Every capability `do` needs has a `given`**:
 
 ```una
 -- fails with U3001
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -118,15 +118,15 @@ pub note(line: Text) -> Unit
   @log.write(line)
 
 example "missing handler"
-  do note("x")
+  do note("order 42 shipped")
   expect result == unit
 ```
 
-**`expect performed` names a declared operation** (`spec/05 §9` rule 5):
+**`expect performed` names a declared operation**:
 
 ```una
 -- fails with U1001
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -141,33 +141,33 @@ handler quiet() for Log
 
 example "notes"
   given @log = quiet()
-  do note("x")
+  do note("order 42 shipped")
   expect performed @log.erase
 ```
 
-**Names are unique per module** (`spec/08 §2` rule 3):
+**Names are unique per module**:
 
 ```una
 -- fails with U1002
-module demo
+module shop
 
-pub double(n: Int) -> Int = n * 2
+pub double_price(cents: Int) -> Int = cents * 2
 
 example "doubles"
-  do double(2)
+  do double_price(2)
   expect result == 4
 
 example "doubles"
-  do double(3)
+  do double_price(3)
   expect result == 6
 ```
 
 Further rules:
 
-- **Checked like code.** Examples are type-checked, information-flow checked and verified like any other code. Only `expect` lines are exempt from sink checks, since they observe values for the test harness (`spec/08 §2` rule 4, `spec/07 §4`).
-- **`do` lines may nest calls.** The one-effect-per-line rule does not apply to them: fallible and effectful calls are evaluated left to right, and any failure ends the example (`spec/08 §2` rule 5, `spec/04 §4`).
-- **Order of expectations.** They are checked in order, and the first that does not hold fails the example. An `expect` over `result` after a failed `do` fails it with the failure shown; a `do` that failed with no `expect fails` line fails it too. An `expect` line that does not mention `result` still runs after a failed `do`, and an example whose run aborts fails (`spec/08 §2` rules 2 and 7, ADR 0032).
-- **Fresh runs.** Each example runs in a fresh abstract machine. `una test --json` reports, per example, the outcome, the failed expectation if any, and the full effect trace (`spec/08 §2` rule 6, `spec/11 §5`, `spec/13 §5`).
+- **Checked like code.** Examples are type-checked, information-flow checked and verified like any other code. Only `expect` lines are exempt from sink checks, since they observe values for the test harness.
+- **`do` lines may nest calls.** The one-effect-per-line rule does not apply to them: fallible and effectful calls are evaluated left to right, and any failure ends the example.
+- **Order of expectations.** They are checked in order, and the first that does not hold fails the example. An `expect` over `result` after a failed `do` fails it with the failure shown; a `do` that failed with no `expect fails` line fails it too. An `expect` line that does not mention `result` still runs after a failed `do`, and an example whose run aborts fails.
+- **Fresh runs.** Each example runs in a fresh abstract machine. `una test --json` reports, per example, the outcome, the failed expectation if any, and the full effect trace.
 
 ## Diagnostics
 
@@ -187,3 +187,4 @@ Examples are the same in editions `0.1` and `0.2`.
 - `spec/05 §9` rule 5: operations named in examples.
 - `spec/07 §4`: the sink exemption; `spec/04 §4`: one effect per line.
 - `spec/11 §5`: traces; `spec/13 §5`: `una test`.
+- Decision record: [ADR 0032](../../../adr/0032-runtime-details-left-open.md), for the order of expectations after a failed `do`.

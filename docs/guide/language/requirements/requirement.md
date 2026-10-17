@@ -9,10 +9,10 @@ codes: [U1002, U1006, U1007]
 
 ## What it does
 
-A `requirement` records a human or business statement, with its source and its owner, so contracts can be traced to intent (`spec/08 §1`). A function names the requirements it implements with `derived from`. `una trace` then lists, for one requirement, every function derived from it, with its contract and the status of each proof (`spec/08 §1`).
+A `requirement` records a human or business statement, with its source and its owner, so contracts can be traced to intent. A function names the requirements it implements with `derived from`. `una trace` then lists, for one requirement, every function derived from it, with its contract and the status of each proof.
 
 ```una
-module demo
+module shop
 
 requirement EVENTS_3
   text "An event with no remaining seats is always shown as sold out"
@@ -42,7 +42,7 @@ requirement_decl = "requirement" upper_ident NEWLINE INDENT
 source          = "human" | ( "policy" | "regulation" | "generated" ) text_lit ;
 ```
 
-This is `spec/02 §5`. The fields are those of `spec/08 §1`:
+The fields:
 
 | Field | Values |
 | --- | --- |
@@ -51,17 +51,17 @@ This is `spec/02 §5`. The fields are those of `spec/08 §1`:
 | `owner` | Team or person accountable (lower snake case) |
 | `status` | `proposed` or `active` |
 
-**`derived from R1, R2`** is the last clause of a function header, at most once (`spec/02 §3`).
+**`derived from R1, R2`** is the last clause of a function header, at most once.
 
 ## Examples
 
-The function above proves the requirement's intent as a contract: `ensures remaining == 0 implies result is SoldOut`. The requirement says what people want; the contract says what the code guarantees, and the verifier checks the contract (`spec/08 §1`).
+The function above proves the requirement's intent as a contract: `ensures remaining == 0 implies result is SoldOut`. The requirement says what people want; the contract says what the code guarantees, and the verifier checks the contract.
 
-A requirement written by an agent is only proposed. A person activates it by changing its source (`spec/08 §1` rule 2):
+A requirement written by an agent is only proposed. A person activates it by changing its source:
 
 ```una
 -- fails with U1007
-module demo
+module shop
 
 requirement GEN_1
   text "Seats are counted"
@@ -72,32 +72,32 @@ requirement GEN_1
 
 ## Edge cases
 
-**`derived from` names declared requirements** (`spec/08 §1` rule 3):
+**`derived from` names declared requirements**:
 
 ```una
 -- fails with U1006
-module demo
+module shop
 
-pub f(n: Int) -> Int
+pub seats_left(remaining: Int) -> Int
   derived from NOPE_1
 =
-  n
+  remaining
 ```
 
-**Identifiers are unique per package** (`spec/08 §1` rule 1):
+**Identifiers are unique per package**:
 
 ```una
 -- fails with U1002
-module demo
+module shop
 
-requirement R_1
-  text "a"
+requirement SHOP_1
+  text "Prices include sales tax"
   source human
   owner team
   status active
 
-requirement R_1
-  text "b"
+requirement SHOP_1
+  text "Prices show sales tax apart"
   source human
   owner team
   status active
@@ -105,8 +105,8 @@ requirement R_1
 
 Further rules:
 
-- **Proposed requirements** do not block a build: functions derived from them compile normally, and the build report flags them (`spec/08 §1` rule 4, `spec/13 §6`).
-- **`una trace R`** checks the package at tier 1, then prints the requirement and each function derived from it, with its `requires`, `ensures` and the status of each obligation. With `--json` it prints `una.trace/1` (`spec/08 §1`, `spec/13 §5`).
+- **Proposed requirements** do not block a build: functions derived from them compile normally, and the build report flags them.
+- **`una trace R`** checks the package at tier 1, then prints the requirement and each function derived from it, with its `requires`, `ensures` and the status of each obligation. With `--json` it prints `una.trace/1`.
 - **Evidence is separate.** A requirement states intent, a contract guarantees it, and examples show it running. See [`example`](../examples/example.md).
 
 ## Diagnostics

@@ -9,13 +9,13 @@ codes: [U2014, U2015, U2016, U7003]
 
 ## What it does
 
-A predicate is a named, pure, total boolean function that refinements and contracts can call (`spec/03 §4`). It comes in two forms, which differ in what the solver knows:
+A predicate is a named, pure, total boolean function that refinements and contracts can call. It comes in two forms, which differ in what the solver knows:
 
 - **`reflect`:** its body is in the refinement language, and the solver sees it as a definition. A value obtains its fact by proof.
-- **`opaque`:** its body is any pure expression that cannot fail, and the solver sees only a name. A value obtains its fact at run time, through `checked`, or from a capability operation's `ensures` (`spec/06 §6`, `spec/05 §2`).
+- **`opaque`:** its body is any pure expression that cannot fail, and the solver sees only a name. A value obtains its fact at run time, through `checked`, or from a capability operation's `ensures`.
 
 ```una
-module demo
+module shop
 
 pub predicate reflect adult(age: Int) -> Bool = age >= 18
 
@@ -31,7 +31,7 @@ predicate_decl  = [ "pub" ] "predicate" ( "reflect" | "opaque" ) lower_ident
                   "(" [ params ] ")" "->" type "=" inline_or_block ;
 ```
 
-This is `spec/02 §3`. The table is that of `spec/03 §4`:
+The kinds of predicate:
 
 | Form | Body | Visible to the solver | How a value obtains the fact |
 | --- | --- | --- | --- |
@@ -40,9 +40,9 @@ This is `spec/02 §3`. The table is that of `spec/03 §4`:
 
 ## Examples
 
-The solver proves `grow`'s result from `adult`'s definition: `a >= 18` implies `a + 1 >= 18` (`spec/03 §4`).
+The solver proves `grow`'s result from `adult`'s definition: `a >= 18` implies `a + 1 >= 18`.
 
-An opaque predicate holds a test the solver cannot reason about, such as `is_digits`. A value gets its fact through `checked`, which counts against the escape budget (`spec/03 §4`, `spec/06 §6`):
+An opaque predicate holds a test the solver cannot reason about, such as `is_digits`. A value gets its fact through `checked`, which counts against the escape budget:
 
 `una.toml`
 
@@ -75,62 +75,62 @@ pub parse_phone(raw: Text) -> Phone
 
 ## Edge cases
 
-A `reflect` predicate can also be called in code, as an ordinary function (`spec/03 §4`):
+A `reflect` predicate can also be called in code, as an ordinary function:
 
 ```una
-module demo
+module shop
 
 pub predicate reflect adult(age: Int) -> Bool = age >= 18
 
 pub can_vote(age: Int) -> Bool = adult(age)
 ```
 
-**`reflect` bodies are in the refinement language** (`spec/03 §4`):
+**`reflect` bodies are in the refinement language**:
 
 ```una
 -- fails with U2015
-module demo
+module shop
 
 pub predicate reflect digits(t: Text) -> Bool = is_digits(t)
 ```
 
-**`reflect` predicates do not call themselves**, directly or through others (`spec/03 §4`):
+**`reflect` predicates do not call themselves**, directly or through others:
 
 ```una
 -- fails with U2015
-module demo
+module shop
 
 pub predicate reflect even(n: Int) -> Bool = even(n - 2)
 ```
 
-**Predicates cannot fail.** A body is pure and total (`spec/03 §4`):
+**Predicates cannot fail.** A body is pure and total:
 
 ```una
 -- fails with U2015
-module demo
+module shop
 
-pub kind Oops = | Bad
+pub kind StockError = | Unknown
 
-pub predicate opaque risky(n: Int) -> Bool = if n > 1 then fail Bad else true
+pub predicate opaque restockable(n: Int) -> Bool = if n > 1 then fail Unknown else true
 ```
 
-**An opaque predicate is called only in `checked`**, and in the bodies of other opaque predicates. A call anywhere else would establish its fact without counting against the escape budget (`spec/03 §4`, ADR 0042):
+**An opaque predicate is called only in `checked`**, and in the bodies of other opaque predicates. A call anywhere else would establish its fact without counting against the escape budget:
 
 ```una
 -- fails with U2016
-module demo
+module shop
 
-pub predicate opaque valid(t: Text) -> Bool = t.len == 11 and is_digits(t)
+pub predicate opaque valid_phone(raw: Text) -> Bool = raw.len == 11 and is_digits(raw)
 
-pub ok(t: Text) -> Bool = valid(t)
+pub looks_valid(raw: Text) -> Bool = valid_phone(raw)
 ```
 
 Further rules:
 
-- **Code may call a `reflect` predicate.** It is an ordinary pure function to `Bool` that the solver also knows. `spec/03 §4` restricts where opaque predicates are called, and no other predicate, so a function body may call a `reflect` predicate like any other function.
-- **Naming is not establishing.** The `where` clause of a kind, and the `requires` and `ensures` clauses of a capability operation, may name an opaque predicate, since they state the fact without establishing it (`spec/03 §4`).
-- **Sound by construction.** The solver knows nothing about an opaque predicate beyond facts established at run time, so it cannot introduce an inconsistency (`spec/03 §4`).
-- **Budgeted.** Each `checked` counts against the module's escape budget, U7003 beyond it (`spec/06 §6`).
+- **Code may call a `reflect` predicate.** It is an ordinary pure function to `Bool` that the solver also knows. Only opaque predicates are restricted in where they are called, so a function body may call a `reflect` predicate like any other function.
+- **Naming is not establishing.** The `where` clause of a kind, and the `requires` and `ensures` clauses of a capability operation, may name an opaque predicate, since they state the fact without establishing it.
+- **Sound by construction.** The solver knows nothing about an opaque predicate beyond facts established at run time, so it cannot introduce an inconsistency.
+- **Budgeted.** Each `checked` counts against the module's escape budget, U7003 beyond it.
 
 ## Diagnostics
 
@@ -148,3 +148,4 @@ Predicates are the same in editions `0.1` and `0.2`.
 - `spec/03 §4`: predicates; `spec/03 §3`: the refinement language.
 - `spec/02 §3`: the grammar.
 - `spec/06 §6`: `checked`; `spec/05 §2`: a capability operation's `ensures`.
+- Decision record: [ADR 0042](../../../adr/0042-opaque-predicates-only-in-checked.md), for opaque predicates only in `checked`.
