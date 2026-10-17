@@ -1,11 +1,12 @@
 module shop
 
---- A quantity typed on an order form, and why it is not one.
-quantity(raw: Text) -> Text
+--- A stock adjustment typed by hand, and why it is not one. A sign is allowed, so `-3`
+--- writes off three units.
+adjustment(raw: Text) -> Text
 =
   let outcome = attempt parse_int(raw)
   when outcome
-    is Ok(n) -> "'{raw}': {n} units"
+    is Ok(n) -> "'{raw}': adjust the stock by {n}"
     is Err(failure) -> "'{raw}': {reason(failure)}"
 
 reason(failure: ParseError) -> Text
@@ -18,7 +19,8 @@ reason(failure: ParseError) -> Text
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print(quantity("12"))
-  @console.print(quantity(""))
-  @console.print(quantity("-"))
-  @console.print(quantity("1x2"))
+  @console.print(adjustment("12"))
+  @console.print(adjustment("-3"))
+  @console.print(adjustment(""))
+  @console.print(adjustment("-"))
+  @console.print(adjustment("1x2"))

@@ -4,5 +4,5 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let slug = to_lower("LAMP-01")
+  let slug = "LAMP-01".to_lower()
   @console.print("/products/{slug}")

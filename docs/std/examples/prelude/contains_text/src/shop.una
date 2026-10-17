@@ -4,7 +4,7 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let brass = contains_text("Desk lamp, brass", part: "brass")
+  let brass = "Desk lamp, brass".contains_text(part: "brass")
   @console.print("brass: {brass}")
-  let steel = contains_text("Desk lamp, brass", part: "steel")
+  let steel = "Desk lamp, brass".contains_text(part: "steel")
   @console.print("steel: {steel}")

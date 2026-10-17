@@ -4,4 +4,4 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print(join(["lamp", "desk", "chair"], separator: ", "))
+  @console.print(join(["Café", "Crème", "Thé"], separator: ", "))

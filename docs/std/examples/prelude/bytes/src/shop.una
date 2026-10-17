@@ -4,7 +4,7 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let plain = bytes("Lamp").len
+  let plain = "Lamp".bytes().len
   @console.print("Lamp: {plain} bytes")
-  let accented = bytes("Café").len
+  let accented = "Café".bytes().len
   @console.print("Café: {accented} bytes")

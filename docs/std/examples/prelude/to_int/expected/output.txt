@@ -1,2 +1,3 @@
-12 units
-'+3' is not a quantity
+'12': adjust the stock by 12
+'-3': adjust the stock by -3
+'+3': not an adjustment

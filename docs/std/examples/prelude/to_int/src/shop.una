@@ -1,14 +1,15 @@
 module shop
 
---- A quantity typed on an order form.
-quantity(raw: Text) -> Text
+--- A stock adjustment typed by hand: a sign is allowed, so `-3` writes off three units.
+adjustment(raw: Text) -> Text
 =
   when to_int(raw)
-    is Some(n) -> "{n} units"
-    is None -> "'{raw}' is not a quantity"
+    is Some(n) -> "'{raw}': adjust the stock by {n}"
+    is None -> "'{raw}': not an adjustment"
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print(quantity("12"))
-  @console.print(quantity("+3"))
+  @console.print(adjustment("12"))
+  @console.print(adjustment("-3"))
+  @console.print(adjustment("+3"))

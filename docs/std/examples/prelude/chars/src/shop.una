@@ -1,7 +1,9 @@
 module shop
 
---- The characters of a short code, one by one.
+--- The characters of a product name, one by one: `é` is one scalar value.
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print(join(chars("SKU"), separator: "|"))
+  let letters = "Café".chars()
+  @console.print(join(letters, separator: "|"))
+  @console.print("{letters.len} characters")

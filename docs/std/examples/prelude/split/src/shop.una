@@ -4,5 +4,5 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  for field in split("LAMP-01,2,1999", on: ",")
+  for field in "CAFÉ-01,2,1999".split(on: ",")
     @console.print(field)

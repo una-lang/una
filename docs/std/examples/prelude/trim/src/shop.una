@@ -4,5 +4,5 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let name = trim("  Desk lamp  ")
+  let name = "  Desk lamp  ".trim()
   @console.print("[{name}]")

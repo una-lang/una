@@ -1,6 +1,7 @@
 {
  "schema": "una.std-reference/1",
  "note": "Unstable, not part of the specification: see docs/std/README.md. Hand-written; crates/una-cli/tests/std_listing.rs checks it against the listing.",
+ "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 §3`): it reports U5001 when the condition is refuted and U5002 when it is unknown, and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved.",
  "areas": [
   "text",
   "lists",
@@ -16,6 +17,37 @@
   "testing"
  ],
  "pending": [
+  "builtin bit_and",
+  "builtin bit_not",
+  "builtin bit_or",
+  "builtin bit_xor",
+  "builtin entries",
+  "builtin get",
+  "builtin has",
+  "builtin keys",
+  "builtin len",
+  "builtin remove",
+  "builtin saturating_add",
+  "builtin saturating_mul",
+  "builtin saturating_sub",
+  "builtin set",
+  "builtin shift_right",
+  "builtin to_i16",
+  "builtin to_i32",
+  "builtin to_i64",
+  "builtin to_i8",
+  "builtin to_int",
+  "builtin to_u16",
+  "builtin to_u32",
+  "builtin to_u64",
+  "builtin to_u8",
+  "builtin values",
+  "builtin with",
+  "builtin without",
+  "builtin wrapping_add",
+  "builtin wrapping_mul",
+  "builtin wrapping_shift_left",
+  "builtin wrapping_sub",
   "prelude Clock",
   "prelude Console",
   "prelude Entry",
@@ -76,12 +108,13 @@
    },
    "use_instead": [
     {
-     "item": "parse_int",
+     "item": "prelude parse_int",
+     "from_edition": "0.2",
      "why": "to read the number the digits write, with a reason when there is none"
     }
    ],
    "see_also": [
-    "to_int"
+    "prelude to_int"
    ],
    "example": "docs/std/examples/prelude/is_digits"
   },
@@ -104,8 +137,14 @@
     "meaning": "`true` when the first scalar values of `t` are those of `prefix`"
    },
    "see_also": [
-    "ends_with",
-    "contains_text"
+    {
+     "item": "prelude ends_with",
+     "from_edition": "0.2"
+    },
+    {
+     "item": "prelude contains_text",
+     "from_edition": "0.2"
+    }
    ],
    "example": "docs/std/examples/prelude/starts_with"
   },
@@ -121,16 +160,18 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "`t` without the Unicode whitespace at both ends; never longer than `t`"
+    "meaning": "`t` without the Unicode `White_Space` at both ends; never longer than `t`"
    },
    "use_instead": [
     {
-     "item": "trim_start",
-     "why": "to keep the whitespace at the end"
+     "item": "prelude trim_start",
+     "from_edition": "0.2",
+     "why": "to keep the Unicode `White_Space` at the end"
     },
     {
-     "item": "trim_end",
-     "why": "to keep the whitespace at the start"
+     "item": "prelude trim_end",
+     "from_edition": "0.2",
+     "why": "to keep the Unicode `White_Space` at the start"
     }
    ],
    "example": "docs/std/examples/prelude/trim"
@@ -147,17 +188,18 @@
    ],
    "returns": {
     "type": "Option[Int]",
-    "meaning": "`Some` of the integer `t` writes, an optional `-` and one or more ASCII digits; `None` for any other text"
+    "meaning": "`Some` of the integer `t` writes, an optional `-` and one or more ASCII digits; `None` for any other text, among them a leading `+`"
    },
    "use_instead": [
     {
-     "item": "parse_int",
+     "item": "prelude parse_int",
+     "from_edition": "0.2",
      "why": "to know why a text is not a number"
     }
    ],
    "see_also": [
-    "is_digits",
-    "trim"
+    "prelude is_digits",
+    "prelude trim"
    ],
    "example": "docs/std/examples/prelude/to_int"
   },
@@ -172,21 +214,36 @@
     },
     {
      "name": "on",
-     "meaning": "the separator; it must not be empty"
+     "meaning": "the separator"
     }
    ],
    "returns": {
     "type": "List[Text]",
-    "meaning": "the parts of `t` between the non-overlapping occurrences of `on`, left to right; at least one part"
+    "meaning": "the parts of `t` between the non-overlapping occurrences of `on`, left to right, empty parts included; at least one part"
    },
+   "requires": [
+    {
+     "condition": "on.len > 0",
+     "meaning": "the separator is not empty"
+    }
+   ],
    "see_also": [
-    "join",
-    "find"
+    "prelude join",
+    "prelude find"
    ],
    "cost": {
     "time": "O(b + m), two-way search",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `on` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/split"
   },
@@ -209,11 +266,17 @@
     "meaning": "the parts joined, with `separator` between each two"
    },
    "see_also": [
-    "split"
+    "prelude split"
    ],
    "cost": {
     "time": "O(total bytes)",
-    "source": "ADR 0070"
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "total bytes",
+      "meaning": "the length of the result in UTF-8 bytes: the parts and the separators between them"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/join"
   },
@@ -233,15 +296,21 @@
    ],
    "returns": {
     "type": "Bool",
-    "meaning": "`true` when `t` ends with `suffix`"
+    "meaning": "`true` when the last scalar values of `t` are those of `suffix`"
    },
    "see_also": [
-    "starts_with",
-    "contains_text"
+    "prelude starts_with",
+    "prelude contains_text"
    ],
    "cost": {
     "time": "O(m)",
-    "source": "ADR 0070"
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "m",
+      "meaning": "the length of `suffix` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/ends_with"
   },
@@ -265,18 +334,27 @@
    },
    "use_instead": [
     {
-     "item": "find",
+     "item": "prelude find",
      "why": "to know where it occurs"
     }
    ],
    "see_also": [
-    "starts_with",
-    "ends_with"
+    "prelude starts_with",
+    "prelude ends_with"
    ],
    "cost": {
     "time": "O(b + m)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `part` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/contains_text"
   },
@@ -296,21 +374,34 @@
    ],
    "returns": {
     "type": "Option[Int]",
-    "meaning": "`Some` of the position of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`, and `None` when it does not occur"
+    "meaning": "`Some` of the scalar position, from 0, of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`, and `None` when it does not occur; when it is `Some(p)`, `0 <= p` and `p + text.len <= t.len`, which the verifier assumes after each call"
    },
    "use_instead": [
     {
-     "item": "contains_text",
+     "item": "prelude contains_text",
      "why": "when only whether it occurs matters"
     }
    ],
    "see_also": [
-    "slice"
+    "prelude slice"
    ],
    "cost": {
     "time": "O(b + m), plus O(1) for the scalar index from the checkpoints",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `text` in UTF-8 bytes"
+     },
+     {
+      "symbol": "the checkpoints",
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/find"
   },
@@ -325,7 +416,7 @@
     },
     {
      "name": "pattern",
-     "meaning": "the text to replace; it must not be empty"
+     "meaning": "the text to replace"
     },
     {
      "name": "by",
@@ -336,14 +427,33 @@
     "type": "Text",
     "meaning": "`t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right"
    },
+   "requires": [
+    {
+     "condition": "pattern.len > 0",
+     "meaning": "the pattern is not empty"
+    }
+   ],
    "see_also": [
-    "split",
-    "contains_text"
+    "prelude split",
+    "prelude contains_text"
    ],
    "cost": {
     "time": "O(b + m + result)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     },
+     {
+      "symbol": "m",
+      "meaning": "the length of `pattern` in UTF-8 bytes"
+     },
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/replace"
   },
@@ -358,24 +468,40 @@
     },
     {
      "name": "start",
-     "meaning": "the first position, from 0"
+     "meaning": "the scalar position, from 0, of the first scalar value to take"
     },
     {
      "name": "end",
-     "meaning": "the position after the last; `start <= end <= t.len`"
+     "meaning": "the scalar position after the last scalar value to take"
     }
    ],
    "returns": {
     "type": "Text",
     "meaning": "the scalar values of `t` from `start` up to, not including, `end`; its length is `end - start`"
    },
+   "requires": [
+    {
+     "condition": "0 <= start and start <= end and end <= t.len",
+     "meaning": "the positions are in order and inside `t`"
+    }
+   ],
    "see_also": [
-    "find",
-    "chars"
+    "prelude find",
+    "prelude chars"
    ],
    "cost": {
     "time": "O(result), after the index is built once",
-    "source": "ADR 0070"
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     },
+     {
+      "symbol": "the index",
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/slice"
   },
@@ -391,15 +517,20 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "`t` with the ASCII letters `a` to `z` in upper case; the same length as `t`"
+    "meaning": "`t` with the ASCII letters `a` to `z` in upper case and every other scalar value as it is; the same length as `t`"
    },
    "see_also": [
-    "to_lower"
+    "prelude to_lower"
    ],
    "cost": {
     "time": "O(b)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/to_upper"
   },
@@ -415,15 +546,20 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "`t` with the ASCII letters `A` to `Z` in lower case; the same length as `t`"
+    "meaning": "`t` with the ASCII letters `A` to `Z` in lower case and every other scalar value as it is; the same length as `t`"
    },
    "see_also": [
-    "to_upper"
+    "prelude to_upper"
    ],
    "cost": {
     "time": "O(b)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/to_lower"
   },
@@ -442,13 +578,18 @@
     "meaning": "one text of length 1 per scalar value of `t`, in order; as many as `t.len`"
    },
    "see_also": [
-    "bytes",
-    "slice"
+    "prelude bytes",
+    "prelude slice"
    ],
    "cost": {
     "time": "O(b)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/chars"
   },
@@ -473,7 +614,7 @@
     },
     {
      "variant": "NotADigit",
-     "when": "at the first position that is neither the leading `-` nor a digit, which it holds as `at`"
+     "when": "a character is neither the leading `-` nor an ASCII digit; `at` is the scalar position, from 0, of the first one"
     },
     {
      "variant": "NoDigits",
@@ -482,19 +623,24 @@
    ],
    "use_instead": [
     {
-     "item": "to_int",
+     "item": "prelude to_int",
      "why": "when the reason does not matter"
     }
    ],
    "see_also": [
-    "ParseError",
-    "trim",
-    "is_digits"
+    "prelude ParseError",
+    "prelude trim",
+    "prelude is_digits"
    ],
    "cost": {
     "time": "O(b)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/parse_int"
   },
@@ -510,15 +656,25 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "`t` without Unicode white space at its start; never longer than `t`"
+    "meaning": "`t` without the Unicode `White_Space` at its start; never longer than `t`"
    },
    "see_also": [
-    "trim",
-    "trim_end"
+    "prelude trim",
+    "prelude trim_end"
    ],
    "cost": {
     "time": "O(result + trimmed)",
-    "source": "ADR 0070"
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     },
+     {
+      "symbol": "trimmed",
+      "meaning": "the length in UTF-8 bytes of the white space removed"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/trim_start"
   },
@@ -534,15 +690,25 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "`t` without Unicode white space at its end; never longer than `t`"
+    "meaning": "`t` without the Unicode `White_Space` at its end; never longer than `t`"
    },
    "see_also": [
-    "trim",
-    "trim_start"
+    "prelude trim",
+    "prelude trim_start"
    ],
    "cost": {
     "time": "O(result + trimmed)",
-    "source": "ADR 0070"
+    "source": "ADR 0070",
+    "terms": [
+     {
+      "symbol": "result",
+      "meaning": "the length of the result in UTF-8 bytes"
+     },
+     {
+      "symbol": "trimmed",
+      "meaning": "the length in UTF-8 bytes of the white space removed"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/trim_end"
   },
@@ -561,12 +727,17 @@
     "meaning": "the UTF-8 encoding of `t`; at least as many bytes as `t` has scalar values"
    },
    "see_also": [
-    "chars"
+    "prelude chars"
    ],
    "cost": {
     "time": "O(b)",
     "source": "ADR 0070",
-    "terms": "b is the length of the text in bytes"
+    "terms": [
+     {
+      "symbol": "b",
+      "meaning": "the length of `t` in UTF-8 bytes"
+     }
+    ]
    },
    "example": "docs/std/examples/prelude/bytes"
   },
@@ -574,8 +745,30 @@
    "module": "prelude",
    "name": "ParseError",
    "area": "text",
+   "variants": [
+    {
+     "name": "Empty",
+     "fields": [],
+     "meaning": "the text is empty"
+    },
+    {
+     "name": "NotADigit",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the first character that is neither the leading `-` nor an ASCII digit"
+      }
+     ],
+     "meaning": "a character is not a digit"
+    },
+    {
+     "name": "NoDigits",
+     "fields": [],
+     "meaning": "the text is `-` alone"
+    }
+   ],
    "see_also": [
-    "parse_int"
+    "prelude parse_int"
    ],
    "example": "docs/std/examples/prelude/parse_int"
   }

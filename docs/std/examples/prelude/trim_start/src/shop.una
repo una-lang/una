@@ -4,5 +4,5 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let number = trim_start("  0042  ")
+  let number = "  0042  ".trim_start()
   @console.print("[{number}]")
