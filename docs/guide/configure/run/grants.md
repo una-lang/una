@@ -9,30 +9,32 @@ codes: [U3012, U7002]
 
 ## What it does
 
-`grants` lists the host capabilities `una run` gives the entry's `main`, as grant specs. There is no ambient authority: a host capability that is not granted is not there, and `una check` reports a `main` that needs one.
+`grants` lists the host capabilities, the authority to use the console, files, the clock and the like, that `una run` gives the entry's `main`. Each is written as a grant spec, a short text such as `"console"` or `"files:./data:read"` that names one capability and how far it reaches. There is no ambient authority, no authority a program has just by running: a host capability that is not granted is not there, and `una check` reports a `main` that needs one.
+
+Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "hello"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [run]
-entry = "hello"
+entry = "shop"
 grants = ["console"]
 ```
 
-`src/hello.una`
+`src/shop.una`
 
 ```una
-module hello
+module shop
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print("hello")
+  @console.print("the shop is open")
 ```
 
 ## Forms

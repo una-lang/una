@@ -9,13 +9,17 @@ codes: [U3020, U3021, U3024, U7002]
 
 ## What it does
 
-`[boundaries]` marks modules of the package as boundaries, such as a vendored library or a plug-in, and gives each one a ceiling: the capabilities and operations that the rest of the package may grant it. A call from outside a boundary into one of its modules is checked at the call:
+A capability is the authority to act outside the program, such as reading or writing files, and each of its operations is one such action, such as `read`. Una code holds only the capabilities its callers hand it. A boundary is a part of the package that should never hold more than a fixed set of them: a library copied in from a vendor, or a plug-in written by another team. Its ceiling is that set. A release is the one way labeled data, such as a customer's `secret` balance, may go to a lower label: a call of a `policy` (see [`policy`](../language/information-flow/policy.md)).
 
-- each capability the callee needs is granted by name, with `with`, never taken from the caller's own context (U3020);
-- what the call grants lies within the ceiling (U3021);
-- no release of a label is reachable from the call (U3024).
+Take a shop that copies in an image-resizing library as the module `shop.resize`. The library only needs to read image files. With a ceiling of `Files[read]`, the shop knows, from `una.toml` alone, that the library can never write or delete a file, whatever its code says and however it changes. `[boundaries]` names each boundary module and its ceiling, and every call from outside a boundary into it is checked:
+
+- each capability the callee needs is handed over by name at the call, with `with` (see [`with`](../language/capabilities/with.md)), never taken from the caller's own capabilities implicitly (U3020);
+- what the call hands over lies within the ceiling (U3021);
+- no release of a label can happen during the call (U3024).
 
 So the code that calls a boundary states, at each call, exactly what it hands over, and the boundary can never receive more than its ceiling.
+
+Learn more: [Locks in edition 0.3: contracts and boundaries](/learn/packages/locks-in-edition-0-3-contracts-and-boundaries/) and [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
 
 `una.toml`
 
@@ -184,7 +188,7 @@ pub preview(path: Text) -> Text
   shrink(path) with @files = @files
 ```
 
-An example outside a boundary cannot grant at its `do` line, which takes no `with`. To exercise a boundary function that needs a capability, the example calls a function of its own module that grants it. The example's `given` handler reaches that function by name, since it is not in the boundary, and is checked where it is installed, at the `given` line, as any handler granted on to a boundary is:
+An example outside a boundary cannot hand over capabilities at its `do` line, which takes no `with`. To exercise a boundary function that needs a capability, the example calls a function of its own module that hands it over. The example's `given` handler, a stand-in for the real files, reaches that function, which is outside the boundary, and is checked where it is installed, at the `given` line, as any handler that ends up handed to a boundary is:
 
 `una.toml`
 
@@ -245,9 +249,9 @@ example "a preview reads through the boundary"
   expect performed @files.read
 ```
 
-Written as `do shrink("a.png")`, the same example is U3020: its `given` binding does not reach the boundary by name.
+Written as `do shrink("a.png")`, the same example is U3020: nothing hands its `given` binding to the boundary by name.
 
-A boundary never releases a label. A call into a boundary from which a policy call is reachable, through its body or the functions it calls, is U3024:
+A boundary never releases a label. A call into a boundary that may lead to a policy call, in the callee or in any function it calls, is U3024:
 
 `una.toml`
 
@@ -306,18 +310,12 @@ The repair is to keep releases in the consumer's trusted modules, before or afte
 
 Further rules:
 
-- **Other crossings.** A function of a boundary used as a value outside it is checked at the reference, a handler of a boundary installed outside it at the installation, and a policy call when the policy or its `via` is in a boundary. A call from one boundary into another is a crossing too.
+- **Every way in is checked.** A call is the usual way into a boundary, but not the only one. A boundary function used as a value outside it, a boundary's handler installed outside it, a policy call when the policy or its `via` function is in a boundary, and a call from one boundary into another are checked the same way.
 - **A callee that needs nothing.** A call of a boundary function with no `uses` needs no grant.
-- **Unnamed bindings.** A binding of the `with` clause that no requirement of the callee names is not counted against the ceiling: the callee can neither name it nor perform an operation outside its declared `uses`.
-- **Functional arguments.** The `uses` of each lambda or function value among the arguments count against the ceiling, since they run inside the boundary. An argument evaluated before the call, such as `count(reveal(balance))`, runs in the caller and grants nothing, but a lambda written anywhere among the arguments counts, since such a call may return it.
-- **Where a value runs.** A lambda, or a function named as a value, runs on the bindings its `uses` resolve to where it is written, even when the boundary calls it under bindings of its own. Among the arguments, those bindings count as the call's, a handler with its own `uses`, and the releases they reach count for U3024. A binding that a lambda written outside the call captured is not followed: the value counts as unknown, U3021 at the call.
-- **Effect parameters.** A parameter that an `of` clause names, given to the boundary or called in a lambda given to it, runs the effects its caller chooses, which no ceiling bounds: U3021 at the call.
-- **Unknown function values.** For U3024, a named function and a lambda given to the boundary are followed. A function value whose code is not known at the call, from a parameter, a local, a computed value or a kind's field, given as an argument or captured by a lambda given to the boundary, is U3024 at the call, unless no policy is declared in the package or the modules it imports. A function value given to a handler's installation counts the same way for every call into a boundary that may run the handler.
-- **Handlers.** A handler counts with its own `uses`. A handler of a boundary installed outside it with `with` takes its own `uses` from the other bindings of the same `with` clause, not from the caller's context.
-- **Examples.** The `given` handlers of an example of a boundary module count against its ceiling, at the `given` line. A `do` line takes no `with`, so an example outside a boundary can call into it directly only for functions with no `uses`. Otherwise it calls a function of its own module that grants the boundary with `with`, as in the example above, and a `given` handler granted on that way is checked at its `given` line.
-- **Inference.** A call into a boundary adds to a private caller's inferred `uses` only through its `with` bindings.
-- **Invalid tables.** Each of these is U7002: a key that is not a module of the package, a key inside another key's extent, a malformed ceiling string, a capability named twice in one ceiling, an unknown capability or operation, a module of `[trusted] modules` inside a boundary, and a `[run] entry` inside a boundary. A malformed or unknown ceiling entry permits nothing.
-- **A handler granted on by name.** A handler installed by a caller further up, by `with` or by an example's `given`, and granted on by name through header bindings, rebindings and calls until it reaches the call into the boundary, is checked where it is installed. Its own `uses`, and what its installation's arguments grant, must lie within the ceiling (U3021), and a release it reaches is U3024. Each is reported at the installation, with the call as the related span. The handlers that its own `uses` lead to are checked the same way, and so is a handler of another boundary installed outside it.
+- **Functions handed over.** A lambda or a function value given to a boundary function runs inside the boundary, so what it may do counts against the ceiling (U3021), and a release it may reach counts too (U3024). An argument evaluated before the call, such as `count(reveal(balance))`, runs in the caller and hands over nothing.
+- **Examples.** An example's `do` line takes no `with`, so an example outside a boundary can call into it directly only for functions with no `uses`. Otherwise it calls a function of its own module that hands the boundary its capabilities with `with`, as in the example above.
+- **Invalid tables.** Each of these is U7002: a key that is not a module of the package, a key for a module that another key already covers, a malformed ceiling string, a capability named twice in one ceiling, an unknown capability or operation, a module of `[trusted] modules` inside a boundary, and a `[run] entry` inside a boundary. A malformed or unknown ceiling entry permits nothing.
+- **The rest.** Handlers, effect parameters (a parameter whose effects its caller chooses), function values whose code is not known at the call, and how a private caller's `uses` are inferred have rules of their own, which the normative source gives in full.
 
 ## Diagnostics
 

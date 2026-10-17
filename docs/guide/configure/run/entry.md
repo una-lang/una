@@ -9,30 +9,32 @@ codes: [U3012, U7002]
 
 ## What it does
 
-`entry` names the module whose `main` `una run` and `una build` start. `main` is `pub main() -> Unit`, and it receives host capabilities from the runtime through its `uses` clauses.
+`entry` names the module whose `main` function `una run` and `una build` start: the first code of the program to run. `main` is `pub main() -> Unit`, and it receives host capabilities, the authority to use the console, files, the clock and the like that the runtime provides, through its `uses` clauses.
+
+Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "hello"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [run]
-entry = "hello"
+entry = "shop"
 grants = ["console"]
 ```
 
-`src/hello.una`
+`src/shop.una`
 
 ```una
-module hello
+module shop
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print("hello")
+  @console.print("the shop is open")
 ```
 
 ## Forms
@@ -42,7 +44,7 @@ pub main() -> Unit
 entry = "<module path>"
 ```
 
-The path of a module of the package.
+The path of a module of the package, as its `module` line writes it: `shop` for `src/shop.una`, `shop.orders` for `src/shop/orders.una`.
 
 ## Examples
 

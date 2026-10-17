@@ -9,13 +9,15 @@ codes: [U7002, U7003]
 
 ## What it does
 
-`checked_per_module` is the escape budget: how many times each module of the package may use `checked`, which replaces a proof with a run-time test. The default is 0, so a package that wants run-time tests says so here, and reviewers see it.
+Una proves the facts a program relies on before it runs, such as a shelf number being between 0 and 9. When a fact cannot be proved, as with a number a customer types, `checked` tests it while the program runs instead, and fails when it does not hold. That gives up a proof, so it is an escape, and `checked_per_module` is the escape budget: how many times each module of the package may use `checked`. The default is 0, so a package that wants run-time tests says so here, and reviewers see it.
+
+Learn more: [When no proof can decide: checked](/learn/failure/when-no-proof-can-decide-checked/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "shelves"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -23,10 +25,10 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/shelves.una`
+`src/shop.una`
 
 ```una
-module shelves
+module shop
 
 pub kind Shelf = Int in 0..9
 
@@ -55,16 +57,16 @@ A use beyond the budget is rejected, here with the default of 0:
 
 ```toml
 [package]
-name = "shelves"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
 
-`src/shelves.una`
+`src/shop.una`
 
 ```una
 -- fails with U7003
-module shelves
+module shop
 
 pub kind Shelf = Int in 0..9
 

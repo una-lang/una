@@ -1,7 +1,7 @@
 ---
 construct: "[package] edition"
 editions: ["0.1", "0.2"]
-spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2"]
+spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1"]
 codes: [U0103, U7002]
 ---
 
@@ -9,7 +9,9 @@ codes: [U0103, U7002]
 
 ## What it does
 
-`edition` is the version of the language the package is written in: `"0.1"`, `"0.2"`, or the preview `"0.3"`. Edition `0.2` adds constructs and keywords to `0.1`, and some rules differ between them; edition `0.3` is cumulative: it has every construct, keyword and rule of edition `0.2`.
+A package is one program or library: a directory with its source files under `src/` and its manifest, `una.toml`. `edition` says which version of the Una language the package is written in: `"0.1"`, `"0.2"`, or the preview `"0.3"`. An edition fixes the language a package sees, so a package keeps compiling the same way when a newer `una` comes out. Edition `0.2` adds constructs and keywords to `0.1`, and some rules differ between them; edition `0.3` is cumulative: it has every construct, keyword and rule of edition `0.2`, and adds its own.
+
+Learn more: [An edition is part of the package](/learn/editions/an-edition-is-part-of-the-package/) and [Edition 0.3, a preview](/learn/editions/edition-0-3-a-preview/).
 
 `una.toml`
 
@@ -37,7 +39,14 @@ edition = "0.1" | "0.2" | "0.3"
 
 - **Edition `0.1`** is the v0.1 language.
 - **Edition `0.2`** adds the memory model (`let edit`, `edit` and `take` parameters, `for`), fixed-width integers, `together` and constraints on generics, and the keywords that go with them.
-- **Edition `0.3`** has every construct, keyword and rule of edition `0.2`. It is a preview: the rules that target it join it as they land, so a later `0.3.x` release may add obligations or errors to an edition `0.3` package. It only gets stricter for the programs that edition `0.2` can express. A construct that a rule targeting edition `0.3` adds, such as a condition on an operation (`uses @log: Log[write where not dry_run]`), is a syntax error in earlier releases and may become accepted; it only narrows what a program may do, since erasing it gives a program that edition `0.2` accepts. Editions `0.1` and `0.2` keep their stability promise.
+- **Edition `0.3`** has every construct, keyword and rule of edition `0.2`, and adds these:
+  - **Conditions on operations.** A `uses` clause may allow an operation only under a condition, as `uses @log: Log[write where not dry_run]`, which the verifier proves at each use.
+  - **`[contracts]`.** A table of `una.toml` that bounds what the `uses` clauses of a package's listed public functions may allow, so a header changed to allow more fails the check.
+  - **`[boundaries]`.** A table of `una.toml` that gives a module the most authority it may ever use. See [`[boundaries]`](../boundaries.md).
+  - **Refined elements of collections.** A refined kind may be a type argument, as `List[Pos]`, and every value that flows into such a position is checked against its refinement.
+  - **Units of measure.** `measure` declares a unit, and `Int of Meter` is an integer in meters, which never mixes with seconds.
+
+  Edition `0.3` is a preview: the rules that target it join it as they land, so a later `0.3.x` release may add obligations or errors to an edition `0.3` package. It only gets stricter for the programs that edition `0.2` can express. A construct that a rule targeting edition `0.3` adds, such as a condition on an operation (`uses @log: Log[write where not dry_run]`), is a syntax error in earlier releases and may become accepted; it only narrows what a program may do, since erasing it gives a program that edition `0.2` accepts. Editions `0.1` and `0.2` keep their stability promise.
 - **A single file**, outside a package, has edition `"0.1"`.
 
 ## Examples
@@ -107,4 +116,5 @@ The stable editions are `0.1` and `0.2`, and `0.3` is a preview.
 - `spec/13 §7`: project files and editions.
 - `spec/01 §5`: reserved words.
 - `spec/17 §1`, `spec/18 §1`, `spec/19 §1`, `spec/20 §2`: the constructs of edition `0.2`.
+- `spec/05 §3`: conditions on operations; `spec/03 §3`: refined type arguments in edition `0.3`; `spec/25 §1`: units of measure.
 - Decision record: [ADR 0056](../../../adr/0056-memory-model.md), which introduced edition `0.2`, and its amendment of 2026-10-13, which introduced edition `0.3`.
