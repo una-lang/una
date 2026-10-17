@@ -9,7 +9,9 @@ codes: [U2001, U3008, U3009, U3010, U3011, U5001]
 
 ## What it does
 
-A handler implements a capability in Una: it gives a body to each operation. A caller installs it for one statement with `with`, or an example installs it with `given`, so code that needs the capability runs against the handler instead of the outside world. Handler bodies are ordinary Una code, fully checked and verified.
+A handler implements a [capability](capability.md) in Una: it gives a body to each operation. A caller installs it for one statement with `with`, or an example (a test written next to the code) installs it with `given`, so code that needs the capability runs against the handler instead of the outside world, as a fake store does in a test. Handler bodies are ordinary Una code, fully checked and verified (their contracts proved by the checker).
+
+Learn more: [Your own capabilities and handlers](/learn/capabilities/your-own-capabilities-and-handlers/).
 
 ```una
 module shop
@@ -32,6 +34,8 @@ pub preview_name() -> Text
 ```
 
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 handler_decl    = [ "pub" ] "handler" lower_ident "(" [ params ] ")" "for" upper_ident NEWLINE
@@ -126,7 +130,7 @@ handler broken() for Store
 Further rules:
 
 - **Not a value.** A handler is installed only with `with` or `given`. Binding it with `let` is U2001.
-- **Worst caller.** An operation body is checked for the worst caller its operation allows: every parameter is raised to the operation's `accepts` label. So a handler of an operation that accepts `internal` data cannot print it, while a fake store that fails or returns fixed values stays valid.
+- **Worst caller.** An operation body is checked for the worst caller its operation allows, the caller that passes the most sensitive data the operation accepts: every parameter is raised to the operation's `accepts` label (how sensitive its data may be). So a handler of an operation that accepts `internal` data cannot print it, while a fake store that fails or returns fixed values stays valid.
 - **Its own authority.** A handler's `uses` must be held where it is installed.
 - **Host capabilities** may have user handlers too, such as a fake `Keys` in examples. The host implementations are used only by `una run`.
 

@@ -1,7 +1,7 @@
 ---
 construct: Host capabilities and grants
 editions: ["0.1", "0.2"]
-spec: ["spec/05 §7", "spec/14 §3", "spec/13 §5", "spec/13 §7", "spec/07 §4", "spec/07 §7", "spec/24 §2", "spec/24 §5"]
+spec: ["spec/05 §7", "spec/14 §3", "spec/13 §5", "spec/13 §7", "spec/07 §4", "spec/07 §7", "spec/24 §1", "spec/24 §2", "spec/24 §5"]
 codes: [U3012, U4003, U6005]
 ---
 
@@ -9,30 +9,32 @@ codes: [U3012, U4003, U6005]
 
 ## What it does
 
-Host capabilities are the ones the runtime implements: `Console`, `Clock`, `Env`, `Files` and `Keys`, and from edition `0.2` on also `Http`. They enter a program only through `main`'s `uses` clauses, and the runtime provides them only when they are granted, in `una.toml` or with `--grant`. Other functions receive them from their callers by name, like any capability.
+Host capabilities are the ones the runtime implements: `Console`, `Clock`, `Env`, `Files` and `Keys`, and from edition `0.2` on also `Http`. They enter a program only through `main`'s `uses` clauses, and the runtime provides them only when they are granted (allowed by whoever runs the program), in `una.toml` or with `--grant`. Other functions receive them from their callers by name, like any [capability](capability.md).
+
+Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "hello"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [run]
-entry = "hello"
+entry = "shop"
 grants = ["console"]
 ```
 
-`src/hello.una`
+`src/shop.una`
 
 ```una
-module hello
+module shop
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  @console.print("hello")
+  @console.print("The shop is open")
 ```
 
 ## Forms
@@ -47,6 +49,12 @@ The host capabilities:
 | `Files` | `read(path: Text) -> internal Text` | `FileError` | `public` |
 | `Files` | `write(path: Text, content: Text) -> Unit` | `FileError` | `internal` |
 | `Keys` | `hmac(key_name: Text, data: Text) -> internal Hashed` | `KeyError` | `public` for `key_name`, any label for `data` |
+| `Http` (edition `0.2`) | `get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+| `Http` (edition `0.2`) | `post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+| `Http` (edition `0.2`) | `put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+| `Http` (edition `0.2`) | `delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+
+`internal` is a label: a mark on data that says how sensitive it is, which the checker follows wherever the data goes (see [labels](../information-flow/labels.md)).
 
 The grant specs:
 - `console`, `clock` and `env`;
@@ -87,7 +95,7 @@ pub main() -> Unit
   @console.print("opened at {opened}")
 ```
 
-What `Env.get` and `Files.read` return is `internal`, so printing it to the console, which accepts only `public`, is rejected. Lowering a label takes a policy:
+What `Env.get` and `Files.read` return is `internal`, so printing it to the console, which accepts only `public`, is rejected. Lowering a label takes a [policy](../information-flow/policy.md), a declared and reviewed release of data:
 
 `una.toml`
 
@@ -121,11 +129,11 @@ pub main() -> Unit
 
 Further rules:
 
-- **Files stay inside the grant.** A `Files` path is resolved against the grant's prefix. An absolute path, a `..` that leaves the prefix, or a final component that is a symbolic link fails with `Denied`; path resolution never escapes the prefix.
-- **Keys stay outside values.** `Keys` loads its keys from the grant's file, and key material never enters Una values. The result of `hmac` is labeled `internal`, joined with every label of the type of `data`, and lowering it takes a policy. `key_name` accepts only `public`, so a labeled key name, or a call under a raised program counter, is U4003.
-- **Labeled failures.** Whether a host operation fails is labeled by the arguments that decide it: the path of `Files`, not the content; the key name of `Keys.hmac`, not the data; and every argument of `Http`, so its failures are `internal`. A `Files.write` to an `internal` path fails `internal`, and every `Files` failure also carries the package's file-state label, the labels that decide where its writes land and whether they run.
+- **Files stay inside the grant.** A `Files` path is resolved against the grant's prefix (the directory the grant names). An absolute path, a `..` that leaves the prefix, or a final component that is a symbolic link (a file that points to another file) fails with `Denied`; path resolution never escapes the prefix.
+- **Keys stay outside values.** `Keys` loads its keys from the grant's file, and key material never enters Una values. The result of `hmac` is labeled `internal`, joined with every label of the type of `data`, and lowering it takes a policy. `key_name` accepts only `public`, so a labeled key name, or a call under a raised program counter (when the conditions that decided whether this line runs read labeled data; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)), is U4003.
+- **Labeled failures.** Whether a host operation fails is labeled by the arguments that decide it: the path of `Files`, not the content; the key name of `Keys.hmac`, not the data; and every argument of `Http`, so its failures are `internal`. A `Files.write` to an `internal` path fails `internal`, and every `Files` failure also carries the package's file-state label: the labels that decide where the package's writes land and whether they run.
 - **Host text.** When `Files.read` or `Env.get` meets bytes that are not valid UTF-8, the run aborts with U6005.
-- **Out of the model.** Races on a path, hard links, resource limits and other processes are outside the model, and the build report lists them.
+- **Out of the model.** Races on a path, hard links, resource limits and other processes are outside what the checker reasons about, and `una report` lists such channels under `out_of_model`.
 - **User handlers.** Code may implement a host capability with its own handler, such as a fake `Keys` in examples. The host implementations are used only by `una run`.
 - **Declared in `std.host`.** A user capability with the same name is a different declaration.
 
@@ -145,5 +153,5 @@ The five host capabilities of v0.1 are in editions `0.1` and `0.2`. Edition `0.2
 - `spec/14 §3`: the operations, `Files` paths, `Keys`, labels and host text.
 - `spec/13 §5`: grant specs and `una run`; `spec/13 §7`: `[run] grants`.
 - `spec/07 §4`: sinks; `spec/07 §7` rule 4: labeled failures.
-- `spec/24 §2`: `Http` grants; `spec/24 §5` rule 3: the labels of `Http` failures.
+- `spec/24 §1`: the `Http` operations; `spec/24 §2`: `Http` grants; `spec/24 §5` rule 3: the labels of `Http` failures.
 - Decision record: [ADR 0039](../../../adr/0039-labels-of-keys-hmac.md), for the labels of `Keys.hmac`.

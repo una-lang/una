@@ -2,14 +2,16 @@
 construct: if error and if none
 editions: ["0.1", "0.2"]
 spec: ["spec/06 §1", "spec/06 §3", "spec/06 §5", "spec/02 §6", "spec/02 §8", "spec/04 §4", "spec/07 §3", "spec/07 §7", "spec/06 §2"]
-codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013, U3025]
+codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013, U3025, U4002]
 ---
 
 # `if error` and `if none`
 
 ## What it does
 
-A statement whose expression can fail is followed by a handling clause, which says what the failure becomes at that line. There is no implicit propagation, so every failure is visible where it can occur. `if none` handles an `Option` the same way, at the same place.
+A statement whose expression can fail is followed by a handling clause, which says what the failure becomes at that line. There is no implicit propagation, so every failure is visible where it can occur. `if none` handles an `Option` (a value that is either `Some` of something or `None`) the same way, at the same place.
+
+Learn more: [Handling a failure: the five clauses](/learn/failure/handling-a-failure-the-five-clauses/).
 
 ```una
 module shop
@@ -37,13 +39,15 @@ pub lookup(key: Text) -> Registration
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 handled         = line_expr [ with_clause ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
 handling        = "if" "error" ( "fail" variant_expr | "pass" | "use" line_expr ) NEWLINE
                 | "if" "none" ( "fail" variant_expr | "use" line_expr ) NEWLINE ;
 ```
 
-The clauses and their meaning:
+The clauses and their meaning, where a fallible expression is one that can fail:
 
 | Clause | Applies to | Meaning |
 | --- | --- | --- |
@@ -101,7 +105,7 @@ pub checkout(units: Int) -> Int
     if error fail Stock(cause: error)
 ```
 
-`if none use` gives a default for an `Option`, and an operation's failure can be recovered at the same line:
+`if none use` gives a default for an `Option`, and an operation's failure can be recovered at the same line. Here `if error use None` turns a failure of `get` into `None`, and `if none use ""` then turns any `None`, from a failure or from a missing key, into the empty text:
 
 ```una
 module shop
@@ -119,6 +123,26 @@ pub cached(key: Text) -> Text
     if error use None
     if none use ""
   found
+```
+
+Inside `if error use`, `error` names the failure too, so the recovered value can come from it:
+
+```una
+module shop
+
+pub kind StockError = | OutOfStock(left: Int)
+
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock(left: 10) else units
+
+left_of(failure: StockError) -> Int
+=
+  when failure
+    is OutOfStock(left) -> left
+
+pub reserve_what_is_left(units: Int) -> Int
+=
+  reserve(units)
+    if error use left_of(error)
 ```
 
 A fallible call without a clause is rejected:
@@ -249,9 +273,9 @@ pub reserve(units: Int) -> Int
 Further rules:
 
 - **One effect per line.** A fallible call is the whole expression of its statement, `let` or final expression, so that its clause has one site (U3013). Bind its result with `let` first.
-- **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009), and it is allowed only under a `public` program counter (U4002).
-- **Labeled failures.** A failure decided by labeled data, such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`.
-- **An `if error` clause on a statement that cannot fail.** In edition `0.3`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is U3025, and `una fix` deletes it. An `if none` clause on the same statement is not affected. Editions `0.1` and `0.2` accept it.
+- **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009), and it is allowed only when the [program counter](/learn/information-flow/branches-and-failures-implicit-flows/), the label of the conditions that decided whether this line runs, is `public` (U4002).
+- **Labeled failures.** A failure decided by labeled data (data marked with a label above `public`, such as `internal` or `secret`), such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`.
+- **An `if error` clause on a statement that cannot fail.** In edition `0.3`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is U3025, and `una fix` deletes it. Only `if error` is judged: on an `Option` that cannot fail, such as `let first = codes.first()`, an `if none` clause stays. Editions `0.1` and `0.2` accept the `if error` clause.
 - **Alternative.** `attempt` handles a failure by turning it into a `Result` value instead. See [`attempt`](attempt.md).
 
 ## Diagnostics
@@ -265,6 +289,7 @@ Further rules:
 - [U3009](../../../../crates/una-explain/explain/U3009.md): the variant of `if error fail` or `if none fail` outside the function's error kind.
 - [U3013](../../../../crates/una-explain/explain/U3013.md): a fallible call nested inside another expression.
 - [U3025](../../../../crates/una-explain/explain/U3025.md): in edition `0.3`, an `if error` clause on an expression that cannot fail.
+- [U4002](../../../../crates/una-explain/explain/U4002.md): the `fail` of a clause under a program counter above `public`, or `if error pass` or `if error fail` on a failure labeled above `public`.
 
 ## Edition
 

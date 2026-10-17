@@ -9,13 +9,15 @@ codes: [U4004, U7005]
 
 ## What it does
 
-A trusted module may hold declassification policies, the only code that lowers a label. A module is trusted only when two places agree: its header says `trusted module`, and the package lists it under `[trusted] modules` in `una.toml`. The rest of its code is checked as usual. Trusted modules and their line counts are listed in the build report's trusted base, so reviewers know exactly what to read.
+A trusted module may hold declassification [policies](policy.md): declared releases of data to a lower [label](labels.md), the only code that lowers a label (marks data as less sensitive). A module is trusted only when two places agree: its header says `trusted module`, and the package lists it under [`[trusted] modules`](../../configure/trusted/modules.md) in `una.toml`. The rest of its code is checked as usual. `una report` lists trusted modules and their line counts under `tcb` (the trusted computing base: the parts the guarantees rely on, which people review), so reviewers know exactly what to read.
+
+Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/releasing-data-policies-and-trusted-modules/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "journal"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -23,35 +25,37 @@ edition = "0.2"
 categories = ["Private"]
 
 [trusted]
-modules = ["release"]
+modules = ["shop.release"]
 ```
 
-`src/release.una`
+`src/shop/release.una`
 
 ```una
-trusted module release
+trusted module shop.release
 
 pub policy length_band
   from confidential[Private] Text
   to public Nat
   via hundreds
-  purpose "show how much was written without showing what"
-  owner journal_owner
+  purpose "show how long a customer note is without showing it"
+  owner support
 
 hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 ```
 
-`src/show.una`
+`src/shop/notes.una`
 
 ```una
-module show
+module shop.notes
 
-import release (length_band)
+import shop.release (length_band)
 
-pub size(text: confidential[Private] Text) -> Nat = length_band(text)
+pub note_size(note: confidential[Private] Text) -> Nat = length_band(note)
 ```
 
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 module_header   = [ "trusted" ] "module" module_path NEWLINE ;
@@ -67,7 +71,7 @@ The header alone does not make a module trusted:
 
 ```toml
 [package]
-name = "journal"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -75,18 +79,18 @@ edition = "0.2"
 categories = ["Private"]
 ```
 
-`src/release.una`
+`src/shop/release.una`
 
 ```una
 -- fails with U7005
-trusted module release
+trusted module shop.release
 
 pub policy length_band
   from confidential[Private] Text
   to public Nat
   via hundreds
-  purpose "show how much was written without showing what"
-  owner journal_owner
+  purpose "show how long a customer note is without showing it"
+  owner support
 
 hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 ```
@@ -97,7 +101,7 @@ Without both, a policy has no place to live:
 
 ```toml
 [package]
-name = "journal"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -105,18 +109,18 @@ edition = "0.2"
 categories = ["Private"]
 ```
 
-`src/release.una`
+`src/shop/release.una`
 
 ```una
 -- fails with U4004
-module release
+module shop.release
 
 pub policy length_band
   from confidential[Private] Text
   to public Nat
   via hundreds
-  purpose "show how much was written without showing what"
-  owner journal_owner
+  purpose "show how long a customer note is without showing it"
+  owner support
 
 hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 ```
@@ -126,7 +130,7 @@ hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 Further rules:
 
 - **Everything else is checked.** Only the `via` functions of policies skip label checks; every other declaration of a trusted module is checked normally, and every obligation of a `via` function is proven.
-- **Reported.** The build report's trusted base lists each trusted module with its line count.
+- **Reported.** `una report` lists each trusted module with its line count under `tcb`.
 
 ## Diagnostics
 
@@ -135,10 +139,11 @@ Further rules:
 
 ## Edition
 
-Trusted modules are the same in editions `0.1` and `0.2`.
+Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
 
 ## Normative source
 
-- `spec/07 §6`: trusted modules; `spec/07 §5`: policies.
+- `spec/07 §6`: trusted modules, and in edition `0.3`, boundary modules that are never trusted; `spec/07 §5`: policies.
 - `spec/02 §1`: the module header.
-- `spec/13 §6`: the build report; `spec/13 §7`: `[trusted] modules`.
+- `spec/13 §6`: the build report and its `tcb`; `spec/13 §7`: `[trusted] modules`.
+- Decision record: [ADR 0093](../../../adr/0093-authority-at-module-boundaries.md), for boundaries.

@@ -16,7 +16,9 @@ codes: [U0101, U1002, U2001, U2002, U5001]
 - a **sum**, a choice among variants, which may carry fields;
 - a **record**, a set of named fields.
 
-Records and sums are nominal: two declarations of the same shape are two types. Aliases and refinements are structural over their base, so a `Seats` value is an `Int` wherever an `Int` is expected.
+Records and sums are nominal, which means a type is known by its name: two declarations of the same shape are two types. Aliases and refinements are structural over their base, which means they are the type they rename or narrow, so a `Seats` value is an `Int` wherever an `Int` is expected.
+
+Learn more: [Records](/learn/kinds/records/) and [Sum kinds](/learn/kinds/sum-kinds/).
 
 ```una
 module shop
@@ -37,6 +39,8 @@ pub kind Count = Int
 ```
 
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 kind_decl       = [ "pub" ] "kind" upper_ident [ type_params ] kind_body ;
@@ -59,7 +63,7 @@ field_sig       = lower_ident ":" type ;
 
 ## Examples
 
-A refinement is checked where a value enters it. Here the verifier refutes that an arbitrary `Int` lies in `0..5000`:
+A refinement is checked where a value enters it. Here the verifier, the part of `una check` that proves what the program must keep, refutes that an arbitrary `Int` lies in `0..5000`:
 
 ```una
 -- fails with U5001
@@ -131,7 +135,7 @@ module shop
 pub kind Chain = | Link(rest: Chain)
 ```
 
-**Refined type arguments.** A refined kind cannot be a type argument, inside a kind either, since refinements are top-level:
+**Refined type arguments.** In editions `0.1` and `0.2`, a refined kind cannot be a type argument (the type in brackets, as in `List[Quantity]`), inside a kind either, since refinements are top-level:
 
 ```una
 -- fails with U2002
@@ -165,12 +169,12 @@ Further rules:
 - [U0101](../../../../crates/una-explain/explain/U0101.md): a malformed declaration, such as a single-variant sum without its bar.
 - [U1002](../../../../crates/una-explain/explain/U1002.md): a kind or variant name defined twice in a module.
 - [U2001](../../../../crates/una-explain/explain/U2001.md): a value of one nominal kind where another is expected.
-- [U2002](../../../../crates/una-explain/explain/U2002.md): an ill-formed kind, such as a recursion without a finite value or a refined type argument.
+- [U2002](../../../../crates/una-explain/explain/U2002.md): an ill-formed kind, such as a recursion without a finite value or, in editions `0.1` and `0.2`, a refined type argument.
 - [U5001](../../../../crates/una-explain/explain/U5001.md): a refinement refuted where a value enters the kind.
 
 ## Edition
 
-Every form is in editions `0.1` and `0.2`. Recursion differs: edition `0.1` allows a kind to contain itself only through `List` or `Option` fields.
+Every form is in editions `0.1` and `0.2`. Edition `0.3` accepts refined type arguments, as `List[Quantity]`: every value put into such a position must be proven to satisfy the refinement, and every value read from it carries it. Recursion differs: edition `0.1` allows a kind to contain itself only through `List` or `Option` fields.
 
 ```una
 -- edition 0.1
@@ -188,4 +192,4 @@ pub kind Bundle = Item(sku: Int) | Pair(left: Bundle, right: Bundle)
 - `spec/03 §1`: built-in type names.
 - `spec/10 §11` rule 5: duplicate names; `spec/10 §12`: the formal rules of recursive kinds.
 - `spec/20 §2` rule 1: a kind's type parameters take no constraint.
-- Decision records: [ADR 0060](../../../adr/0060-recursive-kinds.md), for recursive kinds; [ADR 0040](../../../adr/0040-refined-type-arguments.md), for refined type arguments; [ADR 0045](../../../adr/0045-refined-kinds-over-function-types.md), for refined function kinds.
+- Decision records: [ADR 0060](../../../adr/0060-recursive-kinds.md), for recursive kinds; [ADR 0040](../../../adr/0040-refined-type-arguments.md), for refined type arguments in editions `0.1` and `0.2`; [ADR 0103](../../../adr/0103-refined-elements-of-collections.md), for refined type arguments in edition `0.3`; [ADR 0045](../../../adr/0045-refined-kinds-over-function-types.md), for refined function kinds.

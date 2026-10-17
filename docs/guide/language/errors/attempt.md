@@ -9,7 +9,9 @@ codes: [U2001, U3007, U3013, U3026, U4002]
 
 ## What it does
 
-`attempt f(args)` evaluates one fallible call and returns a `Result[T, E]` instead of failing: `Ok(value)` on a normal return, `Err(failure)` on a failure. The caller then branches on the outcome. `attempt` is the call's handling site, so the call needs no `if error` clause (U3007).
+`attempt f(args)` evaluates one fallible call (a call that can fail) and returns a `Result[T, E]` instead of failing: `Ok(value)` on a normal return, `Err(failure)` on a failure. The caller then branches on the outcome. `attempt` is the call's handling site, so the call needs no `if error` clause (U3007).
+
+Learn more: [Failures as values: attempt and Result](/learn/failure/failures-as-values-attempt-and-result/).
 
 ```una
 module shop
@@ -34,6 +36,8 @@ pub registered(key: Text) -> Bool
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 attempt_expr    = "attempt" postfix ;
 ```
@@ -42,7 +46,7 @@ The operand is one call of a function or of a capability operation. `attempt` st
 
 ## Examples
 
-After `let x = attempt f(...)`, the arm `is Ok(value)` knows what a normal return of `f` guarantees, its `ensures` included; the arm `is Err` knows nothing more. Here the verifier proves `result >= units` from `add_units`'s `ensures`:
+After `let x = attempt f(...)`, the arm (one `is` line of a `when`) `is Ok(value)` knows what a normal return of `f` guarantees, its `ensures` included; the arm `is Err` knows nothing more. Here the verifier (the part of `una check` that proves facts about the code) proves `result >= units` from `add_units`'s `ensures`:
 
 ```una
 module shop
@@ -103,7 +107,7 @@ pub can_reserve(units: Int) -> Bool = (attempt reserve(units)).is_ok()
 Further rules:
 
 - **One call, not a block.** `attempt` covers a single call; a sequence of fallible calls takes one `attempt` or one clause each.
-- **Labeled failures.** When a failure is decided by labeled data, the `Result` carries that label. This holds for the requests of `Http` and the failure of a policy call whose `to` label is above `public`. Branching on it raises the program counter, under which a `fail` is U4002.
+- **Labeled failures.** When a failure is decided by labeled data (data marked with a label above `public`, such as `internal` or `secret`), the `Result` carries that label. This holds for the requests of `Http` and the failure of a policy call whose `to` label is above `public`. Branching on it raises the [program counter](/learn/information-flow/branches-and-failures-implicit-flows/), the label of the conditions that decided whether a line runs, and under a raised one a `fail` is U4002.
 - **An operand that cannot fail.** In edition `0.3`, `attempt` of a call that cannot fail is U3026: use the value of the call directly, and unwrap the uses of the `Result`. Editions `0.1` and `0.2` accept it, and the error type of its `Result` is then not constrained.
 - **Alternative.** To convert, propagate or recover at the line itself, use a handling clause. See [`if error` and `if none`](if-error.md).
 

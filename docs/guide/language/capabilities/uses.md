@@ -9,7 +9,9 @@ codes: [U1002, U3001, U3002, U3003, U3004]
 
 ## What it does
 
-`uses @x: C[ops]` is the header clause that gives a function authority: inside its body, `@x` names a capability `C`, and the body may perform the operations `ops` on it. There is no ambient authority, so a function's capability context is exactly its `uses` clauses. A line without `@` touches nothing outside the program.
+`uses @x: C[ops]` is the header clause that gives a function authority (the right to act outside the program): inside its body, `@x` names a [capability](capability.md) `C`, and the body may perform the operations `ops` on it. There is no ambient authority (no power that code has just by existing, such as a global file system), so a function's capability context is exactly its `uses` clauses. A line acts outside the program only through an `@` operation, or through a call of a function that has `uses`.
+
+Learn more: [Declaring what a function may do: uses](/learn/capabilities/declaring-what-a-function-may-do-uses/).
 
 ```una
 module shop
@@ -25,6 +27,8 @@ pub note(line: Text) -> Unit
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 clause          = "requires" line_expr NEWLINE
                 | "ensures" line_expr NEWLINE
@@ -37,7 +41,7 @@ cap_type        = upper_ident [ "[" lower_ident { "," lower_ident } "]" ] ;
 - **`uses @x: C[op1, op2]`** permits the listed operations.
 - **`uses @x: C`**, without brackets, permits every operation of `C`.
 - A function may have several `uses` clauses, one per reference. They come after `requires` and `ensures`, and before `fails`.
-- **`uses of p`** (from edition `0.2` on): the function performs the effects of its parameter `p`, a function value.
+- **`uses of p`** (from edition `0.2` on): the function performs the effects (actions outside the program) of its parameter `p`, a function value.
 
 ## Examples
 
@@ -94,7 +98,7 @@ pub note(line: Text) -> Unit
   @other.write(line)
 ```
 
-**A function without `uses` is pure.** In a `pub` function, which declares its `uses`, an `@` is rejected:
+**A public function without `uses` is pure** (it does nothing outside the program). In a `pub` function, which declares its `uses`, an `@` is rejected:
 
 ```una
 -- fails with U3004
@@ -142,7 +146,7 @@ pub note(line: Text) -> Unit
 Further rules:
 
 - **Inferred for private functions.** A private function without `uses` gets the least set that covers its operations and its callees' requirements. A `pub` function declares every `uses`.
-- **Attenuation.** Passing a capability with more operations than the callee needs is allowed, and the callee can use only its own list.
+- **Attenuation** (narrowing what a callee may do). Passing a capability with more operations than the callee needs is allowed, and the callee can use only its own list.
 - **Rebinding.** A caller can give a callee another reference, or a handler, with `with`. See [`@` bindings and `with`](with.md).
 - **Host capabilities** reach a program only through `main`'s `uses`, from the runtime's grants. See [host capabilities and grants](host.md).
 
@@ -156,11 +160,11 @@ Further rules:
 
 ## Edition
 
-`uses` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `uses of p`.
+`uses` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `uses of p`. Edition `0.3`, a preview, adds conditions on operations, as `Catalog[price, set_price where not dry_run]`, which the checker proves wherever the operation may run, and lets `una.toml` lock the `uses` of public functions under `[contracts]`, so that a header granting more than its lock is an error. See [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
 
 ## Normative source
 
-- `spec/05 §1`: the model; `spec/05 §3`: using capabilities; `spec/05 §4`: passing capabilities; `spec/05 §9`: reporting.
+- `spec/05 §1`: the model; `spec/05 §3`: using capabilities, and in edition `0.3` rules 4 and 5, conditions on operations and locked contracts; `spec/05 §4`: passing capabilities; `spec/05 §9`: reporting.
 - `spec/04 §2` rule 4: pure functions; `spec/04 §5`: inference.
 - `spec/02 §3`: the grammar and clause order.
-- Decision record: [ADR 0062](../../../adr/0062-effect-polymorphism.md), for `uses of`.
+- Decision records: [ADR 0062](../../../adr/0062-effect-polymorphism.md), for `uses of`; [ADR 0092](../../../adr/0092-conditions-on-allowed-effects.md), for conditions on operations and locked contracts.

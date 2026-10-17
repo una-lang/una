@@ -9,18 +9,20 @@ codes: [U2013, U2014, U2016, U3009, U4002, U7003]
 
 ## What it does
 
-`checked(v, p) else fail V` tests the predicate `p` at run time, with `it` bound to `v`:
+`checked(v, p) else fail V` tests the predicate `p` (a condition, a function that gives `Bool`) at run time, with `it` bound to `v`:
 
-- when `p` holds, the result is `v`, with its type refined by `p`;
+- when `p` holds, the result is `v`, with its type refined by `p` (its type now carries the condition `p`);
 - otherwise the function fails with `V`.
 
-This is how a value obtains an opaque fact, one the solver cannot prove. `checked` replaces a static proof with a run-time test, so it is an escape hatch. Each module may use it only as many times as its package's escape budget allows, and every use is listed in the build report.
+This is how a value obtains an opaque fact, one the solver (the program that `una check` asks to prove each fact) cannot prove. `checked` replaces a proof made before the program runs with a test while it runs, so it is an escape hatch. Each module may use it only as many times as its package's escape budget (a count set in `una.toml`) allows, and every use is listed in the build report (what `una report` prints about a build).
+
+Learn more: [When no proof can decide: checked](/learn/failure/when-no-proof-can-decide-checked/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "phones"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -28,10 +30,10 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/phones.una`
+`src/shop.una`
 
 ```una
-module phones
+module shop
 
 pub kind Phone = Text where valid_phone(it)
 
@@ -47,12 +49,14 @@ pub parse_phone(raw: Text) -> Phone
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 checked_expr    = "checked" "(" line_expr "," line_expr ")" "else" "fail" variant_expr ;
 ```
 
 - The first argument is the value tested.
-- The second is the predicate, with `it` naming the value. It is written in the refinement language, or is a call of an opaque predicate, so that it can run.
+- The second is the predicate, with `it` naming the value. It is written in the refinement language (the expressions that a type's condition may use, which the solver can reason about), or is a call of an opaque predicate (one whose body the solver never sees), so that it can run.
 - `else fail V` names the variant the function fails with when the test fails. `V` belongs to the function's error kind.
 
 The budget is the key `checked_per_module` of the `[escape_budget]` table of `una.toml`, an integer of at least 0 that defaults to 0.
@@ -65,7 +69,7 @@ A predicate in the refinement language refines a plain value. Here `Shelf`'s ref
 
 ```toml
 [package]
-name = "shelves"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -73,10 +77,10 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/shelves.una`
+`src/shop.una`
 
 ```una
-module shelves
+module shop
 
 pub kind Shelf = Int in 0..9
 
@@ -92,7 +96,7 @@ Without a budget, `checked` is rejected. The default is 0, and a file checked on
 
 ```una
 -- fails with U7003
-module phones
+module shop
 
 pub kind Phone = Text where valid_phone(it)
 
@@ -114,7 +118,7 @@ pub parse_phone(raw: Text) -> Phone
 
 ```toml
 [package]
-name = "skus"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -122,11 +126,11 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/skus.una`
+`src/shop.una`
 
 ```una
 -- fails with U2014
-module skus
+module shop
 
 pub kind SkuError = | NotDigits
 
@@ -140,7 +144,7 @@ pub digits_only(sku: Text) -> Text
 
 ```una
 -- fails with U2016
-module phones
+module shop
 
 pub predicate opaque valid_phone(t: Text) -> Bool = t.len == 11 and is_digits(t)
 
@@ -153,7 +157,7 @@ pub looks_valid(raw: Text) -> Bool = valid_phone(raw)
 
 ```toml
 [package]
-name = "stock"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -161,11 +165,11 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/stock.una`
+`src/shop.una`
 
 ```una
 -- fails with U3009
-module stock
+module shop
 
 pub kind StockError = | Negative
 
@@ -177,13 +181,13 @@ pub stock_level(units: Int) -> Int
   checked(units, it >= 0) else fail Declined
 ```
 
-**No test that depends on labeled data.** A failure of `checked` reveals whether the predicate holds. So `checked` is U4002 on a labeled value, on a predicate that reads a labeled value, or under a raised program counter:
+**No test that depends on labeled data** (data marked with a label above `public`, such as `internal` or `secret`). A failure of `checked` reveals whether the predicate holds. So `checked` is U4002 on a labeled value, on a predicate that reads a labeled value, or under a raised [program counter](/learn/information-flow/branches-and-failures-implicit-flows/) (the label of the conditions that decided whether this line runs):
 
 `una.toml`
 
 ```toml
 [package]
-name = "credit"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -191,11 +195,11 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/credit.una`
+`src/shop.una`
 
 ```una
 -- fails with U4002
-module credit
+module shop
 
 pub kind CreditError = | Negative
 
@@ -211,7 +215,7 @@ The same holds when the operand is public but the predicate reads labeled data, 
 
 ```toml
 [package]
-name = "limits"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -219,11 +223,11 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/limits.una`
+`src/shop.una`
 
 ```una
 -- fails with U4002
-module limits
+module shop
 
 pub kind LimitError = | OverLimit
 
@@ -236,10 +240,10 @@ pub within_limit(cents: Int, limit: internal Int) -> Int
 Further rules:
 
 - **Counting.** The first use beyond the budget is U7003, with the later uses as related locations. The budget counts per module, not per package.
-- **`it`** is valid only in the predicate of `checked` and in `where` clauses (U2013).
-- **Repairs prefer proofs.** When a proof is refuted, the repairs list a stronger type, a `requires` clause or a guard before `checked`, which they mark as an escape with a cost.
+- **`it`** is valid only in the predicate of `checked` and in `where` clauses (U2013). In edition `0.3`, only the `where` of a kind counts, not the condition on an operation.
+- **Repairs prefer proofs.** When a proof is refuted (the solver finds a case where the fact is false), the repairs list a stronger type, a `requires` clause or a guard before `checked`, which they mark as an escape with a cost.
 - **Reported.** Every use of `checked` is listed in the build report, so reviewers see each run-time test that replaces a proof.
-- **Narrowing integers.** In edition `0.2`, a narrowing conversion of an integer carries an `overflow` obligation, or narrows through `checked` on the same budget.
+- **Narrowing integers.** In edition `0.2`, a narrowing conversion of an integer (to a type with fewer values) carries an `overflow` obligation (a fact `una check` must prove), or narrows through `checked` on the same budget.
 
 ## Diagnostics
 

@@ -9,7 +9,9 @@ codes: [U4001, U4002, U4003, U4007]
 
 ## What it does
 
-A label classifies data: a level, and optional categories. The checker follows labels through every computation and every branch, and rejects any flow of data to a place that its label does not allow. The guarantee is termination-insensitive noninterference: an observer at a label sees the same values and effects in two runs that differ only in data labeled above it, unless a policy released it.
+A label classifies data by how sensitive it is: a level, and optional categories (named kinds of data, such as personal data). The checker follows labels through every computation and every branch, and rejects any flow of data to a place that its label does not allow. The guarantee is termination-insensitive noninterference (data can influence what a reader sees only through a declared release, leaving aside whether the program finishes at all): an observer at a label sees the same values and effects in two runs that differ only in data labeled above it, unless a [policy](policy.md) released it.
+
+Learn more: [Labels and how they follow data](/learn/information-flow/labels-and-how-they-follow-data/), and [Sinks: where labeled data may go](/learn/information-flow/sinks-where-labeled-data-may-go/).
 
 ```una
 module shop
@@ -21,6 +23,8 @@ pub flag(age: secret Int) -> secret Int = if age > 17 then 1 else 0
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 type            = [ label ] type_core [ "in" range ] ;
 label           = level [ "[" upper_ident { "," upper_ident } "]" ] ;
@@ -28,7 +32,7 @@ level           = "public" | "internal" | "confidential" | "secret" | "restricte
 ```
 
 - **Levels**, in order: `public` < `internal` < `confidential` < `secret` < `restricted`. A type without a label is `public`.
-- **Categories**, in brackets: `secret[PII] Phone`. They are declared per package in `una.toml`, under `[labels] categories`.
+- **Categories**, in brackets: `secret[PII] Phone`. They are declared per package in `una.toml`, under [`[labels] categories`](../../configure/labels/categories.md).
 - **Order.** A label is below another when its level is not higher and its categories are a subset.
 - **Position.** A label covers one position of a type: `internal Option[internal Int]` labels the option and its payload; a flow compares the labels at every position.
 
@@ -43,7 +47,7 @@ module shop
 pub show_balance(balance: secret Int) -> Int = balance
 ```
 
-Branching raises the program counter. A value chosen by a `secret` condition is `secret`, even when the branches are constants:
+Branching raises the program counter (the label of the conditions that decided whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). A value chosen by a `secret` condition is `secret`, even when the branches are constants:
 
 ```una
 -- fails with U4001
@@ -52,7 +56,7 @@ module shop
 pub flag(age: secret Int) -> Int = if age > 17 then 1 else 0
 ```
 
-A capability operation accepts arguments only up to its label: `Console.print` accepts `public`. Interpolation keeps the label of what it interpolates:
+A capability operation is a sink (a place where data leaves the program), and accepts arguments only up to its label: `Console.print` accepts `public`. Interpolation keeps the label of what it interpolates:
 
 ```una
 -- fails with U4003
@@ -70,7 +74,7 @@ Categories are declared in the package:
 
 ```toml
 [package]
-name = "people"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -78,10 +82,10 @@ edition = "0.2"
 categories = ["PII"]
 ```
 
-`src/people.una`
+`src/shop.una`
 
 ```una
-module people
+module shop
 
 pub tagged(birth_year: secret[PII] Int) -> secret[PII] Int = birth_year
 
@@ -116,11 +120,11 @@ pub spend(balance: secret Int) -> secret Int
 Further rules:
 
 - **Raising is free.** An `internal` value may flow where `secret` is expected.
-- **Lowering needs a policy** in a trusted module. See [`policy`](policy.md).
+- **Lowering needs a policy** in a trusted module. See [`policy`](policy.md) and [trusted modules](trusted.md).
 - **Fields.** Reading a field joins the record's label with the field's declared label.
 - **Effects under the program counter.** A call is allowed under a raised program counter only when every effect it may perform accepts that label, and the function cannot fail (U4002).
 - **Examples are exempt.** `expect` lines observe values for the test harness and are not sinks.
-- **Outside the model.** Timing, termination, resource consumption and the order of effects across concurrent tasks, among others, are not covered, and the build report says so. The normative source gives the full list.
+- **Outside the model.** Timing, termination, resource consumption and the order of effects across concurrent tasks, among others, are not covered, and `una report` lists them under `out_of_model`. The normative source gives the full list.
 
 ## Diagnostics
 

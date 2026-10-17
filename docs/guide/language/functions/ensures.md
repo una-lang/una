@@ -9,12 +9,14 @@ codes: [U0102, U2012, U2014, U5001, U5002]
 
 ## What it does
 
-`ensures q` states a postcondition: what holds of `result` and the arguments when the function returns normally. It is checked at both ends:
+`ensures q` states a postcondition, a promise about the result: what holds of `result` and the arguments when the function returns normally. It is checked at both ends:
 
-- **in the body**, the verifier proves `q` on every normal return path;
+- **in the body**, the verifier (the part of `una check` that proves facts about the code) proves `q` on every normal return path;
 - **at every call**, callers may assume `q` for the value they receive.
 
 So a caller can rely on a function's header alone, without reading its body.
+
+Learn more: [Postconditions: ensures and counterexamples](/learn/contracts/postconditions-ensures-and-counterexamples/).
 
 ```una
 module shop
@@ -29,22 +31,26 @@ pub clamp(n: Int, low: Int, high: Int) -> Int
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 clause          = "requires" line_expr NEWLINE
                 | "ensures" line_expr NEWLINE
                 | "uses" cap_ref ":" cap_type NEWLINE
+                | "uses" "of" lower_ident NEWLINE                   (* edition 0.2 *)
                 | "fails" upper_ident NEWLINE
+                | "fails" "of" lower_ident NEWLINE                  (* edition 0.2 *)
                 | "derived" "from" upper_ident { "," upper_ident } NEWLINE ;
 ```
 
 - A function may have any number of `ensures` clauses. They all hold together.
 - They come after every `requires` and before `uses`, `fails` and `derived from`.
-- The expression is in the refinement language, over the parameters and `result`.
-- **`old(x)`** (edition `0.2`): for an `edit` parameter `x`, `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
+- The expression is in the refinement language (the expressions that a type's condition may use, which the solver can reason about), over the parameters and `result`.
+- **`old(x)`** (edition `0.2`): for an [`edit` parameter](/learn/memory-and-concurrency/passing-a-value-in-and-out-edit/) `x` (one the function may change for its caller), `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
 
 ## Examples
 
-A postcondition the body does not keep is refuted, with a counterexample:
+A postcondition the body does not keep is refuted, with a counterexample (the values for which it fails):
 
 ```una
 -- fails with U5001
@@ -56,7 +62,7 @@ pub next_price(cents: Int) -> Int
   cents
 ```
 
-Callers assume what they are promised. `attempt` keeps the promise for its `Ok` arm, so `add_or_keep` is proven from `add_units`'s header alone:
+Callers assume what they are promised. `attempt` keeps the promise for its `Ok` arm (the `is Ok` line of the `when`), so `add_or_keep` is proven from `add_units`'s header alone:
 
 ```una
 module shop
@@ -109,10 +115,10 @@ pub tile_area(side: Int) -> Int
 Further rules:
 
 - **Normal returns only.** `ensures` holds when the function returns. A failure carries no postcondition, so `add_units` above proves `result > units` only on its `units + 1` path.
-- **Partial correctness.** `ensures` holds if the function returns; termination is not checked.
+- **Partial correctness.** `ensures` holds if the function returns, a promise only for the runs that finish; whether a function finishes is not checked.
 - **`result`** appears only in `ensures` clauses and `expect` lines (U2012).
-- **Unknown is an error.** A postcondition the solver cannot decide is U5002, never a pass.
-- **Operations.** A capability operation's `ensures` is an assumption about the external system. Callers rely on it, handlers are verified against it, and host implementations are trusted to satisfy it.
+- **Unknown is an error.** A postcondition the solver (the program that `una check` asks to prove each fact) cannot decide is U5002, never a pass.
+- **Operations.** A capability operation's `ensures` (the promise of an action on something outside the program) is an assumption about the external system. Callers rely on it, handlers (Una code that implements a capability, such as a fake for tests) are verified against it, and the runtime's own implementations are trusted to satisfy it.
 - **Clause order.** An `ensures` before a `requires` is U0102.
 
 ## Diagnostics
@@ -130,7 +136,7 @@ Further rules:
 ## Normative source
 
 - `spec/04 §2`: clauses and rules 1 to 3.
-- `spec/02 §3`: the grammar and clause order; `spec/02 §8`: where `result` may appear.
+- `spec/02 §3`: the grammar, clause order and the `of` clauses of edition `0.2`; `spec/02 §8`: where `result` may appear.
 - `spec/03 §3`: the refinement language.
 - `spec/12 §3`: the `postcondition` obligation and the hypotheses; `spec/12 §6`: statuses; `spec/12 §7`: counterexamples.
 - `spec/05 §2`: operation contracts.

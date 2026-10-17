@@ -1,7 +1,7 @@
 ---
 construct: when
 editions: ["0.1", "0.2"]
-spec: ["spec/01 §5", "spec/02 §6", "spec/02 §8", "spec/10 §4", "spec/12 §3", "spec/12 §4", "spec/07 §3", "spec/18 §2"]
+spec: ["spec/01 §5", "spec/02 §6", "spec/02 §8", "spec/10 §4", "spec/10 §12", "spec/12 §3", "spec/12 §4", "spec/07 §3", "spec/07 §7", "spec/18 §2"]
 codes: [U0101, U2001, U2007, U2008, U2022, U4002, U4008, U5001]
 ---
 
@@ -9,14 +9,16 @@ codes: [U0101, U2001, U2007, U2008, U2022, U4002, U4008, U5001]
 
 ## What it does
 
-`when v` chooses an arm by the value of `v`. An arm can match:
+`when v` chooses an arm, one of the lines below it that each say what to do for some values, by the value of `v`. An arm can match:
 
-- a variant of a sum, binding its payload fields;
+- a variant of a sum, one of the alternatives a sum kind lists, binding its payload fields, the values the variant carries;
 - a literal;
 - a range;
 - anything, with `else`.
 
 Variant arms must cover every variant (U2007). Range and literal arms without `else` must be proven to cover every value. `when` is Una's only pattern match: `match` is not a keyword.
+
+Learn more: [Taking a value apart: when](/learn/kinds/taking-a-value-apart-when/).
 
 ```una
 module shop
@@ -49,6 +51,8 @@ pub band(remaining: Seats) -> Availability
 ```
 
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 when_expr       = "when" line_expr NEWLINE INDENT arm { arm } DEDENT ;
@@ -180,7 +184,7 @@ pub house_number(address: Address) -> Int
     is Address(number) -> number
 ```
 
-**Labeled values raise the program counter.** Every arm runs under the label of the value, so an arm cannot `fail` on `secret` data:
+**Labeled values raise the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). Every arm runs under the label of the value, so an arm cannot `fail` on `secret` data:
 
 ```una
 -- fails with U4002
@@ -202,7 +206,7 @@ Further rules:
 - **Results of `attempt`** are matched with `is Ok(value)` and `is Err(failure)`. See [`attempt`](../errors/attempt.md).
 - **An arm may `fail`,** so a binding takes the value of the arms that do not. See [`fail`](../errors/fail.md).
 - **Fixed-width values.** In edition `0.2`, arms over a fixed-width integer take its type, and a bound that does not fit it is U2022.
-- **Facts in arms.** Inside an arm the verifier knows the arm's condition, and the payload's fields.
+- **Facts in arms.** Inside an arm the verifier, the part of `una check` that proves what the program must keep, knows the arm's condition, and the payload's fields.
 
 ## Diagnostics
 
@@ -222,7 +226,7 @@ Further rules:
 ## Normative source
 
 - `spec/01 §5`: keywords; `spec/02 §6`: the grammar; `spec/02 §8`: the place of `else`.
-- `spec/10 §4`: T-Case and exhaustiveness over variants.
+- `spec/10 §4`: T-Case and exhaustiveness over variants; `spec/10 §12` rule 1: variant arms on a value that is not of a sum kind (U2001), and rule 3: unreachable and repeated arms (U2008).
 - `spec/12 §3`: hypotheses in arms and the `exhaustive` obligation; `spec/12 §4`: its encoding.
-- `spec/07 §3` rule 3: failures under the program counter.
+- `spec/07 §3` rule 3: failures under the program counter; `spec/07 §7` rule 3: a text literal with interpolation in a pattern (U4008).
 - `spec/18 §2`: literals of fixed-width types.

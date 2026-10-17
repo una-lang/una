@@ -9,7 +9,9 @@ codes: [U0101, U2001, U2025, U2026, U2027]
 
 ## What it does
 
-In edition `0.2`, a type parameter of a function may carry one built-in constraint: `Eq`, `Ord` or `Integer`. A constraint allows operators on values of the parameter, with their built-in meaning, and restricts the types that may instantiate it. There are no user traits and no implementations: a type satisfies a constraint by what it is.
+From edition `0.2`, a type parameter of a function, a placeholder such as `T` that stands for any type the caller uses, may carry one built-in constraint: `Eq`, `Ord` or `Integer`. A constraint allows operators on values of the parameter, with their built-in meaning, and restricts the types that may instantiate it. There are no user traits and no implementations (ways, in other languages, to declare your own constraints and say which types meet them): a type satisfies a constraint by what it is.
+
+Learn more: [Generic kinds and constraints](/learn/kinds/generic-kinds-and-constraints/).
 
 ```una
 module shop
@@ -22,6 +24,8 @@ pub same[T: Eq](a: T, b: T) -> Bool = a == b
 ```
 
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 signature       = lower_ident [ constrained_params ] "(" [ params ] ")" "->" type ;
@@ -108,7 +112,7 @@ pub kind Box[T: Eq]
   value: T
 ```
 
-**No arithmetic on `T`.** `+`, `-`, `*`, `/` and `%` stay undefined on a type parameter, constrained or not. Convert with `to_int()` and compute on `Int`:
+**No arithmetic on `T`.** `+`, `-`, `*`, `/` and `mod` stay undefined on a type parameter, constrained or not. Convert with `to_int()` and compute on `Int`:
 
 ```una
 -- fails with U2001
@@ -121,8 +125,8 @@ Further rules:
 
 - **Labels do not count.** `secret Int` satisfies `Integer`.
 - **Operators keep their meaning.** `==` is structural equality and `<` the built-in order, on every type that satisfies the constraint.
-- **Information flow.** A comparison on values of `T` carries the labels of its operands, the symbolic label of `T` included. Branching on it raises the program counter.
-- **Verification.** In a generic body, `<` on a `T: Ord` is an uninterpreted relation with no axioms, so no law such as transitivity is assumed.
+- **Information flow.** A comparison on values of `T` carries the labels of its operands, the symbolic label of `T` included, a stand-in for whatever label the caller's type carries. Branching on it raises the program counter, the label of the conditions that decide whether a line runs (see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)).
+- **Verification.** In a generic body, the verifier knows nothing about `<` on a `T: Ord` but its name, so no law such as transitivity (`a < b` and `b < c` give `a < c`) is assumed.
 - **The prelude.** In edition `0.2`, `min`, `max`, `contains`, `sum` and `sort` are generic over these constraints.
 
 ## Diagnostics

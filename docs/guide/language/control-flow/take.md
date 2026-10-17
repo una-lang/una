@@ -9,7 +9,9 @@ codes: [U0103, U2017, U2018, U2020, U2021]
 
 ## What it does
 
-In edition `0.2`, a parameter declared `take` consumes its argument: after `f(take a)`, the caller cannot use `a` until an assignment gives it a new value. This lets a backend reuse the memory of the value passed. That reuse is never observable, so the meaning stays that of values.
+From edition `0.2`, a parameter declared `take` consumes its argument, which means the caller gives the value away: after `f(take a)`, the caller cannot use `a` until an assignment gives it a new value. This lets the backend (the part of the compiler that produces the running program) reuse the memory of the value passed instead of copying it. That reuse is never observable, so the meaning stays that of values.
+
+Learn more: [Giving a value up: take](/learn/memory-and-concurrency/giving-a-value-up-take/).
 
 ```una
 module shop
@@ -26,6 +28,8 @@ pub close(cart: Cart) -> Int
 ```
 
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 param           = [ "edit" | "take" ] lower_ident ":" type ;
@@ -100,15 +104,15 @@ Further rules:
 
 - **Branches and loops.** A binding taken in one branch of an `if` or a `when` counts as taken after it. A binding taken in a loop body is taken in every later iteration, so it is assigned before the end of the body, or declared inside it (U2017).
 - **Any local binding** can be taken: a plain `let`, a `let edit` or a parameter. Only an assignment revives it, so a plain binding stays taken.
-- **Exclusivity.** A `take` argument with any other use of the same binding in one call is U2018.
+- **Exclusivity.** Another use of a binding after its `take`, even in the same call, is U2017. A `take` together with an `edit` of the same binding in one call is U2018.
 - **Not a value.** A function with a `take` parameter can only be called (U2021).
 - **Not on operations.** Capability operations and handlers cannot declare `take` parameters (U2020).
 
 ## Diagnostics
 
 - [U0103](../../../../crates/una-explain/explain/U0103.md): `take` in edition `0.1`, where it is reserved.
-- [U2017](../../../../crates/una-explain/explain/U2017.md): a binding used after it was taken.
-- [U2018](../../../../crates/una-explain/explain/U2018.md): a taken binding used again in the same call.
+- [U2017](../../../../crates/una-explain/explain/U2017.md): a binding used after it was taken, in a later line or later in the same call.
+- [U2018](../../../../crates/una-explain/explain/U2018.md): a `take` together with an `edit` of the same binding in one call.
 - [U2020](../../../../crates/una-explain/explain/U2020.md): a missing or extra `take` marker, or a field given to `take`.
 - [U2021](../../../../crates/una-explain/explain/U2021.md): a function with a `take` parameter used as a value.
 

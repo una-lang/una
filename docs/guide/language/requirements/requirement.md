@@ -1,15 +1,17 @@
 ---
 construct: requirement and derived from
 editions: ["0.1", "0.2"]
-spec: ["spec/08 §1", "spec/02 §5", "spec/02 §3", "spec/13 §5", "spec/13 §6"]
-codes: [U1002, U1006, U1007]
+spec: ["spec/08 §1", "spec/02 §5", "spec/02 §3", "spec/13 §5", "spec/13 §6", "spec/01 §4", "spec/12 §1"]
+codes: [U1002, U1005, U1006, U1007]
 ---
 
 # `requirement` and `derived from`
 
 ## What it does
 
-A `requirement` records a human or business statement, with its source and its owner, so contracts can be traced to intent. A function names the requirements it implements with `derived from`. `una trace` then lists, for one requirement, every function derived from it, with its contract and the status of each proof.
+A `requirement` records a human or business statement, with its source and its owner, so contracts (the conditions a function states with `requires` and `ensures`) can be traced to intent. A function names the requirements it implements with `derived from`. `una trace` then lists, for one requirement, every function derived from it, with its contract and the status of each proof.
+
+Learn more: [What the verifier proves and what examples show](/learn/testing/what-the-verifier-proves-and-what-examples-show/).
 
 ```una
 module shop
@@ -32,6 +34,8 @@ pub availability(remaining: Int) -> Availability
 
 ## Forms
 
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 requirement_decl = "requirement" upper_ident NEWLINE INDENT
                      "text" text_lit NEWLINE
@@ -51,11 +55,13 @@ The fields:
 | `owner` | Team or person accountable (lower snake case) |
 | `status` | `proposed` or `active` |
 
+A requirement's identifier is upper snake case ending in `_` and a number, as `SHOP_1` or `EVENTS_3`; another form is U1005.
+
 **`derived from R1, R2`** is the last clause of a function header, at most once.
 
 ## Examples
 
-The function above proves the requirement's intent as a contract: `ensures remaining == 0 implies result is SoldOut`. The requirement says what people want; the contract says what the code guarantees, and the verifier checks the contract.
+The function above proves the requirement's intent as a contract: `ensures remaining == 0 implies result is SoldOut`. The requirement says what people want; the contract says what the code guarantees, and the verifier (the part of `una check` that proves facts about the code) checks the contract.
 
 A requirement written by an agent is only proposed. A person activates it by changing its source:
 
@@ -71,6 +77,19 @@ requirement GEN_1
 ```
 
 ## Edge cases
+
+**The identifier follows its convention**:
+
+```una
+-- fails with U1005
+module shop
+
+requirement Shipping
+  text "Orders ship within two days"
+  source human
+  owner warehouse
+  status active
+```
 
 **`derived from` names declared requirements**:
 
@@ -106,12 +125,13 @@ requirement SHOP_1
 Further rules:
 
 - **Proposed requirements** do not block a build: functions derived from them compile normally, and the build report flags them.
-- **`una trace R`** checks the package at tier 1, then prints the requirement and each function derived from it, with its `requires`, `ensures` and the status of each obligation. With `--json` it prints `una.trace/1`.
+- **`una trace R`** checks the package at tier 1 (with the solver's proofs, as `una check` does by default), then prints the requirement and each function derived from it, with its `requires`, `ensures` and the status of each obligation (a fact that `una check` must prove). With `--json` it prints `una.trace/1`.
 - **Evidence is separate.** A requirement states intent, a contract guarantees it, and examples show it running. See [`example`](../examples/example.md).
 
 ## Diagnostics
 
 - [U1002](../../../../crates/una-explain/explain/U1002.md): a requirement identifier defined twice in a package.
+- [U1005](../../../../crates/una-explain/explain/U1005.md): a requirement identifier that is not upper snake case ending in `_` and a number.
 - [U1006](../../../../crates/una-explain/explain/U1006.md): `derived from` names an undeclared requirement.
 - [U1007](../../../../crates/una-explain/explain/U1007.md): a requirement with source `generated` and status `active`.
 
@@ -124,3 +144,5 @@ Requirements are the same in editions `0.1` and `0.2`.
 - `spec/08 §1`: requirements, rules 1 to 4, and `una trace`.
 - `spec/02 §5`: the grammar; `spec/02 §3`: the `derived from` clause.
 - `spec/13 §5`: the command line; `spec/13 §6`: the build report.
+- `spec/01 §4`: the naming convention of requirement identifiers.
+- `spec/12 §1`: tiers of verification.

@@ -9,10 +9,10 @@ codes: [U2014, U2015, U2016, U7003]
 
 ## What it does
 
-A predicate is a named, pure, total boolean function that refinements and contracts can call. It comes in two forms, which differ in what the solver knows:
+A predicate is a named, pure (it acts on nothing outside the program), total (it gives a result for every input, without failing) boolean function that refinements and contracts can call. Refinements are the conditions a type adds to its values; contracts are a function's `requires` and `ensures` clauses. It comes in two forms, which differ in what the solver, the program that decides each fact the compiler must prove, knows:
 
-- **`reflect`:** its body is in the refinement language, and the solver sees it as a definition. A value obtains its fact by proof.
-- **`opaque`:** its body is any pure expression that cannot fail, and the solver sees only a name. A value obtains its fact at run time, through `checked`, or from a capability operation's `ensures`.
+- **`reflect`:** its body is in the refinement language, the small set of expressions the solver can decide, and the solver sees it as a definition. A value obtains its fact by proof.
+- **`opaque`:** its body is any pure expression that cannot fail, and the solver sees only a name. A value obtains its fact at run time, through [`checked`](../errors/checked.md), or from a capability operation's `ensures`.
 
 ```una
 module shop
@@ -24,7 +24,11 @@ pub kind Adult = Int where adult(it)
 pub grow(a: Adult) -> Adult = a + 1
 ```
 
+Learn more: [Refined kinds and predicates](/learn/contracts/refined-kinds-and-predicates/).
+
 ## Forms
+
+In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 predicate_decl  = [ "pub" ] "predicate" ( "reflect" | "opaque" ) lower_ident
@@ -36,19 +40,19 @@ The kinds of predicate:
 | Form | Body | Visible to the solver | How a value obtains the fact |
 | --- | --- | --- | --- |
 | `predicate reflect` | In the refinement language, not recursive | Yes, as a definition | Proven statically |
-| `predicate opaque` | Any pure, non-failing expression | No, only as an uninterpreted symbol | `checked` at run time, or a capability operation's `ensures` |
+| `predicate opaque` | Any pure, non-failing expression | No, only as a name whose meaning it does not know | `checked` at run time, or a capability operation's `ensures` |
 
 ## Examples
 
 The solver proves `grow`'s result from `adult`'s definition: `a >= 18` implies `a + 1 >= 18`.
 
-An opaque predicate holds a test the solver cannot reason about, such as `is_digits`. A value gets its fact through `checked`, which counts against the escape budget:
+An opaque predicate holds a test the solver cannot reason about, such as `is_digits`. A value gets its fact through [`checked`](../errors/checked.md), which counts against the escape budget, the number of run-time tests each module may use in place of a proof:
 
 `una.toml`
 
 ```toml
 [package]
-name = "phones"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -56,10 +60,10 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/phones.una`
+`src/shop.una`
 
 ```una
-module phones
+module shop
 
 pub kind Phone = Text where valid_phone(it)
 
@@ -127,7 +131,6 @@ pub looks_valid(raw: Text) -> Bool = valid_phone(raw)
 
 Further rules:
 
-- **Code may call a `reflect` predicate.** It is an ordinary pure function to `Bool` that the solver also knows. Only opaque predicates are restricted in where they are called, so a function body may call a `reflect` predicate like any other function.
 - **Naming is not establishing.** The `where` clause of a kind, and the `requires` and `ensures` clauses of a capability operation, may name an opaque predicate, since they state the fact without establishing it.
 - **Sound by construction.** The solver knows nothing about an opaque predicate beyond facts established at run time, so it cannot introduce an inconsistency.
 - **Budgeted.** Each `checked` counts against the module's escape budget, U7003 beyond it.
