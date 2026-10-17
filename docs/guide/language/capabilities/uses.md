@@ -9,10 +9,10 @@ codes: [U1002, U3001, U3002, U3003, U3004]
 
 ## What it does
 
-`uses @x: C[ops]` is the header clause that gives a function authority: inside its body, `@x` names a capability `C`, and the body may perform the operations `ops` on it (`spec/05 §3`). There is no ambient authority, so a function's capability context is exactly its `uses` clauses. A line without `@` touches nothing outside the program (`spec/05 §1`).
+`uses @x: C[ops]` is the header clause that gives a function authority: inside its body, `@x` names a capability `C`, and the body may perform the operations `ops` on it. There is no ambient authority, so a function's capability context is exactly its `uses` clauses. A line without `@` touches nothing outside the program.
 
 ```una
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -34,19 +34,17 @@ clause          = "requires" line_expr NEWLINE
 cap_type        = upper_ident [ "[" lower_ident { "," lower_ident } "]" ] ;
 ```
 
-This is `spec/02 §3` and §2.
-
 - **`uses @x: C[op1, op2]`** permits the listed operations.
-- **`uses @x: C`**, without brackets, permits every operation of `C` (`spec/05 §3` rule 1).
-- A function may have several `uses` clauses, one per reference. They come after `requires` and `ensures`, and before `fails` (`spec/02 §3`).
-- **`uses of p`** (from edition `0.2` on): the function performs the effects of its parameter `p`, a function value (`spec/05 §9` rule 9).
+- **`uses @x: C`**, without brackets, permits every operation of `C`.
+- A function may have several `uses` clauses, one per reference. They come after `requires` and `ensures`, and before `fails`.
+- **`uses of p`** (from edition `0.2` on): the function performs the effects of its parameter `p`, a function value.
 
 ## Examples
 
-Capabilities pass downward by name. A callee that needs `@log` gets the caller's `@log`, with at least the operations it needs (`spec/05 §4`):
+Capabilities pass downward by name. A callee that needs `@log` gets the caller's `@log`, with at least the operations it needs:
 
 ```una
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -63,11 +61,11 @@ pub twice(line: Text) -> Unit
   note(line)
 ```
 
-An operation outside the clause's list is rejected (`spec/05 §3` rule 2):
+An operation outside the clause's list is rejected:
 
 ```una
 -- fails with U3002
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -76,16 +74,16 @@ pub capability Store
 pub save(key: Text) -> Unit
   uses @store: Store[get]
 =
-  @store.put(key, value: "x")
+  @store.put(key, value: "Desk lamp")
 ```
 
 ## Edge cases
 
-**A reference must be in scope** (`spec/05 §3` rule 2, `spec/05 §9` rule 1):
+**A reference must be in scope**:
 
 ```una
 -- fails with U3001
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -96,11 +94,11 @@ pub note(line: Text) -> Unit
   @other.write(line)
 ```
 
-**A function without `uses` is pure.** In a `pub` function, which declares its `uses`, an `@` is rejected (`spec/04 §2` rule 4, `spec/05 §9` rule 1):
+**A function without `uses` is pure.** In a `pub` function, which declares its `uses`, an `@` is rejected:
 
 ```una
 -- fails with U3004
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -108,11 +106,11 @@ pub capability Log
 pub note(line: Text) -> Unit = @log.write(line)
 ```
 
-**A call with effects needs the caller's `uses`.** A pure `pub` function cannot call a function with effects (`spec/05 §9` rule 1):
+**A call with effects needs the caller's `uses`.** A pure `pub` function cannot call a function with effects:
 
 ```una
 -- fails with U3003
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -125,11 +123,11 @@ note(line: Text) -> Unit
 pub caller(line: Text) -> Unit = note(line)
 ```
 
-**One clause per reference** (`spec/05 §9` rule 8):
+**One clause per reference**:
 
 ```una
 -- fails with U1002
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -143,8 +141,8 @@ pub note(line: Text) -> Unit
 
 Further rules:
 
-- **Inferred for private functions.** A private function without `uses` gets the least set that covers its operations and its callees' requirements. A `pub` function declares every `uses` (`spec/04 §5`, `spec/05 §9` rule 2).
-- **Attenuation.** Passing a capability with more operations than the callee needs is allowed, and the callee can use only its own list (`spec/05 §4`).
+- **Inferred for private functions.** A private function without `uses` gets the least set that covers its operations and its callees' requirements. A `pub` function declares every `uses`.
+- **Attenuation.** Passing a capability with more operations than the callee needs is allowed, and the callee can use only its own list.
 - **Rebinding.** A caller can give a callee another reference, or a handler, with `with`. See [`@` bindings and `with`](with.md).
 - **Host capabilities** reach a program only through `main`'s `uses`, from the runtime's grants. See [host capabilities and grants](host.md).
 
@@ -158,10 +156,11 @@ Further rules:
 
 ## Edition
 
-`uses` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `uses of p` (ADR 0062).
+`uses` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `uses of p`.
 
 ## Normative source
 
 - `spec/05 §1`: the model; `spec/05 §3`: using capabilities; `spec/05 §4`: passing capabilities; `spec/05 §9`: reporting.
 - `spec/04 §2` rule 4: pure functions; `spec/04 §5`: inference.
 - `spec/02 §3`: the grammar and clause order.
+- Decision record: [ADR 0062](../../../adr/0062-effect-polymorphism.md), for `uses of`.

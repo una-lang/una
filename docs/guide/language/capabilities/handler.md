@@ -9,10 +9,10 @@ codes: [U2001, U3008, U3009, U3010, U3011, U5001]
 
 ## What it does
 
-A handler implements a capability in Una: it gives a body to each operation (`spec/05 §5`). A caller installs it for one statement with `with`, or an example installs it with `given`, so code that needs the capability runs against the handler instead of the outside world (`spec/05 §4`, `spec/08 §2`). Handler bodies are ordinary Una code, fully checked and verified (`spec/05 §5` rule 2).
+A handler implements a capability in Una: it gives a body to each operation. A caller installs it for one statement with `with`, or an example installs it with `given`, so code that needs the capability runs against the handler instead of the outside world. Handler bodies are ordinary Una code, fully checked and verified.
 
 ```una
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -25,10 +25,10 @@ read(key: Text) -> Text
 =
   @store.get(key)
 
-pub demo_read() -> Text
+pub preview_name() -> Text
 =
-  let v = read("a") with @store = fixed(value: "x")
-  v
+  let name = read("LAMP-01") with @store = fixed(value: "Desk lamp")
+  name
 ```
 
 ## Forms
@@ -41,20 +41,18 @@ handler_op      = "op" lower_ident "(" [ lower_ident { "," lower_ident } ] ")"
                   "=" inline_or_block ;
 ```
 
-This is `spec/02 §4`.
-
-- **Parameters** of the handler are captured values, given where it is installed: `fixed(value: "x")` (`spec/05 §5` rule 3).
+- **Parameters** of the handler are captured values, given where it is installed: `fixed(value: "Desk lamp")`.
 - **`for C`** names the capability the handler implements.
-- **`uses`** lines give the handler capabilities of its own (`spec/05 §5` rule 3).
-- **`op name(params) = body`** implements one operation. Its parameters are written without types: they come from the capability's declaration (`spec/05 §5` rule 1).
+- **`uses`** lines give the handler capabilities of its own.
+- **`op name(params) = body`** implements one operation. Its parameters are written without types: they come from the capability's declaration.
 
 ## Examples
 
-A handler implements every operation of its capability (`spec/05 §5` rule 1):
+A handler implements every operation of its capability:
 
 ```una
 -- fails with U3011
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -64,11 +62,11 @@ handler fixed(value: Text) for Store
   op get(key) = value
 ```
 
-A handler body must keep the operation's `ensures`, which callers rely on (`spec/05 §5` rule 2, `spec/12 §3`):
+A handler body must keep the operation's `ensures`, which callers rely on:
 
 ```una
 -- fails with U5001
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -80,11 +78,11 @@ handler blank() for Store
 
 ## Edge cases
 
-**Only the capability's operations** (`spec/05 §9` rule 3):
+**Only the capability's operations**:
 
 ```una
 -- fails with U3010
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -94,43 +92,43 @@ handler fixed(value: Text) for Store
   op extra(key) = value
 ```
 
-**`for` names a capability** (`spec/05 §9` rule 3):
+**`for` names a capability**:
 
 ```una
 -- fails with U3010
-module demo
+module shop
 
-pub kind Point
-  x: Int
+pub kind Address
+  street: Text
 
-handler h() for Point
+handler shipping() for Address
   op get(key) = key
 ```
 
-**Failures of the operation's kind only.** An operation body fails only with its operation's error kind, and passes only an equal kind (U3008) (`spec/05 §9` rule 3):
+**Failures of the operation's kind only.** An operation body fails only with its operation's error kind, and passes only an equal kind (U3008):
 
 ```una
 -- fails with U3009
-module demo
+module shop
 
 pub kind StoreError = | Timeout
 
-pub kind Other = | Nope
+pub kind PaymentError = | Declined
 
 pub capability Store
   op get(key: Text) -> Text
     fails StoreError
 
 handler broken() for Store
-  op get(key) = fail Nope
+  op get(key) = fail Declined
 ```
 
 Further rules:
 
-- **Not a value.** A handler is installed only with `with` or `given`. Binding it with `let` is U2001 (`spec/05 §5` rule 4).
-- **Worst caller.** An operation body is checked for the worst caller its operation allows: every parameter is raised to the operation's `accepts` label. So a handler of an operation that accepts `internal` data cannot print it, while a fake store that fails or returns fixed values stays valid (`spec/05 §5` rule 5).
-- **Its own authority.** A handler's `uses` must be held where it is installed (`spec/05 §4` rule 2).
-- **Host capabilities** may have user handlers too, such as a fake `Keys` in examples. The host implementations are used only by `una run` (`spec/14 §3`).
+- **Not a value.** A handler is installed only with `with` or `given`. Binding it with `let` is U2001.
+- **Worst caller.** An operation body is checked for the worst caller its operation allows: every parameter is raised to the operation's `accepts` label. So a handler of an operation that accepts `internal` data cannot print it, while a fake store that fails or returns fixed values stays valid.
+- **Its own authority.** A handler's `uses` must be held where it is installed.
+- **Host capabilities** may have user handlers too, such as a fake `Keys` in examples. The host implementations are used only by `una run`.
 
 ## Diagnostics
 

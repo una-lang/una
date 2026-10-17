@@ -1,0 +1,1 @@
+- **Capability guide pages read as guides** (#859). The pages for `capability` and `op`, handlers, host capabilities and grants, `uses` and `with` use store examples instead of placeholders, keep their spec citations in the "Normative source" part, and name decision records only there.

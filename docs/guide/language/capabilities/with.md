@@ -9,13 +9,13 @@ codes: [U1002, U2001, U3001, U3005, U3006, U3010, U3016]
 
 ## What it does
 
-A capability reference, `@name`, is a name for authority, not a value. Capabilities pass downward by name: a callee that says `uses @x: C[ops]` gets the caller's `@x` (`spec/05 §4`). `with` changes what the callee's name refers to, for one statement:
+A capability reference, `@name`, is a name for authority, not a value. Capabilities pass downward by name: a callee that says `uses @x: C[ops]` gets the caller's `@x`. `with` changes what the callee's name refers to, for one statement:
 
 - **`with @x = @y`** gives the callee the caller's `@y` under the name `@x`;
-- **`with @x = h(args)`** installs a handler `h`, written in Una, as the callee's `@x` (`spec/05 §4`).
+- **`with @x = h(args)`** installs a handler `h`, written in Una, as the callee's `@x`.
 
 ```una
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -39,17 +39,15 @@ with_clause     = "with" cap_binding { "," cap_binding } ;
 cap_binding     = cap_ref "=" ( cap_ref | handler_call ) ;
 ```
 
-This is `spec/02 §6`.
-
-- A `with` clause ends a statement, a `let` or a final expression, and scopes over that expression only (`spec/05 §4` rule 3).
+- A `with` clause ends a statement, a `let` or a final expression, and scopes over that expression only.
 - One clause may bind several references, separated by commas.
 
 ## Examples
 
-A handler installed for one call. The handler's operations run in place of a real store (`spec/05 §4` rule 2):
+A handler installed for one call. The handler's operations run in place of a real store:
 
 ```una
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -62,17 +60,17 @@ read(key: Text) -> Text
 =
   @store.get(key)
 
-pub demo_read() -> Text
+pub preview_name() -> Text
 =
-  let v = read("a") with @store = fixed(value: "x")
-  v
+  let name = read("LAMP-01") with @store = fixed(value: "Desk lamp")
+  name
 ```
 
-Both sides of a rebinding have the same capability (`spec/05 §4` rule 1):
+Both sides of a rebinding have the same capability:
 
 ```una
 -- fails with U3001
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -86,18 +84,18 @@ note(line: Text) -> Unit
   @log.write(line)
 
 pub caller(line: Text) -> Unit
-  uses @c: Ticker[now]
+  uses @ticker: Ticker[now]
 =
-  note(line) with @log = @c
+  note(line) with @log = @ticker
 ```
 
 ## Edge cases
 
-**References are second-class.** A capability reference cannot be bound with `let`, passed as an ordinary argument, returned, stored, compared or interpolated (`spec/05 §6`):
+**References are second-class.** A capability reference cannot be bound with `let`, passed as an ordinary argument, returned, stored, compared or interpolated:
 
 ```una
 -- fails with U3005
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
@@ -105,31 +103,31 @@ pub capability Log
 pub keep() -> Unit
   uses @log: Log[write]
 =
-  let l = @log
+  let saved = @log
   unit
 ```
 
-**So are effectful function values.** A function value with `uses` or `fails` may only be called, or passed directly as an argument. It never outlives the `with` scope it was created in (`spec/05 §6`, `spec/05 §9` rule 6):
+**So are effectful function values.** A function value with `uses` or `fails` may only be called, or passed directly as an argument. It never outlives the `with` scope it was created in:
 
 ```una
 -- fails with U3006
-module demo
+module shop
 
 pub capability Log
   op write(line: Text) -> Unit
 
-pub keep(f: fn() -> Unit uses @log: Log[write]) -> Unit
+pub keep(writer: fn() -> Unit uses @log: Log[write]) -> Unit
   uses @log: Log[write]
 =
-  let g = f
-  g()
+  let later = writer
+  later()
 ```
 
-**Handlers are not values.** A handler is installed with `with`, or with `given` in an example (`spec/05 §5` rule 4):
+**Handlers are not values.** A handler is installed with `with`, or with `given` in an example:
 
 ```una
 -- fails with U2001
-module demo
+module shop
 
 pub capability Store
   op get(key: Text) -> Text
@@ -139,19 +137,19 @@ handler fixed(value: Text) for Store
 
 pub keep() -> Unit
 =
-  let h = fixed(value: "x")
+  let catalog = fixed(value: "Desk lamp")
   unit
 ```
 
 Further rules:
 
-- **Attenuation.** A caller may give a reference with more operations than the callee needs. The callee uses only its own (`spec/05 §4`).
-- **The handler's own `uses`** must be held where it is installed (`spec/05 §4` rule 2, `spec/05 §9` rule 4).
-- **A handler for the right capability.** `with @x = h(...)` needs `h` to implement the capability the callee expects at `@x` (U3010, `spec/05 §4` rule 2).
-- **One binding per reference** in a clause (U1002, `spec/05 §9` rule 8).
-- **No type argument holds an effectful function type,** so such a value cannot be stored in a list either (U3016, `spec/05 §6`).
-- **Why.** Authority moves only downward, along calls, through `uses` and `with`. So every function's reachable authority is visible in its header, and capability confinement holds without an escape analysis (`spec/05 §6`, `spec/10 §6`).
-- **A bare reference**, not followed by `.op(...)`, appears only on either side of a `with` binding or after `given @x =` (U3005, `spec/02 §8`).
+- **Attenuation.** A caller may give a reference with more operations than the callee needs. The callee uses only its own.
+- **The handler's own `uses`** must be held where it is installed.
+- **A handler for the right capability.** `with @x = h(...)` needs `h` to implement the capability the callee expects at `@x` (U3010).
+- **One binding per reference** in a clause (U1002).
+- **No type argument holds an effectful function type,** so such a value cannot be stored in a list either (U3016).
+- **Why.** Authority moves only downward, along calls, through `uses` and `with`. So every function's reachable authority is visible in its header, and capability confinement holds without an escape analysis.
+- **A bare reference**, not followed by `.op(...)`, appears only on either side of a `with` binding or after `given @x =` (U3005).
 
 ## Diagnostics
 
@@ -172,3 +170,4 @@ Further rules:
 - `spec/05 §4`: passing capabilities and `with`; `spec/05 §6`: the second-class rule; `spec/05 §9`: reporting.
 - `spec/02 §6`: the grammar; `spec/02 §8`: where a bare reference may appear.
 - `spec/10 §6`: capability confinement.
+- `spec/05 §5` rule 4: handlers are not values.
