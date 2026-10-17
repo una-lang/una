@@ -9,7 +9,7 @@ codes: [U4004, U7005]
 
 ## What it does
 
-A trusted module may hold declassification policies, the only code that lowers a label (`spec/07 §5, §6`). A module is trusted only when two places agree: its header says `trusted module`, and the package lists it under `[trusted] modules` in `una.toml`. The rest of its code is checked as usual. Trusted modules and their line counts are listed in the build report's trusted base, so reviewers know exactly what to read (`spec/07 §6`).
+A trusted module may hold declassification policies, the only code that lowers a label. A module is trusted only when two places agree: its header says `trusted module`, and the package lists it under `[trusted] modules` in `una.toml`. The rest of its code is checked as usual. Trusted modules and their line counts are listed in the build report's trusted base, so reviewers know exactly what to read.
 
 `una.toml`
 
@@ -57,11 +57,11 @@ pub size(text: confidential[Private] Text) -> Nat = length_band(text)
 module_header   = [ "trusted" ] "module" module_path NEWLINE ;
 ```
 
-This is `spec/02 §1`. In `una.toml`, `[trusted] modules` is an array of module paths, each one of the package whose header says `trusted module` (`spec/13 §7`).
+In `una.toml`, `[trusted] modules` is an array of module paths, each one of the package whose header says `trusted module`.
 
 ## Examples
 
-The header alone does not make a module trusted (`spec/07 §6`):
+The header alone does not make a module trusted:
 
 `una.toml`
 
@@ -91,7 +91,7 @@ pub policy length_band
 hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 ```
 
-Without both, a policy has no place to live (`spec/07 §6`):
+Without both, a policy has no place to live:
 
 `una.toml`
 
@@ -125,8 +125,8 @@ hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 
 Further rules:
 
-- **Everything else is checked.** Only the `via` functions of policies skip label checks; every other declaration of a trusted module is checked normally, and every obligation of a `via` function is proven (`spec/07 §5` rule 3, `spec/07 §6`).
-- **Reported.** The build report's trusted base lists each trusted module with its line count (`spec/07 §6`, `spec/13 §6`).
+- **Everything else is checked.** Only the `via` functions of policies skip label checks; every other declaration of a trusted module is checked normally, and every obligation of a `via` function is proven.
+- **Reported.** The build report's trusted base lists each trusted module with its line count.
 
 ## Diagnostics
 

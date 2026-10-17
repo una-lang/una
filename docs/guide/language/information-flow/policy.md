@@ -9,7 +9,7 @@ codes: [U4002, U4004, U4005]
 
 ## What it does
 
-Labels only rise, except through a `policy`: a declared, named release of data from one label to a lower one, through a function that the policy names (`spec/07 §5`). A policy lives in a trusted module, and every call of it is listed in the build report with its purpose and owner (`spec/07 §5` rule 5, `spec/07 §6`). So every place where data goes down is visible and reviewed.
+Labels only rise, except through a `policy`: a declared, named release of data from one label to a lower one, through a function that the policy names. A policy lives in a trusted module, and every call of it is listed in the build report with its purpose and owner. So every place where data goes down is visible and reviewed.
 
 `una.toml`
 
@@ -63,19 +63,17 @@ policy_decl     = [ "pub" ] "policy" lower_ident NEWLINE INDENT
                   DEDENT ;
 ```
 
-This is `spec/02 §4`.
+- **`from`** and **`to`**: the types before and after the release. They differ only in their labels.
+- **`via`**: the private function of the trusted module that computes the release.
+- **`purpose`** and **`owner`**: why the release exists and who answers for it. The build report lists them at every call.
 
-- **`from`** and **`to`**: the types before and after the release. They differ only in their labels (`spec/07 §5` rule 4).
-- **`via`**: the private function of the trusted module that computes the release (`spec/07 §5` rule 3).
-- **`purpose`** and **`owner`**: why the release exists and who answers for it. The build report lists them at every call (`spec/07 §5` rule 5).
-
-A policy `p` is called as a function, `p(v)`, with the `uses` and `fails` of its `via` function (`spec/07 §5` rule 1).
+A policy `p` is called as a function, `p(v)`, with the `uses` and `fails` of its `via` function.
 
 ## Examples
 
 Above, `size` hands its caller a `public` number computed from `confidential` text: only the length band leaves, through `length_band`, and the text stays labeled.
 
-A policy is allowed only in a trusted module (`spec/07 §6`):
+A policy is allowed only in a trusted module:
 
 `una.toml`
 
@@ -107,7 +105,7 @@ hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 
 ## Edge cases
 
-**The `via` function is private.** The policy is its only entry point, so no other code can call it with labeled data (`spec/07 §5` rule 3):
+**The `via` function is private.** The policy is its only entry point, so no other code can call it with labeled data:
 
 `una.toml`
 
@@ -140,7 +138,7 @@ pub policy length_band
 pub hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 ```
 
-**No `requires` on `via`.** A policy call checks its argument against `from` only, so the `via` body may assume nothing more (`spec/07 §5` rule 4):
+**No `requires` on `via`.** A policy call checks its argument against `from` only, so the `via` body may assume nothing more:
 
 `una.toml`
 
@@ -176,7 +174,7 @@ hundreds(text: confidential[Private] Text) -> public Nat
   text.len / 100
 ```
 
-**No release under a labeled program counter.** At a call `p(v)`, the program counter must be below the `to` label. Choosing whether to release by a `secret` condition would reveal it (`spec/07 §5` rule 2):
+**No release under a labeled program counter.** At a call `p(v)`, the program counter must be below the `to` label. Choosing whether to release by a `secret` condition would reveal it:
 
 `una.toml`
 
@@ -221,9 +219,9 @@ pub size(text: confidential[Private] Text, flag: secret Bool) -> secret Nat = if
 
 Further rules:
 
-- **Inside `via`, labels are not checked.** The `via` function is part of the trusted base; its refinements, preconditions and postconditions are still proven (`spec/07 §5` rule 3).
-- **Labeled failures.** The failure of a policy call is labeled by its `to` label, so `if error pass` and `if error fail` on it are U4002 when that label is above `public` (`spec/07 §5` rule 6).
-- **Keys.** The result of `Keys.hmac` is labeled `internal` joined with every label of its data; lowering it further takes a policy, as `spec/07 §5`'s example does for a phone number (`spec/14 §3`, ADR 0039).
+- **Inside `via`, labels are not checked.** The `via` function is part of the trusted base; its refinements, preconditions and postconditions are still proven.
+- **Labeled failures.** The failure of a policy call is labeled by its `to` label, so `if error pass` and `if error fail` on it are U4002 when that label is above `public`.
+- **Keys.** The result of `Keys.hmac` is labeled `internal` joined with every label of its data; lowering it further takes a policy, as the specification's example does for a phone number.
 
 ## Diagnostics
 
@@ -241,3 +239,4 @@ Policies are the same in editions `0.1` and `0.2`.
 - `spec/02 §4`: the grammar.
 - `spec/13 §6`: the build report.
 - `spec/14 §3`: `Keys.hmac` and its labels.
+- Decision record: [ADR 0039](../../../adr/0039-labels-of-keys-hmac.md), for the labels of `Keys.hmac`.
