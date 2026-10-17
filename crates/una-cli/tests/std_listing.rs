@@ -105,18 +105,56 @@ fn every_item_has_doc_comments_that_cite_spec_sections_that_exist() {
 
 /// What in the doc comment `lines` the website could not render as written (#695): it joins
 /// the lines into one Markdown paragraph that may hold HTML, so a `<` or `&` outside a code
-/// span, or a line that starts a list item or a code fence, is refused.
+/// span, or a line that starts a list item or a code fence, is refused. Code spans are told
+/// apart by pairing single backticks, which holds only without a backslash (an escaped backtick
+/// opens no span), with every backtick paired, and with no run of two or more (Markdown pairs
+/// runs of equal length only); a bracket outside code spans (any link, image or link
+/// definition), a heading, a quote and a control or invisible format character are refused too
+/// (#861).
 fn doc_problems(lines: &[String]) -> Vec<String> {
     let mut problems = Vec::new();
     let text = lines.join(" ");
+    // The segments between backticks are code spans only when no backslash escapes a backtick
+    // and every backtick is paired; Markdown reads anything else differently (#861).
+    if text.contains('\\') {
+        problems.push(format!(
+            "a backslash, which could escape a backtick: {text:?}"
+        ));
+    }
+    if text.matches('`').count() % 2 == 1 {
+        problems.push(format!("a backtick without its pair: {text:?}"));
+    }
+    // Markdown pairs runs of backticks of equal length only, so pairing single backticks is
+    // exact only when no run is longer.
+    if text.contains("``") {
+        problems.push(format!("a run of backticks: {text:?}"));
+    }
+    if text.chars().any(|c| c.is_control())
+        || text.contains([
+            '\u{200b}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{feff}',
+        ])
+    {
+        problems.push(format!("a control or invisible format character: {text:?}"));
+    }
     // Outside code spans: the even segments between backticks.
     for (index, segment) in text.split('`').enumerate() {
         if index % 2 == 0 && segment.contains(['<', '&']) {
             problems.push(format!("`<` or `&` outside a code span: {segment:?}"));
         }
+        // A bracket outside a code span: an inline, reference or image link, or a link
+        // definition.
+        if index % 2 == 0 && segment.contains(['[', ']']) {
+            problems.push(format!(
+                "a bracket, which could make a link or an image, outside a code span: {segment:?}"
+            ));
+        }
     }
     for line in lines {
         let line = line.trim_start();
+        if line.starts_with(['#', '>']) {
+            problems.push(format!("a line that starts a heading or a quote: {line:?}"));
+        }
         let numbered = line
             .split_once(". ")
             .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
@@ -163,6 +201,17 @@ fn the_doc_comment_rules_refuse_each_case() {
         &["1. one"],
         &["```", "code", "```"],
         &["~~~"],
+        &["An escaped \\`<img src=x onerror=f()>` backtick."],
+        &["An unpaired `<b> backtick."],
+        &["A [link](https://example.com/)."],
+        &["An ![image](https://example.com/i.png)."],
+        &["# A heading"],
+        &["> A quote"],
+        &["A right\u{202e}to-left override."],
+        &["a ```<img src=x>`"],
+        &["``<img>`x`"],
+        &["A [reference][docs] link."],
+        &["A [shortcut] link.", "[shortcut]: https://example.com/"],
     ] {
         assert!(!doc_problems(&lines(bad)).is_empty(), "accepted {bad:?}");
     }
