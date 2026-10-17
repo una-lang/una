@@ -1,0 +1,1 @@
+- **Language guide pages read as guides** (#859). The construct pages under `docs/guide/language/` (failures, capabilities, control flow, types and contracts, information flow) use store examples instead of placeholders, keep their spec citations in the "Normative source" part, and name decision records only there.
