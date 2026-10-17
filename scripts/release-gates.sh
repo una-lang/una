@@ -41,8 +41,12 @@
 #                two-run oracle and the comparison with the formal model's re-check, with five
 #                canaries, failing closed (#767, #791). It runs after `formal`, and builds the
 #                re-check's executable (`lake build una-core-check`) with the same pinned Lean.
-#                macOS only: every compiler run is under sandbox-exec. Its summary is
+#                On macOS every compiler run is under sandbox-exec. Its summary is
 #                OUT/hunt/summary.json
+#   hunt-linux-arm64
+#                the same fixed run on linux/arm64 (scripts/hunt-linux.sh, #793): the container
+#                is the gate's sandbox (no network, read-only root, no capability, not root) and
+#                Landlock confines each run. Its summary is OUT/hunt-linux-arm64/summary.json
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, record.md, the full validation record, and, when the record names its
@@ -57,7 +61,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -289,6 +293,15 @@ gate_hunt() {
         cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \
             --una "$una" --out "$1" --tip "$2" --core-check "$core_check" --z3 "$3/bin/z3"' \
         sh "$hunt" "$SHA" "$Z3"
+}
+
+gate_hunt-linux-arm64() {
+    # The hunt gate on linux/arm64 (#793): scripts/hunt-linux.sh builds the release `una` and
+    # the re-check in the image of scripts/local-ci.sh, then runs the gate in a hardened
+    # container, its evidence in OUT/hunt-linux-arm64.
+    local hunt=$OUT/hunt-linux-arm64
+    rm -rf "${hunt:?}"
+    run hunt-linux-arm64 scripts/hunt-linux.sh --linux-arm64 "$hunt" "$SHA"
 }
 
 gate_site() {

@@ -52,8 +52,8 @@ def parse_check(run):
 
 
 def check(una, pkg_dir, root, timeout):
-    r = sandbox.run([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir, writable=root,
-                    timeout=timeout)
+    r = sandbox.run_fresh([una, "--json", "check", "--tier", "0", "."], cwd=pkg_dir, root=root,
+                          timeout=timeout)
     return parse_check(r)
 
 
@@ -280,22 +280,22 @@ def differ(rows, una, core_check, root, timeout, out, z3=None):
             # needs the solver (`judge_residual`).
             fv = None
             if z3:
-                fv = parse_check(sandbox.run(
+                fv = parse_check(sandbox.run_fresh(
                     [una, "--json", "check", ".", "--solver-wallclock", str(FULL_CHECK_WALLCLOCK)],
-                    cwd=pkg, writable=root, timeout=timeout, env_extra=solver_env(z3)))
+                    cwd=pkg, root=root, timeout=timeout, env_extra=solver_env(z3)))
             r = judge_residual(v.kind, fv, prog.variant, prog.expect, prog.prove)
             result.update(full=None if fv is None else fv.row(), **r)
             tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + r["full_kind"])] += 1
         if v.kind == "accepted":
-            exp = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root,
-                              timeout=timeout)
+            exp = sandbox.run_fresh([una, "--json", "core", "."], cwd=pkg, root=root,
+                                    timeout=timeout)
             core = os.path.join(pkg, "core.json")
             with open(core, "w", encoding="utf-8") as f:
                 f.write(exp.stdout)
             rec = None
             if not exp.timed_out and exp.code == 0:
-                rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout,
-                                  env_extra=RECHECK_ENV)
+                rec = sandbox.run_fresh([core_check, core], cwd=pkg, root=root, timeout=timeout,
+                                        env_extra=RECHECK_ENV)
             main = "app.main.run" if row["op"].startswith("F") else None
             j = judge_differ(exp, exp.stdout, rec, main=main, expect_main=prog.recheck)
             result.update(differ=j["kind"], differ_detail=j["detail"], recheck=j["recheck"],
