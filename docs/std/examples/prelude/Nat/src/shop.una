@@ -1,0 +1,14 @@
+module shop
+
+--- The units left on a shelf, which can never be negative.
+remaining(stock: Nat, sold: Nat) -> Nat
+=
+  if sold > stock then 0 else stock - sold
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let left = remaining(12, sold: 5)
+  @console.print("{left} left")
+  let none = remaining(3, sold: 5)
+  @console.print("{none} left")

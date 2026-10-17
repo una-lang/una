@@ -1,0 +1,10 @@
+module shop
+
+--- A delivery adds to the stock.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit stock: Map[Text, Int] = empty_map()
+  edit stock.set(key: "lamp", value: 3)
+  edit stock.set(key: "lamp", value: 5)
+  @console.print("{stock.len} entries")

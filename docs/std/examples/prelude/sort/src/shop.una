@@ -1,0 +1,9 @@
+module shop
+
+--- A cart's prices, lowest first.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let sorted = [1999, 499, 2499].sort()
+  let shown = sorted.map(each: fn(p) -> "{p}")
+  @console.print(join(shown, separator: ", "))

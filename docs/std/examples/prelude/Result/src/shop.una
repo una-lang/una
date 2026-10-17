@@ -1,0 +1,18 @@
+module shop
+
+--- A quantity checked without failing: the outcome is a value.
+checked_quantity(units: Int) -> Result[Int, Text]
+=
+  if units > 0 then Ok(units) else Err("no units")
+
+describe(units: Int) -> Text
+=
+  when checked_quantity(units)
+    is Ok(n) -> "{n} units"
+    is Err(failure) -> failure
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(describe(3))
+  @console.print(describe(0))

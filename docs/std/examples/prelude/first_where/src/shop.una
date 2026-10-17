@@ -1,0 +1,10 @@
+module shop
+
+--- The first item of a cart whose name starts with a letter.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let names = ["lamp", "desk", "door"]
+  when names.first_where(keep: fn(n) -> n.starts_with(prefix: "d"))
+    is Some(name) -> @console.print(name)
+    is None -> @console.print("none")

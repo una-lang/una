@@ -1,0 +1,10 @@
+module shop
+
+--- An item taken out of the range.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
+  edit stock.remove(key: "desk")
+  let desk = stock.has(key: "desk")
+  @console.print("desk: {desk}")

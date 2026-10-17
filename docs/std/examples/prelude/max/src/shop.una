@@ -1,0 +1,11 @@
+module shop
+
+--- How many units to reorder, never fewer than none, and the last name in alphabetical
+--- order.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let reorder = max(0, b: 10 - 14)
+  @console.print("reorder {reorder}")
+  let last = max("Desk lamp", b: "Chair")
+  @console.print(last)

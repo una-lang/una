@@ -1,0 +1,8 @@
+module shop
+
+--- The names of a cart in upper case.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let names = ["lamp", "desk"].map(each: fn(n) -> n.to_upper())
+  @console.print(join(names, separator: ", "))

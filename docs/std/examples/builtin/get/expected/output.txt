@@ -1,0 +1,2 @@
+lamp: 3
+chair: not stocked

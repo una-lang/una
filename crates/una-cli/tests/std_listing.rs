@@ -502,14 +502,16 @@ fn each_builtin_signature_checks_in_exactly_its_editions_and_a_wrong_call_does_n
 }
 
 /// The parts of a function's declaration the reference describes (#853): its parameters' names,
-/// its result type, the kind it fails with and its preconditions, from the declaration line
-/// `pub NAME[...](PARAMS) -> RESULT`, a `fails KIND` line and its `requires` lines.
+/// its result type, the kind it fails with, its preconditions and the parameters whose effects it
+/// has, from the declaration line `pub NAME[...](PARAMS) -> RESULT`, a `fails KIND` line, its
+/// `requires` lines and its `uses of p` and `fails of p` lines.
 #[derive(Debug, PartialEq)]
 struct Signature {
     params: Vec<String>,
     result: String,
     fails: Option<String>,
     requires: Vec<String>,
+    effects: Vec<String>,
 }
 
 fn signature(declaration: &str) -> Signature {
@@ -569,11 +571,92 @@ fn signature(declaration: &str) -> Signature {
             .map(|rest| rest.trim().to_owned())
             .collect::<Vec<String>>()
     };
+    let mut effects: Vec<String> = clause("uses of ")
+        .into_iter()
+        .chain(clause("fails of "))
+        .collect();
+    effects.sort();
+    effects.dedup();
     Signature {
         params,
         result,
-        fails: clause("fails ").into_iter().next(),
+        fails: clause("fails ")
+            .into_iter()
+            .find(|kind| !kind.starts_with("of ")),
         requires: clause("requires "),
+        effects,
+    }
+}
+
+/// One signature line of a built-in method's declaration, `[edit ]x.name[(PARAMS)] -> RESULT`
+/// with its `where x: TYPE` line: the receiver's type, the parameters' names and the result.
+#[derive(Debug, PartialEq)]
+struct Method {
+    receiver: String,
+    params: Vec<String>,
+    result: String,
+}
+
+/// The signature lines of a built-in method's declaration, one per receiver type.
+fn methods(declaration: &str) -> Vec<Method> {
+    let mut found: Vec<Method> = Vec::new();
+    for line in declaration.lines() {
+        if let Some(receiver) = line.trim().strip_prefix("where ") {
+            if let Some(last) = found.last_mut() {
+                last.receiver = receiver
+                    .split_once(':')
+                    .map_or("", |(_, t)| t)
+                    .trim()
+                    .to_owned();
+            }
+            continue;
+        }
+        let line = line.trim().trim_start_matches("edit ");
+        let Some((_, rest)) = line.split_once('.') else {
+            continue;
+        };
+        let (params, result) = if rest.split("->").next().unwrap_or("").contains('(') {
+            let sig = signature(rest);
+            (sig.params, sig.result)
+        } else {
+            (
+                Vec::new(),
+                rest.split_once("->")
+                    .map_or("", |(_, r)| r)
+                    .trim()
+                    .to_owned(),
+            )
+        };
+        found.push(Method {
+            receiver: String::new(),
+            params,
+            result,
+        });
+    }
+    found
+}
+
+/// The shape of a kind's declaration: a sum (`= A | B(x: T)`, its variants), a record (no `=`,
+/// one `name: Type` line per field) or a definition over another type (`= Int where it >= 0`).
+enum KindForm {
+    Sum,
+    Record(Vec<String>),
+    Definition(String),
+}
+
+fn kind_form(declaration: &str) -> KindForm {
+    let first = declaration.lines().next().unwrap_or("");
+    match first.split_once('=') {
+        Some((_, body)) if body.contains('|') => KindForm::Sum,
+        Some((_, body)) => KindForm::Definition(body.trim().to_owned()),
+        None => KindForm::Record(
+            declaration
+                .lines()
+                .skip(1)
+                .filter_map(|line| line.trim().split_once(':'))
+                .map(|(field, _)| field.trim().to_owned())
+                .collect(),
+        ),
     }
 }
 
@@ -739,9 +822,23 @@ fn cells(line: &str) -> Vec<String> {
 }
 
 /// The cost cells for `name` in `text`: in the first table whose header has a column that
-/// starts with `Time`, that column of each row whose first cell has the call `` `name( ``.
-fn cost_cells(text: &str, name: &str) -> Vec<String> {
+/// starts with `Time`, that column of each row whose first cell has the call `` `name( `` or,
+/// for a built-in method, `.name` as a whole word.
+fn cost_cells(text: &str, name: &str, method: bool) -> Vec<String> {
     let call = format!("`{name}(");
+    let names = |first: &str| {
+        if method {
+            let dotted = format!(".{name}");
+            first.match_indices(&dotted).any(|(at, _)| {
+                first[at + dotted.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+            })
+        } else {
+            first.contains(&call)
+        }
+    };
     let lines: Vec<&str> = text.lines().collect();
     for (at, line) in lines.iter().enumerate() {
         let starts = line.starts_with('|') && (at == 0 || !lines[at - 1].starts_with('|'));
@@ -756,7 +853,7 @@ fn cost_cells(text: &str, name: &str) -> Vec<String> {
             .iter()
             .take_while(|row| row.starts_with('|'))
             .map(|row| cells(row))
-            .filter(|row| row.first().is_some_and(|first| first.contains(&call)))
+            .filter(|row| row.first().is_some_and(|first| names(first)))
             .filter_map(|row| row.get(column).cloned())
             .collect();
     }
@@ -842,9 +939,16 @@ fn code_bytes(src: &str) -> Vec<bool> {
     code
 }
 
-/// Where in `src` the identifier `name` occurs as code: whole, after a `.` only when `method`,
-/// and followed by `(` when `call`.
-fn occurrences(src: &str, code: &[bool], name: &str, call: bool, method: bool) -> Vec<usize> {
+/// Where in `src` the identifier `name` occurs as code: whole, after a `.` only when `method`, not
+/// after a `.` only when `free`, and followed by `(` when `call`.
+fn occurrences(
+    src: &str,
+    code: &[bool],
+    name: &str,
+    call: bool,
+    free: bool,
+    method: bool,
+) -> Vec<usize> {
     let identifier = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_';
     let bytes = src.as_bytes();
     src.match_indices(name)
@@ -852,7 +956,11 @@ fn occurrences(src: &str, code: &[bool], name: &str, call: bool, method: bool) -
         .filter(|&at| {
             let end = at + name.len();
             code[at..end].iter().all(|c| *c)
-                && (at == 0 || !identifier(&bytes[at - 1]) && (method || bytes[at - 1] != b'.'))
+                && (if at > 0 && bytes[at - 1] == b'.' {
+                    method
+                } else {
+                    free && (at == 0 || !identifier(&bytes[at - 1]))
+                })
                 && bytes.get(end).is_none_or(|b| !identifier(b))
                 && (!call || bytes.get(end) == Some(&b'('))
         })
@@ -905,8 +1013,15 @@ fn reached_from_main(src: &str, code: &[bool]) -> Vec<std::ops::Range<usize>> {
         let body = functions[caller].1.clone();
         for (callee, (name, _)) in functions.iter().enumerate() {
             if !reached[callee]
-                && !occurrences(&src[body.clone()], &code[body.clone()], name, true, true)
-                    .is_empty()
+                && !occurrences(
+                    &src[body.clone()],
+                    &code[body.clone()],
+                    name,
+                    true,
+                    true,
+                    true,
+                )
+                .is_empty()
             {
                 stack.push(callee);
             }
@@ -934,10 +1049,60 @@ fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// How an example names the item `name`: a call, `name(...)` or, unless a built-in method has
-/// the same name, `x.name(...)`; for a kind, the name itself.
-fn naming(name: &str, kind: bool, builtin_names: &[String]) -> (bool, bool) {
-    (!kind, !kind && !builtin_names.iter().any(|b| b == name))
+/// The head of a type, `Map` for `Map[K, V]`.
+fn type_head(written: &str) -> String {
+    written
+        .trim()
+        .trim_start_matches("edit ")
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
+/// How the example code `src` names `item`, as `(call, free, method)` for `occurrences`:
+/// - a kind by its name;
+/// - a function as a call, `name(...)`, or as a method call, `x.name(...)`;
+/// - a built-in method only as `x.name(...)`, or `x.name` when it takes no arguments.
+///
+/// A method call counts only when no other item of that name could be meant: the code names
+/// none of the types that the other item takes as its receiver or first parameter, so that a
+/// map's `.set(...)` is never taken for the list function `set`.
+fn naming(item: &Item, items: &[Item], src: &str, code: &[bool]) -> (bool, bool, bool) {
+    let declaration = &item.variants.last().unwrap().declaration;
+    let others: Vec<String> = items
+        .iter()
+        .filter(|other| other.name == item.name && other.module != item.module)
+        .flat_map(|other| {
+            other.variants.iter().flat_map(|variant| {
+                if other.kind == "method" {
+                    methods(&variant.declaration)
+                        .into_iter()
+                        .map(|method| type_head(&method.receiver))
+                        .collect::<Vec<String>>()
+                } else {
+                    let first = variant.declaration.lines().next().unwrap_or("");
+                    first
+                        .split_once('(')
+                        .and_then(|(_, params)| params.split_once(':'))
+                        .map(|(_, t)| type_head(t))
+                        .into_iter()
+                        .collect()
+                }
+            })
+        })
+        .collect();
+    let unambiguous = others
+        .iter()
+        .all(|head| occurrences(src, code, head, false, true, false).is_empty());
+    match item.kind {
+        "kind" => (false, true, false),
+        "method" => (
+            declaration.contains(&format!(".{}(", item.name)),
+            false,
+            unambiguous,
+        ),
+        _ => (true, true, unambiguous),
+    }
 }
 
 /// The editions in which `item` exists.
@@ -983,7 +1148,6 @@ fn the_reference_agrees_with_the_listing() {
     filled(&reference, "note", "reference", &mut problems);
     filled(&reference, "requires_note", "reference", &mut problems);
     let builtin_items = std_builtin_items();
-    let builtin_names: Vec<String> = builtin_items.iter().map(|item| item.name.clone()).collect();
     let items: Vec<Item> = std_items().into_iter().chain(builtin_items).collect();
     let listed = |module: &str, name: &str| {
         items
@@ -1020,7 +1184,14 @@ fn the_reference_agrees_with_the_listing() {
                 "returns",
                 "requires",
                 "fails",
+                "effects_of",
                 "variants",
+                "fields",
+                "definition",
+                "receiver",
+                "receivers",
+                "describes",
+                "earlier",
                 "use_instead",
                 "see_also",
                 "cost",
@@ -1044,42 +1215,98 @@ fn the_reference_agrees_with_the_listing() {
                 entry["area"]
             ));
         }
-        let declarations: Vec<&str> = item
+        // The variant it describes: the only one or, when the declaration differs between
+        // editions, the one whose editions `describes` gives, with one `earlier` note for each
+        // other variant.
+        let described = match entry.get("describes") {
+            None if item.variants.len() == 1 => item.variants.first(),
+            None => {
+                problems.push(format!(
+                    "{at}: its declaration differs between editions; give `describes` and `earlier`"
+                ));
+                item.variants.last()
+            }
+            Some(describes) => {
+                let wanted: Vec<&str> = describes
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.as_str())
+                    .collect();
+                let found = item.variants.iter().find(|v| v.editions == wanted);
+                if found.is_none() || item.variants.len() == 1 {
+                    problems.push(format!(
+                        "{at}: `describes` {wanted:?} is not the editions of one of several variants"
+                    ));
+                }
+                found.or(item.variants.last())
+            }
+        };
+        let declaration = described.map_or("", |v| v.declaration.as_str());
+        let mut noted: Vec<Vec<&str>> = Vec::new();
+        for (i, earlier) in list(entry, "earlier", &at, &mut problems)
+            .iter()
+            .enumerate()
+        {
+            let at = format!("{at} earlier {i}");
+            shape(earlier, &at, &["editions", "differs"], &[], &mut problems);
+            filled(earlier, "differs", &at, &mut problems);
+            noted.push(
+                earlier["editions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.as_str())
+                    .collect(),
+            );
+        }
+        let others: Vec<Vec<&str>> = item
             .variants
             .iter()
-            .map(|variant| variant.declaration.as_str())
+            .filter(|v| described.is_none_or(|d| !std::ptr::eq(*v, d)))
+            .map(|v| v.editions.clone())
             .collect();
+        if noted != others {
+            problems.push(format!(
+                "{at}: `earlier` notes {noted:?}, the other variants' editions are {others:?}"
+            ));
+        }
         let only = |keys: &[&str], problems: &mut Vec<String>| {
-            for key in ["params", "returns", "requires", "fails", "variants"] {
+            for key in [
+                "params",
+                "returns",
+                "requires",
+                "fails",
+                "effects_of",
+                "variants",
+                "fields",
+                "definition",
+                "receiver",
+                "receivers",
+            ] {
                 if !keys.contains(&key) && entry.get(key).is_some() {
                     problems.push(format!("{at}: a {} has no `{key}`", item.kind));
                 }
             }
         };
-        if item.kind == "function" {
-            only(&["params", "returns", "requires", "fails"], &mut problems);
-            // Every edition's declaration, so that the entry cannot describe only the newest.
-            let signatures: Vec<Signature> = declarations.iter().map(|d| signature(d)).collect();
-            if signatures.windows(2).any(|pair| pair[0] != pair[1]) {
+        // Parameters and result, for functions and built-in methods.
+        let check_params = |declared: &[String], result: &str, problems: &mut Vec<String>| {
+            if entry.get("params").is_none() || entry.get("returns").is_none() {
                 problems.push(format!(
-                    "{at}: its declaration differs between editions, and an entry describes one"
+                    "{at}: a {} needs `params` and `returns`",
+                    item.kind
                 ));
             }
-            let sig = &signatures[0];
-            if entry.get("params").is_none() || entry.get("returns").is_none() {
-                problems.push(format!("{at}: a function needs `params` and `returns`"));
-            }
             let mut params = Vec::new();
-            for (i, param) in list(entry, "params", &at, &mut problems).iter().enumerate() {
+            for (i, param) in list(entry, "params", &at, problems).iter().enumerate() {
                 let at = format!("{at} parameter {i}");
-                shape(param, &at, &["name", "meaning"], &[], &mut problems);
-                params.push(filled(param, "name", &at, &mut problems).to_owned());
-                filled(param, "meaning", &at, &mut problems);
+                shape(param, &at, &["name", "meaning"], &[], problems);
+                params.push(filled(param, "name", &at, problems).to_owned());
+                filled(param, "meaning", &at, problems);
             }
-            if params != sig.params {
+            if params != declared {
                 problems.push(format!(
-                    "{at}: parameters {params:?}, the declaration's are {:?}",
-                    sig.params
+                    "{at}: parameters {params:?}, the declaration's are {declared:?}"
                 ));
             }
             let returns = &entry["returns"];
@@ -1088,15 +1315,23 @@ fn the_reference_agrees_with_the_listing() {
                 &format!("{at} returns"),
                 &["type", "meaning"],
                 &[],
-                &mut problems,
+                problems,
             );
-            filled(returns, "meaning", &at, &mut problems);
-            if returns["type"].as_str() != Some(sig.result.as_str()) {
+            filled(returns, "meaning", &at, problems);
+            if returns["type"].as_str() != Some(result) {
                 problems.push(format!(
-                    "{at}: returns {}, the declaration's result is {}",
-                    returns["type"], sig.result
+                    "{at}: returns {}, the declaration's result is {result}",
+                    returns["type"]
                 ));
             }
+        };
+        if item.kind == "function" {
+            only(
+                &["params", "returns", "requires", "fails", "effects_of"],
+                &mut problems,
+            );
+            let sig = signature(declaration);
+            check_params(&sig.params, &sig.result, &mut problems);
             let mut requires = Vec::new();
             for (i, condition) in list(entry, "requires", &at, &mut problems)
                 .iter()
@@ -1126,65 +1361,157 @@ fn the_reference_agrees_with_the_listing() {
                 fails.push(filled(failure, "variant", &at, &mut problems).to_owned());
                 filled(failure, "when", &at, &mut problems);
             }
-            let failure_kind = sig
+            let declared: Vec<String> = sig
                 .fails
                 .as_deref()
-                .and_then(|kind| listed("prelude", kind));
-            let declared: Vec<Vec<String>> = failure_kind
-                .map(|kind| {
-                    kind.variants
-                        .iter()
-                        .map(|v| {
-                            variants_of(&v.declaration)
-                                .into_iter()
-                                .map(|(n, _)| n)
-                                .collect()
-                        })
+                .and_then(|kind| listed("prelude", kind))
+                .and_then(|kind| kind.variants.last())
+                .map(|v| {
+                    variants_of(&v.declaration)
+                        .into_iter()
+                        .map(|(n, _)| n)
                         .collect()
                 })
-                .unwrap_or_else(|| vec![Vec::new()]);
-            if declared.iter().any(|variants| *variants != fails) {
+                .unwrap_or_default();
+            if declared != fails {
                 problems.push(format!(
                     "{at}: fails with {fails:?}, the declaration's failure kind has {declared:?}"
                 ));
             }
-        } else if item.kind == "kind" {
-            only(&["variants"], &mut problems);
-            let mut variants = Vec::new();
-            for (i, variant) in list(entry, "variants", &at, &mut problems)
-                .iter()
-                .enumerate()
-            {
-                let at = format!("{at} variant {i}");
-                shape(
-                    variant,
-                    &at,
-                    &["name", "fields", "meaning"],
-                    &[],
-                    &mut problems,
-                );
-                let mut fields = Vec::new();
-                for (j, field) in list(variant, "fields", &at, &mut problems)
-                    .iter()
-                    .enumerate()
-                {
-                    let at = format!("{at} field {j}");
-                    shape(field, &at, &["name", "meaning"], &[], &mut problems);
-                    fields.push(filled(field, "name", &at, &mut problems).to_owned());
-                    filled(field, "meaning", &at, &mut problems);
+            // `uses of p` and `fails of p`: the function has the effects and failures of `p`.
+            match (entry.get("effects_of"), sig.effects.as_slice()) {
+                (None, []) => {}
+                (Some(effects), [param]) => {
+                    let at = format!("{at} effects_of");
+                    shape(effects, &at, &["param", "meaning"], &[], &mut problems);
+                    filled(effects, "meaning", &at, &mut problems);
+                    if effects["param"].as_str() != Some(param.as_str()) {
+                        problems.push(format!(
+                            "{at}: names {}, the declaration's is `{param}`",
+                            effects["param"]
+                        ));
+                    }
                 }
-                variants.push((
-                    filled(variant, "name", &at, &mut problems).to_owned(),
-                    fields,
-                ));
-                filled(variant, "meaning", &at, &mut problems);
+                (_, declared) => problems.push(format!(
+                    "{at}: `effects_of` {}, the declaration has the effects of {declared:?}",
+                    entry
+                        .get("effects_of")
+                        .map_or("absent".to_owned(), |e| e.to_string())
+                )),
             }
-            for declaration in &declarations {
-                let declared = variants_of(declaration);
-                if variants != declared {
+        } else if item.kind == "method" {
+            only(
+                &["params", "returns", "receiver", "receivers"],
+                &mut problems,
+            );
+            let lines = methods(declaration);
+            let Some(first) = lines.first() else {
+                problems.push(format!("{at}: no signature line in its declaration"));
+                continue;
+            };
+            if lines
+                .iter()
+                .any(|m| m.params != first.params || m.result != first.result)
+            {
+                problems.push(format!(
+                    "{at}: its signature lines differ beyond the receiver"
+                ));
+            }
+            check_params(&first.params, &first.result, &mut problems);
+            let declared: Vec<&str> = lines.iter().map(|m| m.receiver.as_str()).collect();
+            let receivers: Vec<&serde_json::Value> = match (
+                entry.get("receiver"),
+                entry.get("receivers"),
+                declared.len(),
+            ) {
+                (Some(one), None, 1) => vec![one],
+                (None, Some(many), n) if n > 1 => many.as_array().into_iter().flatten().collect(),
+                _ => {
                     problems.push(format!(
-                        "{at}: variants {variants:?}, the declaration's are {declared:?}"
+                        "{at}: give `receiver` for one receiver type, `receivers` for several; the declaration has {declared:?}"
                     ));
+                    Vec::new()
+                }
+            };
+            let mut types = Vec::new();
+            for (i, receiver) in receivers.iter().enumerate() {
+                let at = format!("{at} receiver {i}");
+                shape(receiver, &at, &["type", "meaning"], &[], &mut problems);
+                filled(receiver, "meaning", &at, &mut problems);
+                types.push(filled(receiver, "type", &at, &mut problems));
+            }
+            if !receivers.is_empty() && types != declared {
+                problems.push(format!(
+                    "{at}: receivers {types:?}, the declaration's are {declared:?}"
+                ));
+            }
+        } else if item.kind == "kind" {
+            match kind_form(declaration) {
+                KindForm::Sum => {
+                    only(&["variants"], &mut problems);
+                    let mut variants = Vec::new();
+                    for (i, variant) in list(entry, "variants", &at, &mut problems)
+                        .iter()
+                        .enumerate()
+                    {
+                        let at = format!("{at} variant {i}");
+                        shape(
+                            variant,
+                            &at,
+                            &["name", "fields", "meaning"],
+                            &[],
+                            &mut problems,
+                        );
+                        let mut fields = Vec::new();
+                        for (j, field) in list(variant, "fields", &at, &mut problems)
+                            .iter()
+                            .enumerate()
+                        {
+                            let at = format!("{at} field {j}");
+                            shape(field, &at, &["name", "meaning"], &[], &mut problems);
+                            fields.push(filled(field, "name", &at, &mut problems).to_owned());
+                            filled(field, "meaning", &at, &mut problems);
+                        }
+                        variants.push((
+                            filled(variant, "name", &at, &mut problems).to_owned(),
+                            fields,
+                        ));
+                        filled(variant, "meaning", &at, &mut problems);
+                    }
+                    let declared = variants_of(declaration);
+                    if variants != declared {
+                        problems.push(format!(
+                            "{at}: variants {variants:?}, the declaration's are {declared:?}"
+                        ));
+                    }
+                }
+                KindForm::Record(declared) => {
+                    only(&["fields"], &mut problems);
+                    let mut fields = Vec::new();
+                    for (j, field) in list(entry, "fields", &at, &mut problems).iter().enumerate() {
+                        let at = format!("{at} field {j}");
+                        shape(field, &at, &["name", "meaning"], &[], &mut problems);
+                        fields.push(filled(field, "name", &at, &mut problems).to_owned());
+                        filled(field, "meaning", &at, &mut problems);
+                    }
+                    if fields != declared || fields.is_empty() {
+                        problems.push(format!(
+                            "{at}: fields {fields:?}, the declaration's are {declared:?}"
+                        ));
+                    }
+                }
+                KindForm::Definition(declared) => {
+                    only(&["definition"], &mut problems);
+                    let definition = &entry["definition"];
+                    let at = format!("{at} definition");
+                    shape(definition, &at, &["type", "meaning"], &[], &mut problems);
+                    filled(definition, "meaning", &at, &mut problems);
+                    if definition["type"].as_str() != Some(declared.as_str()) {
+                        problems.push(format!(
+                            "{at}: {}, the declaration's is `{declared}`",
+                            definition["type"]
+                        ));
+                    }
                 }
             }
         } else {
@@ -1263,16 +1590,37 @@ fn the_reference_agrees_with_the_listing() {
         }
         // The cost: the cell of the item's row in the table of an accepted ADR or of a spec
         // section, verbatim, with every term it uses defined.
+        let method = item.kind == "method";
         if entry.get("cost").is_none() {
             for source in &cost_sources {
-                if cited(source).is_some_and(|text| !cost_cells(&text, name).is_empty()) {
+                if cited(source).is_some_and(|text| !cost_cells(&text, name, method).is_empty()) {
                     problems.push(format!("{at}: {source} states its cost, and it has none"));
                 }
             }
         }
         if let Some(cost) = entry.get("cost") {
             let at = format!("{at} cost");
-            shape(cost, &at, &["time", "source", "terms"], &[], &mut problems);
+            shape(
+                cost,
+                &at,
+                &["time", "source", "terms"],
+                &["on"],
+                &mut problems,
+            );
+            // With several receivers, `on` names the one whose cost is stated.
+            let receivers: Vec<&str> = entry["receivers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r["type"].as_str())
+                .collect();
+            match (cost.get("on").and_then(|on| on.as_str()), receivers.is_empty()) {
+                (None, true) => {}
+                (Some(on), false) if receivers.contains(&on) => {}
+                (on, _) => problems.push(format!(
+                    "{at}: `on` {on:?}, which must name one of the receivers {receivers:?}, and only then"
+                )),
+            }
             let time = filled(cost, "time", &at, &mut problems);
             let source = filled(cost, "source", &at, &mut problems);
             match cited(source) {
@@ -1280,7 +1628,7 @@ fn the_reference_agrees_with_the_listing() {
                     "{at}: cites `{source}`, which is neither an accepted ADR nor a spec section"
                 )),
                 Some(cited) => {
-                    let mut cells = cost_cells(&cited, name);
+                    let mut cells = cost_cells(&cited, name, method);
                     cells.dedup();
                     if cells != [time] {
                         problems.push(format!(
@@ -1312,35 +1660,29 @@ fn the_reference_agrees_with_the_listing() {
         // kind and each of its variants. `each_example_of_the_reference_...` also requires that
         // it stops checking once the item is renamed.
         let example = filled(entry, "example", &at, &mut problems);
-        let kind = item.kind == "kind";
-        let (call, method) = naming(name, kind, &builtin_names);
         let mut names = vec![name.to_owned()];
-        if kind {
-            names.extend(
-                declarations
-                    .iter()
-                    .flat_map(|d| variants_of(d))
-                    .map(|(n, _)| n),
-            );
+        if item.kind == "kind" && matches!(kind_form(declaration), KindForm::Sum) {
+            names.extend(variants_of(declaration).into_iter().map(|(n, _)| n));
         }
         let files = sources(&root().join(example));
         if files.is_empty() {
             problems.push(format!("{at}: its example {example} has no source"));
         }
         for wanted in &names {
-            let (call, method) = if wanted == name {
-                (call, method)
-            } else {
-                (false, false)
-            };
             let used = files.iter().any(|(_, src)| {
                 let code = code_bytes(src);
+                let (call, free, method) = if wanted == name {
+                    naming(item, &items, src, &code)
+                } else {
+                    (false, true, false)
+                };
                 reached_from_main(src, &code).iter().any(|range| {
                     !occurrences(
                         &src[range.clone()],
                         &code[range.clone()],
                         wanted,
                         call,
+                        free,
                         method,
                     )
                     .is_empty()
@@ -1386,17 +1728,23 @@ fn una(dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-/// `src` with every place where it names `name` (see `naming`) renamed to a name that does not
+/// `src` with every place where it names `item` (see `naming`) renamed to a name that does not
 /// exist, and how many there were.
-fn renamed(src: &str, name: &str, call: bool, method: bool) -> (String, usize) {
+fn renamed(src: &str, item: &Item, items: &[Item]) -> (String, usize) {
+    let name = item.name.as_str();
     let code = code_bytes(src);
-    let places = occurrences(src, &code, name, call, method);
+    let (call, free, method) = naming(item, items, src, &code);
+    let places = occurrences(src, &code, name, call, free, method);
     let mut out = String::new();
     let mut last = 0;
     for at in &places {
         out.push_str(&src[last..*at]);
         out.push_str(name);
-        out.push_str(if call { "_absent" } else { "Absent" });
+        out.push_str(if item.kind == "kind" {
+            "Absent"
+        } else {
+            "_absent"
+        });
         last = at + name.len();
     }
     out.push_str(&src[last..]);
@@ -1407,11 +1755,7 @@ fn renamed(src: &str, name: &str, call: bool, method: bool) -> (String, usize) {
 fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
     let text = fs::read_to_string(root().join("docs/std/reference.json")).unwrap();
     let reference: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let builtin_names: Vec<String> = std_builtin_items()
-        .into_iter()
-        .map(|item| item.name)
-        .collect();
-    let items = std_items();
+    let items: Vec<Item> = std_items().into_iter().chain(std_builtin_items()).collect();
     let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let mut problems = Vec::new();
     let mut run = std::collections::BTreeSet::new();
@@ -1457,17 +1801,20 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
             }
         }
         // With the item renamed, the example must stop checking: it needs the item, not a
-        // comment, a text or a built-in method of the same name.
-        let kind = items
+        // comment, a text or another item of the same name.
+        let Some(item) = items
             .iter()
-            .any(|item| item.module == module && item.name == name && item.kind == "kind");
-        let (call, method) = naming(name, kind, &builtin_names);
+            .find(|item| item.module == module && item.name == name)
+        else {
+            problems.push(format!("{example}: `{module} {name}` is not a listed item"));
+            continue;
+        };
         let copy = scratch.join("std-examples-renamed").join(module).join(name);
         let _ = fs::remove_dir_all(&copy);
         copy_tree(&source, &copy);
         let mut places = 0;
         for (path, src) in sources(&copy) {
-            let (src, count) = renamed(&src, name, call, method);
+            let (src, count) = renamed(&src, item, &items);
             fs::write(path, src).unwrap();
             places += count;
         }

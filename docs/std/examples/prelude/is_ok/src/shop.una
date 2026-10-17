@@ -1,0 +1,12 @@
+module shop
+
+--- Whether a quantity was accepted.
+checked_quantity(units: Int) -> Result[Int, Text]
+=
+  if units > 0 then Ok(units) else Err("no units")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let accepted = checked_quantity(0).is_ok()
+  @console.print("accepted: {accepted}")

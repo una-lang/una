@@ -1,0 +1,11 @@
+module shop
+
+--- The price to charge, the lower of the list price and the sale price, and the first name
+--- in alphabetical order.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let price = min(1999, b: 1499)
+  @console.print("{price} cents")
+  let first = min("Desk lamp", b: "Chair")
+  @console.print(first)

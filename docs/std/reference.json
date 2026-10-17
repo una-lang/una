@@ -4,6 +4,7 @@
  "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 §3`): it reports U5001 when the condition is refuted and U5002 when it is unknown (`spec/12 §6`), and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved (`spec/22 §2`).",
  "areas": [
   "text",
+  "numbers",
   "lists",
   "options-and-results",
   "maps",
@@ -21,16 +22,9 @@
   "builtin bit_not",
   "builtin bit_or",
   "builtin bit_xor",
-  "builtin entries",
-  "builtin get",
-  "builtin has",
-  "builtin keys",
-  "builtin len",
-  "builtin remove",
   "builtin saturating_add",
   "builtin saturating_mul",
   "builtin saturating_sub",
-  "builtin set",
   "builtin shift_right",
   "builtin to_i16",
   "builtin to_i32",
@@ -41,16 +35,12 @@
   "builtin to_u32",
   "builtin to_u64",
   "builtin to_u8",
-  "builtin values",
-  "builtin with",
-  "builtin without",
   "builtin wrapping_add",
   "builtin wrapping_mul",
   "builtin wrapping_shift_left",
   "builtin wrapping_sub",
   "prelude Clock",
   "prelude Console",
-  "prelude Entry",
   "prelude Env",
   "prelude FileError",
   "prelude Files",
@@ -62,32 +52,10 @@
   "prelude JsonNumber",
   "prelude KeyError",
   "prelude Keys",
-  "prelude Nat",
-  "prelude Option",
   "prelude Response",
-  "prelude Result",
-  "prelude abs",
-  "prelude append",
-  "prelude at",
-  "prelude contains",
-  "prelude empty_map",
-  "prelude filter",
-  "prelude first",
-  "prelude first_where",
-  "prelude fold",
-  "prelude is_empty",
   "prelude is_json_number",
-  "prelude is_ok",
-  "prelude is_some",
-  "prelude map",
-  "prelude max",
-  "prelude min",
-  "prelude or_else",
   "prelude parse_json",
   "prelude quote_json",
-  "prelude set",
-  "prelude sort",
-  "prelude sum",
   "prelude to_json",
   "std.testing fake_hash"
  ],
@@ -771,6 +739,912 @@
     "prelude parse_int"
    ],
    "example": "docs/std/examples/prelude/parse_int"
+  },
+  {
+   "module": "prelude",
+   "name": "Nat",
+   "area": "numbers",
+   "definition": {
+    "type": "Int where it >= 0",
+    "meaning": "an `Int` that is at least zero; an `Int` becomes a `Nat` where the checker proves the bound"
+   },
+   "see_also": [
+    "prelude abs"
+   ],
+   "example": "docs/std/examples/prelude/Nat"
+  },
+  {
+   "module": "prelude",
+   "name": "abs",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "x",
+     "meaning": "the number"
+    }
+   ],
+   "returns": {
+    "type": "Int",
+    "meaning": "the absolute value of `x`: at least `0`, and either `x` or `-x`"
+   },
+   "see_also": [
+    "prelude Nat"
+   ],
+   "example": "docs/std/examples/prelude/abs"
+  },
+  {
+   "module": "prelude",
+   "name": "min",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "a",
+     "meaning": "a value"
+    },
+    {
+     "name": "b",
+     "meaning": "another value of the same type"
+    }
+   ],
+   "returns": {
+    "type": "T",
+    "meaning": "the smaller of `a` and `b`: `result <= a`, `result <= b`, and it is one of them"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`min(a: Int, b: Int) -> Int`: integers only"
+    }
+   ],
+   "see_also": [
+    "prelude max"
+   ],
+   "example": "docs/std/examples/prelude/min"
+  },
+  {
+   "module": "prelude",
+   "name": "max",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "a",
+     "meaning": "a value"
+    },
+    {
+     "name": "b",
+     "meaning": "another value of the same type"
+    }
+   ],
+   "returns": {
+    "type": "T",
+    "meaning": "the larger of `a` and `b`: `result >= a`, `result >= b`, and it is one of them"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`max(a: Int, b: Int) -> Int`: integers only"
+    }
+   ],
+   "see_also": [
+    "prelude min"
+   ],
+   "example": "docs/std/examples/prelude/max"
+  },
+  {
+   "module": "prelude",
+   "name": "append",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "item",
+     "meaning": "the element to add"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "`xs` with `item` after its last element; one element longer than `xs`"
+   },
+   "see_also": [
+    {
+     "item": "prelude set",
+     "from_edition": "0.2"
+    }
+   ],
+   "example": "docs/std/examples/prelude/append"
+  },
+  {
+   "module": "prelude",
+   "name": "at",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "index",
+     "meaning": "the position, from 0"
+    }
+   ],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "`Some` of the element at `index`, and `None` exactly when `index` is below `0` or at least `xs.len`; it never fails"
+   },
+   "see_also": [
+    "prelude first"
+   ],
+   "example": "docs/std/examples/prelude/at"
+  },
+  {
+   "module": "prelude",
+   "name": "contains",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "item",
+     "meaning": "the value to look for"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when an element of `xs` equals `item`, compared structurally"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`contains[T](xs: List[T], item: T) -> Bool`: no `Eq` constraint on `T`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "prelude first_where",
+     "why": "to find the element itself, by a condition"
+    }
+   ],
+   "example": "docs/std/examples/prelude/contains"
+  },
+  {
+   "module": "prelude",
+   "name": "filter",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "keep",
+     "meaning": "the condition an element must meet"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "the elements `x` of `xs` for which `keep(x)` is `true`, in order; never more than `xs`"
+   },
+   "effects_of": {
+    "param": "keep",
+    "meaning": "it calls `keep` from the first element on, at most once per element, has the effects of `keep`, and stops at the first failure of `keep`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`keep` has no effects and cannot fail: the declaration has no `uses of keep` or `fails of keep`"
+    }
+   ],
+   "see_also": [
+    "prelude first_where",
+    "prelude map"
+   ],
+   "example": "docs/std/examples/prelude/filter"
+  },
+  {
+   "module": "prelude",
+   "name": "first",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "`Some` of the element at position `0`, and `None` exactly when `xs` is empty"
+   },
+   "use_instead": [
+    {
+     "item": "prelude first_where",
+     "why": "for the first element that meets a condition"
+    }
+   ],
+   "see_also": [
+    "prelude at",
+    "prelude or_else"
+   ],
+   "example": "docs/std/examples/prelude/first"
+  },
+  {
+   "module": "prelude",
+   "name": "first_where",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "keep",
+     "meaning": "the condition the element must meet"
+    }
+   ],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "`Some` of the first element for which `keep` is `true`, and `None` when there is none; `keep` is not called after that element"
+   },
+   "effects_of": {
+    "param": "keep",
+    "meaning": "it calls `keep` from the first element on, at most once per element, has the effects of `keep`, and stops at the first failure of `keep`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`keep` has no effects and cannot fail: the declaration has no `uses of keep` or `fails of keep`"
+    }
+   ],
+   "see_also": [
+    "prelude filter",
+    "prelude contains"
+   ],
+   "example": "docs/std/examples/prelude/first_where"
+  },
+  {
+   "module": "prelude",
+   "name": "fold",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "initial",
+     "meaning": "the accumulator before the first element"
+    },
+    {
+     "name": "step",
+     "meaning": "the next accumulator, from the last one and an element"
+    }
+   ],
+   "returns": {
+    "type": "U",
+    "meaning": "the last accumulator: `initial` when `xs` is empty, otherwise `step` applied from the first element to the last"
+   },
+   "effects_of": {
+    "param": "step",
+    "meaning": "it calls `step` from the first element on, at most once per element, has the effects of `step`, and stops at the first failure of `step`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`step` has no effects and cannot fail: the declaration has no `uses of step` or `fails of step`"
+    }
+   ],
+   "use_instead": [
+    {
+     "item": "prelude sum",
+     "why": "to add integers"
+    }
+   ],
+   "see_also": [
+    "prelude map"
+   ],
+   "example": "docs/std/examples/prelude/fold"
+  },
+  {
+   "module": "prelude",
+   "name": "is_empty",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `xs.len == 0`"
+   },
+   "example": "docs/std/examples/prelude/is_empty"
+  },
+  {
+   "module": "prelude",
+   "name": "map",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    },
+    {
+     "name": "each",
+     "meaning": "what each element becomes"
+    }
+   ],
+   "returns": {
+    "type": "List[U]",
+    "meaning": "`each(x)` for each element `x` of `xs`, in order; as many as `xs`"
+   },
+   "effects_of": {
+    "param": "each",
+    "meaning": "it calls `each` from the first element on, at most once per element, has the effects of `each`, and stops at the first failure of `each`, which becomes its own"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`each` has no effects and cannot fail: the declaration has no `uses of each` or `fails of each`"
+    }
+   ],
+   "see_also": [
+    "prelude filter",
+    "prelude fold"
+   ],
+   "example": "docs/std/examples/prelude/map"
+  },
+  {
+   "module": "prelude",
+   "name": "sort",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "the elements of `xs` in ascending order, equal ones in their order in `xs`; as many as `xs`"
+   },
+   "example": "docs/std/examples/prelude/sort"
+  },
+  {
+   "module": "prelude",
+   "name": "sum",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list"
+    }
+   ],
+   "returns": {
+    "type": "Int",
+    "meaning": "the exact sum of the elements, as an `Int`; `0` for an empty list; it never overflows"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "`sum(xs: List[Int]) -> Int`: `Int` elements only"
+    }
+   ],
+   "see_also": [
+    "prelude fold"
+   ],
+   "example": "docs/std/examples/prelude/sum"
+  },
+  {
+   "module": "prelude",
+   "name": "set",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the list, changed in place"
+    },
+    {
+     "name": "index",
+     "meaning": "the position to replace, from 0"
+    },
+    {
+     "name": "item",
+     "meaning": "the new element"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; afterwards `xs` holds `item` at `index`, and its length is unchanged"
+   },
+   "requires": [
+    {
+     "condition": "0 <= index and index < xs.len",
+     "meaning": "the position is inside the list"
+    }
+   ],
+   "see_also": [
+    "prelude append",
+    "prelude at"
+   ],
+   "example": "docs/std/examples/prelude/set"
+  },
+  {
+   "module": "prelude",
+   "name": "Option",
+   "area": "options-and-results",
+   "variants": [
+    {
+     "name": "Some",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the value"
+      }
+     ],
+     "meaning": "a value is there"
+    },
+    {
+     "name": "None",
+     "fields": [],
+     "meaning": "no value is there"
+    }
+   ],
+   "see_also": [
+    "prelude is_some",
+    "prelude or_else"
+   ],
+   "example": "docs/std/examples/prelude/Option"
+  },
+  {
+   "module": "prelude",
+   "name": "Result",
+   "area": "options-and-results",
+   "variants": [
+    {
+     "name": "Ok",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the success value"
+      }
+     ],
+     "meaning": "the operation succeeded"
+    },
+    {
+     "name": "Err",
+     "fields": [
+      {
+       "name": "failure",
+       "meaning": "the failure"
+      }
+     ],
+     "meaning": "the operation failed"
+    }
+   ],
+   "see_also": [
+    "prelude is_ok"
+   ],
+   "example": "docs/std/examples/prelude/Result"
+  },
+  {
+   "module": "prelude",
+   "name": "is_some",
+   "area": "options-and-results",
+   "params": [
+    {
+     "name": "o",
+     "meaning": "the option"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `o` is `Some`"
+   },
+   "see_also": [
+    "prelude Option",
+    "prelude or_else"
+   ],
+   "example": "docs/std/examples/prelude/is_some"
+  },
+  {
+   "module": "prelude",
+   "name": "is_ok",
+   "area": "options-and-results",
+   "params": [
+    {
+     "name": "r",
+     "meaning": "the result"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `r` is `Ok`"
+   },
+   "see_also": [
+    "prelude Result"
+   ],
+   "example": "docs/std/examples/prelude/is_ok"
+  },
+  {
+   "module": "prelude",
+   "name": "or_else",
+   "area": "options-and-results",
+   "params": [
+    {
+     "name": "o",
+     "meaning": "the option"
+    },
+    {
+     "name": "default",
+     "meaning": "the value for `None`, evaluated before the call"
+    }
+   ],
+   "returns": {
+    "type": "T",
+    "meaning": "the value of `Some`, and `default` for `None`"
+   },
+   "see_also": [
+    "prelude Option",
+    "prelude first"
+   ],
+   "example": "docs/std/examples/prelude/or_else"
+  },
+  {
+   "module": "prelude",
+   "name": "Entry",
+   "area": "maps",
+   "fields": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    },
+    {
+     "name": "value",
+     "meaning": "the value at that key"
+    }
+   ],
+   "see_also": [
+    "builtin entries"
+   ],
+   "example": "docs/std/examples/prelude/Entry"
+  },
+  {
+   "module": "prelude",
+   "name": "empty_map",
+   "area": "maps",
+   "params": [],
+   "returns": {
+    "type": "Map[K, V]",
+    "meaning": "the map with no entries, of the type its context expects; its `len` is `0`"
+   },
+   "see_also": [
+    "builtin with",
+    "builtin set"
+   ],
+   "example": "docs/std/examples/prelude/empty_map"
+  },
+  {
+   "module": "builtin",
+   "name": "has",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key to look for"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` when `m` has an entry at `key`; usable in `requires`, `ensures`, `where` and predicates"
+   },
+   "use_instead": [
+    {
+     "item": "builtin get",
+     "why": "to read the value too"
+    }
+   ],
+   "example": "docs/std/examples/builtin/has"
+  },
+  {
+   "module": "builtin",
+   "name": "get",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    }
+   ],
+   "returns": {
+    "type": "Option[V]",
+    "meaning": "`Some` of the value at `key`, `Some` exactly when `m.has(key: key)`; a missing key gives `None`, not a failure"
+   },
+   "see_also": [
+    "builtin has"
+   ],
+   "example": "docs/std/examples/builtin/get"
+  },
+  {
+   "module": "builtin",
+   "name": "set",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map, changed in place, written `edit m.set(...)`"
+   },
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    },
+    {
+     "name": "value",
+     "meaning": "the new value at `key`"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; afterwards `m.get(key: key) == Some(value)`, and `m.len` grows by one when `key` was not there"
+   },
+   "use_instead": [
+    {
+     "item": "builtin with",
+     "why": "for a new map, leaving the old one as it is"
+    }
+   ],
+   "see_also": [
+    "builtin remove"
+   ],
+   "example": "docs/std/examples/builtin/set"
+  },
+  {
+   "module": "builtin",
+   "name": "remove",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map, changed in place, written `edit m.remove(...)`"
+   },
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; afterwards `m.has(key: key)` is `false`, and `m.len` shrinks by one when `key` was there"
+   },
+   "use_instead": [
+    {
+     "item": "builtin without",
+     "why": "for a new map, leaving the old one as it is"
+    }
+   ],
+   "see_also": [
+    "builtin set"
+   ],
+   "example": "docs/std/examples/builtin/remove"
+  },
+  {
+   "module": "builtin",
+   "name": "with",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    },
+    {
+     "name": "value",
+     "meaning": "the value at `key`"
+    }
+   ],
+   "returns": {
+    "type": "Map[K, V]",
+    "meaning": "a map with the contract of `set` for the result: `m` with `value` at `key`; `m` itself is unchanged"
+   },
+   "see_also": [
+    "builtin set",
+    "builtin without"
+   ],
+   "example": "docs/std/examples/builtin/with"
+  },
+  {
+   "module": "builtin",
+   "name": "without",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key"
+    }
+   ],
+   "returns": {
+    "type": "Map[K, V]",
+    "meaning": "a map with the contract of `remove` for the result: `m` without `key`; `m` itself is unchanged"
+   },
+   "see_also": [
+    "builtin remove",
+    "builtin with"
+   ],
+   "example": "docs/std/examples/builtin/without"
+  },
+  {
+   "module": "builtin",
+   "name": "keys",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [],
+   "returns": {
+    "type": "List[K]",
+    "meaning": "the keys of `m`, in ascending key order; as many as `m.len`"
+   },
+   "see_also": [
+    "builtin values",
+    "builtin entries"
+   ],
+   "example": "docs/std/examples/builtin/keys"
+  },
+  {
+   "module": "builtin",
+   "name": "values",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [],
+   "returns": {
+    "type": "List[V]",
+    "meaning": "the values of `m`, in the order of their keys; as many as `m.len`"
+   },
+   "see_also": [
+    "builtin keys",
+    "builtin entries"
+   ],
+   "example": "docs/std/examples/builtin/values"
+  },
+  {
+   "module": "builtin",
+   "name": "entries",
+   "area": "maps",
+   "receiver": {
+    "type": "Map[K, V]",
+    "meaning": "the map"
+   },
+   "params": [],
+   "returns": {
+    "type": "List[Entry[K, V]]",
+    "meaning": "the entries of `m` as `Entry` values, in ascending key order; as many as `m.len`"
+   },
+   "see_also": [
+    "builtin keys",
+    "builtin values"
+   ],
+   "example": "docs/std/examples/builtin/entries"
+  },
+  {
+   "module": "builtin",
+   "name": "len",
+   "area": "text",
+   "receivers": [
+    {
+     "type": "Text",
+     "meaning": "a text: its length in Unicode scalar values"
+    },
+    {
+     "type": "List[T]",
+     "meaning": "a list: its number of elements"
+    },
+    {
+     "type": "Map[K, V]",
+     "meaning": "a map: its number of entries, never negative"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "Int",
+    "meaning": "the length of the receiver"
+   },
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.1"
+     ],
+     "differs": "no `Map` receiver, since edition `0.1` has no maps"
+    }
+   ],
+   "see_also": [
+    "prelude is_empty",
+    {
+     "item": "prelude bytes",
+     "from_edition": "0.2"
+    }
+   ],
+   "cost": {
+    "time": "O(1)",
+    "source": "ADR 0070",
+    "terms": [],
+    "on": "Text"
+   },
+   "example": "docs/std/examples/builtin/len"
   }
  ]
 }

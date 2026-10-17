@@ -1,0 +1,12 @@
+module shop
+
+--- The length of a name, of a cart and of a stock list.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let name = "Café"
+  @console.print("{name.len} characters")
+  let cart = ["lamp", "desk"]
+  @console.print("{cart.len} items")
+  let stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
+  @console.print("{stock.len} entries")

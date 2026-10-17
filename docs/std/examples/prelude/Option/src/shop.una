@@ -1,0 +1,18 @@
+module shop
+
+--- A discount code, if the customer typed one.
+code_of(typed: Text) -> Option[Text]
+=
+  if typed.len > 0 then Some(typed) else None
+
+describe(typed: Text) -> Text
+=
+  when code_of(typed)
+    is Some(code) -> "code {code}"
+    is None -> "no code"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(describe("SPRING"))
+  @console.print(describe(""))
