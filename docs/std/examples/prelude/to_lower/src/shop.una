@@ -1,0 +1,8 @@
+module shop
+
+--- An SKU as part of a web address.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let slug = "LAMP-01".to_lower()
+  @console.print("/products/{slug}")

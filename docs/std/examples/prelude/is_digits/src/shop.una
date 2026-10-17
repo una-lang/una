@@ -1,0 +1,16 @@
+module shop
+
+--- Whether a typed article number is one: all digits, and not empty, since the empty text
+--- is all digits too.
+article(raw: Text) -> Text
+=
+  let digits = raw.is_digits()
+  let valid = raw.len > 0 and digits
+  "'{raw}': all digits {digits}, an article number {valid}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(article("12345"))
+  @console.print(article("12a45"))
+  @console.print(article(""))

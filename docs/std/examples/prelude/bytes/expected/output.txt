@@ -1,0 +1,2 @@
+Lamp: 4 bytes
+Café: 5 bytes

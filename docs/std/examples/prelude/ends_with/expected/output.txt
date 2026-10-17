@@ -1,0 +1,2 @@
+invoice-2026.pdf: true
+invoice-2026.txt: false

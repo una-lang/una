@@ -1,0 +1,10 @@
+module shop
+
+--- Whether a product description names a finish.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let brass = "Desk lamp, brass".contains_text(part: "brass")
+  @console.print("brass: {brass}")
+  let steel = "Desk lamp, brass".contains_text(part: "steel")
+  @console.print("steel: {steel}")

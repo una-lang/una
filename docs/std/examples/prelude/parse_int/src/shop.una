@@ -1,0 +1,26 @@
+module shop
+
+--- A stock adjustment typed by hand, and why it is not one. A sign is allowed, so `-3`
+--- writes off three units.
+adjustment(raw: Text) -> Text
+=
+  let outcome = attempt parse_int(raw)
+  when outcome
+    is Ok(n) -> "'{raw}': adjust the stock by {n}"
+    is Err(failure) -> "'{raw}': {reason(failure)}"
+
+reason(failure: ParseError) -> Text
+=
+  when failure
+    is Empty -> "nothing typed"
+    is NoDigits -> "a sign and no digits"
+    is NotADigit(at) -> "not a digit at {at}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(adjustment("12"))
+  @console.print(adjustment("-3"))
+  @console.print(adjustment(""))
+  @console.print(adjustment("-"))
+  @console.print(adjustment("1x2"))

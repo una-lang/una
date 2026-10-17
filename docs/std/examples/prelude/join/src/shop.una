@@ -1,0 +1,7 @@
+module shop
+
+--- The items of an order as one line.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(join(["Café", "Crème", "Thé"], separator: ", "))

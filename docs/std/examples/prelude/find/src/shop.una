@@ -1,0 +1,15 @@
+module shop
+
+--- Where the range ends in an SKU. A position counts scalar values, so `É` counts as one.
+dash(sku: Text) -> Text
+=
+  when sku.find(text: "-")
+    is Some(at) -> "{sku}: the range ends at {at}"
+    is None -> "{sku}: no range"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(dash("LAMP-01"))
+  @console.print(dash("CAFÉ-01"))
+  @console.print(dash("GIFTCARD"))

@@ -1,0 +1,8 @@
+module shop
+
+--- The fields of an order line: SKU, quantity, price in cents.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  for field in "CAFÉ-01,2,1999".split(on: ",")
+    @console.print(field)

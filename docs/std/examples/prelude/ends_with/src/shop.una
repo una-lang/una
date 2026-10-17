@@ -1,0 +1,10 @@
+module shop
+
+--- Whether an uploaded invoice is a PDF.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let pdf = ends_with("invoice-2026.pdf", suffix: ".pdf")
+  @console.print("invoice-2026.pdf: {pdf}")
+  let text = ends_with("invoice-2026.txt", suffix: ".pdf")
+  @console.print("invoice-2026.txt: {text}")
