@@ -2,20 +2,22 @@
 construct: "[labels] categories"
 editions: ["0.1", "0.2"]
 spec: ["spec/13 §7", "spec/07 §2"]
-codes: [U1002, U1005, U4007]
+codes: [U1002, U1005, U4007, U7002]
 ---
 
 # `[labels] categories`
 
 ## What it does
 
-`categories` declares the label categories the package's code may use, such as `secret[PII]` (`spec/13 §7`, `spec/07 §2`). A label is a level and a set of categories, and a value flows only to labels at least as high in both.
+A label marks how sensitive a value is, so the checker can keep it from reaching a place that must not see it, such as the console. A label is a level, one of `public`, `internal`, `confidential`, `secret` and `restricted` from least to most sensitive, and a set of categories, names that say what kind of data it is, such as `PII` for personal data. `categories` declares the categories the package's code may use, as in `secret[PII]`. A value flows only to labels at least as high in both.
+
+Learn more: [Categories](/learn/information-flow/categories/) and [Labels and how they follow data](/learn/information-flow/labels-and-how-they-follow-data/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "people"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -23,14 +25,14 @@ edition = "0.2"
 categories = ["PII", "Location"]
 ```
 
-`src/people.una`
+`src/shop.una`
 
 ```una
-module people
+module shop
 
-pub tagged(n: secret[PII] Int) -> secret[PII] Int = n
+pub tagged(birth_year: secret[PII] Int) -> secret[PII] Int = birth_year
 
-pub wider(n: secret[PII] Int) -> restricted[PII, Location] Int = n
+pub wider(birth_year: secret[PII] Int) -> restricted[PII, Location] Int = birth_year
 ```
 
 ## Forms
@@ -40,39 +42,39 @@ pub wider(n: secret[PII] Int) -> restricted[PII, Location] Int = n
 categories = ["<UpperCamelCase name>", ...]
 ```
 
-An array of category names, each in UpperCamelCase and unique (`spec/13 §7`). Without the table, a package declares no categories (`spec/13 §7`).
+An array of category names, each in UpperCamelCase (words run together, each starting with a capital letter, as `PII` or `ShippingAddress`) and unique. Without the table, a package declares no categories.
 
 ## Examples
 
-A label may name only declared categories (`spec/07 §2`):
+A label may name only declared categories:
 
 `una.toml`
 
 ```toml
 [package]
-name = "people"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
 
-`src/people.una`
+`src/shop.una`
 
 ```una
 -- fails with U4007
-module people
+module shop
 
-pub tagged(n: secret[PII] Int) -> secret[PII] Int = n
+pub tagged(birth_year: secret[PII] Int) -> secret[PII] Int = birth_year
 ```
 
 ## Edge cases
 
-**Names are UpperCamelCase** (`spec/13 §7`):
+**Names are UpperCamelCase**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -80,22 +82,22 @@ edition = "0.2"
 categories = ["pii"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U1005
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
-**Each name once** (`spec/13 §7`):
+**Each name once**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -103,24 +105,48 @@ edition = "0.2"
 categories = ["PII", "PII"]
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U1002
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
+```
+
+**Each name is a string**:
+
+`una.toml`
+
+```toml
+[package]
+name = "shop"
+version = "0.1.0"
+edition = "0.2"
+
+[labels]
+categories = [1]
+```
+
+`src/shop.una`
+
+```una
+-- fails with U7002
+module shop
+
+pub price(cents: Int) -> Int = cents
 ```
 
 Further rules:
 
-- **Order.** A label is below another when its level is not higher and its categories are a subset (`spec/07 §2`). See [labels](../../language/information-flow/labels.md).
+- **Order.** A label is below another when its level is not higher and its categories are a subset. See [labels](../../language/information-flow/labels.md).
 
 ## Diagnostics
 
 - [U1002](../../../../crates/una-explain/explain/U1002.md): a category listed twice.
 - [U1005](../../../../crates/una-explain/explain/U1005.md): a category name that is not UpperCamelCase.
 - [U4007](../../../../crates/una-explain/explain/U4007.md): a label that names an undeclared category.
+- [U7002](../../../../crates/una-explain/explain/U7002.md): a `categories` that is not an array of strings.
 
 ## Edition
 

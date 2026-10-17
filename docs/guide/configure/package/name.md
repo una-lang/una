@@ -9,37 +9,39 @@ codes: [U7002]
 
 ## What it does
 
-`name` names the package. It is required, in the `[package]` table, and is a non-empty string (`spec/13 §7`).
+A package is one program or library: a directory that holds the source files under `src/` and a file `una.toml`, its manifest, which says what the package is called, which version it is and which edition of Una it uses. `name` is the package's name. It is required, in the `[package]` table, and is a non-blank string.
+
+Learn more: [The manifest and the lock](/learn/packages/the-manifest-and-the-lock/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
 ## Forms
 
 ```text
 [package]
-name = "<a non-empty string>"
+name = "<a non-blank string>"
 ```
 
-A package's `una.toml` is a TOML document with the tables and keys of `spec/13 §7`, and no others. A syntax error, a missing required key, and a value of the wrong type or outside its range are U7002 (`spec/13 §7`).
+A package's `una.toml` is a TOML document (TOML is a plain text format of `key = value` lines grouped under `[table]` headers) with the tables and keys the specification defines, and no others. A syntax error, a missing required key, and a value of the wrong type or outside its range are U7002.
 
 ## Examples
 
-An empty name is rejected (`spec/13 §7`):
+An empty name is rejected, and so is one of spaces only:
 
 `una.toml`
 
@@ -50,27 +52,27 @@ version = "0.1.0"
 edition = "0.2"
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U7002
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
 ## Edge cases
 
-**The key is required.** A `[package]` table without `name` is U7002, like a missing `version` or `edition` (`spec/13 §7`).
+**The key is required.** A `[package]` table without `name` is U7002, like a missing `version` or `edition`.
 
 Further rules:
 
-- **A package is a directory** with `una.toml` and `src/`. A single file has the default settings and no `una.toml` (`spec/13 §7`).
-- **Checking goes on.** A project error does not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml` (`spec/13 §7`).
+- **A package is a directory** with `una.toml` and `src/`. A single file has the default settings and no `una.toml`.
+- **Checking goes on.** A project error does not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
 
 ## Diagnostics
 
-- [U7002](../../../../crates/una-explain/explain/U7002.md): a missing or empty `name`, or any other invalid `una.toml`.
+- [U7002](../../../../crates/una-explain/explain/U7002.md): a missing or blank `name`, or any other invalid `una.toml`.
 
 ## Edition
 

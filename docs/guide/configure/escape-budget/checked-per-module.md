@@ -9,13 +9,15 @@ codes: [U7002, U7003]
 
 ## What it does
 
-`checked_per_module` is the escape budget: how many times each module of the package may use `checked`, which replaces a proof with a run-time test (`spec/13 §7`, `spec/06 §6`). The default is 0, so a package that wants run-time tests says so here, and reviewers see it.
+Una proves the facts a program relies on before it runs, such as a shelf number being between 0 and 9. When a fact cannot be proved, as with a number a customer types, `checked` tests it while the program runs instead, and fails when it does not hold. That gives up a proof, so it is an escape, and `checked_per_module` is the escape budget: how many times each module of the package may use `checked`. The default is 0, so a package that wants run-time tests says so here, and reviewers see it.
+
+Learn more: [When no proof can decide: checked](/learn/failure/when-no-proof-can-decide-checked/).
 
 `una.toml`
 
 ```toml
 [package]
-name = "digits"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -23,19 +25,19 @@ edition = "0.2"
 checked_per_module = 1
 ```
 
-`src/digits.una`
+`src/shop.una`
 
 ```una
-module digits
+module shop
 
-pub kind Small = Int in 0..9
+pub kind Shelf = Int in 0..9
 
-pub kind Bad = | Out
+pub kind ShelfError = | NoSuchShelf
 
-pub small(n: Int) -> Small
-  fails Bad
+pub shelf(n: Int) -> Shelf
+  fails ShelfError
 =
-  checked(n, it >= 0 and it <= 9) else fail Out
+  checked(n, it >= 0 and it <= 9) else fail NoSuchShelf
 ```
 
 ## Forms
@@ -45,46 +47,46 @@ pub small(n: Int) -> Small
 checked_per_module = <an integer of at least 0>
 ```
 
-The default is 0, and a single file has the default (`spec/13 §7`, `spec/06 §6`).
+The default is 0, and a single file has the default.
 
 ## Examples
 
-A use beyond the budget is rejected, here with the default of 0 (`spec/06 §6`):
+A use beyond the budget is rejected, here with the default of 0:
 
 `una.toml`
 
 ```toml
 [package]
-name = "digits"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 ```
 
-`src/digits.una`
+`src/shop.una`
 
 ```una
 -- fails with U7003
-module digits
+module shop
 
-pub kind Small = Int in 0..9
+pub kind Shelf = Int in 0..9
 
-pub kind Bad = | Out
+pub kind ShelfError = | NoSuchShelf
 
-pub small(n: Int) -> Small
-  fails Bad
+pub shelf(n: Int) -> Shelf
+  fails ShelfError
 =
-  checked(n, it >= 0 and it <= 9) else fail Out
+  checked(n, it >= 0 and it <= 9) else fail NoSuchShelf
 ```
 
 ## Edge cases
 
-**At least 0** (`spec/13 §7`):
+**At least 0**:
 
 `una.toml`
 
 ```toml
 [package]
-name = "demo"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
@@ -92,20 +94,20 @@ edition = "0.2"
 checked_per_module = -1
 ```
 
-`src/demo.una`
+`src/shop.una`
 
 ```una
 -- fails with U7002
-module demo
+module shop
 
-pub f(n: Int) -> Int = n
+pub price(cents: Int) -> Int = cents
 ```
 
 Further rules:
 
-- **Per module.** The budget counts each module separately (`spec/06 §6`).
-- **Reported.** Every use of `checked` is listed in the build report (`spec/06 §6`, `spec/13 §6`).
-- **Last resort.** When a proof is refuted, the repairs list a stronger type, a `requires` clause or a guard first; `checked` and raising the budget are escapes, marked as such, and come last (`spec/13 §3`). See [`checked`](../../language/errors/checked.md).
+- **Per module.** The budget counts each module separately.
+- **Reported.** Every use of `checked` is listed in the build report.
+- **Last resort.** When a proof is refuted, the repairs list a stronger type, a `requires` clause or a guard first; `checked` and raising the budget are escapes, marked as such, and come last. See [`checked`](../../language/errors/checked.md).
 
 ## Diagnostics
 
