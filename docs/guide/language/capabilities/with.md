@@ -2,7 +2,7 @@
 construct: "@ bindings and with"
 editions: ["0.1", "0.2"]
 spec: ["spec/05 §4", "spec/05 §5", "spec/05 §6", "spec/05 §9", "spec/02 §6", "spec/02 §8", "spec/10 §6", "spec/10 §10"]
-codes: [U1002, U2001, U3001, U3005, U3006, U3010, U3016]
+codes: [U1002, U2001, U3001, U3005, U3006, U3010, U3016, U3020, U3024]
 ---
 
 # `@` bindings and `with`
@@ -35,7 +35,7 @@ pub caller(line: Text) -> Unit
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 handled         = line_expr [ with_clause ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
@@ -164,10 +164,12 @@ Further rules:
 - [U3006](../../../../crates/una-explain/explain/U3006.md): an effectful or failing function value that escapes.
 - [U3010](../../../../crates/una-explain/explain/U3010.md): a handler for another capability than the one expected.
 - [U3016](../../../../crates/una-explain/explain/U3016.md): a type argument that holds an effectful or failing function type.
+- [U3020](../../../../crates/una-explain/explain/U3020.md): in edition `0.3`, a call into a boundary that gets a capability by name instead of through `with`.
+- [U3024](../../../../crates/una-explain/explain/U3024.md): in edition `0.3`, a call into a boundary from which a policy call is reachable.
 
 ## Edition
 
-`with` and the second-class rule are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds the narrowed rebinding `with @x = @y[ops]`, which gives the callee the caller's `@y` restricted to `ops`, and checks each call into a boundary (a group of modules whose authority `una.toml` caps) against that cap. See [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/) and [`[boundaries]`](../../configure/boundaries.md).
+`with` and the second-class rule are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds the narrowed rebinding `with @x = @y[ops]`, which gives the callee the caller's `@y` restricted to `ops`, and checks each call into a boundary (a group of modules whose authority `una.toml` caps) against that cap. A call into a boundary gets no capability by name, so each one it needs is passed with `with` (U3020), and no policy call may be reachable from it (U3024). See [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/) and [`[boundaries]`](../../configure/boundaries.md).
 
 ## Normative source
 

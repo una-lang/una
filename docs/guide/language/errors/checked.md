@@ -9,7 +9,7 @@ codes: [U2013, U2014, U2016, U3009, U4002, U7003]
 
 ## What it does
 
-`checked(v, p) else fail V` tests the predicate `p` (a condition, a function that gives `Bool`) at run time, with `it` bound to `v`:
+`checked(v, p) else fail V` tests the predicate `p` (a condition on `it` that is true or false) at run time, with `it` bound to `v`:
 
 - when `p` holds, the result is `v`, with its type refined by `p` (its type now carries the condition `p`);
 - otherwise the function fails with `V`.
@@ -49,7 +49,7 @@ pub parse_phone(raw: Text) -> Phone
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 checked_expr    = "checked" "(" line_expr "," line_expr ")" "else" "fail" variant_expr ;
@@ -256,7 +256,7 @@ Further rules:
 
 ## Edition
 
-`checked` and the escape budget are the same in editions `0.1` and `0.2`. Edition `0.2` adds fixed-width integers, whose narrowing conversions may go through `checked`.
+`checked` and the escape budget are the same in editions `0.1` and `0.2`. Edition `0.2` keeps them and adds fixed-width integers, whose narrowing conversions may go through `checked`.
 
 ## Normative source
 

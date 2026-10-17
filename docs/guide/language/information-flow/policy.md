@@ -55,7 +55,7 @@ pub note_size(note: confidential[Private] Text) -> Nat = length_band(note)
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 policy_decl     = [ "pub" ] "policy" lower_ident NEWLINE INDENT
@@ -230,9 +230,9 @@ Further rules:
 
 ## Diagnostics
 
-- [U4002](../../../../crates/una-explain/explain/U4002.md): a policy call under a program counter above its `to` label.
+- [U4002](../../../../crates/una-explain/explain/U4002.md): a policy call under a program counter above its `to` label, or `if error pass` or `if error fail` on a policy failure labeled above `public`.
 - [U4004](../../../../crates/una-explain/explain/U4004.md): a policy outside a trusted module.
-- [U4005](../../../../crates/una-explain/explain/U4005.md): a `via` function that is public, has a `requires` clause, or whose types do not match the policy's.
+- [U4005](../../../../crates/una-explain/explain/U4005.md): a `via` function that is public, has a `requires` clause, is used other than through its policy, or whose types do not match the policy's.
 
 ## Edition
 

@@ -26,7 +26,7 @@ pub add_units(units: Int) -> Int
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 fail_expr       = "fail" variant_expr ;
@@ -147,7 +147,7 @@ Further rules:
 
 - **Payload labels.** A failure's payload follows the normal flow rules: a failure raised in a labeled context carries that label.
 - **No postcondition.** `ensures`, the postcondition (a promise about the result), holds on normal returns only. A failing path has no postcondition to prove.
-- **What is not a failure.** Division by zero, and violations of a refinement (a condition attached to a type, such as `Int in 0..5000`) or of a precondition, are proof obligations (facts that `una check` must prove before the program may run), never runtime failures. Running out of stack or memory is runtime diagnostic U6003, not a failure.
+- **What is not a failure.** Division by zero, and violations of a refinement (a condition attached to a type, such as `Int in 0..5000`) or of a precondition, are proof obligations (facts that `una check` must prove before the program may run), never runtime failures. Exceeding the call depth or the memory limit is runtime diagnostic U6003, not a failure.
 - **A failure of `main`** stops `una run` with U6001 and exit code 1.
 
 ## Diagnostics

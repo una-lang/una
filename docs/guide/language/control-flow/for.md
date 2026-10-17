@@ -33,7 +33,7 @@ pub shelf_slots(shelves: Int) -> List[Int]
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 for_stmt        = "for" lower_ident "in" ( line_expr | range_expr ) NEWLINE INDENT block DEDENT ;
@@ -154,7 +154,7 @@ Further rules:
 - [U2017](../../../../crates/una-explain/explain/U2017.md): a binding taken in every iteration.
 - [U2019](../../../../crates/una-explain/explain/U2019.md): an assignment to the loop variable, or to another binding that is not editable.
 - [U4002](../../../../crates/una-explain/explain/U4002.md): a failure in a body under a labeled list or range.
-- [U5002](../../../../crates/una-explain/explain/U5002.md): a fact the loop forgets, needed after it.
+- [U5002](../../../../crates/una-explain/explain/U5002.md): a fact the loop forgets, needed in its body or after it.
 
 ## Edition
 

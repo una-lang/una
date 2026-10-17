@@ -26,7 +26,7 @@ pub add_units(units: Int) -> Int
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 clause          = "requires" line_expr NEWLINE
@@ -44,7 +44,7 @@ Edition `0.2` adds `fails of p` and `uses of p`. `of` is not a keyword: it is re
 - **`fails of p`** (edition `0.2`): the function fails as its parameter `p`, a function value, fails. A header has at most one `fails E` and at most one `fails of p`.
 - **No clause.** A `pub` function then cannot fail. A private function may omit the clause, and the compiler infers its error kind.
 
-Clauses of a header come in a fixed order: every `requires`, every `ensures`, every `uses`, then at most one `fails`, then `derived from`.
+Clauses of a header come in a fixed order: every `requires`, every `ensures`, every `uses`, then at most one `fails E` and one `fails of p`, then `derived from`.
 
 ## Examples
 

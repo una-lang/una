@@ -40,7 +40,7 @@ example "too many units"
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 example_decl    = "example" text_lit NEWLINE INDENT
@@ -181,12 +181,12 @@ Further rules:
 - [U1002](../../../../crates/una-explain/explain/U1002.md): an example name used twice in a module.
 - [U3001](../../../../crates/una-explain/explain/U3001.md): a capability `do` needs that no `given` binds.
 - [U3014](../../../../crates/una-explain/explain/U3014.md): an example that needs a host capability.
-- [U3020](../../../../crates/una-explain/explain/U3020.md): in edition `0.3`, a `do` line that calls into a boundary module without granting its capabilities with `with`.
-- [U3021](../../../../crates/una-explain/explain/U3021.md): in edition `0.3`, a `given` handler of an example of a boundary module beyond the module's limit.
+- [U3020](../../../../crates/una-explain/explain/U3020.md): in edition `0.3`, a `do` line that calls a boundary function that needs a capability; a `do` line takes no `with`, so it grants nothing.
+- [U3021](../../../../crates/una-explain/explain/U3021.md): in edition `0.3`, a `given` handler of an example of a boundary module beyond the module's ceiling.
 
 ## Edition
 
-Examples are the same in editions `0.1` and `0.2`. Edition `0.3` adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its limit (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
+Examples are the same in editions `0.1` and `0.2`. Edition `0.3` adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
 
 ## Normative source
 

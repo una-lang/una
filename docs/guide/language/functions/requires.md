@@ -30,7 +30,7 @@ pub initial(name: Text) -> Text
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 clause          = "requires" line_expr NEWLINE
@@ -134,7 +134,7 @@ Further rules:
 
 - **Counterexamples.** A refuted precondition comes with a counterexample: the values for which it fails, by name.
 - **Unknown is an error.** An obligation (a fact that `una check` must prove) that the solver cannot decide is U5002, never a pass.
-- **Repairs.** For a refuted precondition, the repairs propose a stronger parameter type, a `requires` clause when the function that holds the value is private, a guard, then `checked`.
+- **Repairs.** For a refuted precondition, the repairs propose a stronger parameter type, a `requires` clause when the value is a parameter of a private function, a guard, then `checked`.
 - **Operations.** A capability operation (an action on something outside the program, declared by a `capability`) may have `requires` too, an obligation at every call site.
 - **Not on `via` functions.** A policy (a declared release of labeled data to a lower label) computes its release with a `via` function, which has no `requires` clause, since a policy call checks its argument only against the policy's `from` type (U4005).
 

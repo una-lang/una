@@ -31,7 +31,7 @@ pub book(e: Event, count: Int) -> Seats
 
 ## Forms
 
-In the grammar below, quoted words are written as shown, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
 
 ```ebnf
 alias_body      = "=" type [ "where" line_expr ] NEWLINE ;
@@ -114,7 +114,7 @@ Further rules:
 
 - **Structural over the base.** A refined value is a value of its base, with no conversion; only entering the refinement creates an obligation.
 - **Stacking.** A refinement of a refined kind conjoins both predicates.
-- **`it`** is valid only in `where` clauses and in the predicate of `checked` (U2013). In edition `0.3`, where an operation's condition is also written with `where`, `it` is valid only in a kind's `where`.
+- **`it`** is valid only in `where` clauses and in the predicate of `checked` (U2013). In edition `0.3`, where an operation's condition is also written with `where`, a kind's `where` counts, not the condition on an operation.
 - **Unknown is not proven.** An obligation, a fact the program must be shown to keep, that the solver cannot decide is an error, U5002, never a pass.
 - **Opaque facts.** A refinement may name an opaque predicate, whose fact a value obtains only through `checked`. See [`checked`](../errors/checked.md).
 - **Function kinds.** `kind F = fn(Int) -> Int where good(it)` is ill-formed. Refine the parameters or the result (U2002).
