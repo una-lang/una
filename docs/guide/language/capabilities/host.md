@@ -64,16 +64,16 @@ A host operation of `main` that no grant allows is reported by `una check`, befo
 
 ```toml
 [package]
-name = "clock"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [run]
-entry = "clock"
+entry = "shop"
 grants = ["console"]
 ```
 
-`src/clock.una`
+`src/shop.una`
 
 ```una
 -- fails with U3012
@@ -93,16 +93,16 @@ What `Env.get` and `Files.read` return is `internal`, so printing it to the cons
 
 ```toml
 [package]
-name = "envs"
+name = "shop"
 version = "0.1.0"
 edition = "0.2"
 
 [run]
-entry = "envs"
+entry = "shop"
 grants = ["console", "env"]
 ```
 
-`src/envs.una`
+`src/shop.una`
 
 ```una
 -- fails with U4003
