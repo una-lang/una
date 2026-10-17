@@ -196,7 +196,9 @@ def project(doc, observer, table, keep_outcome=False):
     """What an observer at `observer` sees of one run (docs/release-gates.md, the `hunt` gate):
     - `status`, every `output` line in order (`Console.print` accepts `public`), and `failure`
       (its variant and its `public` fields);
-    - `diagnostics`, by severity and code;
+    - `diagnostics`, by severity, code and message: `una run --json` redacts what a message
+      renders above `public`, so a message that differs between variants shows what reached it
+      (#874, the class of S-28);
     - the trace's events whose operation's `accepts` the observer sees (`EvVis`), in order, each
       with every field but `seq` and `outcome`: `seq` numbers every event, the hidden ones too, and
       `outcome` is the host's answer, an input of the run, not something the program sends. For
@@ -231,7 +233,8 @@ def project(doc, observer, table, keep_outcome=False):
         "status": doc.get("status"),
         "output": doc.get("output"),
         "failure": doc.get("failure"),
-        "diagnostics": [[d.get("severity"), d.get("code")] for d in doc.get("diagnostics", [])],
+        "diagnostics": [[d.get("severity"), d.get("code"), d.get("message")]
+                        for d in doc.get("diagnostics", [])],
         "trace": trace,
         "violations": violations,
     }
@@ -354,8 +357,10 @@ def run_twice(una, files, name, root, timeout, observers, table, live_level):
     return run_twice_kept(una, files, name, root, timeout, observers, table, live_level)[0]
 
 
-def run_twice_kept(una, files, name, root, timeout, observers, table, live_level):
-    """`run_twice`, and the first of the two runs, for the native comparison."""
+def run_twice_kept(una, files, name, root, timeout, observers, table, live_level,
+                   doc_plant=None):
+    """`run_twice`, and the first of the two runs, for the native comparison. `doc_plant`, for the
+    gate's canary only, rewrites the run's document, given the variant's files."""
     runs = []
     for k in range(2):
         rundir = sandbox.fresh_dir(root, f"{name}-r{k}-")
@@ -372,7 +377,11 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
         why = native.undecided(una, files, name, root)
         if why:
             return ("error", why), runs[0]
-    return observe(runs[0], observers, table, live_level), runs[0]
+    run = runs[0]
+    if doc_plant is not None and not run.timed_out:
+        run = sandbox.Run(run.code, json.dumps(doc_plant(json.loads(run.stdout), files)),
+                          run.stderr, run.timed_out, run.seconds)
+    return observe(run, observers, table, live_level), runs[0]
 
 
 def native_check(result, una, files, name, root, timeout, end, run, native_files=None):
@@ -460,12 +469,12 @@ def native_pass(prog, una, root, timeout, result):
         native_check(result, una, files, name, root, timeout, end, run)
 
 
-def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None):
+def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None, doc_plant=None):
     """Runs the oracle on every manifest row with varied literals. `rebuild` turns a row into its
     program (`drivers.rebuild`); `plant`, for the gate's canaries only, rewrites the table of
     `accepts`; `native_plant`, for the native canary only, puts the program in the native sample and
-    gives the files its executables are built from. Writes one result per program to `out` and
-    returns the tally.
+    gives the files its executables are built from; `doc_plant`, for the message canary only,
+    rewrites each run's document. Writes one result per program to `out` and returns the tally.
 
     A program's result counts `compared`, its complete-against-complete comparisons, and says
     whether it is `live`: whether two of its complete ends differ at the literal's own level, where
@@ -522,7 +531,7 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if plant is not None:
             table = plant(table)
         base, base_run = run_twice_kept(una, prog.files, prog.name + "-base", root, timeout,
-                                        observers, table, live_level)
+                                        observers, table, live_level, doc_plant)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
@@ -538,7 +547,7 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
                 files = substitute(prog.files, pos, text)
                 end, end_run = run_twice_kept(una, files, f"{prog.name}-v{i}-{j}", root, timeout,
-                                              observers, table, live_level)
+                                              observers, table, live_level, doc_plant)
                 native_check(result, una, files, f"{prog.name}-v{i}-{j}", root, timeout, end,
                              end_run, native_plant(files) if native_plant else None)
                 if end[0] == "rejected":

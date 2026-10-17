@@ -2162,5 +2162,49 @@ class Sandbox(unittest.TestCase):
         self.assertEqual(sandbox.PROOF_KEY, [])
         self.assertFalse(os.path.exists(home))
 
+
+class Messages(unittest.TestCase):
+    """The observers' views keep each diagnostic's message from `una run --json` (#874): a secret
+    that reaches only a message is a leak."""
+
+    TABLE = {("Console", "print"): {"public"}}
+
+    def end(self, message):
+        doc = run_doc("failed", output=["start"],
+                      failure={"variant": "Halt", "fields": {"code": "7"}},
+                      diagnostics=[{"code": "U6001", "severity": "error", "message": message}])
+        return oracle.observe(Run(1, doc, "", False, 0.1), ["public"], self.TABLE, "secret")
+
+    def test_a_message_is_part_of_what_an_observer_sees(self):
+        end = self.end("main failed with Halt(code: 7, value: <redacted:secret>)")
+        self.assertEqual(end[0], "complete", end)
+        self.assertEqual(end[1]["views"]["public"]["diagnostics"],
+                         [["error", "U6001",
+                           "main failed with Halt(code: 7, value: <redacted:secret>)"]])
+
+    def test_messages_that_differ_are_a_leak(self):
+        a = self.end("main failed with Halt(code: 7, value: <redacted:secret>)")
+        b = self.end("main failed with Halt(code: 7, value: 4243)")
+        self.assertEqual(oracle.judge(a, a), "same")
+        self.assertEqual(oracle.judge(a, b), "leak")
+        self.assertEqual(oracle.leaking_observers(a, b), ["public"])
+
+    def test_the_message_plant_shows_each_variant_s_literal(self):
+        prog = gate.canary_message()
+        doc = {"diagnostics": [{"code": "U6001", "severity": "error",
+                                "message": "`main` failed with `Halt(code: 7)`"}]}
+        planted = gate.message_leak(doc, prog.files)
+        self.assertEqual(planted["diagnostics"][0]["message"],
+                         "`main` failed with `Halt(code: 7)` (value: 4242)")
+        self.assertEqual(doc["diagnostics"][0]["message"], "`main` failed with `Halt(code: 7)`")
+        self.assertTrue(prog.vary)
+
+    def test_the_message_canary_is_caught_by_a_leak_at_public(self):
+        row = {"error": None, "finding": True,
+               "variants": [{"verdict": "leak", "observers": ["public"]}], "violations": []}
+        self.assertTrue(gate.caught("message", row))
+        self.assertFalse(gate.caught("message", dict(row, finding=False)))
+
+
 if __name__ == "__main__":
     unittest.main()
