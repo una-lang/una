@@ -763,6 +763,124 @@ fn a_wide_range_in_a_task_stops_it_with_u6003_in_both_backends() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A program of edition 0.2 named `name` whose `main` builds two equal trees of 30 levels of 64
+/// forks each, about 2,000 forks a tree, and compares them with `==`: at line 25, column 14, in
+/// `main`, or with `in_task` at line 26, column 16, in a branch of a `together`. Each fork's
+/// children are at `step * j` and `step * j + 1` of the level below, with steps 2 and 3: the trees
+/// share their parts differently, and the comparison meets 76,480 distinct pairs of forks (#815),
+/// counted at 128 bytes each, over a budget of 4 MiB (32,768 pairs) and within one of 16 MiB.
+/// The sharing is fixed by the source: each fork's children are the values the list of the
+/// level below holds, read with `at`, the same objects in both engines. Native code copies the
+/// trees into the `together` branch with their sharing (ADR 0113, I9): at 4 MiB the block and its
+/// copies fit, so the comparison is where both engines stop (at 2 MiB native code stops at the
+/// block itself, as ADR 0113 allows).
+fn meeting_trees(name: &str, in_task: bool) -> PathBuf {
+    let compare = if in_task {
+        "  together\n    let same = x == y\n    let two = 2\n  @console.print(\"same {same} {two}\")\n"
+    } else {
+        "  let same = x == y\n  @console.print(\"same {same}\")\n"
+    };
+    let program = format!(
+        "module {name}\n\npub kind Tree = Leaf | Fork(l: Tree, r: Tree)\n\n\
+         pick(level: List[Tree], index: Int) -> Tree = level.at(index: index mod 64).or_else(default: Leaf)\n\n\
+         grow(step: Int) -> Tree\n=\n  let edit level: List[Tree] = []\n  for j in 0..<64\n\
+         \x20   level = level.append(item: Leaf)\n  for depth in 0..<30\n\
+         \x20   let edit next: List[Tree] = []\n    for j in 0..<64\n\
+         \x20     next = next.append(item: Fork(l: pick(level, index: step * j), r: pick(level, index: step * j + 1)))\n\
+         \x20   level = next\n  pick(level, index: 0)\n\n\
+         pub main() -> Unit\n  uses @console: Console[print]\n=\n\
+         \x20 let x = grow(2)\n  let y = grow(3)\n  @console.print(\"built\")\n{compare}"
+    );
+    let file = format!("src/{name}.una");
+    let dir = package(name, "", &[(file.as_str(), program.as_str())]);
+    std::fs::write(
+        dir.join("una.toml"),
+        format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"{name}\"\ngrants = [\"console\"]\n"
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_comparison_over_the_budget_is_u6003_at_its_site_in_both_backends() {
+    // #815: a structural comparison counts the pairs it holds at 64 bytes each, in both
+    // engines, so the same comparison of the same values aborts over the same budget, at its
+    // own site, and completes within a larger one. Trees that share their parts made it walk
+    // every path before, 2^30 of them here.
+    for (name, in_task) in [("meet", false), ("meet_task", true)] {
+        let dir = meeting_trees(name, in_task);
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let site = if in_task { ":26:16" } else { ":25:14" };
+        let expected = "[U6003] Error: this call exceeds the memory limit of 4 MiB\n";
+        let run = una(&dir, &["run", "--max-memory", "4"]);
+        let native = native_run(&dir, name, "4");
+        for (engine, output) in [("una run", &run), ("native", &native)] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{name} {engine}: {stderr}");
+            assert!(stderr.starts_with(expected), "{name} {engine}: {stderr}");
+            assert!(
+                stderr.contains(&format!("src/{name}.una{site}")),
+                "{name} {engine}: {stderr}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "built\n",
+                "{name} {engine}"
+            );
+        }
+        let printed = if in_task {
+            "built\nsame true 2\n"
+        } else {
+            "built\nsame true\n"
+        };
+        let run = una(&dir, &["run", "--max-memory", "16"]);
+        let native = native_run(&dir, name, "16");
+        for (engine, output) in [("una run", &run), ("native", &native)] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(0), "{name} {engine}: {stderr}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                printed,
+                "{name} {engine}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn flat_lists_past_the_budget_s_pairs_compare_in_both_backends() {
+    // #815: a comparison holds only pairs of values with parts, and compares integers as it
+    // meets them, so two flat lists of 32,769 integers, one more than the 32,768 pairs of 128
+    // bytes a budget of 4 MiB holds, compare in both engines within it. A difference in a leaf
+    // is covered by the unit tests of each engine.
+    // The lists come from `together for`, which makes each at its size in both engines.
+    let program = "module flat\n\nmake(n: Int) -> List[Int]\n=\n  let xs = together for i in 0..<n\n    i\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let x = make(32769)\n  let y = make(32769)\n  let same = x == y\n  @console.print(\"{same}\")\n";
+    let dir = package("flat", "", &[("src/flat.una", program)]);
+    std::fs::write(
+        dir.join("una.toml"),
+        "[package]\nname = \"flat\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"flat\"\ngrants = [\"console\"]\n",
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let run = una(&dir, &["run", "--max-memory", "4"]);
+    let native = native_run(&dir, "flat", "4");
+    for (engine, output) in [("una run", &run), ("native", &native)] {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{engine}: {stderr}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "true\n",
+            "{engine}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A program of edition 0.2 named `name` whose module `src/<name>.una` is `body` after its
 /// header, with `make(n)`, a list of the integers below `n` built by a loop.
 fn copies_program(name: &str, body: &str) -> PathBuf {

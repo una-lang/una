@@ -304,7 +304,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_closure_code", 1, true),
     ("una_rt_count", 1, true),
     ("una_rt_list_len", 1, true),
-    ("una_rt_equal", 2, true),
+    ("una_rt_equal_at", 3, true),
     ("una_rt_abs", 1, true),
     ("una_rt_min", 2, true),
     ("una_rt_max", 2, true),
@@ -316,7 +316,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_first", 1, true),
     ("una_rt_at", 2, true),
     ("una_rt_append", 2, true),
-    ("una_rt_contains", 2, true),
+    ("una_rt_contains_at", 3, true),
     ("una_rt_set", 4, true),
     ("una_rt_append_owned", 2, true),
     ("una_rt_set_owned", 4, true),
@@ -354,11 +354,11 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_poll", 0, true),
     ("una_rt_stopped", 0, true),
     ("una_rt_generic_compare", 3, true),
-    ("una_rt_generic_equal", 3, true),
+    ("una_rt_generic_equal_at", 4, true),
     ("una_rt_generic_to_int", 2, true),
     ("una_rt_generic_min", 3, true),
     ("una_rt_generic_max", 3, true),
-    ("una_rt_generic_contains", 3, true),
+    ("una_rt_generic_contains_at", 4, true),
     ("una_rt_generic_sum", 2, true),
     ("una_rt_generic_sort", 2, true),
     ("una_rt_generic_write", 2, true),
@@ -859,5 +859,42 @@ impl<'p> Emitter<'p> {
             .map_err(|error| internal(format!("{error:?}")))?;
         self.module.clear_context(context);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RUNTIME;
+
+    /// Each runtime function that the generated code imports is defined in the runtime's FFI
+    /// module (`crates/una-rt/src/ffi.rs`), in its table of entry points (`exported!`) or as a
+    /// function of its own, and takes as many words as it gives it: a word more or less would
+    /// link and then read the wrong words (#815).
+    #[test]
+    fn the_imported_runtime_functions_take_the_words_the_runtime_exports() {
+        let ffi = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../una-rt/src/ffi.rs"),
+        )
+        .unwrap_or_default();
+        // The parameters after `start`, up to the closing parenthesis: their count.
+        let arity = |start: usize| {
+            let rest = ffi.get(start..).unwrap_or_default();
+            let params = rest.split(')').next().unwrap_or_default();
+            params
+                .split(',')
+                .filter(|param| !param.trim().is_empty())
+                .count()
+        };
+        for &(name, params, _) in RUNTIME {
+            let entry = format!("\n    {name} => ");
+            let function = format!("fn {name}(");
+            let found = if let Some(at) = ffi.find(&entry) {
+                let line = ffi.get(at..).unwrap_or_default();
+                line.find(", (").map(|open| arity(at + open + 3))
+            } else {
+                ffi.find(&function).map(|at| arity(at + function.len()))
+            };
+            assert_eq!(found, Some(params), "{name}");
+        }
     }
 }

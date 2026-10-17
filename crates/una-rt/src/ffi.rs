@@ -280,7 +280,7 @@ exported! {
     una_rt_closure_code => values::closure_code, (value);
     una_rt_count => values::count, (list);
     una_rt_list_len => values::list_len, (list);
-    una_rt_equal => values::equal, (a, b);
+    una_rt_equal_at => values::equal, (site, a, b);
     una_rt_abs => values::abs, (x);
     una_rt_min => values::min, (a, b);
     una_rt_max => values::max, (a, b);
@@ -307,7 +307,7 @@ exported! {
     una_rt_first => values::first, (xs);
     una_rt_at => values::at, (xs, index);
     una_rt_append => values::append, (xs, item);
-    una_rt_contains => values::contains, (xs, item);
+    una_rt_contains_at => values::contains, (site, xs, item);
     una_rt_set => values::set, (site, xs, index, item);
     una_rt_append_owned => values::append_owned, (xs, item);
     una_rt_set_owned => values::set_owned, (site, xs, index, item);
@@ -322,11 +322,11 @@ exported! {
     una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
     una_rt_generic_compare => generic::compare, (desc, a, b);
-    una_rt_generic_equal => generic::equal, (desc, a, b);
+    una_rt_generic_equal_at => generic::equal, (site, desc, a, b);
     una_rt_generic_to_int => generic::to_int, (desc, x);
     una_rt_generic_min => generic::min, (desc, a, b);
     una_rt_generic_max => generic::max, (desc, a, b);
-    una_rt_generic_contains => generic::contains, (desc, xs, item);
+    una_rt_generic_contains_at => generic::contains, (site, desc, xs, item);
     una_rt_generic_sum => generic::sum, (desc, xs);
     una_rt_generic_sort => generic::sort, (desc, xs);
     una_rt_generic_write => generic::write, (desc, x);

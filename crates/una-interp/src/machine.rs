@@ -13,7 +13,7 @@ use una_core::{
 use una_syntax::Span;
 
 use crate::host::{self, FileFault, Grant, World};
-use crate::value::{Closure, Key, Value, compare, equal};
+use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
 
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
 /// within a function (`spec/09 §1`), so the last binding of a name is the one in scope.
@@ -656,6 +656,18 @@ impl<'p, 'w> Machine<'p, 'w> {
         Ok(())
     }
 
+    /// Structural equality at `span`, within the memory budget: a comparison visits at most as
+    /// many pairs of composite values as the budget holds at `EQUALITY_PAIR_BYTES` each, else the
+    /// run aborts with U6003 there (ADR 0061, amendment of 2026-10-17, #815). The count is fixed
+    /// by the values, not by what the heap holds, so the native backend stops at the same pair.
+    fn equal_at(&self, a: &Value<'p>, b: &Value<'p>, span: Span) -> Result<bool, Stop<'p>> {
+        let budget = self.max_memory.saturating_mul(1024 * 1024);
+        equal_within(a, b, budget / EQUALITY_PAIR_BYTES).ok_or(Stop::Abort(Abort::Memory {
+            span,
+            limit: self.max_memory,
+        }))
+    }
+
     fn leave(&mut self, result: Flow<'p>) -> Flow<'p> {
         self.depth = self.depth.saturating_sub(1);
         self.later = self.callers.pop().unwrap_or_default();
@@ -1263,8 +1275,14 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn rhs(&mut self, env: &Env<'p>, caps: &Caps<'p>, rhs: &'p Rhs, ty: &Type) -> Flow<'p> {
         match rhs {
             Rhs::Atom(atom) => self.atom(env, atom),
-            Rhs::Prim { prim, args, .. } => {
+            Rhs::Prim {
+                prim, args, span, ..
+            } => {
                 let args = self.atoms(env, args)?;
+                if let (Prim::Eq | Prim::Ne, [a, b]) = (*prim, args.as_slice()) {
+                    let same = self.equal_at(a, b, *span)?;
+                    return Ok(Value::Bool(same == (*prim == Prim::Eq)));
+                }
                 // Interpolation writes a structured value in its Una form (ADR 0068).
                 if *prim == Prim::ToText
                     && let Some(value) = args.first()
@@ -1876,7 +1894,14 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             "contains" => {
                 let item = arg(1)?;
-                Value::Bool(list(0)?.iter().any(|v| equal(v, &item)))
+                let mut found = false;
+                for v in list(0)?.iter() {
+                    if self.equal_at(v, &item, span)? {
+                        found = true;
+                        break;
+                    }
+                }
+                Value::Bool(found)
             }
             "map" => {
                 let (items, each) = (list(0)?, arg(1)?);
@@ -2121,8 +2146,10 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Bool(b) => Value::Bool(!b),
             _ => return Err(fault("`not` applied to a value that is not a `Bool`")),
         },
-        Prim::Eq => Value::Bool(equal(arg(0)?, arg(1)?)),
-        Prim::Ne => Value::Bool(!equal(arg(0)?, arg(1)?)),
+        // Compared at their call, within the memory budget (`Machine::equal_at`).
+        Prim::Eq | Prim::Ne => {
+            return Err(fault(format!("`{}` outside its call", prim.as_str())));
+        }
         Prim::Lt => Value::Bool(compare(arg(0)?, arg(1)?).is_lt()),
         Prim::Le => Value::Bool(compare(arg(0)?, arg(1)?).is_le()),
         Prim::Gt => Value::Bool(compare(arg(0)?, arg(1)?).is_gt()),

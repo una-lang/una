@@ -23,7 +23,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use num_bigint::{BigInt, Sign};
 use una_core::Text;
@@ -752,61 +752,173 @@ pub fn count(list: i64) -> i64 {
         .unwrap_or(0)
 }
 
-/// Structural equality, `==` of `spec/03 §1`, of two values of one type: 1 or 0.
-pub fn equal(a: i64, b: i64) -> i64 {
-    i64::from(equal_words(a, b))
+/// The bytes a structural equality accounts for each pair of values with parts it holds,
+/// visited or pending, as the interpreter does (`una_interp`'s `EQUALITY_PAIR_BYTES`, ADR 0061,
+/// amendment of 2026-10-17, #815): the budget is checked from this fixed size, never from what
+/// the allocator holds.
+pub(crate) const EQUALITY_PAIR_BYTES: usize = 128;
+
+/// The steps a structural equality takes before it records the pairs it visits, as the
+/// interpreter does: a small comparison allocates no set (#815).
+const EQUALITY_STEPS_UNRECORDED: usize = 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// The pairs of words the equalities of this thread compared, in tests (#815).
+    pub(crate) static EQUALITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Structural equality over a worklist of pairs, never the native stack: a value can nest
-/// deeper than any call (ADR 0060, draft).
-fn equal_words(a: i64, b: i64) -> bool {
-    enum Shape {
+/// Structural equality, `==` of `spec/03 §1`, of two values of one type, at `site`: 1 or 0.
+/// Past the memory budget, the run or the task stops with U6003 at `site` (ADR 0061), and the
+/// answer is 0, which nothing reads once it stopped.
+pub fn equal(site: i64, a: i64, b: i64) -> i64 {
+    i64::from(equal_at(site, a, b) == Some(true))
+}
+
+/// Structural equality at `site` within the memory budget: `None` when it stopped the run or
+/// the task with U6003 there.
+pub(crate) fn equal_at(site: i64, a: i64, b: i64) -> Option<bool> {
+    let verdict = equal_words(a, b, crate::runtime::equality_pairs());
+    if verdict.is_none() {
+        crate::runtime::refuse(usize::try_from(site).unwrap_or(usize::MAX), None);
+    }
+    verdict
+}
+
+/// A value with parts, compared through a worklist: a variant with fields, a record, a
+/// non-empty list or a non-empty map. Every other word is a leaf, compared as it is met.
+fn has_parts(word: i64) -> bool {
+    is_handle(word)
+        && with(word, |object| match object {
+            Object::Data { fields, .. } | Object::List(fields) => !fields.is_empty(),
+            Object::Map(entries) => !entries.is_empty(),
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
+/// The equality of two words with a leaf on either side: one word, or two leaves of the same
+/// value; a value with parts never equals a leaf.
+fn leaf_equal(a: i64, b: i64) -> bool {
+    /// A leaf's value, taken out of the heap, which one lookup borrows at a time.
+    #[derive(PartialEq)]
+    enum Leaf {
         Int(BigInt),
         Text(String),
         Bytes(Vec<u8>),
-        Cells(Option<i64>, Vec<i64>),
-        Map(Vec<MapKey>, Vec<i64>),
-        Opaque,
+        Variant(i64),
+        List,
+        Map,
+        Other,
     }
-    let shape = |word: i64| {
+    if a == b {
+        return true;
+    }
+    if !is_handle(a) || !is_handle(b) {
+        return false;
+    }
+    let leaf = |word: i64| {
         with(word, |object| match object {
-            Object::Int(value) => Shape::Int(value.clone()),
-            Object::Text(text) => Shape::Text(text.as_str().to_owned()),
-            Object::Hashed(bytes) => Shape::Bytes(bytes.clone()),
-            Object::Data { tag, fields } => Shape::Cells(Some(*tag), fields.clone()),
-            Object::List(items) => Shape::Cells(None, items.clone()),
-            Object::Map(entries) => Shape::Map(
-                entries.keys().cloned().collect(),
-                entries.values().map(|(_, value)| *value).collect(),
-            ),
-            Object::Closure { .. } | Object::Instance { .. } => Shape::Opaque,
+            Object::Int(value) => Leaf::Int(value.clone()),
+            Object::Text(text) => Leaf::Text(text.as_str().to_owned()),
+            Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
+            Object::Data { tag, fields } if fields.is_empty() => Leaf::Variant(*tag),
+            Object::List(items) if items.is_empty() => Leaf::List,
+            Object::Map(entries) if entries.is_empty() => Leaf::Map,
+            _ => Leaf::Other,
         })
     };
-    let mut pending = vec![(a, b)];
+    match (leaf(a), leaf(b)) {
+        (Some(x), Some(y)) => x != Leaf::Other && x == y,
+        _ => false,
+    }
+}
+
+/// A pair met by a structural equality: `true` when it is equal at once (one word, or two equal
+/// leaves) or when it is a pair of values with parts, now pending; `false` when it differs.
+fn admit(a: i64, b: i64, pending: &mut Vec<(i64, i64)>) -> bool {
+    if a == b {
+        return true;
+    }
+    match (has_parts(a), has_parts(b)) {
+        (true, true) => {
+            pending.push((a, b));
+            true
+        }
+        (false, false) => leaf_equal(a, b),
+        _ => false,
+    }
+}
+
+/// Structural equality over a worklist of pairs, never the native stack: a value can nest
+/// deeper than any call (ADR 0060, draft). It holds at most `pairs` pairs of values with parts
+/// at once, those it has visited and its pending ones together, else `None`.
+///
+/// Leaves are compared as they are met, and one word on both sides, a shared value, is equal at
+/// once, so `x == x` takes no step. A pair of values with parts compared once, past the first
+/// [`EQUALITY_STEPS_UNRECORDED`] steps, is not compared again, so a value that shares its parts,
+/// such as `x = (y, y)` built over and over, takes a step per distinct pair, not per path: time
+/// and space are O(distinct pairs of values with parts) (#815).
+///
+/// Identity implies equality, in the shortcut and in the skip of a visited pair, because no
+/// value has a `==` that is not reflexive. A type with one, such as a float under IEEE `==`,
+/// where NaN differs from itself, must revisit both (#819).
+fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
+    /// The parts of a value with parts: a variant's tag or a list's `None`, then its words, or
+    /// a map's keys and values.
+    enum Parts {
+        Cells(Option<i64>, Vec<i64>),
+        Map(Vec<MapKey>, Vec<i64>),
+    }
+    let parts = |word: i64| {
+        with(word, |object| match object {
+            Object::Data { tag, fields } => Some(Parts::Cells(Some(*tag), fields.clone())),
+            Object::List(items) => Some(Parts::Cells(None, items.clone())),
+            Object::Map(entries) => Some(Parts::Map(
+                entries.keys().cloned().collect(),
+                entries.values().map(|(_, value)| *value).collect(),
+            )),
+            _ => None,
+        })
+        .flatten()
+    };
+    let mut pending = Vec::new();
+    if !admit(a, b, &mut pending) {
+        return Some(false);
+    }
+    let mut visited: HashSet<(i64, i64)> = HashSet::new();
+    let mut steps = 0_usize;
     while let Some((a, b)) = pending.pop() {
-        if a == b {
+        #[cfg(test)]
+        EQUALITY_STEPS.with(|steps| steps.set(steps.get() + 1));
+        // What the comparison holds, each pair accounted at `EQUALITY_PAIR_BYTES`: the same count
+        // as the interpreter's, which pushes the same pairs in the same order.
+        if visited.len().saturating_add(pending.len()) > pairs {
+            return None;
+        }
+        steps += 1;
+        // A pair already visited is equal or still pending, its parts pushed: any mismatch
+        // anywhere ends the whole comparison with `false`, so skipping it is sound.
+        if steps > EQUALITY_STEPS_UNRECORDED && !visited.insert((a, b)) {
             continue;
         }
-        if !is_handle(a) || !is_handle(b) {
-            return false;
-        }
-        match (shape(a), shape(b)) {
-            (Some(Shape::Int(x)), Some(Shape::Int(y))) if x == y => {}
-            (Some(Shape::Text(x)), Some(Shape::Text(y))) if x == y => {}
-            (Some(Shape::Bytes(x)), Some(Shape::Bytes(y))) if x == y => {}
-            (Some(Shape::Cells(tx, x)), Some(Shape::Cells(ty, y)))
-                if tx == ty && x.len() == y.len() =>
-            {
-                pending.extend(x.into_iter().zip(y));
+        let same = match (parts(a), parts(b)) {
+            (Some(Parts::Cells(tx, x)), Some(Parts::Cells(ty, y))) => {
+                tx == ty
+                    && x.len() == y.len()
+                    && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
             }
             // The same keys, each with an equal value (`spec/21 §1` rule 5).
-            (Some(Shape::Map(kx, x)), Some(Shape::Map(ky, y))) if kx == ky => {
-                pending.extend(x.into_iter().zip(y));
+            (Some(Parts::Map(kx, x)), Some(Parts::Map(ky, y))) => {
+                kx == ky && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
             }
-            _ => return false,
+            _ => false,
+        };
+        if !same {
+            return Some(false);
         }
     }
-    true
+    Some(true)
 }
 
 /// A new keyed hash.
@@ -2132,8 +2244,16 @@ pub fn reuse(old: i64, tag: i64) -> i64 {
 }
 
 /// `contains(xs, item)` of the prelude.
-pub fn contains(xs: i64, item: i64) -> i64 {
-    bool_word(items(xs).into_iter().any(|x| equal_words(x, item)))
+pub fn contains(site: i64, xs: i64, item: i64) -> i64 {
+    for x in items(xs) {
+        // Each comparison within the budget; past it, the run or the task stopped at `site`.
+        match equal_at(site, x, item) {
+            Some(true) => return bool_word(true),
+            Some(false) => {}
+            None => return bool_word(false),
+        }
+    }
+    bool_word(false)
 }
 
 /// `sum(xs)` of the prelude.
@@ -2370,7 +2490,7 @@ mod tests {
         }
         let pair = record(one, one);
         let copy = import(&export(pair).unwrap()).unwrap();
-        assert_eq!(equal(copy, pair), 1);
+        assert_eq!(equal(0, copy, pair), 1);
         assert_eq!(field(copy, 0), field(copy, 1), "sharing survives");
         assert!(marks_clear());
         for word in [copy, pair, one] {
@@ -2437,8 +2557,8 @@ mod tests {
         let copy = import(&export(top).unwrap()).unwrap();
         // `equal` walks every path (#815), so the chain, with 2^40 paths, is checked level by
         // level: its sharing at each level and its last value.
-        assert_eq!(equal(field(copy, 0), outer), 1);
-        assert_eq!(equal(field(copy, 1), map), 1);
+        assert_eq!(equal(0, field(copy, 0), outer), 1);
+        assert_eq!(equal(0, field(copy, 1), map), 1);
         let copied_outer = field(copy, 0);
         assert_eq!(field(copied_outer, 0), field(copied_outer, 1));
         let mut copied_level = field(copy, 2);
@@ -2446,7 +2566,7 @@ mod tests {
             assert_eq!(field(copied_level, 0), field(copied_level, 1));
             copied_level = field(copied_level, 0);
         }
-        assert_eq!(equal(copied_level, n(0)), 1);
+        assert_eq!(equal(0, copied_level, n(0)), 1);
         assert!(marks_clear());
         for word in [copy, top, level, two, one, map, shared, outer, inner] {
             release(word);
@@ -2542,7 +2662,7 @@ mod tests {
             field(six, 0),
             "the map's two values are one object"
         );
-        assert_eq!(equal(field(five, 0), shared), 1);
+        assert_eq!(equal(0, field(five, 0), shared), 1);
         for word in [
             five, six, copy, top, map, shared, capability, closure, variant, hash, big,
         ] {
@@ -2829,7 +2949,7 @@ mod tests {
         let copy = import(&export(value).unwrap()).unwrap();
         let most = MOST_GROWTH.with(std::cell::Cell::get);
         assert!(most > 0 && most <= W, "{most} > {W}");
-        assert_eq!(equal(copy, value), 1);
+        assert_eq!(equal(0, copy, value), 1);
         release(copy);
         release(value);
     }
@@ -2979,9 +3099,9 @@ mod tests {
         // Under Miri (#766), which runs each step slowly, the same walks at a smaller depth.
         let depth = if cfg!(miri) { 1_000 } else { 1_000_000 };
         let (a, b) = (chain(depth), chain(depth));
-        assert_eq!(equal(a, b), 1);
+        assert_eq!(equal(0, a, b), 1);
         let shorter = chain(depth - 1);
-        assert_eq!(equal(a, shorter), 0);
+        assert_eq!(equal(0, a, shorter), 0);
         for value in [a, b, shorter] {
             release(value);
         }
@@ -3116,7 +3236,7 @@ mod tests {
         }
         let portable = export(chain).unwrap();
         let back = import(&portable).unwrap();
-        assert_eq!(equal(back, chain), 1);
+        assert_eq!(equal(0, back, chain), 1);
         release(back);
         release(chain);
         assert_eq!(live(), before);
@@ -3157,8 +3277,8 @@ mod tests {
         let longer = append(xs, n(4));
         assert_eq!(count(longer), 4);
         assert_eq!(int(sum(longer)), "10");
-        assert_eq!(contains(longer, n(4)), 1);
-        assert_eq!(contains(xs, n(4)), 0);
+        assert_eq!(contains(0, longer, n(4)), 1);
+        assert_eq!(contains(0, xs, n(4)), 0);
         let found = at(longer, n(3));
         assert_eq!(tag(found), 0);
         assert_eq!(int(field(found, 0)), "4");
@@ -3167,11 +3287,118 @@ mod tests {
         let parsed = to_int(text_word("-12".to_owned()));
         assert_eq!(int(or_else(parsed, n(0))), "-12");
         assert_eq!(to_int(text_word("1x".to_owned())), NONE);
-        assert_eq!(equal(xs, append(xs, n(4))), 0);
+        assert_eq!(equal(0, xs, append(xs, n(4))), 0);
         let same = list();
         for value in [3, 1, 2] {
             push(same, n(value));
         }
-        assert_eq!(equal(xs, same), 1);
+        assert_eq!(equal(0, xs, same), 1);
+    }
+
+    /// `x0 = [leaf]`, `x(k+1) = [xk, xk]`: a value of `depth` levels whose every level shares
+    /// its one child, 2^depth paths through `depth + 1` distinct lists.
+    fn doubled(depth: usize, leaf: i64) -> i64 {
+        let mut value = list();
+        push(value, n(leaf));
+        for _ in 0..depth {
+            let next = list();
+            retain(value);
+            push(next, value);
+            push(next, value);
+            value = next;
+        }
+        value
+    }
+
+    /// The steps `equal_words` takes to compare `a` and `b`, and its verdict.
+    fn steps(a: i64, b: i64) -> (usize, Option<bool>) {
+        let before = EQUALITY_STEPS.with(std::cell::Cell::get);
+        let verdict = equal_words(a, b, usize::MAX);
+        (EQUALITY_STEPS.with(std::cell::Cell::get) - before, verdict)
+    }
+
+    #[test]
+    fn a_value_equals_itself_at_once() {
+        for depth in [8, 16, 32, 64] {
+            let x = doubled(depth, 1);
+            assert_eq!(steps(x, x), (0, Some(true)), "depth {depth}");
+            release(x);
+        }
+    }
+
+    #[test]
+    fn shared_parts_are_compared_once_however_deep() {
+        // #815: two values built apart, each sharing its parts, compare in a number of steps
+        // linear in their depth past the unrecorded ones, not in their 2^depth paths.
+        for depth in [8, 16, 32, 64] {
+            let (a, b) = (doubled(depth, 1), doubled(depth, 1));
+            let (taken, verdict) = steps(a, b);
+            assert_eq!(verdict, Some(true), "depth {depth}");
+            let bound = EQUALITY_STEPS_UNRECORDED + 3 * (depth + 2);
+            assert!(taken <= bound, "depth {depth}: {taken} steps");
+            release(a);
+            release(b);
+        }
+    }
+
+    #[test]
+    fn a_difference_under_a_shared_part_is_found() {
+        // The skip of a visited pair must not hide a difference: one side shares a part, the
+        // other holds a near copy whose deepest leaf differs.
+        for depth in [1, 8, 16, 32, 64] {
+            let a = doubled(depth, 1);
+            let b = doubled(depth, 2);
+            assert_eq!(steps(a, b).1, Some(false), "depth {depth}");
+            // One branch the same as `a`'s, the other differing deep down.
+            let mixed = list();
+            push(mixed, doubled(depth, 1));
+            push(mixed, doubled(depth, 2));
+            let shared = list();
+            retain(a);
+            push(shared, a);
+            push(shared, a);
+            assert_eq!(steps(shared, mixed).1, Some(false), "depth {depth}");
+            assert_eq!(steps(shared, shared), (0, Some(true)));
+            for word in [b, mixed, shared] {
+                release(word);
+            }
+        }
+    }
+
+    #[test]
+    fn leaves_are_compared_at_once_and_never_held() {
+        // Two flat lists hold one pair, their own, however long: a budget of one pair compares
+        // lists of any length, and a difference in a leaf is found.
+        let flat = |count: i64, last: i64| {
+            let xs = list();
+            for i in 0..count {
+                push(xs, n(if i == count - 1 { last } else { i }));
+            }
+            xs
+        };
+        let count = if cfg!(miri) { 1_000 } else { 100_000 };
+        let (a, b, c) = (flat(count, 7), flat(count, 7), flat(count, 8));
+        assert_eq!(equal_words(a, b, 1), Some(true));
+        assert_eq!(steps(a, b), (1, Some(true)));
+        assert_eq!(equal_words(a, c, 1), Some(false));
+        // A leaf never equals a value with parts.
+        let (empty, other, one) = (list(), list(), flat(1, 0));
+        assert_eq!(equal_words(empty, one, 1), Some(false));
+        assert_eq!(equal_words(empty, other, 0), Some(true));
+        for word in [a, b, c, empty, other, one] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn a_comparison_past_its_budget_of_pairs_stops() {
+        let (a, b) = (doubled(40, 1), doubled(40, 1));
+        assert_eq!(equal_words(a, b, 10), None);
+        assert_eq!(equal_words(a, b, 1000), Some(true));
+        assert_eq!(equal_words(a, a, 0), Some(true));
+        // Outside a run, no budget: `equal` compares.
+        assert_eq!(equal(0, a, b), 1);
+        release(a);
+        release(b);
     }
 }
