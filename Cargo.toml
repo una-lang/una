@@ -1,6 +1,26 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Every crate but `una-oracle`, the security hunt's oracle runner (ADR 0115): a plain `cargo
+# build` never builds it, and the only crate that enables the `oracle` features stays out of
+# every build that names no package.
+default-members = [
+    "crates/una-check",
+    "crates/una-cli",
+    "crates/una-codegen",
+    "crates/una-core",
+    "crates/una-diag",
+    "crates/una-explain",
+    "crates/una-fmt",
+    "crates/una-http",
+    "crates/una-interp",
+    "crates/una-lsp",
+    "crates/una-project",
+    "crates/una-report",
+    "crates/una-rt",
+    "crates/una-syntax",
+    "crates/una-verify",
+]
 
 [workspace.package]
 version = "0.3.15"

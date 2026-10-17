@@ -51,7 +51,9 @@ import atexit
 import io
 import json
 import os
+import platform
 import re
+import struct
 import socket
 import subprocess
 import sys
@@ -66,7 +68,7 @@ from .families import conditions
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
 from .refactor import REFACTORS
-from .una import Varied, header, join_decls, module_file, package
+from .una import Varied, header, join_decls, module_file, package, policy
 
 # The fixed run: changing any of these changes the gate, and docs/release-gates.md with it.
 SEED = 767
@@ -148,10 +150,20 @@ DIFFER_CANARIES = {
 DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
 # literals that decide nothing: about 90% of the measured run's 481 programs and 1,889
-# complete-against-complete comparisons, and of its 117 live programs (#818, docs/release-gates.md).
+# complete-against-complete comparisons (#818, docs/release-gates.md). With the oracle runner
+# (ADR 0115), liveness is read from runs that show every value and their releases: 539 programs
+# are live in the measured run (117 before), and 243 comparisons are explained by the releases of
+# programs whose policy releases to `public`, which were set aside before; the floors are about
+# 90% of each (2026-10-17).
 MIN_ORACLE_COMPARED = 432
 MIN_VARIANTS_COMPARED = 1700
-MIN_LIVE = 105
+MIN_LIVE = 485
+MIN_EXPLAINED = 218
+# A ceiling on the comparisons the releases explain, about 110% of the measured run: an
+# explanation removes a comparison from the leak decision, so a defect that let releases explain
+# more, a release check gone wrong or a released value that varies with something else, shows
+# here even while the compared floors hold (#794).
+MAX_EXPLAINED = 268
 # The same floors per family for the families whose oracle programs are few beside the others'
 # (B, C and Q), about 90% of the measured run's compared programs and comparisons: 36 and 180 of
 # B, 39 and 195 of C, 38 and 190 of Q (#818). Above the global floors, these families could lose
@@ -167,7 +179,12 @@ ORACLE_FORMS = (
     "H3:reach-under-pc", "K4:list", "K4:record", "K4:text", "P1:list", "P1:option", "P1:scalar",
     "Q3:guarded-dry", "Q3:guarded-live", "T8:effect-public", "T8:via-calls-policy",
 )
-LIVE_FORMS = ("C6:secret-fan-out", "H3:install-under-pc", "H3:reach-under-pc")
+LIVE_FORMS = (
+    "B2:function-value", "B2:grant-handler", "B2:narrowed", "C6:secret-fan-out", "C6:secret-sink",
+    "H3:install-under-pc", "H3:reach-under-pc", "K4:list", "K4:record", "K4:text", "P1:list",
+    "P1:option", "P1:scalar", "Q3:guarded-dry", "Q3:guarded-live", "T12:chain-reversed",
+    "T12:chain-to-public", "T8:effect-public", "T8:via-calls-policy",
+)
 PINNED_SET_ASIDE_REJECTED = {"B": 14, "C": 20, "Q": 12, "T": 29}
 # The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
 # programs it compares, about 90% of the measured run's (docs/release-gates.md).
@@ -184,17 +201,25 @@ WORKERS = 4
 # programs, the edition 0.3 sample included, took 226 to 253 seconds in four runs (2026-10-16),
 # the slower ones under more load (load average at the start and the end): 228 (1.9, 3.8), 226
 # (2.2, 4.4), 247 (3.5, 6.3) and 253 (4.9, 8.3), the same programs and the same compiler, so
-# 270 seconds leaves 17 seconds above the slowest, about 6%. A run over it is resolved by
-# measuring again, on a quieter machine, or by raising the budget on a measurement, never by
-# shrinking the run or its sample. With each run in a directory of its own (#793) and the gate's
+# the budget was 270 seconds, 17 seconds above the slowest, about 6%. A run over the budget is
+# resolved by measuring again, on a quieter machine, or by raising the budget on a measurement,
+# never by shrinking the run or its sample. With each run in a directory of its own (#793) and the gate's
 # shared proof-cache key, the gate took 252 and 253 seconds at a load of about 5 (2026-10-17).
-TIME_BUDGET_MACOS = 270
+# With the oracle runner (ADR 0115, #794), each variant that completes also runs observed, a
+# third run besides the two that check determinism. Four runs of the same programs and compiler
+# took 273, 310, 306 and 274 seconds, the load average 2 to 6 from other work (2026-10-18): two
+# clusters, about 274 and about 308, from the machine's state rather than the code. 335 seconds is
+# the slowest plus 7%, rounded up to 5 seconds. The gate's timing lines give each phase, and the
+# observed runs' share of the oracle phase as an estimate: about 12 seconds on macOS.
+TIME_BUDGET_MACOS = 335
 # The budget of the gate on Linux (#793), in the hardened container of `scripts/hunt-linux.sh`,
 # where every run also starts the Landlock launcher: set from measured quiet runs on that
 # container, not from the macOS number. On Docker Desktop's VM on the same Apple M1 Max, the gate
-# took 362 and 359 seconds at a load of about 4 to 5 (2026-10-17), so 390 seconds is the slower
-# plus 7%, rounded up to 5 seconds.
-TIME_BUDGET_LINUX = 390
+# took 362 and 359 seconds at a load of about 4 to 5 (2026-10-17), so the budget was 390
+# seconds, the slower plus 7%, rounded up to 5 seconds. With the oracle runner's observed runs
+# (ADR 0115, #794), two runs back to back took 396 and 388 seconds at a load average of 2.5 to 5.3
+# (2026-10-18), so 425 seconds is the slower plus 7%, rounded up to 5 seconds.
+TIME_BUDGET_LINUX = 425
 # The budget by sandbox backend. A backend with no budget here has none pinned, which is an error
 # of the gate: no platform runs unbudgeted.
 TIME_BUDGETS = {"sandbox-exec": TIME_BUDGET_MACOS, "landlock": TIME_BUDGET_LINUX}
@@ -316,6 +341,80 @@ def timeouts_decided(oracle_rows):
     return sum(int(bool(r.get("base_timed_out")))
                + sum(1 for v in r.get("variants", []) if v.get("timed_out"))
                + r.get("native", {}).get("pass_timed_out", 0) for r in oracle_rows)
+
+
+# The CPU types of the host's executables: Mach-O `cputype` on macOS, ELF `e_machine` on Linux, by
+# `platform.machine()`.
+MACHO_CPU = {"arm64": 0x0100000C, "x86_64": 0x01000007}
+ELF_MACHINE = {"aarch64": 183, "arm64": 183, "x86_64": 62}
+
+
+def host_executable_error(path, system=None, machine=None):
+    """Why `path` cannot run on this host, or None: it must exist and be an executable of the
+    host's format and CPU, Mach-O on macOS (a universal one holding the host's CPU), ELF on Linux.
+    A tool built for another platform, such as a checker left by the Linux gate in a shared build
+    directory, would otherwise fail every run that uses it."""
+    system = system or platform.system()
+    machine = machine or platform.machine()
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError as e:
+        return f"{path} cannot be read: {e.strerror}"
+    if system == "Darwin":
+        want = MACHO_CPU.get(machine)
+        if head[:4] == b"\xcf\xfa\xed\xfe" and len(head) >= 8:
+            cpu = struct.unpack("<I", head[4:8])[0]
+            if want is None or cpu == want:
+                return None
+            return f"{path} is a Mach-O executable for another CPU (cputype {cpu:#x}), not {machine}"
+        if head[:4] == b"\xca\xfe\xba\xbe" and len(head) >= 8:
+            count = struct.unpack(">I", head[4:8])[0]
+            cpus = [struct.unpack(">I", head[8 + 20 * k:12 + 20 * k])[0]
+                    for k in range(min(count, (len(head) - 8) // 20))]
+            if want is None or want in cpus:
+                return None
+            return f"{path} is a universal executable without {machine}"
+        kind = "an ELF executable, for Linux" if head[:4] == b"\x7fELF" else "not a Mach-O executable"
+        return f"{path} is {kind}, and this host is macOS ({machine})"
+    if system == "Linux":
+        if head[:4] != b"\x7fELF" or len(head) < 20:
+            kind = "a Mach-O executable, for macOS" if head[:4] in (
+                b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe") else "not an ELF executable"
+            return f"{path} is {kind}, and this host is Linux ({machine})"
+        order = "<" if head[5] == 1 else ">"
+        got = struct.unpack(order + "H", head[18:20])[0]
+        want = ELF_MACHINE.get(machine)
+        if want is None or got == want:
+            return None
+        return f"{path} is an ELF executable for another CPU (e_machine {got}), not {machine}"
+    return None
+
+
+def timing_summary(phases, observed_runs, observed_seconds, workers):
+    """The timing record of a gate: the seconds of each phase, in order, and the observed runs of
+    the oracle runner, with the share of the oracle phase they account for, estimated as their
+    summed seconds over the workers that run them in parallel. Printed and recorded only: no
+    verdict reads it."""
+    return {
+        "phases": {name: round(seconds, 1) for name, seconds in phases.items()},
+        "observed_runs": observed_runs,
+        "observed_run_seconds": round(observed_seconds, 1),
+        "workers": workers,
+        "observed_share_estimate": round(observed_seconds / workers, 1) if workers else None,
+    }
+
+
+def timing_lines(timing):
+    """The summary's lines for `timing`."""
+    phases = ", ".join(f"{name} {seconds:.0f}" for name, seconds in timing["phases"].items())
+    estimate = timing["observed_share_estimate"]
+    return [
+        f"phases (seconds): {phases}",
+        f"observed runs: {timing['observed_runs']}, {timing['observed_run_seconds']:.0f} seconds "
+        f"summed, about {estimate:.0f} seconds of the oracle phase at {timing['workers']} "
+        "workers (an estimate)",
+    ]
 
 
 def budget_error(elapsed, backend=None):
@@ -452,6 +551,144 @@ def message_leak(doc, files):
     return doc
 
 
+def canary_live():
+    """An accepted program whose secret literal reaches only an operation that accepts `secret`,
+    so `una run --json` redacts it in every variant: with the oracle runner (ADR 0115) its variants
+    must differ at the literal's own level, live, with no finding."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    text = join_decls(
+        header(MOD), VAULT,
+        "send(n: secret Int) -> Unit\n  uses @vault: Vault[note]\n=\n  @vault.note(n)",
+        CONSOLE_MAIN + f"  let s: secret Int = {lit}\n  send(s) with @vault = quiet()\n"
+        '  @console.print("done")')
+    files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
+    return Program(op="canary-live", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+RELEASE_MOD = "app.release"
+
+
+def canary_release():
+    """An accepted program that releases a secret to `public` through a policy and prints it: its
+    variants' output differs at `public`, explained by what the policy released (ADR 0115). Planted
+    (`misstated_release`), each release claims to have released the same value, and the same
+    difference must then be reported as a leak."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    release = join_decls(
+        header(RELEASE_MOD, trusted=True),
+        policy("lower", "secret Int", "public Int", "reveal"),
+        "reveal(n: secret Int) -> public Int = n")
+    text = join_decls(
+        header(MOD, imports=[(RELEASE_MOD, ["lower"])]),
+        CONSOLE_MAIN + f"  let s: secret Int = {lit}\n  let p: public Int = lower(s)\n"
+        '  @console.print("{p}")')
+    files, vary = v.place(package("canary", "0.2", {MOD: text, RELEASE_MOD: release},
+                                  trusted=[RELEASE_MOD], entry=MOD, grants=["console"]))
+    return Program(op="canary-release", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+def canary_release_late():
+    """An accepted program that prints a public line, then releases a secret to `public` through
+    a policy and prints it: as written, its variants differ only after the release, explained by
+    it. Planted (`leaked_before_release`), the first line shows the secret before any release, and
+    that difference must be a leak at `public`: a release explains only what comes after it
+    (ADR 0115, Amendment of 2026-10-18)."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "5")
+    release = join_decls(
+        header(RELEASE_MOD, trusted=True),
+        policy("lower", "secret Int", "public Int", "reveal"),
+        "reveal(n: secret Int) -> public Int = n")
+    text = join_decls(
+        header(MOD, imports=[(RELEASE_MOD, ["lower"])]),
+        CONSOLE_MAIN + f'  @console.print("start")\n  let s: secret Int = {lit}\n'
+        '  let p: public Int = lower(s)\n  @console.print("{p}")')
+    files, vary = v.place(package("canary", "0.2", {MOD: text, RELEASE_MOD: release},
+                                  trusted=[RELEASE_MOD], entry=MOD, grants=["console"]))
+    return Program(op="canary-release-late", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+def leaked_before_release(doc, files):
+    """The release-late canary's plant: the run's first line, printed before the release, shows
+    the variant's secret literal, in the trace and in the output."""
+    text = files.get(module_file(MOD), "")
+    found = re.search(r"let s: secret Int = (-?[0-9]+)", text)
+    literal = found.group(1) if found else "?"
+    doc = dict(doc)
+    trace = [dict(ev) for ev in doc.get("trace", [])]
+    for ev in trace:
+        if (ev.get("capability"), ev.get("op")) == ("Console", "print"):
+            ev["args"] = dict(ev.get("args") or {}, line=literal)
+            break
+    doc["trace"] = trace
+    lines = list(doc.get("output") or [])
+    if lines:
+        lines[0] = literal
+    doc["output"] = lines
+    return doc
+
+
+BRANCH_LITERAL = "5"
+
+
+def branch_before_release(doc, files):
+    """The release-branch canary's plant, on the run's document: in the variant whose literal is
+    `BRANCH_LITERAL`, the base, the secret decides one more visible line, printed after the first
+    and before the release, as an implicit flow would. The other variants print nothing there."""
+    text = files.get(module_file(MOD), "")
+    found = re.search(r"let s: secret Int = (-?[0-9]+)", text)
+    if not found or found.group(1) != BRANCH_LITERAL:
+        return doc
+    doc = dict(doc)
+    trace = [dict(ev) for ev in doc.get("trace", [])]
+    if not trace:
+        return doc
+    extra = dict(trace[0], args={"line": "big"})
+    for ev in trace[1:]:
+        ev["seq"] = ev.get("seq", 0) + 1
+    extra["seq"] = trace[0].get("seq", 1) + 1
+    doc["trace"] = trace[:1] + [extra] + trace[1:]
+    lines = list(doc.get("output") or [])
+    doc["output"] = lines[:1] + ["big"] + lines[1:]
+    return doc
+
+
+def branch_release_after(observed):
+    """The release-branch canary's plant, on the observed run: in the same variant, the release
+    comes after the planted line, one event later, so that variant's merged trace holds the line
+    where every other variant holds its release."""
+    releases = observed.get("releases", [])
+    if not any(r.get("value") == BRANCH_LITERAL for r in releases):
+        return observed
+    observed = dict(observed)
+    observed["releases"] = [dict(r, after=r.get("after", 0) + 1) for r in releases]
+    return observed
+
+
+def misstated_release(observed):
+    """The release canary's plant: every release of an observed run claims the same value."""
+    observed = dict(observed)
+    observed["releases"] = [dict(r, value="0") for r in observed.get("releases", [])]
+    return observed
+
+
+ORACLE_MARKS = (b"una.oracle-run/1", b"run_observed", b"run_main_observed")
+
+
+def release_build_canary(una):
+    """The gate's `una`, built as a release builds it, lacks the oracle runner's observed run
+    (ADR 0115): none of its entry points or its schema is in the binary."""
+    with open(una, "rb") as f:
+        data = f.read()
+    present = [m.decode() for m in ORACLE_MARKS if m in data]
+    return not present, {"una": os.path.basename(una), "oracle_marks": present}
+
+
 def planted(level):
     """The canaries' planted fault: `Vault.note` accepts `level` in the oracle's table."""
     def plant(table):
@@ -461,11 +698,12 @@ def planted(level):
     return plant
 
 
-def oracle_canary(prog, una, work, plant=None, doc_plant=None):
+def oracle_canary(prog, una, work, plant=None, doc_plant=None, observed_plant=None):
     """Runs one program through the oracle, and returns its result row."""
     buf = io.StringIO()
     oracle.oracle([dict(prog.manifest(), digest=prog.digest())], una, work, RUN_TIMEOUT, buf,
-                  lambda row: prog, plant=plant, doc_plant=doc_plant)
+                  lambda row: prog, plant=plant, doc_plant=doc_plant,
+                  observed_plant=observed_plant)
     return json.loads(buf.getvalue())
 
 
@@ -519,6 +757,23 @@ def canary_syntax():
 
 def caught(name, row):
     """Whether a canary's result is the fault it plants, and only that."""
+    if name == "live":
+        # Nothing planted: live, and nothing found.
+        return (not row.get("error") and not row.get("set_aside") and not row.get("finding")
+                and row.get("live") is True)
+    if name in ("release", "release-late", "release-branch"):
+        # The program as written: its difference at `public` explained by its release; planted,
+        # a leak at `public`: a release that misstates its value (`release`), a difference
+        # before the release (`release-late`), or an event of one variant where the others
+        # release (`release-branch`, ADR 0115, Amendment of 2026-10-18 on divergence).
+        honest, planted_row = row.get("honest", {}), row.get("planted", {})
+        if honest.get("error") or honest.get("set_aside") or honest.get("finding"):
+            return False
+        if not honest.get("explained"):
+            return False
+        if planted_row.get("error") or not planted_row.get("finding"):
+            return False
+        return "public" in {o for v in planted_row["variants"] for o in v.get("observers", [])}
     if row.get("error") or row.get("set_aside") or not row.get("finding"):
         return False
     if name == "native":
@@ -820,17 +1075,36 @@ def _version(una):
         return f"unknown ({e})"
 
 
-def run(una, out_dir, tip, core_check, z3):
+def run(una, out_dir, tip, core_check, z3, runner):
     """Runs the gate. Writes OUT/manifest.jsonl, reject.jsonl, keep.jsonl, oracle.jsonl,
     canaries.jsonl and summary.json, prints the summary, and returns 0 (PASS) or 1 (FAIL)."""
     if os.path.exists(out_dir) and os.listdir(out_dir):
         raise SystemExit(f"hunt gate: {out_dir} is not empty; the gate writes a fresh directory")
+    # Every tool runs on this host: one built for another platform would fail each run that uses
+    # it, so the gate refuses to start instead. The check comes before the clock starts, so it is
+    # in no phase's time.
+    for tool in (una, core_check, z3, runner):
+        why = tool and host_executable_error(os.path.realpath(tool))
+        if why:
+            raise SystemExit(f"hunt gate: {why}; build it for this host before running the gate")
     started = time.monotonic()
     # No run starts before the sandbox is verified, and on Linux each run may read the tools'
     # directories besides its own.
     sandbox.require()
-    sandbox.READABLE[:] = [os.path.dirname(os.path.realpath(p)) for p in (una, core_check, z3)
-                           if p]
+    sandbox.READABLE[:] = [os.path.dirname(os.path.realpath(p))
+                           for p in (una, core_check, z3, runner) if p]
+    # The oracle runner (ADR 0115): every oracle run also runs observed.
+    oracle.RUNNER[:] = [os.path.realpath(runner)]
+    oracle.reset_observed()
+    # The seconds of each phase, for the timing lines only: no verdict reads them, and only the
+    # total is held to the budget.
+    phases = {}
+    lapped = [started]
+
+    def lap(name):
+        now = time.monotonic()
+        phases[name] = now - lapped[0]
+        lapped[0] = now
     sandbox.OUT_ROOT[:] = [os.path.realpath(out_dir)]
     key_home = sandbox.make_proof_key()
     atexit.register(sandbox.drop_proof_key, key_home)
@@ -856,6 +1130,7 @@ def run(una, out_dir, tip, core_check, z3):
         return path
     errors, findings, notes = [], [], []
 
+    lap("setup")
     # Must-reject.
     judged = [r for r in rows if r["class"] in (MUST_REJECT, MUST_ACCEPT, OPEN, RESIDUAL)]
     reject_tally, reject_rows = _sharded(
@@ -872,6 +1147,7 @@ def run(una, out_dir, tip, core_check, z3):
         if r.get("over_strict"):
             notes.append(f"reject {r['name']}: a must-accept program is rejected")
 
+    lap("must-reject")
     # Must-keep.
     keep_tally, keep_rows = _sharded(
         lambda part, buf, k: drivers.must_keep(part, una, shard(k), CHECK_TIMEOUT, buf,
@@ -887,12 +1163,16 @@ def run(una, out_dir, tip, core_check, z3):
         elif r.get("direction") == "accepted-to-rejected":
             notes.append(f"keep {r['name']} {r['refactor']}: accepted to rejected")
 
+    lap("must-keep")
     # The oracle.
     varied = [r for r in rows if r.get("vary")]
     oracle_tally, oracle_rows = _sharded(
         lambda part, buf, k: oracle.oracle(part, una, shard(k), RUN_TIMEOUT, buf,
                                            drivers.rebuild),
         varied, WORKERS)
+    lap("oracle")
+    # The observed runs of the oracle phase, before the canaries add their own.
+    observed_runs, observed_seconds = oracle.observed_totals()
     # The native sample's strata: for every family with a compared program, its compared program
     # of lowest hash joins the sample, when the hashed part does not hold it already.
     by_name = {r["name"]: r for r in varied}
@@ -957,7 +1237,9 @@ def run(una, out_dir, tip, core_check, z3):
     compared = sum(r.get("compared", 0) for r in oracle_rows)
     programs_compared = sum(1 for r in oracle_rows if r.get("compared", 0) > 0)
     live = sum(1 for r in oracle_rows if r.get("live"))
+    explained = sum(r.get("explained", 0) for r in oracle_rows)
 
+    lap("native sample")
     # The re-check comparison (part (b) of docs/plan/security-hunt.md, #791): every program the
     # checks accept is exported and re-checked by the model's checker.
     differ_tally, differ_rows = _sharded(
@@ -1033,6 +1315,7 @@ def run(una, out_dir, tip, core_check, z3):
             errors.append(f"differ {r['name']}: tier 0 said {tier0[r['name']]!r} to must-reject "
                           f"and {r['verdict']!r} here")
 
+    lap("re-check")
     # Canaries.
     canaries = {}
     canaries["differ"] = differ_canary(core_check, work)
@@ -1073,10 +1356,22 @@ def run(una, out_dir, tip, core_check, z3):
         "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
         "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
         "message": oracle_canary(canary_message(), una, work, doc_plant=message_leak),
+        "live": oracle_canary(canary_live(), una, work),
+        "release": {"honest": oracle_canary(canary_release(), una, work),
+                    "planted": oracle_canary(canary_release(), una, work,
+                                             observed_plant=misstated_release)},
+        "release-late": {"honest": oracle_canary(canary_release_late(), una, work),
+                         "planted": oracle_canary(canary_release_late(), una, work,
+                                                  doc_plant=leaked_before_release)},
+        "release-branch": {"honest": oracle_canary(canary_release_late(), una, work),
+                           "planted": oracle_canary(canary_release_late(), una, work,
+                                                    doc_plant=branch_before_release,
+                                                    observed_plant=branch_release_after)},
     }
     for name, row in canary_rows.items():
         canaries[name] = caught(name, row)
     canaries["sandbox"], canary_rows["sandbox"] = sandbox_canary(work)
+    canaries["release-build"], canary_rows["release-build"] = release_build_canary(una)
     try:
         sandbox.check_proof_key(full=True)
     except sandbox.SandboxUnavailable as e:
@@ -1110,7 +1405,8 @@ def run(una, out_dir, tip, core_check, z3):
         "oracle": {"expected": len(varied), "judged": len(oracle_rows),
                    "set_aside": sum(1 for r in oracle_rows if r.get("set_aside")),
                    "programs_compared": programs_compared, "variants_compared": compared,
-                   "live": live, "compared_forms": compared_forms, "live_forms": live_forms,
+                   "live": live, "explained": explained,
+                   "compared_forms": compared_forms, "live_forms": live_forms,
                    "set_aside_rejected": set_aside_rejected,
                    "timeouts_decided": killed},
         "differ": {"expected": len(rows), "judged": len(differ_rows), "clean": differ_clean,
@@ -1137,6 +1433,12 @@ def run(una, out_dir, tip, core_check, z3):
     if compared < MIN_VARIANTS_COMPARED:
         errors.append(f"oracle: {compared} variants compared, under the floor of "
                       f"{MIN_VARIANTS_COMPARED}")
+    if explained < MIN_EXPLAINED:
+        errors.append(f"oracle: {explained} comparisons explained by their releases, under the "
+                      f"floor of {MIN_EXPLAINED}")
+    if explained > MAX_EXPLAINED:
+        errors.append(f"oracle: {explained} comparisons explained by their releases, over the "
+                      f"ceiling of {MAX_EXPLAINED}")
     if live < MIN_LIVE:
         errors.append(f"oracle: {live} programs whose variants differ at the literal's level, "
                       f"under the floor of {MIN_LIVE}")
@@ -1163,7 +1465,9 @@ def run(una, out_dir, tip, core_check, z3):
         if not seen:
             errors.append(f"canary {name}: not caught, so the gate cannot see that fault")
 
+    lap("canaries and checks")
     elapsed = time.monotonic() - started
+    timing = timing_summary(phases, observed_runs, observed_seconds, WORKERS)
     if budget_error(elapsed):
         errors.append(budget_error(elapsed))
     verdict = "PASS" if not errors and not findings else "FAIL"
@@ -1175,7 +1479,7 @@ def run(una, out_dir, tip, core_check, z3):
                    "and": "the first program of each further form of its 0.2 programs, and of "
                           "each form only its programs of another edition have"},
         "refactors": list(REFACTOR_IDS), "tip": tip,
-        "una": _version(una), "sizes": sizes, "canaries": canaries,
+        "una": _version(una), "sizes": sizes, "canaries": canaries, "timing": timing,
         "findings": findings, "errors": errors,
         "termination_pairs": {"count": len(termination), "pairs": termination},
         "notes": notes,
@@ -1192,6 +1496,8 @@ def run(una, out_dir, tip, core_check, z3):
     print(f"hunt gate: seed {SEED}, {len(progs)} programs, una tip {tip}")
     print(f"  time: {elapsed:.0f} seconds, budget {TIME_BUDGETS.get(sandbox.backend())} "
           f"({sandbox.backend()})")
+    for line in timing_lines(timing):
+        print(f"  {line}")
     for key in ("reject", "keep", "oracle", "differ"):
         print(f"  {key}: {sizes[key]['judged']} of {sizes[key]['expected']} cases judged")
     print(f"  oracle: {programs_compared} programs and {compared} variants compared (complete "

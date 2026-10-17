@@ -623,7 +623,65 @@ where
         location,
     };
     guard.run(stdout, stderr, |stdout, stderr| {
-        run_command(args, stdout, stderr, stderr_is_terminal, environment, heap)
+        run_command(
+            args,
+            stdout,
+            stderr,
+            stderr_is_terminal,
+            environment,
+            heap,
+            runtime::Mode::Run,
+        )
+    })
+}
+
+/// The hunt oracle's observed run, for the security hunt only (ADR 0115): `args` are those of
+/// `una --json run`, and the package runs exactly as `una run` runs it, but the document,
+/// `una.oracle-run/1`, shows every value, labeled ones included, and records each
+/// declassification. Any other command line is a usage error. It prints labeled values: it is
+/// for the oracle's generated programs only, and no release build has it.
+#[cfg(feature = "oracle")]
+#[doc(hidden)]
+pub fn run_observed<I, T>(
+    args: I,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    environment: Environment<'_>,
+    heap: Heap<'_>,
+) -> ExitStatus
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let parsed = Cli::try_parse_from(args.clone()).ok();
+    let Some(Cli {
+        json: true,
+        command: command @ Some(Command::Run { .. }),
+        ..
+    }) = &parsed
+    else {
+        let _ = writeln!(
+            stderr,
+            "error: an observed run takes the arguments of `una --json run`"
+        );
+        return ExitStatus::Usage;
+    };
+    let guard = Guard {
+        json: true,
+        held: true,
+        location: panic_location(command.as_ref()),
+    };
+    guard.run(stdout, stderr, |stdout, stderr| {
+        run_command(
+            args,
+            stdout,
+            stderr,
+            false,
+            environment,
+            heap,
+            runtime::Mode::Observed,
+        )
     })
 }
 
@@ -762,6 +820,7 @@ fn run_command(
     stderr_is_terminal: bool,
     environment: Environment<'_>,
     heap: Heap<'_>,
+    mode: runtime::Mode,
 ) -> ExitStatus {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
     // never makes one (ADR 0064).
@@ -896,6 +955,7 @@ fn run_command(
                     color: use_color(color, stderr_is_terminal),
                     environment,
                     solving: solving(solver_wallclock),
+                    mode,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -929,6 +989,7 @@ fn run_command(
                     color: use_color(color, stderr_is_terminal),
                     environment,
                     solving: solving(solver_wallclock),
+                    mode: runtime::Mode::Run,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

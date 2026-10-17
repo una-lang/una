@@ -17,5 +17,11 @@ una-diag.workspace = true
 una-http.workspace = true
 una-syntax.workspace = true
 
+[features]
+# A run of `main` that renders every value, labeled ones included, and records each
+# declassification, for the security hunt's oracle only (ADR 0115). It is in no default feature
+# set, and only `una-oracle` enables it: no release build has it.
+oracle = []
+
 [lints]
 workspace = true

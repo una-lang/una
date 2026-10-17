@@ -1092,7 +1092,7 @@ class Gate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             open(os.path.join(tmp, "old"), "w").close()
             with self.assertRaises(SystemExit):
-                gate.run("una", tmp, "0" * 40, "una-core-check", "z3")
+                gate.run("una", tmp, "0" * 40, "una-core-check", "z3", "una-oracle")
 
     def test_shards_keep_row_order(self):
         rows = [{"n": i} for i in range(10)]
@@ -1554,15 +1554,90 @@ class Edition03Guards(unittest.TestCase):
             self.assertIn("not a document", why or "", stdout)
 
     def test_the_gate_has_a_time_budget_per_platform(self):
-        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 270)
-        self.assertIsNone(gate.budget_error(215, "sandbox-exec"))
-        self.assertIn("over its budget of 270", gate.budget_error(271, "sandbox-exec"))
+        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 335)
+        self.assertIsNone(gate.budget_error(335, "sandbox-exec"))
+        self.assertIn("over its budget of 335", gate.budget_error(336, "sandbox-exec"))
         linux = gate.TIME_BUDGETS["landlock"]
         if linux is not None:
             self.assertIsNone(gate.budget_error(linux, "landlock"))
             self.assertIn(f"over its budget of {linux}", gate.budget_error(linux + 1, "landlock"))
         # No platform runs unbudgeted.
         self.assertIn("no time budget", gate.budget_error(1, "other"))
+
+    def test_the_timing_lines_give_each_phase_and_the_observed_runs_as_an_estimate(self):
+        timing = gate.timing_summary({"setup": 2.04, "must-reject": 40.0, "oracle": 120.26},
+                                     1200, 240.0, 4)
+        self.assertEqual(timing["phases"], {"setup": 2.0, "must-reject": 40.0, "oracle": 120.3})
+        self.assertEqual(list(timing["phases"]), ["setup", "must-reject", "oracle"])
+        self.assertEqual(timing["observed_share_estimate"], 60.0)
+        lines = gate.timing_lines(timing)
+        self.assertEqual(lines[0], "phases (seconds): setup 2, must-reject 40, oracle 120")
+        self.assertIn("observed runs: 1200, 240 seconds summed", lines[1])
+        self.assertIn("about 60 seconds of the oracle phase at 4 workers (an estimate)", lines[1])
+
+    def test_a_tool_built_for_another_platform_is_named(self):
+        import struct
+        macho_arm = b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x0100000C) + b"\0" * 24
+        macho_x86 = b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x01000007) + b"\0" * 24
+        fat = b"\xca\xfe\xba\xbe" + struct.pack(">I", 2) + struct.pack(">I", 0x01000007) + \
+            b"\0" * 16 + struct.pack(">I", 0x0100000C) + b"\0" * 16
+        elf_arm = b"\x7fELF\x02\x01" + b"\0" * 12 + struct.pack("<H", 183) + b"\0" * 12
+        elf_x86 = b"\x7fELF\x02\x01" + b"\0" * 12 + struct.pack("<H", 62) + b"\0" * 12
+        with tempfile.TemporaryDirectory() as tmp:
+            def at(name, data):
+                path = os.path.join(tmp, name)
+                with open(path, "wb") as f:
+                    f.write(data)
+                return path
+            err = gate.host_executable_error
+            self.assertIsNone(err(at("m", macho_arm), "Darwin", "arm64"))
+            self.assertIsNone(err(at("f", fat), "Darwin", "arm64"))
+            self.assertIn("another CPU", err(at("mx", macho_x86), "Darwin", "arm64"))
+            self.assertIn("an ELF executable, for Linux", err(at("e", elf_arm), "Darwin", "arm64"))
+            self.assertIn("not a Mach-O", err(at("t", b"#!/bin/sh\n"), "Darwin", "arm64"))
+            self.assertIsNone(err(at("e2", elf_arm), "Linux", "aarch64"))
+            self.assertIn("another CPU", err(at("ex", elf_x86), "Linux", "aarch64"))
+            self.assertIn("a Mach-O executable, for macOS", err(at("m2", macho_arm), "Linux",
+                                                                "aarch64"))
+            self.assertIn("cannot be read", err(os.path.join(tmp, "missing"), "Darwin", "arm64"))
+
+    def test_the_gate_refuses_to_start_with_a_checker_for_another_platform(self):
+        # A checker built for the other platform (the Linux one, left in a shared build
+        # directory, on macOS) stops the gate before any run, rather than failing every re-check.
+        import struct
+        foreign = (b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x0100000C) + b"\0" * 24
+                   if sys.platform.startswith("linux") else
+                   b"\x7fELF\x02\x01" + b"\0" * 12 + struct.pack("<H", 183) + b"\0" * 12)
+        with tempfile.TemporaryDirectory() as tmp:
+            checker = os.path.join(tmp, "una-core-check")
+            with open(checker, "wb") as f:
+                f.write(foreign)
+            ran = []
+            saved = gate.sandbox.require
+            gate.sandbox.require = lambda: ran.append("require")
+            try:
+                with self.assertRaises(SystemExit) as caught:
+                    gate.run(sys.executable, os.path.join(tmp, "out"), "tip", checker, None,
+                             sys.executable)
+            finally:
+                gate.sandbox.require = saved
+            self.assertIn("una-core-check is", str(caught.exception))
+            self.assertIn("build it for this host", str(caught.exception))
+            self.assertEqual(ran, [])
+            self.assertFalse(os.path.exists(os.path.join(tmp, "out")))
+
+    def test_observed_runs_are_counted_across_threads_and_reset(self):
+        import threading
+        oracle.reset_observed()
+        threads = [threading.Thread(target=lambda: [oracle.count_observed(0.5)
+                                                    for _ in range(100)]) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(oracle.observed_totals(), (400, 200.0))
+        oracle.reset_observed()
+        self.assertEqual(oracle.observed_totals(), (0, 0.0))
 
 
 class Native(unittest.TestCase):
@@ -2204,6 +2279,313 @@ class Messages(unittest.TestCase):
                "variants": [{"verdict": "leak", "observers": ["public"]}], "violations": []}
         self.assertTrue(gate.caught("message", row))
         self.assertFalse(gate.caught("message", dict(row, finding=False)))
+class Observed(unittest.TestCase):
+    """The oracle with the oracle runner (ADR 0115): liveness from the observed run, and each
+    observer's comparison up to the releases it sees."""
+
+    def test_an_observer_sees_the_releases_to_its_level_or_below(self):
+        releases = [{"policy": "a.p", "to": "public", "value": "1"},
+                    {"policy": "a.q", "to": "internal", "value": "2"},
+                    {"policy": "a.r", "to": "secret", "value": "3"},
+                    {"policy": "a.s", "to": "nowhere", "value": "4"}]
+        self.assertEqual(oracle.visible_releases(releases, "public"),
+                         [["a.p", "public", "1"]])
+        self.assertEqual(oracle.visible_releases(releases, "internal"),
+                         [["a.p", "public", "1"], ["a.q", "internal", "2"]])
+
+    def test_a_difference_the_releases_explain_is_no_leak(self):
+        def end(first, value, last):
+            # A line printed, a release, then a line printed: the merged trace in run order.
+            merged = [("event", first), ("release", "a.p", "public", value), ("event", last)]
+            return ("complete", {"views": {"public": {"output": [first, last]}},
+                                 "releases": {"public": [["a.p", "public", value]]},
+                                 "merged": {"public": merged}})
+        a = end("start", "1", "1")
+        # Different after a different release: explained.
+        b = end("start", "2", "2")
+        self.assertEqual(oracle.judge(a, b), "explained")
+        self.assertEqual(oracle.leaking_observers(a, b), [])
+        # The same release: a later difference is a leak.
+        same_release = end("start", "1", "2")
+        self.assertEqual(oracle.judge(a, same_release), "leak")
+        self.assertEqual(oracle.leaking_observers(a, same_release), ["public"])
+        # A difference before the release, which differs too: a leak, not explained (#794 F1).
+        early = end("2", "2", "2")
+        self.assertEqual(oracle.judge(a, early), "leak")
+        self.assertEqual(oracle.leaking_observers(a, early), ["public"])
+        self.assertEqual(oracle.judge(a, a), "same")
+
+    def test_a_release_explains_only_what_follows_it(self):
+        ev, rel = ("event", "x"), ("release", "a.p", "public", "1")
+        other = ("release", "a.p", "public", "2")
+        # Both release, through the same policy, after a common prefix: explained (BRelR).
+        self.assertTrue(oracle.explained_from([ev, rel], [ev, other]))
+        self.assertTrue(oracle.explained_from([rel, ev], [other]))
+        # A difference before the release.
+        self.assertFalse(oracle.explained_from([("event", "1"), rel], [("event", "2"), other]))
+        # An event of one where the other releases, in either order (#890 R1).
+        self.assertFalse(oracle.explained_from([ev, rel], [ev, ("event", "y")]))
+        self.assertFalse(oracle.explained_from([ev, ("event", "big"), rel], [ev, other]))
+        # Two different policies.
+        self.assertFalse(oracle.explained_from(
+            [ev, rel], [ev, ("release", "a.q", "public", "2")]))
+        # One ends where the other releases or goes on.
+        self.assertFalse(oracle.explained_from([ev, rel], [ev]))
+        self.assertFalse(oracle.explained_from([ev, ("event", "y")], [ev]))
+        # Equal traces explain nothing: the difference is elsewhere in the view.
+        self.assertFalse(oracle.explained_from([ev, rel], [ev, rel]))
+        self.assertFalse(oracle.explained_from([], []))
+
+    def test_the_release_branch_plants_move_one_variant_s_release_after_an_event(self):
+        prog = gate.canary_release_late()
+        main = prog.files["src/app/main.una"]
+        base_files = dict(prog.files)
+        other_files = dict(prog.files, **{"src/app/main.una": main.replace(
+            f"let s: secret Int = {gate.BRANCH_LITERAL}", "let s: secret Int = 7")})
+        doc = {"output": ["start", "5"], "trace": [
+            {"seq": 1, "capability": "Console", "op": "print", "args": {"line": "start"}},
+            {"seq": 2, "capability": "Console", "op": "print", "args": {"line": "5"}}]}
+        planted = gate.branch_before_release(doc, base_files)
+        self.assertEqual([ev["seq"] for ev in planted["trace"]], [1, 2, 3])
+        self.assertEqual(planted["trace"][1]["args"]["line"], "big")
+        self.assertEqual(planted["output"], ["start", "big", "5"])
+        self.assertIs(gate.branch_before_release(doc, other_files), doc)
+        observed = {"releases": [{"after": 1, "policy": "app.release.lower", "to": "public",
+                                  "value": gate.BRANCH_LITERAL}]}
+        self.assertEqual(gate.branch_release_after(observed)["releases"][0]["after"], 2)
+        other = {"releases": [dict(observed["releases"][0], value="7")]}
+        self.assertIs(gate.branch_release_after(other), other)
+
+    def test_the_merged_trace_puts_each_release_after_its_events(self):
+        table = {("Console", "print"): {"public"}, ("Vault", "note"): {"secret"}}
+        doc = {"trace": [
+            {"seq": 1, "instance": "host:Console", "capability": "Console", "op": "print",
+             "args": {"line": "a"}},
+            {"seq": 2, "instance": "with:quiet#1", "capability": "Vault", "op": "note",
+             "args": {"x": "<redacted:secret>"}},
+            {"seq": 3, "instance": "host:Console", "capability": "Console", "op": "print",
+             "args": {"line": "b"}}]}
+        releases = [{"after": 1, "policy": "a.p", "to": "public", "value": "5"},
+                    {"after": 3, "policy": "a.q", "to": "internal", "value": "6"}]
+        merged = oracle.merged_trace(doc, releases, "public", table)
+        self.assertEqual([m[0] for m in merged], ["event", "release", "event"])
+        self.assertEqual(merged[1], ("release", "a.p", "public", "5"))
+        self.assertIn('"line": "a"', merged[0][1])
+        self.assertEqual([m[0] for m in oracle.merged_trace(doc, releases, "internal", table)],
+                         ["event", "release", "event", "release"])
+
+    def test_explained_variants_are_counted_and_found_nothing(self):
+        def end(out, value):
+            return ("complete", {"views": {"public": {"output": [out]}},
+                                 "releases": {"public": [["a.p", "public", value]]},
+                                 "merged": {"public": [("release", "a.p", "public", value),
+                                                       ("event", out)]},
+                                 "live": {"o": out}})
+        ends = [end("1", "1")] + [end("2", "2")] * 5
+        row = Oracle.drive(self, ends)
+        self.assertFalse(row["finding"])
+        self.assertEqual(row["explained"], 5)
+        self.assertEqual(row["compared"], 0)
+        self.assertTrue(row["live"])
+
+    def test_the_observed_run_must_be_the_run_but_for_its_values(self):
+        doc = {"schema": "una.run/1", "status": "ok", "output": ["x"], "diagnostics": [],
+               "failure": None,
+               "trace": [{"seq": 1, "instance": "host:Console", "capability": "Console",
+                          "op": "print", "args": {"line": "<redacted:secret>"}}]}
+        observed = dict(doc, schema="una.oracle-run/1", releases=[],
+                        trace=[dict(doc["trace"][0], args={"line": "5"})])
+        self.assertIsNone(oracle.same_run(doc, observed))
+        # A diagnostic's message may show the failure's fields; nothing else of it may differ.
+        failed = dict(doc, diagnostics=[{"code": "U6001", "severity": "error",
+                                         "message": "main failed with E(<redacted:secret>)"}])
+        shown = dict(observed, diagnostics=[dict(failed["diagnostics"][0],
+                                                 message="main failed with E(5)")])
+        self.assertIsNone(oracle.same_run(failed, shown))
+        self.assertIsNotNone(oracle.same_run(
+            failed, dict(shown, diagnostics=[dict(shown["diagnostics"][0], code="U6002")])))
+        for change in ({"schema": "una.run/1"}, {"status": "failed"}, {"output": ["y"]},
+                       {"trace": []}, {"failure": {"variant": "E"}},
+                       {"trace": [dict(doc["trace"][0], op="other")]}):
+            self.assertIsNotNone(oracle.same_run(doc, dict(observed, **change)), change)
+        # Not values, so the same in both (#794 F3): the tier, an outcome's kind and variant, the
+        # arguments' names, and the failure's variant and fields' names.
+        ev = doc["trace"][0]
+        self.assertIsNotNone(oracle.same_run(doc, dict(observed, tier=2)))
+        for changed in (dict(ev, args={"other": "5"}), dict(ev, outcome={"kind": "fail"}),
+                        dict(ev, outcome={"kind": "ok", "variant": "B"})):
+            self.assertIsNotNone(oracle.same_run(doc, dict(observed, trace=[changed])), changed)
+        self.assertIsNone(oracle.same_run(
+            dict(doc, trace=[dict(ev, outcome={"kind": "ok", "value": "<redacted:secret>"})]),
+            dict(observed, trace=[dict(observed["trace"][0],
+                                       outcome={"kind": "ok", "value": "5"})])))
+        failing = dict(doc, failure={"variant": "E", "fields": {"code": "<redacted:secret>"}})
+        self.assertIsNone(oracle.same_run(
+            failing, dict(observed, failure={"variant": "E", "fields": {"code": "5"}})))
+        # The observed run shows every field, the run only the public ones, whose values both show.
+        public = dict(doc, failure={"variant": "E", "fields": {"code": "7"}})
+        self.assertIsNone(oracle.same_run(
+            public, dict(observed, failure={"variant": "E",
+                                            "fields": {"code": "7", "secret_detail": "6"}})))
+        self.assertIsNotNone(oracle.same_run(
+            public, dict(observed, failure={"variant": "E", "fields": {"code": "8"}})))
+        # A labeled value inside a public field is redacted by the run and shown when observed.
+        self.assertIsNone(oracle.same_run(
+            failing, dict(observed, failure={"variant": "E",
+                                             "fields": {"code": "5", "secret_detail": "6"}})))
+        # Only at its own place: the rest of that field must match exactly.
+        nested = dict(doc, failure={"variant": "E",
+                                    "fields": {"code": "Pair(a: <redacted:secret>, b: 1)"}})
+        self.assertIsNone(oracle.same_run(
+            nested, dict(observed, failure={"variant": "E",
+                                            "fields": {"code": "Pair(a: 42, b: 1)"}})))
+        self.assertIsNotNone(oracle.same_run(
+            nested, dict(observed, failure={"variant": "E",
+                                            "fields": {"code": "Pair(a: 42, b: 2)"}})))
+        self.assertIsNotNone(oracle.same_run(
+            nested, dict(observed, failure={"variant": "E", "fields": {"code": "other"}})))
+        # Another variant, or a public field the observed run lacks.
+        for other in ({"variant": "F", "fields": {"code": "5"}},
+                      {"variant": "E", "fields": {"other": "5"}}):
+            self.assertIsNotNone(oracle.same_run(failing, dict(observed, failure=other)), other)
+
+    def test_a_mismatch_is_found_in_linear_time(self):
+        # #890 R2: no backtracking. Thirty redacted parts and a last public piece that differs.
+        import time
+        plain = "[" + ", ".join(["<redacted:secret>"] * 30) + "]x"
+        shown = "[" + ", ".join(["[1, 2, 3]"] * 30) + "]y"
+        started = time.monotonic()
+        self.assertFalse(oracle.renders_alike(plain, shown))
+        self.assertTrue(oracle.renders_alike(plain, shown[:-1] + "x"))
+        self.assertLess(time.monotonic() - started, 0.5)
+        # The anchors may not overlap.
+        self.assertFalse(oracle.renders_alike("ab<redacted:secret>ba", "aba"))
+
+    def test_a_release_without_a_position_is_an_error(self):
+        table = {("Console", "print"): {"public"}}
+        doc = json.loads(run_doc("ok"))
+        observed = dict(doc, schema="una.oracle-run/1",
+                        releases=[{"policy": "a.p", "from": "secret", "to": "public",
+                                   "value": "5"}])
+        end = oracle.observe(Run(0, json.dumps(doc), "", False, 0.1), ["public"], table,
+                             "secret", observed)
+        self.assertEqual(end[0], "error", end)
+        self.assertIn("position", end[1])
+
+    def test_a_redacted_value_matches_only_at_its_own_place(self):
+        self.assertTrue(oracle.renders_alike("x", "x"))
+        self.assertFalse(oracle.renders_alike("x", "y"))
+        self.assertTrue(oracle.renders_alike("<redacted:secret>", "anything"))
+        self.assertTrue(oracle.renders_alike("[<redacted:secret>, <redacted:internal>]", "[1, 2]"))
+        self.assertFalse(oracle.renders_alike("[<redacted:secret>, 3]", "[1, 4]"))
+        self.assertFalse(oracle.renders_alike("a.b", "axb"))
+
+    def test_liveness_and_releases_come_from_the_observed_run(self):
+        table = {("Vault", "note"): {"secret"}, ("Console", "print"): {"public"}}
+        event = {"seq": 1, "instance": "with:quiet#1", "capability": "Vault", "op": "note",
+                 "args": {"x": "<redacted:secret>"}, "outcome": {"kind": "ok", "value": "unit"}}
+        doc = json.loads(run_doc("ok", trace=[event]))
+        observed = dict(doc, schema="una.oracle-run/1",
+                        trace=[dict(event, args={"x": "5"})],
+                        releases=[{"after": 1, "policy": "a.p", "from": "secret", "to": "public",
+                                   "value": "5"}])
+        end = oracle.observe(Run(0, json.dumps(doc), "", False, 0.1), ["public"], table,
+                             "secret", observed)
+        self.assertEqual(end[0], "complete", end)
+        self.assertEqual(end[1]["live"]["trace"][0]["args"], {"x": "5"})
+        self.assertEqual(end[1]["releases"], {"public": [["a.p", "public", "5"]]})
+        # At the literal's level, its releases are part of what makes it live.
+        self.assertEqual(end[1]["live"]["releases"], [["a.p", "public", "5"]])
+        # The product's views stay on `una run --json`.
+        self.assertEqual(end[1]["views"]["public"]["trace"], [])
+
+    def test_the_new_canaries_are_judged_as_planted(self):
+        live = {"error": None, "finding": False, "live": True, "variants": []}
+        self.assertTrue(gate.caught("live", live))
+        self.assertFalse(gate.caught("live", dict(live, live=False)))
+        self.assertFalse(gate.caught("live", dict(live, finding=True)))
+        honest = {"error": None, "finding": False, "explained": 2, "variants": []}
+        planted = {"error": None, "finding": True,
+                   "variants": [{"verdict": "leak", "observers": ["public"]}]}
+        self.assertTrue(gate.caught("release", {"honest": honest, "planted": planted}))
+        self.assertFalse(gate.caught("release", {"honest": dict(honest, explained=0),
+                                                 "planted": planted}))
+        self.assertFalse(gate.caught("release", {"honest": dict(honest, finding=True),
+                                                 "planted": planted}))
+        self.assertFalse(gate.caught("release", {"honest": honest,
+                                                 "planted": dict(planted, finding=False)}))
+        self.assertTrue(gate.caught("release-late", {"honest": honest, "planted": planted}))
+        self.assertTrue(gate.caught("release-branch", {"honest": honest, "planted": planted}))
+        self.assertFalse(gate.caught("release-branch", {"honest": honest,
+                                                        "planted": dict(planted, finding=False)}))
+        self.assertFalse(gate.caught("release-late", {"honest": honest,
+                                                      "planted": dict(planted, finding=False)}))
+
+    def test_the_release_late_plant_shows_the_secret_before_the_release(self):
+        prog = gate.canary_release_late()
+        self.assertTrue(prog.vary)
+        main = prog.files["src/app/main.una"]
+        self.assertLess(main.index('print("start")'), main.index("lower(s)"))
+        doc = {"output": ["start", "5"], "trace": [
+            {"seq": 1, "capability": "Console", "op": "print", "args": {"line": "start"}},
+            {"seq": 2, "capability": "Console", "op": "print", "args": {"line": "5"}}]}
+        planted = gate.leaked_before_release(doc, prog.files)
+        literal = re.search(r"let s: secret Int = (-?[0-9]+)", main).group(1)
+        self.assertEqual(planted["trace"][0]["args"]["line"], literal)
+        self.assertEqual(planted["output"], [literal, "5"])
+        self.assertEqual(planted["trace"][1]["args"]["line"], "5")
+        self.assertEqual(doc["trace"][0]["args"]["line"], "start")
+
+    def test_the_release_plant_makes_every_release_alike(self):
+        doc = {"releases": [{"policy": "a.p", "value": "5"}, {"policy": "a.p", "value": "6"}]}
+        planted = gate.misstated_release(doc)
+        self.assertEqual({r["value"] for r in planted["releases"]}, {"0"})
+        self.assertEqual(doc["releases"][0]["value"], "5")
+
+    def test_the_release_build_canary_reads_the_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = os.path.join(tmp, "una")
+            with open(clean, "wb") as f:
+                f.write(b"\x7fELF una.run/1 run_main")
+            self.assertTrue(gate.release_build_canary(clean)[0])
+            dirty = os.path.join(tmp, "una-with-oracle")
+            with open(dirty, "wb") as f:
+                f.write(b"\x7fELF una.oracle-run/1")
+            caught, row = gate.release_build_canary(dirty)
+            self.assertFalse(caught)
+            self.assertEqual(row["oracle_marks"], ["una.oracle-run/1"])
+
+    def test_the_canary_programs_are_packages(self):
+        live, release = gate.canary_live(), gate.canary_release()
+        self.assertTrue(live.vary and release.vary)
+        self.assertIn("src/app/release.una", release.files)
+        self.assertIn("trusted module app.release", release.files["src/app/release.una"])
+        self.assertIn("lower(s)", release.files["src/app/main.una"])
+        self.assertTrue(oracle.releases_to_public(release.files))
+
+    def test_every_run_carries_the_hunt_s_marker(self):
+        seen = {}
+
+        class Fake:
+            def __init__(self, cmd, cwd, env, **kw):
+                seen.update(env)
+                self.pid = os.getpid()
+                self.returncode = 0
+
+            def communicate(self, timeout=None):
+                return b"", b""
+
+        real = sandbox.subprocess.Popen, sandbox.require, sandbox._kill_group
+        sandbox.subprocess.Popen = Fake
+        sandbox.require = lambda: "sandbox-exec"
+        sandbox._kill_group = lambda pgid: None
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                own = sandbox.fresh_dir(os.path.realpath(root), "r-")
+                sandbox.run(["/bin/true"], own, own, 5)
+        finally:
+            sandbox.subprocess.Popen, sandbox.require, sandbox._kill_group = real
+        self.assertEqual(seen.get("UNA_HUNT_RUN"), "1")
 
 
 if __name__ == "__main__":

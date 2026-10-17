@@ -84,6 +84,9 @@ docker run --rm --platform "linux/$arch" \
         [ -x /opt/z3/bin/z3 ] || scripts/install-z3.sh /opt/z3
         PATH=/opt/z3/bin:$PATH scripts/check-solver.sh
         cargo build --locked --release -p una-cli -p una-rt
+        # The oracle runner (ADR 0115), in a build of its own, so that its `oracle` features
+        # never reach the `una` the gate tests.
+        cargo build --locked --release -p una-oracle
         root=/work
         . scripts/lean-env.sh
         (cd formal && lake build una-core-check)
@@ -112,6 +115,7 @@ docker run --rm --platform "linux/$arch" \
         python3 -B -E -s -m hunt gate \
         --una /work/target/release/una --out /out --tip "$tip" \
         --core-check /work/formal/.lake/build/bin/una-core-check --z3 /opt/z3/bin/z3 \
+        --runner /work/target/release/una-oracle \
     || fail "the gate failed; its output is above, and its evidence is in $out"
 for path in "$root" "$HOME"; do
     status=0

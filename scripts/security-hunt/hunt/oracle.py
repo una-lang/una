@@ -26,6 +26,7 @@ rlimit (`spec/12 §10`).
 
 import json
 import re
+import threading
 from collections import Counter
 
 from . import native, sandbox
@@ -41,6 +42,34 @@ SOLVER_CODES = {"U5002", "U5003"}
 VALUES_PER_POSITION = 5
 # The limits of one run (docs/plan/security-hunt-oracle.md §6).
 RUN_LIMITS = ["--max-depth", "2000", "--max-memory", "256"]
+# The hunt's oracle runner (`una-oracle`, ADR 0115), when the gate has one: each variant then also
+# runs observed, every value shown and each declassification recorded, for liveness and for the
+# releases each observer sees. The product's comparison stays on `una run --json`.
+RUNNER = []
+OBSERVED_SCHEMA = "una.oracle-run/1"
+# The observed runs made since the last `reset_observed`, and their seconds summed, for the gate's
+# timing lines only: never part of a verdict.
+_OBSERVED = {"runs": 0, "seconds": 0.0}
+_OBSERVED_LOCK = threading.Lock()
+
+
+def reset_observed():
+    """Starts the count of observed runs anew."""
+    with _OBSERVED_LOCK:
+        _OBSERVED.update(runs=0, seconds=0.0)
+
+
+def count_observed(seconds):
+    """Counts one observed run of `seconds`."""
+    with _OBSERVED_LOCK:
+        _OBSERVED["runs"] += 1
+        _OBSERVED["seconds"] += seconds
+
+
+def observed_totals():
+    """The observed runs counted, and their seconds summed."""
+    with _OBSERVED_LOCK:
+        return _OBSERVED["runs"], _OBSERVED["seconds"]
 LARGE_INT = 9007199254740993
 LONG_TEXT = "x" * 300
 NON_ASCII = "ação ☃"
@@ -240,9 +269,36 @@ def project(doc, observer, table, keep_outcome=False):
     }
 
 
-def observe(run, observers, table, live_level):
-    """One run's end: (`complete`, {"views": {observer: view}, "live": view at `live_level`}),
-    (`abort`, codes), (`rejected`, codes), or (`error`, why)."""
+def merged_trace(doc, releases, observer, table):
+    """The observer's trace with the releases it sees in place, as the formal model orders them
+    (`.release` events in the trace, `formal/UnaFormal/F1/Binary.lean`): its visible events, each
+    as `project` keeps it, and after the `after`-th event of the run each release made then, as
+    ("release", policy, to, value). Raises `UnknownOperation` as `project` does."""
+    events = []
+    for ev in doc.get("trace", []):
+        seq = ev.get("seq", 0)
+        one = project({"trace": [ev]}, observer, table)["trace"]
+        if one:
+            events.append((seq, 0, ("event", json.dumps(one[0], sort_keys=True))))
+    for k, rel in enumerate(releases):
+        if not above(rel.get("to"), observer):
+            events.append((rel["after"], 1 + k,
+                           ("release", rel.get("policy"), rel.get("to"), rel.get("value"))))
+    return [item for _, _, item in sorted(events, key=lambda e: (e[0], e[1]))]
+
+
+def visible_releases(releases, observer):
+    """The releases an observer sees (`EvVis`, `formal/UnaFormal/F1/Binary.lean`): those whose
+    `to` level is at or below it, each as its policy, `to` and released value, in order."""
+    return [[r.get("policy"), r.get("to"), r.get("value")] for r in releases
+            if not above(r.get("to"), observer)]
+
+
+def observe(run, observers, table, live_level, observed=None):
+    """One run's end: (`complete`, {"views": {observer: view}, "live": view at `live_level`,
+    "releases": {observer: the releases it sees}}), (`abort`, codes), (`rejected`, codes), or
+    (`error`, why). With `observed`, the run's observed document (ADR 0115), the liveness view is
+    taken from it, every value shown, and the releases come from it; without, there are none."""
     if run.timed_out:
         return ("abort", ["timeout"])
     try:
@@ -268,8 +324,20 @@ def observe(run, observers, table, live_level):
     if (status == "ok" and run.code == 0) or (status == "failed" and run.code == 1
                                               and doc.get("failure")):
         try:
-            return ("complete", {"views": {o: project(doc, o, table) for o in observers},
-                                 "live": project(doc, live_level, table, keep_outcome=True)})
+            releases = (observed or {}).get("releases", [])
+            if any(not isinstance(rel.get("after"), int) or isinstance(rel.get("after"), bool)
+                   for rel in releases):
+                return ("error", "a release of the observed run has no position (`after`)")
+            # At the literal's own level a release is visible as an event is (`EvVis`): a
+            # literal that reaches only what a policy releases is live too.
+            live = project(observed if observed is not None else doc, live_level, table,
+                           keep_outcome=True)
+            live["releases"] = visible_releases(releases, live_level)
+            return ("complete", {
+                "views": {o: project(doc, o, table) for o in observers},
+                "live": live,
+                "releases": {o: visible_releases(releases, o) for o in observers},
+                "merged": {o: merged_trace(doc, releases, o, table) for o in observers}})
         except UnknownOperation as e:
             return ("error", str(e))
     if status == "aborted" and run.code == 1 and codes and set(codes) <= ABORT_CODES:
@@ -280,8 +348,9 @@ def observe(run, observers, table, live_level):
 def judge(ref, other):
     """The verdict on a variant's end `other` against `ref`, the program's first complete end
     (the base's, or the first variant's that completed), or None when no end has completed yet:
-    - `same` or `leak`: two complete ends, compared at every observer; a difference at any is a
-      leak, whatever the base did;
+    - `same`, `leak` or `explained`: two complete ends, compared at every observer; a difference at
+      an observer is a leak, whatever the base did, unless the releases that observer sees differ
+      between the two, which explain it (`spec/07 §1`): `explained` when every difference is;
     - `termination`: one side completes and the other aborts (outside T6, `spec/07 §1`);
     - `abort`: no end has completed yet and this one aborts too;
     - `error`: an error on either side."""
@@ -290,18 +359,38 @@ def judge(ref, other):
     if other[0] == "complete":
         if ref is None:
             return "first"
-        return "same" if ref[1]["views"] == other[1]["views"] else "leak"
+        if leaking_observers(ref, other):
+            return "leak"
+        return "same" if ref[1]["views"] == other[1]["views"] else "explained"
     if other[0] == "abort":
         return "abort" if ref is None else "termination"
     return "error"
 
 
+def explained_from(ma, mb):
+    """Whether two merged traces (`merged_trace`) diverge at a release, as the formal model's
+    `BRelR` allows (`formal/UnaFormal/F1/BinaryR.lean`): after a common prefix, both hold a
+    release, through the same policy, at the first place where they differ. A difference before
+    it, an event against a release, two different policies, or a trace that ends first, is not
+    explained; equal traces explain nothing."""
+    for x, y in zip(ma, mb):
+        if x != y:
+            return x[0] == "release" and y[0] == "release" and x[1] == y[1]
+    return False
+
+
 def leaking_observers(ref, other):
-    """The observers at which two complete ends differ."""
+    """The observers at which two complete ends differ, unless a release that observer sees
+    explains it: the two merged traces, events and releases in run order, first differ at a
+    release, and every difference after it is explained, the status, output, failure and
+    diagnostics included, which follow every release. A difference before the first differing
+    release, or with no differing release, is a leak (ADR 0115, Amendment of 2026-10-18)."""
     if ref[0] != "complete" or other[0] != "complete":
         return []
     a, b = ref[1]["views"], other[1]["views"]
-    return sorted(o for o in a if a[o] != b.get(o))
+    ma, mb = ref[1].get("merged", {}), other[1].get("merged", {})
+    return sorted(o for o in a if a[o] != b.get(o)
+                  and not explained_from(ma.get(o, []), mb.get(o, [])))
 
 
 def violations(end):
@@ -357,10 +446,126 @@ def run_twice(una, files, name, root, timeout, observers, table, live_level):
     return run_twice_kept(una, files, name, root, timeout, observers, table, live_level)[0]
 
 
+def _unworded(diagnostic):
+    """A diagnostic without its messages, its own and its related locations'."""
+    if not isinstance(diagnostic, dict):
+        return diagnostic
+    out = {k: v for k, v in diagnostic.items() if k != "message"}
+    if isinstance(out.get("related"), list):
+        out["related"] = [{k: v for k, v in r.items() if k != "message"}
+                          if isinstance(r, dict) else r for r in out["related"]]
+    return out
+
+
+def _event_shape(ev):
+    """What an event shares with its observed twin: its place, task, instance, capability and
+    operation, the names of its arguments, and its outcome's kind and variant; only values
+    differ."""
+    outcome = ev.get("outcome") if isinstance(ev.get("outcome"), dict) else {}
+    args = ev.get("args") if isinstance(ev.get("args"), dict) else {}
+    return ([ev.get(k) for k in ("seq", "task", "instance", "capability", "op")],
+            sorted(args), outcome.get("kind"), outcome.get("variant"))
+
+
+REDACTION = re.compile(r"<redacted:[A-Za-z]+>")
+
+
+def renders_alike(plain, shown):
+    """Whether `shown`, a value as the observed run renders it, is `plain`, as the run renders it,
+    but for the values the run redacted: each `<redacted:level>` of `plain` stands for any text at
+    its own place, and the rest must match exactly. Linear in the two texts: the first and last
+    literal pieces anchor the ends, and each piece between is found in order after the last."""
+    parts = REDACTION.split(plain)
+    if len(parts) == 1:
+        return plain == shown
+    first, last = parts[0], parts[-1]
+    if len(first) + len(last) > len(shown):
+        return False
+    if not shown.startswith(first) or not shown.endswith(last):
+        return False
+    at, end = len(first), len(shown) - len(last)
+    for part in parts[1:-1]:
+        found = shown.find(part, at, end)
+        if found < 0:
+            return False
+        at = found + len(part)
+    return True
+
+
+def _failure_differs(plain, shown):
+    """Whether a run's failure and its observed twin's are not one failure: either has one and the
+    other not, or their variants differ, or a field the run shows is not among the observed run's,
+    or has another value there.
+    The run shows a failure's `public` fields only, the observed run every field (ADR 0115), so
+    the observed run may name more."""
+    if not isinstance(plain, dict) or not isinstance(shown, dict):
+        return (plain is None) != (shown is None)
+    if plain.get("variant") != shown.get("variant"):
+        return True
+    fields = plain.get("fields") if isinstance(plain.get("fields"), dict) else {}
+    shown_fields = shown.get("fields") if isinstance(shown.get("fields"), dict) else {}
+    if not set(fields) <= set(shown_fields):
+        return True
+    # Both runs render a public field's value the same, but where the run redacted a labeled value
+    # nested in it, which the observed run shows: each redaction stands for any text at its own
+    # place, and everything around it must match exactly.
+    return any(not renders_alike(str(value), str(shown_fields[name]))
+               for name, value in fields.items())
+
+
+def same_run(doc, observed):
+    """Why the observed run of a variant is not the run `una run --json` made of it, or None: its
+    tier, status, output, diagnostics, failure's variant and public fields' names, and every event's
+    place, task, instance, capability, operation, arguments' names and outcome's kind and variant
+    must be the run's; only values may differ (ADR 0115)."""
+    if not isinstance(observed, dict) or observed.get("schema") != OBSERVED_SCHEMA:
+        return f"not a {OBSERVED_SCHEMA} document"
+    for key in ("tier", "status", "output"):
+        if observed.get(key) != doc.get(key):
+            return f"its {key} differs from the run's"
+    # A diagnostic's message renders the run's failure, which the observed run shows with every
+    # field: diagnostics are compared but for their messages.
+    if [_unworded(d) for d in observed.get("diagnostics", [])] != \
+            [_unworded(d) for d in doc.get("diagnostics", [])]:
+        return "its diagnostics differ from the run's"
+    a = [_event_shape(ev) for ev in doc.get("trace", [])]
+    b = [_event_shape(ev) for ev in observed.get("trace", [])]
+    if a != b:
+        return "its trace's events differ from the run's"
+    if _failure_differs(doc.get("failure"), observed.get("failure")):
+        return "its failure differs from the run's"
+    return None
+
+
+def run_observed(files, name, root, timeout, doc, plant=None):
+    """The variant's observed run with the oracle runner (ADR 0115), checked against `doc`, its
+    `una run --json` document: (document, None) or (None, why). `plant`, for the gate's canary
+    only, rewrites the observed document."""
+    rundir = sandbox.fresh_dir(root, f"{name}-o-")
+    p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files, variant=name)
+    pkg = p.write(rundir)
+    r = sandbox.run([RUNNER[0], "--json", "run", ".", *RUN_LIMITS, *native.SOLVER_FLAGS],
+                    cwd=pkg, writable=rundir, timeout=timeout, env_extra=native.RUN_ENV)
+    count_observed(r.seconds)
+    if r.timed_out:
+        return None, "the observed run timed out where the run did not"
+    try:
+        observed = json.loads(r.stdout)
+    except ValueError:
+        return None, f"the observed run's output is not a document: {(r.stdout + r.stderr)[-300:]}"
+    why = same_run(doc, observed)
+    if why:
+        return None, "the observed run: " + why
+    if plant is not None:
+        observed = plant(observed)
+    return observed, None
+
+
 def run_twice_kept(una, files, name, root, timeout, observers, table, live_level,
-                   doc_plant=None):
+                   doc_plant=None, observed_plant=None):
     """`run_twice`, and the first of the two runs, for the native comparison. `doc_plant`, for the
-    gate's canary only, rewrites the run's document, given the variant's files."""
+    gate's canary only, rewrites the run's document, given the variant's files. With the oracle
+    runner (`RUNNER`), a complete run also runs observed once, for its liveness and releases."""
     runs = []
     for k in range(2):
         rundir = sandbox.fresh_dir(root, f"{name}-r{k}-")
@@ -378,10 +583,20 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
         if why:
             return ("error", why), runs[0]
     run = runs[0]
+    # The observed run is checked against the run's own document; a canary's plant rewrites only
+    # what the oracle then compares.
+    real = run
     if doc_plant is not None and not run.timed_out:
         run = sandbox.Run(run.code, json.dumps(doc_plant(json.loads(run.stdout), files)),
                           run.stderr, run.timed_out, run.seconds)
-    return observe(run, observers, table, live_level), runs[0]
+    end = observe(run, observers, table, live_level)
+    if end[0] == "complete" and RUNNER:
+        observed, why = run_observed(files, name, root, timeout, json.loads(real.stdout),
+                                     observed_plant)
+        if why:
+            return ("error", why), runs[0]
+        end = observe(run, observers, table, live_level, observed)
+    return end, runs[0]
 
 
 def native_check(result, una, files, name, root, timeout, end, run, native_files=None):
@@ -469,12 +684,17 @@ def native_pass(prog, una, root, timeout, result):
         native_check(result, una, files, name, root, timeout, end, run)
 
 
-def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None, doc_plant=None):
+def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None, doc_plant=None,
+           observed_plant=None):
     """Runs the oracle on every manifest row with varied literals. `rebuild` turns a row into its
     program (`drivers.rebuild`); `plant`, for the gate's canaries only, rewrites the table of
     `accepts`; `native_plant`, for the native canary only, puts the program in the native sample and
     gives the files its executables are built from; `doc_plant`, for the message canary only,
-    rewrites each run's document. Writes one result per program to `out` and returns the tally.
+    rewrites each run's document; `observed_plant`, for the release canary only, rewrites each
+    observed document (ADR 0115). Writes one result per program to `out` and returns the tally.
+
+    With the oracle runner (`RUNNER`), a program whose policy releases to `public` is compared,
+    each observer's comparison up to the releases it sees, rather than set aside.
 
     A program's result counts `compared`, its complete-against-complete comparisons, and says
     whether it is `live`: whether two of its complete ends differ at the literal's own level, where
@@ -489,13 +709,13 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         result = {"name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
                   "class": prog.cls, "observers": observers, "variants": [], "finding": False,
                   "error": None, "termination": [], "violations": [], "compared": 0,
-                  "live": False,
+                  "explained": 0, "live": False,
                   "native": {"sampled": native_plant is not None or native.sampled(prog.name),
                              "stratum": False, "compared": 0, "divergences": [], "skipped": [],
                              "not_compiled": None}}
         if not observers:
             result["set_aside"] = "no observer below the varied literal"
-        elif releases_to_public(prog.files):
+        elif releases_to_public(prog.files) and not RUNNER:
             result["set_aside"] = "a policy releases to public"
         if result.get("set_aside"):
             # A program whose policy releases to public still runs natively when sampled: a
@@ -531,7 +751,8 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if plant is not None:
             table = plant(table)
         base, base_run = run_twice_kept(una, prog.files, prog.name + "-base", root, timeout,
-                                        observers, table, live_level, doc_plant)
+                                        observers, table, live_level, doc_plant,
+                                        observed_plant)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
@@ -547,7 +768,8 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
                 files = substitute(prog.files, pos, text)
                 end, end_run = run_twice_kept(una, files, f"{prog.name}-v{i}-{j}", root, timeout,
-                                              observers, table, live_level, doc_plant)
+                                              observers, table, live_level, doc_plant,
+                                              observed_plant)
                 native_check(result, una, files, f"{prog.name}-v{i}-{j}", root, timeout, end,
                              end_run, native_plant(files) if native_plant else None)
                 if end[0] == "rejected":
@@ -566,6 +788,8 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
                         verdict = entry["verdict"] = "termination"
                 if verdict in ("same", "leak"):
                     result["compared"] += 1
+                if verdict == "explained":
+                    result["explained"] += 1
                 if verdict == "leak":
                     entry["observers"] = leaking_observers(ref, end)
                     result["finding"] = True

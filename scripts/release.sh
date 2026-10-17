@@ -47,6 +47,8 @@ export RUSTFLAGS
 CFLAGS="${CFLAGS:-} -ffile-prefix-map=$root=/una -ffile-prefix-map=$cargo_home=/cargo"
 export CFLAGS
 built="$root/target/release-remapped"
+# The two packages by name, never the workspace: `una-oracle` and the `oracle` features it enables
+# print labeled values and never ship (ADR 0115).
 cargo build --release --locked --target-dir "$built" --package una-cli --package una-rt
 name="una-$version-$target"
 out="$root/target/release-archives"

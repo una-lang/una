@@ -67,6 +67,41 @@ pub fn run_main(
     })
 }
 
+/// A run of `main` that shows every value and records each declassification, for the security
+/// hunt's oracle only (ADR 0115): its trace's arguments and outcomes and its result are in their
+/// Una form with every field, a failure's fields are all of its fields, and its releases come in
+/// run order. Otherwise as `run_main`, whose redaction it does not change.
+#[cfg(feature = "oracle")]
+pub fn run_main_observed(
+    program: &Program,
+    module: &str,
+    world: &mut dyn World,
+    host: &Host,
+    limits: Limits<'_>,
+) -> Option<(Run, Vec<crate::machine::Release>)> {
+    let index = Index::new(program);
+    let main = index.function(module, "main")?;
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.observed = true;
+    let result = machine.run_main(main);
+    let completion = match result {
+        Err(Stop::Fail(failure)) => Completion::Failed {
+            variant: variant(&failure),
+            value: index.shown(&failure, Form::Shown),
+            public: index.all_fields(&failure),
+        },
+        other => completion(&index, other, Form::Shown),
+    };
+    let releases = std::mem::take(&mut machine.releases);
+    Some((
+        Run {
+            completion,
+            trace: machine.trace,
+        },
+        releases,
+    ))
+}
+
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
     match result {
         Ok(value) => Completion::Ok(index.shown(&value, form)),

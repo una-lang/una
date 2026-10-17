@@ -136,6 +136,11 @@ if [ -n "${UNA_LOCAL_CI_ADVISORIES_ON_HOST:-}" ] && [ -f /.dockerenv ]; then
 fi
 step "Format" cargo fmt --all --check
 step "Clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
+# The workspace build turns on the hunt's `oracle` features, which `una-oracle` enables (ADR 0115),
+# so the build that ships, `-p una-cli -p una-rt` as scripts/release.sh makes it, is linted and
+# tested on its own too: selected alone, these crates resolve no `oracle` feature.
+step "Clippy (as released, without the oracle)" \
+    cargo clippy --locked -p una-cli -p una-rt -p una-interp --all-targets -- -D warnings
 # Under emulation (--linux on an arm64 Mac, through Rosetta), the tests run one at a time, on
 # one thread each: processes spawned from many threads at once can hang there (#286). The
 # native runs, --linux-arm64 among them, keep full parallelism.
@@ -143,6 +148,13 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
     step "Test (serial)" env RAYON_NUM_THREADS=1 cargo test --workspace --locked -- --test-threads=1
 else
     step "Test" cargo test --workspace --locked
+fi
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
+    step "Test (as released, without the oracle, serial)" env RAYON_NUM_THREADS=1 \
+        cargo test --locked -p una-cli -p una-rt -p una-interp -- --test-threads=1
+else
+    step "Test (as released, without the oracle)" \
+        cargo test --locked -p una-cli -p una-rt -p una-interp
 fi
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
@@ -172,7 +184,15 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
-step "Check the release archive of $target" scripts/check-release.sh "$target"
+# The `una` that check-release.sh compares `una --json run` with (ADR 0115): built with the
+# hunt's `oracle` feature on purpose, in a directory of its own, so the comparison never depends
+# on an earlier build and always runs here.
+# Under the run's target directory, a container's volume when it has one, never the checkout's.
+oracle_target="${CARGO_TARGET_DIR:-$root/target}/oracle-compare"
+step "Build the oracle una for the comparison" \
+    cargo build --locked -p una-cli --features oracle --target-dir "$oracle_target"
+step "Check the release archive of $target" \
+    env UNA_ORACLE_UNA="$oracle_target/debug/una" scripts/check-release.sh "$target"
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
     echo "== peak memory of the container: $(($(cat /sys/fs/cgroup/memory.peak) / 1048576)) MiB, with CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"

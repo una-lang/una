@@ -385,7 +385,9 @@ def run(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
     tmp = os.path.join(writable, ".tmp")
     os.makedirs(home, exist_ok=True)
     os.makedirs(tmp, exist_ok=True)
-    env = {"PATH": "/usr/bin:/bin", "HOME": home, "TMPDIR": tmp, "LANG": "C.UTF-8"}
+    # `UNA_HUNT_RUN`: the marker without which the oracle runner refuses to run (ADR 0115).
+    env = {"PATH": "/usr/bin:/bin", "HOME": home, "TMPDIR": tmp, "LANG": "C.UTF-8",
+           "UNA_HUNT_RUN": "1"}
     if PROOF_KEY:
         env["UNA_PROOF_KEY"] = PROOF_KEY[0]
     env.update(env_extra or {})

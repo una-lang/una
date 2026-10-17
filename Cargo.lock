@@ -1314,6 +1314,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-oracle"
+version = "0.3.15"
+dependencies = [
+ "cap",
+ "serde_json",
+ "una-cli",
+ "una-interp",
+]
+
+[[package]]
 name = "una-project"
 version = "0.3.15"
 dependencies = [

@@ -1,0 +1,24 @@
+[package]
+name = "una-oracle"
+description = "The security hunt's oracle runner: unredacted runs and recorded releases, for development only (ADR 0115)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "una-oracle"
+path = "src/main.rs"
+
+[dependencies]
+cap.workspace = true
+# The only crate that enables the `oracle` features (ADR 0115).
+una-cli = { path = "../una-cli", features = ["oracle"] }
+una-interp.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

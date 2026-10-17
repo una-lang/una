@@ -10,6 +10,12 @@ publish.workspace = true
 name = "una"
 path = "src/main.rs"
 
+[features]
+# `run_observed`, for the security hunt's oracle only (ADR 0115): a run that shows every value
+# and records each declassification. It is in no default feature set, and only `una-oracle`
+# enables it; `scripts/release.sh` builds `una` without it.
+oracle = ["una-interp/oracle"]
+
 [dependencies]
 cap.workspace = true
 clap.workspace = true

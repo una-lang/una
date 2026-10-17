@@ -285,13 +285,18 @@ gate_hunt() {
         scripts/check-solver.sh || exit 1
         [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
         una=$(pwd)/target/release/una
+        # The oracle runner (ADR 0115), in a build of its own: built with `una-cli`, its `oracle`
+        # features would reach the `una` the gate tests and the release ships.
+        cargo build --locked --release -p una-oracle || exit 1
+        runner=$(pwd)/target/release/una-oracle
         root=$(pwd)
         . scripts/lean-env.sh || exit 1
         (cd formal && lake build una-core-check) || exit 1
         core_check=$(pwd)/formal/.lake/build/bin/una-core-check
         [ -x "$core_check" ] || { echo "no una-core-check at $core_check"; exit 1; }
         cd scripts/security-hunt && PYTHONDONTWRITEBYTECODE=1 python3 -B -m hunt gate \
-            --una "$una" --out "$1" --tip "$2" --core-check "$core_check" --z3 "$3/bin/z3"' \
+            --una "$una" --out "$1" --tip "$2" --core-check "$core_check" --z3 "$3/bin/z3" \
+            --runner "$runner"' \
         sh "$hunt" "$SHA" "$Z3"
 }
 

@@ -35,6 +35,27 @@ pub(crate) fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
 /// The JSON schema of `una run --json` (ADR 0032).
 const RUN_SCHEMA: &str = "una.run/1";
 
+/// The JSON schema of an observed run, the hunt oracle's (ADR 0115).
+#[cfg(feature = "oracle")]
+const ORACLE_SCHEMA: &str = "una.oracle-run/1";
+
+/// How `run_command` runs `main`: as `una run` does, or, for the hunt's oracle only, observed,
+/// every value shown and each declassification recorded (ADR 0115).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// `una run`.
+    Run,
+    /// The hunt oracle's observed run.
+    #[cfg(feature = "oracle")]
+    Observed,
+}
+
+/// The releases of an observed run; none in a build without the oracle.
+#[cfg(feature = "oracle")]
+type Releases = Vec<una_interp::Release>;
+#[cfg(not(feature = "oracle"))]
+type Releases = ();
+
 /// The JSON schema of `una test --json` (ADR 0032).
 const TEST_SCHEMA: &str = "una.test/1";
 
@@ -63,6 +84,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) environment: Environment<'a>,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
+    /// `una run`, or the hunt oracle's observed run (ADR 0115).
+    pub(crate) mode: Mode,
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -276,6 +299,7 @@ pub(crate) fn run_command(
     let max_depth = options.max_depth;
     let limits = limits(&options);
     let environment = options.environment;
+    let mode = options.mode;
     let mut output = Vec::new();
     let mut write_error = None;
     let ceiling = Ceiling::raise(&options);
@@ -288,7 +312,16 @@ pub(crate) fn run_command(
                     lines: sender,
                     environment,
                 };
-                una_interp::run_main(program, entry_path, &mut world, host, limits)
+                match mode {
+                    Mode::Run => {
+                        una_interp::run_main(program, entry_path, &mut world, host, limits)
+                            .map(|run| (run, Releases::default()))
+                    }
+                    #[cfg(feature = "oracle")]
+                    Mode::Observed => {
+                        una_interp::run_main_observed(program, entry_path, &mut world, host, limits)
+                    }
+                }
             })?;
         for line in receiver {
             if options.json {
@@ -306,7 +339,7 @@ pub(crate) fn run_command(
         )
     });
     drop(ceiling);
-    let run = match evaluated {
+    let (run, releases) = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {
             writeln!(stderr, "error: the module `{entry}` has no `main` to run")?;
@@ -371,6 +404,23 @@ pub(crate) fn run_command(
         diagnostics: in_output_order(&diagnostics),
         trace: run.trace.iter().map(EventDoc::from).collect(),
     };
+    #[cfg(feature = "oracle")]
+    if mode == Mode::Observed {
+        let observed = ObservedDocument {
+            run: document,
+            releases: releases.iter().map(ReleaseDoc::from).collect(),
+        };
+        return finish(
+            &observed,
+            &diagnostics,
+            &package.sources,
+            options,
+            (stdout, stderr),
+            status,
+        );
+    }
+    #[cfg(not(feature = "oracle"))]
+    let () = releases;
     finish(
         &document,
         &diagnostics,
@@ -719,6 +769,59 @@ fn module_files(analysis: &Analysis, sources: &SourceDb) -> BTreeMap<String, Str
             Some((path.join("."), sources.file(*id).path().to_owned()))
         })
         .collect()
+}
+
+/// `una.oracle-run/1`: the fields of `una.run/1`, every value shown, then the releases, in run
+/// order (ADR 0115).
+#[cfg(feature = "oracle")]
+struct ObservedDocument<'a> {
+    run: RunDocument<'a>,
+    releases: Vec<ReleaseDoc<'a>>,
+}
+
+#[cfg(feature = "oracle")]
+impl Serialize for ObservedDocument<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let run = &self.run;
+        let mut document = serializer.serialize_struct("ObservedDocument", 8)?;
+        document.serialize_field("schema", ORACLE_SCHEMA)?;
+        document.serialize_field("tier", &run.tier)?;
+        document.serialize_field("status", run.status)?;
+        document.serialize_field("output", &run.output)?;
+        document.serialize_field("failure", &run.failure)?;
+        document.serialize_field("diagnostics", &run.diagnostics)?;
+        document.serialize_field("trace", &run.trace)?;
+        document.serialize_field("releases", &self.releases)?;
+        document.end()
+    }
+}
+
+/// One release of an observed run (ADR 0115).
+#[cfg(feature = "oracle")]
+#[derive(Serialize)]
+struct ReleaseDoc<'a> {
+    after: usize,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    task: &'a str,
+    policy: &'a str,
+    from: &'a str,
+    to: &'a str,
+    value: &'a str,
+}
+
+#[cfg(feature = "oracle")]
+impl<'a> From<&'a una_interp::Release> for ReleaseDoc<'a> {
+    fn from(release: &'a una_interp::Release) -> Self {
+        ReleaseDoc {
+            after: release.after,
+            task: &release.task,
+            policy: &release.policy,
+            from: &release.from,
+            to: &release.to,
+            value: &release.value,
+        }
+    }
 }
 
 /// `una.run/1`, with keys in the order of ADR 0032 rule 4.

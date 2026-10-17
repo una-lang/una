@@ -74,6 +74,25 @@ pub struct Event {
     pub outcome: EventOutcome,
 }
 
+/// A declassification of an observed run (ADR 0115): the policy that released a value, and
+/// what it released, in run order with the trace's events.
+#[cfg(feature = "oracle")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    /// How many events of the trace came before it.
+    pub after: usize,
+    /// The path of the `together` task that made it, as in an event, or empty outside any task.
+    pub task: String,
+    /// The policy, by its qualified name.
+    pub policy: String,
+    /// The level of its `from` type.
+    pub from: String,
+    /// The level of its `to` type.
+    pub to: String,
+    /// What its `via` function returned, the released value, in its Una form with every field.
+    pub value: String,
+}
+
 /// How an operation ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventOutcome {
@@ -182,6 +201,10 @@ pub(crate) struct Index<'p> {
     handlers: BTreeMap<Qualified<'p>, HandlerInfo<'p>>,
     capabilities: BTreeMap<&'p str, &'p [CapOp]>,
     data: BTreeMap<Qualified<'p>, Variants<'p>>,
+    /// The `from` and `to` types of each declassification policy, for an observed run's
+    /// releases (ADR 0115).
+    #[cfg(feature = "oracle")]
+    policies: BTreeMap<Qualified<'p>, (&'p Type, &'p Type)>,
 }
 
 impl<'p> Index<'p> {
@@ -193,6 +216,8 @@ impl<'p> Index<'p> {
             handlers: BTreeMap::new(),
             capabilities: BTreeMap::new(),
             data: BTreeMap::new(),
+            #[cfg(feature = "oracle")]
+            policies: BTreeMap::new(),
         };
         for module in &program.modules {
             let path = module.path.as_str();
@@ -234,6 +259,10 @@ impl<'p> Index<'p> {
                         index.data.insert((path, name.as_str()), fields);
                     }
                     Decl::Alias { .. } | Decl::Policy { .. } => {}
+                }
+                #[cfg(feature = "oracle")]
+                if let Decl::Policy { name, from, to, .. } = decl {
+                    index.policies.insert((path, name.as_str()), (from, to));
                 }
             }
         }
@@ -378,6 +407,21 @@ impl<'p> Index<'p> {
             pending.extend(parts.into_iter().rev());
         }
         out
+    }
+
+    /// Every field of a failure, in its Una form with every field shown: what an observed run
+    /// reports where a run reports `public_fields` (ADR 0115).
+    #[cfg(feature = "oracle")]
+    pub(crate) fn all_fields(&self, value: &Value<'_>) -> Vec<(String, String)> {
+        let Value::Data(data) = value else {
+            return Vec::new();
+        };
+        let names = self.fields(&data.ctor);
+        data.fields
+            .iter()
+            .zip(names)
+            .map(|(v, (name, _))| (name.to_owned(), self.una_form(v, Form::Shown)))
+            .collect()
     }
 
     pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label) -> String {
@@ -549,6 +593,12 @@ pub(crate) struct Machine<'p, 'w> {
     reads: HashMap<*const Expr, Rc<BTreeSet<String>>>,
     /// The names each loop body binds, computed once (`una_core::binders`).
     binders: HashMap<*const Expr, Rc<BTreeSet<&'p str>>>,
+    /// An observed run (ADR 0115): its trace shows every value, and it records its releases.
+    #[cfg(feature = "oracle")]
+    pub(crate) observed: bool,
+    /// The declassifications of an observed run so far.
+    #[cfg(feature = "oracle")]
+    pub(crate) releases: Vec<Release>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -584,6 +634,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             callers: Vec::new(),
             reads: HashMap::new(),
             binders: HashMap::new(),
+            #[cfg(feature = "oracle")]
+            observed: false,
+            #[cfg(feature = "oracle")]
+            releases: Vec::new(),
         }
     }
 
@@ -1374,9 +1428,22 @@ impl<'p, 'w> Machine<'p, 'w> {
                     _ => Err(fault("a `checked` predicate that is not a `Bool`")),
                 }
             }
-            Rhs::Declassify { via, arg, span, .. } => {
+            Rhs::Declassify {
+                via,
+                arg,
+                span,
+                policy,
+                ..
+            } => {
                 let arg = self.atom(env, arg)?;
-                self.call(via, vec![arg], caps, *span)
+                let released = self.call(via, vec![arg], caps, *span);
+                #[cfg(feature = "oracle")]
+                if let Ok(value) = &released {
+                    self.release(policy, value)?;
+                }
+                #[cfg(not(feature = "oracle"))]
+                let _ = policy;
+                released
             }
         }
     }
@@ -1438,6 +1505,56 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.leave(result)
     }
 
+    /// A value of the trace: in its Una form when its label is `public`, else `<redacted:level>`;
+    /// in an observed run, in its Una form with every field (ADR 0115).
+    fn traced(&self, value: &Value<'_>, label: &Label) -> String {
+        #[cfg(feature = "oracle")]
+        if self.observed {
+            return self.index.shown(value, Form::Shown);
+        }
+        self.index.redacted(value, label)
+    }
+
+    /// A failure of the trace, in its Una form; in an observed run, with every field.
+    fn traced_failure(&self, failure: &Value<'_>) -> String {
+        #[cfg(feature = "oracle")]
+        if self.observed {
+            return self.index.shown(failure, Form::Shown);
+        }
+        self.index.render(failure)
+    }
+
+    /// Records that `policy` released `value`, in an observed run (ADR 0115).
+    #[cfg(feature = "oracle")]
+    fn release(&mut self, policy: &Path, value: &Value<'_>) -> Result<(), Stop<'p>> {
+        if !self.observed {
+            return Ok(());
+        }
+        let key = (policy.module.as_str(), policy.name.as_str());
+        // A declassification names a policy the checks resolved, so the index always has it: an
+        // unknown one is an internal fault of the observed run, never a release without levels.
+        let Some((from, to)) = self.index.policies.get(&key) else {
+            return Err(fault(format!(
+                "a declassification through `{}`, a policy the index does not have",
+                policy.qualified()
+            )));
+        };
+        let (from, to) = (
+            level_name(from.deep_label().level).to_owned(),
+            level_name(to.deep_label().level).to_owned(),
+        );
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.releases.push(Release {
+            after: self.trace.len(),
+            task: task.join("."),
+            policy: policy.qualified(),
+            from,
+            to,
+            value: self.index.shown(value, Form::Shown),
+        });
+        Ok(())
+    }
+
     /// E-OpHost and E-OpHandler: the operation's event comes first, then the events of a
     /// handler's body; its outcome is filled in when the operation ends.
     fn op(&mut self, caps: &Caps<'p>, request: &Request<'_>, args: Vec<Value<'p>>) -> Flow<'p> {
@@ -1471,7 +1588,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
                 // An argument labeled above `public` is redacted.
                 let label = labels.get(i).cloned().unwrap_or_else(Label::public);
-                (name, self.index.redacted(value, &label))
+                (name, self.traced(value, &label))
             })
             .collect();
         let slot = self.trace.len();
@@ -1512,10 +1629,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
         };
         let outcome = match &result {
-            Ok(value) => EventOutcome::Ok(self.index.redacted(value, &request.result)),
+            Ok(value) => EventOutcome::Ok(self.traced(value, &request.result)),
             Err(Stop::Fail(failure)) => EventOutcome::Fail {
                 variant: variant(failure),
-                value: self.index.render(failure),
+                value: self.traced_failure(failure),
             },
             Err(Stop::Abort(_)) => EventOutcome::Aborted,
         };

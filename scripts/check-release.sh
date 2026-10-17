@@ -63,6 +63,17 @@ if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
     echo "error: $name.tar.gz has no lib/libuna_rt.a" >&2
     exit 1
 fi
+# No part of the hunt's oracle runner (ADR 0115), which prints labeled values: the listing above
+# already admits no `una-oracle` binary, and neither the binary nor the runtime may hold its entry
+# points or its schema, which only a build with the `oracle` feature has.
+for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+    for mark in una.oracle-run/1 run_observed run_main_observed una-oracle; do
+        if LC_ALL=C grep -a -q -F -e "$mark" "$file"; then
+            echo "error: $name.tar.gz has \"$mark\" in ${file#"$tmp/$name/"}: the oracle runner never ships (ADR 0115)" >&2
+            exit 1
+        fi
+    done
+done
 una="$tmp/$name/una"
 "$una" check examples/events
 "$una" test examples/events > /dev/null
@@ -85,6 +96,36 @@ for example in examples/*/; do
         exit 1
     fi
 done
+# `una --json run` is the same with or without the hunt's oracle runner in the build (ADR 0115):
+# `UNA_ORACLE_UNA`, a `una` built with the `oracle` feature (scripts/local-ci.sh builds one for
+# this), gives the same document of every example, byte for byte, as the packed `una`, which has
+# none of it. Where it is set, the comparison is required: the binary must exist and have the
+# feature, or the check fails.
+if [ -n "${UNA_ORACLE_UNA:-}" ]; then
+    oracle_una=$UNA_ORACLE_UNA
+    if [ ! -x "$oracle_una" ]; then
+        echo "error: UNA_ORACLE_UNA names $oracle_una, which is not an executable" >&2
+        exit 1
+    fi
+    if ! LC_ALL=C grep -a -q -F -e una.oracle-run/1 "$oracle_una"; then
+        echo "error: $oracle_una lacks the oracle feature, so comparing with it proves nothing" >&2
+        exit 1
+    fi
+    for example in examples/*/; do
+        example=${example%/}
+        dir="$tmp/compare-$(basename "$example")"
+        cp -R "$example" "$dir"
+        packed=$(cd "$dir" && "$una" --json run . 2>/dev/null || true)
+        built=$(cd "$dir" && "$oracle_una" --json run . 2>/dev/null || true)
+        if [ "$packed" != "$built" ]; then
+            echo "error: una --json run of $example differs between the packed una and $oracle_una (ADR 0115)" >&2
+            exit 1
+        fi
+    done
+    echo "ok: una --json run of every example is the same with the oracle feature built in"
+else
+    echo "note: UNA_ORACLE_UNA is not set, so una --json run is not compared with an oracle build here; this is not a check (scripts/local-ci.sh runs it)"
+fi
 # The archive and what it builds carry no path of a machine (#382, S-13). The same program built
 # by the archive unpacked in two places is the same executable; and neither the packed `una`, nor
 # its runtime, nor that executable names a home directory or the source tree it was built from.

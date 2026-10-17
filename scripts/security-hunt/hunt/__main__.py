@@ -114,10 +114,12 @@ def main(argv=None):
     gt.add_argument("--core-check", required=True,
                     help="the una-core-check executable (formal/.lake/build/bin)")
     gt.add_argument("--z3", required=True, help="the pinned solver, for the residual rows")
+    gt.add_argument("--runner", required=True,
+                    help="the oracle runner, una-oracle (ADR 0115), for liveness and releases")
     a = ap.parse_args(argv)
     if a.cmd == "gate":
         return gate.run(os.path.realpath(a.una), a.out, a.tip, os.path.realpath(a.core_check),
-                        os.path.realpath(a.z3))
+                        os.path.realpath(a.z3), os.path.realpath(a.runner))
     if a.cmd == "gen":
         cmd_gen(a)
     elif a.cmd == "repro":
