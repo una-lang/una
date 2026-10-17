@@ -10,7 +10,10 @@ outside code blocks and inline code, every link that is not a URL, inline or in 
 definition `[ref]: target` (#719):
 - names a file or directory that git tracks (#305), so it exists on GitHub; an image included;
 - with a `#fragment`, names a heading of its target document, or of the document itself, when
-  the target is one of these documents.
+  the target is one of these documents;
+- or, when it starts with `/`, is a page of the website's Learn section: `/learn/` and lowercase
+  route segments, each ending in `/`, with an optional plain `#anchor` (#859). The website build
+  checks that the route exists (its learn-pages.json); here only its form is checked.
 A percent-encoded path or fragment is decoded first, and a malformed escape is refused.
 
 A heading's fragment is the id the website gives it (una-lang/website,
@@ -255,6 +258,8 @@ REFERENCE = re.compile(
     r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
 MALFORMED_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+# A link to a page of the website's Learn section (#859).
+LEARN = re.compile(r"/learn/(?:[a-z0-9]+(?:-[a-z0-9]+)*/)*(?:#[a-z0-9]+(?:-[a-z0-9]+)*)?")
 
 
 def resolve(page, target):
@@ -281,6 +286,10 @@ def problems(root, docs, files, dirs):
     def target_problem(page, target):
         if re.match(r"^[a-z]+:", target) or target.startswith("//"):
             return None
+        if target.startswith("/"):
+            if LEARN.fullmatch(target):
+                return None
+            return "is a root-relative link that is not a /learn/ route with an optional anchor"
         if MALFORMED_ESCAPE.search(target):
             return "has a malformed percent escape"
         path, _, fragment = target.partition("#")
@@ -335,6 +344,8 @@ def self_test():
         '[angle]: <sub/i.png> "A title"\n'
         "[web]: https://example.org/x\n"
         "[encoded]: b.md#part%2Dtwo\n"
+        "Learn more: [uses](/learn/capabilities/declaring-what-a-function-may-do-uses/), "
+        "[a part](/learn/failure/handling-a-failure-the-five-clauses/#s6-2) and [Learn](/learn/).\n"
     )
     bad = {
         "a repository link to an untracked file": "[x](missing.md)",
@@ -350,6 +361,13 @@ def self_test():
         "a percent-encoded fragment that names no heading": "[x](b.md#part%2Dthree)",
         "a malformed percent escape": "[x](sub/i%zz.png)",
         "a percent escape that is not UTF-8": "[x](sub/%FF.png)",
+        "a root-relative link outside /learn/": "[x](/docs/spec/)",
+        "a /learn/ link that climbs out": "[x](/learn/../x/)",
+        "a /learn/ link with an empty segment": "[x](/learn//x/)",
+        "a /learn/ link with an uppercase route": "[x](/learn/Capabilities/)",
+        "a /learn/ link without its trailing slash": "[x](/learn/capabilities)",
+        "a /learn/ link with a query": "[x](/learn/capabilities/?x=1)",
+        "a /learn/ link with markup in its anchor": "[x](/learn/capabilities/#<b>)",
     }
     # `i%zz.png` is tracked, so the malformed escape that names it is refused for the escape alone.
     files = {"docs/a.md", "docs/b.md", "docs/sub/i.png", "docs/sub/a b.png", "docs/sub/i%zz.png"}

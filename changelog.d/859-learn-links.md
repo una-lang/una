@@ -1,0 +1,1 @@
+- **Documents may link the website's Learn pages** (#859). `scripts/doc-links.py` accepts a root-relative link of the form `/learn/<route>/`, with lowercase route segments and an optional plain anchor, and refuses any other root-relative link. The website build checks that each such route exists.
