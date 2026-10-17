@@ -1,0 +1,1 @@
+- **The standard library's doc comments hold only text and code spans** (#861). The check that keeps them free of markup now refuses an escaped or unpaired backtick, which Markdown does not read as the edge of a code span, as well as links, images, headings, quotes, and control or invisible format characters.
