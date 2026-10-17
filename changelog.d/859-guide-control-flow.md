@@ -1,0 +1,1 @@
+- **Control-flow guide pages read as guides** (#859). The pages for `for`, `let edit`, `take`, `together` and `when` use store examples instead of placeholders, keep their spec citations in the "Normative source" part, and name decision records only there.
