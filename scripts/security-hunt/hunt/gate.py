@@ -51,6 +51,7 @@ import atexit
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -65,7 +66,7 @@ from .families import conditions
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .program import write_manifest
 from .refactor import REFACTORS
-from .una import Varied, header, join_decls, package
+from .una import Varied, header, join_decls, module_file, package
 
 # The fixed run: changing any of these changes the gate, and docs/release-gates.md with it.
 SEED = 767
@@ -421,6 +422,36 @@ def canary_redacted():
                    cls=OPEN, files=files, vary=vary)
 
 
+def canary_message():
+    """An accepted program whose `main` fails with a payload holding a public code and a secret
+    value: `una run --json` shows only the code, in its failure and in its message.
+    Planted (`message_leak`), each variant's message shows its own literal, the fault of S-28's
+    class; the oracle must report it as a leak at `public` from the message alone (#874)."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "4242")
+    text = join_decls(
+        header(MOD), "pub kind Stop = | Halt(code: Int, value: secret Int)",
+        "pub main() -> Unit\n  uses @console: Console[print]\n  fails Stop\n=\n"
+        f"  let s: secret Int = {lit}\n"
+        '  @console.print("start")\n'
+        "  fail Halt(code: 7, value: s)")
+    files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
+    return Program(op="canary-message", rule="the gate's own canary", edition="0.2", seed=0,
+                   cls=OPEN, files=files, vary=vary)
+
+
+def message_leak(doc, files):
+    """The message canary's plant: every diagnostic's message shows the variant's secret literal,
+    which `una run --json` leaves out of it (it prints only the failure's public fields)."""
+    text = files.get(module_file(MOD), "")
+    found = re.search(r"let s: secret Int = (-?[0-9]+)", text)
+    literal = found.group(1) if found else "?"
+    doc = dict(doc)
+    doc["diagnostics"] = [dict(d, message=f"{d.get('message', '')} (value: {literal})")
+                          for d in doc.get("diagnostics", [])]
+    return doc
+
+
 def planted(level):
     """The canaries' planted fault: `Vault.note` accepts `level` in the oracle's table."""
     def plant(table):
@@ -430,11 +461,11 @@ def planted(level):
     return plant
 
 
-def oracle_canary(prog, una, work, plant=None):
+def oracle_canary(prog, una, work, plant=None, doc_plant=None):
     """Runs one program through the oracle, and returns its result row."""
     buf = io.StringIO()
     oracle.oracle([dict(prog.manifest(), digest=prog.digest())], una, work, RUN_TIMEOUT, buf,
-                  lambda row: prog, plant=plant)
+                  lambda row: prog, plant=plant, doc_plant=doc_plant)
     return json.loads(buf.getvalue())
 
 
@@ -498,7 +529,7 @@ def caught(name, row):
         return (bool(diverged) and not record.get("not_compiled")
                 and not any(v.endswith("-base") for v in diverged))
     leaks = sorted({o for v in row["variants"] for o in v.get("observers", [])})
-    if name in ("oracle", "oracle-tasks", "oracle-condition"):
+    if name in ("oracle", "oracle-tasks", "oracle-condition", "message"):
         return "public" in leaks
     if name == "internal":
         return leaks == ["internal"] and not row["violations"]
@@ -1041,6 +1072,7 @@ def run(una, out_dir, tip, core_check, z3):
         "oracle-condition": oracle_canary(canary_oracle_condition(), una, work),
         "internal": oracle_canary(canary_internal(), una, work, planted("internal")),
         "redacted": oracle_canary(canary_redacted(), una, work, planted("public")),
+        "message": oracle_canary(canary_message(), una, work, doc_plant=message_leak),
     }
     for name, row in canary_rows.items():
         canaries[name] = caught(name, row)
