@@ -106,9 +106,11 @@ fn every_item_has_doc_comments_that_cite_spec_sections_that_exist() {
 /// What in the doc comment `lines` the website could not render as written (#695): it joins
 /// the lines into one Markdown paragraph that may hold HTML, so a `<` or `&` outside a code
 /// span, or a line that starts a list item or a code fence, is refused. Code spans are told
-/// apart by pairing backticks, which holds only without a backslash (an escaped backtick opens
-/// no span) and with every backtick paired; a link, an image, a heading, a quote and a control
-/// or invisible format character are refused too (#861).
+/// apart by pairing single backticks, which holds only without a backslash (an escaped backtick
+/// opens no span), with every backtick paired, and with no run of two or more (Markdown pairs
+/// runs of equal length only); a bracket outside code spans (any link, image or link
+/// definition), a heading, a quote and a control or invisible format character are refused too
+/// (#861).
 fn doc_problems(lines: &[String]) -> Vec<String> {
     let mut problems = Vec::new();
     let text = lines.join(" ");
@@ -121,6 +123,11 @@ fn doc_problems(lines: &[String]) -> Vec<String> {
     }
     if text.matches('`').count() % 2 == 1 {
         problems.push(format!("a backtick without its pair: {text:?}"));
+    }
+    // Markdown pairs runs of backticks of equal length only, so pairing single backticks is
+    // exact only when no run is longer.
+    if text.contains("``") {
+        problems.push(format!("a run of backticks: {text:?}"));
     }
     if text.chars().any(|c| c.is_control())
         || text.contains([
@@ -135,9 +142,11 @@ fn doc_problems(lines: &[String]) -> Vec<String> {
         if index % 2 == 0 && segment.contains(['<', '&']) {
             problems.push(format!("`<` or `&` outside a code span: {segment:?}"));
         }
-        if index % 2 == 0 && (segment.contains("](") || segment.contains("![")) {
+        // A bracket outside a code span: an inline, reference or image link, or a link
+        // definition.
+        if index % 2 == 0 && segment.contains(['[', ']']) {
             problems.push(format!(
-                "a link or an image outside a code span: {segment:?}"
+                "a bracket, which could make a link or an image, outside a code span: {segment:?}"
             ));
         }
     }
@@ -199,6 +208,10 @@ fn the_doc_comment_rules_refuse_each_case() {
         &["# A heading"],
         &["> A quote"],
         &["A right\u{202e}to-left override."],
+        &["a ```<img src=x>`"],
+        &["``<img>`x`"],
+        &["A [reference][docs] link."],
+        &["A [shortcut] link.", "[shortcut]: https://example.com/"],
     ] {
         assert!(!doc_problems(&lines(bad)).is_empty(), "accepted {bad:?}");
     }
