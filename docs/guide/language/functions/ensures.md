@@ -9,15 +9,17 @@ codes: [U0102, U2012, U2014, U5001, U5002]
 
 ## What it does
 
-`ensures q` states a postcondition: what holds of `result` and the arguments when the function returns normally (`spec/04 §2`). It is checked at both ends:
+`ensures q` states a postcondition, a promise about the result: what holds of `result` and the arguments when the function returns normally. It is checked at both ends:
 
-- **in the body**, the verifier proves `q` on every normal return path;
-- **at every call**, callers may assume `q` for the value they receive (`spec/04 §2`, `spec/12 §3`).
+- **in the body**, the verifier (the part of `una check` that proves facts about the code) proves `q` on every normal return path;
+- **at every call**, callers may assume `q` for the value they receive.
 
 So a caller can rely on a function's header alone, without reading its body.
 
+Learn more: [Postconditions: ensures and counterexamples](/learn/contracts/postconditions-ensures-and-counterexamples/).
+
 ```una
-module demo
+module shop
 
 pub clamp(n: Int, low: Int, high: Int) -> Int
   requires low <= high
@@ -29,93 +31,95 @@ pub clamp(n: Int, low: Int, high: Int) -> Int
 
 ## Forms
 
+In the grammar below, each rule gives a name, `=`, what the name stands for and `;`, quoted words are written as shown, NEWLINE, INDENT and DEDENT stand for a line break and for one more or one less level of indentation, `[ ]` marks an optional part, `{ }` a part that may repeat, `|` separates alternatives, `( )` groups them, and `(* *)` holds a comment.
+
 ```ebnf
 clause          = "requires" line_expr NEWLINE
                 | "ensures" line_expr NEWLINE
                 | "uses" cap_ref ":" cap_type NEWLINE
+                | "uses" "of" lower_ident NEWLINE                   (* edition 0.2 *)
                 | "fails" upper_ident NEWLINE
+                | "fails" "of" lower_ident NEWLINE                  (* edition 0.2 *)
                 | "derived" "from" upper_ident { "," upper_ident } NEWLINE ;
 ```
 
-This is `spec/02 §3`.
-
 - A function may have any number of `ensures` clauses. They all hold together.
-- They come after every `requires` and before `uses`, `fails` and `derived from` (`spec/02 §3`).
-- The expression is in the refinement language, over the parameters and `result` (`spec/04 §2` rule 1, `spec/03 §3`).
-- **`old(x)`** (edition `0.2`): for an `edit` parameter `x`, `x` in `ensures` denotes its final value, and `old(x)` its value on entry (`spec/04 §2`, `spec/17 §3`).
+- They come after every `requires` and before `uses`, `fails` and `derived from`.
+- The expression is in the refinement language (the expressions that a type's condition may use, which the solver can reason about), over the parameters and `result`.
+- **`old(x)`** (edition `0.2`): for an [`edit` parameter](/learn/memory-and-concurrency/passing-a-value-in-and-out-edit/) `x` (one the function may change for its caller), `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
 
 ## Examples
 
-A postcondition the body does not keep is refuted, with a counterexample (`spec/12 §6, §7`):
+A postcondition the body does not keep is refuted, with a counterexample (the values for which it fails):
 
 ```una
 -- fails with U5001
-module demo
+module shop
 
-pub f(n: Int) -> Int
-  ensures result > n
+pub next_price(cents: Int) -> Int
+  ensures result > cents
 =
-  n
+  cents
 ```
 
-Callers assume what they are promised. `attempt` keeps the promise for its `Ok` arm, so `bump_or_same` is proven from `bump`'s header alone (`spec/12 §3`):
+Callers assume what they are promised. `attempt` keeps the promise for its `Ok` arm (the `is Ok` line of the `when`), so `add_or_keep` is proven from `add_units`'s header alone:
 
 ```una
-module demo
+module shop
 
-pub kind Oops = | TooLarge
+pub kind OrderError = | TooMany
 
-pub bump(n: Int) -> Int
-  ensures result > n
-  fails Oops
+pub add_units(units: Int) -> Int
+  ensures result > units
+  fails OrderError
 =
-  if n > 100 then fail TooLarge else n + 1
+  if units > 100 then fail TooMany else units + 1
 
-pub bump_or_same(n: Int) -> Int
-  ensures result >= n
+pub add_or_keep(units: Int) -> Int
+  ensures result >= units
 =
-  let outcome = attempt bump(n)
+  let outcome = attempt add_units(units)
   when outcome
     is Ok(value) -> value
-    is Err -> n
+    is Err -> units
 ```
 
-In edition `0.2`, an `edit` parameter's postcondition relates its final value to `old` (`spec/17 §3`):
+In edition `0.2`, an `edit` parameter's postcondition relates its final value to `old`:
 
 ```una
-module demo
+module shop
 
-pub kind Counter
+pub kind Visits
   seen: Int
 
-pub bump(edit c: Counter) -> Unit
-  ensures c.seen == old(c).seen + 1
+pub record_visit(edit visits: Visits) -> Unit
+  ensures visits.seen == old(visits).seen + 1
 =
-  c.seen = c.seen + 1
+  visits.seen = visits.seen + 1
 ```
 
 ## Edge cases
 
-**Only the refinement language.** `*` needs a literal operand, so `n * n` cannot be stated (`spec/04 §2` rule 1, `spec/03 §3`):
+**Only the refinement language.** `*` needs a literal operand, so `side * side` cannot be stated:
 
 ```una
 -- fails with U2014
-module demo
+module shop
 
-pub f(n: Int) -> Int
-  ensures result == n * n
+pub tile_area(side: Int) -> Int
+  ensures result == side * side
 =
-  n * n
+  side * side
 ```
 
 Further rules:
 
-- **Normal returns only.** `ensures` holds when the function returns. A failure carries no postcondition, so `bump` above proves `result > n` only on its `n + 1` path (`spec/04 §2` rule 2).
-- **Partial correctness.** `ensures` holds if the function returns; termination is not checked (`spec/04 §2` rule 3).
-- **`result`** appears only in `ensures` clauses and `expect` lines (U2012, `spec/02 §8`).
-- **Unknown is an error.** A postcondition the solver cannot decide is U5002, never a pass (`spec/12 §6`).
-- **Operations.** A capability operation's `ensures` is an assumption about the external system. Callers rely on it, handlers are verified against it, and host implementations are trusted to satisfy it (`spec/05 §2`).
-- **Clause order.** An `ensures` before a `requires` is U0102 (`spec/02 §3`).
+- **Normal returns only.** `ensures` holds when the function returns. A failure carries no postcondition, so `add_units` above proves `result > units` only on its `units + 1` path.
+- **Partial correctness.** `ensures` holds if the function returns, a promise only for the runs that finish; whether a function finishes is not checked.
+- **`result`** appears only in `ensures` clauses and `expect` lines (U2012).
+- **Unknown is an error.** A postcondition the solver (the program that `una check` asks to prove each fact) cannot decide is U5002, never a pass.
+- **Operations.** A capability operation's `ensures` (the promise of an action on something outside the program) is an assumption about the external system. Callers rely on it, handlers (Una code that implements a capability, such as a fake for tests) are verified against it, and the runtime's own implementations are trusted to satisfy it.
+- **Clause order.** An `ensures` before a `requires` is U0102.
 
 ## Diagnostics
 
@@ -127,12 +131,12 @@ Further rules:
 
 ## Edition
 
-`ensures` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `edit` parameters, and `old(x)` with them (`spec/17 §3`).
+`ensures` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `edit` parameters, and `old(x)` with them.
 
 ## Normative source
 
 - `spec/04 §2`: clauses and rules 1 to 3.
-- `spec/02 §3`: the grammar and clause order; `spec/02 §8`: where `result` may appear.
+- `spec/02 §3`: the grammar, clause order and the `of` clauses of edition `0.2`; `spec/02 §8`: where `result` may appear.
 - `spec/03 §3`: the refinement language.
 - `spec/12 §3`: the `postcondition` obligation and the hypotheses; `spec/12 §6`: statuses; `spec/12 §7`: counterexamples.
 - `spec/05 §2`: operation contracts.
