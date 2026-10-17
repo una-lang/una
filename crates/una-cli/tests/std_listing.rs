@@ -638,8 +638,8 @@ fn section(reference: &str) -> Option<String> {
     )
 }
 
-/// The cost `source` cites, when it is an accepted ADR, `ADR NNNN`, or a spec section that
-/// exists, `spec/NN §M`.
+/// The text where the cost `source` is stated: the Decision section of an accepted ADR,
+/// `ADR NNNN`, or a spec section that exists, `spec/NN §M`.
 fn cited(source: &str) -> Option<String> {
     if let Some(number) = source.strip_prefix("ADR ") {
         let path = fs::read_dir(root().join("docs/adr"))
@@ -651,33 +651,67 @@ fn cited(source: &str) -> Option<String> {
                     .is_some_and(|name| name.starts_with(&format!("{number}-")))
             })?;
         let text = fs::read_to_string(path).unwrap();
-        text.lines()
-            .any(|line| line.trim() == "- Status: Accepted")
-            .then_some(text)
+        if !text.lines().any(|line| line.trim() == "- Status: Accepted") {
+            return None;
+        }
+        // From `## Decision` to the next section, so that neither the context nor an amendment
+        // can state a cost.
+        let start = text.lines().position(|line| line == "## Decision")?;
+        Some(
+            text.lines()
+                .skip(start + 1)
+                .take_while(|line| !line.starts_with("## "))
+                .map(|line| format!("{line}\n"))
+                .collect(),
+        )
     } else {
         section(source)
     }
 }
 
-/// The last cell of each table row of `text` whose first cell has the call `` `name( ``: where
-/// an ADR's or a spec section's table states a function's cost.
-fn cost_cells<'t>(text: &'t str, name: &str) -> Vec<&'t str> {
+/// The cells of a table row, split at each `|` that is not escaped as `\|`.
+fn cells(line: &str) -> Vec<String> {
+    let mut cells = vec![String::new()];
+    let mut chars = line.trim().trim_start_matches('|').chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cells.last_mut().unwrap().push('|');
+                chars.next();
+            }
+            '|' => cells.push(String::new()),
+            c => cells.last_mut().unwrap().push(c),
+        }
+    }
+    if cells.last().is_some_and(|cell| cell.trim().is_empty()) {
+        cells.pop();
+    }
+    cells.iter().map(|cell| cell.trim().to_owned()).collect()
+}
+
+/// The cost cells for `name` in `text`: in the first table whose header has a column that
+/// starts with `Time`, that column of each row whose first cell has the call `` `name( ``.
+fn cost_cells(text: &str, name: &str) -> Vec<String> {
     let call = format!("`{name}(");
-    text.lines()
-        .filter(|line| line.starts_with('|'))
-        .filter_map(|line| {
-            let cells: Vec<&str> = line
-                .trim()
-                .trim_matches('|')
-                .split('|')
-                .map(str::trim)
-                .collect();
-            cells
-                .first()
-                .is_some_and(|first| first.contains(&call))
-                .then(|| *cells.last().unwrap())
-        })
-        .collect()
+    let lines: Vec<&str> = text.lines().collect();
+    for (at, line) in lines.iter().enumerate() {
+        let starts = line.starts_with('|') && (at == 0 || !lines[at - 1].starts_with('|'));
+        if !starts {
+            continue;
+        }
+        let header = cells(line);
+        let Some(column) = header.iter().position(|cell| cell.starts_with("Time")) else {
+            continue;
+        };
+        return lines[at + 1..]
+            .iter()
+            .take_while(|row| row.starts_with('|'))
+            .map(|row| cells(row))
+            .filter(|row| row.first().is_some_and(|first| first.contains(&call)))
+            .filter_map(|row| row.get(column).cloned())
+            .collect();
+    }
+    Vec::new()
 }
 
 /// The text inside each `O(...)` of the cost `time`.
@@ -734,10 +768,19 @@ fn code_bytes(src: &str) -> Vec<bool> {
                 code[at] = false;
                 match bytes[at] {
                     b'\\' => {
-                        if let Some(next) = code.get_mut(at + 1) {
-                            *next = false;
+                        // The escaped character, and a `\u{...}` escape to its `}`.
+                        let end = if bytes[at + 1..].starts_with(b"u{") {
+                            bytes[at..]
+                                .iter()
+                                .position(|b| *b == b'}')
+                                .map_or(bytes.len() - 1, |close| at + close)
+                        } else {
+                            (at + 1).min(bytes.len() - 1)
+                        };
+                        for byte in &mut code[at..=end] {
+                            *byte = false;
                         }
-                        at += 1;
+                        at = end;
                     }
                     b'"' => state = In::Code,
                     b'{' => state = In::Interpolation,
@@ -856,6 +899,18 @@ fn editions(item: &Item) -> std::collections::BTreeSet<&'static str> {
         .collect()
 }
 
+/// An edition's place among the editions, by its number: `0.2` before `0.10`; a name that is
+/// no edition sorts last.
+fn edition_order(name: &str) -> (u32, u32) {
+    Edition::ALL
+        .iter()
+        .any(|edition| edition.name() == name)
+        .then(|| name.split_once('.'))
+        .flatten()
+        .and_then(|(major, minor)| Some((major.parse().ok()?, minor.parse().ok()?)))
+        .unwrap_or((u32::MAX, u32::MAX))
+}
+
 #[test]
 fn the_reference_agrees_with_the_listing() {
     let text = fs::read_to_string(root().join("docs/std/reference.json")).unwrap();
@@ -896,6 +951,13 @@ fn the_reference_agrees_with_the_listing() {
         .filter_map(|area| area.as_str())
         .collect();
     let mut covered = std::collections::BTreeSet::new();
+    // Every source a cost cites: an item it states a cost for must carry that cost.
+    let cost_sources: std::collections::BTreeSet<&str> = reference["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["cost"]["source"].as_str())
+        .collect();
     for (index, entry) in list(&reference, "entries", "reference", &mut problems)
         .iter()
         .enumerate()
@@ -1121,24 +1183,44 @@ fn the_reference_agrees_with_the_listing() {
                 ));
                 continue;
             };
+            // Editions compare as numbers, `0.10` after `0.2`.
             let theirs = editions(target);
-            let needed: Vec<&str> = own
+            let shared = own
                 .iter()
                 .copied()
-                .filter(|e| from.is_none_or(|from| *e >= from))
-                .collect();
-            if needed.is_empty() || needed.iter().any(|e| !theirs.contains(e)) {
-                problems.push(format!(
-                    "{at}: `{other}` is not in every edition of {needed:?}; give the `from_edition` from which it is"
-                ));
-            } else if from.is_some() && own.iter().all(|e| theirs.contains(e)) {
-                problems.push(format!(
+                .filter(|e| theirs.contains(e))
+                .min_by_key(|e| edition_order(e));
+            let after = |from: &str| {
+                own.iter()
+                    .copied()
+                    .filter(|e| edition_order(e) >= edition_order(from))
+                    .collect::<Vec<&str>>()
+            };
+            match from {
+                None if own.is_subset(&theirs) => {}
+                None => problems.push(format!(
+                    "{at}: `{other}` is not in every edition of {own:?}; give `from_edition` {shared:?}"
+                )),
+                Some(_) if own.is_subset(&theirs) => problems.push(format!(
                     "{at}: `{other}` is in every edition, so `from_edition` is not needed"
-                ));
+                )),
+                Some(from) if Some(from) != shared || after(from).iter().any(|e| !theirs.contains(e)) => {
+                    problems.push(format!(
+                        "{at}: `from_edition` {from:?} is not the first edition, {shared:?}, from which `{other}` is in every edition of the item"
+                    ));
+                }
+                Some(_) => {}
             }
         }
         // The cost: the cell of the item's row in the table of an accepted ADR or of a spec
         // section, verbatim, with every term it uses defined.
+        if entry.get("cost").is_none() {
+            for source in &cost_sources {
+                if cited(source).is_some_and(|text| !cost_cells(&text, name).is_empty()) {
+                    problems.push(format!("{at}: {source} states its cost, and it has none"));
+                }
+            }
+        }
         if let Some(cost) = entry.get("cost") {
             let at = format!("{at} cost");
             shape(cost, &at, &["time", "source", "terms"], &[], &mut problems);
@@ -1149,8 +1231,9 @@ fn the_reference_agrees_with_the_listing() {
                     "{at}: cites `{source}`, which is neither an accepted ADR nor a spec section"
                 )),
                 Some(cited) => {
-                    let cells = cost_cells(&cited, name);
-                    if !cells.contains(&time) {
+                    let mut cells = cost_cells(&cited, name);
+                    cells.dedup();
+                    if cells != [time] {
                         problems.push(format!(
                             "{at}: `{time}` is not the cost {source} states for `{name}`: {cells:?}"
                         ));

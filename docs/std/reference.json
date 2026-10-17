@@ -1,7 +1,7 @@
 {
  "schema": "una.std-reference/1",
  "note": "Unstable, not part of the specification: see docs/std/README.md. Hand-written; crates/una-cli/tests/std_listing.rs checks it against the listing.",
- "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 §3`): it reports U5001 when the condition is refuted and U5002 when it is unknown, and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved.",
+ "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 §3`): it reports U5001 when the condition is refuted and U5002 when it is unknown (`spec/12 §6`), and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved (`spec/22 §2`).",
  "areas": [
   "text",
   "lists",
@@ -398,8 +398,8 @@
       "meaning": "the length of `text` in UTF-8 bytes"
      },
      {
-      "symbol": "the checkpoints",
-      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+      "symbol": "index",
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
      }
     ]
    },
@@ -498,8 +498,8 @@
       "meaning": "the length of the result in UTF-8 bytes"
      },
      {
-      "symbol": "the index",
-      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+      "symbol": "index",
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
      }
     ]
    },
