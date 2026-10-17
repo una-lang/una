@@ -82,6 +82,7 @@ Every run happens inside a sandbox:
 - **The mock Http server** is local, binds to loopback only, and answers from a table that the variation sets: deterministic statuses, headers and bodies per request. It logs every request for the internal view. It never forwards a request.
 - **A clean environment.** Each run starts with `env -i`, plus only the variables that the variation defines. Key files are written fresh into the run's directory.
 - **Limits.** Each run has a wall-clock timeout, and `--max-depth` and `--max-memory` set low enough that a run cannot hurt the machine.
+- **On Linux** (#793), the gate runs in a hardened container (`scripts/hunt-linux.sh`: no network, read-only root, no capability, not root), and Landlock replaces `sandbox-exec`: each run may write only under its own directory and connect only to the mock's port. `docs/release-gates.md` ("The Linux sandbox") states the rules and when the gate refuses to run.
 
 ## 7. Triage of a candidate
 

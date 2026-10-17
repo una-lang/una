@@ -324,7 +324,7 @@ def observers_for(vary):
 
 def export_core(una, pkg, root, timeout):
     """The program's Core export (`una --json core`), complete, or an error string."""
-    r = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root, timeout=timeout)
+    r = sandbox.run_fresh([una, "--json", "core", "."], cwd=pkg, root=root, timeout=timeout)
     if r.timed_out or r.code != 0:
         return None, "the Core export " + ("timed out" if r.timed_out else f"exited {r.code}")
     try:

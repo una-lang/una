@@ -22,8 +22,8 @@ It fails closed. The gate passes only when all of these hold:
   are errors), and a run killed at its time limit counts as an abort only when its full check,
   run on its own, decides (`native.undecided`); and no such run is killed, its check deciding
   (`MAX_TIMEOUTS_DECIDED`, 0), since each is a comparison not made;
-- the whole gate ends within its time budget (`TIME_BUDGET`), a guard against a gate slowed as a
-  whole;
+- the whole gate ends within its platform's time budget (`TIME_BUDGETS`), a guard against a gate
+  slowed as a whole;
 - every canary is caught (`CANARIES`): a must-reject program that is in fact accepted; a program
   whose printed public literal the manifest marks as secret; an operation planted as accepting
   `internal`, reached under a secret branch, which only the `internal` observer must see; an
@@ -39,16 +39,21 @@ It fails closed. The gate passes only when all of these hold:
   from another variant than the one the interpreter ran, which the native comparison must report
   as a divergence; and three pairs of a program and a changed copy (an event's argument,
   `together` tasks, an abort at `--max-depth`), each of which must agree with itself and differ
-  from its copy (`native_pairs`);
+  from its copy (`native_pairs`); and the sandbox's own canary (`sandbox_canary`, #793): a run
+  writes in its directory but not in a sibling run's or in `/tmp`, and connects to the mock's
+  loopback port but to no other;
 - the native sample (`native.py`, #792): its size is the pinned one, its compared programs meet
   their floor, the interpreter and the native executable agree on every variant compared, and the
   programs the native backend does not compile are exactly those pinned by name.
 """
 
+import atexit
 import io
 import json
 import os
+import socket
 import subprocess
+import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -180,8 +185,18 @@ WORKERS = 4
 # (2.2, 4.4), 247 (3.5, 6.3) and 253 (4.9, 8.3), the same programs and the same compiler, so
 # 270 seconds leaves 17 seconds above the slowest, about 6%. A run over it is resolved by
 # measuring again, on a quieter machine, or by raising the budget on a measurement, never by
-# shrinking the run or its sample.
-TIME_BUDGET = 270
+# shrinking the run or its sample. With each run in a directory of its own (#793) and the gate's
+# shared proof-cache key, the gate took 252 and 253 seconds at a load of about 5 (2026-10-17).
+TIME_BUDGET_MACOS = 270
+# The budget of the gate on Linux (#793), in the hardened container of `scripts/hunt-linux.sh`,
+# where every run also starts the Landlock launcher: set from measured quiet runs on that
+# container, not from the macOS number. On Docker Desktop's VM on the same Apple M1 Max, the gate
+# took 362 and 359 seconds at a load of about 4 to 5 (2026-10-17), so 390 seconds is the slower
+# plus 7%, rounded up to 5 seconds.
+TIME_BUDGET_LINUX = 390
+# The budget by sandbox backend. A backend with no budget here has none pinned, which is an error
+# of the gate: no platform runs unbudgeted.
+TIME_BUDGETS = {"sandbox-exec": TIME_BUDGET_MACOS, "landlock": TIME_BUDGET_LINUX}
 # The most runs killed at their time limit, their full check deciding, that the gate allows: the
 # measured run had none, and each such kill is a comparison the oracle does not make (#818).
 MAX_TIMEOUTS_DECIDED = 0
@@ -302,11 +317,17 @@ def timeouts_decided(oracle_rows):
                + r.get("native", {}).get("pass_timed_out", 0) for r in oracle_rows)
 
 
-def budget_error(elapsed):
-    """The error of a gate that took `elapsed` seconds, over `TIME_BUDGET`, or None."""
-    if elapsed > TIME_BUDGET:
-        return (f"the gate took {elapsed:.0f} seconds, over its budget of {TIME_BUDGET}: a "
-                "slower toolchain, or a machine too loaded to measure on")
+def budget_error(elapsed, backend=None):
+    """The error of a gate that took `elapsed` seconds on `backend` (this platform's by default),
+    over its budget in `TIME_BUDGETS` or with none pinned, or None."""
+    backend = sandbox.backend() if backend is None else backend
+    budget = TIME_BUDGETS.get(backend)
+    if budget is None:
+        return (f"the gate took {elapsed:.0f} seconds, and no time budget is pinned for the "
+                f"{backend} sandbox")
+    if elapsed > budget:
+        return (f"the gate took {elapsed:.0f} seconds, over its budget of {budget} for the "
+                f"{backend} sandbox: a slower toolchain, or a machine too loaded to measure on")
     return None
 
 
@@ -508,6 +529,139 @@ SHOW_TWICE = ("show(line: Text) -> Int\n  uses @console: Console[print]\n=\n"
 DOWN = "down(n: Int) -> Int = if n == 0 then 0 else down(n - 1) + 1"
 
 
+# The sandbox canary's probe (#793): run under the sandbox, it writes in its own directory, in a
+# sibling run's and in the system's temporary directory, reads a file of the sibling's, connects
+# to and binds a loopback port, signals its parent and connects to the parent's abstract Unix
+# socket; it prints what each attempt did.
+SANDBOX_PROBE = r'''
+import errno, json, os, socket, sys
+own, sibling, secret, outside, port, abstract, key = sys.argv[1:8]
+def name(e):
+    return errno.errorcode.get(e.errno, type(e).__name__)
+def write(path):
+    try:
+        with open(path, "w") as f:
+            f.write("x")
+        return "written"
+    except OSError as e:
+        return name(e)
+def read(path):
+    try:
+        with open(path, "rb") as f:
+            f.read()
+        return "read"
+    except OSError as e:
+        return name(e)
+def connect(p):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(("127.0.0.1", int(p)))
+        return "connected"
+    except OSError as e:
+        return name(e)
+    finally:
+        s.close()
+def bind():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return "bound"
+    except OSError as e:
+        return name(e)
+    finally:
+        s.close()
+def signal_parent():
+    try:
+        os.kill(os.getppid(), 0)
+        return "sent"
+    except OSError as e:
+        return name(e)
+def unix(path):
+    if path == "-":
+        return "unsupported"
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect("\0" + path)
+        return "connected"
+    except OSError as e:
+        return name(e)
+    finally:
+        s.close()
+print(json.dumps({"own": write(own), "sibling": write(sibling), "sibling_read": read(secret),
+                  "key": write(key) if key != "-" else "none",
+                  "key_read": read(key) if key != "-" else "none",
+                  "outside": write(outside), "socket": connect(port), "bind": bind(),
+                  "signal": signal_parent(), "abstract": unix(abstract)}))
+'''
+# What each attempt of the probe must give, by backend, when the run has no mock port. Landlock
+# denies files and TCP with EACCES and scopes signals and abstract sockets with EPERM;
+# sandbox-exec denies writes, the network and signals to other processes with EPERM, and does
+# not confine reads (abstract sockets do not exist on macOS).
+SANDBOX_EXPECTED = {
+    "landlock": {"own": "written", "sibling": "EACCES", "sibling_read": "EACCES",
+                 "key": "EACCES", "key_read": "read",
+                 "outside": "EACCES", "socket": "EACCES", "bind": "EACCES", "signal": "EPERM",
+                 "abstract": "EPERM"},
+    "sandbox-exec": {"own": "written", "sibling": "EPERM", "sibling_read": "read",
+                     "key": "EPERM", "key_read": "read",
+                     "outside": "EPERM", "socket": "EPERM", "bind": "EPERM", "signal": "EPERM",
+                     "abstract": "unsupported"},
+}
+
+
+def sandbox_canary(work):
+    """The sandbox canary (#793), on every platform: a run writes in its own directory, and gets
+    the sandbox's refusal for every attempt of `SANDBOX_EXPECTED` on its backend: a write in a
+    sibling run's directory or in the system's temporary one, a read of the sibling's file, a
+    connection to a loopback port and a bind, and on Linux a signal to its parent and a
+    connection to the parent's abstract Unix socket. A listener outside the sandbox holds the
+    port open, so a refused connection is the sandbox's doing, not a closed port's; a second run,
+    given that port as its mock's, must connect. Returns (caught, row)."""
+    base = sandbox.fresh_dir(os.path.join(work, "sandbox-canary"), "c-")
+    own, sibling = sandbox.fresh_dir(base, "own-"), sandbox.fresh_dir(base, "sibling-")
+    secret = os.path.join(sibling, "secret")
+    with open(secret, "w", encoding="utf-8") as f:
+        f.write("the sibling's\n")
+    outside = os.path.join("/tmp", f"una-hunt-canary-{os.getpid()}-{os.path.basename(base)}")
+    kind = sandbox.backend()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    port = listener.getsockname()[1]
+    abstract, unix = "-", None
+    if kind == "landlock":
+        abstract = f"una-hunt-canary-{os.getpid()}-{os.path.basename(base)}"
+        unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        unix.bind("\0" + abstract)
+        unix.listen(4)
+    try:
+        def probe(mock_port):
+            r = sandbox.run([sys.executable, "-I", "-c", SANDBOX_PROBE,
+                             os.path.join(own, "file"), os.path.join(sibling, "file"), secret,
+                             outside, str(port), abstract,
+                             sandbox.PROOF_KEY[0] if sandbox.PROOF_KEY else "-"],
+                            cwd=own, writable=own,
+                            timeout=CHECK_TIMEOUT, mock_port=mock_port)
+            try:
+                return json.loads(r.stdout)
+            except ValueError:
+                return {"unreadable": (r.stdout + r.stderr)[-2000:], "exit": r.code}
+        denied, allowed = probe(None), probe(port)
+    finally:
+        listener.close()
+        if unix is not None:
+            unix.close()
+    leaked = os.path.exists(outside) or os.path.exists(os.path.join(sibling, "file"))
+    if os.path.exists(outside):
+        os.remove(outside)
+    expected = SANDBOX_EXPECTED.get(kind)
+    caught = (expected is not None and denied == expected
+              and allowed.get("socket") == "connected" and not leaked)
+    return caught, {"backend": kind, "denied": denied, "expected": expected, "allowed": allowed,
+                    "leaked": leaked}
+
+
 def native_pairs():
     """The native comparison's own canaries: for each, the files of a program the interpreter runs
     and those of the one the native executable is built from. Each program against itself must
@@ -602,8 +756,17 @@ def differ_canary(core_check, work):
                 text = f.read()
         except OSError:
             return None
-        rec = sandbox.run([core_check, path], cwd=work, writable=work, timeout=CHECK_TIMEOUT,
-                          env_extra=drivers.RECHECK_ENV)
+        # The document is copied into the run's own directory: the run reads nothing of the
+        # checkout's (#793).
+        own = sandbox.fresh_dir(work, "differ-canary-")
+        try:
+            copy = os.path.join(own, name)
+            with open(copy, "w", encoding="utf-8") as f:
+                f.write(text)
+            rec = sandbox.run([core_check, copy], cwd=own, writable=own, timeout=CHECK_TIMEOUT,
+                              env_extra=drivers.RECHECK_ENV)
+        finally:
+            sandbox.remove_dir(own, work)
         return drivers.judge_differ(sandbox.Run(0, text, "", False, 0.0), text, rec)
 
     for name, note in DIFFER_CANARIES.items():
@@ -632,6 +795,14 @@ def run(una, out_dir, tip, core_check, z3):
     if os.path.exists(out_dir) and os.listdir(out_dir):
         raise SystemExit(f"hunt gate: {out_dir} is not empty; the gate writes a fresh directory")
     started = time.monotonic()
+    # No run starts before the sandbox is verified, and on Linux each run may read the tools'
+    # directories besides its own.
+    sandbox.require()
+    sandbox.READABLE[:] = [os.path.dirname(os.path.realpath(p)) for p in (una, core_check, z3)
+                           if p]
+    sandbox.OUT_ROOT[:] = [os.path.realpath(out_dir)]
+    key_home = sandbox.make_proof_key()
+    atexit.register(sandbox.drop_proof_key, key_home)
     root = drivers.campaign_root(out_dir)
     # `una run` and `una build` do the full check: a conditioned operation's obligations need the
     # pinned solver (#813).
@@ -873,6 +1044,11 @@ def run(una, out_dir, tip, core_check, z3):
     }
     for name, row in canary_rows.items():
         canaries[name] = caught(name, row)
+    canaries["sandbox"], canary_rows["sandbox"] = sandbox_canary(work)
+    try:
+        sandbox.check_proof_key(full=True)
+    except sandbox.SandboxUnavailable as e:
+        errors.append(f"sandbox: {e}")
     with open(os.path.join(root, "canaries.jsonl"), "w", encoding="utf-8") as f:
         f.write(json.dumps({"caught": canaries, "rows": canary_rows}, sort_keys=True) + "\n")
 
@@ -982,7 +1158,8 @@ def run(una, out_dir, tip, core_check, z3):
         json.dump(summary, f, indent=1, sort_keys=True)
         f.write("\n")
     print(f"hunt gate: seed {SEED}, {len(progs)} programs, una tip {tip}")
-    print(f"  time: {elapsed:.0f} seconds, budget {TIME_BUDGET}")
+    print(f"  time: {elapsed:.0f} seconds, budget {TIME_BUDGETS.get(sandbox.backend())} "
+          f"({sandbox.backend()})")
     for key in ("reject", "keep", "oracle", "differ"):
         print(f"  {key}: {sizes[key]['judged']} of {sizes[key]['expected']} cases judged")
     print(f"  oracle: {programs_compared} programs and {compared} variants compared (complete "

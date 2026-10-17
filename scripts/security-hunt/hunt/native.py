@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 
 from . import sandbox
 from .program import Program
@@ -323,9 +324,12 @@ def build_and_run(una, files, name, root, timeout, limits):
     trace_file = os.path.join(rundir, "trace.json")
     ran = sandbox.run([exe, "--trace", trace_file, *limits], cwd=pkg, writable=rundir,
                       timeout=timeout)
+    # The run could have put a link in its place: the trace is read only as a regular file of its
+    # own directory, never through a link.
     try:
-        with open(trace_file, encoding="utf-8") as f:
-            trace = json.load(f)
+        fd = os.open(trace_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, encoding="utf-8") as f:
+            trace = json.load(f) if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else None
     except (OSError, ValueError):
         trace = None
     return ("ran", (ran, trace))

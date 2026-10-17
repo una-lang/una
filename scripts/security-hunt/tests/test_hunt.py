@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hunt import drivers, families, gate, native, oracle, sandbox  # noqa: E402
+from hunt import drivers, families, gate, landlock, native, oracle, sandbox  # noqa: E402
 from hunt.families import (OPERATORS, SAMPLE_COUNT, editions_for, editions_of,  # noqa: E402
                            sample_forms)
 from hunt.program import (CLASSES, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed,  # noqa: E402
@@ -678,6 +678,7 @@ class Checks(unittest.TestCase):
         prof = sandbox.profile("/tmp/x")
         self.assertIn("(deny network*)", prof)
         self.assertIn("(deny file-write*)", prof)
+        self.assertIn("(deny signal (target others))", prof)
         self.assertNotIn("network-outbound", prof)
         self.assertIn('localhost:8080', sandbox.profile("/tmp/x", mock_port=8080))
 
@@ -1552,10 +1553,16 @@ class Edition03Guards(unittest.TestCase):
                 restore()
             self.assertIn("not a document", why or "", stdout)
 
-    def test_the_gate_has_a_time_budget(self):
-        self.assertEqual(gate.TIME_BUDGET, 270)
-        self.assertIsNone(gate.budget_error(215))
-        self.assertIn("over its budget of 270", gate.budget_error(271))
+    def test_the_gate_has_a_time_budget_per_platform(self):
+        self.assertEqual(gate.TIME_BUDGETS["sandbox-exec"], 270)
+        self.assertIsNone(gate.budget_error(215, "sandbox-exec"))
+        self.assertIn("over its budget of 270", gate.budget_error(271, "sandbox-exec"))
+        linux = gate.TIME_BUDGETS["landlock"]
+        if linux is not None:
+            self.assertIsNone(gate.budget_error(linux, "landlock"))
+            self.assertIn(f"over its budget of {linux}", gate.budget_error(linux + 1, "landlock"))
+        # No platform runs unbudgeted.
+        self.assertIn("no time budget", gate.budget_error(1, "other"))
 
 
 class Native(unittest.TestCase):
@@ -1798,6 +1805,362 @@ class Sample03(unittest.TestCase):
         finally:
             families.SAMPLE_SEARCH = saved
 
+
+
+def _listener():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    s.listen(4)
+    return s
+
+
+ZERO = "0000000000000000"
+
+
+class Sandbox(unittest.TestCase):
+    """The sandbox (#793): a run's own directory, the Linux container's verification, the
+    Landlock ruleset, and, where the platform has it, its enforcement."""
+
+    def good(self, base):
+        # As `--network none` shows them: loopback up, the kernel's fallback devices down, a
+        # file that is no interface, and routes only through loopback.
+        for name, flags in (("lo", "0x9"), ("gre0", "0x80"), ("sit0", "0x80"),
+                            ("tunl0", "0x80")):
+            os.makedirs(os.path.join(base, "net", name))
+            with open(os.path.join(base, "net", name, "flags"), "w") as f:
+                f.write(flags + "\n")
+        open(os.path.join(base, "net", "bonding_masters"), "w").close()
+        os.makedirs(os.path.join(base, "procnet"))
+        with open(os.path.join(base, "procnet", "route"), "w") as f:
+            f.write("Iface\tDestination\tGateway\tFlags\n")
+        with open(os.path.join(base, "procnet", "ipv6_route"), "w") as f:
+            f.write("00000000000000000000000000000001 80 00000000000000000000000000000000 00 "
+                    "00000000000000000000000000000000 00000000 00000001 00000000 00200001 lo\n")
+        open(os.path.join(base, ".dockerenv"), "w").close()
+        return dict(env={sandbox.MARKER: sandbox.MARKER_VALUE},
+                    status={"CapEff": ZERO, "CapPrm": ZERO, "CapInh": ZERO, "CapAmb": ZERO,
+                            "CapBnd": ZERO, "NoNewPrivs": "1", "Uid": "501\t501\t501\t501",
+                            "Gid": "20\t20\t20\t20"},
+                    root=base, net=os.path.join(base, "net"), landlock_abi=8,
+                    root_options=["ro", "relatime"], proc_net=os.path.join(base, "procnet"),
+                    external=["ENETUNREACH", "ENETUNREACH"])
+
+    def test_a_verified_container_has_no_problem(self):
+        with tempfile.TemporaryDirectory() as base:
+            self.assertEqual(sandbox.container_problems(**self.good(base)), [])
+
+    def test_each_missing_condition_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as base:
+            ok = self.good(base)
+            cases = [
+                ("UNA_HUNT_SANDBOX", dict(env={})),
+                ("not in a container", dict(root=os.path.join(base, "net"))),
+                ("root", dict(status=dict(ok["status"], Uid="0\t0\t0\t0"))),
+                ("group root", dict(status=dict(ok["status"], Gid="0\t0\t0\t0"))),
+                ("no-new-privileges", dict(status=dict(ok["status"], NoNewPrivs="0"))),
+                ("read-only", dict(root_options=["rw", "relatime"])),
+                ("read-only", dict(root_options=[])),
+                ("Landlock ABI 5", dict(landlock_abi=5)),
+                ("public addresses", dict(external=["connected", "ENETUNREACH"])),
+                ("public addresses", dict(external=["ENETUNREACH", "ETIMEDOUT"])),
+                ("Landlock ABI 9", dict(landlock_abi=9)),
+            ]
+            for field in ("CapEff", "CapPrm", "CapInh", "CapAmb", "CapBnd"):
+                cases.append((field, dict(status=dict(ok["status"], **{field: "0000000000000400"}))))
+                cases.append((field, dict(status={k: v for k, v in ok["status"].items()
+                                                  if k != field})))
+            for word, change in cases:
+                problems = sandbox.container_problems(**dict(ok, **change))
+                self.assertEqual(len(problems), 1, (word, problems))
+                self.assertIn(word, problems[0])
+            # An interface down is no problem; one up is.
+            os.makedirs(os.path.join(base, "net", "eth0"))
+            with open(os.path.join(base, "net", "eth0", "flags"), "w") as f:
+                f.write("0x1002\n")
+            self.assertEqual(sandbox.container_problems(**ok), [])
+            with open(os.path.join(base, "net", "eth0", "flags"), "w") as f:
+                f.write("0x1003\n")
+            problems = sandbox.container_problems(**ok)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("loopback", problems[0])
+            with open(os.path.join(base, "net", "eth0", "flags"), "w") as f:
+                f.write("0x1002\n")
+            # A route through another interface is a problem too.
+            with open(os.path.join(base, "procnet", "route"), "a") as f:
+                f.write("eth0\t00000000\t0100A8C0\t0003\n")
+            problems = sandbox.container_problems(**ok)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("routes off loopback", problems[0])
+
+    def test_the_ruleset_handles_every_right_of_abi_6_to_8_and_refuses_the_others(self):
+        for version in (0, 4, 5, 9, 10):
+            with self.assertRaises(landlock.SetupError, msg=version):
+                landlock.handled(version)
+        for version in (6, 7, 8):
+            fs, net, scoped = landlock.handled(version)
+            self.assertEqual(fs, (1 << 16) - 1)
+            self.assertEqual(net, landlock.BIND_TCP | landlock.CONNECT_TCP)
+            self.assertEqual(scoped, landlock.SCOPE_ABSTRACT_UNIX_SOCKET | landlock.SCOPE_SIGNAL)
+            self.assertEqual(len(landlock.ruleset_attr(fs, net, scoped)), 24)
+
+    def test_no_read_rule_writes_but_dev_null(self):
+        with tempfile.TemporaryDirectory() as base:
+            fs = landlock.handled(8)[0]
+            got = landlock.rules([base + "/missing", base], base, "/usr/bin/true", fs)
+            for path, rights in got:
+                allowed = landlock.READ_RIGHTS | (landlock.FILE_RIGHTS if path == "/dev/null"
+                                                  else 0)
+                self.assertEqual(rights & ~allowed, 0, path)
+                if path != "/dev/null":
+                    self.assertEqual(rights & landlock.WRITE_FILE, 0, path)
+            self.assertNotIn(base + "/missing", [p for p, _ in got])
+
+    def test_the_launcher_s_arguments(self):
+        self.assertEqual(
+            landlock.parse(["--write", "/w", "--identity", "3:4", "--read", "/r", "--port", "9",
+                            "--", "/bin/x", "-y"]),
+            ("/w", (3, 4), ["/r"], 9, ["/bin/x", "-y"]))
+        for bad in (["--", "/bin/x"], ["--write", "/w", "--", "x"],
+                    ["--write", "/w", "--identity", "3:4", "--"], ["--write"],
+                    ["--other", "1", "--", "x"]):
+            with self.assertRaises(landlock.SetupError):
+                landlock.parse(bad)
+
+    def test_the_command_reads_the_tools_and_the_path_and_never_the_output(self):
+        saved = list(sandbox.READABLE), list(sandbox.OUT_ROOT)
+        sandbox.READABLE[:] = ["/tools"]
+        sandbox.OUT_ROOT[:] = ["/out"]
+        try:
+            cmd = sandbox.landlock_argv(["/bin/una", "check"], "/run", (1, 2),
+                                        {"PATH": "/z3:/usr/bin"}, mock_port=7)
+            for bad in ("/", "/out", "/out/work", "/"):
+                with self.assertRaises(sandbox.SandboxUnavailable, msg=bad):
+                    sandbox.landlock_argv(["/bin/una"], "/run", (1, 2), {"PATH": bad})
+        finally:
+            sandbox.READABLE[:], sandbox.OUT_ROOT[:] = saved
+        self.assertEqual(cmd[:8], [sys.executable, "-I", "-S", sandbox.LANDLOCK, "--write",
+                                   "/run", "--identity", "1:2"])
+        self.assertEqual(cmd[-3:], ["--", "/bin/una", "check"])
+        reads = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--read"]
+        self.assertEqual(reads[:3], ["/tools", "/z3", "/usr/bin"])
+        self.assertEqual(cmd[cmd.index("--port") + 1], "7")
+
+    def test_a_run_writes_only_in_a_directory_made_for_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = os.path.realpath(root)
+            with self.assertRaises(ValueError):
+                sandbox.identity(root)
+            own = sandbox.fresh_dir(root, "r-")
+            self.assertEqual(sandbox.identity(own), (os.lstat(own).st_dev, os.lstat(own).st_ino))
+            # Swapped for a link to somewhere else, it is no longer the run's.
+            os.rename(own, own + "-moved")
+            os.symlink(root, own)
+            with self.assertRaises(ValueError):
+                sandbox.identity(own)
+            os.remove(own)
+            os.rename(own + "-moved", own)
+            sandbox.remove_dir(own, root)
+            with self.assertRaises(ValueError):
+                sandbox.identity(own)
+
+    def test_no_call_site_gives_a_run_a_shared_directory(self):
+        """Every `sandbox.run` of the hunt writes in the run's own directory: none passes the
+        campaign's root, a shard or the gate's work directory (the five former call sites
+        now use `run_fresh`)."""
+        here = os.path.join(os.path.dirname(__file__), "..", "hunt")
+        for name in sorted(os.listdir(here)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(here, name), encoding="utf-8") as f:
+                text = f.read()
+            for m in re.finditer(r"sandbox\.run\(", text):
+                call = text[m.end():m.end() + 400]
+                w = re.search(r"writable=(\w+)", call)
+                self.assertIsNotNone(w, f"{name}: {call[:120]}")
+                self.assertNotIn(w.group(1), ("root", "work", "base", "out_dir"),
+                                 f"{name}: {call[:120]}")
+
+    def test_each_former_shared_call_site_runs_in_a_directory_of_its_own(self):
+        """drivers.check and oracle.export_core, two of the five, end to end with `run`
+        replaced: each run gets a fresh directory under the root, removed afterwards."""
+        seen = []
+
+        def fake(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
+            seen.append(writable)
+            self.assertEqual(sandbox.identity(writable)[1], os.lstat(writable).st_ino)
+            return Run(0, '{"schema":"una.diagnostics/1","diagnostics":[]}', "", False, 0.1)
+
+        real = sandbox.run
+        sandbox.run = fake
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                root = os.path.realpath(root)
+                pkg = os.path.join(root, "pkg")
+                os.makedirs(pkg)
+                drivers.check("/bin/una", pkg, root, 5)
+                oracle.export_core("/bin/una", pkg, root, 5)
+                self.assertEqual(len(set(seen)), 2)
+                for w in seen:
+                    self.assertNotEqual(w, root)
+                    self.assertEqual(os.path.dirname(w), root)
+                    self.assertFalse(os.path.exists(w))
+        finally:
+            sandbox.run = real
+
+    def probe(self, launcher, own, sibling, secret, outside, port, abstract, key):
+        import subprocess
+        p = subprocess.run(launcher + [sys.executable, "-I", "-c", gate.SANDBOX_PROBE,
+                                       os.path.join(own, "file"), os.path.join(sibling, "file"),
+                                       secret, outside, str(port), abstract, key],
+                           cwd=own, capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)
+
+    @unittest.skipUnless(sys.platform.startswith("linux")
+                         and landlock.MIN_ABI <= landlock.abi() <= landlock.KNOWN_ABI,
+                         "Landlock at ABI 6 to 8 is Linux's")
+    def test_landlock_enforces_the_ruleset_not_only_applies_it(self):
+        import socket
+        with tempfile.TemporaryDirectory() as base:
+            own, sibling = os.path.join(base, "own"), os.path.join(base, "sibling")
+            os.makedirs(own)
+            os.makedirs(sibling)
+            secret = os.path.join(sibling, "secret")
+            with open(secret, "w") as f:
+                f.write("x")
+            outside = f"/tmp/una-hunt-test-{os.getpid()}"
+            listener = _listener()
+            port = listener.getsockname()[1]
+            abstract = f"una-hunt-test-{os.getpid()}"
+            unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            unix.bind("\0" + abstract)
+            unix.listen(4)
+            keys = os.path.join(base, "keys")
+            os.makedirs(keys)
+            key = os.path.join(keys, "proof-cache.key")
+            with open(key, "wb") as f:
+                f.write(os.urandom(32))
+            st = os.stat(own)
+            launcher = [sys.executable, "-I", sandbox.LANDLOCK, "--write", own, "--identity",
+                        f"{st.st_dev}:{st.st_ino}", "--read", keys, "--"]
+            try:
+                denied = self.probe(launcher, own, sibling, secret, outside, port, abstract, key)
+                allowed = self.probe(launcher[:-1] + ["--port", str(port), "--"], own, sibling,
+                                     secret, outside, port, abstract, key)
+            finally:
+                listener.close()
+                unix.close()
+            self.assertEqual(denied, gate.SANDBOX_EXPECTED["landlock"])
+            self.assertEqual(allowed["socket"], "connected")
+            self.assertFalse(os.path.exists(outside))
+            self.assertFalse(os.path.exists(os.path.join(sibling, "file")))
+
+    @unittest.skipUnless(sys.platform.startswith("linux")
+                         and landlock.MIN_ABI <= landlock.abi() <= landlock.KNOWN_ABI,
+                         "Landlock at ABI 6 to 8 is Linux's")
+    def test_a_failed_setup_stops_the_run_before_it_executes(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as base:
+            own = os.path.join(base, "own")
+            os.makedirs(own)
+            st = os.stat(own)
+            link = os.path.join(base, "link")
+            os.symlink(own, link)
+            for write, ident in (("/nonexistent", "1:1"), (own, f"{st.st_dev}:{st.st_ino + 1}"),
+                                 (link, f"{st.st_dev}:{st.st_ino}")):
+                p = subprocess.run([sys.executable, "-I", sandbox.LANDLOCK, "--write", write,
+                                    "--identity", ident, "--", "/bin/echo", "ran"],
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(p.returncode, landlock.SETUP_FAILED, write)
+                self.assertIn(landlock.ERROR_PREFIX, p.stderr)
+                self.assertNotIn("ran", p.stdout)
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists(sandbox.SANDBOX_EXEC),
+                         "sandbox-exec is macOS's")
+    def test_a_process_that_leaves_the_run_s_group_holding_its_output_fails_the_run(self):
+        """A run whose child calls `setsid` and keeps the run's output open outlives the kill of
+        its group: the run must fail with `SandboxUnavailable`, not hang the gate."""
+        import signal
+        escape = ("import os, sys, time\n"
+                  "if os.fork() == 0:\n"
+                  "    os.setsid()\n"
+                  "    open('pid', 'w').write(str(os.getpid()))\n"
+                  "    time.sleep(60)\n"
+                  "    os._exit(0)\n"
+                  "time.sleep(60)\n")
+        saved = sandbox.DRAIN
+        sandbox.DRAIN = 1
+        with tempfile.TemporaryDirectory() as root:
+            own = sandbox.fresh_dir(os.path.realpath(root), "r-")
+            try:
+                with self.assertRaises(sandbox.SandboxUnavailable):
+                    sandbox.run([sys.executable, "-I", "-c", escape], cwd=own, writable=own,
+                                timeout=2)
+            finally:
+                sandbox.DRAIN = saved
+                try:
+                    with open(os.path.join(own, "pid")) as f:
+                        os.kill(int(f.read()), signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists(sandbox.SANDBOX_EXEC),
+                         "sandbox-exec is macOS's")
+    def test_the_gate_s_sandbox_canary_is_caught_on_macos(self):
+        home = sandbox.make_proof_key()
+        try:
+            with open(sandbox.PROOF_KEY[0], "rb") as f:
+                before = f.read()
+            with tempfile.TemporaryDirectory() as work:
+                caught, row = gate.sandbox_canary(os.path.realpath(work))
+            self.assertTrue(caught, row)
+            self.assertEqual(row["backend"], "sandbox-exec")
+            with open(sandbox.PROOF_KEY[0], "rb") as f:
+                self.assertEqual(f.read(), before)
+        finally:
+            sandbox.drop_proof_key(home)
+
+    def test_a_missing_or_changed_key_fails_closed(self):
+        """A key that went missing or changed stops every later run and fails the gate's
+        check: `una` never runs without the gate's key, silently making its own."""
+        for change in ("rewrite", "remove", "swap"):
+            home = sandbox.make_proof_key()
+            key = sandbox.PROOF_KEY[0]
+            try:
+                sandbox.check_proof_key(full=True)
+                if change == "rewrite":
+                    with open(key, "wb") as f:
+                        f.write(os.urandom(32))
+                elif change == "remove":
+                    os.remove(key)
+                else:
+                    os.rename(key, key + ".old")
+                    os.symlink(key + ".old", key)
+                with self.assertRaises(sandbox.SandboxUnavailable, msg=change):
+                    sandbox.check_proof_key(full=True)
+                with tempfile.TemporaryDirectory() as root:
+                    own = sandbox.fresh_dir(os.path.realpath(root), "r-")
+                    with self.assertRaises(sandbox.SandboxUnavailable, msg=change):
+                        sandbox.run(["/usr/bin/true"], own, own, 5)
+            finally:
+                sandbox.drop_proof_key(home)
+
+    def test_every_run_reads_the_gate_s_key_and_none_writes_it(self):
+        """The proof-cache key (#793): made once, outside every run's directory, named to every
+        run in `UNA_PROOF_KEY`, readable on Linux through its directory's read rule."""
+        home = sandbox.make_proof_key()
+        try:
+            key = sandbox.PROOF_KEY[0]
+            self.assertEqual(len(open(key, "rb").read()), 32)
+            cmd = sandbox.landlock_argv(["/bin/una"], "/run", (1, 2), {"PATH": "/usr/bin"})
+            reads = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--read"]
+            self.assertIn(os.path.dirname(key), reads)
+        finally:
+            sandbox.drop_proof_key(home)
+        self.assertEqual(sandbox.PROOF_KEY, [])
+        self.assertFalse(os.path.exists(home))
 
 if __name__ == "__main__":
     unittest.main()
