@@ -9,10 +9,10 @@ codes: [U2001, U3007, U3013, U3026, U4002]
 
 ## What it does
 
-`attempt f(args)` evaluates one fallible call and returns a `Result[T, E]` instead of failing: `Ok(value)` on a normal return, `Err(failure)` on a failure. The caller then branches on the outcome (`spec/06 §5`). `attempt` is the call's handling site, so the call needs no `if error` clause (U3007, `spec/06 §3`).
+`attempt f(args)` evaluates one fallible call and returns a `Result[T, E]` instead of failing: `Ok(value)` on a normal return, `Err(failure)` on a failure. The caller then branches on the outcome. `attempt` is the call's handling site, so the call needs no `if error` clause (U3007).
 
 ```una
-module demo
+module shop
 
 pub kind Registration
   name: Text
@@ -38,73 +38,73 @@ pub registered(key: Text) -> Bool
 attempt_expr    = "attempt" postfix ;
 ```
 
-This is `spec/02 §7`. The operand is one call of a function or of a capability operation (`spec/06 §5`). `attempt` stands as the whole expression of a statement, a `let` or a final expression, as any fallible call does (`spec/02 §8`, `spec/04 §4`).
+The operand is one call of a function or of a capability operation. `attempt` stands as the whole expression of a statement, a `let` or a final expression, as any fallible call does.
 
 ## Examples
 
-After `let x = attempt f(...)`, the arm `is Ok(value)` knows what a normal return of `f` guarantees, its `ensures` included; the arm `is Err` knows nothing more (`spec/12 §3`). Here the verifier proves `result >= n` from `bump`'s `ensures`:
+After `let x = attempt f(...)`, the arm `is Ok(value)` knows what a normal return of `f` guarantees, its `ensures` included; the arm `is Err` knows nothing more. Here the verifier proves `result >= units` from `add_units`'s `ensures`:
 
 ```una
-module demo
+module shop
 
-pub kind Oops = | TooLarge
+pub kind OrderError = | TooMany
 
-pub bump(n: Int) -> Int
-  ensures result > n
-  fails Oops
+pub add_units(units: Int) -> Int
+  ensures result > units
+  fails OrderError
 =
-  if n > 100 then fail TooLarge else n + 1
+  if units > 100 then fail TooMany else units + 1
 
-pub bump_or_same(n: Int) -> Int
-  ensures result >= n
+pub add_or_keep(units: Int) -> Int
+  ensures result >= units
 =
-  let outcome = attempt bump(n)
+  let outcome = attempt add_units(units)
   when outcome
     is Ok(value) -> value
-    is Err -> n
+    is Err -> units
 ```
 
 The `Result` is a value like any other, so a function may return it to its caller:
 
 ```una
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-inner(n: Int) -> Int = if n > 1 then fail One else n
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock else units
 
-pub outer(n: Int) -> Result[Int, A] = attempt inner(n)
+pub try_reserve(units: Int) -> Result[Int, StockError] = attempt reserve(units)
 ```
 
-The operand must be a call (`spec/06 §5`):
+The operand must be a call:
 
 ```una
 -- fails with U2001
-module demo
+module shop
 
-pub outer(n: Int) -> Result[Int, Int] = attempt n
+pub try_reserve(units: Int) -> Result[Int, Int] = attempt units
 ```
 
 ## Edge cases
 
-**One effect per line.** `attempt` does not let a fallible call sit inside a larger expression. Bind the `Result` with `let` first (`spec/02 §8`, `spec/04 §4`):
+**One effect per line.** `attempt` does not let a fallible call sit inside a larger expression. Bind the `Result` with `let` first:
 
 ```una
 -- fails with U3013
-module demo
+module shop
 
-pub kind A = | One
+pub kind StockError = | OutOfStock
 
-inner(n: Int) -> Int = if n > 1 then fail One else n
+reserve(units: Int) -> Int = if units > 10 then fail OutOfStock else units
 
-pub outer(n: Int) -> Bool = (attempt inner(n)).is_ok()
+pub can_reserve(units: Int) -> Bool = (attempt reserve(units)).is_ok()
 ```
 
 Further rules:
 
-- **One call, not a block.** `attempt` covers a single call; a sequence of fallible calls takes one `attempt` or one clause each (`spec/06 §3, §5`).
-- **Labeled failures.** When a failure is decided by labeled data, the `Result` carries that label. This holds for the requests of `Http` and the failure of a policy call whose `to` label is above `public` (`spec/07 §7` rule 4, `spec/07 §5` rule 6). Branching on it raises the program counter, under which a `fail` is U4002 (`spec/07 §3` rule 3).
-- **An operand that cannot fail.** In edition `0.3`, `attempt` of a call that cannot fail is U3026: use the value of the call directly, and unwrap the uses of the `Result` (`spec/06 §5`, ADR 0100). Editions `0.1` and `0.2` accept it, and the error type of its `Result` is then not constrained.
+- **One call, not a block.** `attempt` covers a single call; a sequence of fallible calls takes one `attempt` or one clause each.
+- **Labeled failures.** When a failure is decided by labeled data, the `Result` carries that label. This holds for the requests of `Http` and the failure of a policy call whose `to` label is above `public`. Branching on it raises the program counter, under which a `fail` is U4002.
+- **An operand that cannot fail.** In edition `0.3`, `attempt` of a call that cannot fail is U3026: use the value of the call directly, and unwrap the uses of the `Result`. Editions `0.1` and `0.2` accept it, and the error type of its `Result` is then not constrained.
 - **Alternative.** To convert, propagate or recover at the line itself, use a handling clause. See [`if error` and `if none`](if-error.md).
 
 ## Diagnostics
@@ -117,12 +117,13 @@ Further rules:
 
 ## Edition
 
-`attempt` is the same in editions `0.1` and `0.2`. Edition `0.3` adds U3026 for `attempt` of a call that cannot fail (ADR 0100).
+`attempt` is the same in editions `0.1` and `0.2`. Edition `0.3` adds U3026 for `attempt` of a call that cannot fail.
 
 ## Normative source
 
-- `spec/06 §5`: `attempt`; `spec/06 §3`: its role as the handling site.
+- `spec/06 §5`: `attempt`, its operand and, in edition `0.3`, an operand that cannot fail; `spec/06 §3`: its role as the handling site, and one handling per call.
 - `spec/02 §7`: the grammar; `spec/02 §8`: where a fallible call may stand.
 - `spec/04 §4`: one effect per line.
 - `spec/12 §3`: the facts after `attempt`.
 - `spec/07 §3` rule 3, `spec/07 §7` rule 4 and `spec/07 §5` rule 6: labeled failures.
+- Decision record: [ADR 0100](../../../adr/0100-failure-handling-on-code-that-cannot-fail.md), for U3026.
