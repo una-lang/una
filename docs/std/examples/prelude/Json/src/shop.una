@@ -1,0 +1,29 @@
+module shop
+
+--- What each value of an item's JSON is.
+kind_of(value: Json) -> Text
+=
+  when value
+    is Null -> "nothing"
+    is Boolean(flag) -> "yes or no: {flag}"
+    is Number(n) -> "a whole number: {n}"
+    is Decimal(text) -> "a decimal: {text}"
+    is Str(name) -> "a text: {name}"
+    is Array(items) -> "a list of {items.len}"
+    is Object(fields) -> "an object of {fields.len}"
+
+price() -> Json
+=
+  parse_json("9.95")
+    if error use Null
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(kind_of(Null))
+  @console.print(kind_of(Boolean(true)))
+  @console.print(kind_of(Number(12)))
+  @console.print(kind_of(price()))
+  @console.print(kind_of(Str("lamp")))
+  @console.print(kind_of(Array([Number(1), Number(2)])))
+  @console.print(kind_of(Object(empty_map().with(key: "desk", value: Number(1)))))

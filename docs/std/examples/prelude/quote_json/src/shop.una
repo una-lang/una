@@ -1,0 +1,8 @@
+module shop
+
+--- An item's name as a JSON string, with its quotes and its tab escaped.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let quoted = quote_json("Desk \"lamp\"\tblue")
+  @console.print(quoted)
