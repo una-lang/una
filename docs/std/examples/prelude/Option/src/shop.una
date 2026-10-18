@@ -1,9 +1,7 @@
 module shop
 
 --- A discount code, if the customer typed one.
-code_of(typed: Text) -> Option[Text]
-=
-  if typed.len > 0 then Some(typed) else None
+code_of(typed: Text) -> Option[Text] = if typed.len > 0 then Some(typed) else None
 
 describe(typed: Text) -> Text
 =
