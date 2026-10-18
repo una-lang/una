@@ -38,7 +38,7 @@ fuzz_target!(|bytes: &[u8]| {
                 };
                 let expected = values::data(variant);
                 values::push(expected, values::int_word(&BigInt::from(position)));
-                assert_eq!(values::equal(word, expected), 1, "{error:?}");
+                assert_eq!(values::equal(0, word, expected), 1, "{error:?}");
             }
         }
     })

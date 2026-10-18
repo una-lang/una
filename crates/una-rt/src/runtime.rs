@@ -159,6 +159,15 @@ pub(crate) fn refusal_message(message: Option<String>) -> String {
     })
 }
 
+/// How many pairs a structural equality may hold at once, at `values::EQUALITY_PAIR_BYTES` each,
+/// within the run's memory budget (ADR 0061, amendment of 2026-10-17, #815): fixed by the budget,
+/// as the interpreter fixes it, not by what the heap holds.
+pub(crate) fn equality_pairs() -> usize {
+    with_state(|state| state.max_memory.saturating_mul(1024 * 1024)).map_or(usize::MAX, |budget| {
+        budget / crate::values::EQUALITY_PAIR_BYTES
+    })
+}
+
 /// Stops the run or the task with U6003 at the block `site`, for a copy's refused step (ADR 0113
 /// rule 4): with `message`, or the message of a call over the memory budget. The caller holds no
 /// borrow of the heap, since a stop of `main` ends the process.

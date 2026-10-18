@@ -130,11 +130,16 @@ pub fn compare(desc: i64, a: i64, b: i64) -> i64 {
 }
 
 /// 1 when `a == b`, else 0, on a `T: Eq`: structural equality, as on every type
-/// (`spec/20 §1` rule 5), checked against the descriptor.
-pub fn equal(desc: i64, a: i64, b: i64) -> i64 {
+/// (`spec/20 §1` rule 5), checked against the descriptor, at `site` within the memory budget.
+pub fn equal(site: i64, desc: i64, a: i64, b: i64) -> i64 {
+    i64::from(equal_at(site, desc, a, b) == Some(true))
+}
+
+/// `equal`, or `None` when its structural comparison stopped the run or the task at `site`.
+fn equal_at(site: i64, desc: i64, a: i64, b: i64) -> Option<bool> {
     match Descriptor::from_word(desc) {
-        Some(Descriptor::Structural(_) | Descriptor::Composite(_)) => values::equal(a, b),
-        _ => i64::from(order(desc, a, b).is_none_or(Ordering::is_eq)),
+        Some(Descriptor::Structural(_) | Descriptor::Composite(_)) => values::equal_at(site, a, b),
+        _ => Some(order(desc, a, b).is_none_or(Ordering::is_eq)),
     }
 }
 
@@ -191,13 +196,16 @@ pub fn max(desc: i64, a: i64, b: i64) -> i64 {
     greatest
 }
 
-/// `contains(xs, item)` of the prelude of edition 0.2.
-pub fn contains(desc: i64, xs: i64, item: i64) -> i64 {
-    i64::from(
-        values::list_items(xs)
-            .into_iter()
-            .any(|x| equal(desc, x, item) == 1),
-    )
+/// `contains(xs, item)` of the prelude of edition 0.2, at `site` within the memory budget.
+pub fn contains(site: i64, desc: i64, xs: i64, item: i64) -> i64 {
+    for x in values::list_items(xs) {
+        match equal_at(site, desc, x, item) {
+            Some(true) => return 1,
+            Some(false) => {}
+            None => return 0,
+        }
+    }
+    0
 }
 
 /// `sum(xs)` of the prelude of edition 0.2: the values of the elements added as `Int`.
@@ -247,7 +255,7 @@ mod tests {
         assert_eq!(compare(int, small, large), -1);
         assert_eq!(compare(text, pear, apple), 1);
         assert_eq!(compare(sum, high, low), 1);
-        assert_eq!(equal(structural, low, values::data(0)), 1);
+        assert_eq!(equal(0, structural, low, values::data(0)), 1);
         assert_eq!(values::faults(), before);
         // A wrong descriptor never passes silently: the value is outside `U8`, the words are
         // no texts, the texts are no variants, and a structural descriptor gives no order.

@@ -1622,7 +1622,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 };
                 self.call(runtime, &values)
             }
-            Rhs::Prim { prim, args, .. } => {
+            Rhs::Prim {
+                prim, args, span, ..
+            } => {
                 // On values of a constrained type parameter, comparisons and `to_int()` read the
                 // parameter's type descriptor (`spec/20 §7`).
                 if let Some(desc) = args
@@ -1633,7 +1635,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     for arg in args {
                         operands.push(self.atom(arg, env)?.0);
                     }
-                    return self.generic_prim(*prim, &operands);
+                    return self.generic_prim(*prim, &operands, *span);
                 }
                 // Interpolation of a value other than an integer, a `Bool` or a `Text` writes
                 // it by its type's description (`spec/11 §5`, ADR 0068).
@@ -1712,7 +1714,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     operands: machine && !self.exact,
                     result: range::machine_width(ty) && !self.exact,
                 };
-                self.prim(*prim, &operands, width)
+                self.prim(*prim, &operands, width, *span)
             }
             Rhs::Call {
                 function,
@@ -1735,7 +1737,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         "sort" => Some(("una_rt_generic_sort", Constraint::Ord, Descriptor::Int)),
                         "sum" => Some(("una_rt_generic_sum", Constraint::Integer, Descriptor::Int)),
                         "contains" => Some((
-                            "una_rt_generic_contains",
+                            "una_rt_generic_contains_at",
                             Constraint::Eq,
                             Descriptor::Structural(0),
                         )),
@@ -1746,6 +1748,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             Some(ty) => self.descriptor(ty, constraint, env)?,
                             None => self.builder.ins().iconst(types::I64, default.word()),
                         };
+                        // `contains` compares within the memory budget, at this call's site.
+                        if runtime == "una_rt_generic_contains_at" {
+                            let mut operands = vec![desc];
+                            operands.extend(values);
+                            return self.set(runtime, &operands, *span);
+                        }
                         let mut operands = vec![desc];
                         operands.extend(values);
                         return self.call(runtime, &operands);
@@ -2294,7 +2302,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "first" => "una_rt_first",
             "at" => "una_rt_at",
             "append" => "una_rt_append",
-            "contains" => "una_rt_contains",
+            // Its comparisons check the memory budget at this call's site (#815).
+            "contains" => return self.set("una_rt_contains_at", args, span),
             "set" => return self.set("una_rt_set", args, span),
             "sum" => "una_rt_sum",
             "or_else" => "una_rt_or_else",
@@ -2463,13 +2472,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// `prim` on values of a constrained type parameter, whose descriptor comes first in
     /// `operands` (`spec/20 §7`).
-    fn generic_prim(&mut self, prim: Prim, operands: &[Value]) -> Result<Value, CodegenError> {
+    fn generic_prim(
+        &mut self,
+        prim: Prim,
+        operands: &[Value],
+        span: Span,
+    ) -> Result<Value, CodegenError> {
         let cc = match prim {
             Prim::Convert(_) => return self.call("una_rt_generic_to_int", operands),
             // Interpolation, by the type that instantiates the parameter (ADR 0068).
             Prim::ToText => return self.call("una_rt_generic_write", operands),
             Prim::Eq | Prim::Ne => {
-                let equal = self.call("una_rt_generic_equal", operands)?;
+                // Within the memory budget, at the comparison's site (#815).
+                let equal = self.set("una_rt_generic_equal_at", operands, span)?;
                 return Ok(if prim == Prim::Eq {
                     equal
                 } else {
@@ -2497,6 +2512,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         prim: Prim,
         args: &[(Value, Kind)],
         width: Width,
+        span: Span,
     ) -> Result<Value, CodegenError> {
         let first = args.first().copied();
         let second = args.get(1).copied();
@@ -2595,8 +2611,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         Ok(self.flag(flag))
                     }
                     _ if equality => {
-                        // `equal` is 1 when equal; as an order, 0 when equal.
-                        let equal = self.call("una_rt_equal", &[a, b])?;
+                        // `equal` is 1 when equal; as an order, 0 when equal. It compares within
+                        // the memory budget, at the comparison's site (#815).
+                        let equal = self.set("una_rt_equal_at", &[a, b], span)?;
                         let order = self.builder.ins().bxor_imm_s(equal, 1);
                         let flag = self.builder.ins().icmp_imm_s(cc, order, 0);
                         Ok(self.flag(flag))
