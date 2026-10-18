@@ -26,16 +26,8 @@
   "prelude Header",
   "prelude Http",
   "prelude HttpError",
-  "prelude Json",
-  "prelude JsonError",
-  "prelude JsonNumber",
-  "prelude KeyError",
   "prelude Keys",
   "prelude Response",
-  "prelude is_json_number",
-  "prelude parse_json",
-  "prelude quote_json",
-  "prelude to_json",
   "std.testing fake_hash"
  ],
  "entries": [
@@ -2222,6 +2214,287 @@
     "builtin shift_right"
    ],
    "example": "docs/std/examples/builtin/wrapping_shift_left"
+  },
+  {
+   "module": "prelude",
+   "name": "Json",
+   "area": "json",
+   "variants": [
+    {
+     "name": "Null",
+     "fields": [],
+     "meaning": "JSON `null`"
+    },
+    {
+     "name": "Boolean",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "`true` or `false`"
+      }
+     ],
+     "meaning": "a JSON boolean"
+    },
+    {
+     "name": "Number",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the integer, exact at any size"
+      }
+     ],
+     "meaning": "a JSON number with neither a fraction nor an exponent"
+    },
+    {
+     "name": "Decimal",
+     "fields": [
+      {
+       "name": "text",
+       "meaning": "the number as written in the input, a `JsonNumber`"
+      }
+     ],
+     "meaning": "any other JSON number, so that `Number` and `Decimal` never hold the same number; two are equal when their texts are, so `1.0` and `1.00` differ"
+    },
+    {
+     "name": "Str",
+     "fields": [
+      {
+       "name": "value",
+       "meaning": "the string, unescaped"
+      }
+     ],
+     "meaning": "a JSON string; the positions of `Json` are unlabeled, so a labeled text given to `Str`, or a labeled value to any variant, is U4001, and a labeled text reaches JSON through a policy, `quote_json` or interpolation (`spec/23 §5`)"
+    },
+    {
+     "name": "Array",
+     "fields": [
+      {
+       "name": "items",
+       "meaning": "its values, in order"
+      }
+     ],
+     "meaning": "a JSON array"
+    },
+    {
+     "name": "Object",
+     "fields": [
+      {
+       "name": "fields",
+       "meaning": "its entries, by key"
+      }
+     ],
+     "meaning": "a JSON object, a map ordered by its keys, so the order of the input is not kept"
+    }
+   ],
+   "see_also": [
+    "prelude parse_json",
+    "prelude to_json",
+    "prelude JsonNumber"
+   ],
+   "example": "docs/std/examples/prelude/Json"
+  },
+  {
+   "module": "prelude",
+   "name": "JsonNumber",
+   "area": "json",
+   "definition": {
+    "type": "Text where is_json_number(it)",
+    "meaning": "the text of a JSON number with a fraction or an exponent, as `Decimal` holds it; since `is_json_number` is opaque, a `JsonNumber` is made by parsing, or in code by `checked`"
+   },
+   "see_also": [
+    "prelude is_json_number",
+    "prelude Json"
+   ],
+   "example": "docs/std/examples/prelude/JsonNumber"
+  },
+  {
+   "module": "prelude",
+   "name": "is_json_number",
+   "area": "json",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "`true` exactly when `t` is one JSON number of RFC 8259 §6 with a fraction or an exponent; opaque: both engines evaluate it, and the verifier knows nothing more of it, so in code it is called only as the predicate of `checked`, and elsewhere in code is U2016; a kind's `where` clause, as in `JsonNumber`, the `requires` and `ensures` of a capability operation, and the body of another opaque predicate may name it (`spec/03 §4`, ADR 0042); `checked` counts against `[escape_budget] checked_per_module`, which is 0 unless `una.toml` raises it"
+   },
+   "see_also": [
+    "prelude JsonNumber"
+   ],
+   "example": "docs/std/examples/prelude/JsonNumber"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_json",
+   "area": "json",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Json",
+    "meaning": "the one JSON value that `t` writes, with optional white space (U+0020, U+0009, U+000A and U+000D) before and after it and nothing else; there is no limit on its size beyond the memory budget, and a run over it ends with U6003 at the call; when `t` is not one value, the failure is the first error in reading order; the result and the failure carry the labels of `t` (`spec/23 §5`), so with a labeled `t`, `if error pass` and `if error fail` are U4002, and `attempt` or `if error use` handles the failure"
+   },
+   "fails": [
+    {
+     "variant": "Syntax",
+     "when": "`t` is not one JSON value of RFC 8259: there are no comments, trailing commas, `NaN`, `Infinity`, single quotes or byte order mark, no leading `+` or leading zero in a number, and no lone surrogate, raw scalar value below U+0020 or unknown escape in a string; `at` is the scalar position, from 0, of the first scalar value where no JSON text can continue, or the length of `t` when it ends early"
+    },
+    {
+     "variant": "TooDeep",
+     "when": "arrays and objects nest more than 512 deep; `at` is the scalar position, from 0, of the bracket that opens the 513th level"
+    },
+    {
+     "variant": "DuplicateKey",
+     "when": "an object has two equal keys, compared after unescaping; `at` is the scalar position, from 0, of the second one"
+    },
+    {
+     "variant": "NumberTooLong",
+     "when": "an integer has more than 4300 digits; `at` is the scalar position, from 0, of its first character; a number with a fraction or an exponent has no such limit"
+    }
+   ],
+   "see_also": [
+    "prelude JsonError",
+    "prelude to_json",
+    "prelude Json"
+   ],
+   "cost": {
+    "time": "O(n + Σ k log k)",
+    "source": "spec/23 §6",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of `t` in scalar values"
+     },
+     {
+      "symbol": "k",
+      "meaning": "the number of keys of one object; `Σ` sums `k log k` over the objects of `t`"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/parse_json"
+  },
+  {
+   "module": "prelude",
+   "name": "JsonError",
+   "area": "json",
+   "variants": [
+    {
+     "name": "Syntax",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the first scalar value where no JSON text can continue, or the length of the text when it ends early"
+      }
+     ],
+     "meaning": "the text is not one JSON value"
+    },
+    {
+     "name": "TooDeep",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the bracket that opens the 513th level"
+      }
+     ],
+     "meaning": "arrays and objects nest more than 512 deep"
+    },
+    {
+     "name": "DuplicateKey",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the second of two equal keys"
+      }
+     ],
+     "meaning": "an object has two equal keys, compared after unescaping"
+    },
+    {
+     "name": "NumberTooLong",
+     "fields": [
+      {
+       "name": "at",
+       "meaning": "the scalar position, from 0, of the integer's first character"
+      }
+     ],
+     "meaning": "an integer has more than 4300 digits"
+    }
+   ],
+   "see_also": [
+    "prelude parse_json"
+   ],
+   "example": "docs/std/examples/prelude/parse_json"
+  },
+  {
+   "module": "prelude",
+   "name": "to_json",
+   "area": "json",
+   "params": [
+    {
+     "name": "j",
+     "meaning": "the value"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "the canonical JSON text of `j`, with no white space: `Null` as `null`, a `Boolean` as `true` or `false`, a `Number` in decimal, a `Decimal` as its text, a `Str` as `quote_json` writes it, and an object's entries in key order; parsing it gives `j` back when its arrays and objects nest at most 512 deep and each `Number` has at most 4300 digits, since `parse_json` refuses a deeper value with `TooDeep` and a longer integer with `NumberTooLong`; the result carries the labels of `j` (`spec/23 §5`)"
+   },
+   "see_also": [
+    "prelude parse_json",
+    "prelude quote_json"
+   ],
+   "cost": {
+    "time": "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+    "source": "spec/23 §6",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of the result in scalar values"
+     },
+     {
+      "symbol": "d",
+      "meaning": "the number of digits of a `Number`, which parsing bounds by 4300 but a program may make larger"
+     }
+    ]
+   },
+   "example": "docs/std/examples/prelude/to_json"
+  },
+  {
+   "module": "prelude",
+   "name": "quote_json",
+   "area": "json",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text"
+    }
+   ],
+   "returns": {
+    "type": "Text",
+    "meaning": "`t` as a JSON string literal, between double quotes: the double quote and the backslash are escaped with a backslash; U+0008, U+000C, U+000A, U+000D and U+0009 are written as their short escapes; every other scalar value below U+0020, and U+007F, U+2028, U+2029, U+202A to U+202E and U+2066 to U+2069, as a `u` escape with four lowercase hex digits; and every other scalar value as itself; the result carries the labels of `t` (`spec/23 §5`); it escapes for a JSON string only, not for HTML, so `<`, `>`, `&` and `/` are written as themselves"
+   },
+   "see_also": [
+    "prelude to_json"
+   ],
+   "example": "docs/std/examples/prelude/quote_json"
+  },
+  {
+   "module": "prelude",
+   "name": "KeyError",
+   "area": "keys",
+   "variants": [
+    {
+     "name": "UnknownKey",
+     "fields": [],
+     "meaning": "the key file of the grant holds no key of that name"
+    }
+   ],
+   "example": "docs/std/examples/prelude/KeyError"
   }
  ]
 }

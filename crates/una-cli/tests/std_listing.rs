@@ -729,18 +729,19 @@ fn kind_form(declaration: &str) -> KindForm {
 }
 
 /// The variants of a kind's declaration `pub kind K = A | B(x: T) | C`, each with its fields'
-/// names.
+/// names. Variants and fields are split outside brackets, so that a field's type may have
+/// several parameters, `Map[Text, Json]`.
 fn variants_of(declaration: &str) -> Vec<(String, Vec<String>)> {
     declaration
         .split_once('=')
         .map(|(_, body)| {
-            body.split('|')
+            split_top(body, '|')
+                .into_iter()
                 .filter_map(|variant| {
                     let variant = variant.trim();
                     let (name, fields) = variant.split_once('(').unwrap_or((variant, ""));
-                    let fields = fields
-                        .trim_end_matches(')')
-                        .split(',')
+                    let fields = split_top(fields.strip_suffix(')').unwrap_or(fields), ',')
+                        .into_iter()
                         .filter_map(|field| field.split(':').next())
                         .map(|field| field.trim().to_owned())
                         .filter(|field| !field.is_empty())
@@ -981,7 +982,7 @@ type Stated = (
 /// removed), and each item it gives a cost with the cost as the entry's `time` gives it. Each
 /// part of that time between `, ` is words of the sentence, so that each item gets the phrase
 /// that is about it. Review keeps this list; una#852 is to state every item's cost.
-const STATED_COSTS: [Stated; 2] = [
+const STATED_COSTS: [Stated; 4] = [
     (
         "spec/21 §5",
         "O(log n) per lookup, insertion and removal",
@@ -1015,6 +1016,19 @@ const STATED_COSTS: [Stated; 2] = [
                 "amortized O(1) append, O(n) copy when the list is shared",
             ),
         ],
+    ),
+    (
+        "spec/23 §6",
+        "parsing takes O(n + Σ k log k) time, which is O(n) when every object's keys arrive in order, as to_json writes them",
+        &[("prelude parse_json", "O(n + Σ k log k)")],
+    ),
+    (
+        "spec/23 §6",
+        "writing takes O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+        &[(
+            "prelude to_json",
+            "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+        )],
     ),
 ];
 
@@ -1585,7 +1599,7 @@ fn the_reference_agrees_with_the_listing() {
     }
     let constraint_names: std::collections::BTreeSet<String> = items
         .iter()
-        .filter(|item| item.kind == "function")
+        .filter(|item| matches!(item.kind, "function" | "predicate"))
         .flat_map(|item| &item.variants)
         .flat_map(|variant| signature(&variant.declaration).constraints)
         .collect();
@@ -1698,7 +1712,7 @@ fn the_reference_agrees_with_the_listing() {
                 .find(|(index, (e, _))| *index != described && *e == editions)
                 .map(|(_, d)| d)
             {
-                if item.kind == "function" {
+                if matches!(item.kind, "function" | "predicate") {
                     earlier_constraints.extend(signature(theirs).constraints);
                 }
                 let theirs = declaration_lines(theirs);
@@ -1801,7 +1815,8 @@ fn the_reference_agrees_with_the_listing() {
                     ));
                 }
             };
-        if item.kind == "function" {
+        // A predicate is checked as a function: it has parameters and a `Bool` result.
+        if matches!(item.kind, "function" | "predicate") {
             only(
                 &["params", "returns", "requires", "fails", "effects_of"],
                 &mut problems,
@@ -2060,7 +2075,7 @@ fn the_reference_agrees_with_the_listing() {
         // of the declaration or of a spec section the item cites; a constraint it names, `Ord`,
         // is one of the declaration's (or, in an `earlier` note, of the earlier declaration's).
         let contract = contracts(item, declaration);
-        let constraints: Vec<String> = if item.kind == "function" {
+        let constraints: Vec<String> = if matches!(item.kind, "function" | "predicate") {
             signature(declaration).constraints
         } else {
             Vec::new()
@@ -2317,6 +2332,15 @@ fn the_reference_agrees_with_the_listing() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
+/// The manifest of every example: a package `shop` of edition 0.2 whose `main` may print, and
+/// nothing more.
+const EXAMPLE_MANIFEST: &str = "[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"shop\"\ngrants = [\"console\"]\n";
+
+/// The one key an example may add to `EXAMPLE_MANIFEST`, and only when its code uses `checked`
+/// exactly once: an opaque predicate is called only there (`spec/03 §4`, ADR 0042), and the
+/// escape budget is 0 by default.
+const CHECKED_BUDGET: &str = "\n[escape_budget]\nchecked_per_module = 1\n";
+
 /// `una ARGS` in `dir`.
 fn una(dir: &Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_una"))
@@ -2371,6 +2395,33 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
             let copy = scratch.join("std-examples").join(example);
             let _ = fs::remove_dir_all(&copy);
             copy_tree(&source, &copy);
+            // The manifest grants no more than printing, and allows one `checked` only to an
+            // example that uses exactly one.
+            let manifest = fs::read_to_string(source.join("una.toml")).unwrap_or_default();
+            let checks: usize = sources(&source)
+                .iter()
+                .map(|(_, src)| {
+                    occurrences(src, &code_bytes(src), "checked", true, true, false).len()
+                })
+                .sum();
+            let allowed = if checks == 1 {
+                format!("{EXAMPLE_MANIFEST}{CHECKED_BUDGET}")
+            } else {
+                EXAMPLE_MANIFEST.to_owned()
+            };
+            if manifest != allowed {
+                problems.push(format!(
+                    "{example}: una.toml is not the examples' manifest{}, with {checks} uses of `checked`: {manifest:?}",
+                    if checks == 1 { " with the budget of one `checked`" } else { "" }
+                ));
+            }
+            // The verification lock is the repository's own: the solver pins and nothing else.
+            let lock = fs::read_to_string(source.join("verification.lock")).unwrap_or_default();
+            if lock != fs::read_to_string(root().join("verification.lock")).unwrap() {
+                problems.push(format!(
+                    "{example}: verification.lock is not the repository's: {lock:?}"
+                ));
+            }
             let formatted = una(&copy, &["fmt", "--check", "."]);
             if !formatted.status.success() {
                 problems.push(format!(

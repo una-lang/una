@@ -1,0 +1,23 @@
+module shop
+
+--- A price typed by hand, kept as a `JsonNumber` when it has a fraction or an exponent.
+kind PriceError = | NotDecimal
+
+priced(raw: Text) -> JsonNumber
+  fails PriceError
+=
+  checked(raw, is_json_number(it)) else fail NotDecimal
+
+shown(raw: Text) -> Text
+=
+  let outcome = attempt priced(raw)
+  when outcome
+    is Ok(price) -> "price {price}"
+    else -> "{raw} is not a decimal"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(shown("9.95"))
+  @console.print(shown("12"))
+  @console.print(shown("1.5e3"))
