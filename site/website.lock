@@ -2,4 +2,4 @@
 # built from the docs bundle of the commit under validation (scripts/site-website.sh). A newer
 # website is pinned by changing this commit, in a pull request of its own.
 repository = "https://github.com/una-lang/website.git"
-commit = "a186e00524031cb59cfa1839ba10ef091b146a51"
+commit = "b25d5c42ad6dd1986192eff92d606dd85c0f3187"
