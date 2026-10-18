@@ -111,16 +111,23 @@ if [ -n "${UNA_ORACLE_UNA:-}" ]; then
         echo "error: $oracle_una lacks the oracle feature, so comparing with it proves nothing" >&2
         exit 1
     fi
+    # The comparison masks one host-supplied field, each `Clock.now` event's outcome value, which
+    # differs between any two runs; it must catch every other difference, which its self-test
+    # checks first.
+    python3 -B scripts/compare-run-docs.py --self-test || exit 1
     for example in examples/*/; do
         example=${example%/}
-        dir="$tmp/compare-$(basename "$example")"
-        cp -R "$example" "$dir"
-        packed=$(cd "$dir" && "$una" --json run . 2>/dev/null || true)
-        built=$(cd "$dir" && "$oracle_una" --json run . 2>/dev/null || true)
-        if [ "$packed" != "$built" ]; then
+        compared=$(basename "$example")
+        # Each binary runs its own fresh copy, so no state of one run reaches the other.
+        cp -R "$example" "$tmp/compare-$compared-packed"
+        cp -R "$example" "$tmp/compare-$compared-oracle"
+        (cd "$tmp/compare-$compared-packed" && "$una" --json run . >"$tmp/compare-$compared-packed.json" 2>/dev/null || true)
+        (cd "$tmp/compare-$compared-oracle" && "$oracle_una" --json run . >"$tmp/compare-$compared-oracle.json" 2>/dev/null || true)
+        if ! masked=$(python3 -B scripts/compare-run-docs.py "$tmp/compare-$compared-packed.json" "$tmp/compare-$compared-oracle.json"); then
             echo "error: una --json run of $example differs between the packed una and $oracle_una (ADR 0115)" >&2
             exit 1
         fi
+        echo "ok: $example: $masked"
     done
     echo "ok: una --json run of every example is the same with the oracle feature built in"
 else

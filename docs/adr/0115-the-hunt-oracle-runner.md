@@ -155,6 +155,9 @@ The project accepted this record on 2026-10-18, with the measurements above. The
 - **Canary.** `release-branch` plants exactly the first of these: in one variant, a visible line before the release, where the other variants release. It must be a leak at `public`.
 - **Release positions.** A release of the observed run without a position (`after`) is an error of the program.
 - **Matching.** The comparison of a failure's public fields, with a `<redacted:level>` standing for any text at its own place, is a linear scan: the first and last pieces anchor the ends, and each piece between is found in order. It has no backtracking.
+- **The `una run --json` comparison.** It runs each binary on a fresh copy of each example. It compares the two documents field by field, after a self-test that each kind of difference is caught (`scripts/compare-run-docs.py`).
+  - It masks one field: the outcome value of each `Clock.now` event, the host's time, which differs between any two runs, the same binary's included. That value must still be an integer in both documents.
+  - Everything else is compared, as before: the event's place, operation, argument names and outcome kind, and the output byte for byte. Decision item 4's "byte-identical" is meant this way.
 - **Measured again with this rule** (2026-10-18), on the same binaries:
   - **macOS.** The gate took 279 seconds. All canaries were caught, `release-branch` included. Nothing was found, and the oracle's counts were unchanged: 481 programs and 1,889 variants compared, 539 live, 243 explained. So no floor or ceiling moves.
   - **Linux.** Five runs in all:
