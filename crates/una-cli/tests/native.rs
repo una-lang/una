@@ -1318,6 +1318,48 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
 }
 
 #[test]
+fn a_list_built_by_append_in_a_loop_is_never_copied_at_any_size() {
+    // #878: `xs = xs.append(item: i)` in a `for` loop updates the list in place, at every size,
+    // so building it takes linear time and space. The debug runtime counts every copy. Each
+    // program also appends to a list that another binding still holds, which must copy it
+    // once: the count is exactly 1 at every size, which shows the counter counts and that the
+    // loop adds no copy.
+    for n in [1 << 12, 1 << 14, 1 << 16] {
+        let program = format!(
+            "module built\n\nmake(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<n\n    xs = xs.append(item: i)\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let x = make({n})\n  let y = x.append(item: 0)\n  @console.print(\"{{x.len}} {{y.len}}\")\n"
+        );
+        let dir = package(
+            &format!("built{n}"),
+            "\n[run]\nentry = \"built\"\ngrants = [\"console\"]\n",
+            &[("src/built.una", &program)],
+        );
+        edition_0_2(&dir);
+        let expected = format!("{n} {}\n", n + 1);
+        let interpreted = una(&dir, &["run"]);
+        assert_eq!(interpreted.status.code(), Some(0), "{n}: {interpreted:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&interpreted.stdout),
+            expected,
+            "{n}"
+        );
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{n}: {built:?}");
+        let output = Command::new(dir.join(format!("target/una/built{n}")))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{n}: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{n}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "note: una-rt (debug build): lists, maps and texts copied: 1\n",
+            "{n}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
 fn a_loop_runs_in_constant_memory() {
     // #201: a loop whose state takes constant space runs in constant space, also in the debug
     // runtime the tests link, whose quarantine of freed slots is bounded: 10,000,000 iterations
