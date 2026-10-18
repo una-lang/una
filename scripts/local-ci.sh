@@ -187,12 +187,19 @@ step "Pack the release archive of $target" scripts/release.sh "$target"
 # The `una` that check-release.sh compares `una --json run` with (ADR 0115): built with the
 # hunt's `oracle` feature on purpose, in a directory of its own, so the comparison never depends
 # on an earlier build and always runs here.
-# Under the run's target directory, a container's volume when it has one, never the checkout's.
-oracle_target="${CARGO_TARGET_DIR:-$root/target}/oracle-compare"
-step "Build the oracle una for the comparison" \
-    cargo build --locked -p una-cli --features oracle --target-dir "$oracle_target"
+# In the run's own target directory, a container's volume when it has one, never the checkout's:
+# the build reuses the dependencies already built and recompiles only the crates the feature
+# changes, and the binary is copied out at once, so no later build replaces it unseen.
+# check-release.sh still requires the copy to hold the feature.
+# From here on, the run's debug `una` is the oracle build: this is the last build step, the
+# archive is packed above, and no later step may use that `debug/una`.
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
+oracle_una="$target_dir/oracle-compare-una"
+step "Build the oracle una for the comparison" sh -c \
+    'cargo build --locked -p una-cli --features oracle && cp "$1/debug/una" "$2"' \
+    sh "$target_dir" "$oracle_una"
 step "Check the release archive of $target" \
-    env UNA_ORACLE_UNA="$oracle_target/debug/una" scripts/check-release.sh "$target"
+    env UNA_ORACLE_UNA="$oracle_una" scripts/check-release.sh "$target"
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
     echo "== peak memory of the container: $(($(cat /sys/fs/cgroup/memory.peak) / 1048576)) MiB, with CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"
