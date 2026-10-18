@@ -4387,6 +4387,31 @@ impl<'p, 'i> Walker<'p, 'i> {
         let hypotheses = shown_facts;
         self.add_definitions(&mut query);
         let shown = self.shown(&query, ctx);
+        // A shown value of a sum is read through its tag. When no assertion uses that tag, the
+        // query would not declare it, and the model could not be read (#902): it is declared
+        // here with its range, a fact every model of the query already satisfies.
+        let used = query.applications();
+        for item in &shown {
+            if let Show::Variant { tag, .. } = &item.show
+                && !used.contains(tag)
+                && let F::App {
+                    fun:
+                        SmtFun {
+                            role: FunRole::Tag { variants, .. },
+                            ..
+                        },
+                    ..
+                } = tag
+                // A sum has at least one variant (`tag` gives no tag otherwise), so the range
+                // is never empty and the fact never makes a satisfiable query unsatisfiable.
+                && *variants >= 1
+            {
+                query.assertions.push(F::and(vec![
+                    F::op("<=", vec![F::Int("0".to_owned()), tag.clone()]),
+                    F::op("<", vec![tag.clone(), F::Int(variants.to_string())]),
+                ]));
+            }
+        }
         let mut forgotten = std::mem::take(&mut self.returned_forgotten);
         let returned_unpinned = std::mem::take(&mut self.returned_unpinned);
         let (shown_forgotten, unpinned) = self.forgotten(shown.iter().map(|item| &item.term));
