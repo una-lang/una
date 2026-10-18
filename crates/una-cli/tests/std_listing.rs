@@ -1146,7 +1146,10 @@ fn method_requires(name: &str, sections: &[(String, String)]) -> (Vec<String>, V
     let (mut found, mut unread) = (Vec::new(), Vec::new());
     for (source, text) in sections.iter().filter(|(s, _)| s.starts_with("spec/")) {
         for line in text.lines().filter(|line| line.starts_with('|')) {
-            if cells(line).first().is_some_and(|first| first.contains(&call)) {
+            if cells(line)
+                .first()
+                .is_some_and(|first| first.contains(&call))
+            {
                 let (conditions, missed) = row_requires(line);
                 found.extend(conditions);
                 if missed {
@@ -1160,18 +1163,29 @@ fn method_requires(name: &str, sections: &[(String, String)]) -> (Vec<String>, V
 
 #[test]
 fn the_requires_of_a_spec_row_are_read_in_both_forms_or_refused() {
-    let section = |row: &str| vec![("spec/99 §1".to_owned(), format!("| Method | Contract |\n| --- | --- |\n{row}\n"))];
+    let section = |row: &str| {
+        vec![(
+            "spec/99 §1".to_owned(),
+            format!("| Method | Contract |\n| --- | --- |\n{row}\n"),
+        )]
+    };
     let none: Vec<String> = Vec::new();
     assert_eq!(
         method_requires("f", &section("| `a.f(by: n)` | `requires 0 <= n`; total |")),
         (vec!["0 <= by".to_owned()], none.clone())
     );
     assert_eq!(
-        method_requires("f", &section("| `a.f(by: n)` | `requires` `0 <= n`; total |")),
+        method_requires(
+            "f",
+            &section("| `a.f(by: n)` | `requires` `0 <= n`; total |")
+        ),
         (vec!["0 <= by".to_owned()], none.clone())
     );
     assert_eq!(
-        method_requires("f", &section("| `a.f(by: n)` | requires that `n` is positive |")),
+        method_requires(
+            "f",
+            &section("| `a.f(by: n)` | requires that `n` is positive |")
+        ),
         (none.clone(), vec!["spec/99 §1".to_owned()])
     );
     assert_eq!(
