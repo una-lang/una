@@ -1,8 +1,8 @@
 # 0116. Long-running programs: a host-driven step, the forms of `for`, `diverges` and safe stop
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-18
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-18)
 - Resolves: issue #888
 - Related:
   - ADR 0117 (issue #896, concurrency for servers), which uses the timing label, the interruptible operations and the tests' virtual time of this record;
@@ -10,7 +10,7 @@
   - issue #898 (labels on `Clock` readings);
   - issue #893 (`ita.una`).
 - Target: edition `0.4`. Editions `0.1` to `0.3` do not change.
-- Amends, once accepted:
+- Amends:
   - **Lexical and grammar:** `spec/01 §5` (keywords and messages); `spec/02 §3` (the `diverges` clause), `§6`;
   - **Contracts, effects and flow:** `spec/04 §2` rule 3 (a verified measure); `spec/05 §9` (lambdas and `diverges`); `spec/07 §1` (out of model), `§7`;
   - **Tests:** `spec/08 §2` (the `stop after` line);
@@ -25,49 +25,13 @@
 
   These rules would live in a new chapter, `spec/26-long-running-programs.md`.
 
-## Questions for acceptance
+## Decided on acceptance
 
-These points change what the project approved on #888. Each needs a decision, and the text below follows the recommendation.
+The project accepted this record on 2026-10-18, taking the recommendation of each question it was asked:
 
-1. **What Ctrl-C or SIGTERM does to a loop that is waiting on the network.**
-   - **The approved text:** the loop stops right there.
-   - **This record:** the waiting call fails with a new error, `Interrupted`. The loop's own error handling deals with it, the rest of that pass through the loop runs, and the loop stops when the next pass would begin (rule 14).
-   - **Cost to the programmer:** every network call inside a `for ever` loop must handle one more error. After Ctrl-C, the program finishes the current pass's remaining work, the part that does not wait, before `on stop` runs, within the grace period of 10 seconds.
-   - **Why:** stopping halfway through a pass would keep some of its updates and drop others, so the program's state could disagree with what it has already sent or written.
-   - **Recommendation:** accept.
-
-   ```una
-   for ever
-     let job = attempt @http.get(url: queue_url, headers: [], key_name: None)
-     when job
-       is Ok(response) -> run(response)
-       is Err(failure) -> unit       -- includes Interrupted on Ctrl-C
-   ```
-2. **What a time limit per pass, `for ever within d`, limits.**
-   - **The approved text:** a pass that runs late is abandoned, and its changes are undone.
-   - **This record:** the limit cuts only waiting. Once a pass is late, each network call it is waiting on, or starts afterwards, fails at once with its time-out error. Plain computation is not cut: a pass that computes past its limit still runs to its end. Nothing is undone (rule 11).
-   - **Cost to the programmer:** the limit does not bound a pass that only computes. To bound computation, write `within` around it (ADR 0117), which does stop computation. When a `within` times out, the updates its expression made to outer variables through `edit` are dropped, and those variables keep their values from before it.
-   - **Why:** undoing a pass contradicts what it already sent or wrote, and it would copy the loop's whole state on every pass.
-   - **Recommendation:** accept.
-
-   ```una
-   for ever within 100 * millisecond
-     let reading = attempt @http.get(url: sensor_url, headers: [], key_name: None)
-     crunch(reading)      -- runs to its end even when the pass is already late
-   ```
-3. **A `step` that may print or call services, and may not fail.**
-   - **Issue #888:** a "pure" `step`, with no effects.
-   - **This record:** `step` may use capabilities, so a game can draw and a worker can call a service. It must handle its own errors, since a failing step would leave the state half-updated (rule 2).
-   - **Cost to the programmer:** errors inside `step` are handled there, with `if error use` or `attempt`.
-   - **Recommendation:** accept. The alternative is a pure `step` that returns commands for the host to run, which needs a command type for each capability.
-
-   ```una
-   pub step(edit state: World, input: Tick) -> Unit
-     uses @console: Console[print]
-   =
-     state.frames = state.frames + 1
-     @console.print("frame {state.frames}")
-   ```
+1. **Ctrl-C or SIGTERM during a network wait in a loop:** the waiting call fails with `Interrupted`. The loop's own error handling deals with it, the rest of that pass runs, and the loop stops when the next pass would begin (rule 14).
+2. **The time limit per pass, `for ever within d`:** it cuts only waiting. Past the limit, each network call the pass waits on, or starts, fails at once with its time-out error. Plain computation runs to its end, and nothing is undone (rule 11).
+3. **`step`:** it may use capabilities, and it must handle its own errors (rule 2).
 
 ## Glossary
 
@@ -121,11 +85,11 @@ The project fixed the direction on 2026-10-18:
 
 Each departure from the recorded direction, with its reason:
 
-1. **A host stop at a suspension point** is a failure of the operation, not a `stop` there (Question 1).
-2. **`for ever within d`** does not restore an overrun iteration (Question 2).
-3. **`step` may have `uses`**, and it may not fail (Question 3).
+1. **A host stop at a suspension point** is a failure of the operation, not a `stop` there (acceptance decision 1).
+2. **`for ever within d`** does not restore an overrun iteration (acceptance decision 2).
+3. **`step` may have `uses`**, and it may not fail (acceptance decision 3).
 4. **After `on stop`,** execution continues after the loop, rather than returning from the function at once. A `diverges` function then returns when its body ends, as any function does.
-5. **Decided in the review of the outline, on 2026-10-18,** and to be recorded on #888:
+5. **Decided in the review of the outline, on 2026-10-18,** and recorded on #888:
    - edition `0.4`;
    - labels on every value made from elapsed time, with `Clock` left to #898;
    - no termination proof for recursion inside `for ever`, which is left to a later record;
@@ -521,7 +485,7 @@ IF6. **The program's own concurrent work.** Another task of the same program tha
 
 The definition is not circular, since it uses `τ⁰`. It is sound: every task that can run while `e` runs is a part of a construct on the way to `e`, or a task started inside such a part, which runs on data that its part's `τ⁰` already covers. A program without task constructs has `τ_conc = public` everywhere, and so does code that runs before or after every construct, such as start-up code.
 
-The cost of this soundness is stated as ADR 0117's Question 2: a server whose per-request tasks handle `secret` data gives every deadline, race and limit that runs beside them a `secret` timing label. Adding a task construct anywhere in a package can raise the labels that the package's functions get. The host's own load stays out of model.
+The cost of this soundness is ADR 0117's acceptance decision 2: a server whose per-request tasks handle `secret` data gives every deadline, race and limit that runs beside them a `secret` timing label. Adding a task construct anywhere in a package can raise the labels that the package's functions get. The host's own load stays out of model.
 
 IF7. **Values made from time.** Most loops need no timing label on their bindings. Under a fixed stop schedule (below), how many iterations ran before a host stop is an input from the host, not timing. A deadline changes values only through the failures it causes, which IF8 labels, and ordinary flow rules then carry those labels into whatever the program updates. The driver is the exception: `at` and `missed` of its `Tick` depend on how long earlier steps took. So the `input` parameter of `step` MUST be labeled at least `τ⁰` of `step`'s body, joined with `τ_conc` at the driver (U4001 at the parameter). A `step` that only prints `public` values has a `public` `τ`, and its tick costs nothing.
 
@@ -690,8 +654,8 @@ Usage errors, exit code 2:
   - a second signal during a long `on stop` gives U6007;
   - a third signal during a blocked `Files.read` of a named pipe ends the process by the default action.
 
-## Appendix A. Amendments to accepted records, appended on acceptance
+## Appendix A. Amendments to accepted records, appended on 2026-10-18
 
-**ADR 0058, Amendment (date of acceptance).** A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks (ADR 0117 rule 2). It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.
+**ADR 0058, Amendment (2026-10-18).** A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks (ADR 0117 rule 2). It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.
 
-**ADR 0102, Amendment (date of acceptance).** Each check point (`enter`, `budget`, `poll`, and a loop iteration) also performs one relaxed atomic load of its thread's attention word (ADR 0116 rule 18), and compares it with a copy kept in `Hot`. When they differ, the slow path runs, and finds the stop request, the expired deadline, the time slice or the cancellation that changed it. Its cost is measured on the performance gate programs before the implementation merges. The other conditions of rule 2 are unchanged.
+**ADR 0102, Amendment (2026-10-18).** Each check point (`enter`, `budget`, `poll`, and a loop iteration) also performs one relaxed atomic load of its thread's attention word (ADR 0116 rule 18), and compares it with a copy kept in `Hot`. When they differ, the slow path runs, and finds the stop request, the expired deadline, the time slice or the cancellation that changed it. Its cost is measured on the performance gate programs before the implementation merges. The other conditions of rule 2 are unchanged.

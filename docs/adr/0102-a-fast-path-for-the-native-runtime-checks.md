@@ -90,3 +90,7 @@ The checks are part of the language's guarantees: a run never exceeds its limits
 - **Inlining the checks into generated code**, the limits passed as globals: deferred. It would save the call into the runtime as well, but it moves the checks' logic into the code generator, where each change would need a second implementation. The runtime fast path is measured first.
 - **A shared slice of the unshielded flags in `Hot`**, rebuilt when `shielded` moves: rejected. Building it allocates at every operation, and a `Hot` that holds an `Arc` has a destructor whose registration can allocate. Either moves the point where the memory limit fires, since the limit counts every byte the process holds.
 - **A grep-based test that no other code writes the mirrored fields**: not chosen. A single `install`/`uninstall` pair keeps the writes in one place by construction, which a reader and the compiler can check.
+
+## Amendment (2026-10-18, ADR 0116)
+
+Each check point (`enter`, `budget`, `poll`, and a loop iteration) also performs one relaxed atomic load of its thread's attention word (ADR 0116 rule 18), and compares it with a copy kept in `Hot`. When they differ, the slow path runs, and finds the stop request, the expired deadline, the time slice or the cancellation that changed it. Its cost is measured on the performance gate programs, and under a server load, before the implementation merges. The other conditions of rule 2 are unchanged.

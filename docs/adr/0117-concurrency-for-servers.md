@@ -1,8 +1,8 @@
 # 0117. Concurrency for servers: lightweight tasks, `within`, `first of`, `tasks` and `start`, and limits on grants
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-18
-- Deciders:
+- Deciders: Una project (accepted on 2026-10-18)
 - Resolves: issue #896
 - Related:
   - ADR 0116 (issue #888), whose timing label `τ`, `τ_conc`, interruptible operations, stop rules, virtual time and attention word this record uses;
@@ -10,7 +10,7 @@
   - issue #898 (labels on `Clock` readings);
   - issue #893 (`ita.una`).
 - Target: edition `0.4` (ADR 0116 rule 0). Editions `0.1` to `0.3` do not change: `together` keeps its stacks, its schedule and its trace.
-- Amends, once accepted:
+- Amends:
   - **Lexical and grammar:** `spec/01 §5` (words, and the messages of `async` and `await`); `spec/02 §6`, `§7`;
   - **Capabilities and errors:** `spec/05 §4` rule 3 (no `with` on `start`), `§8` (limits); `spec/06 §3`, `§5`;
   - **Information flow:** `spec/07 §1`, `§7`;
@@ -25,62 +25,14 @@
 
   These rules would live in a new chapter, `spec/27-tasks-and-time.md`.
 
-## Questions for acceptance
+## Decided on acceptance
 
-These points change what the project approved on #896, or have costs it has not seen. Each needs a decision, and the text below follows the recommendation.
+The project accepted this record on 2026-10-18, taking the recommendation of each question it was asked:
 
-1. **No public output inside a time limit or a race.**
-   - **The rule:** code inside `e within d`, or inside a branch of `first of`, may not write anything that a less trusted reader sees. A deadline or a faster branch can cut it short, so whether that output appears would reveal how long the work took (IF2, IF3).
-   - **Cost to the programmer:** in #896's own example, `serve(connection) within 30 * second` calls `Http`, so `serve` may no longer print `public` log lines. It logs after the `within`, once the result is known, or logs at `internal`.
-   - **Recommendation:** accept. The alternative keeps such prints legal, and says in the report that a deadline can reveal timing through what the program prints.
-
-   ```una
-   let quote = fetch_quote() within 2 * second   -- fetch_quote may not print public lines
-     if error use cached_quote
-   @console.print("quote ready")                  -- fine: after the within
-   ```
-2. **How far another task's secret data reaches.**
-   - **The rule:** a task that handles `secret` data can slow down every task running beside it, so a deadline, a race or a rate limit there could reveal something about the secret. `τ_conc` (ADR 0116 IF6) gives every deadline, race and limit the label of the tasks that can run beside it.
-   - **Cost to the programmer:** in a server whose per-request tasks read `secret[PII]` records, no code that runs beside those tasks may put a deadline or a race on an `Http` call, and the `Http` grants may not carry rate limits. Code that runs before the tasks start, or after they end, is not affected.
-   - **Options:**
-     - (a) keep the rule (most secure);
-     - (c) (a) by default, plus an explicit timing release: a declaration in a trusted module, like a `policy` (`spec/07 §5`), that names the sites where a server accepts the leak, with a purpose. The build report lists every such release, as it lists policy calls. The rest of the program keeps (a);
-     - (b) treat the slowdown caused by the program's own tasks as outside the model, as the machine's own load already is, and say so in the report. With (b), the server below compiles in full, and a task handling a secret can leak a few bits per deadline to its neighbors.
-   - **Recommendation:** (a). (c) can be added later by its own record, without changing (a).
-
-   ```una
-   let config = load_config() within 5 * second    -- compiles: no task runs yet
-     if error use defaults
-   tasks
-     for ever
-       let request = next_request()                 -- #897
-       start serve(request)                         -- serve reads secret[PII] records
-   -- inside serve: fetch_rate() within 2 * second  -> rejected (U4003) under (a)
-   ```
-3. **Passing a time-out on to the caller.**
-   - **The decision:** the failure of `within` is `Timed[E]`.
-   - **This record:** to pass a time-out to its caller with `if error pass`, a function declares a `TimedOut` variant in its own error kind (rule 5).
-   - **Cost to the programmer:** passing a time-out on works only for computation whose timing reveals nothing, such as `public` data. A time-out over a network call can be recovered from where it happens, never passed on.
-   - **Recommendation:** accept.
-
-   ```una
-   pub kind RouteError = NoPath | TimedOut
-
-   plan(graph: Graph, start: Node, goal: Node) -> Route
-     fails RouteError
-   =
-     shortest(graph, start: start, goal: goal) within 50 * millisecond
-       if error pass                      -- TimedOut becomes RouteError.TimedOut
-   ```
-4. **A rate limit in code is installed, not stored.**
-   - **The body of #896:** "a standard `Limiter` value".
-   - **This record:** `limiter` is installed with `with` around a call, like a test double, because a value shared by tasks would be shared, changing state (rule 9).
-   - **Cost to the programmer:** the limiter cannot be kept in a variable or a record. Every function that uses it lists `@gate` in its `uses`.
-   - **Recommendation:** accept.
-
-   ```una
-   serve_all() with @gate = limiter(at_most: 50, per: second, waiting: 200)
-   ```
+1. **No public output inside a time limit or a race:** code inside `within` or a branch of `first of` is checked under the timing floor (IF2, IF3).
+2. **How far another task's secret data reaches:** option (a). `τ_conc` gives every deadline, race and rate limit the label of the tasks that can run beside it (ADR 0116 IF6). An explicit timing release, option (c), may come later in a record of its own.
+3. **Passing a time-out on:** through a `TimedOut` variant of the function's own error kind, with no type arguments on `fails` (rule 5).
+4. **Rate limits in code:** `limiter` is a handler installed with `with`, not a value (rule 9).
 
 ## Glossary
 
@@ -132,13 +84,13 @@ Issue #896 fixed the direction on 2026-10-18:
 
 ### Departures from the issue
 
-1. **The timing floor** limits what code inside `within` and `first of` may print (Question 1), and `τ_conc` limits deadlines, races and rate limits beside tasks that handle secret data (Question 2).
-2. **A timeout propagates** through the function's own `TimedOut` variant (Question 3), not through `fails Timed[E]` (Question 2).
+1. **The timing floor** limits what code inside `within` and `first of` may print (acceptance decision 1), and `τ_conc` limits deadlines, races and rate limits beside tasks that handle secret data (acceptance decision 2).
+2. **A timeout propagates** through the function's own `TimedOut` variant (acceptance decision 3), not through `fails Timed[E]` (acceptance decision 2).
 3. **`Deadline`'s variant is `Expired`.** The decision says `Deadline = TimedOut`, but `Timed` and `Deadline` are declared in the one module `std.time`, and two variants with the same name in a module are U1002 (`spec/10 §11` rule 5).
-4. **`Limiter` is a scoped handler,** not a value (Question 4).
+4. **`Limiter` is a scoped handler,** not a value (acceptance decision 4).
 5. **`with` on `start` is not allowed** (rule 7). A `with` scopes over its statement, and `start` ends before its task does, so the handler instance would outlive its scope.
 6. **A started task that runs too deep ends alone,** without aborting the run (rule 7), so that one request cannot stop a server.
-7. **Decided in the review of the outline, on 2026-10-18,** and to be recorded on #896:
+7. **Decided in the review of the outline, on 2026-10-18,** and recorded on #896:
    - the interpreter's deterministic schedule of started tasks;
    - the default bound of `tasks`;
    - the streamed trace;
@@ -478,7 +430,7 @@ IF2. **`within`.** Let `t = τ(e)` (ADR 0116 IF5, which includes `ℓ(d)` and `�
 - **Its failure** is labeled `t`, joined with the label of `e`'s own failure. `if error use v` then runs under that label, and its value is raised by it (`spec/07 §7` rule 3). `if error pass` and `if error fail` are U4002 when it is above `public`.
 - **The places `e` updates**, its `edit` arguments and the target of an assignment, MUST be labeled at least `t` (U4001 at the place, with the `within` as the related span). Whether they change depends on whether `e` met its deadline.
 - **The timing floor.** Every operation inside `e`, and every call inside `e` with effects, is checked as if it ran under `pc ⊔ t`: the sinks of `spec/07 §7` rule 4 (U4003), and the effect bound `bound_eff` of each call (U4002), the meet of the `accepts` labels of the effects the callee may perform, as for the effect floor of a handler (ADR 0038 D4, `spec/07 §7` rule 4), not `bound`, which is `public` for any callee that can fail. A deadline can cut `e` before any of them, so whether each happens depends on timing. Failures inside `e` keep the ordinary program counter, since they reach only `e`'s failure, which is labeled `t`. Interruptible operations inside `e` meet ADR 0116 IF8 with `t`.
-- **For `Http`**, `t` is at least `internal`, as its sinks and failures already are (`spec/24 §5`), so code that only calls `Http` inside a `within` is unaffected. Code that also prints `public` lines is not (Question 1).
+- **For `Http`**, `t` is at least `internal`, as its sinks and failures already are (`spec/24 §5`), so code that only calls `Http` inside a `within` is unaffected. Code that also prints `public` lines is not (acceptance decision 1).
 
 IF3. **`first of`.** Let `t` be the join of `τ` of every branch.
 - The result is labeled with `t`, besides the labels of its value, since timing decides the winner.
@@ -579,8 +531,8 @@ The messages of `async` and `await` (`spec/19 §9`) become "not supported; use `
 
 - **What a server can do.** It can hold many connections with a few threads, bound each request's time, race replicas, and pace its calls to other services, with no new kind of value and no split between functions that may wait and functions that may not.
 - **Requests in flight** can be cut short, and a cut one is marked in the trace as an effect in doubt.
-- **Timeouts over I/O** can be recovered from (`use`, `attempt`, `fail` into an `internal` failure), never passed on to a public failure. Code inside a `within` or a `first of` over I/O cannot print `public` lines (Question 1).
-- **Labels in servers.** Deadlines, races and rate limits carry the label of the tasks that can run beside them (Question 2). In a server whose request tasks handle `secret` data, they are not available beside those tasks, and its `Http` grants cannot carry limits. A call of a function parameter makes `τ` the top label (ADR 0116 IF5), so one such call in a task does the same to every deadline beside it.
+- **Timeouts over I/O** can be recovered from (`use`, `attempt`, `fail` into an `internal` failure), never passed on to a public failure. Code inside a `within` or a `first of` over I/O cannot print `public` lines (acceptance decision 1).
+- **Labels in servers.** Deadlines, races and rate limits carry the label of the tasks that can run beside them (acceptance decision 2). In a server whose request tasks handle `secret` data, they are not available beside those tasks, and its `Http` grants cannot carry limits. A call of a function parameter makes `τ` the top label (ADR 0116 IF5), so one such call in a task does the same to every deadline beside it.
 - **`HttpError`** gains `RateLimited` and `Interrupted` in edition `0.4`.
 - **The native runtime** is rebuilt around coroutines. Its per-thread state becomes per-task slots that the worker swaps, which is the main implementation risk, and the trusted base gains `una-sys`.
 - **Traces.** A run with `start` no longer has a deterministic trace order across started tasks. Under `--virtual-time` it does.
@@ -677,12 +629,12 @@ The messages of `async` and `await` (`spec/19 §9`) become "not supported; use `
   - time and memory MUST grow linearly;
   - the same at 20,000 on Linux reports the cap of rule 2, not a failed mapping.
 
-## Appendix A. Amendments to accepted records, appended on acceptance
+## Appendix A. Amendments to accepted records, appended on 2026-10-18
 
-**ADR 0058, Amendment (date of acceptance).** As appended by ADR 0116: the crate `una-sys` holds the stack switch of coroutines and the mapping of their stacks with guard pages (ADR 0117 rule 2), which both the native runtime and the interpreter use.
+**ADR 0058, Amendment (2026-10-18).** As appended by ADR 0116: the crate `una-sys` holds the stack switch of coroutines and the mapping of their stacks with guard pages (ADR 0117 rule 2), which both the native runtime and the interpreter use.
 
-**ADR 0061, Amendment (date of acceptance).** Rule 1's cap on the stack reservation holds for every task. The stack a task uses counts toward the memory budget of rule 2, measured at each depth check (ADR 0117 rule 2). The tasks of `first of` and `start` take their depth limit from `--task-depth`.
+**ADR 0061, Amendment (2026-10-18).** Rule 1's cap on the stack reservation holds for every task. The stack a task uses counts toward the memory budget of rule 2, measured at each depth check (ADR 0117 rule 2). The tasks of `first of` and `start` take their depth limit from `--task-depth`.
 
-**ADR 0065, Amendment (date of acceptance).** C1 rule 5's "no `race` or `select`" and rule 13's deferral of timeouts give way to `first of` and `within` (ADR 0117). Started tasks exist, and C1 C still holds: there are no task handles. C6 A keeps the trace in branch order for `together`, `together for` and `first of`. The events of the root task and of started tasks, in a run that executes a `tasks` statement, are in the order they happen, and such runs compare across engines under `--virtual-time` (ADR 0117 rules 10 and 12). C7 A's threads become coroutines.
+**ADR 0065, Amendment (2026-10-18).** C1 rule 5's "no `race` or `select`" and rule 13's deferral of timeouts give way to `first of` and `within` (ADR 0117). Started tasks exist, and C1 C still holds: there are no task handles. C6 A keeps the trace in branch order for `together`, `together for` and `first of`. The events of the root task and of started tasks, in a run that executes a `tasks` statement, are in the order they happen, and such runs compare across engines under `--virtual-time` (ADR 0117 rules 10 and 12). C7 A's threads become coroutines.
 
-**ADR 0113, Amendment (date of acceptance).** The tasks of a batch are coroutines, not threads, and a join parks its task. Rules 1 to 4, on the order of the copies and the checks before each allocation, are unchanged. The batch width, 64, stays a constant of the runtime, which may grow once coroutines make each task cheap.
+**ADR 0113, Amendment (2026-10-18).** The tasks of a batch are coroutines, not threads, and a join parks its task. Rules 1 to 4, on the order of the copies and the checks before each allocation, are unchanged. The batch width, 64, stays a constant of the runtime, which may grow once coroutines make each task cheap.

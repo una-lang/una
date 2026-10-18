@@ -77,3 +77,7 @@ Rule 2 gains a check point in both engines.
   - When the program's own `let` bindings and lists fix the sharing, both engines count the same pairs and abort at the same comparison.
 - **Complexity.** A comparison takes time and space in the number of distinct pairs of values with parts it meets. That is never more than the product of the two values' distinct parts with parts, plus its first 1024 steps. It no longer grows with the number of paths through their shared parts.
 - **Information flow.** Like the other check points, whether a comparison of labeled values reaches the budget can depend on their contents. That is at most one bit through termination, outside the noninterference model (`spec/07 §1`).
+
+## Amendment (2026-10-18, ADR 0117)
+
+Rule 1's cap on the stack reservation holds for every task. The stack a task uses counts toward the memory budget of rule 2, measured at each depth check (ADR 0117 rule 2). The tasks of `first of` and `start` take their depth limit from `--task-depth`.
