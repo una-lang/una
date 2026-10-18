@@ -25,7 +25,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use una_cli::{
-    Builtin, Item, Tier, builtins, check, std_builtin_items, std_builtins, std_items, std_listing,
+    Builtin, Item, Tier, Variant, builtins, check, std_builtin_items, std_builtins, std_items,
+    std_listing,
 };
 use una_project::Edition;
 
@@ -1089,6 +1090,43 @@ fn declaration_lines(declaration: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The variants of the failure kind `kind` as it is declared in every one of `editions`, or
+/// `None` when no one declaration covers them all.
+fn failure_variants(kind: &Item, editions: &[&str]) -> Option<Vec<String>> {
+    kind.variants
+        .iter()
+        .find(|v| editions.iter().all(|edition| v.editions.contains(edition)))
+        .map(|v| {
+            variants_of(&v.declaration)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        })
+}
+
+#[test]
+fn a_failure_kind_is_read_in_the_editions_an_entry_describes() {
+    let variant = |editions: Vec<&'static str>, declaration: &str| Variant {
+        editions,
+        declaration: declaration.to_owned(),
+        docs: Vec::new(),
+    };
+    let kind = Item {
+        name: "Problem".to_owned(),
+        module: "prelude",
+        kind: "kind",
+        spec: Vec::new(),
+        variants: vec![
+            variant(vec!["0.2"], "pub kind Problem = A | B"),
+            variant(vec!["0.3"], "pub kind Problem = A | B | C"),
+        ],
+    };
+    let names = |names: &[&str]| Some(names.iter().map(|n| (*n).to_owned()).collect());
+    assert_eq!(failure_variants(&kind, &["0.2"]), names(&["A", "B"]));
+    assert_eq!(failure_variants(&kind, &["0.3"]), names(&["A", "B", "C"]));
+    assert_eq!(failure_variants(&kind, &["0.2", "0.3"]), None);
+}
+
 /// The text inside each `O(...)` of the cost `time`.
 fn big_o(time: &str) -> Vec<&str> {
     let mut found = Vec::new();
@@ -1643,17 +1681,10 @@ fn the_reference_agrees_with_the_listing() {
             // The failure kind as it is declared in the editions the entry describes.
             let declared: Vec<String> = match sig.fails.as_deref() {
                 None => Vec::new(),
-                Some(kind) => match listed("prelude", kind).and_then(|kind| {
-                    kind.variants.iter().find(|v| {
-                        described_editions
-                            .iter()
-                            .all(|edition| v.editions.contains(edition))
-                    })
-                }) {
-                    Some(v) => variants_of(&v.declaration)
-                        .into_iter()
-                        .map(|(n, _)| n)
-                        .collect(),
+                Some(kind) => match listed("prelude", kind)
+                    .and_then(|kind| failure_variants(kind, &described_editions))
+                {
+                    Some(variants) => variants,
                     None => {
                         problems.push(format!(
                             "{at}: its failure kind `{kind}` has no declaration for all of {described_editions:?}"
