@@ -5,8 +5,8 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   let empty: U8 = 0
-  let all = empty.bit_not()
+  let full = empty.bit_not()
   let bottom: I8 = -128
   let top = bottom.bit_not()
-  @console.print("{all}")
+  @console.print("{full}")
   @console.print("{top}")
