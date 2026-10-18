@@ -14,6 +14,11 @@ use una_syntax::Span;
 use crate::host::{self, FileFault, Grant, World};
 use crate::value::{Closure, Value, compare, equal};
 
+/// The most digits that `to_int` reads, its sign excluded and leading zeros included
+/// (`spec/14 §1`): converting d digits to an exact integer takes O(d²), so a longer text is
+/// `None` before any conversion, as in CPython (#914).
+const MAX_INT_DIGITS: usize = 4300;
+
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
 /// within a function (`spec/09 §1`), so the last binding of a name is the one in scope.
 pub(crate) type Env<'p> = Vec<(&'p str, Value<'p>)>;
@@ -974,11 +979,16 @@ impl<'p, 'w> Machine<'p, 'w> {
             "to_int" => {
                 let t = text(0)?;
                 let digits = t.strip_prefix('-').unwrap_or(&t);
-                match t.parse::<BigInt>() {
-                    Ok(n) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
-                        some(Value::Int(n))
-                    }
-                    _ => none(),
+                // Checked in O(b) before the O(d²) conversion, which only a text of at most
+                // MAX_INT_DIGITS digits reaches (`spec/14 §1`, #914).
+                let valid = !digits.is_empty()
+                    && digits.len() <= MAX_INT_DIGITS
+                    && digits.bytes().all(|b| b.is_ascii_digit());
+                if valid {
+                    t.parse::<BigInt>()
+                        .map_or_else(|_| none(), |n| some(Value::Int(n)))
+                } else {
+                    none()
                 }
             }
             "is_empty" => Value::Bool(list(0)?.is_empty()),

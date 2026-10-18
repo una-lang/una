@@ -48,7 +48,7 @@ Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (ef
 
 The native implementations declare these labels explicitly.
 
-Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when every character is an ASCII digit, so it holds of the empty text; `trim` removes Unicode whitespace at both ends; `to_int` reads an optional `-` followed by ASCII digits; `starts_with` compares scalar values; `contains` and `==` are structural; `Text` orders by scalar values (ADR 0032).
+Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when every character is an ASCII digit, so it holds of the empty text; `trim` removes Unicode whitespace at both ends; `to_int` reads an optional `-` followed by ASCII digits, and (security fix, 2026-10-18, #914) is `None` for more than 4300 digits, the sign excluded and leading zeros included, checked before any conversion, since converting d digits takes O(d²); `starts_with` compares scalar values; `contains` and `==` are structural; `Text` orders by scalar values (ADR 0032).
 
 ## 2. Built-in operations
 

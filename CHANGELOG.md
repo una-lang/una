@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.12
+
+v0.1.11 with the #914 fix: `to_int` is `None` for a text of more than 4300 digits.
+
+### Security
+
+- **`to_int` is bounded at 4300 digits** (#914, advisory UNA-SA-016, `spec/14 §1`). Converting a text of d digits to an `Int` took O(d²) time, so a program reading untrusted text could be made to spend quadratic time in one call. `to_int` now returns `None` for an optional `-` and more than 4300 digits, leading zeros included, after one O(b) scan and before any conversion.
+
 ## v0.1.11
 
 v0.1.10 with the S-28 fix: a text literal with interpolation in a pattern is U4008 (#801).
