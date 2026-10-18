@@ -1,1 +1,1 @@
-1 entries
+lamp: 5, entries: 1

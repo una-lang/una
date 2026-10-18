@@ -1,7 +1,7 @@
 module shop
 
---- How many units to reorder, never fewer than none, and the last name in alphabetical
---- order.
+--- How many units to reorder, never fewer than none, and the last of two names in the order of
+--- their scalar values.
 pub main() -> Unit
   uses @console: Console[print]
 =

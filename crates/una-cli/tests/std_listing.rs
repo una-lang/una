@@ -501,22 +501,36 @@ fn each_builtin_signature_checks_in_exactly_its_editions_and_a_wrong_call_does_n
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// The parts of a function's declaration the reference describes (#853): its parameters' names,
-/// its result type, the kind it fails with, its preconditions and the parameters whose effects it
-/// has, from the declaration line `pub NAME[...](PARAMS) -> RESULT`, a `fails KIND` line, its
-/// `requires` lines and its `uses of p` and `fails of p` lines.
+/// The parts of a function's declaration the reference describes (#853): its parameters' names
+/// and which of them are `edit`, the constraints of its type parameters, its result type, the
+/// kind it fails with, its preconditions and the parameters whose effects (`uses of p`) and
+/// failures (`fails of p`) it has, from the declaration line `pub NAME[...](PARAMS) -> RESULT`, a
+/// `fails KIND` line, its `requires` lines and its `uses of p` and `fails of p` lines.
 #[derive(Debug, PartialEq)]
 struct Signature {
     params: Vec<String>,
+    edits: Vec<bool>,
+    constraints: Vec<String>,
     result: String,
     fails: Option<String>,
     requires: Vec<String>,
-    effects: Vec<String>,
+    uses_of: Vec<String>,
+    fails_of: Vec<String>,
 }
 
 fn signature(declaration: &str) -> Signature {
     let first = declaration.lines().next().unwrap();
     let open = first.find('(').unwrap();
+    // `[T: Ord, U]` between the name and `(`: the constraints after each `:`.
+    let constraints = first[..open]
+        .split_once('[')
+        .map(|(_, inside)| inside.trim_end_matches(']'))
+        .into_iter()
+        .flat_map(|inside| inside.split(','))
+        .filter_map(|param| param.split_once(':'))
+        .flat_map(|(_, bounds)| bounds.split('+'))
+        .map(|bound| bound.trim().to_owned())
+        .collect();
     let mut depth = 0;
     let mut close = open;
     for (at, c) in first.char_indices().skip_while(|(at, _)| *at <= open) {
@@ -548,6 +562,10 @@ fn signature(declaration: &str) -> Signature {
     if !part.trim().is_empty() {
         params.push(part);
     }
+    let edits = params
+        .iter()
+        .map(|p| p.trim().starts_with("edit "))
+        .collect();
     let params = params
         .iter()
         .map(|p| {
@@ -571,27 +589,27 @@ fn signature(declaration: &str) -> Signature {
             .map(|rest| rest.trim().to_owned())
             .collect::<Vec<String>>()
     };
-    let mut effects: Vec<String> = clause("uses of ")
-        .into_iter()
-        .chain(clause("fails of "))
-        .collect();
-    effects.sort();
-    effects.dedup();
     Signature {
         params,
+        edits,
+        constraints,
         result,
         fails: clause("fails ")
             .into_iter()
             .find(|kind| !kind.starts_with("of ")),
         requires: clause("requires "),
-        effects,
+        uses_of: clause("uses of "),
+        fails_of: clause("fails of "),
     }
 }
 
 /// One signature line of a built-in method's declaration, `[edit ]x.name[(PARAMS)] -> RESULT`
-/// with its `where x: TYPE` line: the receiver's type, the parameters' names and the result.
+/// with its `where x: TYPE` line: whether the receiver is `edit`, its name and type, the
+/// parameters' names and the result.
 #[derive(Debug, PartialEq)]
 struct Method {
+    edit: bool,
+    var: String,
     receiver: String,
     params: Vec<String>,
     result: String,
@@ -611,8 +629,9 @@ fn methods(declaration: &str) -> Vec<Method> {
             }
             continue;
         }
+        let edit = line.trim().starts_with("edit ");
         let line = line.trim().trim_start_matches("edit ");
-        let Some((_, rest)) = line.split_once('.') else {
+        let Some((var, rest)) = line.split_once('.') else {
             continue;
         };
         let (params, result) = if rest.split("->").next().unwrap_or("").contains('(') {
@@ -628,6 +647,8 @@ fn methods(declaration: &str) -> Vec<Method> {
             )
         };
         found.push(Method {
+            edit,
+            var: var.trim().to_owned(),
             receiver: String::new(),
             params,
             result,
@@ -644,19 +665,65 @@ enum KindForm {
     Definition(String),
 }
 
+/// Whether `word` is a lowercase name, `[a-z_][a-z0-9_]*`.
+fn lower_name(word: &str) -> bool {
+    word.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        && word
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// The parts of `text` between the `separator`s outside brackets and parentheses.
+fn split_top(text: &str, separator: char) -> Vec<&str> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0, 0);
+    for (at, c) in text.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            c if c == separator && depth == 0 => {
+                parts.push(&text[start..at]);
+                start = at + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// By structure, not by how it is written: after `=`, a sum is one or more constructors, an
+/// uppercase name with or without fields in parentheses, separated by `|`, with a leading `|`,
+/// several of them or fields, so that `= Only` stays a definition over a type `Only`; anything
+/// else after `=` is a definition; with no `=`, the fields are the following lines of the form
+/// `name: Type`.
 fn kind_form(declaration: &str) -> KindForm {
     let first = declaration.lines().next().unwrap_or("");
-    match first.split_once('=') {
-        Some((_, body)) if body.contains('|') => KindForm::Sum,
-        Some((_, body)) => KindForm::Definition(body.trim().to_owned()),
-        None => KindForm::Record(
+    let Some((_, body)) = first.split_once('=') else {
+        return KindForm::Record(
             declaration
                 .lines()
                 .skip(1)
                 .filter_map(|line| line.trim().split_once(':'))
-                .map(|(field, _)| field.trim().to_owned())
+                .filter(|(field, ty)| lower_name(field) && !ty.trim().is_empty())
+                .map(|(field, _)| field.to_owned())
                 .collect(),
-        ),
+        );
+    };
+    let body = body.trim();
+    let leading = body.starts_with('|');
+    let parts = split_top(body.trim_start_matches('|'), '|');
+    let constructor = |part: &str| {
+        let part = part.trim();
+        let (head, fields) = part.split_once('(').unwrap_or((part, ""));
+        head.starts_with(|c: char| c.is_ascii_uppercase())
+            && head.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && (fields.is_empty() || fields.ends_with(')'))
+    };
+    let fields = parts.iter().any(|part| part.contains('('));
+    if parts.iter().all(|part| constructor(part)) && (leading || parts.len() > 1 || fields) {
+        KindForm::Sum
+    } else {
+        KindForm::Definition(body.to_owned())
     }
 }
 
@@ -860,6 +927,168 @@ fn cost_cells(text: &str, name: &str, method: bool) -> Vec<String> {
     Vec::new()
 }
 
+/// Every source that can state a cost, with its text: the Decision section of each accepted ADR,
+/// `ADR NNNN`, and each section of the spec, `spec/NN §M`.
+fn cost_sources() -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let names = |dir: &str| {
+        let mut names: Vec<String> = fs::read_dir(root().join(dir))
+            .unwrap()
+            .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
+    };
+    for name in names("docs/adr") {
+        let number = name.split('-').next().unwrap_or("");
+        if number.len() == 4 && number.chars().all(|c| c.is_ascii_digit()) {
+            let source = format!("ADR {number}");
+            if let Some(text) = cited(&source) {
+                found.push((source, text));
+            }
+        }
+    }
+    for name in names("docs/spec") {
+        let chapter = name.split('-').next().unwrap_or("");
+        if chapter.len() != 2 || !chapter.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let text = fs::read_to_string(root().join("docs/spec").join(&name)).unwrap();
+        for line in text.lines() {
+            let Some((number, _)) = line.strip_prefix("## ").and_then(|h| h.split_once(". "))
+            else {
+                continue;
+            };
+            let source = format!("spec/{chapter} §{number}");
+            if let Some(text) = section(&source) {
+                found.push((source, text));
+            }
+        }
+    }
+    found
+}
+
+/// Costs that a source states in a sentence rather than in a cost table, so that the check
+/// cannot find them by itself: the source, the cost as an entry's `time` gives it (the sentence's
+/// words, with the backticks of its code spans removed), and the items it is the cost of. Review
+/// keeps this list; una#852 is to state every item's cost.
+const STATED_COSTS: [(&str, &str, &[&str]); 2] = [
+    (
+        "spec/21 §5",
+        "O(log n) per lookup, insertion and removal",
+        &[
+            "builtin has",
+            "builtin get",
+            "builtin set",
+            "builtin remove",
+        ],
+    ),
+    (
+        "ADR 0107",
+        "O(1) index and set, amortized O(1) append, O(n) copy when the list is shared",
+        &["prelude set", "prelude append"],
+    ),
+];
+
+/// The receiver that a cost table's row is about where the row names only the method, for a
+/// method with several receivers: ADR 0070 is about texts, so its `.len` row is the cost on a
+/// `Text`.
+const COST_ON: [(&str, &str, &str); 1] = [("ADR 0070", "len", "Text")];
+
+/// The keys of the reference whose values are prose.
+const PROSE: [&str; 6] = ["meaning", "when", "why", "differs", "note", "requires_note"];
+
+/// Every prose text under `value`, with where it is.
+fn prose<'v>(value: &'v serde_json::Value, at: &str, found: &mut Vec<(String, &'v str)>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, inner) in object {
+                match inner.as_str() {
+                    Some(text) if PROSE.contains(&key.as_str()) => {
+                        found.push((format!("{at} {key}"), text));
+                    }
+                    _ => prose(inner, &format!("{at} {key}"), found),
+                }
+            }
+        }
+        serde_json::Value::Array(list) => {
+            for (index, inner) in list.iter().enumerate() {
+                prose(inner, &format!("{at} {index}"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The code spans of a prose text.
+fn spans(text: &str) -> impl Iterator<Item = &str> {
+    text.split('`').skip(1).step_by(2)
+}
+
+/// Whether a code span states a condition: it compares, or names an `old` value.
+fn condition(span: &str) -> bool {
+    ["==", "!=", "<=", ">=", " < ", " > ", "old("]
+        .iter()
+        .any(|op| span.contains(op))
+}
+
+/// `text` with each whole word `from` replaced by `to`.
+fn replace_word(text: &str, from: &str, to: &str) -> String {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut last = 0;
+    for (at, _) in text.match_indices(from) {
+        let before = text[..at].chars().next_back();
+        let after = text[at + from.len()..].chars().next();
+        if before.is_some_and(word) || after.is_some_and(word) {
+            continue;
+        }
+        out.push_str(&text[last..at]);
+        out.push_str(to);
+        last = at + from.len();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// The contracts an entry may restate: the declaration's lines, and the spec sections that the
+/// item cites, where a table row whose first cell is a call, `m.set(key: k, value: v)`, reads with
+/// each argument's name, `k`, replaced by its label, `key`.
+fn contracts(item: &Item, declaration: &str) -> String {
+    let mut text = format!("{declaration}\n");
+    for reference in &item.spec {
+        for line in section(reference).unwrap_or_default().lines() {
+            let mut line = line.to_owned();
+            if line.starts_with('|') {
+                let first = cells(&line).first().cloned().unwrap_or_default();
+                if let Some((_, args)) = first.split_once('(') {
+                    for arg in args.trim_end_matches(['`', ')']).split(',') {
+                        if let Some((label, name)) = arg.split_once(':')
+                            && lower_name(name.trim())
+                        {
+                            line = replace_word(&line, name.trim(), label.trim());
+                        }
+                    }
+                }
+            }
+            text.push_str(&line);
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// The lines of a declaration as `earlier` quotes them: trimmed, without `pub `.
+fn declaration_lines(declaration: &str) -> Vec<&str> {
+    declaration
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            line.strip_prefix("pub ").unwrap_or(line)
+        })
+        .collect()
+}
+
 /// The text inside each `O(...)` of the cost `time`.
 fn big_o(time: &str) -> Vec<&str> {
     let mut found = Vec::new();
@@ -1049,60 +1278,33 @@ fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// The head of a type, `Map` for `Map[K, V]`.
-fn type_head(written: &str) -> String {
-    written
-        .trim()
-        .trim_start_matches("edit ")
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect()
-}
-
 /// How the example code `src` names `item`, as `(call, free, method)` for `occurrences`:
 /// - a kind by its name;
 /// - a function as a call, `name(...)`, or as a method call, `x.name(...)`;
 /// - a built-in method only as `x.name(...)`, or `x.name` when it takes no arguments.
 ///
-/// A method call counts only when no other item of that name could be meant: the code names
-/// none of the types that the other item takes as its receiver or first parameter, so that a
-/// map's `.set(...)` is never taken for the list function `set`.
-fn naming(item: &Item, items: &[Item], src: &str, code: &[bool]) -> (bool, bool, bool) {
+/// A method call `x.name(...)` can be a function's or a built-in method's, which only the
+/// receiver's type decides: `shadowed` tells them apart through the checker.
+fn naming(item: &Item) -> (bool, bool, bool) {
     let declaration = &item.variants.last().unwrap().declaration;
-    let others: Vec<String> = items
-        .iter()
-        .filter(|other| other.name == item.name && other.module != item.module)
-        .flat_map(|other| {
-            other.variants.iter().flat_map(|variant| {
-                if other.kind == "method" {
-                    methods(&variant.declaration)
-                        .into_iter()
-                        .map(|method| type_head(&method.receiver))
-                        .collect::<Vec<String>>()
-                } else {
-                    let first = variant.declaration.lines().next().unwrap_or("");
-                    first
-                        .split_once('(')
-                        .and_then(|(_, params)| params.split_once(':'))
-                        .map(|(_, t)| type_head(t))
-                        .into_iter()
-                        .collect()
-                }
-            })
-        })
-        .collect();
-    let unambiguous = others
-        .iter()
-        .all(|head| occurrences(src, code, head, false, true, false).is_empty());
     match item.kind {
         "kind" => (false, true, false),
         "method" => (
             declaration.contains(&format!(".{}(", item.name)),
             false,
-            unambiguous,
+            true,
         ),
-        _ => (true, true, unambiguous),
+        _ => (true, true, true),
     }
+}
+
+/// The Una source `src` with a declaration of a function `name` of one `Unit` parameter
+/// appended, in canonical form. It shadows the prelude function of that name (`spec/10 §11`
+/// rule 5), so every call that resolved to the prelude function stops checking,
+/// while a built-in method resolved by its receiver's type is tried before any function in
+/// scope (`spec/04 §3`, `spec/21 §2`) and keeps checking.
+fn shadowed(src: &str, name: &str) -> String {
+    format!("{src}\n{name}(probe: Unit) -> Unit = probe\n")
 }
 
 /// The editions in which `item` exists.
@@ -1164,12 +1366,31 @@ fn the_reference_agrees_with_the_listing() {
         .filter_map(|area| area.as_str())
         .collect();
     let mut covered = std::collections::BTreeSet::new();
-    // Every source a cost cites: an item it states a cost for must carry that cost.
-    let cost_sources: std::collections::BTreeSet<&str> = reference["entries"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry["cost"]["source"].as_str())
+    // Every prose text follows the rules of doc comments (#861), so that a text the site would
+    // refuse fails here first.
+    let mut texts = Vec::new();
+    prose(&reference, "reference", &mut texts);
+    for (at, text) in texts {
+        for problem in doc_problems(&[text.to_owned()]) {
+            problems.push(format!("{at}: {problem}"));
+        }
+    }
+    // Every source that can state a cost: an item whose row a cost table of one has must carry
+    // a cost, and so must an item that `STATED_COSTS` gives a cost, in its source's words.
+    let all_sources = cost_sources();
+    for (source, time, _) in STATED_COSTS {
+        let stated = all_sources
+            .iter()
+            .any(|(s, text)| s == source && text.replace('`', "").contains(time));
+        if !stated {
+            problems.push(format!("STATED_COSTS: {source} does not say `{time}`"));
+        }
+    }
+    let constraint_names: std::collections::BTreeSet<String> = items
+        .iter()
+        .filter(|item| item.kind == "function")
+        .flat_map(|item| &item.variants)
+        .flat_map(|variant| signature(&variant.declaration).constraints)
         .collect();
     for (index, entry) in list(&reference, "entries", "reference", &mut problems)
         .iter()
@@ -1215,16 +1436,28 @@ fn the_reference_agrees_with_the_listing() {
                 entry["area"]
             ));
         }
-        // The variant it describes: the only one or, when the declaration differs between
+        // Its declarations, each with the editions that have it: variants that differ only in
+        // their doc comments are one.
+        let mut declarations: Vec<(Vec<&str>, &str)> = Vec::new();
+        for variant in &item.variants {
+            match declarations
+                .iter_mut()
+                .find(|(_, d)| *d == variant.declaration)
+            {
+                Some((editions, _)) => editions.extend(variant.editions.iter().copied()),
+                None => declarations.push((variant.editions.clone(), &variant.declaration)),
+            }
+        }
+        // The declaration it describes: the only one or, when the declaration differs between
         // editions, the one whose editions `describes` gives, with one `earlier` note for each
-        // other variant.
+        // other declaration.
         let described = match entry.get("describes") {
-            None if item.variants.len() == 1 => item.variants.first(),
+            None if declarations.len() == 1 => 0,
             None => {
                 problems.push(format!(
                     "{at}: its declaration differs between editions; give `describes` and `earlier`"
                 ));
-                item.variants.last()
+                declarations.len() - 1
             }
             Some(describes) => {
                 let wanted: Vec<&str> = describes
@@ -1233,42 +1466,76 @@ fn the_reference_agrees_with_the_listing() {
                     .flatten()
                     .filter_map(|e| e.as_str())
                     .collect();
-                let found = item.variants.iter().find(|v| v.editions == wanted);
-                if found.is_none() || item.variants.len() == 1 {
+                let found = declarations.iter().position(|(e, _)| *e == wanted);
+                if found.is_none() || declarations.len() == 1 {
                     problems.push(format!(
-                        "{at}: `describes` {wanted:?} is not the editions of one of several variants"
+                        "{at}: `describes` {wanted:?} is not the editions of one of several declarations"
                     ));
                 }
-                found.or(item.variants.last())
+                found.unwrap_or(declarations.len() - 1)
             }
         };
-        let declaration = described.map_or("", |v| v.declaration.as_str());
+        let (described_editions, declaration) = declarations[described].clone();
+        // Each `earlier` note says how the declaration of its editions differs: it quotes, in a
+        // code span, each line that the earlier declaration has and the described one lacks, and
+        // each line after the first that the described one has and the earlier one lacks.
+        let ours = declaration_lines(declaration);
         let mut noted: Vec<Vec<&str>> = Vec::new();
+        let mut earlier_constraints = Vec::new();
         for (i, earlier) in list(entry, "earlier", &at, &mut problems)
             .iter()
             .enumerate()
         {
             let at = format!("{at} earlier {i}");
             shape(earlier, &at, &["editions", "differs"], &[], &mut problems);
-            filled(earlier, "differs", &at, &mut problems);
-            noted.push(
-                earlier["editions"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|e| e.as_str())
-                    .collect(),
-            );
+            let differs = filled(earlier, "differs", &at, &mut problems);
+            let editions: Vec<&str> = earlier["editions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.as_str())
+                .collect();
+            if let Some((_, theirs)) = declarations
+                .iter()
+                .enumerate()
+                .find(|(index, (e, _))| *index != described && *e == editions)
+                .map(|(_, d)| d)
+            {
+                if item.kind == "function" {
+                    earlier_constraints.extend(signature(theirs).constraints);
+                }
+                let theirs = declaration_lines(theirs);
+                let quoted: Vec<&str> = spans(differs).collect();
+                let lines: Vec<&str> = theirs
+                    .iter()
+                    .filter(|line| !ours.contains(*line))
+                    .chain(ours.iter().skip(1).filter(|line| !theirs.contains(*line)))
+                    .copied()
+                    .collect();
+                for line in &lines {
+                    if !quoted.contains(line) {
+                        problems.push(format!(
+                            "{at}: `differs` does not quote `{line}`, where the declarations differ"
+                        ));
+                    }
+                }
+                if lines.is_empty() {
+                    problems.push(format!(
+                        "{at}: the declarations differ in no line `differs` can quote"
+                    ));
+                }
+            }
+            noted.push(editions);
         }
-        let others: Vec<Vec<&str>> = item
-            .variants
+        let others: Vec<Vec<&str>> = declarations
             .iter()
-            .filter(|v| described.is_none_or(|d| !std::ptr::eq(*v, d)))
-            .map(|v| v.editions.clone())
+            .enumerate()
+            .filter(|(index, _)| *index != described)
+            .map(|(_, (editions, _))| editions.clone())
             .collect();
         if noted != others {
             problems.push(format!(
-                "{at}: `earlier` notes {noted:?}, the other variants' editions are {others:?}"
+                "{at}: `earlier` notes {noted:?}, the other declarations' editions are {others:?}"
             ));
         }
         let only = |keys: &[&str], problems: &mut Vec<String>| {
@@ -1289,8 +1556,21 @@ fn the_reference_agrees_with_the_listing() {
                 }
             }
         };
+        // A parameter or receiver is "changed in place" exactly when it is declared `edit`.
+        let in_place = |text: &str, edit: bool, at: &str, problems: &mut Vec<String>| {
+            if text.contains("changed in place") != edit {
+                problems.push(format!(
+                    "{at}: says \"changed in place\" {}, and it is {}declared `edit`",
+                    if edit { "nowhere" } else { "" },
+                    if edit { "" } else { "not " }
+                ));
+            }
+        };
         // Parameters and result, for functions and built-in methods.
-        let check_params = |declared: &[String], result: &str, problems: &mut Vec<String>| {
+        let check_params = |declared: &[String],
+                            edits: &[bool],
+                            result: &str,
+                            problems: &mut Vec<String>| {
             if entry.get("params").is_none() || entry.get("returns").is_none() {
                 problems.push(format!(
                     "{at}: a {} needs `params` and `returns`",
@@ -1302,7 +1582,8 @@ fn the_reference_agrees_with_the_listing() {
                 let at = format!("{at} parameter {i}");
                 shape(param, &at, &["name", "meaning"], &[], problems);
                 params.push(filled(param, "name", &at, problems).to_owned());
-                filled(param, "meaning", &at, problems);
+                let meaning = filled(param, "meaning", &at, problems);
+                in_place(meaning, edits.get(i) == Some(&true), &at, problems);
             }
             if params != declared {
                 problems.push(format!(
@@ -1331,7 +1612,7 @@ fn the_reference_agrees_with_the_listing() {
                 &mut problems,
             );
             let sig = signature(declaration);
-            check_params(&sig.params, &sig.result, &mut problems);
+            check_params(&sig.params, &sig.edits, &sig.result, &mut problems);
             let mut requires = Vec::new();
             for (i, condition) in list(entry, "requires", &at, &mut problems)
                 .iter()
@@ -1361,27 +1642,42 @@ fn the_reference_agrees_with_the_listing() {
                 fails.push(filled(failure, "variant", &at, &mut problems).to_owned());
                 filled(failure, "when", &at, &mut problems);
             }
-            let declared: Vec<String> = sig
-                .fails
-                .as_deref()
-                .and_then(|kind| listed("prelude", kind))
-                .and_then(|kind| kind.variants.last())
-                .map(|v| {
-                    variants_of(&v.declaration)
+            // The failure kind as it is declared in the editions the entry describes.
+            let declared: Vec<String> = match sig.fails.as_deref() {
+                None => Vec::new(),
+                Some(kind) => match listed("prelude", kind).and_then(|kind| {
+                    kind.variants.iter().find(|v| {
+                        described_editions
+                            .iter()
+                            .all(|edition| v.editions.contains(edition))
+                    })
+                }) {
+                    Some(v) => variants_of(&v.declaration)
                         .into_iter()
                         .map(|(n, _)| n)
-                        .collect()
-                })
-                .unwrap_or_default();
+                        .collect(),
+                    None => {
+                        problems.push(format!(
+                            "{at}: its failure kind `{kind}` has no declaration for all of {described_editions:?}"
+                        ));
+                        Vec::new()
+                    }
+                },
+            };
             if declared != fails {
                 problems.push(format!(
                     "{at}: fails with {fails:?}, the declaration's failure kind has {declared:?}"
                 ));
             }
-            // `uses of p` and `fails of p`: the function has the effects and failures of `p`.
-            match (entry.get("effects_of"), sig.effects.as_slice()) {
-                (None, []) => {}
-                (Some(effects), [param]) => {
+            // `uses of p` and `fails of p`: the function has the effects and the failures of `p`.
+            // `effects_of` says both, so the declaration has both clauses, of the same parameter.
+            match (
+                entry.get("effects_of"),
+                sig.uses_of.as_slice(),
+                sig.fails_of.as_slice(),
+            ) {
+                (None, [], []) => {}
+                (Some(effects), [param], [failures]) if param == failures => {
                     let at = format!("{at} effects_of");
                     shape(effects, &at, &["param", "meaning"], &[], &mut problems);
                     filled(effects, "meaning", &at, &mut problems);
@@ -1392,8 +1688,8 @@ fn the_reference_agrees_with_the_listing() {
                         ));
                     }
                 }
-                (_, declared) => problems.push(format!(
-                    "{at}: `effects_of` {}, the declaration has the effects of {declared:?}",
+                (_, uses, fails) => problems.push(format!(
+                    "{at}: `effects_of` {}, the declaration has `uses of` {uses:?} and `fails of` {fails:?}",
                     entry
                         .get("effects_of")
                         .map_or("absent".to_owned(), |e| e.to_string())
@@ -1417,7 +1713,12 @@ fn the_reference_agrees_with_the_listing() {
                     "{at}: its signature lines differ beyond the receiver"
                 ));
             }
-            check_params(&first.params, &first.result, &mut problems);
+            check_params(
+                &first.params,
+                &vec![false; first.params.len()],
+                &first.result,
+                &mut problems,
+            );
             let declared: Vec<&str> = lines.iter().map(|m| m.receiver.as_str()).collect();
             let receivers: Vec<&serde_json::Value> = match (
                 entry.get("receiver"),
@@ -1433,11 +1734,22 @@ fn the_reference_agrees_with_the_listing() {
                     Vec::new()
                 }
             };
+            // Each receiver's meaning names it as its signature line does, `m`, and says
+            // "changed in place" exactly when the line is `edit`.
             let mut types = Vec::new();
             for (i, receiver) in receivers.iter().enumerate() {
                 let at = format!("{at} receiver {i}");
                 shape(receiver, &at, &["type", "meaning"], &[], &mut problems);
-                filled(receiver, "meaning", &at, &mut problems);
+                let meaning = filled(receiver, "meaning", &at, &mut problems);
+                if let Some(line) = lines.get(i) {
+                    if !spans(meaning).any(|span| span == line.var) {
+                        problems.push(format!(
+                            "{at}: its meaning does not name it `{}`, as its signature line does",
+                            line.var
+                        ));
+                    }
+                    in_place(meaning, line.edit, &at, &mut problems);
+                }
                 types.push(filled(receiver, "type", &at, &mut problems));
             }
             if !receivers.is_empty() && types != declared {
@@ -1517,6 +1829,38 @@ fn the_reference_agrees_with_the_listing() {
         } else {
             only(&[], &mut problems);
         }
+        // A condition that its prose restates in a code span is, verbatim, part of a contract
+        // of the declaration or of a spec section the item cites; a constraint it names, `Ord`,
+        // is one of the declaration's (or, in an `earlier` note, of the earlier declaration's).
+        let contract = contracts(item, declaration);
+        let constraints: Vec<String> = if item.kind == "function" {
+            signature(declaration).constraints
+        } else {
+            Vec::new()
+        };
+        let mut texts = Vec::new();
+        prose(entry, &at, &mut texts);
+        for (at, text) in texts {
+            let earlier = at.contains(" earlier ");
+            for span in spans(text) {
+                if !earlier && condition(span) && !contract.contains(span) {
+                    problems.push(format!(
+                        "{at}: `{span}` is a condition that no contract of the declaration or of {:?} states",
+                        item.spec
+                    ));
+                }
+                let allowed: Vec<&String> = if earlier {
+                    constraints.iter().chain(&earlier_constraints).collect()
+                } else {
+                    constraints.iter().collect()
+                };
+                if constraint_names.contains(span) && !allowed.iter().any(|c| c.as_str() == span) {
+                    problems.push(format!(
+                        "{at}: names the constraint `{span}`, which the declaration does not have"
+                    ));
+                }
+            }
+        }
         // What it names: listed items, `module name`, in every edition of this one, or from
         // the edition its advice gives.
         let own = editions(item);
@@ -1588,14 +1932,27 @@ fn the_reference_agrees_with_the_listing() {
                 Some(_) => {}
             }
         }
-        // The cost: the cell of the item's row in the table of an accepted ADR or of a spec
-        // section, verbatim, with every term it uses defined.
+        // The cost: the cell of the item's row in the cost table of an accepted ADR or of a spec
+        // section, verbatim, or the cost that `STATED_COSTS` gives it from a sentence of one,
+        // with every term it uses defined. Every source is searched, so an item whose cost one
+        // states carries it.
         let method = item.kind == "method";
+        let qualified = format!("{module} {name}");
+        let stated: Vec<(&str, &str)> = STATED_COSTS
+            .iter()
+            .filter(|(_, _, of)| of.contains(&qualified.as_str()))
+            .map(|(source, time, _)| (*source, *time))
+            .collect();
         if entry.get("cost").is_none() {
-            for source in &cost_sources {
-                if cited(source).is_some_and(|text| !cost_cells(&text, name, method).is_empty()) {
-                    problems.push(format!("{at}: {source} states its cost, and it has none"));
+            for (source, text) in &all_sources {
+                if !cost_cells(text, name, method).is_empty() {
+                    problems.push(format!(
+                        "{at}: {source} states its cost in a table, and it has none"
+                    ));
                 }
+            }
+            for (source, _) in &stated {
+                problems.push(format!("{at}: {source} states its cost, and it has none"));
             }
         }
         if let Some(cost) = entry.get("cost") {
@@ -1607,22 +1964,27 @@ fn the_reference_agrees_with_the_listing() {
                 &["on"],
                 &mut problems,
             );
-            // With several receivers, `on` names the one whose cost is stated.
+            let time = filled(cost, "time", &at, &mut problems);
+            let source = filled(cost, "source", &at, &mut problems);
+            // With several receivers, `on` names the one whose cost is stated, as `COST_ON` ties
+            // it to the source.
             let receivers: Vec<&str> = entry["receivers"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|r| r["type"].as_str())
                 .collect();
+            let tied = COST_ON
+                .iter()
+                .find(|(s, n, _)| *s == source && *n == name)
+                .map(|(_, _, on)| *on);
             match (cost.get("on").and_then(|on| on.as_str()), receivers.is_empty()) {
                 (None, true) => {}
-                (Some(on), false) if receivers.contains(&on) => {}
+                (Some(on), false) if receivers.contains(&on) && tied == Some(on) => {}
                 (on, _) => problems.push(format!(
-                    "{at}: `on` {on:?}, which must name one of the receivers {receivers:?}, and only then"
+                    "{at}: `on` {on:?}, which must name the receiver {tied:?} that COST_ON ties to {source}, one of {receivers:?}, and only then"
                 )),
             }
-            let time = filled(cost, "time", &at, &mut problems);
-            let source = filled(cost, "source", &at, &mut problems);
             match cited(source) {
                 None => problems.push(format!(
                     "{at}: cites `{source}`, which is neither an accepted ADR nor a spec section"
@@ -1630,7 +1992,13 @@ fn the_reference_agrees_with_the_listing() {
                 Some(cited) => {
                     let mut cells = cost_cells(&cited, name, method);
                     cells.dedup();
-                    if cells != [time] {
+                    if cells.is_empty() {
+                        if !stated.contains(&(source, time)) {
+                            problems.push(format!(
+                                "{at}: `{time}` is neither in a row of {source}'s cost table for `{name}` nor a cost STATED_COSTS gives it from {source}"
+                            ));
+                        }
+                    } else if cells != [time] {
                         problems.push(format!(
                             "{at}: `{time}` is not the cost {source} states for `{name}`: {cells:?}"
                         ));
@@ -1648,9 +2016,10 @@ fn the_reference_agrees_with_the_listing() {
                 }
                 defined.extend(symbol.split(|c: char| !c.is_ascii_alphabetic()));
             }
+            // `log` is the logarithm, not a term.
             for inside in big_o(time) {
                 for word in inside.split(|c: char| !c.is_ascii_alphabetic()) {
-                    if !word.is_empty() && !defined.contains(&word) {
+                    if !word.is_empty() && word != "log" && !defined.contains(&word) {
                         problems.push(format!("{at}: `{word}` in `{time}` is not defined"));
                     }
                 }
@@ -1672,7 +2041,7 @@ fn the_reference_agrees_with_the_listing() {
             let used = files.iter().any(|(_, src)| {
                 let code = code_bytes(src);
                 let (call, free, method) = if wanted == name {
-                    naming(item, &items, src, &code)
+                    naming(item)
                 } else {
                     (false, true, false)
                 };
@@ -1730,10 +2099,10 @@ fn una(dir: &Path, args: &[&str]) -> std::process::Output {
 
 /// `src` with every place where it names `item` (see `naming`) renamed to a name that does not
 /// exist, and how many there were.
-fn renamed(src: &str, item: &Item, items: &[Item]) -> (String, usize) {
+fn renamed(src: &str, item: &Item) -> (String, usize) {
     let name = item.name.as_str();
     let code = code_bytes(src);
-    let (call, free, method) = naming(item, items, src, &code);
+    let (call, free, method) = naming(item);
     let places = occurrences(src, &code, name, call, free, method);
     let mut out = String::new();
     let mut last = 0;
@@ -1814,7 +2183,7 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
         copy_tree(&source, &copy);
         let mut places = 0;
         for (path, src) in sources(&copy) {
-            let (src, count) = renamed(&src, item, &items);
+            let (src, count) = renamed(&src, item);
             fs::write(path, src).unwrap();
             places += count;
         }
@@ -1823,6 +2192,35 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
             problems.push(format!(
                 "{example}: still checks with `{name}` renamed in {places} places, so it does not need it"
             ));
+        }
+        // Where another item has the same name, a method call `x.name(...)` could be either's,
+        // whatever types the code writes or infers: with a function `name` declared in the
+        // example, which shadows the prelude function, an example of the prelude function stops
+        // checking and an example of a built-in method keeps checking.
+        let shared = items
+            .iter()
+            .any(|other| other.name == item.name && other.module != item.module);
+        if shared && item.kind != "kind" {
+            let copy = scratch.join("std-examples-shadowed").join(module).join(name);
+            let _ = fs::remove_dir_all(&copy);
+            copy_tree(&source, &copy);
+            for (path, src) in sources(&copy) {
+                fs::write(path, shadowed(&src, name)).unwrap();
+            }
+            let checked = una(&copy, &["--color", "never", "check", "."]);
+            let builtin = item.kind == "method";
+            if checked.status.success() != builtin {
+                problems.push(format!(
+                    "{example}: with a function `{name}` declared beside it, it {}, so {}:\n{}",
+                    if builtin { "stops checking" } else { "still checks" },
+                    if builtin {
+                        "a call in it is the prelude function's, not the built-in method's"
+                    } else {
+                        "no call in it is the prelude function's"
+                    },
+                    String::from_utf8_lossy(&checked.stderr)
+                ));
+            }
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n\n"));

@@ -866,7 +866,17 @@
      "from_edition": "0.2"
     }
    ],
-   "example": "docs/std/examples/prelude/append"
+   "example": "docs/std/examples/prelude/append",
+   "cost": {
+    "time": "O(1) index and set, amortized O(1) append, O(n) copy when the list is shared",
+    "source": "ADR 0107",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of `xs`"
+     }
+    ]
+   }
   },
   {
    "module": "prelude",
@@ -1219,7 +1229,17 @@
     "prelude append",
     "prelude at"
    ],
-   "example": "docs/std/examples/prelude/set"
+   "example": "docs/std/examples/prelude/set",
+   "cost": {
+    "time": "O(1) index and set, amortized O(1) append, O(n) copy when the list is shared",
+    "source": "ADR 0107",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the length of `xs`"
+     }
+    ]
+   }
   },
   {
    "module": "prelude",
@@ -1382,12 +1402,12 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [
     {
      "name": "key",
-     "meaning": "the key to look for"
+     "meaning": "the key to look for; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
     }
    ],
    "returns": {
@@ -1400,7 +1420,17 @@
      "why": "to read the value too"
     }
    ],
-   "example": "docs/std/examples/builtin/has"
+   "example": "docs/std/examples/builtin/has",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`"
+     }
+    ]
+   }
   },
   {
    "module": "builtin",
@@ -1408,12 +1438,12 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [
     {
      "name": "key",
-     "meaning": "the key"
+     "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
     }
    ],
    "returns": {
@@ -1423,7 +1453,17 @@
    "see_also": [
     "builtin has"
    ],
-   "example": "docs/std/examples/builtin/get"
+   "example": "docs/std/examples/builtin/get",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`"
+     }
+    ]
+   }
   },
   {
    "module": "builtin",
@@ -1431,16 +1471,16 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map, changed in place, written `edit m.set(...)`"
+    "meaning": "the map `m`, changed in place, written `edit m.set(...)`"
    },
    "params": [
     {
      "name": "key",
-     "meaning": "the key"
+     "meaning": "the key; from edition 0.3, with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
     },
     {
      "name": "value",
-     "meaning": "the new value at `key`"
+     "meaning": "the new value at `key`; from edition 0.3, with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
     }
    ],
    "returns": {
@@ -1456,7 +1496,17 @@
    "see_also": [
     "builtin remove"
    ],
-   "example": "docs/std/examples/builtin/set"
+   "example": "docs/std/examples/builtin/set",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; in the native runtime the update is in place when `m` is uniquely held, and on a copy, in O(n), otherwise"
+     }
+    ]
+   }
   },
   {
    "module": "builtin",
@@ -1464,12 +1514,12 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map, changed in place, written `edit m.remove(...)`"
+    "meaning": "the map `m`, changed in place, written `edit m.remove(...)`"
    },
    "params": [
     {
      "name": "key",
-     "meaning": "the key"
+     "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
     }
    ],
    "returns": {
@@ -1485,7 +1535,17 @@
    "see_also": [
     "builtin set"
    ],
-   "example": "docs/std/examples/builtin/remove"
+   "example": "docs/std/examples/builtin/remove",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; in the native runtime the update is in place when `m` is uniquely held, and on a copy, in O(n), otherwise"
+     }
+    ]
+   }
   },
   {
    "module": "builtin",
@@ -1493,16 +1553,16 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [
     {
      "name": "key",
-     "meaning": "the key"
+     "meaning": "the key; from edition 0.3, with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
     },
     {
      "name": "value",
-     "meaning": "the value at `key`"
+     "meaning": "the value at `key`; from edition 0.3, with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
     }
    ],
    "returns": {
@@ -1521,12 +1581,12 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [
     {
      "name": "key",
-     "meaning": "the key"
+     "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
     }
    ],
    "returns": {
@@ -1545,7 +1605,7 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [],
    "returns": {
@@ -1564,7 +1624,7 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [],
    "returns": {
@@ -1583,7 +1643,7 @@
    "area": "maps",
    "receiver": {
     "type": "Map[K, V]",
-    "meaning": "the map"
+    "meaning": "the map `m`"
    },
    "params": [],
    "returns": {
@@ -1603,21 +1663,21 @@
    "receivers": [
     {
      "type": "Text",
-     "meaning": "a text: its length in Unicode scalar values"
+     "meaning": "a text `t`: its length in Unicode scalar values"
     },
     {
      "type": "List[T]",
-     "meaning": "a list: its number of elements"
+     "meaning": "a list `xs`: its number of elements"
     },
     {
      "type": "Map[K, V]",
-     "meaning": "a map: its number of entries, never negative"
+     "meaning": "a map `m`: its number of entries, never negative"
     }
    ],
    "params": [],
    "returns": {
     "type": "Int",
-    "meaning": "the length of the receiver"
+    "meaning": "the length of the receiver, a text, a list or a map"
    },
    "describes": [
     "0.2",
@@ -1628,7 +1688,7 @@
      "editions": [
       "0.1"
      ],
-     "differs": "no `Map` receiver, since edition `0.1` has no maps"
+     "differs": "no `Map[K, V]` receiver, since edition 0.1 has no maps: it has neither `m.len -> Int` nor `where m: Map[K, V]`"
     }
    ],
    "see_also": [
