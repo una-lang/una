@@ -1,9 +1,7 @@
 module shop
 
 --- A quantity checked without failing: the outcome is a value.
-checked_quantity(units: Int) -> Result[Int, Text]
-=
-  if units > 0 then Ok(units) else Err("no units")
+checked_quantity(units: Int) -> Result[Int, Text] = if units > 0 then Ok(units) else Err("no units")
 
 describe(units: Int) -> Text
 =

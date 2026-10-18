@@ -11,5 +11,5 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   let stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
-  @console.print(describe("lamp", stock.get(key: "lamp")))
-  @console.print(describe("chair", stock.get(key: "chair")))
+  @console.print(describe("lamp", units: stock.get(key: "lamp")))
+  @console.print(describe("chair", units: stock.get(key: "chair")))
