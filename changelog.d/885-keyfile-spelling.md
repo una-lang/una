@@ -1,0 +1,1 @@
+- **One spelling for the key file grant** (#885). `spec/13 §5` and the agents guide now write the grant as `keys:<keyfile>` everywhere, as the list of grant specs does; one paragraph wrote `keys:<file>`. Editorial: the grant's meaning is unchanged.

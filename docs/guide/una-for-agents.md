@@ -395,7 +395,7 @@ There is no ambient authority. A capability is declared with operations; a funct
 
 - Operation clauses: `requires` (a proof at each call), `ensures` (an assumption the build report lists), `fails E`, and `accepts label` (the highest label its arguments may carry).
 - A handler implements every operation in Una. Its bodies are verified against the operations' `ensures`, and it may have its own `uses`.
-- Host capabilities come from the runtime into `main` only, as `una run` grants them: `Console[print]`, `Clock[now]`, `Env[get]`, `Files[read, write]` and `Keys[hmac]` (`spec/14 §3`). Grants are `console`, `clock`, `env`, `keys:<file>` and `files:<path>:read`, `:write` or `:read,write`, in `[run] grants` or with `--grant`.
+- Host capabilities come from the runtime into `main` only, as `una run` grants them: `Console[print]`, `Clock[now]`, `Env[get]`, `Files[read, write]` and `Keys[hmac]` (`spec/14 §3`). Grants are `console`, `clock`, `env`, `keys:<keyfile>` and `files:<path>:read`, `:write` or `:read,write`, in `[run] grants` or with `--grant`.
 - Their signatures (`spec/14 §3`; `Http` is in §17):
   - `print(line: Text) -> Unit`;
   - `now() -> Int`, in milliseconds since 1970;
