@@ -1,0 +1,12 @@
+module shop
+
+--- A one-byte ticket counter that goes on from the smallest value after the largest.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let counter: U8 = 250
+  let next = counter.wrapping_add(by: 10)
+  let top: I8 = 127
+  let past = top.wrapping_add(by: 1)
+  @console.print("{next}")
+  @console.print("{past}")

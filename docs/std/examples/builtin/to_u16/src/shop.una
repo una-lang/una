@@ -1,0 +1,12 @@
+module shop
+
+--- A stock level kept in two bytes, where it fits.
+stocked(units: Int) -> U16 = if units >= 0 and units <= 65535 then units.to_u16() else 0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let lamps = stocked(1200)
+  let broken = stocked(-3)
+  @console.print("{lamps}")
+  @console.print("{broken}")

@@ -1,0 +1,12 @@
+module shop
+
+--- Every bit of a value flipped, unsigned and signed.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let empty: U8 = 0
+  let full = empty.bit_not()
+  let bottom: I8 = -128
+  let top = bottom.bit_not()
+  @console.print("{full}")
+  @console.print("{top}")

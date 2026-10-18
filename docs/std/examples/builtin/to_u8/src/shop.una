@@ -1,0 +1,12 @@
+module shop
+
+--- A shelf count kept in one byte, where it fits.
+packed(count: Int) -> U8 = if count >= 0 and count <= 255 then count.to_u8() else 255
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let small = packed(200)
+  let large = packed(300)
+  @console.print("{small}")
+  @console.print("{large}")

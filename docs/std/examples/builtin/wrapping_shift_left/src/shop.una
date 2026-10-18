@@ -1,0 +1,12 @@
+module shop
+
+--- Values doubled and moved to the top bit, with the bits past the top dropped.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let crates: U8 = 200
+  let doubled = crates.wrapping_shift_left(by: 1)
+  let one: I8 = 1
+  let top = one.wrapping_shift_left(by: 7)
+  @console.print("{doubled}")
+  @console.print("{top}")

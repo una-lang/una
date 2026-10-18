@@ -1,0 +1,14 @@
+module shop
+
+--- A debt halved, a count divided by eight, and the same debt shifted by seven places.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let debt: I8 = -128
+  let half = debt.shift_right(by: 1)
+  let units: U16 = 1000
+  let eighth = units.shift_right(by: 3)
+  let whole = debt.shift_right(by: 7)
+  @console.print("{half}")
+  @console.print("{eighth}")
+  @console.print("{whole}")

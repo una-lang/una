@@ -1079,31 +1079,119 @@ fn replace_word(text: &str, from: &str, to: &str) -> String {
     out
 }
 
+/// A spec table row as an entry restates it: where its first cell holds calls,
+/// `m.set(key: k, value: v)` or `a.bit_and(mask: b)`, `a.bit_or(mask: b)`, each argument's name,
+/// `k`, is replaced by its label, `key`, in the whole row.
+fn labeled_row(line: &str) -> String {
+    let mut line = line.to_owned();
+    let first = cells(&line).first().cloned().unwrap_or_default();
+    for arg in first.split(['(', ',', ')']) {
+        if let Some((label, name)) = arg.split_once(':')
+            && lower_name(label.trim())
+            && lower_name(name.trim())
+        {
+            line = replace_word(&line, name.trim(), label.trim());
+        }
+    }
+    line
+}
+
 /// The contracts an entry may restate: the declaration's lines, and the spec sections that the
-/// item cites, where a table row whose first cell is a call, `m.set(key: k, value: v)`, reads with
-/// each argument's name, `k`, replaced by its label, `key`.
+/// item cites, with their table rows labeled (`labeled_row`).
 fn contracts(item: &Item, declaration: &str) -> String {
     let mut text = format!("{declaration}\n");
     for reference in &item.spec {
         for line in section(reference).unwrap_or_default().lines() {
-            let mut line = line.to_owned();
             if line.starts_with('|') {
-                let first = cells(&line).first().cloned().unwrap_or_default();
-                if let Some((_, args)) = first.split_once('(') {
-                    for arg in args.trim_end_matches(['`', ')']).split(',') {
-                        if let Some((label, name)) = arg.split_once(':')
-                            && lower_name(name.trim())
-                        {
-                            line = replace_word(&line, name.trim(), label.trim());
-                        }
-                    }
-                }
+                text.push_str(&labeled_row(line));
+            } else {
+                text.push_str(line);
             }
-            text.push_str(&line);
             text.push('\n');
         }
     }
     text
+}
+
+/// The preconditions that a table row states, labeled (`labeled_row`): each code span
+/// `requires C`, and each span `requires` followed by the span `C`. Also whether the row says
+/// `requires` more often than that, in a form this does not read, which the check refuses
+/// rather than read past.
+fn row_requires(line: &str) -> (Vec<String>, bool) {
+    let row = labeled_row(line);
+    let parts: Vec<&str> = spans(&row).collect();
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < parts.len() {
+        if let Some(condition) = parts[at].strip_prefix("requires ") {
+            found.push(condition.trim().to_owned());
+        } else if parts[at].trim() == "requires"
+            && let Some(condition) = parts.get(at + 1)
+        {
+            found.push(condition.trim().to_owned());
+            at += 1;
+        }
+        at += 1;
+    }
+    let unread = row.matches("requires").count() > found.len();
+    (found, unread)
+}
+
+/// The preconditions that the spec gives the built-in method `name`, which has no declaration
+/// with `requires` lines: those of every table row, in every spec section of `sections`, whose
+/// first cell calls it, `x.name(...)`. Also the sections where such a row says `requires` in a
+/// form `row_requires` does not read.
+fn method_requires(name: &str, sections: &[(String, String)]) -> (Vec<String>, Vec<String>) {
+    let call = format!(".{name}(");
+    let (mut found, mut unread) = (Vec::new(), Vec::new());
+    for (source, text) in sections.iter().filter(|(s, _)| s.starts_with("spec/")) {
+        for line in text.lines().filter(|line| line.starts_with('|')) {
+            if cells(line)
+                .first()
+                .is_some_and(|first| first.contains(&call))
+            {
+                let (conditions, missed) = row_requires(line);
+                found.extend(conditions);
+                if missed {
+                    unread.push(source.clone());
+                }
+            }
+        }
+    }
+    (found, unread)
+}
+
+#[test]
+fn the_requires_of_a_spec_row_are_read_in_both_forms_or_refused() {
+    let section = |row: &str| {
+        vec![(
+            "spec/99 §1".to_owned(),
+            format!("| Method | Contract |\n| --- | --- |\n{row}\n"),
+        )]
+    };
+    let none: Vec<String> = Vec::new();
+    assert_eq!(
+        method_requires("f", &section("| `a.f(by: n)` | `requires 0 <= n`; total |")),
+        (vec!["0 <= by".to_owned()], none.clone())
+    );
+    assert_eq!(
+        method_requires(
+            "f",
+            &section("| `a.f(by: n)` | `requires` `0 <= n`; total |")
+        ),
+        (vec!["0 <= by".to_owned()], none.clone())
+    );
+    assert_eq!(
+        method_requires(
+            "f",
+            &section("| `a.f(by: n)` | requires that `n` is positive |")
+        ),
+        (none.clone(), vec!["spec/99 §1".to_owned()])
+    );
+    assert_eq!(
+        method_requires("g", &section("| `a.f(by: n)` | `requires 0 <= n` |")),
+        (none.clone(), none)
+    );
 }
 
 /// The lines of a declaration as `earlier` quotes them: trimmed, without `pub `.
@@ -1797,7 +1885,7 @@ fn the_reference_agrees_with_the_listing() {
             }
         } else if item.kind == "method" {
             only(
-                &["params", "returns", "receiver", "receivers"],
+                &["params", "returns", "requires", "receiver", "receivers"],
                 &mut problems,
             );
             let lines = methods(declaration);
@@ -1855,6 +1943,45 @@ fn the_reference_agrees_with_the_listing() {
             if !receivers.is_empty() && types != declared {
                 problems.push(format!(
                     "{at}: receivers {types:?}, the declaration's are {declared:?}"
+                ));
+            }
+            // Its preconditions are those of the spec rows that call it.
+            let mut requires = Vec::new();
+            for (i, condition) in list(entry, "requires", &at, &mut problems)
+                .iter()
+                .enumerate()
+            {
+                let at = format!("{at} requires {i}");
+                shape(
+                    condition,
+                    &at,
+                    &["condition", "meaning"],
+                    &[],
+                    &mut problems,
+                );
+                requires.push(filled(condition, "condition", &at, &mut problems).to_owned());
+                filled(condition, "meaning", &at, &mut problems);
+            }
+            // Read from every spec section, failing closed: a row that says `requires` in a form
+            // not read, or a declaration with `requires` lines that no row states, is refused.
+            let (stated, unread) = method_requires(name, &all_sources);
+            for source in unread {
+                problems.push(format!(
+                    "{at}: a row of {source} that calls it says `requires` in a form the check does not read"
+                ));
+            }
+            let declared: Vec<&str> = declaration
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("requires "))
+                .collect();
+            if !declared.is_empty() && stated.is_empty() {
+                problems.push(format!(
+                    "{at}: its declaration has `requires` {declared:?}, and no spec row states them"
+                ));
+            }
+            if requires != stated {
+                problems.push(format!(
+                    "{at}: requires {requires:?}, the spec rows that call it give {stated:?}"
                 ));
             }
         } else if item.kind == "kind" {
