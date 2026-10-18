@@ -74,7 +74,7 @@ Relations: requirement → (derives) contract → (constrains) implementation. E
 
 ## 5b. v0.2 scope (opened 2026-10-01)
 
-The project opened the v0.2 scope on 2026-10-01, in parallel with Gate 1 (`plan/roadmap.md §1`). The Gate 1 benchmark stays pinned to a v0.1.x release. v0.2 adds these areas to §5, each specified by its ADR and spec text before it is implemented:
+The project opened the v0.2 scope on 2026-10-01, in parallel with the v0.1 benchmark (`plan/roadmap.md §1`). The benchmark baseline stays pinned to a v0.1.x release. v0.2 adds these areas to §5, each specified by its ADR and spec text before it is implemented:
 
 - **Native backend** (ADR 0055, `spec/16`): ahead-of-time compilation through Cranelift, refining the UAM.
 - **Fixed-width integers** (ADR 0057): `I8` to `I64` and `U8` to `U64`, with overflow obligations. `Int` stays mathematical.
@@ -93,7 +93,7 @@ Dynamic typing, runtime reflection, implicit conversions, operator overloading, 
 
 ## 7. Success criteria for v0.1
 
-v0.1 exists to test the thesis, not to be fast. It succeeds when Gate 1 (`plan/roadmap.md §3`) passes: on a fixed task suite, agents working in Una produce fewer security and specification violations, need no more repair iterations, and let reviewers find dangerous changes faster than agents working in TypeScript.
+v0.1 exists to test the thesis, not to be fast. It succeeds when the v0.1 benchmark (`plan/roadmap.md §3`) passes: on a fixed task suite, agents working in Una produce fewer security and specification violations, need no more repair iterations, and let reviewers find dangerous changes faster than agents working in TypeScript.
 
 ## 8. Glossary
 
