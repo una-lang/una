@@ -1,0 +1,1 @@
+- **Docs: neutral wording for the benchmark baseline** (#907). The spec and the charter name the benchmark baseline that stays on edition `0.1`, with the same meaning as before.

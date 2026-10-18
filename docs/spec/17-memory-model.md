@@ -8,7 +8,7 @@ Una has mutable value semantics. Values are immutable, and there are no referenc
 - In edition `0.1`, the parser keeps the keyword tables of v0.1 (`spec/01 §5`): `old` is an ordinary name, `weak` is not reserved, and `edit`, `take`, `region`, `shared` and `iso` give the U0103 messages of v0.1.
 - `for` stays limited to `handler h for K`, so a `for` loop is a syntax error (U0101).
 - A single file has the default settings, and so edition `0.1`.
-- The Gate 1 benchmark stays on edition `0.1`.
+- The benchmark baseline stays on edition `0.1`.
 
 ## 1. Syntax
 
