@@ -1818,7 +1818,7 @@
    "params": [],
    "returns": {
     "type": "U8",
-    "meaning": "the value of `x` as an `U8`: from `U8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+    "meaning": "the value of `x` as a `U8`: from `U8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
    },
    "receivers": [
     {
@@ -1842,7 +1842,7 @@
    "params": [],
    "returns": {
     "type": "U16",
-    "meaning": "the value of `x` as an `U16`: from `U8` and `U16` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+    "meaning": "the value of `x` as a `U16`: from `U8` and `U16` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
    },
    "receivers": [
     {
@@ -1866,7 +1866,7 @@
    "params": [],
    "returns": {
     "type": "U32",
-    "meaning": "the value of `x` as an `U32`: from `U8`, `U16` and `U32` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+    "meaning": "the value of `x` as a `U32`: from `U8`, `U16` and `U32` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
    },
    "receivers": [
     {
@@ -1890,7 +1890,7 @@
    "params": [],
    "returns": {
     "type": "U64",
-    "meaning": "the value of `x` as an `U64`: from `U8`, `U16`, `U32` and `U64` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+    "meaning": "the value of `x` as a `U64`: from `U8`, `U16`, `U32` and `U64` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
    },
    "receivers": [
     {

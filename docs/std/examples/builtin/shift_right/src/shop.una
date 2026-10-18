@@ -1,6 +1,6 @@
 module shop
 
---- A price halved, a count divided by eight, and a debt shifted by seven places.
+--- A debt halved, a count divided by eight, and the same debt shifted by seven places.
 pub main() -> Unit
   uses @console: Console[print]
 =
