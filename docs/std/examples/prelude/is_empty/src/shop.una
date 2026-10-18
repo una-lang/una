@@ -1,0 +1,9 @@
+module shop
+
+--- Whether a cart has anything in it.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let cart: List[Text] = []
+  let empty = cart.is_empty()
+  @console.print("empty: {empty}")

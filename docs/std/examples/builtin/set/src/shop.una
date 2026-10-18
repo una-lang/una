@@ -1,0 +1,10 @@
+module shop
+
+--- A recount replaces the stock of an item.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit stock = empty_map().with(key: "lamp", value: 3)
+  edit stock.set(key: "lamp", value: 5)
+  let units = stock.get(key: "lamp").or_else(default: 0)
+  @console.print("lamp: {units}, entries: {stock.len}")

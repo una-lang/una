@@ -1,0 +1,14 @@
+module shop
+
+--- The first item of a cart, if any.
+describe(names: List[Text]) -> Text
+=
+  when names.first()
+    is Some(name) -> "first: {name}"
+    is None -> "the cart is empty"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(describe(["lamp", "desk"]))
+  @console.print(describe([]))

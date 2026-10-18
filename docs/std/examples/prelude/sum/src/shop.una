@@ -1,0 +1,8 @@
+module shop
+
+--- The total of a cart, in cents.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let total = [1999, 499].sum()
+  @console.print("total {total}")

@@ -1,0 +1,9 @@
+module shop
+
+--- A stock report, from the map's entries.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let stock = empty_map().with(key: "lamp", value: 3).with(key: "desk", value: 1)
+  for e in stock.entries()
+    @console.print("{e.key}: {e.value}")

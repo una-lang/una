@@ -1,0 +1,8 @@
+module shop
+
+--- Whether a cart has a first item.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let some = ["lamp"].first().is_some()
+  @console.print("has an item: {some}")

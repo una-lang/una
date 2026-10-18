@@ -1,0 +1,9 @@
+module shop
+
+--- A cart with one more item.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let cart = ["lamp"].append(item: "chair")
+  @console.print(join(cart, separator: ", "))
+  @console.print("{cart.len} items")

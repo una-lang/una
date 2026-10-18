@@ -1,0 +1,9 @@
+module shop
+
+--- The most expensive price of a cart, starting from zero.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let prices = [1999, 499, 2499]
+  let highest = prices.fold(initial: 0, step: fn(best, p) -> max(best, b: p))
+  @console.print("highest {highest}")

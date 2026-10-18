@@ -1,0 +1,2 @@
+desk: true
+chair: false

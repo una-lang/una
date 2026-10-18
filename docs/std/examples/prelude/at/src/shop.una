@@ -1,0 +1,15 @@
+module shop
+
+--- The item at a position of a cart, if there is one.
+describe(names: List[Text], index: Int) -> Text
+=
+  when names.at(index: index)
+    is Some(name) -> "{index}: {name}"
+    is None -> "{index}: no item"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let names = ["lamp", "desk", "chair"]
+  @console.print(describe(names, index: 1))
+  @console.print(describe(names, index: 3))

@@ -1,0 +1,10 @@
+module shop
+
+--- The prices over ten dollars, in cents.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let prices = [1999, 499, 2499]
+  let expensive = prices.filter(keep: fn(p) -> p > 1000)
+  let total = expensive.sum()
+  @console.print("{expensive.len} over 1000, {total} in all")

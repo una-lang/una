@@ -1,0 +1,8 @@
+module shop
+
+--- A stock count that starts empty.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let stock: Map[Text, Int] = empty_map()
+  @console.print("{stock.len} entries")
