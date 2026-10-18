@@ -1,1 +1,0 @@
-- **The `site` gate builds the website with the new Learn chapters** (#842). `site/website.lock` pins the website whose Learn section is Una by Example with all fourteen chapters on its second template, checked against una 0.3.15, and linked to the release `for-una-0.3.15`, cut from that same commit.
