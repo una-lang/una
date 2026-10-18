@@ -1,0 +1,9 @@
+module shop
+
+--- Two large view counts, widened before they are added.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let views: U32 = 4000000000
+  let both = views.to_i64() + views.to_i64()
+  @console.print("{both}")

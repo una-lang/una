@@ -1,0 +1,9 @@
+module shop
+
+--- A shelf level widened so that a shortfall can go below zero.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let level: U8 = 200
+  let shortfall = level.to_i16() - 300
+  @console.print("{shortfall}")

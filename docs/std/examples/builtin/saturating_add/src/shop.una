@@ -1,0 +1,12 @@
+module shop
+
+--- A one-byte stock level that stops at the largest and the smallest value.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let stock: U8 = 250
+  let full = stock.saturating_add(by: 10)
+  let bottom: I8 = -128
+  let floor = bottom.saturating_add(by: -1)
+  @console.print("{full}")
+  @console.print("{floor}")

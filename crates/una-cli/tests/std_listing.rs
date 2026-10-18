@@ -1079,31 +1079,61 @@ fn replace_word(text: &str, from: &str, to: &str) -> String {
     out
 }
 
+/// A spec table row as an entry restates it: where its first cell holds calls,
+/// `m.set(key: k, value: v)` or `a.bit_and(mask: b)`, `a.bit_or(mask: b)`, each argument's name,
+/// `k`, is replaced by its label, `key`, in the whole row.
+fn labeled_row(line: &str) -> String {
+    let mut line = line.to_owned();
+    let first = cells(&line).first().cloned().unwrap_or_default();
+    for arg in first.split(['(', ',', ')']) {
+        if let Some((label, name)) = arg.split_once(':')
+            && lower_name(label.trim())
+            && lower_name(name.trim())
+        {
+            line = replace_word(&line, name.trim(), label.trim());
+        }
+    }
+    line
+}
+
 /// The contracts an entry may restate: the declaration's lines, and the spec sections that the
-/// item cites, where a table row whose first cell is a call, `m.set(key: k, value: v)`, reads with
-/// each argument's name, `k`, replaced by its label, `key`.
+/// item cites, with their table rows labeled (`labeled_row`).
 fn contracts(item: &Item, declaration: &str) -> String {
     let mut text = format!("{declaration}\n");
     for reference in &item.spec {
         for line in section(reference).unwrap_or_default().lines() {
-            let mut line = line.to_owned();
             if line.starts_with('|') {
-                let first = cells(&line).first().cloned().unwrap_or_default();
-                if let Some((_, args)) = first.split_once('(') {
-                    for arg in args.trim_end_matches(['`', ')']).split(',') {
-                        if let Some((label, name)) = arg.split_once(':')
-                            && lower_name(name.trim())
-                        {
-                            line = replace_word(&line, name.trim(), label.trim());
-                        }
-                    }
-                }
+                text.push_str(&labeled_row(line));
+            } else {
+                text.push_str(line);
             }
-            text.push_str(&line);
             text.push('\n');
         }
     }
     text
+}
+
+/// The preconditions that the spec sections a built-in method cites give it: each code span
+/// `requires C` in a table row whose first cell calls the method, `x.name(...)`, labeled
+/// (`labeled_row`). A built-in method has no declaration with `requires` lines, so its
+/// preconditions are the spec's.
+fn method_requires(item: &Item) -> Vec<String> {
+    let call = format!(".{}(", item.name);
+    let mut found = Vec::new();
+    for reference in &item.spec {
+        for line in section(reference).unwrap_or_default().lines() {
+            let first = cells(line).first().cloned().unwrap_or_default();
+            if line.starts_with('|') && first.contains(&call) {
+                let row = labeled_row(line);
+                found.extend(
+                    spans(&row)
+                        .filter_map(|span| span.strip_prefix("requires "))
+                        .map(str::to_owned),
+                );
+            }
+        }
+    }
+    found
 }
 
 /// The lines of a declaration as `earlier` quotes them: trimmed, without `pub `.
@@ -1797,7 +1827,7 @@ fn the_reference_agrees_with_the_listing() {
             }
         } else if item.kind == "method" {
             only(
-                &["params", "returns", "receiver", "receivers"],
+                &["params", "returns", "requires", "receiver", "receivers"],
                 &mut problems,
             );
             let lines = methods(declaration);
@@ -1855,6 +1885,30 @@ fn the_reference_agrees_with_the_listing() {
             if !receivers.is_empty() && types != declared {
                 problems.push(format!(
                     "{at}: receivers {types:?}, the declaration's are {declared:?}"
+                ));
+            }
+            // Its preconditions are those of the spec rows that call it.
+            let mut requires = Vec::new();
+            for (i, condition) in list(entry, "requires", &at, &mut problems)
+                .iter()
+                .enumerate()
+            {
+                let at = format!("{at} requires {i}");
+                shape(
+                    condition,
+                    &at,
+                    &["condition", "meaning"],
+                    &[],
+                    &mut problems,
+                );
+                requires.push(filled(condition, "condition", &at, &mut problems).to_owned());
+                filled(condition, "meaning", &at, &mut problems);
+            }
+            let stated = method_requires(item);
+            if requires != stated {
+                problems.push(format!(
+                    "{at}: requires {requires:?}, the spec rows of {:?} that call it give {stated:?}",
+                    item.spec
                 ));
             }
         } else if item.kind == "kind" {

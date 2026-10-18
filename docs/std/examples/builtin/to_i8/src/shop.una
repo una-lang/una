@@ -1,0 +1,12 @@
+module shop
+
+--- A small stock adjustment kept in one byte, where it fits.
+adjustment(change: Int) -> I8 = if change >= -128 and change <= 127 then change.to_i8() else 0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let returned = adjustment(-5)
+  let unknown = adjustment(500)
+  @console.print("{returned}")
+  @console.print("{unknown}")

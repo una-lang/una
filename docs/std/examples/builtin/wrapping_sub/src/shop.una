@@ -1,0 +1,12 @@
+module shop
+
+--- A one-byte counter that goes on from the largest value below the smallest.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let low: U8 = 3
+  let back = low.wrapping_sub(by: 5)
+  let bottom: I8 = -128
+  let past = bottom.wrapping_sub(by: 1)
+  @console.print("{back}")
+  @console.print("{past}")

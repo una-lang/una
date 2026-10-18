@@ -18,27 +18,6 @@
   "testing"
  ],
  "pending": [
-  "builtin bit_and",
-  "builtin bit_not",
-  "builtin bit_or",
-  "builtin bit_xor",
-  "builtin saturating_add",
-  "builtin saturating_mul",
-  "builtin saturating_sub",
-  "builtin shift_right",
-  "builtin to_i16",
-  "builtin to_i32",
-  "builtin to_i64",
-  "builtin to_i8",
-  "builtin to_int",
-  "builtin to_u16",
-  "builtin to_u32",
-  "builtin to_u64",
-  "builtin to_u8",
-  "builtin wrapping_add",
-  "builtin wrapping_mul",
-  "builtin wrapping_shift_left",
-  "builtin wrapping_sub",
   "prelude Clock",
   "prelude Console",
   "prelude Env",
@@ -1735,6 +1714,514 @@
     "on": "Text"
    },
    "example": "docs/std/examples/builtin/len"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i8",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I8",
+    "meaning": "the value of `x` as an `I8`: from `I8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i8"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i16",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I16",
+    "meaning": "the value of `x` as an `I16`: from `I8`, `I16` and `U8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i16"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i32",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I32",
+    "meaning": "the value of `x` as an `I32`: from `I8`, `I16`, `I32`, `U8` and `U16` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i32"
+  },
+  {
+   "module": "builtin",
+   "name": "to_i64",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "I64",
+    "meaning": "the value of `x` as an `I64`: from `I8`, `I16`, `I32`, `I64`, `U8`, `U16` and `U32` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_i64"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u8",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U8",
+    "meaning": "the value of `x` as an `U8`: from `U8` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u8"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u16",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U16",
+    "meaning": "the value of `x` as an `U16`: from `U8` and `U16` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u16"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u32",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U32",
+    "meaning": "the value of `x` as an `U32`: from `U8`, `U16` and `U32` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u32"
+  },
+  {
+   "module": "builtin",
+   "name": "to_u64",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "U64",
+    "meaning": "the value of `x` as an `U64`: from `U8`, `U16`, `U32` and `U64` the conversion widens, so it always succeeds; from `Int` and every other type it narrows, and a narrowing conversion carries an `overflow` obligation that the value fits, which `una check` proves at the call, or goes through `checked`, which counts against the escape budget"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin to_int"
+   ],
+   "example": "docs/std/examples/builtin/to_u64"
+  },
+  {
+   "module": "builtin",
+   "name": "to_int",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "Int",
+    "meaning": "the value of `x` as an `Int`, which every value of a fixed-width type fits, so it always succeeds"
+   },
+   "receivers": [
+    {
+     "type": "Int",
+     "meaning": "an integer `x`"
+    },
+    {
+     "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+     "meaning": "a fixed-width integer `x`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`"
+    }
+   ],
+   "see_also": [
+    "prelude to_int",
+    "builtin to_i64"
+   ],
+   "example": "docs/std/examples/builtin/to_int"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_add",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact sum reduced into the range of the type modulo `2^w`, where `w` is its width: past the largest value it goes on from the smallest; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin saturating_add"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_add"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_sub",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact difference reduced into the range of the type modulo `2^w`, where `w` is its width: below the smallest value it goes on from the largest; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin saturating_sub"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_sub"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_mul",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact product reduced into the range of the type modulo `2^w`, where `w` is its width; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin saturating_mul"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_mul"
+  },
+  {
+   "module": "builtin",
+   "name": "saturating_add",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact sum clamped to the range of the type: the largest value when the sum is above it, the smallest when it is below; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin wrapping_add"
+   ],
+   "example": "docs/std/examples/builtin/saturating_add"
+  },
+  {
+   "module": "builtin",
+   "name": "saturating_sub",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact difference clamped to the range of the type: the largest value when the difference is above it, the smallest when it is below; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin wrapping_sub"
+   ],
+   "example": "docs/std/examples/builtin/saturating_sub"
+  },
+  {
+   "module": "builtin",
+   "name": "saturating_mul",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the exact product clamped to the range of the type: the largest value when the product is above it, the smallest when it is below; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin wrapping_mul"
+   ],
+   "example": "docs/std/examples/builtin/saturating_mul"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_and",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "mask",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the bits set in both `a` and `mask`, on the two's-complement bits of the width; on an unsigned type `result <= a` and `result <= mask`; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_or",
+    "builtin bit_xor",
+    "builtin bit_not"
+   ],
+   "example": "docs/std/examples/builtin/bit_and"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_or",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "mask",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the bits set in `a` or in `mask`, on the two's-complement bits of the width; on an unsigned type `result >= a` and `result >= mask`; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_and",
+    "builtin bit_xor",
+    "builtin bit_not"
+   ],
+   "example": "docs/std/examples/builtin/bit_or"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_xor",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "mask",
+     "meaning": "the other operand, of the same type"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "the bits set in exactly one of `a` and `mask`, on the two's-complement bits of the width; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_and",
+    "builtin bit_or",
+    "builtin bit_not"
+   ],
+   "example": "docs/std/examples/builtin/bit_xor"
+  },
+  {
+   "module": "builtin",
+   "name": "bit_not",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "F",
+    "meaning": "each bit of `a` flipped, on the two's-complement bits of the width; it never fails"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "see_also": [
+    "builtin bit_and",
+    "builtin bit_or",
+    "builtin bit_xor"
+   ],
+   "example": "docs/std/examples/builtin/bit_not"
+  },
+  {
+   "module": "builtin",
+   "name": "shift_right",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the number of places, an `Int`"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "`a` divided by `2^by`, rounding toward negative infinity: on a signed type the shift is arithmetic, so a negative value stays negative; on an unsigned type `result <= a`"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "requires": [
+    {
+     "condition": "0 <= by and by < w",
+     "meaning": "the number of places is at least `0` and below the width `w` of the type, `8` for `I8` and `U8` up to `64` for `I64` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin wrapping_shift_left"
+   ],
+   "example": "docs/std/examples/builtin/shift_right"
+  },
+  {
+   "module": "builtin",
+   "name": "wrapping_shift_left",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "by",
+     "meaning": "the number of places, an `Int`"
+    }
+   ],
+   "returns": {
+    "type": "F",
+    "meaning": "`a * 2^by` reduced into the range of the type modulo `2^w`, where `w` is its width: the bits shifted past the top are dropped"
+   },
+   "receiver": {
+    "type": "F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+    "meaning": "a fixed-width integer `a`, of one of the eight types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`; the result has its type"
+   },
+   "requires": [
+    {
+     "condition": "0 <= by and by < w",
+     "meaning": "the number of places is at least `0` and below the width `w` of the type, `8` for `I8` and `U8` up to `64` for `I64` and `U64`"
+    }
+   ],
+   "see_also": [
+    "builtin shift_right"
+   ],
+   "example": "docs/std/examples/builtin/wrapping_shift_left"
   }
  ]
 }

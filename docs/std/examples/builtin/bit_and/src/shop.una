@@ -1,0 +1,9 @@
+module shop
+
+--- The low four flags of an item, kept with a mask.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let flags: U8 = 250
+  let low = flags.bit_and(mask: 15)
+  @console.print("{low}")
