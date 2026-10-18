@@ -1,1 +1,0 @@
-- **The site with Learn at teaching depth** (#899). `site/website.lock` pins website b25d5c42, which builds Learn from the release `for-una-0.3.15-3`: every chapter at teaching depth, with new pages 4.5 and 11.5 and no whole-chapter pages. The configure guide's boundaries page links Learn's new page on boundaries, 11.5.

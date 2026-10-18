@@ -1,1 +1,0 @@
-- **The `hunt` gate compares diagnostics' messages** (#874). Each observer's view of a run now keeps the message of every diagnostic of `una run --json`, which redacts what a message renders above `public`, so a secret that reaches only a message, the class of S-28, is a leak between variants; a new canary plants one.
