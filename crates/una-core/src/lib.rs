@@ -14,6 +14,12 @@ mod names;
 mod print;
 mod text;
 
+/// The most decimal digits of an integer that a text may write, its sign excluded and leading
+/// zeros included, for JSON (`spec/23 §3`), `parse_int` (`spec/22 §4`) and `to_int`
+/// (`spec/14 §1`): converting d digits to an exact integer takes O(d²), so a longer text is
+/// refused before any conversion, as in CPython (#914).
+pub const MAX_INT_DIGITS: usize = 4300;
+
 pub use descriptor::Descriptor;
 pub use ir::{
     Arm, Atom, Base, BinOp, Bound, CapOp, Clause, ConditionEdit, Constraint, Ctor, DataVariant,

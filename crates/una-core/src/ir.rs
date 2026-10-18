@@ -1322,6 +1322,7 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
             ("Empty", &[]),
             ("NotADigit", &[("at", Int)]),
             ("NoDigits", &[]),
+            ("TooLong", &[]),
         ]),
         _ => None,
     }
