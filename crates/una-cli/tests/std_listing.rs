@@ -969,12 +969,19 @@ fn cost_sources() -> Vec<(String, String)> {
     found
 }
 
+/// A cost stated in a sentence: the source, the sentence, and each item with its phrase.
+type Stated = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
 /// Costs that a source states in a sentence rather than in a cost table, so that the check
 /// cannot find them by itself: the source, the sentence (with the backticks of its code spans
 /// removed), and each item it gives a cost with the cost as the entry's `time` gives it. Each
 /// part of that time between `, ` is words of the sentence, so that each item gets the phrase
 /// that is about it. Review keeps this list; una#852 is to state every item's cost.
-const STATED_COSTS: [(&str, &str, &[(&str, &str)]); 2] = [
+const STATED_COSTS: [Stated; 2] = [
     (
         "spec/21 §5",
         "O(log n) per lookup, insertion and removal",
@@ -982,9 +989,15 @@ const STATED_COSTS: [(&str, &str, &[(&str, &str)]); 2] = [
             ("builtin has", "O(log n) per lookup"),
             ("builtin get", "O(log n) per lookup"),
             ("builtin set", "O(log n) per lookup, insertion and removal"),
-            ("builtin remove", "O(log n) per lookup, insertion and removal"),
+            (
+                "builtin remove",
+                "O(log n) per lookup, insertion and removal",
+            ),
             ("builtin with", "O(log n) per lookup, insertion and removal"),
-            ("builtin without", "O(log n) per lookup, insertion and removal"),
+            (
+                "builtin without",
+                "O(log n) per lookup, insertion and removal",
+            ),
         ],
     ),
     (
