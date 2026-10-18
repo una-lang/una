@@ -218,8 +218,12 @@ TIME_BUDGET_MACOS = 335
 # took 362 and 359 seconds at a load of about 4 to 5 (2026-10-17), so the budget was 390
 # seconds, the slower plus 7%, rounded up to 5 seconds. With the oracle runner's observed runs
 # (ADR 0115, #794), two runs back to back took 396 and 388 seconds at a load average of 2.5 to 5.3
-# (2026-10-18), so 425 seconds is the slower plus 7%, rounded up to 5 seconds.
-TIME_BUDGET_LINUX = 425
+# (2026-10-18), so the budget was 425 seconds, the slower plus 7%, rounded up to 5 seconds. With
+# the order of releases (ADR 0115, Amendments of 2026-10-18), a run at a 1-minute load under 4.5
+# took 411 seconds, and two runs during indexing and another virtual machine's work, every phase
+# slower alike, took 451 and 444, recorded as outliers: 440 seconds is 411 plus 7%, rounded up to
+# 5 seconds.
+TIME_BUDGET_LINUX = 440
 # The budget by sandbox backend. A backend with no budget here has none pinned, which is an error
 # of the gate: no platform runs unbudgeted.
 TIME_BUDGETS = {"sandbox-exec": TIME_BUDGET_MACOS, "landlock": TIME_BUDGET_LINUX}

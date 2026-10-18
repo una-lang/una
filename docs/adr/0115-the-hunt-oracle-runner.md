@@ -155,3 +155,18 @@ The project accepted this record on 2026-10-18, with the measurements above. The
 - **Canary.** `release-branch` plants exactly the first of these: in one variant, a visible line before the release, where the other variants release. It must be a leak at `public`.
 - **Release positions.** A release of the observed run without a position (`after`) is an error of the program.
 - **Matching.** The comparison of a failure's public fields, with a `<redacted:level>` standing for any text at its own place, is a linear scan: the first and last pieces anchor the ends, and each piece between is found in order. It has no backtracking.
+- **Measured again with this rule** (2026-10-18), on the same binaries:
+  - **macOS.** The gate took 279 seconds. All canaries were caught, `release-branch` included. Nothing was found, and the oracle's counts were unchanged: 481 programs and 1,889 variants compared, 539 live, 243 explained. So no floor or ceiling moves.
+  - **Linux.** Five runs in all:
+
+    | run | seconds | 1-minute load average | note |
+    | --- | --- | --- | --- |
+    | 1 | 396 | 4.4 to 4.2 | |
+    | 2 | 388 | 3.4 to 2.5 | |
+    | 3 | 451 | 6.1 to 8.9 | machine-state outlier |
+    | 4 | 444 | 6.1 to 10.1 | machine-state outlier |
+    | 5 | 411 | 3.4 to 6.4 | |
+
+  - **Runs 3 and 4.** Every phase was 12 to 20% slower than in runs 1 and 2, the phases this record does not touch as much as the oracle's. Their snapshots show Spotlight indexing, `triald` and a second virtual machine beside Docker's.
+  - **Run 5** started only once the 1-minute load average was under 4.5, with no indexing running.
+  - **The budget** is now 440 seconds: the slowest run at a normal load, run 5 at 411 seconds, plus 7%, rounded up to 5 seconds, by the same rule as before. Runs 3 and 4 are recorded as outliers and not used. The macOS budget stays 335 seconds.
