@@ -101,6 +101,7 @@ Further rules:
 
 - **Moving to edition `0.2`.** Changing `edition` and checking again shows what changes. See [Migrating from edition 0.1](../../una-for-agents.md#21-migrating-from-edition-01).
 - **Some rules differ by edition,** such as recursive kinds and the prelude's generic functions. Each construct page has an Edition part.
+- **A security fix may change an edition.** `ParseError`, the failure of `parse_int`, gained the variant `TooLong` in editions `0.2` and `0.3` (#914). A `when` that names each of its variants without an `else` arm now fails to check, so the change is never silent.
 
 ## Diagnostics
 
