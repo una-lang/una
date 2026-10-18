@@ -1567,45 +1567,43 @@ fn the_reference_agrees_with_the_listing() {
             }
         };
         // Parameters and result, for functions and built-in methods.
-        let check_params = |declared: &[String],
-                            edits: &[bool],
-                            result: &str,
-                            problems: &mut Vec<String>| {
-            if entry.get("params").is_none() || entry.get("returns").is_none() {
-                problems.push(format!(
-                    "{at}: a {} needs `params` and `returns`",
-                    item.kind
-                ));
-            }
-            let mut params = Vec::new();
-            for (i, param) in list(entry, "params", &at, problems).iter().enumerate() {
-                let at = format!("{at} parameter {i}");
-                shape(param, &at, &["name", "meaning"], &[], problems);
-                params.push(filled(param, "name", &at, problems).to_owned());
-                let meaning = filled(param, "meaning", &at, problems);
-                in_place(meaning, edits.get(i) == Some(&true), &at, problems);
-            }
-            if params != declared {
-                problems.push(format!(
-                    "{at}: parameters {params:?}, the declaration's are {declared:?}"
-                ));
-            }
-            let returns = &entry["returns"];
-            shape(
-                returns,
-                &format!("{at} returns"),
-                &["type", "meaning"],
-                &[],
-                problems,
-            );
-            filled(returns, "meaning", &at, problems);
-            if returns["type"].as_str() != Some(result) {
-                problems.push(format!(
-                    "{at}: returns {}, the declaration's result is {result}",
-                    returns["type"]
-                ));
-            }
-        };
+        let check_params =
+            |declared: &[String], edits: &[bool], result: &str, problems: &mut Vec<String>| {
+                if entry.get("params").is_none() || entry.get("returns").is_none() {
+                    problems.push(format!(
+                        "{at}: a {} needs `params` and `returns`",
+                        item.kind
+                    ));
+                }
+                let mut params = Vec::new();
+                for (i, param) in list(entry, "params", &at, problems).iter().enumerate() {
+                    let at = format!("{at} parameter {i}");
+                    shape(param, &at, &["name", "meaning"], &[], problems);
+                    params.push(filled(param, "name", &at, problems).to_owned());
+                    let meaning = filled(param, "meaning", &at, problems);
+                    in_place(meaning, edits.get(i) == Some(&true), &at, problems);
+                }
+                if params != declared {
+                    problems.push(format!(
+                        "{at}: parameters {params:?}, the declaration's are {declared:?}"
+                    ));
+                }
+                let returns = &entry["returns"];
+                shape(
+                    returns,
+                    &format!("{at} returns"),
+                    &["type", "meaning"],
+                    &[],
+                    problems,
+                );
+                filled(returns, "meaning", &at, problems);
+                if returns["type"].as_str() != Some(result) {
+                    problems.push(format!(
+                        "{at}: returns {}, the declaration's result is {result}",
+                        returns["type"]
+                    ));
+                }
+            };
         if item.kind == "function" {
             only(
                 &["params", "returns", "requires", "fails", "effects_of"],
@@ -2201,7 +2199,10 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
             .iter()
             .any(|other| other.name == item.name && other.module != item.module);
         if shared && item.kind != "kind" {
-            let copy = scratch.join("std-examples-shadowed").join(module).join(name);
+            let copy = scratch
+                .join("std-examples-shadowed")
+                .join(module)
+                .join(name);
             let _ = fs::remove_dir_all(&copy);
             copy_tree(&source, &copy);
             for (path, src) in sources(&copy) {
@@ -2212,7 +2213,11 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
             if checked.status.success() != builtin {
                 problems.push(format!(
                     "{example}: with a function `{name}` declared beside it, it {}, so {}:\n{}",
-                    if builtin { "stops checking" } else { "still checks" },
+                    if builtin {
+                        "stops checking"
+                    } else {
+                        "still checks"
+                    },
                     if builtin {
                         "a call in it is the prelude function's, not the built-in method's"
                     } else {
