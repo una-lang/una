@@ -868,7 +868,7 @@
    ],
    "example": "docs/std/examples/prelude/append",
    "cost": {
-    "time": "O(1) index and set, amortized O(1) append, O(n) copy when the list is shared",
+    "time": "amortized O(1) append, O(n) copy when the list is shared",
     "source": "ADR 0107",
     "terms": [
      {
@@ -899,7 +899,12 @@
    "see_also": [
     "prelude first"
    ],
-   "example": "docs/std/examples/prelude/at"
+   "example": "docs/std/examples/prelude/at",
+   "cost": {
+    "time": "O(1) index",
+    "source": "ADR 0107",
+    "terms": []
+   }
   },
   {
    "module": "prelude",
@@ -1003,7 +1008,12 @@
     "prelude at",
     "prelude or_else"
    ],
-   "example": "docs/std/examples/prelude/first"
+   "example": "docs/std/examples/prelude/first",
+   "cost": {
+    "time": "O(1) index",
+    "source": "ADR 0107",
+    "terms": []
+   }
   },
   {
    "module": "prelude",
@@ -1231,7 +1241,7 @@
    ],
    "example": "docs/std/examples/prelude/set",
    "cost": {
-    "time": "O(1) index and set, amortized O(1) append, O(n) copy when the list is shared",
+    "time": "O(1) index and set, O(n) copy when the list is shared",
     "source": "ADR 0107",
     "terms": [
      {
@@ -1422,7 +1432,7 @@
    ],
    "example": "docs/std/examples/builtin/has",
    "cost": {
-    "time": "O(log n) per lookup, insertion and removal",
+    "time": "O(log n) per lookup",
     "source": "spec/21 §5",
     "terms": [
      {
@@ -1455,7 +1465,7 @@
    ],
    "example": "docs/std/examples/builtin/get",
    "cost": {
-    "time": "O(log n) per lookup, insertion and removal",
+    "time": "O(log n) per lookup",
     "source": "spec/21 §5",
     "terms": [
      {
@@ -1573,7 +1583,17 @@
     "builtin set",
     "builtin without"
    ],
-   "example": "docs/std/examples/builtin/with"
+   "example": "docs/std/examples/builtin/with",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; the update is in place when the call is the last use of `m` and nothing else holds it, and on a copy, in O(n), otherwise"
+     }
+    ]
+   }
   },
   {
    "module": "builtin",
@@ -1597,7 +1617,17 @@
     "builtin remove",
     "builtin with"
    ],
-   "example": "docs/std/examples/builtin/without"
+   "example": "docs/std/examples/builtin/without",
+   "cost": {
+    "time": "O(log n) per lookup, insertion and removal",
+    "source": "spec/21 §5",
+    "terms": [
+     {
+      "symbol": "n",
+      "meaning": "the number of entries in `m`; the update is in place when the call is the last use of `m` and nothing else holds it, and on a copy, in O(n), otherwise"
+     }
+    ]
+   }
   },
   {
    "module": "builtin",

@@ -970,24 +970,38 @@ fn cost_sources() -> Vec<(String, String)> {
 }
 
 /// Costs that a source states in a sentence rather than in a cost table, so that the check
-/// cannot find them by itself: the source, the cost as an entry's `time` gives it (the sentence's
-/// words, with the backticks of its code spans removed), and the items it is the cost of. Review
-/// keeps this list; una#852 is to state every item's cost.
-const STATED_COSTS: [(&str, &str, &[&str]); 2] = [
+/// cannot find them by itself: the source, the sentence (with the backticks of its code spans
+/// removed), and each item it gives a cost with the cost as the entry's `time` gives it. Each
+/// part of that time between `, ` is words of the sentence, so that each item gets the phrase
+/// that is about it. Review keeps this list; una#852 is to state every item's cost.
+const STATED_COSTS: [(&str, &str, &[(&str, &str)]); 2] = [
     (
         "spec/21 §5",
         "O(log n) per lookup, insertion and removal",
         &[
-            "builtin has",
-            "builtin get",
-            "builtin set",
-            "builtin remove",
+            ("builtin has", "O(log n) per lookup"),
+            ("builtin get", "O(log n) per lookup"),
+            ("builtin set", "O(log n) per lookup, insertion and removal"),
+            ("builtin remove", "O(log n) per lookup, insertion and removal"),
+            ("builtin with", "O(log n) per lookup, insertion and removal"),
+            ("builtin without", "O(log n) per lookup, insertion and removal"),
         ],
     ),
     (
         "ADR 0107",
         "O(1) index and set, amortized O(1) append, O(n) copy when the list is shared",
-        &["prelude set", "prelude append"],
+        &[
+            ("prelude at", "O(1) index"),
+            ("prelude first", "O(1) index"),
+            (
+                "prelude set",
+                "O(1) index and set, O(n) copy when the list is shared",
+            ),
+            (
+                "prelude append",
+                "amortized O(1) append, O(n) copy when the list is shared",
+            ),
+        ],
     ),
 ];
 
@@ -1338,11 +1352,48 @@ fn naming(item: &Item) -> (bool, bool, bool) {
 
 /// The Una source `src` with a declaration of a function `name` of one `Unit` parameter
 /// appended, in canonical form. It shadows the prelude function of that name (`spec/10 §11`
-/// rule 5), so every call that resolved to the prelude function stops checking,
-/// while a built-in method resolved by its receiver's type is tried before any function in
-/// scope (`spec/04 §3`, `spec/21 §2`) and keeps checking.
+/// rule 5), so every call that resolved to the prelude function stops checking. A built-in
+/// method of the receiver's type keeps checking: the checker tries it before any function in
+/// scope (`crates/una-check/src/types/call.rs`, `method`), an order the spec is to state
+/// (una#880).
 fn shadowed(src: &str, name: &str) -> String {
     format!("{src}\n{name}(probe: Unit) -> Unit = probe\n")
+}
+
+/// Whether the report of `una --json check`, `report`, has an error located at one of `calls`,
+/// each a file relative to the package and a line: a failure at a call of the item, not at the
+/// appended declaration or anywhere else.
+fn fails_at(report: &serde_json::Value, calls: &[(String, u64)]) -> bool {
+    report["diagnostics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|diagnostic| {
+            let primary = &diagnostic["primary"];
+            diagnostic["severity"] == "error"
+                && calls.iter().any(|(file, line)| {
+                    primary["file"] == file.as_str() && primary["start"]["line"] == *line
+                })
+        })
+}
+
+#[test]
+fn a_shadowed_example_must_fail_at_a_call_of_the_item() {
+    let report = |file: &str, line: u64| {
+        serde_json::json!({ "schema": "una.diagnostics/1", "diagnostics": [{
+            "severity": "error",
+            "code": "U2005",
+            "primary": { "file": file, "start": { "line": line, "col": 5 } }
+        }], "fixable": 0 })
+    };
+    let calls = [("src/shop.una".to_owned(), 9)];
+    assert!(fails_at(&report("src/shop.una", 9), &calls));
+    assert!(!fails_at(&report("src/shop.una", 13), &calls));
+    assert!(!fails_at(&report("src/other.una", 9), &calls));
+    assert!(!fails_at(
+        &serde_json::json!({ "diagnostics": [], "fixable": 0 }),
+        &calls
+    ));
 }
 
 /// The editions in which `item` exists.
@@ -1416,12 +1467,19 @@ fn the_reference_agrees_with_the_listing() {
     // Every source that can state a cost: an item whose row a cost table of one has must carry
     // a cost, and so must an item that `STATED_COSTS` gives a cost, in its source's words.
     let all_sources = cost_sources();
-    for (source, time, _) in STATED_COSTS {
+    for (source, sentence, of) in STATED_COSTS {
         let stated = all_sources
             .iter()
-            .any(|(s, text)| s == source && text.replace('`', "").contains(time));
+            .any(|(s, text)| s == source && text.replace('`', "").contains(sentence));
         if !stated {
-            problems.push(format!("STATED_COSTS: {source} does not say `{time}`"));
+            problems.push(format!("STATED_COSTS: {source} does not say `{sentence}`"));
+        }
+        for (item, time) in of {
+            if time.split(", ").any(|part| !sentence.contains(part)) {
+                problems.push(format!(
+                    "STATED_COSTS: `{time}` for `{item}` is not words of `{sentence}`"
+                ));
+            }
         }
     }
     let constraint_names: std::collections::BTreeSet<String> = items
@@ -1969,8 +2027,11 @@ fn the_reference_agrees_with_the_listing() {
         let qualified = format!("{module} {name}");
         let stated: Vec<(&str, &str)> = STATED_COSTS
             .iter()
-            .filter(|(_, _, of)| of.contains(&qualified.as_str()))
-            .map(|(source, time, _)| (*source, *time))
+            .flat_map(|(source, _, of)| {
+                of.iter()
+                    .filter(|(item, _)| *item == qualified)
+                    .map(move |(_, time)| (*source, *time))
+            })
             .collect();
         if entry.get("cost").is_none() {
             for (source, text) in &all_sources {
@@ -2225,7 +2286,8 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
         // Where another item has the same name, a method call `x.name(...)` could be either's,
         // whatever types the code writes or infers: with a function `name` declared in the
         // example, which shadows the prelude function, an example of the prelude function stops
-        // checking and an example of a built-in method keeps checking.
+        // checking with an error at one of its calls of the item, and an example of a built-in
+        // method keeps checking.
         let shared = items
             .iter()
             .any(|other| other.name == item.name && other.module != item.module);
@@ -2236,25 +2298,45 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
                 .join(name);
             let _ = fs::remove_dir_all(&copy);
             copy_tree(&source, &copy);
+            let (call, free, method) = naming(item);
+            let mut calls = Vec::new();
             for (path, src) in sources(&copy) {
+                let file = path
+                    .strip_prefix(&copy)
+                    .unwrap()
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<String>>()
+                    .join("/");
+                let code = code_bytes(&src);
+                for at in occurrences(&src, &code, name, call, free, method) {
+                    calls.push((file.clone(), src[..at].matches('\n').count() as u64 + 1));
+                }
                 fs::write(path, shadowed(&src, name)).unwrap();
             }
-            let checked = una(&copy, &["--color", "never", "check", "."]);
+            let checked = una(&copy, &["--json", "--color", "never", "check", "."]);
+            let report: serde_json::Value =
+                serde_json::from_slice(&checked.stdout).unwrap_or_default();
             let builtin = item.kind == "method";
-            if checked.status.success() != builtin {
+            let as_expected = if builtin {
+                checked.status.success()
+            } else {
+                !checked.status.success() && fails_at(&report, &calls)
+            };
+            if !as_expected {
                 problems.push(format!(
                     "{example}: with a function `{name}` declared beside it, it {}, so {}:\n{}",
                     if builtin {
                         "stops checking"
                     } else {
-                        "still checks"
+                        "has no error at a call of it"
                     },
                     if builtin {
                         "a call in it is the prelude function's, not the built-in method's"
                     } else {
                         "no call in it is the prelude function's"
                     },
-                    String::from_utf8_lossy(&checked.stderr)
+                    String::from_utf8_lossy(&checked.stdout)
                 ));
             }
         }
