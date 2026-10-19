@@ -81,7 +81,10 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
         .strip_suffix('\n')
         .ok_or("root metadata ends with a line feed")?;
     let lines: Vec<&str> = body.split('\n').collect();
-    let mut at = 0;
+    if lines.first() != Some(&FORMAT) {
+        return Err(format!("root metadata starts with `{FORMAT}`"));
+    }
+    let mut at = 1;
     let mut next = |key: &str| -> Result<String, String> {
         let line = lines
             .get(at)
@@ -93,10 +96,6 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
         at += 1;
         Ok(value.to_owned())
     };
-    if lines.first() != Some(&FORMAT) {
-        return Err(format!("root metadata starts with `{FORMAT}`"));
-    }
-    at += 1;
     let source = next("source")?;
     let version = number(&next("version")?)
         .filter(|v| *v >= 1)
