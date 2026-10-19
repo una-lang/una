@@ -110,6 +110,15 @@ impl Scan<'_, '_> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&on_stop.block),
+            // The bound is evaluated once; a started expression is a statement of its own
+            // (`spec/27 §7`).
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&stmt.block);
+            }
+            Stmt::Start(stmt) => self.handled(&stmt.handled),
         }
     }
 

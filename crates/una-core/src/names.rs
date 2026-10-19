@@ -56,6 +56,13 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             atoms(std::slice::from_ref(deadline), out);
             vars(body, out);
         }
+        Expr::Tasks { bound, body, .. } => {
+            if let Some((bound, _)) = bound {
+                atoms(std::slice::from_ref(bound), out);
+            }
+            vars(body, out);
+        }
+        Expr::Start { task, .. } => vars(task, out),
         Expr::LetTuple { value, body, .. } => {
             atoms(std::slice::from_ref(value), out);
             vars(body, out);
@@ -235,7 +242,10 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
             binders(body, out);
             binders(handler, out);
         }
-        Expr::Attempt { body, .. } | Expr::Within { body, .. } => binders(body, out),
+        Expr::Attempt { body, .. } | Expr::Within { body, .. } | Expr::Tasks { body, .. } => {
+            binders(body, out);
+        }
+        Expr::Start { task, .. } => binders(task, out),
         Expr::With { cap, body, .. } => {
             out.insert(cap.as_str());
             binders(body, out);

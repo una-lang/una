@@ -1083,7 +1083,8 @@ fn stops(expr: &Expr) -> bool {
         Expr::LetTuple { body, .. }
         | Expr::With { body, .. }
         | Expr::Attempt { body, .. }
-        | Expr::Within { body, .. } => stops(body),
+        | Expr::Within { body, .. }
+        | Expr::Tasks { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -1097,7 +1098,8 @@ fn stops(expr: &Expr) -> bool {
         | Expr::Loop { .. }
         | Expr::Together { .. }
         | Expr::TogetherFor { .. }
-        | Expr::FirstOf { .. } => false,
+        | Expr::FirstOf { .. }
+        | Expr::Start { .. } => false,
     }
 }
 
@@ -1929,6 +1931,40 @@ impl<'p, 'i> Walker<'p, 'i> {
                             self.refined_flow(result, value, leaf.span, &leaf_ctx);
                         }
                     }
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
+                // `tasks(b) e` (`spec/27 §7`, ADR 0117 Verification): `b >= 1`, a `refinement`
+                // obligation at `b`; the block runs in the current task, so it is walked as a
+                // block, and its `start`s change no outer binding.
+                Expr::Tasks { bound, body, .. } => {
+                    if let Some((bound, bound_span)) = bound {
+                        let value = self.atom(bound, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*bound_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *bound_span,
+                            None,
+                        );
+                    }
+                    expr = body;
+                }
+                // `start e`: `e` is verified alone, in the context of the `start`, as a
+                // `together` task is; its value is `unit`, and it gives no fact.
+                Expr::Start { task, span } => {
+                    let mut task_leaves = Vec::new();
+                    self.walk(task, &ctx, &mut task_leaves);
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
                         divisions: ctx.divisions.clone(),

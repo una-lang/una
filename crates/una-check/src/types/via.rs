@@ -275,9 +275,11 @@ mod tests {
         use una_syntax::ast::{CapBindingValue, DeclKind, ExprKind, Stmt};
         // Whether the form installs a handler, at this edition.
         let stmt = match stmt {
-            // A `with` clause of the handled line: counted by `words`.
-            Stmt::Handled(_) | Stmt::Let(_) | Stmt::Assign(_) => true,
-            Stmt::IfThen(_)
+            // A `with` clause of the handled line: counted by `words`. A `start` with one is
+            // U2035, and counted all the same, so the check fails closed.
+            Stmt::Handled(_) | Stmt::Let(_) | Stmt::Assign(_) | Stmt::Start(_) => true,
+            Stmt::Tasks(_)
+            | Stmt::IfThen(_)
             | Stmt::For(_)
             | Stmt::Together(_)
             | Stmt::BlockExpr(_)

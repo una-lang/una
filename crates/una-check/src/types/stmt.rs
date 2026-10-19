@@ -7,7 +7,8 @@ use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
     ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
-    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
+    Literal, PatternKind, StartStmt, Stmt, StopStmt, TasksStmt, TextPart, TogetherFor, TogetherStmt,
+    UntilStmt, WhenExpr,
 };
 
 use super::Report;
@@ -175,6 +176,22 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(*span, &Ty::Unit, expected, role);
                     }
                 }
+                // A block that ends in `tasks` or `start` has `unit` as its value (ADR 0117
+                // rule 7).
+                Stmt::Tasks(stmt) => {
+                    self.outside_rl(stmt.span, || "`tasks`".to_owned());
+                    self.tasks_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::Start(stmt) => {
+                    self.outside_rl(stmt.span, || "`start`".to_owned());
+                    self.start_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
             }
         }
         self.ctx.rl = rl;
@@ -192,6 +209,14 @@ impl<'a> Checker<'_, 'a, '_> {
             .current
             .and_then(|id| self.env.functions.get(id))
             .is_some_and(|def| def.diverges);
+        // A started task may run forever where its function says `diverges`, also inside a
+        // `for ever` body or a task, since it ends with its `tasks` statement, which waits for
+        // it (ADR 0117 rule 7, ADR 0116 rules 8 and 9).
+        if self.in_start && self.lambda_depth == 0 {
+            return (!diverges).then_some(
+                "its function does not say `diverges`; add `diverges` to the header of a function that may run forever",
+            );
+        }
         if self.lambda_depth > 0 {
             Some(
                 "a lambda may not run forever: it is an ordinary value that can be called later from code that does not say `diverges`",
@@ -758,6 +783,99 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
             }
         }
+    }
+
+    /// `tasks [at most n at once]` with its block (`spec/27 §7`, ADR 0117 rule 7): the bound is
+    /// an `Int` of at least 1, a `refinement` obligation, evaluated once; the block runs in the
+    /// current task, and the `start` statements in it, outside any task within it, start its
+    /// tasks.
+    fn tasks_stmt(&mut self, stmt: &TasksStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        if let Some(bound) = &stmt.bound {
+            let found = self.expr(bound, None);
+            let found = self.resolve(&found);
+            if !matches!(found.unlabeled(), Ty::Error(_)) {
+                if matches!(found.magnitude(), Ty::Int) {
+                    self.obligation(ObligationKind::Refinement, bound.span, None);
+                } else {
+                    let shown = self.show(&found);
+                    self.report.error(
+                        Code::U2001,
+                        bound.span,
+                        format!("the bound of `tasks` is an `Int`, found `{shown}`"),
+                    );
+                }
+            }
+        }
+        self.tasks_frames.push((self.task_depth, self.lambda_depth));
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.tasks_frames.pop();
+        self.discarded(value_span(&stmt.block), &ty);
+    }
+
+    /// `start e` (`spec/27 §7`, ADR 0117 rule 7): legal only in the block of a `tasks`, outside
+    /// any task and lambda within it, and without a `with` clause (U2035). `e`, with its
+    /// deadline and handling clauses, is a task: checked as a `together` branch is, under the
+    /// program counter of the `start` (IF1), unable to change a binding declared outside it
+    /// (U2023); it is a `Unit` (U2011) that must not fail (U3029).
+    fn start_stmt(&mut self, stmt: &StartStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
+        let placed = self
+            .tasks_frames
+            .last()
+            .is_some_and(|&(tasks, lambdas)| tasks == self.task_depth && lambdas == self.lambda_depth);
+        if !placed {
+            let inside = if self.lambda_depth > 0
+                && self
+                    .tasks_frames
+                    .last()
+                    .is_some_and(|&(_, lambdas)| lambdas < self.lambda_depth)
+            {
+                "inside a lambda, a value that may be called after its `tasks` statement has ended"
+            } else if self.tasks_frames.is_empty() {
+                "outside the block of a `tasks` statement, which waits for the tasks it starts"
+            } else {
+                "inside a task within the block of its `tasks` statement, which cannot wait for it"
+            };
+            self.report.error(
+                Code::U2035,
+                stmt.keyword,
+                format!("`start` stands {inside}; start tasks from the block of a `tasks` statement"),
+            );
+        }
+        if let Some(binding) = stmt.handled.with.first() {
+            let mut diagnostic = self.report.make(
+                Code::U2035,
+                binding.span,
+                "`start` takes no `with` clause, since its task outlives the statement a `with` scopes over; install the handler around the call of the function that holds the `tasks` statement, or inside the started function".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt.keyword, "the `start`"));
+            self.report.push(diagnostic);
+        }
+        if matches!(
+            stmt.handled.expr.kind,
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+        ) {
+            self.statement_calls.push(stmt.handled.expr.span);
+        }
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        let word = std::mem::replace(&mut self.task_word, "started task");
+        let in_start = std::mem::replace(&mut self.in_start, true);
+        self.task_depth += 1;
+        let ty = self.handled(&stmt.handled, None, Role::Plain, false);
+        self.task_depth -= 1;
+        self.in_start = in_start;
+        self.task_word = word;
+        self.task_mark = saved_mark;
+        self.locals.truncate(mark);
+        self.discarded(stmt.handled.expr.span, &ty);
     }
 
     /// `together` with its branches (`spec/19 §1`, `§2`): each branch is checked as its `let`,
@@ -1911,6 +2029,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::Skip(span) => *span,
         Stmt::Until(stmt) => stmt.span,
         Stmt::Ever(stmt) => stmt.span,
+        Stmt::Tasks(stmt) => stmt.span,
+        Stmt::Start(stmt) => stmt.span,
         Stmt::OnStop(on_stop) => on_stop.span,
     }
 }

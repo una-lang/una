@@ -17,6 +17,10 @@ use super::ty::{CapId, FnUse, Ty};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
+/// The message of U3029 for a `start` whose expression can fail (`spec/27 §7`, ADR 0117 rule
+/// 7), with `{what}` for what fails.
+pub(crate) const START_FAILS: &str = "{what}, and a started task must not fail, since no code receives its failure; handle it with `if error use`, or wrap the call in `attempt`";
+
 /// Which pass of the checker runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pass {
@@ -964,6 +968,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 span,
                 "`if error pass` passes the failure on, and `on stop` must not fail; handle it with `if error use`".to_owned(),
             );
+        } else if self.in_start && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                START_FAILS.replace("{what}", "`if error pass` passes the failure on"),
+            );
         }
         let mut inner = expr;
         while let ExprKind::Paren(next) = &inner.kind {
@@ -1113,6 +1123,14 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return;
         }
+        if self.in_start && self.authority() {
+            self.report.error(
+                Code::U3029,
+                variant.span,
+                START_FAILS.replace("{what}", "this clause fails"),
+            );
+            return;
+        }
         if let Some(kind) = kind {
             self.raised_fact(
                 Raised::Kind(Ty::Kind(kind, Vec::new().into())),
@@ -1234,6 +1252,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 format!(
                     "{what} has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first"
                 ),
+            );
+            return;
+        }
+        // ADR 0117 rule 7: a started task handles every failure where it is.
+        if fails.is_some() && !handled && self.in_start {
+            self.report.error(
+                Code::U3029,
+                span,
+                START_FAILS.replace("{what}", &format!("{what} can fail")),
             );
             return;
         }

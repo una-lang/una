@@ -87,7 +87,10 @@ impl Checker<'_, '_, '_> {
     /// its own, and the ones before it are its free variables. Sites nest.
     pub(crate) fn timing_start(&mut self) {
         let mut seed = TimingSeed {
-            unplaced: self.lambda_depth > 0 || self.task_depth > 0 || self.current.is_none(),
+            unplaced: self.lambda_depth > 0
+                || self.task_depth > 0
+                || !self.tasks_frames.is_empty()
+                || self.current.is_none(),
             ..TimingSeed::default()
         };
         seed.sources

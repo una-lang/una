@@ -397,6 +397,10 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
         Expr::Attempt { body, .. } => mentions(body, name),
         Expr::Within { deadline, body, .. } => atom(deadline) || mentions(body, name),
+        Expr::Tasks { bound, body, .. } => {
+            bound.as_ref().is_some_and(|(b, _)| atom(b)) || mentions(body, name)
+        }
+        Expr::Start { task, .. } => mentions(task, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,
