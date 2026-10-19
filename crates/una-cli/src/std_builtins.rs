@@ -1,7 +1,8 @@
 //! The built-in methods of the standard library reference (#690): `.len`, the methods of maps,
-//! the conversions and the wrapping, saturating and bit operations of the fixed-width integers.
-//! They have no declaration in the standard modules, so their signature lines and doc comments
-//! are written here, from `spec/14 §2`, `spec/18 §4`, `§5` and `spec/21 §2`. The names come from
+//! of `Stack` and of `Queue`, the conversions and the wrapping, saturating and bit operations of
+//! the fixed-width integers. They have no declaration in the standard modules, so their
+//! signature lines and doc comments are written here, from `spec/14 §2`, `spec/18 §4`, `§5`,
+//! `spec/21 §2` and `spec/28 §5`. The names come from
 //! the checker (`una_check::builtin_methods`), and tests keep the two in step: every method the
 //! checker resolves has an entry and every entry is one it resolves, and each entry's signature
 //! is probed against `una check` in every edition, with a positive and a negative call.
@@ -73,7 +74,8 @@ fn fixed_types() -> Vec<&'static str> {
 }
 
 /// Every built-in method on every receiver, in the order of the reference: `.len`, the
-/// methods of maps, the conversions, then the fixed-width operations.
+/// methods of maps, of `Stack` and of `Queue`, the conversions, then the fixed-width
+/// operations.
 pub fn builtins() -> Vec<Builtin> {
     let entry = |name: &'static str,
                  receiver: &'static str,
@@ -140,6 +142,34 @@ pub fn builtins() -> Vec<Builtin> {
             )
         },
     ];
+    // Edition 0.4: the methods of `Stack` and `Queue` (`spec/28 §5`), in the order of their
+    // tables.
+    let seq =
+        |name, receiver, var, edit, params: &[(&'static str, &'static str)], result| Builtin {
+            edit,
+            since: Edition::V0_4,
+            ..entry(name, receiver, var, params, result)
+        };
+    all.extend([
+        seq("push", "Stack[T]", "s", true, &[("item", "T")], "Unit"),
+        seq("pop", "Stack[T]", "s", true, &[], "Option[T]"),
+        seq("peek", "Stack[T]", "s", false, &[], "Option[T]"),
+        seq("items", "Stack[T]", "s", false, &[], "List[T]"),
+        seq("push", "Queue[T]", "q", true, &[("item", "T")], "Unit"),
+        seq("pop", "Queue[T]", "q", true, &[], "Option[T]"),
+        seq("peek", "Queue[T]", "q", false, &[], "Option[T]"),
+        seq(
+            "push_front",
+            "Queue[T]",
+            "q",
+            true,
+            &[("item", "T")],
+            "Unit",
+        ),
+        seq("pop_back", "Queue[T]", "q", true, &[], "Option[T]"),
+        seq("peek_back", "Queue[T]", "q", false, &[], "Option[T]"),
+        seq("items", "Queue[T]", "q", false, &[], "List[T]"),
+    ]);
     for target in IntType::ALL {
         let name: &'static str = conversion_name(target);
         all.push(entry(name, "Int", "x", &[], target.as_str()));
@@ -227,6 +257,37 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "Updates `m` in place, written `edit m.update(...)`: sets `key` to `change(v)`, where",
             "`v` is its value, or `initial` when `m` has no `key`. `change` is called exactly once,",
             "and when it fails, `m` keeps its value from before the call (`spec/21 §2`).",
+        ],
+        "push" => &[
+            "Updates the receiver in place, written `edit s.push(item: x)`: a `Stack` takes",
+            "`item` on top and a `Queue` at its back, and its length grows by one, in O(1)",
+            "amortized time (`spec/28 §5`).",
+        ],
+        "pop" => &[
+            "Updates the receiver in place, written `let x = edit s.pop()`: it removes the top of",
+            "a `Stack` or the front of a `Queue` and gives it as `Some`, or gives `None` and",
+            "leaves an empty one as it is, in O(1) amortized time (`spec/28 §5`).",
+        ],
+        "peek" => &[
+            "The top of a `Stack` or the front of a `Queue`, the item `pop` would remove, as",
+            "`Some`, and `None` exactly when it is empty, in O(1) time (`spec/28 §5`).",
+        ],
+        "items" => &[
+            "The items as a list, a `Stack` top first and a `Queue` front first, as many as its",
+            "`len`, in O(n) time (`spec/28 §5`).",
+        ],
+        "push_front" => &[
+            "Updates a `Queue` in place, written `edit q.push_front(item: x)`: `item` goes to the",
+            "front, so `peek` gives it, in O(1) amortized time (`spec/28 §5`).",
+        ],
+        "pop_back" => &[
+            "Updates a `Queue` in place, written `let x = edit q.pop_back()`: it removes the back",
+            "and gives it as `Some`, or gives `None` when the queue is empty, in O(1) amortized",
+            "time (`spec/28 §5`).",
+        ],
+        "peek_back" => &[
+            "The back of a `Queue`, the item `pop_back` would remove, as `Some`, and `None`",
+            "exactly when it is empty, in O(1) time (`spec/28 §5`).",
         ],
         "to_int" => &[
             "Converts `x` to `Int`, which every value of a fixed-width type fits, so it always",

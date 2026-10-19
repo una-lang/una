@@ -1,7 +1,7 @@
 //! Runtime values (`spec/11 §2`).
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -39,6 +39,9 @@ pub(crate) enum Value<'p> {
     /// A map, in the order of its keys (`spec/21 §5`): each entry keeps its key as a value,
     /// for listing and rendering.
     Map(Rc<Entries<'p>>),
+    /// A `Stack` or a `Queue` of `std.collections`, a ring buffer front first (`spec/28 §5`,
+    /// ADR 0119 rule 19): a stack's top is its front.
+    Seq(Rc<VecDeque<Value<'p>>>),
     /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`): a view of a
     /// buffer, with its own offset, shape and strides, so a view shares its parent's storage.
     Dense(Rc<Dense<'p>>),
@@ -180,6 +183,11 @@ fn unwind(mut pending: Vec<Value<'_>>) {
                     }
                 }
             }
+            Value::Seq(items) => {
+                if let Ok(items) = Rc::try_unwrap(items) {
+                    pending.extend(items);
+                }
+            }
             Value::Dense(dense) => {
                 if let Ok(mut dense) = Rc::try_unwrap(dense)
                     && let Some(items) = take_values(&mut dense)
@@ -251,6 +259,7 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
         Value::Tuple(x) if !x.is_empty() => Some((2, Rc::as_ptr(x) as usize)),
         Value::Map(x) if !x.is_empty() => Some((3, Rc::as_ptr(x) as usize)),
         Value::Dense(x) => Some((4, Rc::as_ptr(x) as usize)),
+        Value::Seq(x) if !x.is_empty() => Some((5, Rc::as_ptr(x) as usize)),
         _ => None,
     }
 }
@@ -276,6 +285,7 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
             x.is_empty() && y.is_empty()
         }
         (Value::Map(x), Value::Map(y)) => x.is_empty() && y.is_empty(),
+        (Value::Seq(x), Value::Seq(y)) => x.is_empty() && y.is_empty(),
         _ => false,
     }
 }
@@ -388,6 +398,13 @@ pub(crate) fn equal_within(a: &Value<'_>, b: &Value<'_>, pairs: usize) -> Option
                     && x.values()
                         .zip(y.values())
                         .all(|((_, a), (_, b))| admit(a, b, &mut pending))
+            }
+            // The same elements in the same order, front first (`spec/28 §3` rule 3).
+            (Value::Seq(x), Value::Seq(y)) => {
+                x.len() == y.len()
+                    && x.iter()
+                        .zip(y.iter())
+                        .all(|(a, b)| admit(a, b, &mut pending))
             }
             _ => false,
         };

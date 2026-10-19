@@ -519,6 +519,10 @@ pub enum Prim {
     /// A built-in method of a map (`spec/21 §2`); `set` and `remove` are rebinds to `With`
     /// and `Without`.
     Map(MapOp),
+    /// A built-in method of a `Stack` or a `Queue` of `std.collections` (`spec/28 §5`, ADR 0119
+    /// rules 5 and 6), both held as one double-ended sequence; `push` and `pop` are rebinds of
+    /// the receiver to the new sequence.
+    Seq(SeqOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1117,6 +1121,65 @@ impl MapOp {
     }
 }
 
+/// The operations of the double-ended sequence that holds a `Stack[T]` or a `Queue[T]`
+/// (`spec/28 §5`, ADR 0119 rules 5, 6 and 19), each over the sequence in its first argument. A
+/// stack keeps its top at the front, so both types list front first. Every operation is O(1),
+/// amortized for the updates, except `Items`, O(n).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SeqOp {
+    /// The sequence with `item` added at the front: a stack's `push`, a queue's `push_front`.
+    PushFront,
+    /// The sequence with `item` added at the back: a queue's `push`.
+    PushBack,
+    /// The sequence without its front, the same sequence when it is empty: the update of a
+    /// stack's or a queue's `pop`.
+    PopFront,
+    /// The sequence without its back, the same sequence when it is empty: the update of a
+    /// queue's `pop_back`.
+    PopBack,
+    /// `Some` of the front, `None` when empty: `peek`, and the result of `pop`.
+    PeekFront,
+    /// `Some` of the back, `None` when empty: a queue's `peek_back`, and the result of
+    /// `pop_back`.
+    PeekBack,
+    /// The elements, front first, as a `List`: `items()`.
+    Items,
+}
+
+impl SeqOp {
+    /// The operation's name in Core.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeqOp::PushFront => "push_front",
+            SeqOp::PushBack => "push_back",
+            SeqOp::PopFront => "pop_front",
+            SeqOp::PopBack => "pop_back",
+            SeqOp::PeekFront => "peek_front",
+            SeqOp::PeekBack => "peek_back",
+            SeqOp::Items => "items",
+        }
+    }
+
+    /// Whether the operation gives a new sequence built from its receiver, which it may update
+    /// in place when the receiver is given up (`spec/28 §5`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            SeqOp::PushFront | SeqOp::PushBack | SeqOp::PopFront | SeqOp::PopBack
+        )
+    }
+
+    /// The read that gives a removal's result, read before the removal: `PeekFront` for
+    /// `PopFront` and `PeekBack` for `PopBack`; `None` for any other operation.
+    pub fn removed(self) -> Option<SeqOp> {
+        match self {
+            SeqOp::PopFront => Some(SeqOp::PeekFront),
+            SeqOp::PopBack => Some(SeqOp::PeekBack),
+            _ => None,
+        }
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1239,6 +1302,7 @@ impl Prim {
             },
             Prim::Fixed(op, _) => op.as_str(),
             Prim::Map(op) => op.as_str(),
+            Prim::Seq(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),

@@ -40,6 +40,7 @@ mod lock;
 mod map;
 mod memory;
 mod records;
+mod seq;
 mod shared;
 #[cfg(test)]
 mod sharing_tests;
@@ -157,9 +158,10 @@ pub struct StandardSource {
 
 /// The built-in methods and properties that the checker resolves by the type of their
 /// receiver, as `(receiver, name)`: `.len` on `Text`, `List` and `Map` (`spec/14 §2`), the
-/// methods of maps (`spec/21 §2`), the conversions (`spec/18 §4`), and the wrapping,
-/// saturating and bit operations of the fixed-width integers (`spec/18 §5`). The receivers are
-/// `"len"`, `"Map"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
+/// methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`), the conversions
+/// (`spec/18 §4`), and the wrapping, saturating and bit operations of the fixed-width integers
+/// (`spec/18 §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"conversion"` and
+/// `"fixed"`. Read-only: it is built from the tables the
 /// checker resolves them with, for the standard library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
@@ -170,6 +172,17 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
     );
     // Edition 0.4: `update`, which method syntax on a map reaches (ADR 0119 rule 18).
     methods.push(("Map", "update".to_owned()));
+    // Edition 0.4: the methods of `Stack` and `Queue` (`spec/28 §5`).
+    methods.extend(
+        seq::STACK_METHODS
+            .iter()
+            .map(|(name, ..)| ("Stack", (*name).to_owned())),
+    );
+    methods.extend(
+        seq::QUEUE_METHODS
+            .iter()
+            .map(|(name, ..)| ("Queue", (*name).to_owned())),
+    );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (
             "conversion",

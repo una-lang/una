@@ -3,3 +3,4 @@
 tests/conformance/runtime/dense_run
 tests/conformance/runtime/dense_memory_budget
 tests/conformance/runtime/dense_memory_budget_integers
+tests/conformance/runtime/stack_queue_run

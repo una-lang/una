@@ -18,6 +18,13 @@
   "testing"
  ],
  "pending": [
+  "builtin items",
+  "builtin peek",
+  "builtin peek_back",
+  "builtin pop",
+  "builtin pop_back",
+  "builtin push",
+  "builtin push_front",
   "builtin update",
   "prelude Clock",
   "prelude Console",

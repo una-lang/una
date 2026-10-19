@@ -6,3 +6,15 @@ module std.collections
 pub kind Ranked[T, P]
   item: T
   priority: P
+
+--- The stack with no items, of the type its context expects (`spec/28 §5`). Its body is a
+--- placeholder: both engines make the value.
+pub empty_stack[T]() -> Stack[T]
+=
+  empty_stack()
+
+--- The queue with no items, of the type its context expects (`spec/28 §5`). Its body is a
+--- placeholder: both engines make the value.
+pub empty_queue[T]() -> Queue[T]
+=
+  empty_queue()

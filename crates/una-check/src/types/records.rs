@@ -33,6 +33,12 @@ pub(crate) enum Res {
     MapMethod(una_core::MapOp),
     /// `edit m.set(...)` or `edit m.remove(...)`: the map rebound to `With` or `Without`.
     MapUpdate(una_core::MapOp),
+    /// A built-in method of a `Stack` or a `Queue` that reads it (`spec/28 §5`).
+    SeqMethod(una_core::SeqOp),
+    /// `edit q.push(...)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`: the
+    /// sequence rebound to the operation's result, and for a removal, the end it removes read
+    /// first as the call's value.
+    SeqUpdate(una_core::SeqOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

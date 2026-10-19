@@ -421,6 +421,9 @@ impl Writer<'_> {
                 "values" => J::Arr(vec![self.fixed_op(*op), self.int_type(*int)]),
             ),
             Prim::Map(op) => node!(Map, "value" => self.map_op(*op)),
+            // ADR 0119 rules 5 and 6: the operations of the sequence that holds a `Stack` or a
+            // `Queue`, by their Core names.
+            Prim::Seq(op) => node!(Seq, "value" => J::Obj(vec![("kind", s(op.as_str()))])),
             // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
             Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
                 "kind",

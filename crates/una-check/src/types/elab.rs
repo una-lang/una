@@ -8,7 +8,7 @@ use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
     DataVariant, Decl, Example, ExitTag, Expectation, Expr as CoreExpr, FloatOp, Fun,
     HandlerOp as CoreHandlerOp, Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim,
-    Program, Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
+    Program, Refinement as CoreRefinement, Rhs, SeqOp, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
@@ -2936,6 +2936,9 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.assign(lets, target, value, span);
             return Atom::Unit;
         }
+        if let Some(Res::SeqUpdate(op)) = self.res(span) {
+            return self.seq_update(lets, expr, op);
+        }
         let Some(Res::Function { id, type_args }) = self.res(span) else {
             self.broken.set(true);
             return Atom::Unit;
@@ -2991,6 +2994,63 @@ impl<'e, 'a> Fx<'e, 'a> {
         binders
             .last()
             .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
+    }
+
+    /// `edit q.push(item: x)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`
+    /// (`spec/28 §5`): `q = op(q, x)`, as a map's `set` is `m = with(m, k, v)`. A removal first
+    /// reads the end it removes, `PeekFront` or `PeekBack`, which is the call's value; a push's
+    /// value is `unit`. The read holds no reference to the sequence, so the removal still
+    /// updates it in place when nothing else holds it. O(1) amortized each.
+    fn seq_update(&mut self, lets: &mut Vec<Let>, expr: &Expr, op: SeqOp) -> Atom {
+        let span = expr.span;
+        let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        let mut arg_spans = vec![target.span];
+        let mut values = vec![self.atom(lets, target)];
+        for arg in args {
+            arg_spans.push(arg.value.span);
+            values.push(self.atom(lets, &arg.value));
+        }
+        let result = match op.removed() {
+            Some(read) => {
+                let r = self.temp();
+                let ty = self.type_at(span);
+                lets.push(Let::inferred(
+                    r.clone(),
+                    ty,
+                    Bound::Rhs(Rhs::Prim {
+                        prim: Prim::Seq(read),
+                        args: values.clone(),
+                        arg_spans: arg_spans.clone(),
+                        span,
+                    }),
+                    span,
+                ));
+                Atom::Var(r)
+            }
+            None => Atom::Unit,
+        };
+        let t = self.temp();
+        let ty = self.type_at(target.span);
+        lets.push(Let::inferred(
+            t.clone(),
+            ty,
+            Bound::Rhs(Rhs::Prim {
+                prim: Prim::Seq(op),
+                args: values,
+                arg_spans,
+                span,
+            }),
+            span,
+        ));
+        let value = CoreExpr::Atom {
+            atom: Atom::Var(t),
+            span: target.span,
+        };
+        self.assign(lets, target, value, span);
+        result
     }
 
     /// The bindings of the enclosing scope that an `if` or a `when` updates, in order of
@@ -3901,11 +3961,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
-                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map
-                // that reads it (`spec/21 §2`).
-                Some(res @ (Res::IntMethod(_) | Res::MapMethod(_))) => {
+                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map,
+                // a stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`).
+                Some(res @ (Res::IntMethod(_) | Res::MapMethod(_) | Res::SeqMethod(_))) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
+                        Res::SeqMethod(op) => Prim::Seq(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };

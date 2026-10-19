@@ -155,6 +155,8 @@ pub(crate) enum Stop<'p> {
 /// The result of evaluating an expression.
 pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
 
+mod seqs;
+
 /// The fault of a `slice` outside the text (#693).
 const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
 
@@ -385,6 +387,17 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(value));
                     }
                     parts.push(Task::Text("}".to_owned()));
+                }
+                // A `Stack` or a `Queue` as a list, front first (`spec/28 §4`, ADR 0119 rule 3).
+                Value::Seq(items) => {
+                    parts.push(Task::Text("[".to_owned()));
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
+                    }
+                    parts.push(Task::Text("]".to_owned()));
                 }
                 Value::Data(data) => {
                     let names = self.fields(&data.ctor);
@@ -962,6 +975,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } => args.get(..1)?,
+            // A `Stack` or a `Queue` given up to a push or a removal (`spec/28 §5`).
+            Rhs::Prim {
+                prim: Prim::Seq(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -1040,6 +1059,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         prim: Prim::Map(op),
                                         ..
                                     } => map_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Seq(op),
+                                        ..
+                                    } => seqs::seq_apply(*op, args)?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -1590,6 +1613,11 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Flow<'p> {
         match function.module.as_str() {
             "prelude" => return self.prelude(&function.name, args, span),
+            una_core::COLLECTIONS_MODULE => {
+                if let Some(made) = self.collections(&function.name) {
+                    return made;
+                }
+            }
             "std.testing" if function.name == "fake_hash" => {
                 return match args.first() {
                     Some(Value::Int(seed)) => {
@@ -1622,6 +1650,16 @@ impl<'p, 'w> Machine<'p, 'w> {
             self.frames.pop();
         }
         self.leave(result)
+    }
+
+    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), or `None`
+    /// for one the module declares in Una.
+    fn collections(&mut self, name: &str) -> Option<Flow<'p>> {
+        Some(Ok(match name {
+            // O(1): an empty ring buffer allocates nothing.
+            "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
+            _ => return None,
+        }))
     }
 
     /// A call of a function value.
@@ -2424,11 +2462,16 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Text(t) => Value::Int(BigInt::from(t.scalars())),
             Value::List(items) => Value::Int(BigInt::from(items.len())),
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
+            Value::Seq(items) => Value::Int(BigInt::from(items.len())),
             // An array's length (`spec/29 §17`).
             Value::Dense(dense) => {
                 Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
             }
-            _ => return Err(fault("`len` of a value that is not a text, list or map")),
+            _ => {
+                return Err(fault(
+                    "`len` of a value that is not a text, list, map, sequence or array",
+                ));
+            }
         },
         Prim::Concat => {
             let mut out = String::new();
@@ -2457,6 +2500,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         // A copy of the map when another name holds it; a binding at its last use gives it up
         // first, in `Machine::eval`.
         Prim::Map(op) => return map_apply(op, args.to_vec()),
+        Prim::Seq(op) => return seqs::seq_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
         // The shape of a matrix (`spec/29 §17`).

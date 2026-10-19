@@ -25,7 +25,7 @@ Status: Normative, edition `0.4` (ADR 0119). This chapter grows with the impleme
 ## 2. The module `std.collections`
 
 1. **Edition.** `std.collections` exists only in edition `0.4`. In earlier editions an import of it is U1001 at the module path (`spec/10 §11` rule 10), and the names it would export are ordinary names.
-2. **Exports.** In edition `0.4`, `std.collections` is an importable standard module (`spec/10 §11` rule 10). It exports the types `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, and the kind `Ranked[T, P]`, a record with the fields `item: T` and `priority: P`. Its functions join the exports with the types they make, as ADR 0119 lands.
+2. **Exports.** In edition `0.4`, `std.collections` is an importable standard module (`spec/10 §11` rule 10). It exports the types `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, and the kind `Ranked[T, P]`, a record with the fields `item: T` and `priority: P`. It exports the functions `empty_stack` and `empty_queue` (§5); its other functions join the exports with the types they make, as ADR 0119 lands.
 3. **Names are not reserved.** A module that does not import a name of `std.collections` may declare its own `Queue` or `Set`. A module that imports one and declares the same name is U1002, as for any import (`spec/10 §11`).
 4. **Methods need no import.** The operations of each type are built-in methods resolved by the receiver, as a map's are (`spec/21 §2`). Only names written in the source, a type in an annotation or a function called by name, are imported.
 5. **Functions named like a built-in method.** A built-in method resolves ahead of a function of the same name in scope (`spec/04 §3`, `spec/21 §2`), so such a function could never be reached by method syntax on the type. In edition `0.4`, a package function is U1002 at its name when its name is a built-in method of a type of this chapter and its first parameter has that type, refined or not, or is a type parameter; so is an import of such a function, at the imported name. The message names the built-in method: "`pop` is a built-in method of `Queue`; rename this function". The names are `push`, `pop`, `peek`, `push_front`, `pop_back`, `peek_back`, `items`, `has`, `add`, `remove`, `with`, `without`, `first`, `last`, `between`, `union`, `intersection`, `difference`, `is_subset`, `get`, `set`, `update`, `keys`, `values`, `entries`, `same_entries`, `same_items`, `pop_ranked` and `peek_priority`. A function `update` whose first parameter is a `Map` is U1002 likewise (`spec/21 §2` rule 5).
@@ -49,3 +49,51 @@ pub depth(history: Stack[Text]) -> Unit = unit
 1. **Interpolation** (`spec/10 §12` rule 14). Every type of this chapter may be interpolated, and so may a type that does not satisfy `Eq` only because it holds a `HashMap`, a `HashSet` or a `PriorityQueue` at some position, provided that it holds no function and no `Hashed` at any position. The text is the value's Una form (`spec/11 §5`).
 2. **The shape's label.** The items of a `Set`, a `HashSet` and a `BitSet`, the keys of a `HashMap` and the priorities of a `PriorityQueue` decide its size and its order, so the top label of a value of such a type is at least every label of that position, the labels that a kind's fields declare included (`spec/07 §7` rule 3). Its Core IR type carries that label on its top.
 3. **Redaction in traces** (`spec/11 §5`). A value of a type of this chapter is redacted as a whole, `<redacted:level>`, when its top label, with the label of rule 2, is above `public`. So a field `queue: PriorityQueue[Text, secret Int]` renders `<redacted:secret>`, and so does a field `patients: HashSet[Patient]` when `Patient` has a `secret` field.
+
+## 5. `Stack` and `Queue`
+
+A `Stack[T]` gives back its last push first, and a `Queue[T]` its first, with both of its ends open. Both are made by functions of `std.collections`, `empty_stack()` and `empty_queue()`, whose type comes from the expected type, as `empty_map()`'s does (`spec/21 §2`).
+
+1. **`Stack[T]`.** Its listing order is the order `pop` gives: the top first.
+
+   | Operation | Type | Contract | Cost |
+   | --- | --- | --- | --- |
+   | `empty_stack()` | `Stack[T]` | `result.len == 0` | O(1) |
+   | `s.len` | `Int` | `s.len >= 0` | O(1) |
+   | `edit s.push(item: x)` | `Unit` | `s.len == old(s).len + 1`, and `s.peek() == Some(x)` | O(1) amortized |
+   | `edit s.pop()` | `Option[T]` | `result == old(s).peek()`; `s.len == old(s).len - 1` when `old(s).len > 0`, else `s.len == 0` | O(1) amortized |
+   | `s.peek()` | `Option[T]` | `(result is None) == (s.len == 0)` | O(1) |
+   | `s.items()` | `List[T]` | `result.len == s.len`, the top first | O(n) |
+
+2. **`Queue[T]`.** Its listing order is the order `pop` gives: the front first. `push` adds at the back and `pop` removes the front; `push_front`, `pop_back` and `peek_back` work at the other ends.
+
+   | Operation | Type | Contract | Cost |
+   | --- | --- | --- | --- |
+   | `empty_queue()` | `Queue[T]` | `result.len == 0` | O(1) |
+   | `q.len` | `Int` | `q.len >= 0` | O(1) |
+   | `edit q.push(item: x)` | `Unit` | `q.len == old(q).len + 1`, and `q.peek_back() == Some(x)` | O(1) amortized |
+   | `edit q.pop()` | `Option[T]` | `result == old(q).peek()`; the length as for a stack's `pop` | O(1) amortized |
+   | `q.peek()` | `Option[T]` | `(result is None) == (q.len == 0)` | O(1) |
+   | `edit q.push_front(item: x)` | `Unit` | `q.len == old(q).len + 1`, and `q.peek() == Some(x)` | O(1) amortized |
+   | `edit q.pop_back()` | `Option[T]` | `result == old(q).peek_back()`; the length as for `pop` | O(1) amortized |
+   | `q.peek_back()` | `Option[T]` | `(result is None) == (q.len == 0)` | O(1) |
+   | `q.items()` | `List[T]` | `result.len == q.len`, the front first | O(n) |
+
+3. **Updates.** `push`, `pop`, `push_front` and `pop_back` update the receiver: the call is written with `edit` before the receiver, which MUST be an editable place, and MUST be the whole expression of a statement or a `let` (`spec/17 §3`). Without `edit` it is U2020, and so is `edit` before `peek`, `peek_back` or `items`, which read the receiver; elsewhere in an expression it is U3013. A removal's result is bound with `let`, since a statement call of a non-`Unit` type is U2011. Every other binding that held the old value keeps it. Arguments after the receiver are labeled, as for a map (`spec/21 §2`), and another number of arguments, or an argument of another type, is U2001.
+4. **Absence.** `pop`, `pop_back`, `peek` and `peek_back` on an empty collection give `None`; a removal then leaves it empty. No operation of this section fails or aborts, except on the memory budget (U6003, `spec/11 §7`).
+5. **Costs.** An update of a collection that no other binding holds happens in place, in O(1) amortized time; on a collection that another binding holds, it copies it first, in O(n) (`spec/16 §4` rule 7). A buffer grows by doubling and shrinks by half when fewer than a quarter of its slots are used, so a collection holds memory for its current length, not for the largest it ever had.
+6. **Refined items** (ADR 0103). The item of `push` and `push_front` flows into the element type, with a `refinement` obligation when that type is refined, and the items that `pop`, `pop_back`, `peek`, `peek_back` and `items()` give back carry its refinement as a fact.
+7. **Labels** (`spec/07 §7`, ADR 0119 IF1). Both types are labeled as a list: the top label covers the length and which item is at which position, and the element position carries the items' labels. `len` and `items()` carry the receiver's top label, and the `Option` of a read or a removal carries it on its top, its payload the element labels. A push of an item whose labels are above the element position's is U4001 at the item. An update under a condition whose label is above the binding's top label is U4001 (`spec/17 §6` rule 1), since the length would reveal it.
+8. **Equality and the Una form.** Two stacks, or two queues, are equal when they hold equal items in the same listing order (§3 rule 3). Their Una form is a list's, in listing order: `[1, 2, 3]` (§4).
+
+```una
+import std.collections (Queue, empty_queue)
+
+pub serve(names: List[Text]) -> Option[Text]
+=
+  let edit line: Queue[Text] = empty_queue()
+  for name in names
+    edit line.push(item: name)
+  let first = edit line.pop()
+  first
+```
