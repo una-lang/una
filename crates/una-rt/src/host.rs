@@ -491,16 +491,16 @@ fn http(
     // Under virtual time, a network wait takes no virtual time (ADR 0116 rule 19), so only a
     // deadline the virtual clock has already reached cuts the request, at once.
     let mut settings = settings;
-    let mut cut = false;
-    if let Some(left) = crate::deadline::left()
+    let mut cut = None;
+    if let Some((left, bound)) = crate::deadline::left()
         && left < settings.timeout
         && (left.is_zero() || !crate::runtime::clock().is_virtual())
     {
         settings.timeout = left;
-        cut = true;
+        cut = Some(bound);
     }
     let stop = crate::runtime::op_interrupt();
-    let sent = if cut && settings.timeout.is_zero() {
+    let sent = if cut.is_some() && settings.timeout.is_zero() {
         Err(Error::TimedOut)
     } else {
         // In a task, the request runs on a helper of the I/O pool while the task parks (ADR 0117
@@ -524,7 +524,9 @@ fn http(
             }
         })
     };
-    if cut && sent == Err(Error::TimedOut) {
+    // A `for ever within` iteration observes its deadline at the operation; a `within` at its
+    // next check point, or when its expression returns (`spec/27 §5`).
+    if cut == Some(crate::deadline::Bound::Ever) && sent == Err(Error::TimedOut) {
         crate::deadline::timed_out();
     }
     match sent {

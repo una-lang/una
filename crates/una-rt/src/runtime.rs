@@ -760,7 +760,7 @@ pub(crate) struct TaskTemplate {
     /// Where the block is written.
     pub(crate) location: Location,
     /// The deadline of the `for ever within` iteration that starts the block (`spec/26 §7`).
-    deadline: Option<crate::deadline::Deadline>,
+    deadline: crate::deadline::Inherited,
     /// The settings of the run's tasks, and its scheduler.
     concurrency: una_interp::Concurrency,
     pub(crate) sched: Arc<crate::sched::Scheduler>,
@@ -1363,6 +1363,34 @@ fn take_state(cell: &mut Option<State>) -> Option<State> {
         hot.flags.set(0);
     });
     cell.take()
+}
+
+/// Pushes the cancellation entry of a `within` (ADR 0117 rule 5): the task's check points, and
+/// those of the tasks it starts, see it once its deadline sets it. O(1).
+pub(crate) fn push_cancel(flag: Arc<AtomicUsize>) {
+    with_state(|state| {
+        state.cancel.push((flag, 1));
+        HOT.with(|hot| hot.flags.set(state.cancel.len()));
+    });
+}
+
+/// Removes the cancellation entry `flag` of a `within` that ended. O(entries).
+pub(crate) fn pop_cancel(flag: &Arc<AtomicUsize>) {
+    with_state(|state| {
+        if let Some(at) = state
+            .cancel
+            .iter()
+            .rposition(|(count, _)| Arc::ptr_eq(count, flag))
+        {
+            state.cancel.remove(at);
+        }
+        HOT.with(|hot| hot.flags.set(state.cancel.len()));
+    });
+}
+
+/// Whether the thread's task stops: it was cancelled, or an abort stopped it.
+pub(crate) fn task_stopping() -> bool {
+    with_state(|state| state.cancelled() || state.stopped.is_some()).unwrap_or(false)
 }
 
 /// `f` of the state of the run, when the thread runs `main`.

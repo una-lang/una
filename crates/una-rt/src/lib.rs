@@ -29,6 +29,7 @@ pub mod render;
 pub mod runtime;
 mod sched;
 pub mod tasks;
+mod timer;
 pub mod values;
 pub mod wheel;
 
