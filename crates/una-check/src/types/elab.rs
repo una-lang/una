@@ -2533,7 +2533,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn exit(&mut self, tag: ExitTag, span: Span) -> CoreExpr {
         let Some(names) = self.loop_names.clone() else {
             // Outside a loop body: U2034, already reported.
-            self.broken = true;
+            self.broken.set(true);
             return CoreExpr::Atom {
                 atom: Atom::Unit,
                 span,
@@ -2543,7 +2543,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         for name in &names {
             match self.local(name) {
                 Some(binder) => state.push(Atom::Var(binder)),
-                None => self.broken = true,
+                None => self.broken.set(true),
             }
         }
         CoreExpr::Exit { tag, state, span }
