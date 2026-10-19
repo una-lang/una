@@ -76,6 +76,23 @@ fn element_bytes(f64s: bool) -> usize {
     }
 }
 
+/// The heap bytes that a clone of `value` allocates of its own: the limbs of a nonzero integer,
+/// at least the allocator's 16-byte block. Every other value is a word or shares its heap
+/// through a reference count, so its clone allocates nothing (ADR 0120, Security).
+fn clone_heap(value: &Value<'_>) -> usize {
+    match value {
+        Value::Int(n) => {
+            let limbs = usize::try_from(n.bits().div_ceil(64)).unwrap_or(usize::MAX);
+            if limbs == 0 {
+                0
+            } else {
+                limbs.saturating_mul(8).max(16)
+            }
+        }
+        _ => 0,
+    }
+}
+
 /// The fault of a dense method's arguments of the wrong types, which checking excludes.
 fn bad<'p>(name: &str) -> Stop<'p> {
     fault(format!("`{name}` applied to values of the wrong types"))
@@ -182,6 +199,18 @@ impl<'p> Machine<'p, '_> {
     /// what the run holds already: checked before the allocation, in checked arithmetic, so a
     /// size whose computation overflows fails the check (ADR 0120, Security).
     fn reserve(&self, elements: usize, bytes: usize, span: Span) -> Result<(), Stop<'p>> {
+        self.reserve_with(elements, bytes, 0, span)
+    }
+
+    /// [`Machine::reserve`] with `extra` bytes more: the heap that the elements' clones
+    /// allocate of their own ([`clone_heap`]).
+    fn reserve_with(
+        &self,
+        elements: usize,
+        bytes: usize,
+        extra: usize,
+        span: Span,
+    ) -> Result<(), Stop<'p>> {
         let budget = self.max_memory.saturating_mul(1024 * 1024);
         let held = (self.held)().saturating_sub(self.baseline);
         let over = Stop::Abort(Abort::Memory {
@@ -190,11 +219,20 @@ impl<'p> Machine<'p, '_> {
         });
         match elements
             .checked_mul(bytes)
+            .and_then(|size| size.checked_add(extra))
             .and_then(|size| size.checked_add(held))
         {
             Some(total) if total <= budget => Ok(()),
             _ => Err(over),
         }
+    }
+
+    /// The heap bytes that cloning `values` allocates of their own, saturating.
+    fn clones_heap<'v>(values: impl Iterator<Item = &'v Value<'p>>) -> usize
+    where
+        'p: 'v,
+    {
+        values.fold(0usize, |sum, value| sum.saturating_add(clone_heap(value)))
     }
 
     /// A vector of `n` elements, reserved within the budget and fallibly.
@@ -222,6 +260,12 @@ impl<'p> Machine<'p, '_> {
             }));
             Ok(Elements::F64(out))
         } else {
+            self.reserve_with(
+                items.len(),
+                element_bytes(false),
+                Self::clones_heap(items.iter()),
+                span,
+            )?;
             let mut out = self.buffer(items.len(), false, span)?;
             out.extend(items.iter().cloned());
             Ok(Elements::Values(out))
@@ -239,6 +283,8 @@ impl<'p> Machine<'p, '_> {
                 Ok(Elements::F64(out))
             }
             Elements::Values(items) => {
+                let heap = Self::clones_heap(value.positions().filter_map(|p| items.get(p)));
+                self.reserve_with(n, element_bytes(false), heap, span)?;
                 let mut out = self.buffer(n, false, span)?;
                 out.extend(value.positions().filter_map(|p| items.get(p).cloned()));
                 Ok(Elements::Values(out))
@@ -272,6 +318,8 @@ impl<'p> Machine<'p, '_> {
                 Ok(Elements::F64(out))
             }
             other => {
+                let heap = n.saturating_mul(clone_heap(other));
+                self.reserve_with(n, element_bytes(false), heap, span)?;
                 let mut out = self.buffer(n, false, span)?;
                 out.resize(n, other.clone());
                 Ok(Elements::Values(out))
@@ -547,6 +595,14 @@ impl<'p> Machine<'p, '_> {
                 Ok(compact(receiver.kind, receiver.shape.clone(), elements))
             }
             "to_list" => {
+                // The integers it clones allocate of their own, so their heap is reserved too.
+                let heap = match receiver.buffer.as_ref() {
+                    Elements::Values(items) => {
+                        Self::clones_heap(receiver.positions().filter_map(|p| items.get(p)))
+                    }
+                    Elements::F64(_) => 0,
+                };
+                self.reserve_with(receiver.count(), element_bytes(false), heap, span)?;
                 let mut out = self.buffer(receiver.count(), false, span)?;
                 for k in 0..receiver.count() {
                     out.push(receiver.element(k).ok_or_else(|| bad(method))?);
