@@ -380,11 +380,17 @@ pub fn within_end(id: i64, stopped: i64) -> i64 {
     // An operation in progress completes: the `within`s it shields, those whose entries come
     // before the ones it started with, cannot cut its handler's code (`spec/19 §6` rule 4).
     let shielded = crate::runtime::shielded();
+    // An outer deadline that the clock has passed before its timer fired is set here, so the
+    // task is cancelled from now on, as the timer would have made it.
     let outer = local(|local| {
-        local
-            .withins
-            .iter()
-            .any(|outer| outer.entry >= shielded && passed(outer, now))
+        let mut outer = false;
+        for frame in local.withins.iter().filter(|frame| frame.entry >= shielded) {
+            if passed(frame, now) {
+                frame.flag.store(0, Ordering::SeqCst);
+                outer = true;
+            }
+        }
+        outer
     });
     if outer || crate::runtime::task_stopping() {
         return STOPPED;

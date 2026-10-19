@@ -390,11 +390,15 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
 }
 
 /// Ends the event at `slot`, of operation `site`, with its value, or its failure when `failed`
-/// is 1.
+/// is 1. A task that stopped at or in the operation (`failed` 2) leaves the event as it was,
+/// `aborted`.
 pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     let (Ok(site), Ok(slot)) = (usize::try_from(site), usize::try_from(slot)) else {
         return;
     };
+    if failed == 2 {
+        return;
+    }
     with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return;

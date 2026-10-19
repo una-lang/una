@@ -378,9 +378,11 @@ struct Lowerer<'e, 'p, 'b> {
     /// The bindings that other words borrow from: the scrutinees of `case`, the tuples of
     /// `let (...)` and the lists that loops visit. Their values are never moved (#30).
     pinned: BTreeSet<String>,
-    /// The block that returns the status 2 of a stopped task (`spec/19 §6` rule 4): a task
-    /// that is cancelled, or that aborts, stops where it is. Nothing is released, since the
-    /// task's heap ends with its thread.
+    /// The block that returns the status 2 of a stopped task at once (`spec/19 §6` rule 4), for
+    /// an abort found where the words in scope are not at hand (U6003, U6004, U6005 and the
+    /// faults of the prelude): the run, or the task, ends, and the task's heap with it. A
+    /// cancellation, which a task survives inside a `within`, takes the failure path with
+    /// [`STOPPED`] instead.
     stop: Block,
     /// Whether the code being lowered computes integers exactly (`Body::exact`): a fixed-width
     /// type there is not a proof that a value fits it.
@@ -456,14 +458,18 @@ pub(crate) fn function<'p>(
         let ok = lowerer.builder.ins().iconst(types::I64, 0);
         lowerer.builder.ins().return_(&[result, ok]);
     }
+    // A failure returns status 1; a stop, which reaches here as [`STOPPED`] once every frame of
+    // the body has released its words, returns status 2.
     lowerer.builder.switch_to_block(failed);
     let failure = lowerer.param(failed)?;
+    let stopped = lowerer.stopped(failure);
     let one = lowerer.builder.ins().iconst(types::I64, 1);
-    lowerer.builder.ins().return_(&[failure, one]);
+    let status = lowerer.builder.ins().iadd(one, stopped);
+    lowerer.builder.ins().return_(&[failure, status]);
     lowerer.builder.switch_to_block(stop);
-    let zero = lowerer.builder.ins().iconst(types::I64, 0);
+    let word = lowerer.builder.ins().iconst(types::I64, STOPPED);
     let two = lowerer.builder.ins().iconst(types::I64, 2);
-    lowerer.builder.ins().return_(&[zero, two]);
+    lowerer.builder.ins().return_(&[word, two]);
     lowerer.builder.seal_all_blocks();
     lowerer.builder.finalize(config);
     Ok(())
@@ -669,6 +675,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     let mut reached = self.branch(body, env, scope, join, &inner)?;
                     self.builder.switch_to_block(handling);
                     let failure = self.param(handling)?;
+                    // A stop is no failure to handle: it goes on, out of this frame too.
+                    self.pass_stop(failure, scope, catch);
                     let mut handler_env = env.clone();
                     handler_env.insert(error.clone(), (failure, unknown()));
                     let mut handler_scope = scope.clone();
@@ -677,7 +685,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         self.branch_in(handler, &mut handler_env, &handler_scope, join, catch)?;
                     return self.joined(join, reached);
                 }
-                Expr::Attempt { body, .. } => return self.attempt(body, env, scope).map(Some),
+                Expr::Attempt { body, .. } => {
+                    return self.attempt(body, env, scope, catch).map(Some);
+                }
                 Expr::Within {
                     deadline,
                     body,
@@ -835,15 +845,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.builder.append_block_param(exit, types::I64);
         }
         self.builder.ins().jump(head, &initial);
-        // A cancellation that stops the task inside the loop, as a `within` around it whose
-        // deadline passed, ends the loop as after a failure: `on stop` runs first, shielded
-        // (ADR 0116 rule 15, ADR 0117 rule 5).
-        let cancelled = self.builder.create_block();
-        let outer_stop = if on_stop.is_some() {
-            Some(std::mem::replace(&mut self.stop, cancelled))
-        } else {
-            None
-        };
 
         // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
         // budget, then the body, which owns the state, with its exits.
@@ -857,8 +858,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .ins()
             .brif(host_stop, exit, &current_arguments, started, &[]);
         self.builder.switch_to_block(started);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         if within.is_some() {
             self.runtime("una_rt_deadline_iteration", &[]);
         }
@@ -884,6 +883,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             exit: Some(exits),
         };
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        // The iteration's budget: a stop there leaves as a failure of the body would.
+        let budget = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(budget, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
@@ -905,36 +907,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .collect();
         self.builder.ins().jump(head, &next);
 
-        // The task stopped inside the loop. A cancellation runs `on stop` on the saved state,
-        // shielded as an operation in progress is, then the stop goes on; an abort goes on at
-        // once. The words the body held are not released, as on any stop.
-        self.builder.switch_to_block(cancelled);
-        if let (Some(outer), Some(on_stop)) = (outer_stop, on_stop) {
-            self.stop = outer;
-            let polled = self.call("una_rt_poll", &[])?;
-            let aborted = self.call("una_rt_stopped", &[])?;
-            let cancelling = self.builder.ins().icmp_imm_s(IntCC::NotEqual, polled, 0);
-            let healthy = self.builder.ins().icmp_imm_s(IntCC::Equal, aborted, 0);
-            let run = self.builder.ins().band(cancelling, healthy);
-            let run = self.flag(run);
-            let running = self.builder.create_block();
-            self.builder.ins().brif(run, running, &[], outer, &[]);
-            self.builder.switch_to_block(running);
-            self.runtime("una_rt_ever_end", &[]);
-            if within.is_some() {
-                self.runtime("una_rt_deadline_leave", &[]);
-            }
-            self.runtime("una_rt_operation_begin", &[]);
-            let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
-            if let Some(result) = result {
-                self.release(result, Kind::Tuple);
-                self.runtime("una_rt_operation_end", &[]);
-                self.builder.ins().jump(outer, &[]);
-            }
-        } else {
-            self.builder.ins().jump(self.stop, &[]);
-        }
-
         // After a failure: out of the body, `on stop` on the saved state, then the failure goes
         // on.
         self.builder.switch_to_block(failing);
@@ -945,9 +917,43 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         match on_stop {
             Some(on_stop) => {
+                // A stop of the task: a cancellation, as a `within` around the loop whose
+                // deadline passed, ends the loop as after a failure, with `on stop` shielded
+                // from it (ADR 0116 rule 15, ADR 0117 rule 5); an abort goes on at once, the
+                // saved state released.
+                let stopped = self.stopped(failure);
+                let stopping = self.builder.create_block();
+                let failing_on = self.builder.create_block();
+                self.builder
+                    .ins()
+                    .brif(stopped, stopping, &[], failing_on, &[]);
+                self.builder.switch_to_block(failing_on);
                 let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
                 if let Some(result) = result {
                     self.release(result, Kind::Tuple);
+                    self.fail(failure, scope, catch);
+                }
+                self.builder.switch_to_block(stopping);
+                let polled = self.call("una_rt_poll", &[])?;
+                let aborted = self.call("una_rt_stopped", &[])?;
+                let cancelling = self.builder.ins().icmp_imm_s(IntCC::NotEqual, polled, 0);
+                let healthy = self.builder.ins().icmp_imm_s(IntCC::Equal, aborted, 0);
+                let run = self.builder.ins().band(cancelling, healthy);
+                let run = self.flag(run);
+                let running = self.builder.create_block();
+                let skipping = self.builder.create_block();
+                self.builder.ins().brif(run, running, &[], skipping, &[]);
+                self.builder.switch_to_block(skipping);
+                for (&value, &kind) in saved.iter().zip(&kinds) {
+                    self.release(value, kind);
+                }
+                self.fail(failure, scope, catch);
+                self.builder.switch_to_block(running);
+                self.runtime("una_rt_operation_begin", &[]);
+                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.runtime("una_rt_operation_end", &[]);
                     self.fail(failure, scope, catch);
                 }
             }
@@ -1081,10 +1087,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 .brif(holds, exit, &state_arguments, iteration, &[]);
         }
 
-        // An iteration: its budget, then the body, which owns the state, with its exits.
+        // An iteration: its budget, then the body, which owns the state, with its exits. A stop
+        // at the budget leaves as a failure of the body would, the state released.
         self.builder.switch_to_block(iteration);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         let unit_value = self.builder.ins().iconst(types::I64, 0);
         inner.insert(var.0.clone(), (unit_value, range::unrefined(&var.1)));
         let mut nested = catch.nested(scope);
@@ -1096,6 +1101,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             base: 0,
         });
         let mut owned = owned_state;
+        let stopping = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(stopping, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
@@ -1252,8 +1259,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(exit, &state_arguments);
 
         self.builder.switch_to_block(iteration);
-        let stopping = self.call("una_rt_budget", &[site])?;
-        self.stop_if(stopping);
         let item = match list {
             Some(list) => self.call("una_rt_field", &[list, cursor])?,
             None => cursor,
@@ -1286,6 +1291,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
             base: 0,
         });
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        // The iteration's budget: a stop there leaves as a failure of the body would, the state
+        // and a range's cursor released.
+        let budget = self.call("una_rt_budget", &[site])?;
+        self.stop_or_fail(budget, &owned, &nested);
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
@@ -1594,8 +1603,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             _ => return Err(internal("a `together` that is not one")),
         };
+        // A block stopped, status 2, goes on as [`STOPPED`] by the failure path.
         let status = self.call("una_rt_together_status", &[])?;
-        self.stop_if_stopped(status);
+        let stopped = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::Equal, status, 2);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let value = self.builder.ins().select(stopped, word, value);
         self.check(value, status, scope, catch);
         for &(owned, kind) in scope.iter().rev() {
             self.release(owned, kind);
@@ -1605,7 +1620,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
     /// value of the expression whose scope is `scope`.
-    fn attempt(&mut self, body: &'p Expr, env: &Env, scope: &Scope) -> Result<Value, CodegenError> {
+    fn attempt(
+        &mut self,
+        body: &'p Expr,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
         let succeeded = self.join();
         let failed = self.join();
         let done = self.join();
@@ -1629,6 +1650,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         self.builder.switch_to_block(failed);
         let failure = self.param(failed)?;
+        // A stop is no failure to hold: it goes on, with the scope still owned.
+        self.pass_stop(failure, scope, catch);
         let err = self.wrap(1, failure)?;
         for &(owned, kind) in scope.iter().rev() {
             self.release(owned, kind);
@@ -1647,11 +1670,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// releases them: a value that returned too late becomes the time-out with `scope` still
     /// owned, which is released here on every path.
     ///
-    /// While `body` is lowered, a stop of the task goes to this `within`'s own block instead of
-    /// the function's: a passed deadline cancels `body` at a check point, and the stop reaches
-    /// here. Nothing is released on a stop's way, as for a stopped task: the words `body` held
-    /// stay allocated, charged to the run's memory budget, until the task's heap ends
-    /// (`docs/plan/0117-s2-design.md` §5, decision S2-D5).
+    /// A passed deadline cancels `body` at a check point. The cancellation leaves each frame of
+    /// `body` by the path a failure takes, as [`STOPPED`], so every frame releases what it
+    /// owns, and reaches `failed` here, where the `within` turns it into its time-out, or passes
+    /// it on.
     #[allow(clippy::too_many_arguments)]
     fn within(
         &mut self,
@@ -1668,19 +1690,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let succeeded = self.join();
         let failed = self.join();
         let done = self.join();
-        let cut = self.builder.create_block();
-        // A failure of `body` in time goes to `failed`, which releases what `body` made; Core
-        // puts no `skip` or `stop` in a handled expression.
+        // A failure of `body` in time, or its stop, goes to `failed`, which releases what
+        // `body` made; Core puts no `skip` or `stop` in a handled expression.
         let inner = Catch {
             block: failed,
             outer: Scope::new(),
             base: 0,
             exit: None,
         };
-        let stop = std::mem::replace(&mut self.stop, cut);
-        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner);
-        self.stop = stop;
-        let reached = reached?;
+        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner)?;
         let timeout_index = i64::try_from(timeout.index).map_err(crate::internal)?;
         // The time-out: a variant without fields, an immediate word.
         let timed_out = |lowerer: &mut Self| {
@@ -1706,23 +1724,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.builder.ins().jump(done, &[value.into()]);
             self.builder.switch_to_block(late);
             self.release(value, Kind::Any);
-            let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
-            let stopping = self.flag(stopping);
-            self.stop_if(stopping);
-            let failure = timed_out(self);
-            self.fail(failure, scope, catch);
+            self.end_within(outcome, timed_out, scope, catch);
         } else {
             self.builder.ins().trap(TRAP);
         }
 
-        // `body` failed with `x`: in time, `wrap(x)` or `x`; late, the time-out.
+        // `body` failed with `x`, or stopped. In time, `wrap(x)` or `x`; late, the time-out; a
+        // stop, this deadline's time-out, or a stop that goes on.
         self.builder.switch_to_block(failed);
         let failure = self.param(failed)?;
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let outcome = self.call("una_rt_within_end", &[id, zero])?;
-        let late = self.builder.create_block();
+        let stopped = self.stopped(failure);
+        let outcome = self.call("una_rt_within_end", &[id, stopped])?;
+        let ended = self.builder.create_block();
         let stands = self.builder.create_block();
-        self.builder.ins().brif(outcome, late, &[], stands, &[]);
+        self.builder.ins().brif(outcome, ended, &[], stands, &[]);
         self.builder.switch_to_block(stands);
         let passed = match wrap {
             Some(wrap) => {
@@ -1732,23 +1747,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             None => failure,
         };
         self.fail(passed, scope, catch);
-        self.builder.switch_to_block(late);
+        self.builder.switch_to_block(ended);
         self.release(failure, Kind::Any);
-        let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
-        let stopping = self.flag(stopping);
-        self.stop_if(stopping);
-        let failure = timed_out(self);
-        self.fail(failure, scope, catch);
-
-        // The task stopped inside `body`: this deadline's time-out, or a stop that goes on.
-        self.builder.switch_to_block(cut);
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let outcome = self.call("una_rt_within_end", &[id, one])?;
-        let stopping = self.builder.ins().icmp_imm_s(IntCC::NotEqual, outcome, 1);
-        let stopping = self.flag(stopping);
-        self.stop_if(stopping);
-        let failure = timed_out(self);
-        self.fail(failure, scope, catch);
+        self.end_within(outcome, timed_out, scope, catch);
 
         self.builder.switch_to_block(done);
         if reached {
@@ -1757,6 +1758,22 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.builder.ins().trap(TRAP);
             Ok(None)
         }
+    }
+
+    /// The end of a `within` whose `una_rt_within_end` gave `outcome`, 1 or 2, with `scope`
+    /// still owned: 1 fails with the time-out that `timed_out` makes, 2 goes on with the stop.
+    fn end_within(
+        &mut self,
+        outcome: Value,
+        timed_out: impl Fn(&mut Self) -> Value,
+        scope: &Scope,
+        catch: &Catch,
+    ) {
+        let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
+        let stopping = self.flag(stopping);
+        self.stop_or_fail(stopping, scope, catch);
+        let failure = timed_out(self);
+        self.fail(failure, scope, catch);
     }
 
     /// The variant at position `tag` of `Result` or `Option` holding `value`, which it takes
@@ -1901,7 +1918,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         borrowed: bool,
         type_args: &[Type],
         args: &[Value],
-        span: Span,
         env: &Env,
         scope: &Scope,
         catch: &Catch,
@@ -1929,10 +1945,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             args.push(*instance);
         }
         let id = callee.id;
-        // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
-        // against the call's site.
-        let site = self.site(span);
-        self.enter(site)?;
         let callee = self
             .emitter
             .module
@@ -1943,7 +1955,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("a call lost its result"));
         };
-        self.stop_if_stopped(failed);
+        // A callee that stopped returns [`STOPPED`] with status 2, a failure to pass on.
         // Every callee returns whether it failed, 0 when it cannot: a function with `fails of
         // p` fails when the function value given for `p` does, which its declaration does not
         // say, so every call checks (#267).
@@ -2035,7 +2047,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let site = self.builder.ins().iconst(types::I64, site);
         // A cancelled task stops before its next operation (`spec/19 §6` rule 4).
         let stopping = self.call("una_rt_poll", &[])?;
-        self.stop_if(stopping);
+        self.stop_or_fail(stopping, scope, catch);
         // From here the operation is in progress: it completes, and keeps its own outcome,
         // whatever cancellation comes meanwhile (`spec/19 §6` rule 4, `§7` rule 3).
         self.runtime("una_rt_operation_begin", &[]);
@@ -2115,7 +2127,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut operands = vec![instance];
         operands.extend_from_slice(&values);
-        self.enter(call_site)?;
+        // A task that stops at the operation's call, by U6003 alone since the operation shields
+        // cancellations, or inside it, ends the operation with [`STOPPED`] and status 2, which
+        // leaves its event as it was, `aborted`, and goes on as a failure.
+        let stopping = self.call("una_rt_enter", &[call_site])?;
+        let refused = self.builder.create_block();
+        let calling = self.builder.create_block();
+        self.builder.ins().brif(stopping, refused, &[], calling, &[]);
+        self.builder.switch_to_block(refused);
+        self.runtime("una_rt_operation_end", &[]);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let two = self.builder.ins().iconst(types::I64, 2);
+        self.builder.ins().jump(done, &[word.into(), two.into()]);
+        self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &operands);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
@@ -2123,9 +2147,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("an operation lost its result"));
         };
-        // A task that stops inside the operation, by U6003 alone, leaves its event as it was,
-        // `aborted`.
-        self.stop_if_stopped(failed);
         self.builder
             .ins()
             .jump(done, &[value.into(), failed.into()]);
@@ -2429,10 +2450,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
+                // `spec/11 §7`: each call counts toward the maximum depth, which the runtime
+                // checks against the call's site before the arguments are given, so a stop
+                // there leaves with every word still in scope.
+                let site = self.site(*span);
+                self.enter(site, scope, catch)?;
                 let borrowed = self.give(function, args, &values, env, scope, catch, rest)?;
-                self.call_function(
-                    function, borrowed, type_args, &values, *span, env, scope, catch,
-                )
+                self.call_function(function, borrowed, type_args, &values, env, scope, catch)
             }
             Rhs::Apply {
                 callee, args, span, ..
@@ -2522,6 +2546,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
+                let site = self.site(*span);
+                self.enter(site, scope, catch)?;
                 let borrowed = self.give(
                     via,
                     std::slice::from_ref(arg),
@@ -2531,7 +2557,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     catch,
                     rest,
                 )?;
-                self.call_function(via, borrowed, &[], &[value], *span, env, scope, catch)
+                self.call_function(via, borrowed, &[], &[value], env, scope, catch)
             }
         }
     }
@@ -2772,23 +2798,48 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut values = vec![callee];
         values.extend_from_slice(args);
-        self.enter(site)?;
+        // A lambda owns its parameters: when the task stops before the call, the arguments
+        // given to it are released here, and the stop comes back as a failure, [`STOPPED`]
+        // with status 2, which the caller passes on as a callee's.
+        let returned = self.builder.create_block();
+        self.builder.append_block_param(returned, types::I64);
+        self.builder.append_block_param(returned, types::I64);
+        let stopping = self.call("una_rt_enter", &[site])?;
+        let refused = self.builder.create_block();
+        let calling = self.builder.create_block();
+        self.builder.ins().brif(stopping, refused, &[], calling, &[]);
+        self.builder.switch_to_block(refused);
+        for &arg in args {
+            self.release(arg, Kind::Any);
+        }
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        let two = self.builder.ins().iconst(types::I64, 2);
+        self.builder.ins().jump(returned, &[word.into(), two.into()]);
+        self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &values);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
         match (results.first(), results.get(1)) {
             (Some(&value), Some(&failed)) => {
-                self.stop_if_stopped(failed);
-                Ok((value, failed))
+                self.builder
+                    .ins()
+                    .jump(returned, &[value.into(), failed.into()]);
+                self.builder.switch_to_block(returned);
+                let results = self.builder.block_params(returned).to_vec();
+                match (results.first(), results.get(1)) {
+                    (Some(&value), Some(&failed)) => Ok((value, failed)),
+                    _ => Err(internal("a closure lost its result")),
+                }
             }
             _ => Err(internal("a closure lost its result")),
         }
     }
 
-    /// Enters the call at `site` (`spec/11 §7`), or stops the task when the runtime says so.
-    fn enter(&mut self, site: Value) -> Result<(), CodegenError> {
+    /// Enters the call at `site` (`spec/11 §7`), before its arguments are given, or leaves the
+    /// frame by the failure path when the runtime says the task stops.
+    fn enter(&mut self, site: Value, scope: &Scope, catch: &Catch) -> Result<(), CodegenError> {
         let stopping = self.call("una_rt_enter", &[site])?;
-        self.stop_if(stopping);
+        self.stop_or_fail(stopping, scope, catch);
         Ok(())
     }
 
@@ -2811,18 +2862,53 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(value)
     }
 
-    /// Stops the task when `stopping` is not 0.
+    /// 1 when the failure word `failure` is [`STOPPED`], else 0.
+    fn stopped(&mut self, failure: Value) -> Value {
+        let stopped = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::Equal, failure, STOPPED);
+        self.flag(stopped)
+    }
+
+    /// Goes on with [`STOPPED`] to `catch`, releasing the words of `scope` since it, when
+    /// `failure` is the stop of the task; continues otherwise.
+    fn pass_stop(&mut self, failure: Value, scope: &Scope, catch: &Catch) {
+        let stopped = self.stopped(failure);
+        self.stop_or_fail(stopped, scope, catch);
+    }
+
+    /// Leaves the frame by the failure path with [`STOPPED`] when `stopping` is not 0: the
+    /// words of `scope` since `catch` was installed are released, as a failure releases them
+    /// (`spec/19 §6` rule 4).
+    fn stop_or_fail(&mut self, stopping: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        self.fail(word, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// A JSON call stopped at one of its check points (`stopping` not 0), by the memory budget
+    /// or a cancellation: its value is released, and the frame left by the failure path.
+    fn json_stop(&mut self, stopping: Value, value: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        self.release(value, Kind::Any);
+        let word = self.builder.ins().iconst(types::I64, STOPPED);
+        self.fail(word, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// Stops the task at once when `stopping` is not 0: for an abort only (see `stop`).
     fn stop_if(&mut self, stopping: Value) {
         let next = self.builder.create_block();
         self.builder.ins().brif(stopping, self.stop, &[], next, &[]);
         self.builder.switch_to_block(next);
-    }
-
-    /// Stops the task when the code it called returned the status 2 of a stopped task.
-    fn stop_if_stopped(&mut self, status: Value) {
-        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
-        let stopped = self.flag(stopped);
-        self.stop_if(stopped);
     }
 
     /// The one parameter of a join block.
@@ -2975,7 +3061,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 let value = self.call("una_rt_parse_json", &[arg(0)?, site])?;
                 let stopping = self.call("una_rt_json_stopped", &[])?;
-                self.stop_if(stopping);
+                self.json_stop(stopping, value, scope, catch);
                 let failed = self.call("una_rt_host_failed", &[])?;
                 self.check(value, failed, scope, catch);
                 return Ok(value);
@@ -2984,7 +3070,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 let value = self.call("una_rt_to_json", &[arg(0)?, site])?;
                 let stopping = self.call("una_rt_json_stopped", &[])?;
-                self.stop_if(stopping);
+                self.json_stop(stopping, value, scope, catch);
                 return Ok(value);
             }
             "quote_json" => "una_rt_quote_json",
@@ -3600,6 +3686,13 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
         Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
     }
 }
+
+/// The failure word of a stopped task (`spec/19 §6` rule 4): a task that is cancelled, by a
+/// failed sibling or a `within` whose deadline passed (`spec/27 §5`), or that aborts, leaves
+/// every frame by the path a failure takes, so each frame releases what it owns, and a frame
+/// that catches failures passes this word on. `-1` is no failure: a variant without fields is
+/// `(index << 1) | 1` with `index >= 0`, and a variant with fields a handle.
+const STOPPED: i64 = -1;
 
 /// The trap of a branch that verification proves unreachable.
 const TRAP: cranelift_codegen::ir::TrapCode = cranelift_codegen::ir::TrapCode::unwrap_user(1);
