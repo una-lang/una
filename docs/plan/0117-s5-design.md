@@ -1,0 +1,85 @@
+# ADR 0117 slice S5: limits on `Http` grants (design note)
+
+- Issue: #970 (part of #896, ADR 0117 rule 8, IF4, IF6, Security, Costs, Implementation plan step 5)
+- Base: slice S4 (#969, `docs/plan/0117-s4-design.md`), on S3 (#968), S2 (#967) and S1 (#966); the `ita.una` form of ADR 0122 (#893) has landed on this base
+- Normative text: `spec/27 §9`, `spec/24 §1`, `§2`, `§4`; `spec/30 §2`; decisions in the ADR 0117 amendment of 2026-10-19 on slice S5
+
+This note fixes how S5 is built, and lists the decisions it takes where the ADRs leave a choice. Each decision takes the most secure option the ADRs allow.
+
+## 1. What S5 delivers
+
+1. Limits on `Http` grants, in edition `0.4` (rule 8): rates per second, minute or hour, `at most n at once`, and `waiting at most n`; as limit lines under an `http` grant of `ita.una`, and as suffixes of the text form of a grant spec in `--grant`.
+2. Their enforcement in the host layer that both engines share (`una-http`), below every handler and rebinding: a token bucket per grant kept by GCRA, a count of requests in flight, and a queue of waiters served by ticket, without deadlock.
+3. `HttpError.RateLimited`, the tenth variant, after `Interrupted`, in edition `0.4` only.
+4. IF4: `L_lim`, U4001 in `una check` for limits in `run grants`, `L_lim` embedded by `una build`, and a limited `--grant` refused before `main` (exit code 2) when `L_lim` is above `internal`.
+5. The report's `out_of_model` entry "waits at limits and at `start`", which slice S4 already writes, now also covers the waits of this slice.
+
+Not in S5: `std.limit` and `limiter` (rule 9, IF5), which the Implementation plan puts after the limits in step 5, and which issue #970 does not list; and the reactor (step 6). Both are later slices.
+
+## 2. Syntax
+
+- **`ita.una`** (ADR 0122 rule 12, `spec/30 §2`). Under an `http` grant line, each indented line is one limit:
+
+  ```una
+  run
+    grants
+      http "https://api.payments.example" get, post
+        at most 100 per minute
+        at most 8 at once
+        waiting at most 1000
+  ```
+
+  `at most <n> per second|minute|hour`, `at most <n> at once` and `waiting at most <n>`. Each error is U7008 at the line (ADR 0122, Appendix A, amendment of ADR 0117): a line of another form; a count below 1 or above 2^31 − 1; a limit under a grant other than `http`; a kind of limit given twice on one grant (two rates count as the same kind, whatever their periods: decision S5-D1).
+- **The text form** (`spec/13 §5`), used by `--grant` and by the manifest once read: `http:<origin>[:<methods>]` followed by suffixes, each `;` and one of `<n>/second`, `<n>/minute`, `<n>/hour`, `<n>/once` and `waiting=<n>`, in any order: `http:https://api.payments.example:get,post;100/minute;8/once;waiting=1000`. The same three errors make the spec invalid, a usage error for `--grant`.
+- **`una.toml`.** Edition `0.4` reads only `ita.una` (ADR 0122 rule 8.1), and limits exist only in edition `0.4`, so a suffix in `una.toml`'s `[run] grants` stays an invalid grant, U7002, as before: `una_core::http::Grant::parse` keeps refusing `;`, and only `Grant::parse_limited` reads suffixes.
+- **Decision S5-D2: limits need edition `0.4`.** `HttpError.RateLimited` exists only in edition `0.4`; a program of an earlier edition could not name it, and a `when` over `HttpError` there would not cover it. So a limited `--grant` is a usage error for a package of an earlier edition on `una run`, and for an executable whose description embeds no `L_lim` (§5), which `una build` embeds only for edition `0.4`.
+
+## 3. Enforcement (`una-http`, `limit.rs`)
+
+Both engines send requests through the one client of `una-http`, so the limits live there, in a `Governor` per run, made once from the run's `Http` grants and shared by every task: the interpreter keeps it in its `Run`, native code in the state every task's template copies.
+
+- **Which grants a request is charged to.** Each hop of a request, its first and each redirect it follows (`spec/24 §2` rule 3), is charged to every grant that allows its target with its method (`spec/24 §2` rule 2), so a broad grant without limits does not bypass a narrow one with limits. A grant without limits takes no part.
+- **The per-grant state.** For a grant with limits: the theoretical arrival time of GCRA for its rate, its count of requests in flight for `at once`, and its queue of waiting tickets, bounded by `waiting` (default 1024).
+- **GCRA.** A rate of `n` per period `T` lets a request through at time `t` when `t ≥ TAT − (T − T/n)`, and then sets `TAT = max(TAT, t) + T/n`: a burst of `n`, then one every `T/n`. All of it is computed in units of `1/n` nanoseconds, in 128-bit integers, so `T/n` is exact for every `n` (decision S5-D3): with nanoseconds rounded, a bucket of 3 per second would let only 2 through at once. The clock is the monotonic clock of the process, never the virtual clock of `--virtual-time` (decision S5-D4): a virtual clock moves only by the run's own waits, so a program could otherwise pass a limit that the remote service counts in real time.
+- **Decision S5-D5: one lock per governor.** Rule 8 keeps the bucket "as one timestamp updated with one atomic instruction". A request is charged to every grant that allows it, all at once, or to none (rule 8, No deadlock, item 1), and an atomic instruction per grant cannot take the tokens of two grants together without a lock, or a rollback that another request could observe. So each grant's timestamp, count and queue sit under one mutex per governor, held for O(g) work per charge, for the `g` grants that allow the request, and never across a wait. The cost of rule 8, O(1) per grant charged, holds.
+- **No deadlock** (rule 8, items 1 to 3).
+  1. A hop takes the tokens and slots of every grant it needs at once, under the lock, or nothing. It releases its slots when its response is read, before the next hop asks for its own (the `Permit` is dropped at the end of the exchange, before the redirect is followed).
+  2. A request holds nothing while it waits, and a request that holds slots, one in flight, never waits for a limit.
+  3. A request that cannot be served at once takes the next ticket and joins the queue of each limited grant it needs. It is served when, for every such grant, it is the first waiter and the grant has a token and a slot. A newcomer is served at once only when every queue it would join is empty, so it never passes a waiter. The waiter with the lowest ticket is first in every queue it is in, so it waits only for capacity, and every waiter is served once capacity frees: none starves.
+  4. In the first step, the slots of a request on a helper stay held until the helper returns (rule 4), since the exchange runs there.
+- **Waiting.** A waiter sleeps on a parker of its own, with a time-out of the earliest of: when its token comes (computed by GCRA when it is first in line and only the rate blocks it), its request's deadline, and a slice of 20 ms for host stops. It is woken when a slot is released, when the first waiter of a queue it is in leaves, and when its operation is interrupted.
+  - **A full queue.** A request that must wait while one of its grants' queues holds `waiting` tickets fails at once with `RateLimited`, joining no queue.
+  - **Deadlines.** The wait is part of the request's time: `--http-timeout` covers it (`spec/24 §4` rule 2), and so does the deadline of a `within` or of a `for ever within` iteration, which already shortens the request's time-out. Past it, the request fails with `TimedOut` without being sent.
+  - **Interruption.** A host stop in the body of a `for ever` (`Interrupt::stopped`) ends the wait with `Interrupted`, within one slice. A cancellation of the task (a lost race, a `tasks` statement that fails) closes the task's mailbox as in slice S3, and also abandons the wait on the helper (`limit::Abandon`), so the request is never sent and its ticket leaves the queue at once.
+- **Decision S5-D6: waits on helpers in the first step.** In native code a request of a task runs on a helper of the I/O pool (rule 3), and its wait at a limit happens there too, holding the helper: the task itself parks, as for any request. Moving the wait off the helper needs the reactor (step 6). Until then, as the Security section says of a stalled upstream, requests waiting at limits can hold every helper of `--io-threads`, and further requests queue in the pool with their deadlines running; `Files` and `Console` have their own pool. The interpreter's host operations stay on its thread (slice S4, decision S4-D4), where a request never waits for a slot: no other request of the run is in flight then.
+
+## 4. `RateLimited`
+
+`std.host` declares `HttpError` with `RateLimited` after `Interrupted` in edition `0.4`, so the earlier variants keep their indices (8 for `Interrupted`, 9 for `RateLimited`), as for `Interrupted` (ADR 0116 rule 12). Before edition `0.4` the name resolves to nothing (U1001).
+
+## 5. IF4 and `L_lim`
+
+- **The sites.** The checker records each operation of the host's `Http` it checks: its span, the function whose body holds it, and whether it is unplaced (inside a lambda, a task, a handler's operation or outside a function, where `τ_conc` is `⊤`, as for a timing seed).
+- **`L_lim`** is the join, over those sites, of `τ⁰` of the body of the function that holds the site and `τ_conc` at the site (IF4). Each body is a seed as the step of a `[drive]` module is (IF7): its parameters' labels, and the function itself as its one callee, closed over the package by the one rule of every timing label (`timing.rs`). Since that closure distributes over joins, `L_lim` is one closure of the union of the seeds: O(functions + call edges + operations + handlers) once per package. A package without an `Http` site has `L_lim = public`.
+- **`una check`.** When a grant of `run grants` carries limits and `L_lim` is above `internal`, U4001 at each `Http` site whose own label is above `internal`, in source order, naming the grant and the source of the label (decision S5-D7: every such site, so each one that needs a change is shown; the per-site labels are computed only on this error path).
+- **`una build`** embeds `limit_label`, `L_lim` as written in messages, and `limits_allowed`, whether `L_lim` flows to `internal`, for edition `0.4` only.
+- **Start-up.** `una run` and the executable refuse a `--grant` with limits before `main`, a usage error with exit code 2, when the package is of an earlier edition, when the description embeds no `L_lim` (decision S5-D2), or when `L_lim` is above `internal`, with the message "the grant `<spec>` has limits, but this program's requests are timed by `<label>` data".
+- **The preview over-approximation.** `τ_conc` is `⊤` wherever a part of a task construct can run beside a site (`spec/26 §2` rule 5), so today a program whose `Http` requests can run beside a task construct has `L_lim = ⊤`, and its grants cannot carry limits. That is the safe side of IF4; it gets less strict when `τ_conc` becomes the join of the siblings' `τ⁰` (ADR 0116 IF6).
+
+## 6. Costs
+
+| Operation | Time | Space |
+| --- | --- | --- |
+| A hop with no limited grant | O(G) to find the grants that allow it, as before | none |
+| A hop charged at once | O(g) under the governor's lock: one GCRA update and one count per grant | none |
+| A hop that waits | O(g) to join the queues, O(1) amortized to leave them | one ticket per grant, and one parker |
+| Releasing a hop's slots | O(g), and one wake per queue | none |
+| `L_lim` | once per package: O(functions + call edges + operations + handlers) | the set of `Http` sites |
+
+`G` is the number of `Http` grants, `g` those that allow the hop and carry limits. A queue is a double-ended queue of tickets with lazy removal: a waiter that leaves early is marked, and dropped when it reaches the front, so each ticket is pushed once and popped once. The scaling test charges 10,000 and 100,000 requests through one governor and asserts linear time.
+
+## 7. Tests
+
+- Conformance (`tests/conformance`, `ita.una` packages, edition `0.4`): `project/ita_limit_lines` (accepted), `project/ita_limit_count`, `project/ita_limit_twice`, `project/ita_limit_not_http`, `project/ita_limit_form` (U7008 each); `types/http_rate_limited` (an exhaustive `when` with `RateLimited`), `names/http_rate_limited_0_3` (U1001); `security/limits_timed_secret` (U4001 at the site), `security/limits_timed_internal` (accepted). The case `project/ita_limit_unsupported` gives way to them.
+- Unit (`una-core`): the text form of limits, its errors, and `Grant::parse` still refusing suffixes. (`una-http`, `limit.rs`): a bucket of 3 per second shared by every request; a broad and a narrow grant both charged; the queue served by ticket; a full queue; a wait cut by its deadline; an abandoned wait leaving its queue; a host stop ending a wait; the scaling test.
+- Native and live network (`crates/una-cli/tests/http.rs`, a local server): the Limits cases of the ADR in both engines, a bucket shared through a rebinding, a redirect to the same origin under `1/once`, two tasks whose redirect chains cross two grants in opposite orders, a full queue, a wait cut by `within`, `--http-timeout` covering a wait, a slot held until the helper returns; and the Start-up checks: an executable and `una run` refusing a limited `--grant` (exit code 2) when `L_lim` is `secret`, and starting when it is `internal`.
