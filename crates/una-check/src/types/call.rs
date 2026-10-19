@@ -554,7 +554,12 @@ impl<'a> Checker<'_, 'a, '_> {
             FnKind::Predicate { .. } => format!("predicate `{}`", def.name),
             FnKind::Policy => format!("policy `{}`", def.name),
         };
-        if !matches!(def.kind, FnKind::Predicate { .. }) {
+        // `nan()` and `infinity()` of the prelude are constants of the refinement language
+        // (`spec/29 §8`, ADR 0114 rule 8.4).
+        let float_constant = def.module == self.env.prelude
+            && matches!(def.name, "nan" | "infinity")
+            && self.env.edition >= una_project::Edition::V0_3;
+        if !matches!(def.kind, FnKind::Predicate { .. }) && !float_constant {
             // Contracts call only predicates (`spec/03 §3`).
             let word = if def.kind == FnKind::Policy {
                 "policy"

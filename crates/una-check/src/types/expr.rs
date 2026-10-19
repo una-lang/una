@@ -110,10 +110,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             Ty::Fixed(_) if self.in_clause() => Ty::Int,
                             Ty::Fixed(int) => Ty::Fixed(int),
                             // `-x` is IEEE `negate` (ADR 0114 rule 3.1).
-                            Ty::F64 => {
-                                self.outside_rl(span, || "`-` of an `F64`".to_owned());
-                                Ty::F64
-                            }
+                            Ty::F64 => Ty::F64,
                             // `-x` of a decimal negates its coefficient (ADR 0120 rule 13).
                             Ty::Decimal(scale) => Ty::Decimal(scale),
                             _ => {
@@ -918,7 +915,6 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
                 if self.is_f64(&left_ty) || self.is_f64(&right_ty) {
-                    self.outside_rl(span, || format!("`{symbol}` of `F64` values"));
                     self.zero_comparison(symbol, left, right, span, true);
                 }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
@@ -945,7 +941,6 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
                 if self.is_f64(&left_ty) || self.is_f64(&right_ty) {
-                    self.outside_rl(span, || format!("`{symbol}` of `F64` values"));
                     self.zero_comparison(symbol, left, right, span, false);
                 }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
@@ -990,18 +985,21 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.ints(left, right, &operand, span, expected, Combine::Same, op)
             }
             BinaryOp::Mul => {
-                // A float literal is a literal factor of a decimal (ADR 0120 V2).
+                let ty = self.ints(left, right, &operand, span, expected, Combine::Mul, op);
+                // A float literal is a literal factor of a decimal (ADR 0120 V2), and the
+                // linearity restriction concerns integer arithmetic: `*` of two `F64` values is
+                // in the refinement language (ADR 0114 rule 8.4).
                 let literal = |e: &Expr| {
                     int_literal(e).is_some()
                         || (self.env.edition >= Edition::V0_4
                             && super::decimal::is_float_literal(e))
                 };
-                if !literal(left) && !literal(right) {
+                if !literal(left) && !literal(right) && !self.is_f64(&ty) {
                     self.outside_rl(span, || {
                         "`*` of two operands that are not literals".to_owned()
                     });
                 }
-                self.ints(left, right, &operand, span, expected, Combine::Mul, op)
+                ty
             }
             BinaryOp::Div | BinaryOp::Mod => {
                 let combine = if op == BinaryOp::Div {
@@ -1215,7 +1213,6 @@ impl<'a> Checker<'_, 'a, '_> {
         span: Span,
         combine: Combine,
     ) -> Ty {
-        self.outside_rl(span, || "arithmetic on `F64`".to_owned());
         let mark = self.report.count();
         let second_ty = self.infer(second, Some(&Ty::F64));
         let second_top = self.vars.peel(&second_ty);

@@ -1,0 +1,41 @@
+-- test: an integer obligation of a function that computes with floats keeps only the integer hypotheses and the floats it needs: an index is proven beside float lets, a result range over float branches is proven from their abstracted conditions
+-- spec: spec/29 §8
+-- expect: ok
+module m
+
+get(xs: List[F64], i: Int) -> F64
+  requires 0 <= i and i < xs.len
+=
+  when at(xs, index: i)
+    is Some(v) -> v
+    is None -> 0.0
+
+geti(xs: List[Int], i: Int) -> Int
+  requires 0 <= i and i < xs.len
+=
+  when at(xs, index: i)
+    is Some(v) -> v
+    is None -> 0
+
+pub scaled(xs: List[F64], i: Int, k: F64) -> F64
+  requires 0 <= i and i < xs.len
+=
+  let a = k * 2.0
+  let b = a / 3.0 + k
+  let c = b.sqrt()
+  get(xs, i: i) * c
+
+pub zone(x: F64) -> Int
+  ensures 0 <= result and result <= 2
+=
+  if x.ieee_lt(other: 0.5) then 0 else if x.ieee_lt(other: 1.0) then 1 else 2
+
+pub bucket(x: F64) -> Int
+  ensures result >= 0 and result < 16 and (x.is_nan() implies result == 15)
+=
+  if x.is_nan() then 15 else 3
+
+pub lookup(table: List[Int], x: F64) -> Int
+  requires table.len == 16
+=
+  geti(table, i: bucket(x))
