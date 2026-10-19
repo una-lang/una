@@ -1468,7 +1468,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let goal = (value.f.sort() == "Int")
                             .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
                         let text =
-                            format!("the deadline `{}` is at least 1", self.text(*deadline_span));
+                            format!("{} >= 1", self.text(*deadline_span));
                         self.site(
                             ObligationKind::Refinement,
                             &ctx,

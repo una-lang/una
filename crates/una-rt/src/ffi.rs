@@ -467,6 +467,25 @@ pub extern "C" fn una_rt_budget(site: i64) -> i64 {
     runtime::budget(usize::try_from(site).unwrap_or(usize::MAX))
 }
 
+/// Enters a `for ever within` loop whose deadline is the borrowed integer `ms`
+/// ([`crate::deadline::enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_enter(ms: i64) {
+    crate::deadline::enter(ms);
+}
+
+/// Starts an iteration of a `for ever within` loop ([`crate::deadline::iteration`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_iteration() {
+    crate::deadline::iteration();
+}
+
+/// Leaves a `for ever within` loop ([`crate::deadline::leave`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_deadline_leave() {
+    crate::deadline::leave();
+}
+
 /// The next tick of a driven program's loop, or 0 when it stops ([`runtime::drive_tick`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_drive_tick() -> i64 {

@@ -747,17 +747,27 @@ impl<'p> Lowerer<'_, 'p, '_> {
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
         let Expr::Loop {
+            source,
             var,
             state,
             init,
             body,
             on_stop,
             span,
-            ..
         } = expr
         else {
             return Err(internal("a loop that is not one"));
         };
+        // `within d` (`spec/26 §6`): evaluated once, before the first iteration; the runtime
+        // arms the deadline at each iteration and drops it when the loop ends.
+        let within = match source.as_ref() {
+            LoopSource::Ever { within } => within.as_ref(),
+            _ => None,
+        };
+        if let Some((deadline, _)) = within {
+            let (word, _) = self.atom(deadline, env)?;
+            self.runtime("una_rt_deadline_enter", &[word]);
+        }
         let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
         let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
         let mut initial: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
@@ -794,6 +804,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let current = self.builder.block_params(head).to_vec();
         let stopping = self.call("una_rt_budget", &[site])?;
         self.stop_if(stopping);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_iteration", &[]);
+        }
         let mut inner = env.clone();
         for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
             inner.insert(name.clone(), (value, ty.clone()));
@@ -807,19 +820,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
             outer: Scope::new(),
             base: 0,
         };
-        // With `on stop`, a failure of the body goes to it first.
-        let nested = match on_stop {
-            Some(_) => Catch {
+        // With `on stop`, a failure of the body goes to it first; with a deadline, the failure
+        // leaves the deadline first.
+        let nested = if on_stop.is_some() || within.is_some() {
+            Catch {
                 block: failing,
                 outer: Scope::new(),
                 base: 0,
                 exit: Some(exits),
-            },
-            None => {
-                let mut nested = catch.nested(scope);
-                nested.exit = Some(exits);
-                nested
             }
+        } else {
+            let mut nested = catch.nested(scope);
+            nested.exit = Some(exits);
+            nested
         };
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
@@ -843,20 +856,32 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .collect();
         self.builder.ins().jump(head, &next);
 
-        // After a failure: `on stop` on the saved state, then the failure goes on.
-        if let Some(on_stop) = on_stop {
+        // After a failure: the deadline left, `on stop` on the saved state, then the failure
+        // goes on.
+        if on_stop.is_some() || within.is_some() {
             self.builder.switch_to_block(failing);
             let failure = self.param(failing)?;
-            let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
-            if let Some(result) = result {
-                self.release(result, Kind::Tuple);
-                self.fail(failure, scope, catch);
+            if within.is_some() {
+                self.runtime("una_rt_deadline_leave", &[]);
+            }
+            match on_stop {
+                Some(on_stop) => {
+                    let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                    if let Some(result) = result {
+                        self.release(result, Kind::Tuple);
+                        self.fail(failure, scope, catch);
+                    }
+                }
+                None => self.fail(failure, scope, catch),
             }
         }
 
         // The loop's value: the final state, through `on stop` when there is one.
         self.builder.switch_to_block(exit);
         let finals = self.builder.block_params(exit).to_vec();
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
         let tuple = match on_stop {
             Some(on_stop) => {
                 for (&value, &kind) in saved.iter().zip(&kinds) {

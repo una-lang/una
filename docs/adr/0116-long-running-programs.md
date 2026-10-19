@@ -674,3 +674,11 @@ Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`
 ## Amendment (2026-10-19): statements after `stop` or `skip`
 
 Rule 6 does not say what a statement after an unconditional `stop` or `skip` in the same block means. Such a statement never runs, and code that never runs is almost always a mistake. It is an error: U2040, "a statement after `stop` or `skip` in the same block, which never runs", at the first such statement, with a repair that removes the statements after the exit. `stop when c` is conditional, so the statements after it stay legal, and so do the statements after the block that holds the exit, which run on the paths that do not take it.
+
+## Amendment (2026-10-19): the report's additions of rule 21, and the timing label in the preview
+
+Rule 21 adds to `una.report/2` without saying which packages see the additions. With `for ever within` (`spec/26 §6`):
+- **Edition `0.4` only.** The three `out_of_model` entries of rule 21 appear in the reports of packages of edition `0.4`, whose constructs they describe; the reports of earlier editions do not change.
+- **`information.timing`** is absent when it is empty, so a report without a site that has a deadline is the one earlier releases wrote.
+- **The driver's budget** (rule 1) is not yet a deadline, so it adds no `timing` entry until it bounds a step.
+- **One rule for `τ`.** The checker computes the timing label of every site with a deadline, the body of a `for ever within` and the driven step (IF7), by one function, which `within` of ADR 0117 is meant to call too. In the preview it keeps the over-approximations of `spec/26 §2` rule 5 for IF5 items 3 and 4 and IF6: every handler of an operation's capability counts, and `τ_conc` is `⊤` wherever a part of a task construct can reach the site's function. They are sound, and MAY only become more precise.

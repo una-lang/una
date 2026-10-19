@@ -444,7 +444,25 @@ fn http(
         body: body.as_bytes(),
         bearer: bearer.as_deref(),
     };
-    match send(&request, &grants, &settings) {
+    // The deadline of a `for ever within` iteration (`spec/26 §6`): past it, the request fails
+    // at once with `TimedOut`; before it, it waits no longer than the time left.
+    let mut settings = settings;
+    let mut cut = false;
+    if let Some(left) = crate::deadline::left()
+        && left < settings.timeout
+    {
+        settings.timeout = left;
+        cut = true;
+    }
+    let sent = if cut && settings.timeout.is_zero() {
+        Err(Error::TimedOut)
+    } else {
+        send(&request, &grants, &settings)
+    };
+    if cut && sent == Err(Error::TimedOut) {
+        crate::deadline::timed_out();
+    }
+    match sent {
         Ok(response) => {
             let list = values::list();
             for (name, value) in response.headers {
