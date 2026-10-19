@@ -185,6 +185,8 @@ The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-25
 - With no key to read or make, a run uses no cache.
 - The key file, not the cache, is part of the Trusted zone (`00-charter.md §3`).
 
+(v0.4, ADR 0122 rule 48.) For a package of edition `0.4`, the key is the domain-tagged, length-prefixed hash of the lock's `solver` section and the query of `spec/30 §7`, not the whole lock, so adding a dependency invalidates nothing; the tag keeps it apart from the key above.
+
 The build report counts the results that came from the cache (ADR 0041). Removing `.una/` verifies every obligation again. (In v0.1, entries were not authenticated, and the cache itself was in the Trusted zone.)
 
 ## 10. Determinism guarantee

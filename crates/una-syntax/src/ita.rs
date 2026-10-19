@@ -141,6 +141,9 @@ pub struct Lines {
     pub comments_after: Vec<Range<usize>>,
     /// Lexical and layout errors.
     pub errors: Vec<Error>,
+    /// The decoded text that every range indexes: `\r\n` read as `\n`, and each invalid UTF-8
+    /// sequence as U+FFFD (`spec/01 §1`).
+    pub text: String,
 }
 
 /// Reads `text` into lines (ADR 0122 rule 4): the lexer's project mode, then one tree of lines
@@ -150,7 +153,10 @@ pub fn lines(text: &str) -> Lines {
     let file = sources.add("project", text.as_bytes());
     let mut interner = Interner::new();
     let lexed = lex_project(sources.file(file), file, &mut interner);
+    let decoded = sources.file(file).text().to_owned();
+    let text = decoded.as_str();
     let mut out = Lines {
+        text: decoded.clone(),
         errors: lexed
             .errors
             .iter()
@@ -784,7 +790,8 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
         );
     }
     let read = lines(text);
-    let mut errors = read.errors;
+    let decoded = read.text.as_str();
+    let mut errors = read.errors.clone();
     let mut lines = read.lines.iter();
     match lines.next() {
         Some(line) if line.word(0) == Some("ita") => head(line, &mut manifest, &mut errors),
@@ -853,7 +860,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
     }
     for contract in &mut manifest.contracts {
         for clause in &mut contract.clauses {
-            clause.value = text.get(clause.range.clone()).unwrap_or("").to_owned();
+            clause.value = decoded.get(clause.range.clone()).unwrap_or("").to_owned();
         }
     }
     (manifest, errors)
@@ -2159,6 +2166,7 @@ pub fn format(text: &str) -> Option<String> {
     if !read.errors.is_empty() {
         return None;
     }
+    let text = read.text.as_str();
     let mut out = String::new();
     for (index, line) in read.lines.iter().enumerate() {
         if index > 0 {
@@ -2193,7 +2201,7 @@ fn write_line(text: &str, line: &Line, children: &[&Line], depth: usize, out: &m
         out.push('\n');
     }
     out.push_str(&indent);
-    out.push_str(&canonical_tokens(text, &line.tokens));
+    out.push_str(&rendered(text, &line.tokens));
     if let Some(comment) = &line.trailing_comment {
         out.push_str("  ");
         out.push_str(text.get(comment.clone()).unwrap_or("").trim_end());
@@ -2203,6 +2211,26 @@ fn write_line(text: &str, line: &Line, children: &[&Line], depth: usize, out: &m
         let grandchildren: Vec<&Line> = child.children.iter().collect();
         write_line(text, child, &grandchildren, depth + 1, out);
     }
+}
+
+/// A line's tokens with canonical spacing, when they read back as the same tokens; otherwise,
+/// as where dropping a space would join `1.` and `2` into a version, one space between every
+/// two tokens, which always reads back the same. O(length of the line).
+fn rendered(text: &str, tokens: &[Tok]) -> String {
+    let canonical = canonical_tokens(text, tokens);
+    let read = lines(&canonical);
+    let same = read.errors.is_empty()
+        && matches!(read.lines.as_slice(), [line] if line.children.is_empty()
+            && line.tokens.len() == tokens.len()
+            && line.tokens.iter().zip(tokens).all(|(a, b)| a.item == b.item));
+    if same {
+        return canonical;
+    }
+    tokens
+        .iter()
+        .map(|token| text.get(token.range.clone()).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The tokens of a line with canonical spacing; a token is written as the file writes it.

@@ -1322,6 +1322,7 @@ dependencies = [
  "toml",
  "una-core",
  "una-diag",
+ "una-syntax",
 ]
 
 [[package]]

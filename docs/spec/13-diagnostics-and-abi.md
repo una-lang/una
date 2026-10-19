@@ -395,6 +395,8 @@ A TOML syntax error, a missing required key, and a value of the wrong type or ou
 
 Project errors do not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
 
+(v0.4, ADR 0122.) **Edition `0.4` and later.** A package of edition `0.4` describes itself in `ita.una` and is pinned by `ita.lock`, in Una's own lexical syntax, by the closed grammars of `spec/30`; a directory with `ita.una` is a package with that file in place of `una.toml`, and one with both is U7008. Every error that this section makes U7002 for a key of `una.toml` is U7008 at the corresponding line of `ita.una`; every error of `ita.lock` is U7009 where `verification.lock` has U7004. `una fmt ita.una` formats the file, `una fmt` of the package leaves it alone, and `una fix` never edits `ita.una`, `ita.lock` or `itaty.una`.
+
 ## 8. Core export
 
 (v0.3, ADR 0083.) `una --json core [path]` prints the package's Core IR (`spec/09`) as one `una.core/1` document, for programs outside the compiler, such as the checker of the formal track. The text form of `spec/09 §4` stays a debug output; this document is the stable form.

@@ -22,7 +22,7 @@ pub const AREAS: [&str; 10] = [
 pub enum CaseKind {
     /// One `.una` file, compiled as a package containing only that module.
     Single,
-    /// A directory with `una.toml` and `src/`.
+    /// A directory with `una.toml` or `ita.una`, and `src/`.
     Directory,
 }
 
@@ -90,13 +90,13 @@ pub fn cases(area: &str, entries: &[Entry]) -> (Vec<CaseLocation>, Vec<String>) 
                 kind: CaseKind::Directory,
             }),
             Entry::File(name) => errors.push(format!(
-                "{area}/{name}: not a case (a case is a .una file or a directory with una.toml)"
+                "{area}/{name}: not a case (a case is a .una file or a directory with una.toml or ita.una)"
             )),
             Entry::Dir {
                 name,
                 has_una_toml: false,
             } => errors.push(format!(
-                "{area}/{name}/: not a case (a multi-module case needs una.toml)"
+                "{area}/{name}/: not a case (a multi-module case needs una.toml or ita.una)"
             )),
         }
     }
@@ -155,7 +155,9 @@ fn list(dir: &Path) -> Vec<Entry> {
             let path = entry.path();
             if path.is_dir() {
                 Entry::Dir {
-                    has_una_toml: path.join("una.toml").is_file(),
+                    // A package of edition 0.4 has `ita.una` in place of `una.toml` (ADR 0122).
+                    has_una_toml: path.join("una.toml").is_file()
+                        || path.join("ita.una").is_file(),
                     name,
                 }
             } else {
@@ -221,8 +223,8 @@ mod tests {
         assert_eq!(
             errors,
             [
-                "names/leftovers/: not a case (a multi-module case needs una.toml)",
-                "names/notes.md: not a case (a case is a .una file or a directory with una.toml)",
+                "names/leftovers/: not a case (a multi-module case needs una.toml or ita.una)",
+                "names/notes.md: not a case (a case is a .una file or a directory with una.toml or ita.una)",
             ]
         );
     }
