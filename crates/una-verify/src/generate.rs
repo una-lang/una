@@ -381,6 +381,9 @@ pub(crate) struct Index<'p> {
     /// The edits of callees' conditions, by site, caller's binding and operation (ADR 0092,
     /// amendment of 2026-10-14).
     condition_edits: BTreeMap<(Span, &'p str, &'p str), &'p una_core::ConditionEdit>,
+    /// Whether a map's update keeps its other keys, in edition `0.4` (ADR 0069, amendment of
+    /// 2026-10-19; ADR 0119 V3).
+    map_frames: bool,
 }
 
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
@@ -526,6 +529,7 @@ impl<'p> Index<'p> {
             policies: BTreeMap::new(),
             vias: BTreeMap::new(),
             unresolved: RefCell::new(BTreeSet::new()),
+            map_frames: program.map_frames,
             condition_edits: program
                 .condition_edits
                 .iter()
@@ -4175,6 +4179,15 @@ impl<'p, 'i> Walker<'p, 'i> {
                     F::op("ite", vec![had, with_key, without_key]),
                 ));
                 let has_now = has_of(&x.f, &key.f);
+                // ADR 0069, amendment of 2026-10-19: in edition `0.4`, the update keeps `has`
+                // and `get` at every other key (ADR 0119 V3); editions `0.2` and `0.3` keep M3
+                // and M8 as written.
+                if self.index.map_frames
+                    && x.f.sort() == map.f.sort()
+                    && let Some(option) = option_of(&map.ty)
+                {
+                    ctx.define(frame_of(&map.f, &x.f, &key.f, Some(self::sort(&option))));
+                }
                 if op == MapOp::Without {
                     ctx.assume(F::not(has_now));
                     return;
@@ -8444,6 +8457,7 @@ mod tests {
             library: Vec::new(),
             host: vec![files(Vec::new())],
             condition_edits: Vec::new(),
+            map_frames: false,
         };
         let index = Index::new(&program);
         let ensures = |module: &str| {

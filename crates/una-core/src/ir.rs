@@ -2247,6 +2247,10 @@ pub struct Program {
     /// `with`s, in site order (ADR 0092, amendment of 2026-10-14). Not exported: `una core`
     /// derives nothing from them.
     pub condition_edits: Vec<ConditionEdit>,
+    /// Whether the verifier keeps a map's other keys across its updates: the frame facts of
+    /// ADR 0119 V3 on `Map`, in edition `0.4` and later only (ADR 0069, amendment of
+    /// 2026-10-19). Not exported: `una core` derives nothing from it.
+    pub map_frames: bool,
 }
 
 /// The condition that a call or a `with` asks of its callee or handler, written on the callee's

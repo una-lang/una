@@ -115,6 +115,8 @@ pub(crate) fn program(
         library,
         host,
         condition_edits: condition_edits(findings),
+        // ADR 0069, amendment of 2026-10-19: the frames of a map, in edition `0.4`.
+        map_frames: env.edition >= una_project::Edition::V0_4,
     };
     gaps.missing = missing(env, &program);
     (program, gaps)
