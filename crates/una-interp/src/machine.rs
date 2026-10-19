@@ -1178,7 +1178,14 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn add_installs(&mut self, name: &str, count: usize) {
         match self.buffers.last_mut() {
             Some(buffer) => *buffer.installs.entry(name.to_owned()).or_insert(0) += count,
-            None => *self.run.installs.borrow_mut().entry(name.to_owned()).or_insert(0) += count,
+            None => {
+                *self
+                    .run
+                    .installs
+                    .borrow_mut()
+                    .entry(name.to_owned())
+                    .or_insert(0) += count
+            }
         }
     }
 
@@ -1260,7 +1267,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
         if una_sys::coroutine::inside() {
             return Err(Abort::Fault {
-                message: "the interpreter runs its tasks on a coroutine of another owner".to_owned(),
+                message: "the interpreter runs its tasks on a coroutine of another owner"
+                    .to_owned(),
                 span: None,
             });
         }
@@ -2121,7 +2129,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 };
                 for item in items.iter() {
                     self.run.tick();
-                self.within_budget(span)?;
+                    self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
                         self.iteration(env, caps, var, state, current, item, body)?;
@@ -2152,7 +2160,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     }
                     let item = Value::Int(index.clone());
                     self.run.tick();
-                self.within_budget(span)?;
+                    self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
                         self.iteration(env, caps, var, state, current, &item, body)?;
@@ -2335,9 +2343,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             None => return Err(fault("a `tasks` statement outside any task")),
         };
-        let bound = bound.unwrap_or_else(|| {
-            crate::concurrency::default_bound(self.max_memory, self.run.cap)
-        });
+        let bound = bound
+            .unwrap_or_else(|| crate::concurrency::default_bound(self.max_memory, self.run.cap));
         let mut path = self.task.clone();
         path.push(format!("s{count}"));
         let scope = Rc::new(TasksScope::new(path, bound));
@@ -2368,7 +2375,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             scope.waiter.set(Some(self.run.current()));
             if !self.run.park() {
                 scope.waiter.set(None);
-                return Err(fault("a task waits for the tasks it started outside the scheduler"));
+                return Err(fault(
+                    "a task waits for the tasks it started outside the scheduler",
+                ));
             }
         }
         Ok(())
@@ -2427,7 +2436,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 child.started_end(result);
             });
         };
-        self.run.sched.borrow_mut().start(Box::new(body), bytes, span);
+        self.run
+            .sched
+            .borrow_mut()
+            .start(Box::new(body), bytes, span);
         Ok(())
     }
 
@@ -4161,7 +4173,14 @@ mod tests {
         let keys = BTreeMap::new();
         let mut sources = una_syntax::SourceDb::new();
         let span = Span::at(sources.add("src/t.una", b"slice"), 0);
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(8), Clock::real());
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(8),
+            Clock::real(),
+        );
         let slice =
             |start: i64, end: i64| vec![Value::text("abc"), Value::int(start), Value::int(end)];
         for (name, args, expected) in [
@@ -4244,7 +4263,14 @@ mod tests {
         let keys = BTreeMap::new();
         let mut sources = una_syntax::SourceDb::new();
         let span = Span::at(sources.add("a.una", b"module a\n"), 0);
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(3), Clock::real());
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(3),
+            Clock::real(),
+        );
         for _ in 0..3 {
             assert!(machine.enter(span).is_ok());
         }
@@ -4254,7 +4280,14 @@ mod tests {
         ));
         // A stack used beyond the budget aborts in the same way, below the maximum depth.
         let mut world = crate::host::NoWorld;
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(3), Clock::real());
+        let mut machine = Machine::new(
+            &index,
+            &mut world,
+            &[],
+            &keys,
+            Limits::depth(3),
+            Clock::real(),
+        );
         machine.stack_base = stack_position(&span).wrapping_add(4096);
         machine.stack_budget = 1024;
         assert!(matches!(

@@ -948,7 +948,11 @@ pub main() -> Unit
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "--workers {workers}: the loser was not interrupted"
@@ -1095,8 +1099,9 @@ fn twenty_thousand_started_tasks_report_the_cap_of_the_map_count_on_linux() {
     if cap < 20_000 {
         assert_eq!(native.status.code(), Some(1), "{native:?}");
         assert!(
-            String::from_utf8_lossy(&native.stderr)
-                .contains(&format!("exceeds the {cap} started tasks this system allows at once")),
+            String::from_utf8_lossy(&native.stderr).contains(&format!(
+                "exceeds the {cap} started tasks this system allows at once"
+            )),
             "{native:?}"
         );
     } else {

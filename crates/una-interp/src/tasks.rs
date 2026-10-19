@@ -397,9 +397,11 @@ mod tests {
             log.borrow_mut().push("root starts");
             for label in ["a", "b"] {
                 let (log, span) = (&log, span());
-                run.sched
-                    .borrow_mut()
-                    .start(Box::new(move || log.borrow_mut().push(label)), 64 * 1024, span);
+                run.sched.borrow_mut().start(
+                    Box::new(move || log.borrow_mut().push(label)),
+                    64 * 1024,
+                    span,
+                );
             }
             log.borrow_mut().push("root goes on");
             for _ in 0..TURN {

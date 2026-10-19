@@ -236,7 +236,8 @@ impl Checker<'_, '_, '_> {
             self.report.error(
                 Code::U3029,
                 span,
-                super::authority::START_FAILS.replace("{what}", "`if error pass` passes the failure on"),
+                super::authority::START_FAILS
+                    .replace("{what}", "`if error pass` passes the failure on"),
             );
         }
         if let Some(inner) = inner {

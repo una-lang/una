@@ -278,9 +278,7 @@ fn serve_in(scope: &Scope<'_>, worker: &Arc<Worker>, shared: &Arc<Shared>) {
     while let Some((job, fresh)) = worker.next(held > 0) {
         if fresh {
             TURN.with(|turn| turn.set(0));
-            worker
-                .turn_since
-                .store(millis(), Ordering::Relaxed);
+            worker.turn_since.store(millis(), Ordering::Relaxed);
         }
         let id = match job {
             Job::Start(stack, body, finish) => {
@@ -867,8 +865,7 @@ pub(crate) fn blocking_interruptible<T: Send + 'static>(
     drop(shared);
     let (sender, receiver) = channel::<Waited<T>>();
     let mailbox = Arc::clone(&sender.0);
-    let wake: crate::interrupt::Wake =
-        Arc::new(move || close(&mailbox, Some(Waited::Interrupted)));
+    let wake: crate::interrupt::Wake = Arc::new(move || close(&mailbox, Some(Waited::Interrupted)));
     let registration = crate::interrupt::register(entries, &wake);
     drop(wake);
     // A cancellation that came before the registration woke nothing: seen here, the operation

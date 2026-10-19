@@ -1298,9 +1298,11 @@ fn decide_race(ended: &[Option<Outcome>], winner: Option<usize>) -> Option<(usiz
     if let Some(at) = winner {
         return Some((at, Decision::Win));
     }
-    let every_failed = ended
-        .iter()
-        .all(|outcome| outcome.as_ref().is_some_and(|o| matches!(o.ended, Ended::Failed)));
+    let every_failed = ended.iter().all(|outcome| {
+        outcome
+            .as_ref()
+            .is_some_and(|o| matches!(o.ended, Ended::Failed))
+    });
     if every_failed && !ended.is_empty() {
         return Some((0, Decision::Fail));
     }
@@ -1392,13 +1394,17 @@ fn task(
             }
             drop(signals.answer);
             runtime::refuse(site, message);
-            signals.report.send(report(index, (&count, race), Ended::Stopped));
+            signals
+                .report
+                .send(report(index, (&count, race), Ended::Stopped));
             return exit_task();
         }
         Err(message) => {
             drop(signals.answer);
             runtime::abort_from_task(Code::U8001, template.location.clone(), message);
-            signals.report.send(report(index, (&count, race), Ended::Stopped));
+            signals
+                .report
+                .send(report(index, (&count, race), Ended::Stopped));
             return exit_task();
         }
     };
@@ -1915,7 +1921,10 @@ mod tests {
         RACE_SAW_CANCEL.store(false, Ordering::SeqCst);
         let (text, status, stopped) = in_race(vec![0, 6], racing);
         assert_eq!((text.as_deref(), status, stopped), (Some("6"), 0, None));
-        assert!(RACE_SAW_CANCEL.load(Ordering::SeqCst), "the loser was cancelled");
+        assert!(
+            RACE_SAW_CANCEL.load(Ordering::SeqCst),
+            "the loser was cancelled"
+        );
     }
 
     #[test]
@@ -2158,7 +2167,12 @@ mod tests {
         for _ in 0..if depth == 1 { 2 } else { 1 } {
             values::push(items, ((depth - 1) << 1) | 1);
         }
-        let (value, status) = run(Tasks::Over { closure, items }, Shape::List, site, nested_installs);
+        let (value, status) = run(
+            Tasks::Over { closure, items },
+            Shape::List,
+            site,
+            nested_installs,
+        );
         values::release(items);
         (value, status)
     }

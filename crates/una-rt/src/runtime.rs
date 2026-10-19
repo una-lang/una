@@ -1851,44 +1851,44 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     let mut state = state;
     state.sched.clone_from(&sched);
     let main = move || {
-            if floats {
-                crate::ffi::write_float_environment();
-            }
-            let _stack = StackCount::new(stack);
-            let mut state = state;
-            state.stack_base = stack_position(&state);
-            state.baseline = crate::held();
-            // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
-            crate::ceiling(state.baseline.saturating_add(budget.saturating_mul(2)));
-            install(state, 0);
-            DRIVER.with(|cell| *cell.borrow_mut() = drive);
-            let status = entry();
-            crate::ceiling(usize::MAX);
-            // A debug build of the runtime checks the compiled code's reference counting: it
-            // never used a value it had released, and released every value it made, which is
-            // unreferenced once `main` returns (`spec/16 §4`).
-            //
-            // Only the detection of an internal error depends on the build (unlike a refined function kind, where a
-            // check of the program did): for a program whose counting is right, the output, exit
-            // status and trace are the same in both builds, and a release executable never runs
-            // the check. The tests link the debug build, so a counting bug fails them.
-            //
-            // The tasks of `together` blocks check their own heaps when they end (`tasks`).
-            let faults = if cfg!(debug_assertions) {
-                (
-                    values::faults()
-                        + values::unbalanced_literals()
-                        + crate::tasks::TASK_FAULTS.load(Ordering::SeqCst),
-                    values::live() + crate::tasks::TASK_LEAKS.load(Ordering::SeqCst),
-                    values::copies() + crate::tasks::TASK_COPIES.load(Ordering::SeqCst),
-                    values::fallbacks() + crate::tasks::TASK_FALLBACKS.load(Ordering::SeqCst),
-                    crate::tasks::BLOCK_CHECKS.load(Ordering::SeqCst),
-                )
-            } else {
-                (0, 0, 0, 0, 0)
-            };
-            let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
-            (status, state, faults)
+        if floats {
+            crate::ffi::write_float_environment();
+        }
+        let _stack = StackCount::new(stack);
+        let mut state = state;
+        state.stack_base = stack_position(&state);
+        state.baseline = crate::held();
+        // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
+        crate::ceiling(state.baseline.saturating_add(budget.saturating_mul(2)));
+        install(state, 0);
+        DRIVER.with(|cell| *cell.borrow_mut() = drive);
+        let status = entry();
+        crate::ceiling(usize::MAX);
+        // A debug build of the runtime checks the compiled code's reference counting: it
+        // never used a value it had released, and released every value it made, which is
+        // unreferenced once `main` returns (`spec/16 §4`).
+        //
+        // Only the detection of an internal error depends on the build (unlike a refined function kind, where a
+        // check of the program did): for a program whose counting is right, the output, exit
+        // status and trace are the same in both builds, and a release executable never runs
+        // the check. The tests link the debug build, so a counting bug fails them.
+        //
+        // The tasks of `together` blocks check their own heaps when they end (`tasks`).
+        let faults = if cfg!(debug_assertions) {
+            (
+                values::faults()
+                    + values::unbalanced_literals()
+                    + crate::tasks::TASK_FAULTS.load(Ordering::SeqCst),
+                values::live() + crate::tasks::TASK_LEAKS.load(Ordering::SeqCst),
+                values::copies() + crate::tasks::TASK_COPIES.load(Ordering::SeqCst),
+                values::fallbacks() + crate::tasks::TASK_FALLBACKS.load(Ordering::SeqCst),
+                crate::tasks::BLOCK_CHECKS.load(Ordering::SeqCst),
+            )
+        } else {
+            (0, 0, 0, 0, 0)
+        };
+        let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
+        (status, state, faults)
     };
     let ran = match &sched {
         Some(sched) => {
@@ -1898,8 +1898,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                 move || {
                     // A panic of the runtime is caught on the root's own stack, so nothing
                     // unwinds across a switch.
-                    if let Ok(result) =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(main))
+                    if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(main))
                     {
                         sender.send(result);
                     }
