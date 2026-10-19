@@ -446,8 +446,12 @@ mod tests {
         let y = (1.0 - e) * (e / 2.0); // 2^-24 (1 - 2^-23), exact
         let z = 1.0 + e;
         assert_eq!(b(fma(x, y, z)), b(1.0 + e));
-        let twice = f64::from(x).mul_add(f64::from(y), f64::from(z)) as f32;
+        let twice = crate::float::fma(f64::from(x), f64::from(y), f64::from(z)) as f32;
         assert_eq!(b(twice), b(1.0 + 2.0 * e));
+        // AArch64's `fmadd`, where `mul_add` is that instruction (clippy's `disallowed_methods`
+        // keeps it there: elsewhere it may call the platform's C library).
+        #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::disallowed_methods)]
         assert_eq!(b(x.mul_add(y, z)), b(1.0 + e));
         // Special values.
         assert_eq!(b(fma(f32::INFINITY, 0.0, 1.0)), CANONICAL_NAN);
@@ -457,8 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn fma_matches_the_exact_reference_on_random_triples() {
-        // The reference: `f32::mul_add` (the C library's `fmaf`, in a test only).
+    #[cfg(target_arch = "aarch64")]
+    #[allow(clippy::disallowed_methods)]
+    fn fma_matches_the_hardware_on_random_triples() {
+        // The reference: `f32::mul_add`, which on AArch64 is the `fmadd` instruction. Elsewhere it
+        // may call the platform's C library, which no part of Una uses, so the test runs only
+        // here; the exact cases above check `fma` on every target.
         let mut bits = Bits(0x9E37_79B9_7F4A_7C15);
         for _ in 0..100_000 {
             let (x, y, z) = (bits.f32(), bits.f32(), bits.f32());
