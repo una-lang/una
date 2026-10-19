@@ -1621,6 +1621,103 @@
       ]
     },
     {
+      "name": "array",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub array[T](xs: List[T]) -> Array[T]\n  ensures result.len == xs.len",
+          "docs": [
+            "An array of the elements of `xs`, in order (`spec/29 §17`, ADR 0120 rule 32). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "array_filled",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub array_filled[T](length: Int, value: T) -> Array[T]\n  requires length >= 0\n  ensures result.len == length",
+          "docs": [
+            "An array of `length` elements, each `value` (`spec/29 §17`). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "matrix",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub matrix[T](rows: Int, columns: Int, elements: List[T]) -> Matrix[T]\n  requires rows >= 0 and columns >= 0 and elements.len == rows * columns\n  ensures result.rows == rows and result.columns == columns",
+          "docs": [
+            "A matrix of `rows` rows and `columns` columns, the elements of `elements` in row-major",
+            "order (`spec/29 §17`). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "matrix_filled",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub matrix_filled[T](rows: Int, columns: Int, value: T) -> Matrix[T]\n  requires rows >= 0 and columns >= 0\n  ensures result.rows == rows and result.columns == columns",
+          "docs": [
+            "A matrix of `rows` rows and `columns` columns, each element `value` (`spec/29 §17`). O(n)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "matrix_diagonal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §17"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub matrix_diagonal[T](values: Array[T]) -> Matrix[T]\n  ensures result.rows == values.len and result.columns == values.len",
+          "docs": [
+            "The square matrix with `values` on its diagonal and `+0` of the element type elsewhere",
+            "(`spec/29 §17`). O(n²)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "fake_hash",
       "module": "std.testing",
       "kind": "function",
