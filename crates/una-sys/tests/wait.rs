@@ -9,7 +9,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use una_sys::signals::{Readiness, install, request_host_stop, wait};
+use una_sys::signals::{Readiness, install, request_host_stop, wait, wake};
 
 #[test]
 fn a_wait_ends_at_readiness_at_its_timeout_or_at_a_stop() {
@@ -36,9 +36,19 @@ fn a_wait_ends_at_readiness_at_its_timeout_or_at_a_stop() {
         wait(Some(b.as_raw_fd()), false, true, Duration::from_secs(5)),
         Readiness::Ready
     );
+    // A wake without a request, as a run's own deadline makes: the pipe is readable, and the
+    // process's count of requests does not move.
+    let before = una_sys::attention::stop_requests();
+    wake();
+    assert_eq!(
+        wait(None, false, true, Duration::from_secs(30)),
+        Readiness::Woken
+    );
+    assert_eq!(una_sys::attention::stop_requests(), before);
     // A stop wakes every wait that watches the pipe, at once and for good; a wait that does
     // not watch it still sees its socket.
     request_host_stop();
+    assert_eq!(una_sys::attention::stop_requests(), before + 1);
     let start = Instant::now();
     assert_eq!(
         wait(None, false, true, Duration::from_secs(30)),
