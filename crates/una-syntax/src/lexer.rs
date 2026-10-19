@@ -1098,17 +1098,40 @@ impl Lexer<'_> {
         if word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':') {
             self.out.from_label = Some(self.interner.intern("from"));
         }
-        let kind = if word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2 {
-            TokenKind::LowerIdent(self.interner.intern(&word))
-        } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
-            TokenKind::Keyword(keyword)
-        } else if let Some(message) = reserved_in(&word, self.out.keywords) {
-            self.reserved(&word, message, start);
-            TokenKind::Reserved(self.interner.intern(&word))
-        } else {
-            TokenKind::LowerIdent(self.interner.intern(&word))
-        };
+        // Edition 0.4: `diverges` alone on its line is the clause of a header (`spec/26 §5`);
+        // anywhere else it stays reserved (U0103).
+        let line_start = self
+            .out
+            .tokens
+            .last()
+            .is_none_or(|token| matches!(token.kind, TokenKind::Newline | TokenKind::Indent));
+        let clause = word == "diverges"
+            && line_start
+            && self.out.keywords >= KeywordSet::V0_4
+            && self.rest_of_line_blank();
+        let kind =
+            if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2) || clause {
+                TokenKind::LowerIdent(self.interner.intern(&word))
+            } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
+                TokenKind::Keyword(keyword)
+            } else if let Some(message) = reserved_in(&word, self.out.keywords) {
+                self.reserved(&word, message, start);
+                TokenKind::Reserved(self.interner.intern(&word))
+            } else {
+                TokenKind::LowerIdent(self.interner.intern(&word))
+            };
         self.push(kind, start, self.pos);
+    }
+
+    /// Whether the rest of the current line, from the cursor, holds only spaces or a comment.
+    fn rest_of_line_blank(&self) -> bool {
+        let rest = self.text.get(self.pos..).unwrap_or("");
+        let line = rest
+            .split('\n')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches([' ', '\t', '\r']);
+        line.is_empty() || line.starts_with("--")
     }
 
     fn upper_word(&mut self) {

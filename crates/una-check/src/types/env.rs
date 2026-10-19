@@ -228,6 +228,8 @@ pub(crate) struct FnDef<'a> {
     pub(crate) infer_uses: bool,
     /// Whether its `fails` is inferred: a private function without `fails` (ADR 0007).
     pub(crate) infer_fails: bool,
+    /// Whether the header says `diverges`, edition 0.4 (`spec/26 §5`): never inferred.
+    pub(crate) diverges: bool,
     /// The parameters of function type whose effects it performs, by `uses of p`, written or
     /// inferred (ADR 0062).
     pub(crate) uses_of: Vec<usize>,
@@ -787,6 +789,7 @@ impl<'a> Env<'a> {
             constraints: Vec::new(),
             constraints_written: Vec::new(),
             infer_fails: false,
+            diverges: false,
             uses_of: Vec::new(),
             fails_of: None,
             requires: false,
@@ -1460,6 +1463,10 @@ impl<'a> Env<'a> {
                     def.uses = uses;
                     def.uses_of = uses_of;
                     def.fails_of = fails_of;
+                    def.diverges = function
+                        .clauses
+                        .iter()
+                        .any(|clause| matches!(clause.kind, ClauseKind::Diverges));
                 }
             }
             FnAst::Predicate(predicate) => {

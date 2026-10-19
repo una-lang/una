@@ -568,6 +568,13 @@ impl Collector<'_> {
                 self.expr(&stmt.measure);
                 self.block(&stmt.block);
             }
+            Stmt::Ever(stmt) => {
+                self.block(&stmt.block);
+                if let Some(on_stop) = &stmt.on_stop {
+                    self.block(&on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&on_stop.block),
         }
     }
 

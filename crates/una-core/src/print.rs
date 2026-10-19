@@ -205,6 +205,7 @@ fn print_source(source: &LoopSource) -> String {
             print_atom(high)
         ),
         LoopSource::Until { measure, .. } => format!("until decreases {}", measure.text),
+        LoopSource::Ever => "ever".to_owned(),
     }
 }
 
@@ -555,6 +556,7 @@ impl Printer {
                 state,
                 init,
                 body,
+                on_stop,
                 ..
             } => {
                 let source_ref = source.as_ref();
@@ -582,6 +584,15 @@ impl Printer {
                     self.line(indent + 1, "do");
                 }
                 self.expr(indent + 1, body);
+                if let Some(on_stop) = on_stop {
+                    let names: Vec<&str> = on_stop
+                        .state
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    self.line(indent, &format!("on stop with ({}) do", names.join(", ")));
+                    self.expr(indent + 1, &on_stop.body);
+                }
             }
             Expr::Together { tasks, .. } => {
                 self.line(indent, "together");

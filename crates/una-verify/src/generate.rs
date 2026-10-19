@@ -1445,8 +1445,19 @@ impl<'p, 'i> Walker<'p, 'i> {
                     state,
                     init,
                     body,
+                    on_stop,
                     span,
                 } => {
+                    // `on stop` runs with the state fresh at its declared types (ADR 0116 V3):
+                    // its leaves give no fact, as the loop's value gives none.
+                    if let Some(on_stop) = on_stop {
+                        let mut stop_ctx = ctx.clone();
+                        for (name, ty) in &on_stop.state {
+                            self.bind(&mut stop_ctx, name, ty);
+                        }
+                        let mut stop_leaves = Vec::new();
+                        self.walk(&on_stop.body, &stop_ctx, &mut stop_leaves);
+                    }
                     let mut body_ctx = ctx.clone();
                     self.bind(&mut body_ctx, &var.0, &var.1);
                     if let LoopSource::Range {
@@ -3604,7 +3615,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// number of integers of its range, zero when it is empty.
     fn task_count(&mut self, source: &LoopSource, ctx: &Ctx) -> Option<F> {
         match source {
-            LoopSource::Until { .. } => None,
+            LoopSource::Until { .. } | LoopSource::Ever => None,
             LoopSource::List(list) => {
                 let list = self.atom(list, ctx);
                 self.len(&list)

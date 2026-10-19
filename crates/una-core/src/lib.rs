@@ -26,9 +26,9 @@ pub use descriptor::Descriptor;
 pub use ir::{
     Arm, Atom, Base, BinOp, Bound, CapOp, Clause, ConditionEdit, Constraint, Ctor, DataVariant,
     DecimalOp, Decl, Example, ExitTag, Expectation, Expr, FixedOp, FloatOp, FloatResult, Fun,
-    HOST_MODULE, HandlerOp, IntType, Lock, LoopSource, MapOp, Module, Name, PRELUDE_ENGINE_KINDS,
-    PRELUDE_MODULE, Path, PreludeField, PreludeVariant, Prim, Program, Refinement, Rhs, Signature,
-    Source, Term, Type, Use, prelude_variants,
+    HOST_MODULE, HandlerOp, IntType, Lock, LoopSource, MapOp, Module, Name, OnStop,
+    PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Path, PreludeField, PreludeVariant, Prim, Program,
+    Refinement, Rhs, Signature, Source, Term, Type, Use, prelude_variants,
 };
 pub use label::{Accepts, Label, Level, Names, counters as label_counters};
 pub use names::{binders, rhs_vars, vars};

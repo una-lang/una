@@ -294,6 +294,13 @@ impl Normalizer<'_> {
                 self.expr(&mut stmt.measure);
                 self.block(&mut stmt.block);
             }
+            Stmt::Ever(stmt) => {
+                self.block(&mut stmt.block);
+                if let Some(on_stop) = &mut stmt.on_stop {
+                    self.block(&mut on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&mut on_stop.block),
         }
     }
 

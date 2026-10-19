@@ -28,6 +28,8 @@ pub(crate) struct Contract {
     ensures: Vec<String>,
     uses: Vec<Uses>,
     fails: Option<Fails>,
+    /// Whether the header says `diverges` (ADR 0116 rule 21).
+    diverges: bool,
     derived_from: Vec<Requirement>,
     /// The lines of the human output.
     #[serde(skip)]
@@ -257,9 +259,14 @@ pub(crate) fn contract(
             ClauseKind::Uses(_)
             | ClauseKind::Fails(_)
             | ClauseKind::UsesOf(_)
-            | ClauseKind::FailsOf(_) => {}
+            | ClauseKind::FailsOf(_)
+            | ClauseKind::Diverges => {}
         }
     }
+    let diverges = function
+        .clauses
+        .iter()
+        .any(|c| matches!(c.kind, ClauseKind::Diverges));
     let uses_inferred = header.is_some_and(|h| h.uses_inferred);
     let uses: Vec<Uses> = header
         .map(|h| {
@@ -316,6 +323,7 @@ pub(crate) fn contract(
     } else if let Some(param) = header.and_then(|h| h.fails_of.clone()) {
         lines.push(format!("  fails of {param} -- inferred"));
     }
+    clause_lines(&|k| matches!(k, ClauseKind::Diverges), &mut lines);
     clause_lines(&|k| matches!(k, ClauseKind::DerivedFrom(_)), &mut lines);
     // ADR 0067: the result summary, after the header.
     let result_labels: Vec<ResultLabel> = header
@@ -379,6 +387,7 @@ pub(crate) fn contract(
         ensures,
         uses,
         fails,
+        diverges,
         derived_from,
         lines,
     }

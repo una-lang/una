@@ -162,6 +162,7 @@ impl<'e> Facts<'e> {
                 state,
                 init,
                 body,
+                on_stop,
                 ..
             } => {
                 // A state's initial value is consumed when the state is: `state` aliases it.
@@ -172,6 +173,13 @@ impl<'e> Facts<'e> {
                     self.expr(cond, owned);
                 }
                 self.expr(body, owned);
+                // `on stop` binds the state afresh, from the same values.
+                if let Some(on_stop) = on_stop {
+                    for ((name, _), atom) in on_stop.state.iter().zip(init) {
+                        self.alias(name, Some(atom));
+                    }
+                    self.expr(&on_stop.body, owned);
+                }
             }
             Expr::Together { tasks, .. } => tasks.iter().for_each(|task| self.expr(task, owned)),
             Expr::TogetherFor { task, .. } => self.expr(task, owned),

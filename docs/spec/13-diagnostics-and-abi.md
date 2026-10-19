@@ -205,6 +205,8 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3024 | authority | Call into a boundary module from which a release is reachable |
 | U3025 | authority | `if error` clause on an expression that cannot fail |
 | U3026 | authority | `attempt` of a call that cannot fail |
+| U3027 | authority | Code that may run forever where it is not allowed to |
+| U3028 | authority | A function that says `diverges`, used as a value |
 | U3029 | authority | A failure that must be handled where it is not |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
@@ -449,7 +451,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `FixedOp` | `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `saturating_add`, `saturating_sub`, `saturating_mul`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shift_right`, `wrapping_shift_left` |
 | `FloatOp` | `add`, `sub`, `mul`, `div`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `abs`, `sqrt`, `fma`, `rem`, `floor`, `ceil`, `trunc`, `round_half_even`, `round_half_away`, `copy_sign`, `ieee_min`, `ieee_max`, `clamp`, `ieee_eq`, `ieee_ne`, `ieee_lt`, `ieee_le`, `ieee_gt`, `ieee_ge`, `is_nan`, `is_finite`, `is_infinite`, `is_sign_negative`, `is_zero`, `is_positive_zero`, `is_negative_zero`, `to_bits`, `to_int_exact`, `from_int`, `to_text` |
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
-| `LoopSource` | `list`, `range`, `until` |
+| `LoopSource` | `list`, `range`, `until`, `ever` |
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
 | `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float`, `decimal` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |

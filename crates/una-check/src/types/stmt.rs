@@ -5,9 +5,9 @@
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
-    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind,
-    ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal,
-    PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
+    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
+    ExprKind, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
+    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
 };
 
 use super::Report;
@@ -152,6 +152,22 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
                 }
+                Stmt::Ever(stmt) => {
+                    self.outside_rl(stmt.span, || "`for ever`".to_owned());
+                    self.ever_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::OnStop(on_stop) => {
+                    self.report.error(
+                        Code::U2034,
+                        on_stop.keyword,
+                        "`on stop` follows only a `for ever` loop, which is the only one a host stop can end; run the statements after the loop instead".to_owned(),
+                    );
+                    let ty = self.block(&on_stop.block, None, Role::Plain, false);
+                    self.discarded(value_span(&on_stop.block), &ty);
+                }
                 Stmt::Skip(span) => {
                     self.outside_rl(*span, || "`skip`".to_owned());
                     self.skip_stmt(*span);
@@ -165,6 +181,82 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         self.unreachable_after_exit(block);
         ty
+    }
+
+    /// Whether code here may run forever: in a function that says `diverges`, outside lambdas,
+    /// `together` tasks, `on stop` blocks and the bodies of `for ever` loops (ADR 0116 rules 8
+    /// to 10). Otherwise, the reason, for U3027.
+    pub(crate) fn divergence_refused(&self) -> Option<&'static str> {
+        let diverges = self
+            .current
+            .and_then(|id| self.env.functions.get(id))
+            .is_some_and(|def| def.diverges);
+        if self.lambda_depth > 0 {
+            Some(
+                "a lambda may not run forever: it is an ordinary value that can be called later from code that does not say `diverges`",
+            )
+        } else if self.task_depth > 0 {
+            Some(
+                "a `together` task may not run forever, since the tasks of a block run one after another in the interpreter; start it with `start` instead",
+            )
+        } else if self.in_on_stop {
+            Some("an `on stop` block runs once its loop has ended, and must end itself")
+        } else if self.in_ever {
+            Some(
+                "each iteration of a `for ever` loop must end, so its body runs no `for ever` and calls no function that says `diverges`",
+            )
+        } else if !diverges {
+            Some(
+                "its function does not say `diverges`; add `diverges` to the header of a function that may run forever",
+            )
+        } else {
+            None
+        }
+    }
+
+    /// `for ever` with its body and `on stop` (`spec/26 §5`, ADR 0116 rules 8 to 10): legal only
+    /// where code may run forever (U3027); the body runs under the enclosing program counter
+    /// (IF4); `on stop` runs once the loop has ended, must not fail (U3029), and may not end
+    /// the loop with `stop` or `skip` (U2034).
+    fn ever_stmt(&mut self, stmt: &EverStmt) {
+        if let Some(reason) = self.divergence_refused() {
+            self.report.error(
+                Code::U3027,
+                stmt.span,
+                format!("`for ever` may run forever here: {reason}"),
+            );
+        }
+        let before = self.taken_state();
+        let before_len = self.locals.len();
+        let mark = self.locals.len();
+        self.loops.push(LoopFrame {
+            pc: self.ctx.pc.clone(),
+            depth: (self.task_depth, self.lambda_depth),
+            skipped: None,
+            on_stop: false,
+        });
+        let in_ever = std::mem::replace(&mut self.in_ever, true);
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.in_ever = in_ever;
+        self.loops.pop();
+        self.locals.truncate(mark);
+        self.discarded(value_span(&stmt.block), &ty);
+        self.taken_in_loop(&before, before_len);
+        if let Some(on_stop) = &stmt.on_stop {
+            self.loops.push(LoopFrame {
+                pc: self.ctx.pc.clone(),
+                depth: (self.task_depth, self.lambda_depth),
+                skipped: None,
+                on_stop: true,
+            });
+            let in_on_stop = std::mem::replace(&mut self.in_on_stop, true);
+            let ty = self.block(&on_stop.block, None, Role::Plain, false);
+            self.in_on_stop = in_on_stop;
+            self.loops.pop();
+            self.locals.truncate(mark);
+            self.discarded(value_span(&on_stop.block), &ty);
+        }
+        self.join_skipped(&before);
     }
 
     /// U2040: statements after an unconditional `stop` or `skip` in the same block never run
@@ -388,6 +480,7 @@ impl<'a> Checker<'_, 'a, '_> {
             pc: self.ctx.pc.clone(),
             depth: (self.task_depth, self.lambda_depth),
             skipped: None,
+            on_stop: false,
         });
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.loops.pop();
@@ -428,10 +521,15 @@ impl<'a> Checker<'_, 'a, '_> {
     /// U2034 for `word` at `span` when no loop body encloses it at its own task and lambda
     /// depth (`spec/26 §3`, ADR 0116 rule 6); whether it has a loop.
     fn exit_in_loop(&mut self, word: &str, span: Span) -> bool {
-        if self.innermost_loop().is_some() {
+        let frame = self.innermost_loop().map(|frame| frame.on_stop);
+        if frame == Some(false) {
             return true;
         }
-        let message = if self.loops.is_empty() {
+        let message = if frame == Some(true) {
+            format!(
+                "`{word}` cannot end the loop from its `on stop` block, which runs once the loop has ended"
+            )
+        } else if self.loops.is_empty() {
             format!("`{word}` is outside a loop body; it belongs to the body of a `for` loop")
         } else {
             format!(
@@ -540,6 +638,7 @@ impl<'a> Checker<'_, 'a, '_> {
             pc: self.ctx.pc.clone(),
             depth: (self.task_depth, self.lambda_depth),
             skipped: None,
+            on_stop: false,
         });
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.loops.pop();
@@ -1586,6 +1685,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::Stop(stmt) => stmt.span,
         Stmt::Skip(span) => *span,
         Stmt::Until(stmt) => stmt.span,
+        Stmt::Ever(stmt) => stmt.span,
+        Stmt::OnStop(on_stop) => on_stop.span,
     }
 }
 

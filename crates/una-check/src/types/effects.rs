@@ -99,6 +99,13 @@ impl Scan<'_, '_> {
                 self.expr(&stmt.condition);
                 self.block(&stmt.block);
             }
+            Stmt::Ever(stmt) => {
+                self.block(&stmt.block);
+                if let Some(on_stop) = &stmt.on_stop {
+                    self.block(&on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&on_stop.block),
         }
     }
 

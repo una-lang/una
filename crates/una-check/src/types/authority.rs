@@ -958,6 +958,13 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `if error pass` (`spec/06 §3`): the failure passes on unchanged, so its kind must be the
     /// body's (U3008). In pass 1, it is a failure of a body whose `fails` is inferred.
     pub(crate) fn pass_clause(&mut self, span: Span, expr: &Expr) {
+        if self.in_on_stop && self.authority() {
+            self.report.error(
+                Code::U3029,
+                span,
+                "`if error pass` passes the failure on, and `on stop` must not fail; handle it with `if error use`".to_owned(),
+            );
+        }
         let mut inner = expr;
         while let ExprKind::Paren(next) = &inner.kind {
             inner = next;
@@ -1098,6 +1105,14 @@ impl<'a> Checker<'_, 'a, '_> {
     /// U3009 (`spec/06 §2`): a variant raised outside the error kind of the body, or in a body
     /// that cannot fail. `kind` is the variant's kind, when it was found.
     pub(crate) fn fail_site(&mut self, variant: &Ident, kind: Option<usize>) {
+        if self.in_on_stop && self.authority() {
+            self.report.error(
+                Code::U3029,
+                variant.span,
+                "`on stop` must not fail, since it runs once its loop has ended".to_owned(),
+            );
+            return;
+        }
         if let Some(kind) = kind {
             self.raised_fact(
                 Raised::Kind(Ty::Kind(kind, Vec::new().into())),
@@ -1222,6 +1237,17 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return;
         }
+        // ADR 0116 rule 10: an `on stop` block handles every failure where it is.
+        if fails.is_some() && !handled && self.in_on_stop {
+            self.report.error(
+                Code::U3029,
+                span,
+                format!(
+                    "{what} can fail, and `on stop` must not fail, since it runs once its loop has ended; handle the failure with `if error use`, or wrap the call in `attempt`"
+                ),
+            );
+            return;
+        }
         if let Some(kind) = fails
             && !handled
         {
@@ -1261,12 +1287,15 @@ pub(crate) fn duplicate_refs(report: &mut Report<'_>, names: &[(&str, Span)]) {
 
 /// Whether a new `uses` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_uses(kind: &ClauseKind) -> bool {
-    matches!(kind, ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_))
+    matches!(
+        kind,
+        ClauseKind::Fails(_) | ClauseKind::Diverges | ClauseKind::DerivedFrom(_)
+    )
 }
 
 /// Whether a new `fails` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_fails(kind: &ClauseKind) -> bool {
-    matches!(kind, ClauseKind::DerivedFrom(_))
+    matches!(kind, ClauseKind::Diverges | ClauseKind::DerivedFrom(_))
 }
 
 /// Infers the `uses` and `fails` of private functions that omit them, as least fixed points
