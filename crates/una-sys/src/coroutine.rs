@@ -7,7 +7,10 @@
 //!   threads: a handle borrows its scope, and the scope aborts the process rather than return
 //!   while one of its coroutines is unfinished, a leaked one included. So no suspended coroutine
 //!   outlives its thread, nor anything its frames borrow, thread-locals included.
-//! - A body is `'static`: it borrows nothing of its caller.
+//! - A body may borrow what outlives the call of [`scope`] (`'env`), as the threads of
+//!   `std::thread::scope` may (ADR 0117 slice S4, `docs/plan/0117-s4-design.md` §6.2), and
+//!   nothing made inside it: the scope's own guarantee keeps every such borrow alive while a
+//!   frame of a coroutine can use it.
 //! - A panic that escapes a body aborts the process: nothing unwinds across a switch.
 //! - Dropping a suspended coroutine aborts the process, running no code on its stack: freeing it
 //!   could leave dangling what still points into it, and running its destructors would mean
@@ -16,9 +19,22 @@
 //!   task writes the one environment of ADR 0114 rule 6.4; a per-task one must switch FPCR.
 //!
 //! ```compile_fail
-//! let local = vec![1];
 //! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
-//! una_sys::coroutine::scope(|s| drop(s.spawn(stack, || drop(local.len())))); // borrows `local`
+//! una_sys::coroutine::scope(|s| {
+//!     let local = vec![1];
+//!     drop(s.spawn(stack, || drop(local.len()))); // borrows a local of the scope's closure
+//! });
+//! ```
+//!
+//! ```
+//! let outside = vec![1, 2];
+//! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
+//! let mut seen = 0;
+//! una_sys::coroutine::scope(|s| {
+//!     let mut coroutine = s.spawn(stack, || seen = outside.len()); // borrows what outlives it
+//!     coroutine.resume();
+//! });
+//! assert_eq!(seen, 2);
 //! ```
 //!
 //! ```compile_fail
@@ -153,18 +169,24 @@ impl Drop for Stack {
     }
 }
 
-/// What a coroutine and its resumer share: the stack pointer each side saved at its last
-/// switch, and the body until it starts. Only one side runs at a time.
-struct Shared {
+/// The stack pointer each side of a coroutine saved at its last switch: the resumer's, and
+/// the coroutine's. Only one side runs at a time.
+struct Switch {
     resumer: Cell<usize>,
     coroutine: Cell<usize>,
-    body: Cell<Option<Box<dyn FnOnce()>>>,
+}
+
+/// What a coroutine and its resumer share: the switch, and the body until it starts, which may
+/// borrow what outlives the scope that owns the coroutine (`'s` is shorter than that).
+struct Shared<'s> {
+    switch: Switch,
+    body: Cell<Option<Box<dyn FnOnce() + 's>>>,
     finished: Cell<bool>,
 }
 
 thread_local! {
-    /// The innermost coroutine whose stack the thread is running, or null.
-    static CURRENT: Cell<*const Shared> = const { Cell::new(std::ptr::null()) };
+    /// The switch of the innermost coroutine whose stack the thread is running, or null.
+    static CURRENT: Cell<*const Switch> = const { Cell::new(std::ptr::null()) };
 }
 
 /// Where a coroutine stands.
@@ -190,20 +212,22 @@ pub enum Resumed {
 /// while suspended (`mem::forget`, an `Rc` cycle) keeps its count up, so [`scope`] aborts the
 /// process instead of returning: no suspended coroutine outlives the frame that runs its
 /// scope, so none outlives its thread or the thread-locals its frames may borrow.
-pub struct Scope {
+pub struct Scope<'env> {
     /// The coroutines made in this scope that have not finished or been dropped unstarted.
     live: Cell<usize>,
-    /// Neither `Send` nor `Sync`.
-    _marker: PhantomData<*mut ()>,
+    /// Neither `Send` nor `Sync`, and invariant in `'env`, as `std::thread::Scope` is, so a body
+    /// cannot borrow a local of the closure that runs the scope.
+    _marker: PhantomData<(*mut (), &'env mut &'env ())>,
 }
 
 /// Runs `f` with a [`Scope`] in which it makes coroutines, and returns its result once every
 /// coroutine made in it has finished or was dropped before it started. Otherwise, at the end of
-/// `f` or while a panic unwinds out of it, aborts the process.
-pub fn scope<R>(f: impl FnOnce(&Scope) -> R) -> R {
+/// `f` or while a panic unwinds out of it, aborts the process. A body may borrow what outlives
+/// this call (`'env`): it runs only while the scope does.
+pub fn scope<'env, R>(f: impl for<'s> FnOnce(&'s Scope<'env>) -> R) -> R {
     /// Checks the count when the scope ends, a panic's unwinding included.
-    struct End<'s>(&'s Scope);
-    impl Drop for End<'_> {
+    struct End<'s, 'env>(&'s Scope<'env>);
+    impl Drop for End<'_, '_> {
         fn drop(&mut self) {
             if self.0.live.get() != 0 {
                 std::process::abort();
@@ -220,14 +244,16 @@ pub fn scope<R>(f: impl FnOnce(&Scope) -> R) -> R {
     result
 }
 
-impl Scope {
-    /// A coroutine of this scope that will run `body` on `stack` when first resumed. A body is
-    /// `'static`, so it borrows nothing of its caller.
-    pub fn spawn(&self, stack: Stack, body: impl FnOnce() + 'static) -> Coroutine<'_> {
-        let body: Box<dyn FnOnce()> = Box::new(body);
+impl<'env> Scope<'env> {
+    /// A coroutine of this scope that will run `body` on `stack` when first resumed. A body may
+    /// borrow what outlives the scope (`'env`), never what the scope's own closure holds.
+    pub fn spawn<'s>(&'s self, stack: Stack, body: impl FnOnce() + 'env) -> Coroutine<'s> {
+        let body: Box<dyn FnOnce() + 's> = Box::new(body);
         let shared = Box::new(Shared {
-            resumer: Cell::new(0),
-            coroutine: Cell::new(0),
+            switch: Switch {
+                resumer: Cell::new(0),
+                coroutine: Cell::new(0),
+            },
             body: Cell::new(Some(body)),
             finished: Cell::new(false),
         });
@@ -237,7 +263,7 @@ impl Scope {
             shared,
             stack: Some(stack),
             run: Run::NotStarted,
-            scope: self,
+            live: &self.live,
             _marker: PhantomData,
         };
         coroutine.prepare();
@@ -246,17 +272,17 @@ impl Scope {
 }
 
 /// A body that runs on its own stack, and that can suspend itself with [`suspend`] at any depth
-/// and be resumed later on the same thread. It borrows the [`Scope`] that made it.
+/// and be resumed later on the same thread. It borrows the count of the [`Scope`] that made it.
 pub struct Coroutine<'s> {
-    shared: NonNull<Shared>,
+    shared: NonNull<Shared<'s>>,
     stack: Option<Stack>,
     run: Run,
-    scope: &'s Scope,
+    live: &'s Cell<usize>,
     /// Neither `Send` nor `Sync`.
     _marker: PhantomData<*mut ()>,
 }
 
-impl Coroutine<'_> {
+impl<'s> Coroutine<'s> {
     /// Writes the first frame on the stack, as a switch away from it would have saved it: the
     /// shared record and the entry function in callee-saved registers, a zero frame pointer,
     /// and the trampoline as the return address (`arch::initial_frame`).
@@ -265,7 +291,7 @@ impl Coroutine<'_> {
             return;
         };
         let top = stack.top() & !15;
-        let entry = entry as extern "C" fn(*const Shared) as usize;
+        let entry = entry as extern "C" fn(*const Shared<'_>) as usize;
         let slots = arch::initial_frame(self.shared.as_ptr().addr(), entry);
         let sp = top - slots.len() * size_of::<usize>();
         // The frame is at most 160 bytes, and a stack has at least one page above its guard.
@@ -278,10 +304,10 @@ impl Coroutine<'_> {
                 frame.add(index).write(*value);
             }
         }
-        self.shared().coroutine.set(sp);
+        self.shared().switch.coroutine.set(sp);
     }
 
-    fn shared(&self) -> &Shared {
+    fn shared(&self) -> &Shared<'s> {
         // SAFETY: `shared` comes from `Box::leak` in `spawn` and is freed only in `drop`.
         unsafe { self.shared.as_ref() }
     }
@@ -294,11 +320,11 @@ impl Coroutine<'_> {
             Run::NotStarted | Run::Suspended => {}
         }
         self.run = Run::Running;
-        let shared = self.shared.as_ptr().cast_const();
-        let previous = CURRENT.with(|current| current.replace(shared));
+        let switch = &raw const self.shared().switch;
+        let previous = CURRENT.with(|current| current.replace(switch));
         let (save, load) = (
-            self.shared().resumer.as_ptr(),
-            self.shared().coroutine.get(),
+            self.shared().switch.resumer.as_ptr(),
+            self.shared().switch.coroutine.get(),
         );
         // SAFETY: `load` is the stack pointer the coroutine saved at its last switch, or the
         // frame `prepare` wrote; its stack is alive, owned by `self`. `save` points into the
@@ -308,7 +334,7 @@ impl Coroutine<'_> {
         CURRENT.with(|current| current.set(previous));
         if self.shared().finished.get() {
             self.run = Run::Finished;
-            self.scope.live.set(self.scope.live.get() - 1);
+            self.live.set(self.live.get() - 1);
             Resumed::Finished
         } else {
             self.run = Run::Suspended;
@@ -341,7 +367,7 @@ impl Drop for Coroutine<'_> {
         match self.run {
             // Decision D1: no code runs on a suspended stack, and it is not freed.
             Run::Suspended | Run::Running => std::process::abort(),
-            Run::NotStarted => self.scope.live.set(self.scope.live.get() - 1),
+            Run::NotStarted => self.live.set(self.live.get() - 1),
             Run::Finished => {}
         }
         // SAFETY: `shared` comes from `Box::leak` in `spawn`, and the coroutine is not running,
@@ -358,11 +384,12 @@ pub fn suspend() -> bool {
         return false;
     }
     // SAFETY: `CURRENT` is set by `resume` only while that coroutine's stack is the running one,
-    // and its shared record lives as long as the coroutine, which `resume` borrows.
-    let shared = unsafe { &*current };
+    // and its switch, in the shared record, lives as long as the coroutine, which `resume`
+    // borrows.
+    let switch = unsafe { &*current };
     // SAFETY: the resumer saved its stack pointer in `resumer` when it switched here, and waits
     // in `resume`; the next resume switches back to the pointer saved in `coroutine`.
-    unsafe { arch::switch(shared.coroutine.as_ptr(), shared.resumer.get()) };
+    unsafe { arch::switch(switch.coroutine.as_ptr(), switch.resumer.get()) };
     true
 }
 
@@ -373,7 +400,7 @@ pub fn inside() -> bool {
 
 /// The first function on a coroutine's stack, called by the trampoline with the shared record:
 /// runs the body, catching any panic to abort, then switches back for the last time.
-extern "C" fn entry(shared: *const Shared) {
+extern "C" fn entry(shared: *const Shared<'_>) {
     // SAFETY: the trampoline passes the record `prepare` wrote into the first frame, alive as
     // long as the coroutine, which `resume` borrows while this runs.
     let shared = unsafe { &*shared };
@@ -389,7 +416,7 @@ extern "C" fn entry(shared: *const Shared) {
     let mut ended = 0usize;
     // SAFETY: the resumer waits in `resume`, its stack pointer saved in `resumer`; nothing
     // ever switches back to `ended`.
-    unsafe { arch::switch(&raw mut ended, shared.resumer.get()) };
+    unsafe { arch::switch(&raw mut ended, shared.switch.resumer.get()) };
     std::process::abort();
 }
 

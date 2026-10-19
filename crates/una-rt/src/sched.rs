@@ -238,7 +238,7 @@ fn serve(worker: Arc<Worker>, shared: Arc<Shared>) {
 }
 
 /// The loop of [`serve`], whose coroutines `scope` owns.
-fn serve_in(scope: &Scope, worker: &Arc<Worker>, shared: &Arc<Shared>) {
+fn serve_in(scope: &Scope<'_>, worker: &Arc<Worker>, shared: &Arc<Shared>) {
     let mut entries: Vec<Option<Entry<'_>>> = Vec::new();
     let mut free: Vec<usize> = Vec::new();
     let mut generation: u64 = 0;
