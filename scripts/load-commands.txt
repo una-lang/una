@@ -29,7 +29,6 @@ macos command LC_CODE_SIGNATURE  # the ad hoc code signature that arm64 macOS re
 # program interpreter as `interpreter`. RPATH, RUNPATH, AUXILIARY, FILTER, AUDIT and DEPAUDIT
 # entries fail.
 linux needed libc.so.6  # glibc, the C library of the Rust standard library (docs/foreign-code-inventory.md section 4)
-linux needed libm.so.6  # glibc's math library: log2 from num-bigint's std feature until #1092 removes it; then `--as-needed` drops the entry
 linux needed libgcc_s.so.1  # the unwinder of panics and backtraces (`_Unwind_*`)
 linux needed ld-linux-x86-64.so.2  # the x86_64 dynamic loader, which provides __tls_get_addr for thread-local storage
 linux needed ld-linux-aarch64.so.1  # the aarch64 dynamic loader, for the same symbols
