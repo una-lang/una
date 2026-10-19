@@ -1,7 +1,8 @@
--- test: a time-out over `Http` is at least `internal` (ADR 0117 IF2): it can be recovered from with `attempt` or `if error use`, never failed on publicly (U4002), and an expression over `Http` that reads a `secret` binding makes `Http`'s `internal` failure too low (U4001 at the `within`, ADR 0116 IF8)
+-- test: a time-out over `Http` is at least `internal` (ADR 0117 IF2): it can be recovered from with `attempt` or `if error use`, never failed on publicly (U4002), and an expression over `Http` that reads a `secret` binding makes `Http`'s `internal` failure too low (U4001 at the `within`, ADR 0116 IF8), and the request, which accepts `internal` data, runs under the timing floor (U4003)
 -- spec: spec/27 §5
--- expect: error U4002 at src/fetch.una:16:5
+-- expect: error U4002 at src/fetch.una:17:5
 -- expect: error U4001 at src/fetch.una:31:17
+-- expect: error U4003 at src/fetch.una:31:25
 module fetch
 
 import std.time (second)

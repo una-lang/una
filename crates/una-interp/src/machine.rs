@@ -2143,6 +2143,11 @@ impl<'p, 'w> Machine<'p, 'w> {
             span,
             ..
         } = *request;
+        // A `within` whose deadline has passed cancels its expression before an operation
+        // starts, as native code polls before each one (`spec/27 §5`, `spec/19 §6` rule 4).
+        if let Some(id) = self.passed_within(self.within_shield) {
+            return Err(Stop::Cut(id));
+        }
         let instance = caps
             .get(cap)
             .cloned()

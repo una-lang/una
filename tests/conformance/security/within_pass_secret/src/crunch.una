@@ -1,6 +1,6 @@
 -- test: the failure of `e within d` carries `τ(e)` (ADR 0117 IF2): over a pure function of a `secret` value, `if error pass` is U4002, while `if error use` is accepted
 -- spec: spec/27 §5
--- expect: error U4002 at src/crunch.una:17:5
+-- expect: error U4002 at src/crunch.una:16:5
 module crunch
 
 import std.time (millisecond)

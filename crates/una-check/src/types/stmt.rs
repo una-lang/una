@@ -292,8 +292,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// the same way (ADR 0117 rule 5); `what` names the construct.
     pub(crate) fn deadline(&mut self, within: &Expr, what: &str) -> Label {
         let found = self.expr(within, None);
-        let found = self.resolve(&found);
+        // The label first: `resolve` keeps the type, not its labels.
         let label = self.deep(&found);
+        let found = self.resolve(&found);
         if matches!(found.unlabeled(), Ty::Error(_)) {
             return label;
         }

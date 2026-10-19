@@ -2334,7 +2334,8 @@ impl<'a> Parser<'a> {
     /// Whether the cursor is at the word `within` of a deadline (`spec/26 §7`, `spec/27 §5`),
     /// which the lexer gives as a name only where a deadline may stand, in edition 0.4.
     fn at_within(&self) -> bool {
-        matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within")
+        self.v0_4
+            && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within")
     }
 
     /// Whether the cursor is at `on stop` alone on its line.

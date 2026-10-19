@@ -1,5 +1,6 @@
--- test: whether `e within d` times out depends on the timing of the code it reaches, a handler installed with a `secret` argument included (ADR 0117 IF2, ADR 0116 IF5 item 3), so the value of `if error use false` carries that label and cannot flow into a `public` binding (U4001)
+-- test: whether `e within d` times out depends on the timing of the code it reaches, a handler installed with a `secret` argument included (ADR 0117 IF2, ADR 0116 IF5 item 3), so the value of `if error use false` carries that label and cannot flow into a `public` result (U4001), and the operation inside, which accepts `public` data, runs under the timing floor (U4003)
 -- spec: spec/27 §5
+-- expect: error U4003 at src/guard.una:17:12
 -- expect: error U4001 at src/guard.una:19:3
 module guard
 
@@ -7,7 +8,6 @@ import std.time (millisecond)
 
 capability Vault
   op check(code: Int) -> Bool
-    accepts secret
 
 handler sealed(seed: secret Int) for Vault
   op check(code) = code == 0

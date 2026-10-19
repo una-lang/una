@@ -1339,7 +1339,7 @@ fn a_list_built_by_append_in_a_loop_is_never_copied_at_any_size() {
         );
         edition_0_2(&dir);
         let expected = format!("{n} {}\n", n + 1);
-        let interpreted = una(&dir, &["run"]);
+        let interpreted = una(&dir, &["run", "."]);
         assert_eq!(interpreted.status.code(), Some(0), "{n}: {interpreted:?}");
         assert_eq!(
             String::from_utf8_lossy(&interpreted.stdout),
@@ -2395,7 +2395,7 @@ fn a_call_that_would_retain_every_owned_argument_takes_the_borrowed_entry() {
             &[("src/rc.una", &program)],
         );
         edition_0_2(&dir);
-        let interpreted = una(&dir, &["run"]);
+        let interpreted = una(&dir, &["run", "."]);
         assert_eq!(
             interpreted.status.code(),
             Some(0),
@@ -3519,20 +3519,25 @@ pub main() -> Unit
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A package of edition 0.4 whose `run` entry is `module`, built.
+/// A package of edition 0.4, in `ita.una`, whose `run` entry is `module`, built.
 fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
-    let dir = package(
-        name,
-        &format!("\n[run]\nentry = \"{module}\"\ngrants = [\"console\"]\n"),
-        &[(&format!("src/{module}.una"), program)],
-    );
-    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("una.toml"),
-        manifest.replace("edition = \"0.1\"", "edition = \"0.4\""),
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry {module}\n  grants\n    console\n"
+        ),
     )
     .unwrap();
-    let built = una(&dir, &["build"]);
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join(format!("src/{module}.una")), program).unwrap();
+    let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     dir
 }
@@ -3546,7 +3551,7 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
     let program = "module busy\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("busy", "busy", program);
     let started = std::time::Instant::now();
-    let interpreted = una(&dir, &["--json", "run"]);
+    let interpreted = una(&dir, &["--json", "run", "."]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
     assert_eq!(
@@ -3588,7 +3593,7 @@ fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
     let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("tasks", "tasks", program);
     let started = std::time::Instant::now();
-    let interpreted = una(&dir, &["run"]);
+    let interpreted = una(&dir, &["run", "."]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "total -1\n");
     let exe = dir.join("target/una/tasks");
@@ -3619,7 +3624,7 @@ fn a_deadline_met_keeps_the_value_under_virtual_time_in_both_engines() {
     // output and trace.
     let program = "module met\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(100000) within 1 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("met", "met", program);
-    let interpreted = una(&dir, &["--json", "run", "--virtual-time"]);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
     assert_eq!(

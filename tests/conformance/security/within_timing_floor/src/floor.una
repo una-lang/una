@@ -1,7 +1,7 @@
 -- test: code inside `e within d` runs under the timing floor `pc ⊔ τ(e)` (ADR 0117 IF2): with a `secret` deadline, a `public` print inside it is U4003, and a call with effects that accept `public` data is U4002; on `public` timing both are accepted
 -- spec: spec/27 §5
--- expect: error U4003 at src/floor.una:17:3
--- expect: error U4002 at src/floor.una:19:3
+-- expect: error U4003 at src/floor.una:18:3
+-- expect: error U4002 at src/floor.una:20:3
 module floor
 
 import std.time (millisecond)
@@ -12,8 +12,8 @@ announce() -> Unit
   @console.print("start")
 
 pub floor(limit: secret Int) -> Unit
-  uses @console: Console[print]
   requires limit >= 1
+  uses @console: Console[print]
 =
   @console.print("a") within limit * millisecond
     if error use unit

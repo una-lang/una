@@ -17,4 +17,4 @@ pub measure Minute = 60 * Second
 pub kind Timed[E] = TimedOut | Failed(error: E)
 
 --- The failure of `e within d` when `e` cannot fail: the deadline passed first.
-pub kind Deadline = Expired
+pub kind Deadline = | Expired
