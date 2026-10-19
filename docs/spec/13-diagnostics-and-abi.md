@@ -176,6 +176,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2031 | types | A float literal rounds to an infinity, or is not zero and rounds to zero |
 | U2032 | types | A float literal other than zero, or a float range, as a pattern |
 | U2033 | types | A comparison of an `F64` with a float literal zero |
+| U2037 | types | A decimal scale out of place |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |
@@ -430,11 +431,12 @@ Keys are printed in this order, and two runs over the same sources print the sam
 
 | Enum | Kinds |
 | --- | --- |
-| `Atom` | `var`, `int`, `f64`, `bool`, `text`, `unit` |
-| `Base` | `int`, `fixed`, `f64`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
+| `Atom` | `var`, `int`, `f64`, `decimal`, `bool`, `text`, `unit` |
+| `Base` | `int`, `fixed`, `f64`, `decimal`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
 | `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
 | `Bound` | `rhs`, `expr` |
 | `Constraint` | `none`, `eq`, `ord`, `integer` |
+| `DecimalOp` | `add`, `sub`, `mul`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `widen`, `rescale`, `rescale_exact`, `divide`, `remainder`, `to_int`, `abs`, `coefficient`, `from_int`, `from_f64`, `to_f64`, `to_text`, `parse`, `from_json`, `to_json` |
 | `Decl` | `alias`, `data`, `pred`, `cap`, `handler`, `fun`, `policy` |
 | `Expectation` | `holds`, `fails`, `performed` |
 | `Expr` | `atom`, `let`, `let_tuple`, `loop`, `together`, `together_for`, `if`, `case`, `fail`, `handle`, `attempt`, `with`, `unreachable` |
@@ -443,7 +445,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
 | `LoopSource` | `list`, `range` |
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
-| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float` |
+| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float`, `decimal` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `Source` | `rebind`, `handler` |
 | `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call` |
@@ -464,5 +466,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 `file_state` is such a key: a lower label would label `Files` failures lower. Its argument of soundness is that the re-check does not trust it. Every write the package can perform, wherever it appears, is checked against it, or no `Files`-using declaration of the document is accepted. The re-check MUST reject a write whose path or program counter is above it, and MUST NOT re-check a document whose `file_state` is above `internal`. A write it does not check counts as unchecked: one in a declaration it rejects or does not re-check, in a handler, or in a node it cannot read. So a value too low gives a rejection or a declaration not re-checked, never an accepted one. A value too high only labels failures higher, which can reject, never accept, what the true label would reject.
 
 (ADR 0114.) An `f64` atom, a float literal, has one key after `kind`, `bits`: its bits as 16 lowercase hex digits. An operation of `F64` is a `float` primitive whose `value` is its `FloatOp`, so no existing kind changes meaning.
+
+(ADR 0120.) A `decimal` base has one key after `kind`, `scale`. A `decimal` atom, a decimal literal, has two, `coefficient`, in decimal with an optional `-`, and `scale`: its value is the coefficient times ten to the minus scale. An operation of `Decimal` is a `decimal` primitive whose `value` is its `DecimalOp`, with a key `scales` after `kind`: the static scales its meaning depends on, in the order `spec/29 §16` gives them.
 
 **Versioning** (ADR 0076). The `kind` of a node is an **open** field: Core gains forms as the language grows, and adding one keeps `una.core/1`. A consumer MUST report a declaration that holds a `kind` it does not know as not understood, never as accepted or checked. A label's `level` is closed. Any other change follows ADR 0076.

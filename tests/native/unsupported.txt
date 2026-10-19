@@ -3,3 +3,4 @@
 tests/conformance/runtime/float_run
 tests/conformance/runtime/float_parse_run
 tests/conformance/runtime/float_min_max_run
+tests/conformance/runtime/decimal_float_run

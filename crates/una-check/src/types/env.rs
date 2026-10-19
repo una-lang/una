@@ -1138,6 +1138,7 @@ impl<'a> Env<'a> {
             self.function_signature(id, report);
         }
         self.no_function_to_f64(report);
+        self.no_function_to_decimal(report);
         // A policy fails and uses capabilities as its `via` function does (`spec/10 §7`).
         for id in 0..self.functions.len() {
             let Some((module, FnAst::Policy(policy))) =
@@ -1260,6 +1261,62 @@ impl<'a> Env<'a> {
                     function.name.span,
                     "`to_f64` on an integer is a built-in conversion from edition 0.3, so a function cannot take its name for an integer or a type parameter".to_owned(),
                 );
+            }
+        }
+    }
+
+    /// ADR 0120 rule 4: in edition 0.4, `to_decimal` on an integer and on an `F64` is built
+    /// in, ahead of a function of that name, so a package function `to_decimal` whose first
+    /// parameter has an integer type, a refinement or a measured one, `F64`, or a type
+    /// parameter, is U1002 at its name: no program changes meaning silently.
+    fn no_function_to_decimal(&self, report: &mut Report<'_>) {
+        if self.edition < Edition::V0_4 {
+            return;
+        }
+        let built_in = |def: &FnDef<'_>| {
+            def.name == "to_decimal"
+                && def.params.first().is_some_and(|param| {
+                    matches!(
+                        param.ty.base.unlabeled(),
+                        Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::Param(_) | Ty::Measured(..)
+                    )
+                })
+        };
+        for def in &self.functions {
+            let FnAst::Function(function) = def.ast else {
+                continue;
+            };
+            if self.reports(def.module) && built_in(def) {
+                report.error(
+                    Code::U1002,
+                    function.name.span,
+                    "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so a function cannot take its name for an integer, an `F64` or a type parameter".to_owned(),
+                );
+            }
+        }
+        // An import of such a function, from a dependency or another module, is U1002 at the
+        // name it imports: the built-in would resolve ahead of it there too.
+        for module in self.modules.iter().filter(|module| module.reports) {
+            for import in &module.tree.imports {
+                for ident in &import.names {
+                    if module.interner.resolve(ident.name) != "to_decimal" {
+                        continue;
+                    }
+                    let Some(Entity::Function(id)) = module.imports.get("to_decimal") else {
+                        continue;
+                    };
+                    let foreign = self
+                        .functions
+                        .get(*id)
+                        .is_some_and(|def| built_in(def) && !self.reports(def.module));
+                    if foreign {
+                        report.error(
+                            Code::U1002,
+                            ident.span,
+                            "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so an imported function of that name for an integer, an `F64` or a type parameter would never be called".to_owned(),
+                        );
+                    }
+                }
             }
         }
     }
@@ -1729,6 +1786,25 @@ impl<'a> Env<'a> {
                 let lowered = lowered.into_iter().map(|arg| self.nested(arg)).collect();
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
+            TypeCore::Decimal {
+                scale, scale_span, ..
+            } => match scale.parse::<u8>() {
+                Ok(scale) if scale <= una_core::decimal::MAX_SCALE => {
+                    Declared::plain(Ty::Decimal(scale))
+                }
+                _ => {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2037,
+                            *scale_span,
+                            format!(
+                                "the scale of `Decimal[{scale}]` is not an integer from 0 to 38, the scales of a decimal"
+                            ),
+                        );
+                    }
+                    Declared::error()
+                }
+            },
             TypeCore::List(element) => {
                 let lowered = self.lower_type(module, element, type_params, report);
                 self.type_argument(module, element.span, &lowered.base, report);
@@ -2060,6 +2136,18 @@ impl<'a> Env<'a> {
                 return arity(0, args.len());
             }
             return Declared::plain(Ty::Param(index));
+        }
+        // Edition 0.4: `Decimal` is the decimal type only with its scale, an integer literal,
+        // in brackets (ADR 0120 rule 2); the name alone is the `Json` variant.
+        if self.edition >= Edition::V0_4 && name == "Decimal" {
+            if reports {
+                report.error(
+                    Code::U2037,
+                    span,
+                    "the scale of `Decimal` is an integer literal from 0 to 38 in brackets, as in `Decimal[2]`".to_owned(),
+                );
+            }
+            return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
         let problem = match self.upper(module, name).first().copied() {

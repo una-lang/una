@@ -61,6 +61,7 @@ pub fn text(code: Code) -> &'static str {
         Code::U2031 => include_str!("../explain/U2031.md"),
         Code::U2032 => include_str!("../explain/U2032.md"),
         Code::U2033 => include_str!("../explain/U2033.md"),
+        Code::U2037 => include_str!("../explain/U2037.md"),
         Code::U3001 => include_str!("../explain/U3001.md"),
         Code::U3002 => include_str!("../explain/U3002.md"),
         Code::U3003 => include_str!("../explain/U3003.md"),

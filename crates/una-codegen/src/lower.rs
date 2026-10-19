@@ -111,6 +111,9 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Fixed(_) => Ok(Kind::Int),
             // `F64` waits for its native step (`spec/29`, ADR 0114 rule 9).
             Base::F64 => Err(unsupported("`F64` (spec/29)")),
+            // A decimal is its coefficient, an integer word; its scale is static (ADR 0120
+            // rule 20).
+            Base::Decimal(_) => Ok(Kind::Int),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
@@ -156,6 +159,7 @@ pub(crate) fn constant_descriptor(
         Base::Int => Descriptor::Int,
         Base::Fixed(int) => Descriptor::Fixed(*int),
         Base::Text => Descriptor::Text,
+        Base::Decimal(_) => Descriptor::Decimal(index(ty)),
         // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
         Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
             Descriptor::Sum(index(ty))
@@ -1934,6 +1938,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
             },
             Atom::Text(text) => (self.literal("una_rt_text_literal", text)?, Kind::Text),
             Atom::F64(_) => return Err(unsupported("`F64` (spec/29)")),
+            // A decimal literal is its coefficient's word (ADR 0120 rule 20).
+            Atom::Decimal { coefficient, .. } => match coefficient.parse::<i64>() {
+                Ok(small) if SMALL.contains(&small) => (
+                    self.builder.ins().iconst(types::I64, (small << 1) | 1),
+                    Kind::Int,
+                ),
+                _ => (self.literal("una_rt_int_literal", coefficient)?, Kind::Int),
+            },
         })
     }
 
@@ -2004,6 +2016,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Atom::Bool(_) => base(Base::Bool),
             Atom::Text(_) => base(Base::Text),
             Atom::F64(_) => base(Base::F64),
+            Atom::Decimal { scale, .. } => base(Base::Decimal(*scale)),
             Atom::Unit => base(Base::Unit),
         }
     }
@@ -2281,6 +2294,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.check(failure, failed, scope, catch);
                 return self.call("una_rt_parse_int", &[t]);
             }
+            // A failure of `parse_decimal` goes to `catch`, as `parse_int`'s (`spec/29 §16`).
+            "parse_decimal" => {
+                let (t, scale) = (arg(0)?, arg(1)?);
+                let failure = self.call("una_rt_parse_decimal_failure", &[t, scale])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_decimal", &[t, scale]);
+            }
+            "as_decimal" => "una_rt_as_decimal",
+            // Elaboration writes `json_decimal(x)` as an operation with the scale of `x`.
+            "json_decimal" => {
+                return Err(internal(
+                    "`json_decimal` called without the scale of its argument",
+                ));
+            }
             "split" => "una_rt_split",
             "join" => "una_rt_join",
             "ends_with" => "una_rt_ends_with",
@@ -2538,6 +2566,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
             // Lowered with their arguments' ownership, in `rhs`.
             Prim::Map(op) => Err(internal(format!("map `{}` out of place", op.as_str()))),
             Prim::Float(_) => Err(unsupported("`F64` (spec/29)")),
+            // The conversions with `F64` wait for its native step (`spec/29`).
+            Prim::Decimal(una_core::DecimalOp::FromF64(_) | una_core::DecimalOp::ToF64(_)) => {
+                Err(unsupported("`F64` (spec/29)"))
+            }
+            // Every other operation of `Decimal` is the runtime's, on coefficients, with the
+            // operation's static scales (`spec/29 §16`).
+            Prim::Decimal(op) => {
+                let (index, packed) = op.code();
+                let mut words = vec![
+                    self.builder.ins().iconst(types::I64, index),
+                    self.builder.ins().iconst(types::I64, packed),
+                ];
+                for i in 0..3 {
+                    words.push(match args.get(i) {
+                        Some((word, _)) => *word,
+                        None => self.builder.ins().iconst(types::I64, 1),
+                    });
+                }
+                self.call("una_rt_decimal", &words)
+            }
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {

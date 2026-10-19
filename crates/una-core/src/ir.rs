@@ -189,6 +189,9 @@ pub enum Base {
     Fixed(IntType),
     /// `F64`, IEEE 754 binary64, edition 0.3 (`spec/29`, ADR 0114).
     F64,
+    /// `Decimal[s]`, an exact decimal of scale s, edition 0.4 (`spec/29 §16`, ADR 0120): its
+    /// value is an integer coefficient c, worth c × 10^-s.
+    Decimal(u8),
     /// `Bool`.
     Bool,
     /// `Text`.
@@ -425,6 +428,14 @@ pub enum Atom {
     Int(String),
     /// A float literal, as the bits of its value (`spec/29`): never a NaN.
     F64(u64),
+    /// A decimal literal (`spec/29 §16`): its coefficient, in decimal with an optional `-`, at
+    /// its scale.
+    Decimal {
+        /// The coefficient c of the value c × 10^-scale.
+        coefficient: String,
+        /// The scale.
+        scale: u8,
+    },
     /// `true` or `false`.
     Bool(bool),
     /// A text literal, with its escapes decoded.
@@ -478,6 +489,202 @@ pub enum Prim {
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
+    /// An operator, method or conversion of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13 to
+    /// 17), with the static scales of its operands.
+    Decimal(DecimalOp),
+}
+
+/// The operators, methods and conversions of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13
+/// to 17). Each carries the scales its meaning depends on, which are static: the operands are
+/// coefficients, so `x + y` at scales 2 and 4 adds `x × 100` and `y`. Every one is exact; the
+/// rounding ones take a `Rounding` operand after their other operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DecimalOp {
+    /// `x + y`, at scales a and b: scale max(a, b).
+    Add(u8, u8),
+    /// `x - y`, at scales a and b: scale max(a, b).
+    Sub(u8, u8),
+    /// `x * y`: the coefficients' product, at the sum of the scales.
+    Mul,
+    /// `-x`.
+    Neg,
+    /// `x == y`, at scales a and b, by value.
+    Eq(u8, u8),
+    /// `x != y`.
+    Ne(u8, u8),
+    /// `x < y`.
+    Lt(u8, u8),
+    /// `x <= y`.
+    Le(u8, u8),
+    /// `x > y`.
+    Gt(u8, u8),
+    /// `x >= y`.
+    Ge(u8, u8),
+    /// `x.widen(scale: s)`, from scale a to s ≥ a.
+    Widen(u8, u8),
+    /// `x.rescale(scale: s, rounding: r)`, from scale a to s < a.
+    Rescale(u8, u8),
+    /// `x.rescale_exact(scale: s)`, from scale a to s < a; its precondition holds.
+    RescaleExact(u8, u8),
+    /// `x.divide(by: y, scale: s, rounding: r)`, x at scale a and y at scale b; `y != 0`.
+    Divide(u8, u8, u8),
+    /// `x.remainder(by: y, scale: s)`, x at scale a and y at scale b; `y != 0`.
+    Remainder(u8, u8, u8),
+    /// `x.to_int(rounding: r)`, x at scale a.
+    ToInt(u8),
+    /// `x.abs()`.
+    Abs,
+    /// `x.coefficient()`: the coefficient as an `Int`.
+    Coefficient,
+    /// `n.to_decimal()` of an integer of any integer type: `Decimal[0]`.
+    FromInt,
+    /// `x.to_decimal(scale: s, rounding: r)` of an `F64`: `Option[Decimal[s]]`.
+    FromF64(u8),
+    /// `x.to_f64()`, x at scale a.
+    ToF64(u8),
+    /// The rendering of rule 16, x at scale a, as `to_text` and interpolation write it.
+    ToText(u8),
+    /// `parse_decimal(t, scale: s)`, which fails with `ParseError`.
+    Parse(u8),
+    /// `as_decimal(j, scale: s)`: `Option[Decimal[s]]`.
+    FromJson(u8),
+    /// `json_decimal(x)`, x at scale a: a `Json`.
+    ToJson(u8),
+}
+
+impl DecimalOp {
+    /// How the operation is written in Core.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecimalOp::Add(..) => "decimal_add",
+            DecimalOp::Sub(..) => "decimal_sub",
+            DecimalOp::Mul => "decimal_mul",
+            DecimalOp::Neg => "decimal_neg",
+            DecimalOp::Eq(..) => "decimal_eq",
+            DecimalOp::Ne(..) => "decimal_ne",
+            DecimalOp::Lt(..) => "decimal_lt",
+            DecimalOp::Le(..) => "decimal_le",
+            DecimalOp::Gt(..) => "decimal_gt",
+            DecimalOp::Ge(..) => "decimal_ge",
+            DecimalOp::Widen(..) => "decimal_widen",
+            DecimalOp::Rescale(..) => "decimal_rescale",
+            DecimalOp::RescaleExact(..) => "decimal_rescale_exact",
+            DecimalOp::Divide(..) => "decimal_divide",
+            DecimalOp::Remainder(..) => "decimal_remainder",
+            DecimalOp::ToInt(_) => "decimal_to_int",
+            DecimalOp::Abs => "decimal_abs",
+            DecimalOp::Coefficient => "decimal_coefficient",
+            DecimalOp::FromInt => "decimal_from_int",
+            DecimalOp::FromF64(_) => "decimal_from_f64",
+            DecimalOp::ToF64(_) => "decimal_to_f64",
+            DecimalOp::ToText(_) => "decimal_to_text",
+            DecimalOp::Parse(_) => "parse_decimal",
+            DecimalOp::FromJson(_) => "as_decimal",
+            DecimalOp::ToJson(_) => "json_decimal",
+        }
+    }
+
+    /// The operation as two machine words, its position and its scales packed a byte each, which
+    /// the native code passes to the runtime; [`DecimalOp::from_code`] reads them back.
+    pub fn code(self) -> (i64, i64) {
+        let index = match self {
+            DecimalOp::Add(..) => 0,
+            DecimalOp::Sub(..) => 1,
+            DecimalOp::Mul => 2,
+            DecimalOp::Neg => 3,
+            DecimalOp::Eq(..) => 4,
+            DecimalOp::Ne(..) => 5,
+            DecimalOp::Lt(..) => 6,
+            DecimalOp::Le(..) => 7,
+            DecimalOp::Gt(..) => 8,
+            DecimalOp::Ge(..) => 9,
+            DecimalOp::Widen(..) => 10,
+            DecimalOp::Rescale(..) => 11,
+            DecimalOp::RescaleExact(..) => 12,
+            DecimalOp::Divide(..) => 13,
+            DecimalOp::Remainder(..) => 14,
+            DecimalOp::ToInt(_) => 15,
+            DecimalOp::Abs => 16,
+            DecimalOp::Coefficient => 17,
+            DecimalOp::FromInt => 18,
+            DecimalOp::FromF64(_) => 19,
+            DecimalOp::ToF64(_) => 20,
+            DecimalOp::ToText(_) => 21,
+            DecimalOp::Parse(_) => 22,
+            DecimalOp::FromJson(_) => 23,
+            DecimalOp::ToJson(_) => 24,
+        };
+        let packed = self
+            .scales()
+            .iter()
+            .enumerate()
+            .fold(0i64, |packed, (i, s)| packed | (i64::from(*s) << (8 * i)));
+        (index, packed)
+    }
+
+    /// The operation that [`DecimalOp::code`] gave `index` and `packed`.
+    pub fn from_code(index: i64, packed: i64) -> Option<DecimalOp> {
+        let scale = |i: u32| u8::try_from((packed >> (8 * i)) & 0xFF).ok();
+        let (a, b, c) = (scale(0)?, scale(1)?, scale(2)?);
+        Some(match index {
+            0 => DecimalOp::Add(a, b),
+            1 => DecimalOp::Sub(a, b),
+            2 => DecimalOp::Mul,
+            3 => DecimalOp::Neg,
+            4 => DecimalOp::Eq(a, b),
+            5 => DecimalOp::Ne(a, b),
+            6 => DecimalOp::Lt(a, b),
+            7 => DecimalOp::Le(a, b),
+            8 => DecimalOp::Gt(a, b),
+            9 => DecimalOp::Ge(a, b),
+            10 => DecimalOp::Widen(a, b),
+            11 => DecimalOp::Rescale(a, b),
+            12 => DecimalOp::RescaleExact(a, b),
+            13 => DecimalOp::Divide(a, b, c),
+            14 => DecimalOp::Remainder(a, b, c),
+            15 => DecimalOp::ToInt(a),
+            16 => DecimalOp::Abs,
+            17 => DecimalOp::Coefficient,
+            18 => DecimalOp::FromInt,
+            19 => DecimalOp::FromF64(a),
+            20 => DecimalOp::ToF64(a),
+            21 => DecimalOp::ToText(a),
+            22 => DecimalOp::Parse(a),
+            23 => DecimalOp::FromJson(a),
+            24 => DecimalOp::ToJson(a),
+            _ => return None,
+        })
+    }
+
+    /// The static scales of the operation, in the order its variant holds them.
+    pub fn scales(self) -> Vec<u8> {
+        match self {
+            DecimalOp::Add(a, b)
+            | DecimalOp::Sub(a, b)
+            | DecimalOp::Eq(a, b)
+            | DecimalOp::Ne(a, b)
+            | DecimalOp::Lt(a, b)
+            | DecimalOp::Le(a, b)
+            | DecimalOp::Gt(a, b)
+            | DecimalOp::Ge(a, b)
+            | DecimalOp::Widen(a, b)
+            | DecimalOp::Rescale(a, b)
+            | DecimalOp::RescaleExact(a, b) => vec![a, b],
+            DecimalOp::Divide(a, b, s) | DecimalOp::Remainder(a, b, s) => vec![a, b, s],
+            DecimalOp::ToInt(a)
+            | DecimalOp::FromF64(a)
+            | DecimalOp::ToF64(a)
+            | DecimalOp::ToText(a)
+            | DecimalOp::Parse(a)
+            | DecimalOp::FromJson(a)
+            | DecimalOp::ToJson(a) => vec![a],
+            DecimalOp::Mul
+            | DecimalOp::Neg
+            | DecimalOp::Abs
+            | DecimalOp::Coefficient
+            | DecimalOp::FromInt => Vec::new(),
+        }
+    }
 }
 
 /// The operators, methods and conversions of `F64` (`spec/29`, ADR 0114 rules 3 to 5). Every
@@ -909,6 +1116,7 @@ impl Prim {
             Prim::Fixed(op, _) => op.as_str(),
             Prim::Map(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
+            Prim::Decimal(op) => op.as_str(),
         }
     }
 }

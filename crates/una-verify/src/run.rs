@@ -701,6 +701,25 @@ fn shown_bindings(shown: &[Shown], requested: &[F], answer: &Answer) -> Vec<Bind
                 Some(raw) => number_or_bool(&raw),
                 None => continue,
             },
+            // A decimal shows its value, not its coefficient (ADR 0120).
+            Show::Decimal(scale) => match value(&shown.term) {
+                Some(raw) => match number_or_bool(&raw) {
+                    serde_json::Value::Number(n) => {
+                        match una_core::decimal::render_digits(&n.to_string(), *scale) {
+                            Some(text) => serde_json::Value::String(text),
+                            None => continue,
+                        }
+                    }
+                    serde_json::Value::String(digits) => {
+                        match una_core::decimal::render_digits(&digits, *scale) {
+                            Some(text) => serde_json::Value::String(text),
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                },
+                None => continue,
+            },
             Show::Variant { tag, names } => {
                 let Some(tag) = value(tag) else {
                     continue;

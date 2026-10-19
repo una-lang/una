@@ -61,6 +61,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         errors: Vec::new(),
         v0_2: lexed.keywords >= KeywordSet::V0_2,
         v0_3: lexed.keywords >= KeywordSet::V0_3,
+        v0_4: lexed.keywords >= KeywordSet::V0_4,
         in_body: false,
         from_label: lexed.from_label,
     };
@@ -119,6 +120,7 @@ pub fn parse_uses_clause(
         errors: Vec::new(),
         v0_2: true,
         v0_3: true,
+        v0_4: true,
         in_body: false,
         from_label: None,
     };
@@ -212,6 +214,8 @@ struct Parser<'a> {
     v0_2: bool,
     /// Whether the constructs of edition 0.3 parse (`spec/13 §7`).
     v0_3: bool,
+    /// Whether the constructs of edition 0.4 parse (`spec/26 §1`).
+    v0_4: bool,
     /// Whether a function body or a handler operation body is being parsed, where a
     /// declaration keyword bound as a name is renamed by an edit (ADR 0096, amendment of
     /// 2026-10-15).
@@ -1443,6 +1447,24 @@ impl<'a> Parser<'a> {
         match self.peek() {
             TokenKind::UpperIdent(_) => {
                 let name = self.upper_name("a type")?;
+                // Edition 0.4: `Decimal[s]`, whose argument is a scale, an integer literal
+                // (ADR 0120 rule 2). Any other argument parses as a type, which the checker
+                // refuses (U2037).
+                if self.v0_4
+                    && self.interner.resolve(name.name) == "Decimal"
+                    && self.at(&TokenKind::LBracket)
+                    && let TokenKind::Int(digits) = self.peek_at(1)
+                {
+                    let scale = digits.clone();
+                    self.advance();
+                    let scale_span = self.advance();
+                    self.expect(&TokenKind::RBracket, "`]`")?;
+                    return Ok(TypeCore::Decimal {
+                        name,
+                        scale,
+                        scale_span,
+                    });
+                }
                 let mut args = Vec::new();
                 if self.eat(&TokenKind::LBracket) {
                     args.push(self.ty()?);

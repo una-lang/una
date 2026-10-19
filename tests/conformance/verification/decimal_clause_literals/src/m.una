@@ -1,0 +1,29 @@
+-- test: a decimal literal in a clause is its coefficient at the scale of the value it is compared with, aligned across scales: a refinement `it >= 0.5` on a `Decimal[2]` refutes `0.10` and proves `0.50`, and mixed scales prove and refute exactly
+-- spec: spec/29 §16
+-- expect: error U5001 at src/m.una:9:24
+-- expect: error U5001 at src/m.una:29:3
+module m
+
+pub kind Price = Decimal[2] where it >= 0.5
+
+pub cheap() -> Price = 0.10
+
+pub fine() -> Price = 0.50
+
+pub mixed(a: Decimal[2], b: Decimal[3]) -> Bool
+  requires a == 1.5 and b == 1.25
+  ensures result
+=
+  a + b > 2.7
+
+pub bounded(x: Decimal[2]) -> Bool
+  requires x <= 100.5
+  ensures result
+=
+  x < 100.51
+
+pub too_tight(x: Decimal[2]) -> Bool
+  requires x <= 100.5
+  ensures result
+=
+  x < 100.49

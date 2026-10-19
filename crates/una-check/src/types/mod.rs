@@ -19,6 +19,7 @@ mod check;
 mod conditions;
 mod crossing;
 mod dead;
+mod decimal;
 mod edit_labels;
 mod effects;
 mod elab;
@@ -64,6 +65,9 @@ const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 /// The declarations that edition 0.3 adds to the prelude: the functions of `F64` (`spec/29`,
 /// ADR 0114 rule 3.9), appended after those of edition 0.2.
 const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
+/// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
+/// `Decimal` (`spec/29 §16`, ADR 0120), appended after those of edition 0.3.
+const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -159,7 +163,12 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
 
 /// The standard modules' source in `edition`, as [`Standard::load`] parses it.
 pub fn standard_source(edition: Edition) -> StandardSource {
-    let (prelude, keywords) = if edition >= Edition::V0_3 {
+    let (prelude, keywords) = if edition >= Edition::V0_4 {
+        (
+            format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+            KeywordSet::V0_4,
+        )
+    } else if edition >= Edition::V0_3 {
         (
             format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}", of_prelude()),
             KeywordSet::V0_3,
@@ -1240,7 +1249,12 @@ mod tests {
         // `Standard::load` parses, for every edition.
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
-            let (prelude, keywords) = if *edition >= Edition::V0_3 {
+            let (prelude, keywords) = if *edition >= Edition::V0_4 {
+                (
+                    format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    KeywordSet::V0_4,
+                )
+            } else if *edition >= Edition::V0_3 {
                 (
                     format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}", of_prelude()),
                     KeywordSet::V0_3,
@@ -1269,10 +1283,12 @@ mod tests {
         // a keyword used as a name does.
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
+        let v0_4 = format!("{v0_3}{PRELUDE_0_4}");
         for (name, text, keywords) in [
             ("prelude", PRELUDE, KeywordSet::V0_1),
             ("prelude 0.2", v0_2.as_str(), KeywordSet::V0_2),
             ("prelude 0.3", v0_3.as_str(), KeywordSet::V0_3),
+            ("prelude 0.4", v0_4.as_str(), KeywordSet::V0_4),
             ("testing", TESTING, KeywordSet::V0_1),
         ] {
             let mut sources = SourceDb::new();

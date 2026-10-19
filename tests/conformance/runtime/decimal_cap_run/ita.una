@@ -1,0 +1,8 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+run
+  entry m
+  grants
+    console

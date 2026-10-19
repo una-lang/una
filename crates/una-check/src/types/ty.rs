@@ -203,6 +203,9 @@ pub(crate) enum Ty {
     Fixed(IntType),
     /// `F64`, IEEE binary64, edition 0.3 (`spec/29`, ADR 0114).
     F64,
+    /// `Decimal[s]`, an exact decimal of scale s from 0 to 38, edition 0.4 (`spec/29 §16`,
+    /// ADR 0120 rule 12).
+    Decimal(u8),
     Bool,
     Text,
     Unit,
@@ -507,6 +510,7 @@ impl Flagged for Ty {
             | Ty::Unit
             | Ty::Hashed
             | Ty::F64
+            | Ty::Decimal(_)
             | Ty::Param(_)
             | Ty::Never
             | Ty::Error(_) => Flags::LEAF,
@@ -569,6 +573,7 @@ impl Ty {
             | (Ty::Never, Ty::Never)
             | (Ty::Error(_), Ty::Error(_)) => true,
             (Ty::Fixed(a), Ty::Fixed(b)) => a == b,
+            (Ty::Decimal(a), Ty::Decimal(b)) => a == b,
             (Ty::Measured(u, a), Ty::Measured(v, b)) => u == v && a == b,
             (Ty::Param(a), Ty::Param(b)) | (Ty::Var(a), Ty::Var(b)) => a == b,
             _ => false,
@@ -1149,6 +1154,7 @@ pub(crate) enum View<'t, T> {
     Unit,
     Hashed,
     F64,
+    Decimal(u8),
     List(&'t T),
     Map(&'t T, &'t T),
     Kind(KindId, &'t [T]),
@@ -1180,6 +1186,7 @@ impl TypeView for Ty {
             Ty::Unit => View::Unit,
             Ty::Hashed => View::Hashed,
             Ty::F64 => View::F64,
+            Ty::Decimal(scale) => View::Decimal(*scale),
             Ty::List(element) => View::List(element),
             Ty::Map(key, value) => View::Map(key, value),
             Ty::Kind(id, args) => View::Kind(*id, args),
@@ -1216,6 +1223,7 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             View::Unit => write!(f, "Unit"),
             View::Hashed => write!(f, "Hashed"),
             View::F64 => write!(f, "F64"),
+            View::Decimal(scale) => write!(f, "Decimal[{scale}]"),
             View::List(element) => write!(f, "List[{}]", Show(element, names)),
             View::Map(key, value) => {
                 write!(f, "Map[{}, {}]", Show(key, names), Show(value, names))

@@ -1,0 +1,18 @@
+
+--- How a decimal operation rounds an exact value to the units of its result's scale
+--- (`spec/29 §16`): on the magnitude, then the sign. No operation has a default mode.
+pub kind Rounding = HalfEven | HalfAwayFromZero | HalfTowardZero | TowardZero | AwayFromZero | TowardPositive | TowardNegative
+
+--- The `Decimal[s]` that `t` writes at the scale `s` of the literal `scale`, or why it writes
+--- none (`spec/29 §16`).
+pub parse_decimal(t: Text, scale: Int) -> Decimal[0]
+  fails ParseError
+=
+  fail Empty
+
+--- The `Decimal[s]` of a JSON number at the scale `s` of the literal `scale`, `None` when it
+--- has no exact value there, and for any other `Json` (`spec/29 §16`).
+pub as_decimal(j: Json, scale: Int) -> Option[Decimal[0]] = None
+
+--- A `Decimal[s]` as a JSON number: `Number` at scale 0, `Decimal` otherwise (`spec/29 §16`).
+pub json_decimal[T](x: T) -> Json = Null

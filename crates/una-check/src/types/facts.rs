@@ -461,6 +461,7 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         Ty::Unit => "Unit".to_owned(),
         Ty::Hashed => "Hashed".to_owned(),
         Ty::F64 => "F64".to_owned(),
+        Ty::Decimal(scale) => format!("Decimal[{scale}]"),
         Ty::Fixed(int) => format!("{int:?}"),
         Ty::Measured(unit, inner) => format!("{} of {}", written(env, kind, inner), **unit),
         _ => "_".to_owned(),
@@ -776,6 +777,8 @@ fn satisfies(
             Ty::Text | Ty::Measured(..) => need == Constraint::Ord,
             // `F64` is ordered by totalOrder, and never `Integer` (`spec/29`, ADR 0114 rule 1.5).
             Ty::F64 => need == Constraint::Ord,
+            // `Decimal[s]` is ordered by value, and never `Integer` (ADR 0120 rule 18).
+            Ty::Decimal(_) => need == Constraint::Ord,
             Ty::Kind(id, _) => {
                 need == Constraint::Ord
                     && env.kinds.get(*id).is_some_and(|kind| {

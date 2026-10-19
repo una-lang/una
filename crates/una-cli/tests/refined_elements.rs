@@ -89,7 +89,9 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
             | Prim::ToText
             | Prim::Convert(_)
             | Prim::Fixed(..)
-            | Prim::Float(_) => SCALAR,
+            | Prim::Float(_)
+            // A decimal's `Option` results take the binder's type without its refinements.
+            | Prim::Decimal(_) => SCALAR,
         },
         Rhs::Call { .. } => "call_result",
         Rhs::Apply { .. } => "apply_result",

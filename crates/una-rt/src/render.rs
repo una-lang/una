@@ -16,6 +16,8 @@ use crate::values;
 pub enum Shape {
     /// `Int`.
     Int,
+    /// `Decimal[s]`, its coefficient written with s digits after the point (`spec/29 §16`).
+    Decimal(u8),
     /// `Bool`.
     Bool,
     /// `Text`.
@@ -175,6 +177,9 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
         let mut parts = Vec::new();
         match types.get(ty) {
             Some(Shape::Int) => out.push_str(&values::int_value(word).to_string()),
+            Some(Shape::Decimal(scale)) => {
+                out.push_str(&una_core::decimal::render(&values::int_value(word), *scale))
+            }
             Some(Shape::Bool) => out.push_str(if word != 0 { "true" } else { "false" }),
             Some(Shape::Text) => out.push_str(&una_core::quote(&values::text_value(word))),
             Some(Shape::Unit) => out.push_str("unit"),
@@ -286,6 +291,11 @@ pub(crate) fn index(value: &Value, key: &str) -> Option<usize> {
 fn shape(value: &Value) -> Option<Shape> {
     Some(match value.get("shape")?.as_str()? {
         "int" => Shape::Int,
+        "decimal" => Shape::Decimal(
+            u8::try_from(index(value, "scale")?)
+                .ok()
+                .filter(|s| *s <= una_core::decimal::MAX_SCALE)?,
+        ),
         "bool" => Shape::Bool,
         "text" => Shape::Text,
         "unit" => Shape::Unit,

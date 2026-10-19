@@ -73,7 +73,9 @@ pub(crate) fn shape_of(desc: i64) -> Option<Written> {
     Some(match Descriptor::from_word(desc)? {
         Descriptor::Int | Descriptor::Fixed(_) => Written::Int,
         Descriptor::Text => Written::Text,
-        Descriptor::Sum(ty) | Descriptor::Structural(ty) => Written::Typed(ty, Vec::new()),
+        Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty) => {
+            Written::Typed(ty, Vec::new())
+        }
         Descriptor::Composite(index) => {
             let (ty, params) = entry(index)?;
             Written::Typed(ty, params)
@@ -85,7 +87,10 @@ pub(crate) fn shape_of(desc: i64) -> Option<Written> {
 /// no order or does not fit them.
 fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
     let found = match Descriptor::from_word(desc) {
-        Some(Descriptor::Int) if is_int(a) && is_int(b) => Some(int_value(a).cmp(&int_value(b))),
+        // The values of one decimal type share their scale: their coefficients order them.
+        Some(Descriptor::Int | Descriptor::Decimal(_)) if is_int(a) && is_int(b) => {
+            Some(int_value(a).cmp(&int_value(b)))
+        }
         Some(Descriptor::Fixed(int)) if in_range(a, int) && in_range(b, int) => {
             Some(int_value(a).cmp(&int_value(b)))
         }
@@ -167,7 +172,9 @@ pub fn write(desc: i64, x: i64) -> i64 {
             retain(x);
             x
         }
-        Some(Descriptor::Sum(ty) | Descriptor::Structural(ty)) => runtime::written(ty, x, &[]),
+        Some(Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty)) => {
+            runtime::written(ty, x, &[])
+        }
         Some(Descriptor::Composite(index)) => match entry(index) {
             Some((ty, params)) => runtime::written(ty, x, &params),
             None => {

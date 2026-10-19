@@ -70,17 +70,39 @@ fn run_seconds(dir: &Path, n: usize) -> f64 {
 
 /// The seconds `run_main` takes on `source`, a package of edition 0.2, its best of three.
 fn run_source_seconds(dir: &Path, source: &str) -> f64 {
+    run_edition_seconds(dir, source, "0.2")
+}
+
+/// The seconds `run_main` takes on `source`, a package of `edition`, its best of three. A
+/// package of edition 0.4 is described by `ita.una` and `ita.lock`, the others by `una.toml`
+/// and `verification.lock`.
+fn run_edition_seconds(dir: &Path, source: &str, edition: &str) -> f64 {
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("una.toml"),
-        "[package]\nname = \"scaling\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
-    )
-    .unwrap();
-    std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
-        dir.join("verification.lock"),
-    )
-    .unwrap();
+    if edition == "0.4" {
+        std::fs::write(
+            dir.join("ita.una"),
+            "ita scaling\n  version 0.1.0\n  edition 0.4\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("ita.lock"),
+            "-- Written by `una ita`; do not edit.\nlock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+        )
+        .unwrap();
+    } else {
+        std::fs::write(
+            dir.join("una.toml"),
+            format!(
+                "[package]\nname = \"scaling\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+            dir.join("verification.lock"),
+        )
+        .unwrap();
+    }
     std::fs::write(dir.join("src/main.una"), source).unwrap();
     let checked = una_cli::check(dir, una_cli::Tier::Zero).unwrap();
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
@@ -143,5 +165,32 @@ fn a_closure_costs_what_it_reads_not_what_is_in_scope() {
     timing::assert_growth("bindings in scope", &[16, 1_024], 0.0, 1e-6, 3.0, |n| {
         run_source_seconds(&dir, &closures(n))
     });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `main` that adds `n` amounts of `Decimal[2]` in a loop, as a ledger sums its lines.
+fn decimal_sum(n: usize) -> String {
+    format!(
+        "module main\n\npub main() -> Unit\n=\n  let price: Decimal[2] = 19.99\n  let edit total: Decimal[2] = 0.00\n  for i in 0..<{n}\n    total = total + price\n  unit\n"
+    )
+}
+
+#[test]
+fn a_sum_of_decimals_is_linear_in_its_amounts() {
+    // ADR 0120, Costs: a sum of n amounts of `Decimal[2]` is O(n), each `+` one operation on
+    // coefficients of one word. From 10,000 to 80,000 amounts, eight times as many, the run
+    // takes about eight times as long, against 64 for a quadratic step; the bound, 24, leaves
+    // a wide margin (#341).
+    let dir = std::env::temp_dir().join(format!("una-interp-decimals-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixed = run_edition_seconds(&dir, &decimal_sum(10), "0.4");
+    timing::assert_growth(
+        "decimal amounts",
+        &[10_000, 80_000],
+        fixed,
+        1e-6,
+        24.0,
+        |n| run_edition_seconds(&dir, &decimal_sum(n), "0.4"),
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

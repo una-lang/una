@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use una_check::Header;
 use una_core::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, Decl, Example,
-    Expectation, Expr, FixedOp, Fun, HandlerOp, IntType, Label, LoopSource, MapOp, Module, Path,
-    Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, DecimalOp, Decl,
+    Example, Expectation, Expr, FixedOp, Fun, HandlerOp, IntType, Label, LoopSource, MapOp, Module,
+    Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_project::Edition;
 use una_syntax::{SourceDb, Span};
@@ -216,6 +216,8 @@ impl Writer<'_> {
             Base::Hashed => node!(Hashed),
             // ADR 0114 rule 17: the kind `f64`.
             Base::F64 => J::Obj(vec![("kind", s("f64"))]),
+            // ADR 0120: the kind `decimal`, with its scale.
+            Base::Decimal(scale) => node!(Decimal, "scale" => n(usize::from(*scale))),
             Base::Named { module, name, args } => node!(Named,
                 "module" => s(module),
                 "name" => s(name),
@@ -355,6 +357,11 @@ impl Writer<'_> {
                 ("kind", s("f64")),
                 ("bits", J::Str(format!("{bits:016x}"))),
             ]),
+            // ADR 0120: a decimal literal, its coefficient and its scale.
+            Atom::Decimal { coefficient, scale } => node!(Decimal,
+                "coefficient" => s(coefficient),
+                "scale" => n(usize::from(*scale)),
+            ),
             Atom::Bool(b) => node!(Bool, "value" => J::Bool(*b)),
             Atom::Text(text) => node!(Text, "value" => s(text)),
             Atom::Unit => node!(Unit),
@@ -395,7 +402,46 @@ impl Writer<'_> {
                 "kind",
                 s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
             )])),
+            // ADR 0120: an operation of `Decimal`, its `DecimalOp` with its static scales.
+            Prim::Decimal(op) => node!(Decimal, "value" => self.decimal_op(*op)),
         }
+    }
+
+    fn decimal_op(&self, op: DecimalOp) -> J {
+        let kind = match op {
+            DecimalOp::Add(..) => "add",
+            DecimalOp::Sub(..) => "sub",
+            DecimalOp::Mul => "mul",
+            DecimalOp::Neg => "neg",
+            DecimalOp::Eq(..) => "eq",
+            DecimalOp::Ne(..) => "ne",
+            DecimalOp::Lt(..) => "lt",
+            DecimalOp::Le(..) => "le",
+            DecimalOp::Gt(..) => "gt",
+            DecimalOp::Ge(..) => "ge",
+            DecimalOp::Widen(..) => "widen",
+            DecimalOp::Rescale(..) => "rescale",
+            DecimalOp::RescaleExact(..) => "rescale_exact",
+            DecimalOp::Divide(..) => "divide",
+            DecimalOp::Remainder(..) => "remainder",
+            DecimalOp::ToInt(_) => "to_int",
+            DecimalOp::Abs => "abs",
+            DecimalOp::Coefficient => "coefficient",
+            DecimalOp::FromInt => "from_int",
+            DecimalOp::FromF64(_) => "from_f64",
+            DecimalOp::ToF64(_) => "to_f64",
+            DecimalOp::ToText(_) => "to_text",
+            DecimalOp::Parse(_) => "parse",
+            DecimalOp::FromJson(_) => "from_json",
+            DecimalOp::ToJson(_) => "to_json",
+        };
+        J::Obj(vec![
+            ("kind", s(kind)),
+            (
+                "scales",
+                J::Arr(op.scales().into_iter().map(|x| n(usize::from(x))).collect()),
+            ),
+        ])
     }
 
     fn map_op(&self, op: MapOp) -> J {

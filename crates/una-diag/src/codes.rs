@@ -168,6 +168,8 @@ pub enum Code {
     U2032,
     /// A comparison of an `F64` with a float literal zero (ADR 0114).
     U2033,
+    /// A decimal scale out of place (ADR 0120).
+    U2037,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -269,7 +271,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 100] = [
+    pub const ALL: [Code; 101] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -322,6 +324,7 @@ impl Code {
         Code::U2031,
         Code::U2032,
         Code::U2033,
+        Code::U2037,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -648,6 +651,11 @@ impl Code {
                 code: "U2033",
                 domain: Domain::Types,
                 meaning: "A comparison of an `F64` with a float literal zero",
+            },
+            Code::U2037 => &Entry {
+                code: "U2037",
+                domain: Domain::Types,
+                meaning: "A decimal scale out of place",
             },
             Code::U3001 => &Entry {
                 code: "U3001",

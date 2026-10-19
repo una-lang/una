@@ -427,6 +427,7 @@ impl Dumper<'_> {
                 }
             }
             TypeCore::List(element) => format!("[{}]", self.type_text(element)),
+            TypeCore::Decimal { scale, .. } => format!("Decimal[{scale}]"),
             TypeCore::Function {
                 params,
                 result,

@@ -85,7 +85,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     && (self.expected_fixed(expected).is_some()
                         || matches!(
                             expected.map(|e| self.vars.peel(e)),
-                            Some(Ty::Measured(..) | Ty::F64)
+                            Some(Ty::Measured(..) | Ty::F64 | Ty::Decimal(_))
                         ))
                 {
                     let ty = self.int_literal_type(true, digits, span, expected);
@@ -98,6 +98,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         let hint = match expected.map(|e| self.vars.peel(e)) {
                             Some(measured @ Ty::Measured(..)) => Some(measured),
                             Some(Ty::F64) => Some(Ty::F64),
+                            Some(Ty::Decimal(scale)) => Some(Ty::Decimal(scale)),
                             _ => self.expected_fixed(expected).map(Ty::Fixed),
                         };
                         let found = self.infer(operand, hint.as_ref());
@@ -113,6 +114,8 @@ impl<'a> Checker<'_, 'a, '_> {
                                 self.outside_rl(span, || "`-` of an `F64`".to_owned());
                                 Ty::F64
                             }
+                            // `-x` of a decimal negates its coefficient (ADR 0120 rule 13).
+                            Ty::Decimal(scale) => Ty::Decimal(scale),
                             _ => {
                                 self.unify_at(
                                     operand.span,
@@ -256,7 +259,12 @@ impl<'a> Checker<'_, 'a, '_> {
     fn literal(&mut self, literal: &Literal, span: Span, expected: Option<&Ty>) -> Ty {
         match literal {
             Literal::Int(digits) => self.int_literal_type(false, digits, span, expected),
-            Literal::Float(text) => self.float_literal(text, span),
+            // A float literal where a decimal is expected is that decimal, exactly (ADR 0120
+            // rule 12).
+            Literal::Float(text) => match expected.and_then(|e| self.decimal_scale(e)) {
+                Some(scale) => self.decimal_literal(text, scale, span),
+                None => self.float_literal(text, span),
+            },
             Literal::Bool(_) => Ty::Bool,
             Literal::Unit => {
                 self.outside_rl(span, || "`unit`".to_owned());
@@ -469,6 +477,7 @@ impl<'a> Checker<'_, 'a, '_> {
         match self.env.lower(self.module, name) {
             Some(Entity::Function(id)) => {
                 self.outside_rl(ident.span, || format!("function `{name}` used as a value"));
+                self.decimal_function_value(id, ident.span);
                 let (module, effects) = self.env.functions.get(id).map_or((0, false), |f| {
                     (f.module, !f.uses.is_empty() || f.fails.is_some())
                 });
@@ -915,7 +924,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
-                if self.same(span, &left_ty, &right_ty, symbol) {
+                // Decimals compare by value across scales (ADR 0120 rule 13).
+                let decimals = self.is_decimal(&left_ty) && self.is_decimal(&right_ty);
+                if !decimals && self.same(span, &left_ty, &right_ty, symbol) {
                     let resolved = self.resolve(&left_ty);
                     if self.facts.has_function(&resolved) {
                         let shown = self.show(&resolved);
@@ -940,7 +951,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
-                if self.same(span, &left_ty, &right_ty, symbol) {
+                // Decimals are ordered by value across scales (ADR 0120 rule 13).
+                let decimals = self.is_decimal(&left_ty) && self.is_decimal(&right_ty);
+                if !decimals && self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
                         // `F64` is ordered by IEEE totalOrder (ADR 0114 rule 5.2).
                         Ty::F64 => {}
@@ -974,15 +987,21 @@ impl<'a> Checker<'_, 'a, '_> {
                 Ty::Bool
             }
             BinaryOp::Add | BinaryOp::Sub => {
-                self.ints(left, right, &operand, span, expected, Combine::Same)
+                self.ints(left, right, &operand, span, expected, Combine::Same, op)
             }
             BinaryOp::Mul => {
-                if int_literal(left).is_none() && int_literal(right).is_none() {
+                // A float literal is a literal factor of a decimal (ADR 0120 V2).
+                let literal = |e: &Expr| {
+                    int_literal(e).is_some()
+                        || (self.env.edition >= Edition::V0_4
+                            && super::decimal::is_float_literal(e))
+                };
+                if !literal(left) && !literal(right) {
                     self.outside_rl(span, || {
                         "`*` of two operands that are not literals".to_owned()
                     });
                 }
-                self.ints(left, right, &operand, span, expected, Combine::Mul)
+                self.ints(left, right, &operand, span, expected, Combine::Mul, op)
             }
             BinaryOp::Div | BinaryOp::Mod => {
                 let combine = if op == BinaryOp::Div {
@@ -990,10 +1009,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 } else {
                     Combine::Same
                 };
-                let ty = self.ints(left, right, &operand, span, expected, combine);
+                let ty = self.ints(left, right, &operand, span, expected, combine, op);
                 // An `F64` division by zero gives an infinity or NaN, and has no obligation
-                // (ADR 0114 rule 3.2).
-                if int_literal(right) != Some(true) && !self.is_f64(&ty) {
+                // (ADR 0114 rule 3.2); a decimal has no `/` (ADR 0120 rule 13).
+                if int_literal(right) != Some(true) && !self.is_f64(&ty) && !self.is_decimal(&ty) {
                     self.outside_rl(span, || {
                         format!("`{symbol}` by a divisor that is not a nonzero literal")
                     });
@@ -1012,6 +1031,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// Units (ADR 0104 rule 3): `+`, `-` and `mod` keep one unit, `*` and `/` multiply and
     /// divide them. A constant operand of `+`, `-` or `mod` takes the other operand's unit; one
     /// of `*` or `/` is unitless; a constant expression as a whole takes the expected unit.
+    #[allow(clippy::too_many_arguments)]
     fn ints(
         &mut self,
         left: &Expr,
@@ -1020,9 +1040,17 @@ impl<'a> Checker<'_, 'a, '_> {
         span: Span,
         expected: Option<&Ty>,
         combine: Combine,
+        op: BinaryOp,
     ) -> Ty {
         let clause = self.in_clause();
-        let constant = (fixed::is_constant(left), fixed::is_constant(right));
+        // Edition 0.4: a float literal is typed after the other operand, whose decimal scale it
+        // takes (ADR 0120 rule 12).
+        let decimals = self.env.edition >= Edition::V0_4;
+        let float = |e: &Expr| decimals && super::decimal::is_float_literal(e);
+        let constant = (
+            fixed::is_constant(left) || float(left),
+            fixed::is_constant(right) || float(right),
+        );
         let (first, second) = if constant.0 && !constant.1 {
             (right, left)
         } else {
@@ -1030,7 +1058,17 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let expected_resolved = expected.map(|e| self.vars.peel(e));
         let expected_magnitude = expected_resolved.as_ref().map(|e| e.magnitude().clone());
-        let hint = if clause {
+        let expected_scale = expected.and_then(|e| self.decimal_scale(e));
+        let hint = if let (Some(scale), true) = (expected_scale, float(first)) {
+            // Two literals: `+` and `-` give both the expected scale; `*` gives each the scale
+            // of its own digits.
+            match combine {
+                Combine::Same => Some(Ty::Decimal(scale)),
+                _ => super::decimal::float_text(first)
+                    .and_then(una_core::decimal::literal_scale)
+                    .map(Ty::Decimal),
+            }
+        } else if clause {
             None
         } else {
             match (&combine, &expected_magnitude) {
@@ -1046,6 +1084,10 @@ impl<'a> Checker<'_, 'a, '_> {
         let first_top = self.vars.peel(&first_ty);
         if matches!(first_top.magnitude(), Ty::F64) {
             return self.float_arithmetic(first_ty, second, operand, span, combine);
+        }
+        if let Ty::Decimal(a) = first_top.magnitude() {
+            let a = *a;
+            return self.decimal_arithmetic(first_ty, a, float(first), second, op, span);
         }
         let magnitude = match first_top.magnitude() {
             Ty::Fixed(int) if !clause => Ty::Fixed(*int),
@@ -1209,13 +1251,18 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The types of the operands of a comparison: the side that is not a literal first, so a
     /// literal takes the other side's type.
     fn operand_pair(&mut self, left: &Expr, right: &Expr) -> (Ty, Ty) {
-        if fixed::is_constant(left) && !fixed::is_constant(right) {
+        // Edition 0.4: a float literal beside a decimal takes the scale of its own digits
+        // (ADR 0120 rule 12).
+        let decimals = self.env.edition >= Edition::V0_4;
+        let constant =
+            |e: &Expr| fixed::is_constant(e) || (decimals && super::decimal::is_float_literal(e));
+        if constant(left) && !constant(right) {
             let right_ty = self.expr(right, None);
-            let left_ty = self.infer(left, Some(&right_ty));
+            let left_ty = self.comparison_literal(left, &right_ty);
             (left_ty, right_ty)
         } else {
             let left_ty = self.expr(left, None);
-            let right_ty = self.infer(right, Some(&left_ty));
+            let right_ty = self.comparison_literal(right, &left_ty);
             (left_ty, right_ty)
         }
     }
