@@ -1052,6 +1052,7 @@ fn run_command(
                 virtual_time,
                 deadline,
                 stop_grace,
+                trace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1073,6 +1074,7 @@ fn run_command(
                     virtual_time,
                     deadline,
                     stop_grace,
+                    trace: trace.as_deref(),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1121,6 +1123,7 @@ fn run_command(
                     virtual_time: true,
                     deadline: None,
                     stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
+                    trace: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

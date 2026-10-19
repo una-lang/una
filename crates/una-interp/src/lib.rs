@@ -14,6 +14,7 @@ mod host;
 mod json;
 mod machine;
 pub mod stopping;
+mod tasks;
 mod trace;
 mod value;
 
@@ -25,7 +26,7 @@ pub use harness::{
 };
 pub use host::{FileFault, Grant, NotText, World, confine, hex, hmac_sha256, parse_keys};
 pub use machine::{Abort, Drive, Event, EventOutcome, Limits, fixed_method};
-pub use trace::{EventDoc, OutcomeDoc, Pairs, trace_json};
+pub use trace::{EventDoc, OutcomeDoc, Pairs, event_json, trace_json};
 
 /// The default maximum call depth (`spec/11 §7`).
 pub const DEFAULT_MAX_DEPTH: usize = 10_000;

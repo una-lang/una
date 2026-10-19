@@ -62,13 +62,15 @@ pub fn run_main(
 ) -> Option<Run> {
     let index = Index::new(program);
     let main = index.function(module, "main")?;
-    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
-    machine.clock = Clock::for_run(host.virtual_time);
-    let result = machine.run_main(main);
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    let result = machine
+        .rooted(|machine| machine.run_main(main))
+        .unwrap_or_else(unfinished);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
-        trace: machine.trace,
+        trace: machine.run.take_trace(),
     })
 }
 
@@ -97,14 +99,25 @@ pub fn run_drive(
     let init = index.function(module, "init").ok_or(DriveShape::NoInit)?;
     let step = index.function(module, "step").ok_or(DriveShape::NoStep)?;
     let on_stop = index.function(module, "on_stop");
-    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
-    machine.clock = Clock::for_run(host.virtual_time);
-    let result = machine.drive(init, step, on_stop, &drive);
+    let clock = Clock::for_run(host.virtual_time);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
+    let result = machine
+        .rooted(|machine| machine.drive(init, step, on_stop, &drive))
+        .unwrap_or_else(unfinished);
     let completion = completion(&index, result, Form::Redacted);
     Ok(Run {
         completion,
-        trace: machine.trace,
+        trace: machine.run.take_trace(),
     })
+}
+
+/// The outcome of a root task that did not run to its end, which the driver of its run
+/// excludes (ADR 0117 rule 11): an internal error rather than a value.
+fn unfinished<'p>() -> Flow<'p> {
+    Err(Stop::Abort(Abort::Fault {
+        message: "the root task did not run to its end".to_owned(),
+        span: None,
+    }))
 }
 
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
@@ -185,12 +198,20 @@ fn run_example<'p>(
     let mut world = NoWorld;
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
-    let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
     // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
     // rule 19, `spec/26 §8`).
-    machine.clock = Clock::virtual_time();
-    machine.stop_after = example.stop_after;
-    let result = machine.eval_closed(&mut Env::new(), &example.body);
+    let mut machine = Machine::new(
+        index,
+        &mut world,
+        &grants,
+        &keys,
+        limits,
+        Clock::virtual_time(),
+    );
+    machine.run.stop_after.set(example.stop_after);
+    let result = machine
+        .rooted(|machine| machine.eval_closed(&mut Env::new(), &example.body))
+        .unwrap_or_else(unfinished);
     let failure = match &result {
         Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
             expectation: None,
@@ -198,7 +219,7 @@ fn run_example<'p>(
         }),
         _ => judge(&mut machine, index, example, &result, form),
     };
-    let trace = std::mem::take(&mut machine.trace);
+    let trace = machine.run.take_trace();
     ExampleRun {
         module: module.to_owned(),
         name: example.name.clone(),
@@ -273,7 +294,10 @@ where
                 }
                 _ => {}
             }
-            let reason = match machine.eval_closed(&mut env, check) {
+            let checked = machine
+                .rooted(|machine| machine.eval_closed(&mut env, check))
+                .unwrap_or_else(unfinished);
+            let reason = match checked {
                 Ok(Value::Bool(true)) => return None,
                 Ok(_) => match result {
                     Ok(value) if mentions_result => {
@@ -319,8 +343,8 @@ where
             line,
         } => {
             let instance = format!("given:{cap}");
-            let mut events = machine
-                .trace
+            let trace = machine.run.trace();
+            let mut events = trace
                 .iter()
                 .filter(|e| e.instance == instance && e.op == *op);
             if *negated {
