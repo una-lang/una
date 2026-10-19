@@ -4,12 +4,12 @@
 //! swapped for a link while they write redirects nothing.
 //!
 //! Why not std: the standard library opens, creates and renames by path only; it has no
-//! `openat`, `mkdirat`, `renameat`, `renameat2` or `renameatx_np`. What std does have is used:
-//! opening the first directory by path, and reading, protecting and syncing through an open
-//! descriptor. Every name is one path component, refused before any call when it is empty,
-//! `.`, `..`, or holds `/` or a NUL byte. The `libc` crate gives the declarations only (ADR
-//! 0116 Appendix A). No call falls back to a weaker one: a file system that cannot rename
-//! without replacing refuses the rename.
+//! `openat`, `mkdirat`, `renameat`, `renameat2`, `renameatx_np` or `geteuid`. What std does
+//! have is used: opening the first directory by path, and reading, protecting and syncing
+//! through an open descriptor. Every name is one path component, refused before any call when
+//! it is empty, `.`, `..`, or holds `/` or a NUL byte. The `libc` crate gives the declarations
+//! only (ADR 0116 Appendix A). No call falls back to a weaker one: a file system that cannot
+//! rename without replacing refuses the rename.
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
@@ -184,6 +184,14 @@ pub fn replace_at(
     done(result)
 }
 
+/// The effective user id of the process, which owns every file and directory it creates: a
+/// fresh directory opened after `mkdir_at` that another user owns was put in its place. Why
+/// not std: std has no `geteuid`.
+pub fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` takes no argument, touches no memory and always succeeds.
+    unsafe { libc::geteuid() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +295,16 @@ mod tests {
             assert!(invalid(mkdir_at(&handle, name, 0o700)), "{name:?}");
             assert!(invalid(open_dir_at(&handle, name)), "{name:?}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_this_process_creates_is_owned_by_its_effective_user() {
+        let dir = scratch("uid");
+        let handle = DirHandle::open(&dir).unwrap();
+        mkdir_at(&handle, "mine", 0o700).unwrap();
+        let mine = open_dir_at(&handle, "mine").unwrap();
+        assert_eq!(mine.metadata().unwrap().uid(), effective_uid());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

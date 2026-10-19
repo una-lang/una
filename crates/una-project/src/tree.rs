@@ -24,7 +24,8 @@
 //! above, with no link followed, giving a [`Parent`]: a descriptor. [`store_tree`] and
 //! [`store_file`] create in it, relative to that descriptor, a fresh directory with a name of
 //! their own, which must not exist (`mkdirat` fails otherwise), with mode 0700, so no other user
-//! can create or replace anything in it, and open it with no link followed. Each directory below
+//! can create or replace anything in it, and open it with no link followed; what they open must
+//! be owned by this process's user. Each directory below
 //! it is created and opened the same way, relative to the one above, and each file with
 //! `openat` and `O_CREAT | O_EXCL | O_NOFOLLOW`, relative to its directory's descriptor
 //! (`una_sys::dir`). Nothing is created by path, so a path swapped for a link while the write
@@ -879,12 +880,14 @@ fn sync_dir(handle: &DirHandle, path: &Path) -> Result<(), Refusal> {
 }
 
 /// Opens the directory `name` in `dir`, just created by this process, with no link followed: it
-/// must be a directory that grants nothing to others.
+/// must be a directory that this process's user owns and that grants nothing to others, so a
+/// directory of another user put at the name between its creation and its opening is refused.
 fn open_private_dir(dir: &DirHandle, name: &str, shown: &Path) -> Result<DirHandle, Refusal> {
+    use std::os::unix::fs::MetadataExt;
     let handle = sys::open_dir_at(dir, name)
         .map_err(|e| cannot("open, without following a link,", shown, &e))?;
     let opened = handle.metadata().map_err(|e| cannot("read", shown, &e))?;
-    if !opened.is_dir() || !private(&opened) {
+    if !opened.is_dir() || !private(&opened) || opened.uid() != sys::effective_uid() {
         return Err(format!(
             "`{}` is not the private directory just created",
             shown.display()
