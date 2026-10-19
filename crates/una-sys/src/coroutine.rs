@@ -86,6 +86,10 @@ impl Stack {
     }
 }
 
+// SAFETY: a stack is memory that the value owns, with no tie to a thread; the coroutine that
+// runs on it is what stays on one thread.
+unsafe impl Send for Stack {}
+
 impl Drop for Stack {
     fn drop(&mut self) {
         // SAFETY: `base` and `len` are exactly the mapping `new` made, and nothing runs on it:

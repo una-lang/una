@@ -218,6 +218,31 @@ thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
 }
 
+/// A task's heap, and its test counters, while it is parked (`sched`, ADR 0117 rule 2).
+#[derive(Default)]
+pub(crate) struct Slots {
+    heap: Heap,
+    #[cfg(test)]
+    counters: [usize; 3],
+}
+
+/// Exchanges the thread's heap and test counters with `slots`. A heap is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' heaps.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    HEAP.with(|heap| match heap.try_borrow_mut() {
+        Ok(mut heap) => std::mem::swap(&mut *heap, &mut slots.heap),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [equality, objects, growth] = &mut slots.counters;
+        *equality = EQUALITY_STEPS.with(|cell| cell.replace(*equality));
+        *objects = OBJECT_STEPS.with(|cell| cell.replace(*objects));
+        *growth = MOST_GROWTH.with(|cell| cell.replace(*growth));
+    }
+}
+
 /// Whether `word` is a handle.
 fn is_handle(word: i64) -> bool {
     word & 1 == 0 && word != 0
