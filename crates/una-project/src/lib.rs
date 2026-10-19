@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod authority;
 pub mod content;
 mod document;
 pub mod ita;
