@@ -587,6 +587,7 @@ pub(crate) struct Slots {
     runtime: crate::runtime::Slots,
     values: crate::values::Slots,
     tasks: crate::tasks::Slots,
+    deadline: crate::deadline::Slots,
     json: bool,
     #[cfg(debug_assertions)]
     allocated: usize,
@@ -599,6 +600,7 @@ fn swap(slots: &mut Slots) {
     crate::runtime::swap_slots(&mut slots.runtime);
     crate::values::swap_slots(&mut slots.values);
     crate::tasks::swap_slots(&mut slots.tasks);
+    crate::deadline::swap_slots(&mut slots.deadline);
     crate::json::swap_stopped(&mut slots.json);
     #[cfg(debug_assertions)]
     crate::ffi::swap_thread_allocated(&mut slots.allocated);

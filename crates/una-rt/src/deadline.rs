@@ -44,6 +44,21 @@ thread_local! {
     static USED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// A task's deadline while it is parked, or the worker's own while the task runs: a task runs
+/// on a coroutine of a worker that other tasks share (ADR 0117 rule 2), so the worker swaps
+/// this with the task's other thread-locals ([`crate::sched`]).
+#[derive(Default)]
+pub(crate) struct Slots {
+    deadline: Option<Deadline>,
+    used: bool,
+}
+
+/// Exchanges the thread's deadline with `slots`. O(1).
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    slots.deadline = DEADLINE.with(|cell| cell.replace(slots.deadline.take()));
+    slots.used = USED.with(|cell| cell.replace(slots.used));
+}
+
 /// Enters a `for ever within` loop whose deadline is the integer of the borrowed word `word`,
 /// in milliseconds. A value below 1, which verification refutes, cuts every wait at once; one
 /// beyond `u64` never passes.
@@ -170,4 +185,49 @@ fn observed(deadline: &Deadline) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deadline(period: u64) -> Deadline {
+        Deadline {
+            period,
+            at: Some(period),
+            iteration: 1,
+            owner: String::new(),
+            reported: Arc::new(AtomicU64::new(0)),
+            hit: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn period() -> Option<u64> {
+        DEADLINE.with(|cell| cell.borrow().as_ref().map(|deadline| deadline.period))
+    }
+
+    #[test]
+    fn a_parked_task_keeps_its_deadline_apart_from_the_worker_that_runs_another() {
+        std::thread::spawn(|| {
+            // Task A runs with a deadline on the worker.
+            adopt(Some(deadline(50)));
+            let mut a = Slots::default();
+            // A parks: the worker's own (empty) state comes back, and A's is kept.
+            swap_slots(&mut a);
+            assert_eq!(period(), None);
+            // Task B, without a deadline, runs on the same worker and parks.
+            adopt(None);
+            let mut b = Slots::default();
+            swap_slots(&mut b);
+            // A resumes with its own deadline, whatever B did.
+            swap_slots(&mut a);
+            assert_eq!(period(), Some(50));
+            swap_slots(&mut a);
+            // B resumes without one.
+            swap_slots(&mut b);
+            assert_eq!(period(), None);
+        })
+        .join()
+        .unwrap();
+    }
 }
