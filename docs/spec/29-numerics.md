@@ -8,13 +8,13 @@ This chapter holds the numeric types beyond the integers of `spec/03` and `spec/
 
 **What has landed.** The front end, the checker and the interpreter implement this chapter. Two parts are not implemented yet, and until they are, each refuses what it does not implement:
 - **Verification (§8).** No `F64` term is in the refinement language yet: a float literal, an operator, a comparison or a method of `F64` in a clause, a `where` or the predicate of `checked` is U2014. The verifier reads an `F64` value as a value of an uninterpreted sort, so it never states a fact about a float.
-- **Native code (§9).** `una build` reports a program that computes with `F64` as one the native backend does not compile yet. Ranges with float bounds (`x in 0.5..1.0`) and `F64 of` a unit (§12) are syntax errors until the same steps.
+- **Native code (§9).** `una build` reports a program that computes with `F64` as one the native backend does not compile yet. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
 
 ## 1. The type
 
 1. **`F64`** is a built-in type: an IEEE 754 binary64 value. Its values are every binary64 value that is not a NaN, and one NaN, the **canonical NaN**, whose bits are `0x7FF8000000000000` (positive, quiet, payload zero). There is no other NaN in the language (§6).
 2. **Distinct.** `F64` is distinct from `Int` and from every fixed-width integer. An operator with an `F64` and an integer operand is U2001, with a repair that converts the integer by `to_f64()` (§4).
-3. **Type arguments and labels.** `F64` is a legal type argument (`List[F64]`, `Map[F64, Text]`) and carries labels as `Int` does (`spec/07`).
+3. **Refinements, type arguments and labels.** `F64` MAY be refined (`kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0`) once the verifier encodes it (§8); until then such a `where` is U2014. `F64` is a legal type argument (`List[F64]`, `Map[F64, Text]`) and carries labels as `Int` does (`spec/07`).
 4. **Names.** A user kind, variant, capability or unit named `F64` is U1002.
 5. **Constraints** (`spec/20 §1`). `F64` satisfies `Eq` and `Ord` (§5), and never `Integer`. So `sort`, `min`, `max`, `contains` and `Map[F64, V]` accept it, and `sum` does not: a sum of floats depends on its order, so a program writes it with `fold`, in the order it chooses.
 
@@ -60,7 +60,7 @@ All operations are total: none fails, none has a precondition, and none generate
    | `x.is_zero()`, `x.is_positive_zero()`, `x.is_negative_zero()` | `Bool` | `x` is `0.0` or `-0.0`; `x` is `0.0`; `x` is `-0.0` |
    | `x.to_bits()` | `U64` | the bits; for a NaN, `0x7FF8000000000000` |
 
-   A rounding method keeps NaN, the infinities and the sign of a zero. A method name that is not in this table, on an `F64` receiver, resolves as a function of the package (`spec/10 §5`).
+   The label of `copy_sign`'s argument is the keyword `from`, which a call's argument may take as its label in edition `0.3`, and nothing else may (`spec/02`). A rounding method keeps NaN, the infinities and the sign of a zero. A method name that is not in this table, on an `F64` receiver, resolves as a function of the package (`spec/10 §5`).
 4. **No `round()`.** There is no method named `round`: the name says which tie rule runs.
 5. **`min` and `max` of the prelude** order by §5: `min(-0.0, b: 0.0)` is `-0.0`, `max(nan(), b: 1.0)` is NaN, and `min(nan(), b: 1.0)` is `1.0`, since NaN is the greatest `F64`. A clamp written with them, `min(max(x, b: lo), b: hi)`, maps NaN to `hi`; `x.clamp(lo:, hi:)` keeps NaN.
 6. **`abs` of the prelude** stays `abs(x: Int) -> Int`: `abs(x)` with an `F64` is U2001; `x.abs()` is the method.
@@ -92,7 +92,7 @@ All operations are total: none fails, none has a precondition, and none generate
 3. **IEEE comparison** is the methods of §3 rule 3, `x.ieee_lt(other: y)` and the others.
 4. **Consequences.** `==` is reflexive, symmetric and transitive, on `F64` and on every value that holds one; `<` is a strict total order, so `sort` is deterministic, `-0.0` sorts before `0.0` and NaN last; `Map[F64, V]` holds `-0.0` and `0.0` as two keys and NaN as one key.
 5. **Comparing with a literal zero is an error.** Every comparison of an `F64` with an operand that is a float literal of value zero, with or without unary `-` (`0.0`, `-0.0`, `0.000`), on either side, is U2033: `==`, `!=`, `<`, `<=`, `>` and `>=`, `is`, and a `when` arm. The repairs: `x.is_zero()`, `x.is_positive_zero()` or `x.is_negative_zero()` for an equality; `x.ieee_lt(other: 0.0)` and the other IEEE methods, then `x.is_sign_negative()`, for an ordering. No other comparison changes.
-6. **Other literal patterns.** A `when` arm whose pattern is any other float literal, and `is` with such a literal, are U2032, with a repair to an `if` that compares by `==` or by an IEEE method. `for` does not iterate over `F64`.
+6. **Other literal patterns.** A `when` arm whose pattern is any other float literal or a range, and `is` with such a literal, are U2032, with a repair to an `if` that compares by `==` or by an IEEE method. `for` does not iterate over `F64`.
 
 ## 6. Determinism
 
@@ -131,7 +131,7 @@ The result of every `F64` operation, and every output that depends on one, is bi
 
 ## 8. Verification
 
-The verifier's encoding of `F64` is the FloatingPoint theory of SMT-LIB, `(_ FloatingPoint 11 53)` with `RNE`, sliced and bounded as ADR 0114 rule 8 states. Until it lands, no `F64` term is in the refinement language (U2014 in a clause), and every query reads an `F64` value as a value of the uninterpreted sort `i!F64`, about which it states nothing; a query without an `F64` term is unchanged.
+The verifier's encoding of `F64` is the FloatingPoint theory of SMT-LIB, `(_ FloatingPoint 11 53)` with `RNE`, sliced and bounded as ADR 0114 rule 8 states. Until it lands, no `F64` term is in the refinement language (U2014 in a clause), and every query reads an `F64` value as a value of the uninterpreted sort `i!F64`, about which it states nothing; a query without an `F64` term is unchanged. Two consequences, both of which only refuse: a path behind a float condition is reachable for the verifier, so an obligation there may be reported refuted although only float facts make the path unreachable; and an `Ord` contract of a generic function called at `F64` is never proven.
 
 ## 9. Representation
 
@@ -160,7 +160,7 @@ The representation is not observable (`spec/16 §4`). The interpreter holds an `
 
 ## 13. Editions
 
-`F64`, float literals, the methods of §3, the conversions of §4, the prelude functions of §3 rule 9, U2031, U2032, U2033 and U6006 exist only in packages of edition `0.3`. They do not erase to edition `0.2`, under the carve-out of ADR 0114 rule 15 (`spec/13 §7`). A program that edition `0.2` can express gains from them only U1002, for a declaration named `F64`.
+`F64`, float literals, the methods of §3, the conversions of §4, the prelude functions of §3 rule 9, U2031, U2032, U2033 and U6006 exist only in packages of edition `0.3`. They do not erase to edition `0.2`, under the carve-out of ADR 0114 rule 15 (`spec/13 §7`). A program that edition `0.2` can express gains from them only U1002, for a declaration named `F64` and for a package function `to_f64` on integers, which the built-in conversion resolves ahead of.
 
 ## 14. Cost
 

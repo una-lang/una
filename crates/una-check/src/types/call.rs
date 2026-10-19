@@ -2289,7 +2289,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 38] = [
+const PRELUDE_LABELED: [&str; 42] = [
     "abs",
     "append",
     "at",
@@ -2330,6 +2330,12 @@ const PRELUDE_LABELED: [&str; 38] = [
     "trim",
     "trim_end",
     "trim_start",
+    // `F64` (`spec/29 §7`, `§10`, ADR 0114 rules 7.3 and 10.5): a parsed or converted value,
+    // and the failure of `parse_f64`, carry the labels of their argument.
+    "parse_f64",
+    "f64_from_bits",
+    "as_f64",
+    "json_number",
 ];
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the

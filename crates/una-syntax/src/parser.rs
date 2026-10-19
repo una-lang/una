@@ -16,7 +16,7 @@ use crate::ast::{
     TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
-use crate::intern::Interner;
+use crate::intern::{Interner, Symbol};
 use crate::lexer::{Lexed, starts_declaration};
 use crate::source::{FileId, Span};
 use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
@@ -62,6 +62,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         v0_2: lexed.keywords >= KeywordSet::V0_2,
         v0_3: lexed.keywords >= KeywordSet::V0_3,
         in_body: false,
+        from_label: lexed.from_label,
     };
     let tree = parser.file();
     Parsed {
@@ -119,6 +120,7 @@ pub fn parse_uses_clause(
         v0_2: true,
         v0_3: true,
         in_body: false,
+        from_label: None,
     };
     match parser.lone_uses_clause() {
         Ok(clause) if parser.errors.is_empty() => Ok(clause),
@@ -214,6 +216,9 @@ struct Parser<'a> {
     /// declaration keyword bound as a name is renamed by an edit (ADR 0096, amendment of
     /// 2026-10-15).
     in_body: bool,
+    /// Edition 0.3: the symbol of the argument label `from` (`spec/29 §3`), when the file has
+    /// one.
+    from_label: Option<Symbol>,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -3104,11 +3109,27 @@ impl<'a> Parser<'a> {
 
     fn arg(&mut self) -> Parse<Arg> {
         let start = self.span();
+        // Edition 0.3: `from:` labels an argument, as in `x.copy_sign(from: y)` (`spec/29 §3`);
+        // only here does the keyword `from` serve as a name.
+        let from = match self.from_label {
+            Some(symbol)
+                if self.v0_3
+                    && self.peek() == &TokenKind::Keyword(Keyword::From)
+                    && self.peek_at(1) == &TokenKind::Colon =>
+            {
+                Some(symbol)
+            }
+            _ => None,
+        };
         let labeled = matches!(
             self.peek(),
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_)
         ) && self.peek_at(1) == &TokenKind::Colon;
-        let label = if labeled {
+        let label = if let Some(name) = from {
+            let span = self.advance();
+            self.advance();
+            Some(Ident { name, span })
+        } else if labeled {
             let label = self.lower_name("an argument label")?;
             self.advance();
             Some(label)

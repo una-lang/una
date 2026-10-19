@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use una_diag::Code;
 
 use crate::error::{SyntaxError, SyntaxRepair};
-use crate::intern::Interner;
+use crate::intern::{Interner, Symbol};
 use crate::keywords::reserved_in;
 use crate::source::{FileId, SourceFile, Span};
 use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
@@ -28,6 +28,9 @@ pub struct Lexed {
     /// The U0103 errors that get a rename edit, so that a package can choose each new name
     /// across its files ([`rename_across`]).
     pub renames: Vec<Rename>,
+    /// Edition 0.3: the symbol of `from`, interned when the keyword `from` is followed by `:`,
+    /// which the parser reads as the argument label of `copy_sign(from: y)` (`spec/29 §3`).
+    pub from_label: Option<Symbol>,
 }
 
 /// A U0103 error of [`Lexed::errors`] that gets a rename edit (issue #75, #105, #125).
@@ -246,6 +249,17 @@ fn canonical_integer(raw: &str) -> String {
     } else {
         digits.to_owned()
     }
+}
+
+/// Whether the word at `offset` of `text`, a lowercase name, is followed by `(`: a method call
+/// such as `5.e2()`, which a float literal never is.
+fn method_call(text: &str, offset: usize) -> bool {
+    let rest = text.get(offset..).unwrap_or("");
+    let name = rest
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+        .count();
+    rest.get(name..).is_some_and(|after| after.starts_with('('))
 }
 
 /// Whether a float literal as written is malformed (ADR 0114 rule 2): an integer part or a
@@ -911,8 +925,8 @@ impl Lexer<'_> {
         if digit_after_point {
             self.pos += 1;
             self.consume_while(|c| c.is_ascii_digit() || c == '_');
-        } else if point && exponent_at(after + 1) {
-            // `1.e5`.
+        } else if point && exponent_at(after + 1) && !method_call(text, after + 1) {
+            // `1.e5`; `5.e2()` stays a call of a method named `e2`.
             self.pos += 1;
             malformed = true;
         } else if point
@@ -962,13 +976,13 @@ impl Lexer<'_> {
             .tokens
             .last()
             .is_some_and(|token| token.kind == TokenKind::Dot);
-        // Edition 0.3: `from` right before `:` is the label of `copy_sign(from: y)`
-        // (`spec/29 §3`); the keyword `from` is never followed by `:`.
-        let label_from =
-            word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':');
-        let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
-            || label_from
-        {
+        // Edition 0.3: `from` right before `:` may be the argument label of
+        // `copy_sign(from: y)` (`spec/29 §3`). It stays the keyword; the parser accepts it as a
+        // label in a call's arguments only, so no declaration can take the name.
+        if word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':') {
+            self.out.from_label = Some(self.interner.intern("from"));
+        }
+        let kind = if word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2 {
             TokenKind::LowerIdent(self.interner.intern(&word))
         } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
             TokenKind::Keyword(keyword)

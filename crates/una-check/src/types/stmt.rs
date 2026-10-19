@@ -1086,6 +1086,18 @@ impl<'a> Checker<'_, 'a, '_> {
                     // (`spec/18 §2`).
                     if let Ty::Fixed(int) = self.resolve(&scrutinee) {
                         self.range_bounds(range, int);
+                    } else if self.is_f64(&scrutinee) {
+                        // ADR 0114 rule 5.6: a range is never a pattern over an `F64`.
+                        let mut diagnostic = self.report.make(
+                            Code::U2032,
+                            pattern,
+                            "a range is not a pattern over an `F64`; compare in an `if`",
+                        );
+                        diagnostic.repairs.push(super::Report::advice(
+                            "write an `if` that compares with `<=` and `>=`, or with the IEEE methods, such as `x.ieee_ge(other: lo) and x.ieee_le(other: hi)`",
+                        ));
+                        self.report.push(diagnostic);
+                        problem = true;
                     } else if !self.vars.unify(&scrutinee, &Ty::Int) {
                         let value = self.show(&scrutinee);
                         self.report.error(

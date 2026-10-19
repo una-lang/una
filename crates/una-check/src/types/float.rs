@@ -90,11 +90,18 @@ impl Checker<'_, '_, '_> {
                 "the integer literal `{sign}{digits}` is not an `F64`; a float literal has a point"
             ),
         );
-        diagnostic.repairs.push(self.report.edit(
-            format!("write `{sign}{digits}.0`"),
-            span,
-            format!("{sign}{digits}.0"),
-        ));
+        if digits.chars().all(|c| c == '0') {
+            // `0.0` would be U2033 in a comparison (ADR 0114 rule 5.5): say both.
+            diagnostic.repairs.push(super::Report::advice(
+                "compare with zero by `x.is_zero()` or an IEEE method such as `x.ieee_lt(other: 0.0)`; elsewhere write `0.0`",
+            ));
+        } else {
+            diagnostic.repairs.push(self.report.edit(
+                format!("write `{sign}{digits}.0`"),
+                span,
+                format!("{sign}{digits}.0"),
+            ));
+        }
         self.report.push(diagnostic);
     }
 

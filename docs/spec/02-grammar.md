@@ -210,6 +210,8 @@ arg             = [ lower_ident ":" ] line_expr ;
 literal         = int_lit | text_lit | "true" | "false" | "unit" ;
 ```
 
+(v0.3, ADR 0114.) In edition `0.3`, `literal` also has `float_lit` (`spec/29 §2`), and an argument's label may be the keyword `from`, as in `x.copy_sign(from: y)` (`spec/29 §3`): `arg = [ ( lower_ident | "from" ) ":" ] line_expr`. Nowhere else does `from` serve as a name.
+
 ## 8. Context restrictions
 
 These rules are enforced after parsing and reported with the listed codes.

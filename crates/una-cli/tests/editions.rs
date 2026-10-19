@@ -150,6 +150,16 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
             ("U3026", "src/relay.una:83:12"),
         ],
     },
+    // ADR 0114 rule 15: a float literal, a parse error before edition 0.3. Unlike the
+    // constructs above it does not narrow (the carve-out of rule 15), so its twin is the
+    // package without the function that holds it.
+    Difference::Syntax {
+        case: "types/float_literal_edition_0_2",
+        edition_0_2: ("U0101", "src/m.una:8:23"),
+        edition_0_3: &[],
+        twin: "types/float_literal_edition_0_2_erased",
+        erased: ("src/m.una", "\npub half() -> F64 = 1.0\n"),
+    },
     // ADR 0114 rule 15: a declaration named `F64`, built in from edition 0.3.
     Difference::Stricter {
         case: "types/float_names_edition_0_2",

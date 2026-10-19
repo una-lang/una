@@ -3436,6 +3436,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                     part_spans.push(span);
                 }
                 TextPart::Interpolation(expr) => {
+                    // An `F64` is written by its shortest round-trip text (`spec/29 §7`).
+                    let prim = if self.is_f64_at(expr.span) {
+                        Prim::Float(una_core::FloatOp::ToText)
+                    } else {
+                        Prim::ToText
+                    };
                     let value = self.atom(lets, expr);
                     let t = self.temp();
                     // The text holds the value's fields in clear (`spec/10 §12` rule 14), so it
@@ -3445,7 +3451,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         t.clone(),
                         with_label(text_ty(), &label),
                         Bound::Rhs(Rhs::Prim {
-                            prim: Prim::ToText,
+                            prim,
                             args: vec![value],
                             arg_spans: vec![expr.span],
                             span: expr.span,

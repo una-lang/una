@@ -1068,12 +1068,24 @@ impl<'a> Checker<'_, 'a, '_> {
         let second_top = self.vars.peel(&second_ty);
         let second_magnitude = second_top.magnitude().clone();
         if !(clause && fixed::is_integer(&second_magnitude)) {
+            let mark = self.report.count();
             self.unify_at(
                 second.span,
                 &magnitude,
                 &second_magnitude,
                 Role::Condition(operand),
             );
+            // ADR 0114 rule 1.2: an integer operand of an `F64` operator converts by `to_f64()`.
+            if matches!(second_magnitude, Ty::F64) && fixed::is_integer(&magnitude) {
+                let text = self.report.text(first.span).to_owned();
+                let repair = self.report.edit(
+                    "convert the integer with `to_f64()`",
+                    first.span,
+                    format!("({text}).to_f64()"),
+                );
+                self.report
+                    .repair_since(mark, Code::U2001, second.span, repair);
+            }
         }
         self.operands.push(first_ty.clone());
         self.operands.push(second_ty.clone());
