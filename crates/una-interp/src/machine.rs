@@ -102,19 +102,26 @@ pub enum EventOutcome {
 }
 
 /// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Deadline {
     /// When it passes; `None` when it is beyond what the clock can hold.
     pub(crate) at: Option<std::time::Instant>,
+    /// The path of the task that runs the loop, whose control flow observes the deadline's
+    /// failures (`spec/26 §6`).
+    pub(crate) owner: Vec<usize>,
+    /// Whether a task the iteration started met the deadline, for the join of its block.
+    pub(crate) hit: bool,
     /// Whether the iteration's `timeout` event is in the trace already.
     pub(crate) reported: bool,
 }
 
 impl Deadline {
-    /// The deadline `ms` milliseconds from now.
-    pub(crate) fn after(ms: u64) -> Deadline {
+    /// The deadline `ms` milliseconds from now, of a loop run by the task at `owner`.
+    pub(crate) fn after(ms: u64, owner: Vec<usize>) -> Deadline {
         Deadline {
             at: std::time::Instant::now().checked_add(std::time::Duration::from_millis(ms)),
+            owner,
+            hit: false,
             reported: false,
         }
     }
@@ -1130,11 +1137,15 @@ impl<'p, 'w> Machine<'p, 'w> {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                if matches!(stop, Stop::Fail(_)) {
+                                    self.joined();
+                                }
                                 return Err(stop);
                             }
                         }
                     }
                     self.later.pop();
+                    self.joined();
                     return Ok(Value::Tuple(Rc::new(results)));
                 }
                 // `together for` (`spec/19 §6`): one task per element, in element order.
@@ -1158,11 +1169,15 @@ impl<'p, 'w> Machine<'p, 'w> {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
+                                if matches!(stop, Stop::Fail(_)) {
+                                    self.joined();
+                                }
                                 return Err(stop);
                             }
                         }
                     }
                     self.later.pop();
+                    self.joined();
                     return Ok(Value::List(Rc::new(results)));
                 }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
@@ -1361,7 +1376,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         self.deadline = outer;
                         return Err(stop);
                     }
-                    self.deadline = period.map(Deadline::after);
+                    self.deadline = period.map(|ms| Deadline::after(ms, self.task.clone()));
                     match self.iteration(env, caps, var, state, current, &Value::Unit, body) {
                         Ok((next, stopped)) => {
                             current = next;
@@ -1828,9 +1843,36 @@ impl<'p, 'w> Machine<'p, 'w> {
         result
     }
 
-    /// Appends the `timeout` event of the iteration in progress, once per iteration (ADR 0116
-    /// rule 11), with the path of its task.
+    /// An operation failed because the deadline of the iteration in progress passed (ADR 0116
+    /// rule 11). In the task that runs the loop, the iteration observes it here; in a task it
+    /// started, at the join of that task's block ([`Self::joined`]).
     fn timeout_event(&mut self) {
+        let Some(deadline) = self.deadline.as_mut() else {
+            return;
+        };
+        if self.task != deadline.owner {
+            deadline.hit = true;
+            return;
+        }
+        self.timeout_observed();
+    }
+
+    /// The join of a `together` or `together for` block: when the task that runs the loop
+    /// joins a block one of whose tasks met the deadline, the iteration observes it here.
+    fn joined(&mut self) {
+        if self
+            .deadline
+            .as_ref()
+            .is_some_and(|deadline| deadline.hit && self.task == deadline.owner)
+        {
+            self.timeout_observed();
+        }
+    }
+
+    /// Appends the iteration's one `timeout` event, with the path of the task that runs the
+    /// loop, the first time its control flow observes a failure the deadline caused: a trace
+    /// does not depend on which task met the deadline first (`spec/26 §6`).
+    fn timeout_observed(&mut self) {
         let Some(deadline) = self.deadline.as_mut() else {
             return;
         };
@@ -1838,7 +1880,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             return;
         }
         deadline.reported = true;
-        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        let task: Vec<String> = deadline.owner.iter().map(ToString::to_string).collect();
         self.trace.push(Event {
             seq: self.trace.len() + 1,
             task: task.join("."),

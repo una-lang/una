@@ -1,7 +1,10 @@
 //! The deadline of a `for ever within d` loop (`spec/26 §6`, ADR 0116 rule 11), as native code
 //! runs it: each iteration has the deadline `d` after its start, and every interruptible
 //! operation it waits on, or starts later, fails at once with its time-out failure once the
-//! deadline has passed. The first such failure of an iteration appends one `timeout` event.
+//! deadline has passed. The iteration's one `timeout` event is appended, with the path of the
+//! task that runs the loop, where the iteration's own control flow first observes such a
+//! failure: its own operation's, or the join of a block one of whose tasks met the deadline.
+//! So the trace does not depend on which task met it first.
 //!
 //! A loop arms the deadline at each iteration, O(1), and the tasks of its body start from the
 //! one of the iteration that starts them, so the deadline cuts their waits too.
@@ -25,9 +28,12 @@ pub(crate) struct Deadline {
     at: Option<Instant>,
     /// The iteration, from 1.
     iteration: u64,
-    /// The last iteration whose `timeout` event is in the trace, shared with the tasks the
-    /// loop's iterations start, so that each iteration has one event.
+    /// The path of the task that runs the loop.
+    owner: String,
+    /// The last iteration whose `timeout` event is in the trace.
     reported: Arc<AtomicU64>,
+    /// The last iteration one of whose tasks met the deadline, shared with those tasks.
+    hit: Arc<AtomicU64>,
 }
 
 thread_local! {
@@ -47,13 +53,16 @@ pub fn enter(word: i64) {
     } else {
         u64::try_from(&value).unwrap_or(u64::MAX)
     };
+    let owner = with_state(|state| state.path.clone()).unwrap_or_default();
     USED.with(|used| used.set(true));
     DEADLINE.with(|cell| {
         *cell.borrow_mut() = Some(Deadline {
             period,
             at: None,
             iteration: 0,
+            owner,
             reported: Arc::new(AtomicU64::new(0)),
+            hit: Arc::new(AtomicU64::new(0)),
         });
     });
 }
@@ -106,26 +115,52 @@ pub(crate) fn left() -> Option<Duration> {
     })
 }
 
-/// Appends the iteration's `timeout` event, after the first operation the deadline made fail in
-/// it, with the path of the task that met it.
+/// An operation failed because the deadline of the iteration in progress passed. In the task
+/// that runs the loop, the iteration observes it here; in a task it started, at the join of
+/// that task's block ([`joined`]).
 pub(crate) fn timed_out() {
-    let first = DEADLINE.with(|cell| {
-        cell.borrow().as_ref().is_some_and(|deadline| {
-            deadline
-                .reported
-                .fetch_max(deadline.iteration, Ordering::SeqCst)
-                < deadline.iteration
-        })
-    });
-    if !first {
+    let Some(deadline) = current() else {
+        return;
+    };
+    let path = with_state(|state| state.path.clone()).unwrap_or_default();
+    if path == deadline.owner {
+        observed(&deadline);
+    } else {
+        deadline.hit.fetch_max(deadline.iteration, Ordering::SeqCst);
+    }
+}
+
+/// The join of a `together` or `together for` block that ended normally or failed: when the
+/// task that runs the loop joins a block one of whose tasks met the deadline, the iteration
+/// observes it here, after the block's events.
+pub(crate) fn joined() {
+    let Some(deadline) = current() else {
+        return;
+    };
+    if deadline.hit.load(Ordering::SeqCst) < deadline.iteration {
         return;
     }
+    let path = with_state(|state| state.path.clone()).unwrap_or_default();
+    if path == deadline.owner {
+        observed(&deadline);
+    }
+}
+
+/// Appends the iteration's one `timeout` event, with the path of the task that runs the loop.
+fn observed(deadline: &Deadline) {
+    if deadline
+        .reported
+        .fetch_max(deadline.iteration, Ordering::SeqCst)
+        >= deadline.iteration
+    {
+        return;
+    }
+    let owner = deadline.owner.clone();
     with_state(|state| {
-        let path = state.path.clone();
         if let Some(trace) = state.trace.as_mut() {
             trace.push(Event {
                 seq: trace.len() + 1,
-                task: path,
+                task: owner,
                 instance: String::new(),
                 capability: String::new(),
                 op: String::new(),

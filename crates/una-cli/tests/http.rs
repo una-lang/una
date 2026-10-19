@@ -684,3 +684,108 @@ pub main() -> Unit
     assert_eq!(trace, native);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_timeout_event_of_tasks_is_the_same_in_every_run_and_both_engines() {
+    // `spec/26 §6`: two tasks of a `together` block in the body both wait on a server that
+    // never answers and meet the deadline at about the same time, natively on two threads.
+    // The iteration's one `timeout` event carries the loop's own task and comes at the block's
+    // join, after the block's events, so the trace does not depend on which task met the
+    // deadline first: every native run writes the same trace, which is the interpreter's.
+    let port = silent_server();
+    let program = format!(
+        r#"module poll
+
+import std.time (millisecond)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @http: Http[get]
+  diverges
+=
+  let edit n = 0
+  for ever within 50 * millisecond
+    stop when n == 2
+    together
+      let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+      let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None)
+    @console.print("iteration {{n}}")
+    n = n + 1
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-within-tasks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita tasked\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry poll\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/poll.una"), program).unwrap();
+    let flags = ["--http-timeout", "30"];
+
+    let mut args = vec!["--json", "run", "."];
+    args.extend(flags);
+    let interpreted = una(&dir, &args);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    let trace = document["trace"].clone();
+    let shape: Vec<(String, String)> = trace
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                event["task"].as_str().unwrap_or("").to_owned(),
+                event["outcome"]["variant"]
+                    .as_str()
+                    .or_else(|| event["outcome"]["kind"].as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("1", "TimedOut"),
+        ("2", "TimedOut"),
+        ("", "timeout"),
+        ("", "ok"),
+        ("1", "TimedOut"),
+        ("2", "TimedOut"),
+        ("", "timeout"),
+        ("", "ok"),
+    ]
+    .iter()
+    .map(|(task, outcome)| ((*task).to_owned(), (*outcome).to_owned()))
+    .collect();
+    assert_eq!(shape, expected, "{trace}");
+
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    for run in 0..5 {
+        let trace_file = dir.join(format!("trace-{run}.json"));
+        let native = Command::new(dir.join("target/una/tasked"))
+            .args(flags)
+            .arg("--trace")
+            .arg(&trace_file)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            "iteration 0\niteration 1\n"
+        );
+        let native: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+        assert_eq!(trace, native, "run {run}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
