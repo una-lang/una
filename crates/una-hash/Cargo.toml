@@ -1,0 +1,23 @@
+[package]
+name = "una-hash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# The toolchain's own test builds only (ADR 0119 rule 9): a fixed process key, the `probes`
+# counter, the constant-hash mode and a simulated missing random source. No shipped `una` or
+# `libuna_rt.a` enables it; the release gate looks for its marker symbol with `nm`.
+test-hooks = []
+
+[dependencies]
+getrandom.workspace = true
+
+# The tests use the test-only hooks; a dev-dependency never reaches a shipped build.
+[dev-dependencies]
+una-hash = { path = ".", features = ["test-hooks"] }
+
+[lints]
+workspace = true
