@@ -1222,6 +1222,7 @@ mod missing_values_tests {
             entry: Vec::new(),
             divisions: Vec::new(),
             unencodable: Some("mode == unit".to_owned()),
+            full: None,
         };
         let refutation = outcome(&obligation, &[], &refuted(&[], None), None, false);
         assert_eq!(refutation.status, ObligationStatus::Unknown);

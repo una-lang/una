@@ -3988,7 +3988,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             // `n.to_f64()` of an integer, by the integer's type (ADR 0114 rule 8.1).
             Prim::Float(FloatOp::FromInt) => {
                 let value = arg(0)?;
-                to_f64(value.f, integer_type(&value.ty))
+                to_f64(value.f, integer_type(&value.ty))?
             }
             // The other operations of the refinement language; a code-only method's result is
             // a fresh binder (ADR 0114 rule 8.1).
