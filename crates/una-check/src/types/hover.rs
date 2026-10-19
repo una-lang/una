@@ -31,6 +31,7 @@ enum Node {
     /// A measured type (ADR 0104): its unit, owned, and its magnitude type.
     Measured(super::units::Unit, HoverType),
     List(HoverType),
+    Dense(super::ty::Dense, HoverType),
     Map(HoverType, HoverType),
     Kind(KindId, Arc<[HoverType]>),
     Param(usize),
@@ -72,6 +73,7 @@ impl TypeView for HoverType {
             Node::Labeled(label, inner) => View::Labeled(label, inner),
             Node::Measured(unit, inner) => View::Measured(unit, inner),
             Node::List(element) => View::List(element),
+            Node::Dense(dense, element) => View::Dense(*dense, element),
             Node::Map(key, value) => View::Map(key, value),
             Node::Kind(id, args) => View::Kind(*id, args),
             Node::Param(index) => View::Param(*index),
@@ -181,6 +183,10 @@ impl Snapshots {
             Ty::List(element) => {
                 let element = self.shared(element);
                 self.node(Node::List(element))
+            }
+            Ty::Dense(dense, element) => {
+                let element = self.shared(element);
+                self.node(Node::Dense(*dense, element))
             }
             Ty::Map(key, value) => {
                 let (key, value) = (self.shared(key), self.shared(value));

@@ -279,6 +279,14 @@ impl Writer<'_> {
             ),
             Term::Len(value) => node!(Len, "value" => self.term(value)),
             Term::Has { map, key } => node!(Has, "map" => self.term(map), "key" => self.term(key)),
+            // ADR 0120 rule 33: the shape functions and the elements of a dense value.
+            Term::Shape { fun, value } => {
+                node!(Shape, "fun" => s(fun.as_str()), "value" => self.term(value))
+            }
+            Term::Element { value, indices } => node!(Element,
+                "value" => self.term(value),
+                "indices" => J::Arr(indices.iter().map(|index| self.term(index)).collect()),
+            ),
             Term::Proj { value, index } => {
                 node!(Proj, "value" => self.term(value), "index" => n(*index))
             }
@@ -418,6 +426,7 @@ impl Writer<'_> {
                 "kind",
                 s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
             )])),
+            Prim::Shape(fun) => node!(Shape, "fun" => s(fun.as_str())),
             // ADR 0120: an operation of `Decimal`, its `DecimalOp` with its static scales.
             Prim::Decimal(op) => node!(Decimal, "value" => self.decimal_op(*op)),
         }

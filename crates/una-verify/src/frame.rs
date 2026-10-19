@@ -1,5 +1,6 @@
 //! The length frame of a loop (ADR 0071): which lists the loop updates keep their length, so
-//! the verifier can assume it in the body and after the loop.
+//! the verifier can assume it in the body and after the loop. In edition 0.4 it is the shape
+//! frame (ADR 0120 V4): an array keeps its length, and a matrix its rows and its columns.
 //!
 //! The analysis is syntactic, over Core, in one pass over the body. Each name gets the set of
 //! state positions whose length at the start of the iteration it shares; a tuple gets one such
@@ -7,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_core::{Atom, BinOp, Bound, Clause, Expr, Name, Path, Rhs, Term, Type};
+use una_core::{Atom, BinOp, Bound, Clause, Expr, Name, Path, Rhs, ShapeFun, Term, Type};
 use una_syntax::Span;
 
 /// The state positions whose starting length a value shares, per component of the value: one
@@ -174,16 +175,27 @@ impl<'p, 'l> Frames<'p, 'l> {
             Rhs::Tuple(atoms) => atoms.iter().map(|atom| single(atom, env)).collect(),
             // ADR 0071 D1 rule 2: the component `j` of the result keeps the length of the
             // argument for `p` when the callee ensures `p'.len == old(p).len`, where `p'` is
-            // that component.
+            // that component. ADR 0120 V4: a matrix keeps its shape when the callee ensures
+            // both `p'.rows == old(p).rows` and `p'.columns == old(p).columns`.
             Rhs::Call { function, args, .. } => {
                 let Some((params, ensures)) = (self.contract)(function) else {
                     return Vec::new();
                 };
-                let mut shape: Shape = Vec::new();
+                let mut kept: BTreeMap<(usize, &Name), BTreeSet<Option<ShapeFun>>> =
+                    BTreeMap::new();
                 for clause in ensures {
-                    let Some((component, param)) = keeps_length(&clause.term) else {
+                    if let Some((component, param, fun)) = keeps_length(&clause.term) {
+                        kept.entry((component, param)).or_default().insert(fun);
+                    }
+                }
+                let mut shape: Shape = Vec::new();
+                for ((component, param), funs) in kept {
+                    let whole = funs.contains(&None)
+                        || (funs.contains(&Some(ShapeFun::Rows))
+                            && funs.contains(&Some(ShapeFun::Columns)));
+                    if !whole {
                         continue;
-                    };
+                    }
                     let Some(position) = params.iter().position(|(name, _)| name == param) else {
                         continue;
                     };
@@ -233,10 +245,11 @@ fn join(a: Option<Shape>, b: Option<Shape>) -> Option<Shape> {
     }
 }
 
-/// `result.j.len == p.len`, either way round: the component and the parameter it keeps the
-/// length of. In `ensures`, an `edit` parameter's final value is `result.j` and its value on
-/// entry, `old(p)`, is `p`.
-fn keeps_length(term: &Term) -> Option<(usize, &Name)> {
+/// `result.j.len == p.len`, either way round, or `result.j.rows == p.rows` and the same of
+/// `columns` (ADR 0120 V4): the component, the parameter it keeps the length of, and the
+/// shape function, `None` for `len`. In `ensures`, an `edit` parameter's final value is
+/// `result.j` and its value on entry, `old(p)`, is `p`.
+fn keeps_length(term: &Term) -> Option<(usize, &Name, Option<ShapeFun>)> {
     let Term::Binary {
         op: BinOp::Eq,
         left,
@@ -245,26 +258,39 @@ fn keeps_length(term: &Term) -> Option<(usize, &Name)> {
     else {
         return None;
     };
-    let component = |term: &Term| match term {
-        Term::Len(inner) => match inner.as_ref() {
-            Term::Proj { value, index } if matches!(value.as_ref(), Term::Result) => Some(*index),
+    let component = |term: &Term| {
+        let (inner, fun) = shape_function(term)?;
+        match inner {
+            Term::Proj { value, index } if matches!(value.as_ref(), Term::Result) => {
+                Some((*index, fun))
+            }
             _ => None,
-        },
-        _ => None,
+        }
     };
-    match (component(left), param(right)) {
-        (Some(index), Some(name)) => Some((index, name)),
+    let found = match (component(left), param(right)) {
+        (Some(found), Some(name)) => Some((found, name)),
         _ => component(right).zip(param(left)),
+    };
+    match found {
+        Some(((index, fun), (name, other))) if fun == other => Some((index, name, fun)),
+        _ => None,
     }
 }
 
-/// `p.len`: the parameter whose length a term is.
-fn param(term: &Term) -> Option<&Name> {
+/// The value a shape term applies to, and its function: `None` for `len`.
+fn shape_function(term: &Term) -> Option<(&Term, Option<ShapeFun>)> {
     match term {
-        Term::Len(inner) => match inner.as_ref() {
-            Term::Var(name) => Some(name),
-            _ => None,
-        },
+        Term::Len(inner) => Some((inner.as_ref(), None)),
+        Term::Shape { fun, value } => Some((value.as_ref(), Some(*fun))),
+        _ => None,
+    }
+}
+
+/// `p.len` or `p.rows` or `p.columns`: the parameter whose shape a term is, and the function.
+fn param(term: &Term) -> Option<(&Name, Option<ShapeFun>)> {
+    let (inner, fun) = shape_function(term)?;
+    match inner {
+        Term::Var(name) => Some((name, fun)),
         _ => None,
     }
 }

@@ -2,7 +2,7 @@
 
 Status: Normative, v0.3 (ADR 0114; the chapter of the numeric foundation, ADR 0121 rule 20).
 
-This chapter holds the numeric types beyond the integers of `spec/03` and `spec/18`. It opens with `F64`, IEEE 754 binary64, the rules of ADR 0114; the other types of the numeric foundation (ADR 0120) join it in later sections.
+This chapter holds the numeric types beyond the integers of `spec/03` and `spec/18`. It opens with `F64`, IEEE 754 binary64, the rules of ADR 0114; the other types of the numeric foundation (ADR 0120) join it in later sections: the dense values `Array[T]` and `Matrix[T]` of edition `0.4` are §17.
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`). In editions `0.1` and `0.2`, `F64` is an ordinary name, `1.0` keeps its error (U0101), `to_f64` resolves as any function name does, and the prelude has none of the functions of §3 rule 9.
 
@@ -249,3 +249,113 @@ Every operator and method is O(1): one instruction, or a routine of bounded size
     - U1002 for an imported `to_decimal` holds for a function of a module outside the package, which only dependencies will declare; the edition ledger test of ADR 0121 that pins it, and the other items of ADR 0120's table, waits for that record's test;
     - an obligation's goal text shows coefficients, such as `result >= 0` for `it >= 0.00`; a counterexample shows values.
 15. **Diagnostics.** U2037, a decimal scale out of place: a scale that is not an integer literal from 0 to 38, the `scale` of `parse_decimal` and `as_decimal` included; a literal with a nonzero digit beyond its scale, also as an operator's operand or as `by:`, or whose coefficient passes the cap; a product or a remainder of scale above 38; `widen` to a smaller scale, or `rescale` or `rescale_exact` to a scale that is not smaller; a prelude function with a scale named as a value (ADR 0120, amendment of 2026-10-19).
+
+## 17. Dense values
+
+Edition `0.4` (ADR 0120 rules 26 to 47, V4, IF2 to IF8). Everything in this section exists only in packages of edition `0.4`; in editions `0.1` to `0.3`, `Array` is only the variant `Json.Array`, `Matrix`, `Tensor` and `Lu` are ordinary names, and the prelude has none of the functions of rule 6.
+
+**What has landed.** The front end, the checker, the verifier and the interpreter implement `Array[T]` and `Matrix[T]` with element types `F64` and `I8` to `U64`. Not yet implemented, and refused until their steps land: `Tensor[T]` and `Lu[T]` (each is U1001 as a type, and U1002 as a declared name), the factorizations and solves (`lu`, `cholesky`, `solve`, `solve_lower`, `solve_upper`), `to_finite`, the element types `F32`, `Complex[F64]`, `Complex[F32]` and the measured ones, `simd required`, and native code: `una build` reports a program that holds a dense value as one the native backend does not compile yet.
+
+1. **Types.** `Array[T]` and `Matrix[T]` are built-in types. `Array[T]` takes any element type: it is the language's one fixed-length array. `Matrix[T]` takes a numeric element type, `F64` or one of `I8` to `U64`, or a refinement of one (`Matrix[I32 in 0..1000]`); any other, a type parameter included, is U2002, at the type or at a call whose result would be one (`matrix_filled(rows: 1, columns: 1, value: "a")`). A kind, variant, capability or unit named `Array`, `Matrix`, `Tensor` or `Lu` is U1002, and no declaration hides the types. The prelude's variant `Json.Array` keeps its name: it is a constructor, written with parentheses, and the type is written with brackets, so the two never meet; `Array(...)` where an `Array[T]` is expected is U2001, with the repair to `array(...)`.
+2. **Values.** A dense value is a shape and its elements: an `Array` has a length, a `Matrix` rows and columns, each at least 0. Values are immutable. `==` compares the shapes, then each element by its type's `==`, in row-major order; a dense value satisfies `Eq` when its element type does, and never `Ord`. The representation is not observable (`spec/16 §4`): numeric elements live in one buffer, row-major, and a float element there is canonical (§6).
+3. **The numeric methods.** The methods of rules 7 to 12 exist on numeric elements only, as each rule says; on another element type, the name resolves as a function of the package (`spec/10 §5`). The functions of the prelude that implement the methods are reached by their receiver only: no name in a program finds them.
+4. **Shapes and indexing.** These are in the refinement language: `a.len`, `m.rows` and `m.columns`, each an `Int` of at least 0, and `a.get(index: i)` and `m.get(row: i, column: j)` over integer elements. An element of `F64` in a clause is U2014 until §8 lands.
+
+   | Method | Result | Contract |
+   | --- | --- | --- |
+   | `a.get(index: i)` | `T` | `requires 0 <= i and i < a.len`; `ensures result == a.get(index: i)` |
+   | `m.get(row: i, column: j)` | `T` | `requires 0 <= i and i < m.rows and 0 <= j and j < m.columns` |
+   | `a.at(index: i)`, `m.at(row: i, column: j)` | `Option[T]` | `None` exactly when an index is out of range |
+   | `edit a.set(index: i, item: x)`, `edit m.set(row: i, column: j, item: x)` | `Unit` | the `requires` of `get`; `ensures` the shape is unchanged and `get` at that position is `x` |
+
+   `get` and `set` keep their run-time bounds check in every build. Its failure can come only from a proven precondition that was false, a verifier bug: an internal abort (U8001), never a failure the program handles. Every dense method that takes its receiver by `edit` is written `edit x.m(...)`, as a whole statement (U2020, U3013); a method that reads its receiver is not.
+5. **Views.** These are O(1), share the storage of the value they come from, and are values like any other. Bounds are half-open, `from` included and `until` excluded:
+
+   | View | Requires | Ensures |
+   | --- | --- | --- |
+   | `a.slice(from: i, until: j)` | `0 <= i and i <= j and j <= a.len` | `result.len == j - i` |
+   | `m.row(index: i)` | `0 <= i and i < m.rows` | `result.len == m.columns` |
+   | `m.column(index: j)` | `0 <= j and j < m.columns` | `result.len == m.rows` |
+   | `m.block(row_from: i, row_until: j, column_from: k, column_until: l)` | `0 <= i and i <= j and j <= m.rows and 0 <= k and k <= l and l <= m.columns` | `result.rows == j - i and result.columns == l - k` |
+   | `m.transpose()` | | `result.rows == m.columns and result.columns == m.rows` |
+
+   `x.compact()` copies a view into storage of its own, O(size), and ensures the same shape; until then, a view keeps its parent's whole storage alive. `slice` and `compact` exist on every `Array`; the other views on numeric elements.
+6. **Construction.** The prelude gains these functions; a package declaration MAY reuse one of the names and wins over it (`spec/10 §11` rule 5):
+
+   | Function | Result | Contract |
+   | --- | --- | --- |
+   | `array(xs: List[T])` | `Array[T]` | `ensures result.len == xs.len` |
+   | `array_filled(length: n, value: x)` | `Array[T]` | `requires n >= 0`; `ensures result.len == n` |
+   | `matrix(rows: r, columns: c, elements: xs)` | `Matrix[T]` | `requires r >= 0 and c >= 0 and xs.len == r * c`, row-major; `ensures result.rows == r and result.columns == c` |
+   | `matrix_filled(rows: r, columns: c, value: x)` | `Matrix[T]` | `requires r >= 0 and c >= 0`; the same `ensures` |
+   | `matrix_diagonal(values: a)` | `Matrix[T]` | `ensures result.rows == a.len and result.columns == a.len`; `a` on the diagonal, `+0` of the element type elsewhere |
+
+   **Computed elements keep no refinement.** A function that computes new elements, rather than returning elements it was given, gives its result over the element type's base: `matrix_diagonal` places `+0` off the diagonal, so over `I32 in 1..10` it gives a `Matrix[I32]`, and so do every reduction and product of rules 9 and 10 and the element-wise operators of rule 7. A refinement of the element type flows through only where every element of the result is one of the arguments' (`spec/03 §3`, ADR 0103 rule 5).
+
+7. **Element-wise operators** (numeric elements).
+   - `x + y` and `x - y` between two dense values of one type and one shape, and `-x`, apply the element type's operator to each element. Their precondition is the same shape: equal lengths, or equal rows and equal columns. Each is the `zip_map` (or `map`) of rule 8 with the lambda `fn(p, q) -> p + q`; on a fixed-width element type it carries that lambda's `overflow` obligation over two values of the element type, proven when the element type is a refinement that bounds it, and refuted otherwise. A program that means wrapping or saturating arithmetic writes it in a `zip_map`.
+   - `k * x`, `x * k` and `x / k`, with `k` a scalar of the element type, apply the operator to each element: `x / k` divides, never multiplies by a reciprocal. On fixed-width elements they carry the same `overflow` obligation, and `x / k` the `division` obligation once.
+   - **No `*` and no `/` between two dense values:** U2001, with the repairs `x.multiply(by: y)`, the matrix product, and `x.multiply_elements(by: y)` (for `/`, `x.divide_elements(by: y)`). For two square matrices both are well shaped, so the shapes cannot tell which one a program means.
+   - **No implicit broadcasting:** a dense value and a scalar under `+` or `-`, a scalar divided by a dense value, `mod`, an `Array` with a `Matrix`, and an operator on elements that are not numeric, are U2001. A broadcast is written with `map`, which captures the scalar.
+   - `x.multiply_elements(by: y)` and `x.divide_elements(by: y)`, on `F64` elements, of one shape.
+   - The operators are not in the refinement language (U2014 in a clause).
+8. **Element-wise functions** (numeric elements). `x.map(each: f)` and `x.zip_map(with: y, each: g)` give a dense value of the shape of `x` (`zip_map` requires the same shape); `edit x.update(each: f)` replaces each element in place; `x.fold(initial: v, step: g)` visits the elements in row-major order, left to right. The function's type has no `uses` and no `fails`, and the function is called once per element, in row-major order. `a.to_list()` gives the elements of an array as a `List[T]`, O(n).
+9. **Reductions** (`F64` elements unless stated):
+
+   | Method | Result | Definition |
+   | --- | --- | --- |
+   | `a.sum()`, `m.sum()` | `F64` | rule 13 |
+   | `m.row_sums()`, `m.column_sums()` | `Array[F64]` | each row's or column's sum by rule 13 |
+   | `a.dot(with: b)` | `F64` | requires `a.len == b.len`; rule 14 |
+   | `a.norm2()` | `F64` | rule 15 |
+   | `x.all_finite()` | `Bool` | every element finite |
+   | `a.sum_exact()`, `m.sum_exact()`, `a.dot_exact(with: b)` | `Int` | fixed-width elements; exact |
+
+10. **Product kernels** (`F64` elements):
+
+    | Method | Contract | Definition |
+    | --- | --- | --- |
+    | `a.multiply(by: b)` | `requires a.columns == b.rows`; `ensures result.rows == a.rows and result.columns == b.columns` | each element by rule 14 from `+0` |
+    | `m.multiply_array(by: v)` | `requires m.columns == v.len`; `ensures result.len == m.rows` | each element by rule 14 from `+0` |
+    | `edit c.add_product(of: a, and: b)` | `requires c.rows == a.rows and a.columns == b.rows and b.columns == c.columns`; shape kept | each element by rule 14 from `c`'s element |
+    | `edit y.add_scaled(x, by: k)` | `requires y.len == x.len`; length kept | `y_i = fma(k, x_i, y_i)` |
+    | `edit x.scale(by: k)` | shape kept | `x_i * k` |
+
+    So `u.dot(with: v)`, element (i, j) of `a.multiply(by: b)` when row i of `a` is `u` and column j of `b` is `v`, and element i of `m.multiply_array(by: v)` when row i of `m` is `u`, are the same chain and the same bits. Each kernel checks the shape it ensures before it returns; a violation is an internal abort.
+11. **Updates.** A method that takes its receiver by `edit` updates the storage in place when the value and its storage are held once, and otherwise copies the receiver's own elements into fresh storage first, O(size of the receiver): an update of a view never changes its parent. No dense method fails.
+12. **Rendering.** `to_text`, interpolation and the Una form write the construction call that rebuilds the value, elements in row-major order: `array([1.0, 2.0])`, `matrix(rows: 2, columns: 2, elements: [1.0, 2.0, 3.0, 4.0])`. JSON goes through `to_list()` and `array(...)`, so `spec/23` does not change.
+
+**Definitions by scalar chains.** Each element of a dense result is computed by a chain of the operations of §3, with operands and an order that these rules fix. An implementation MAY block, vectorize, and run independent chains, or the independent blocks of rule 14, in any order or at once; it MUST NOT change a chain. So every engine, on every target, gives the bits of the plain loops of these rules. While edition `0.4` is a preview, the lane width L of rule 13 and the block size KB of rule 14 are unsettled points (ADR 0121 rule 5); every other part of the chains is settled.
+
+13. **Lane-blocked sums.** A sum of n `F64` elements uses L = 32 lanes, 256 bytes of elements: every lane starts at `+0`; element k, in row-major order, is added to lane `k mod 32`, in increasing k (`lane = lane + x_k`); then the lanes combine in a fixed tree, for w = 16, 8, 4, 2, 1, lane l becoming `lane_l + lane_(l+w)` for each l below w; the result is lane 0. So a sum of no elements, and a sum whose terms are all `-0.0`, is `+0.0`. The last digits of a sum can differ from a left-to-right loop; a program that needs that order writes `fold`.
+14. **Inner products, in blocks of KB = 64.** For K terms with factors x_k and y_k: the terms are cut into consecutive blocks of 64, the last one shorter; each block is one chain from `+0`, `p = fma(x_k, y_k, p)` in increasing k; the accumulator starts at `+0` (at the element of `c` for `add_product`), and each block's p is added to it in block order, `s = s + p`. With K = 0, the result is the accumulator's start.
+15. **`norm2`, scaled.** With M the largest `|x_k|` by totalOrder: `+0.0` when M is zero or there is no element; M when M is NaN or an infinity; otherwise, with e the integer such that `2^(e-1) <= M < 2^e`, each x_k is scaled to `ldexp(x_k, -e)`, the scaled values' sum of squares is the dot product of rule 14 of the scaled array with itself, and the result is `ldexp(sqrt(that sum), e)`. `ldexp(y, k)` is `y × 2^k` correctly rounded, ties to even, computed without forming `2^k`. So `norm2` overflows only when the norm itself exceeds the largest finite value, and `array([1.0e-200]).norm2()` is `1.0e-200`.
+16. **No early exit.** `==` and `all_finite` compare or scan every element, with a flag, and decide after.
+
+**Verification.**
+
+17. **Sorts and functions.** Each instantiated dense type is an uninterpreted sort, `i!Array_<T>` and `i!Matrix_<T>`, with `i!len!`, `i!rows!` and `i!columns!` into `Int`, each with the ground fact `>= 0` for every term that occurs, and the element `i!get!<sort>` from the value and one `Int` per axis into the element's sort. The `requires` and `ensures` of the methods are those of the prelude, which is trusted and not verified (`spec/12 §3`); each kernel checks its shape `ensures` when it returns. Facts about the elements other than a written one would need a quantifier, so they are not stated, as for `set` on a list.
+18. **The shape frame.** The length frame of `spec/17 §5` rule 3 extends to shapes: a dense binding that a loop updates keeps its shape when every completing path gives it a value whose callee ensures an unchanged shape, its length for an array, its rows and its columns for a matrix, as every `edit` method of this section does. The verifier then assumes the starting shape in the body and after the loop, so this loop proves every `get` and `set` in bounds:
+
+    ```una
+    for i in 0..<m.rows
+      for j in 0..<m.columns
+        let x = m.get(row: i, column: j)
+        edit m.set(row: i, column: j, item: x * 2.0)
+    ```
+
+    The read comes first, as its own `let`: a call that passes `m` by `edit` cannot read `m` in its other arguments (U2018, `spec/17 §3`).
+
+    The same loop over `0..m.rows`, which reaches `i == m.rows`, is refuted at `get`, U5001, with the counterexample `i == m.rows`.
+19. **What verifies:** the shape preconditions of a whole computation, products included; indices in loops over the shape; views and their shapes. **What does not:** values of sums and products, and facts over all the elements, which a program states at a checked boundary or tests with `all_finite()`.
+
+**Information flow.**
+
+20. **Positions.** A dense type has a top position, which covers its shape and its existence, and an element position: `Matrix[secret F64]` has `public` shapes and `secret` elements, as `List[secret F64]` has. Flows are covariant.
+21. **Reads.** `len`, `rows` and `columns` take the top label. `get` and `at` take the element label joined with the top label and every label of the indices; the top of `at`'s `Option` takes the top label and the indices' labels. A view's top takes its value's top and the labels of its bounds or index.
+22. **Writes.** The item of `set` flows into the element position, joined with the program counter. Where a value lands reveals its index, so an index above `public` is U4001: in this step the index of `set` is a `public` argument, which is stricter than ADR 0120 IF4 (a labeled index into elements of at least its label); a later step may admit that case.
+23. **Element-wise operations,** `map`, `zip_map` and `update`: each result element carries the labels of the operand elements and of the scalars and captured values, and the top the operands' tops.
+24. **Reductions and kernels.** A sum, a product, a norm and `all_finite` depend on many elements: a scalar result, and every position of a dense result, carries the labels of every element and top of every input. The kernels that update their receiver from other dense values (`add_product`, `add_scaled`) flow the inputs' top labels into the receiver's element position too (U4001 above it).
+25. **What stays out of model:** timing, as `spec/07 §1` states, and termination by the memory budget: whether a buffer is refused (U6003) is decided by a shape, so a run that builds a dense value of a `secret` shape may stop or not depending on it, the resource channel of a list of `secret` length. The `out_of_model` entries `timing` and the budget's own cover both.
+
+**Cost.** `get`, `set`, `at` and the shape terms are O(1); the views of rule 5 are O(1); `compact`, a copy on write and `to_list` are O(n); element-wise operations, `map`, `zip_map`, `update`, `fold`, the sums, `dot`, `norm2`, `all_finite` and `==` are O(n); `multiply_array` is O(mn) and `multiply` and `add_product` O(mkn), by the chains of rule 14; Strassen-type products are not used. Every buffer is checked against the memory budget before it is allocated, in checked arithmetic, and a refused one is U6003. The interpreter computes every `fma` by the project's routine of §6, so its kernels are slower than native code's, with the same bits.

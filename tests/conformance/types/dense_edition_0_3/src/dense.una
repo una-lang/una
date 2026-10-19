@@ -1,0 +1,15 @@
+-- test: in edition 0.3 Matrix, Tensor and Lu are ordinary names, and the prelude has no dense constructors, so a package that declares them keeps its meaning
+-- spec: spec/29 §17
+-- expect: ok
+module dense
+
+pub kind Matrix = Rows | Columns
+
+pub kind Lu
+  size: Int
+
+pub array(n: Int) -> Int = n + 1
+
+pub matrix_filled(rows: Int) -> Matrix = if rows > 0 then Rows else Columns
+
+pub use_them() -> Int = array(2) + Lu(size: 3).size

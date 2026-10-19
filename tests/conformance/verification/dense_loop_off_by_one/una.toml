@@ -1,0 +1,4 @@
+[package]
+name = "dense_loop_off_by_one"
+version = "0.1.0"
+edition = "0.4"

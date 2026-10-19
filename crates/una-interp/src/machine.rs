@@ -12,6 +12,8 @@ use una_core::{
 };
 use una_syntax::Span;
 
+mod dense;
+
 use crate::host::{self, FileFault, Grant, World};
 use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
 
@@ -337,6 +339,39 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(item));
                     }
                     parts.push(Task::Text(close.to_owned()));
+                }
+                // The construction call that rebuilds a dense value, its elements in
+                // row-major order (ADR 0120 rule 41), each a task like a list's, so a deep
+                // value never recurses on the native stack.
+                Value::Dense(dense) => {
+                    let open = match (dense.kind, dense.shape.as_slice()) {
+                        (crate::value::DenseKind::Matrix, [rows, columns]) => {
+                            format!("matrix(rows: {rows}, columns: {columns}, elements: [")
+                        }
+                        _ => "array([".to_owned(),
+                    };
+                    parts.push(Task::Text(open));
+                    for k in 0..dense.count() {
+                        if k > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        let Some(position) = dense.position_at(k) else {
+                            continue;
+                        };
+                        match dense.buffer.as_ref() {
+                            crate::value::Elements::F64(items) => {
+                                if let Some(x) = items.get(position) {
+                                    parts.push(Task::Text(una_core::float::render(*x)));
+                                }
+                            }
+                            crate::value::Elements::Values(items) => {
+                                if let Some(item) = items.get(position) {
+                                    parts.push(Task::Value(item));
+                                }
+                            }
+                        }
+                    }
+                    parts.push(Task::Text("])".to_owned()));
                 }
                 // `{k: v, ...}` in key order, `{}` when empty (`spec/21 §2` rule 4).
                 Value::Map(entries) => {
@@ -1874,6 +1909,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         if matches!(name, "append" | "set") {
             return update(name, args, span);
         }
+        // Dense values (`spec/29 §17`, ADR 0120).
+        if dense::is_dense(name) {
+            return self.dense_call(name, args, span);
+        }
         let bad = || fault(format!("`{name}` applied to values of the wrong types"));
         let int = |i: usize| match args.get(i) {
             Some(Value::Int(n)) => Ok(n.clone()),
@@ -2385,6 +2424,10 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Text(t) => Value::Int(BigInt::from(t.scalars())),
             Value::List(items) => Value::Int(BigInt::from(items.len())),
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
+            // An array's length (`spec/29 §17`).
+            Value::Dense(dense) => {
+                Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
+            }
             _ => return Err(fault("`len` of a value that is not a text, list or map")),
         },
         Prim::Concat => {
@@ -2416,6 +2459,18 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::Map(op) => return map_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
+        // The shape of a matrix (`spec/29 §17`).
+        Prim::Shape(fun) => match arg(0)? {
+            Value::Dense(dense) => {
+                let axis = match fun {
+                    una_core::ShapeFun::Rows => 0,
+                    una_core::ShapeFun::Columns => 1,
+                };
+                // Exact, as `len` is: a dimension is the one the program gave.
+                Value::Int(BigInt::from(dense.shape.get(axis).copied().unwrap_or(0)))
+            }
+            _ => return Err(fault("a shape of a value that is not a matrix")),
+        },
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),

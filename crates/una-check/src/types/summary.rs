@@ -162,7 +162,9 @@ fn collect(found: &Ty, declared: &Ty, params: &[&str], path: &mut Vec<Step>, out
         path.pop();
     };
     match (found.unlabeled(), declared.unlabeled()) {
-        (Ty::List(found), Ty::List(declared)) => step(Step::Element, found, declared, out),
+        (Ty::List(found), Ty::List(declared)) | (Ty::Dense(_, found), Ty::Dense(_, declared)) => {
+            step(Step::Element, found, declared, out);
+        }
         (Ty::Map(found_key, found_value), Ty::Map(declared_key, declared_value)) => {
             step(Step::Arg(0), found_key, declared_key, out);
             step(Step::Arg(1), found_value, declared_value, out);
@@ -217,6 +219,10 @@ fn raise_at(
             declared,
             (*actual).clone(),
         ))),
+        (Ty::Dense(_, declared), Ty::Dense(dense, actual)) => Ty::Dense(
+            dense,
+            Shared::new(inner(Step::Element, declared, (*actual).clone())),
+        ),
         (Ty::Map(declared_key, declared_value), Ty::Map(actual_key, actual_value)) => Ty::Map(
             Shared::new(inner(Step::Arg(0), declared_key, (*actual_key).clone())),
             Shared::new(inner(Step::Arg(1), declared_value, (*actual_value).clone())),

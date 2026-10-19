@@ -20,6 +20,7 @@ mod conditions;
 mod crossing;
 mod dead;
 mod decimal;
+mod dense;
 mod edit_labels;
 mod effects;
 mod elab;
@@ -68,7 +69,8 @@ const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 /// ADR 0114 rule 3.9), appended after those of edition 0.2.
 const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
-/// `Decimal` (`spec/29 §16`, ADR 0120), appended after those of edition 0.3.
+/// `Decimal` (`spec/29 §16`), then the constructors of dense values and the functions their
+/// methods resolve to (`spec/29 §17`, ADR 0120), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
@@ -1474,7 +1476,8 @@ mod tests {
         }
         for kind in una_core::PRELUDE_ENGINE_KINDS {
             assert!(
-                kinds.iter().any(|k| k == kind) || ["List", "Map"].contains(&kind),
+                kinds.iter().any(|k| k == kind)
+                    || ["List", "Map", "Array", "Matrix"].contains(&kind),
                 "`{kind}` is not a kind of the prelude"
             );
         }
@@ -1551,7 +1554,7 @@ mod tests {
         }
         let mut expected: Vec<String> = una_core::PRELUDE_ENGINE_KINDS
             .iter()
-            .filter(|kind| !["List", "Map"].contains(kind))
+            .filter(|kind| !["List", "Map", "Array", "Matrix"].contains(kind))
             .map(|kind| (*kind).to_owned())
             .collect();
         expected.sort();

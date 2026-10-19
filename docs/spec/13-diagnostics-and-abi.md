@@ -451,10 +451,11 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
 | `LoopSource` | `list`, `range` |
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
-| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float`, `decimal` |
+| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float`, `shape`, `decimal` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
+| `ShapeFun` | `rows`, `columns` |
 | `Source` | `rebind`, `handler` |
-| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64` |
+| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `shape`, `element`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64` |
 | `Type` | `base`, `fn` |
 
 **What inference adds** (#443). Core holds what elaboration gives it. The document adds facts the checker infers, each as an additive key, in the order shown:
