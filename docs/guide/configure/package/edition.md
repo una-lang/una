@@ -60,7 +60,7 @@ An edition the compiler does not know is rejected:
 [package]
 name = "shop"
 version = "0.1.0"
-edition = "0.4"
+edition = "0.5"
 ```
 
 `src/shop.una`

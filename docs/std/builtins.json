@@ -26,7 +26,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]",
           "docs": [
@@ -49,7 +50,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]",
           "docs": [
@@ -70,7 +72,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.get(key: K) -> Option[V]\n  where m: Map[K, V]",
           "docs": [
@@ -91,7 +94,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "edit m.set(key: K, value: V) -> Unit\n  where m: Map[K, V]",
           "docs": [
@@ -113,7 +117,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]",
           "docs": [
@@ -134,7 +139,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]",
           "docs": [
@@ -154,7 +160,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]",
           "docs": [
@@ -174,7 +181,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.keys() -> List[K]\n  where m: Map[K, V]",
           "docs": [
@@ -194,7 +202,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.values() -> List[V]\n  where m: Map[K, V]",
           "docs": [
@@ -214,7 +223,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "m.entries() -> List[Entry[K, V]]\n  where m: Map[K, V]",
           "docs": [
@@ -235,7 +245,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_i8() -> I8\n  where x: Int\nx.to_i8() -> I8\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -258,7 +269,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_i16() -> I16\n  where x: Int\nx.to_i16() -> I16\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -281,7 +293,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_i32() -> I32\n  where x: Int\nx.to_i32() -> I32\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -304,7 +317,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_i64() -> I64\n  where x: Int\nx.to_i64() -> I64\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -327,7 +341,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_u8() -> U8\n  where x: Int\nx.to_u8() -> U8\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -350,7 +365,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_u16() -> U16\n  where x: Int\nx.to_u16() -> U16\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -373,7 +389,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_u32() -> U32\n  where x: Int\nx.to_u32() -> U32\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -396,7 +413,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_u64() -> U64\n  where x: Int\nx.to_u64() -> U64\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -420,7 +438,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "x.to_int() -> Int\n  where x: Int\nx.to_int() -> Int\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -441,7 +460,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.wrapping_add(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -462,7 +482,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.wrapping_sub(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -483,7 +504,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.wrapping_mul(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -504,7 +526,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.saturating_add(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -524,7 +547,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.saturating_sub(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -544,7 +568,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.saturating_mul(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -564,7 +589,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.bit_and(mask: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -585,7 +611,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.bit_or(mask: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -606,7 +633,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.bit_xor(mask: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -626,7 +654,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.bit_not() -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -646,7 +675,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.shift_right(by: Int) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
@@ -668,7 +698,8 @@
         {
           "editions": [
             "0.2",
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "a.wrapping_shift_left(by: Int) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
           "docs": [
