@@ -295,6 +295,9 @@ impl Normalizer<'_> {
                 self.block(&mut stmt.block);
             }
             Stmt::Ever(stmt) => {
+                if let Some(within) = &mut stmt.within {
+                    self.expr(within);
+                }
                 self.block(&mut stmt.block);
                 if let Some(on_stop) = &mut stmt.on_stop {
                     self.block(&mut on_stop.block);

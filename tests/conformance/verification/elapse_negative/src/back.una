@@ -1,5 +1,5 @@
--- test: `elapse` moves time forward only: its duration must be at least 0, an obligation of its call (U5001, spec/26 §6, ADR 0116 rule 19)
--- spec: spec/26 §6
+-- test: `elapse` moves time forward only: its duration must be at least 0, an obligation of its call (U5001, spec/26 §8, ADR 0116 rule 19)
+-- spec: spec/26 §8
 -- expect: error U5001 at src/back.una:14:5
 module back
 

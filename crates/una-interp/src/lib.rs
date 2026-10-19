@@ -12,6 +12,7 @@ mod harness;
 mod host;
 mod json;
 mod machine;
+pub mod stopping;
 mod trace;
 mod value;
 

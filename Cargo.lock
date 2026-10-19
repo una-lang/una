@@ -1359,6 +1359,7 @@ dependencies = [
  "una-project",
  "una-report",
  "una-syntax",
+ "una-sys",
  "una-verify",
 ]
 
@@ -1419,6 +1420,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "una-core",
+ "una-sys",
  "webpki-roots",
 ]
 
@@ -1435,6 +1437,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-syntax",
+ "una-sys",
 ]
 
 [[package]]
@@ -1477,6 +1480,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-interp",
+ "una-sys",
 ]
 
 [[package]]

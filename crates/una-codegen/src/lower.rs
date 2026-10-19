@@ -747,17 +747,27 @@ impl<'p> Lowerer<'_, 'p, '_> {
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
         let Expr::Loop {
+            source,
             var,
             state,
             init,
             body,
             on_stop,
             span,
-            ..
         } = expr
         else {
             return Err(internal("a loop that is not one"));
         };
+        // `within d` (`spec/26 §7`): evaluated once, before the first iteration; the runtime
+        // arms the deadline at each iteration and drops it when the loop ends.
+        let within = match source.as_ref() {
+            LoopSource::Ever { within } => within.as_ref(),
+            _ => None,
+        };
+        if let Some((deadline, _)) = within {
+            let (word, _) = self.atom(deadline, env)?;
+            self.runtime("una_rt_deadline_enter", &[word]);
+        }
         let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
         let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
         let mut initial: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
@@ -789,11 +799,23 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         self.builder.ins().jump(head, &initial);
 
-        // An iteration: its budget, then the body, which owns the state, with its exits.
+        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
+        // budget, then the body, which owns the state, with its exits.
         self.builder.switch_to_block(head);
         let current = self.builder.block_params(head).to_vec();
+        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let started = self.builder.create_block();
+        let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        self.builder
+            .ins()
+            .brif(host_stop, exit, &current_arguments, started, &[]);
+        self.builder.switch_to_block(started);
         let stopping = self.call("una_rt_budget", &[site])?;
         self.stop_if(stopping);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_iteration", &[]);
+        }
         let mut inner = env.clone();
         for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
             inner.insert(name.clone(), (value, ty.clone()));
@@ -807,19 +829,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
             outer: Scope::new(),
             base: 0,
         };
-        // With `on stop`, a failure of the body goes to it first.
-        let nested = match on_stop {
-            Some(_) => Catch {
-                block: failing,
-                outer: Scope::new(),
-                base: 0,
-                exit: Some(exits),
-            },
-            None => {
-                let mut nested = catch.nested(scope);
-                nested.exit = Some(exits);
-                nested
-            }
+        // A failure of the body leaves the body (ADR 0116 rule 14), then goes to `on stop`
+        // first, when there is one.
+        let nested = Catch {
+            block: failing,
+            outer: Scope::new(),
+            base: 0,
+            exit: Some(exits),
         };
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
@@ -843,20 +859,33 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .collect();
         self.builder.ins().jump(head, &next);
 
-        // After a failure: `on stop` on the saved state, then the failure goes on.
-        if let Some(on_stop) = on_stop {
-            self.builder.switch_to_block(failing);
-            let failure = self.param(failing)?;
-            let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
-            if let Some(result) = result {
-                self.release(result, Kind::Tuple);
-                self.fail(failure, scope, catch);
+        // After a failure: out of the body, `on stop` on the saved state, then the failure goes
+        // on.
+        self.builder.switch_to_block(failing);
+        let failure = self.param(failing)?;
+        self.runtime("una_rt_ever_end", &[]);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
+        match on_stop {
+            Some(on_stop) => {
+                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.fail(failure, scope, catch);
+                }
             }
+            None => self.fail(failure, scope, catch),
         }
 
-        // The loop's value: the final state, through `on stop` when there is one.
+        // The loop's value: the final state, through `on stop` when there is one, out of the
+        // body.
         self.builder.switch_to_block(exit);
         let finals = self.builder.block_params(exit).to_vec();
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
+        self.runtime("una_rt_ever_end", &[]);
         let tuple = match on_stop {
             Some(on_stop) => {
                 for (&value, &kind) in saved.iter().zip(&kinds) {
@@ -1086,7 +1115,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 (None, high, low)
             }
             LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
-            LoopSource::Ever => return self.lower_ever(expr, env, scope, catch),
+            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
         };
         let inclusive = matches!(
             source.as_ref(),
@@ -1473,7 +1502,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             true,
                         )
                     }
-                    LoopSource::Until { .. } | LoopSource::Ever => {
+                    LoopSource::Until { .. } | LoopSource::Ever { .. } => {
                         return Err(internal(
                             "a `together for` with an `until` or `ever` source",
                         ));
@@ -3336,7 +3365,7 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             match source.as_ref() {
                 LoopSource::List(list) => add(list, out),
                 LoopSource::Until { cond, .. } => borrowed_from(cond, out),
-                LoopSource::Range { .. } | LoopSource::Ever => {}
+                LoopSource::Range { .. } | LoopSource::Ever { .. } => {}
             }
             borrowed_from(body, out);
             if let Some(on_stop) = on_stop {

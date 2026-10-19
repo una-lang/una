@@ -1,4 +1,4 @@
-//! The clock of a run (ADR 0116 rule 19, `spec/26 §6`): the real monotonic clock, or a virtual
+//! The clock of a run (ADR 0116 rule 19, `spec/26 §8`): the real monotonic clock, or a virtual
 //! one that only the run's own waits move.
 //!
 //! Both engines read time through a [`Clock`]: the interpreter keeps one per machine, and a

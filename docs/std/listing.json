@@ -1388,10 +1388,18 @@
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol",
+          "docs": [
+            "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted",
           "docs": [
             "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
           ]
@@ -1648,7 +1656,7 @@
       "module": "std.testing",
       "kind": "function",
       "spec": [
-        "spec/26 §6",
+        "spec/26 §8",
         "spec/14 §4"
       ],
       "variants": [
@@ -1659,7 +1667,7 @@
           "declaration": "pub elapse(d: Int of Millisecond) -> Unit\n  requires d >= 0",
           "docs": [
             "Moves the test's virtual clock forward by `d` at once, without waiting (ADR 0116 rule 19,",
-            "`spec/26 §6`). Usable only in examples and in handlers that only examples install",
+            "`spec/26 §8`). Usable only in examples and in handlers that only examples install",
             "(`spec/14 §4`)."
           ]
         }

@@ -184,13 +184,22 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
 
-        /// Stop the run once this many iterations of the host's loop have started (ADR 0116)
+        /// Request a host stop once this many iterations of `for ever` loops, the host's loop
+        /// included, have started (ADR 0116)
         #[arg(long, value_name = "N", value_parser = iterations)]
         stop_after_iterations: Option<u64>,
 
         /// Run on a virtual clock that starts at 0 and never waits (ADR 0116)
         #[arg(long)]
         virtual_time: bool,
+        /// Request a host stop after this many seconds, from 1 to 31536000 (ADR 0116)
+        #[arg(long, value_name = "SECONDS", value_parser = deadline)]
+        deadline: Option<u64>,
+
+        /// The seconds from the first host stop request to the hard stop, from 1 to 86400
+        /// (ADR 0116)
+        #[arg(long, value_name = "SECONDS", default_value_t = una_interp::stopping::DEFAULT_GRACE_SECS, value_parser = stop_grace)]
+        stop_grace: u64,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {
@@ -284,6 +293,30 @@ fn iterations(text: &str) -> Result<u64, String> {
     let n = at_least_one(text)?;
     if n > i64::MAX.unsigned_abs() {
         return Err(format!("{n} is too many; give at most {}", i64::MAX));
+    }
+    Ok(n)
+}
+
+/// A value of `--deadline`: whole seconds, from 1 to a year of seconds (ADR 0116).
+fn deadline(text: &str) -> Result<u64, String> {
+    let n = at_least_one(text)?;
+    if n > una_interp::stopping::MAX_DEADLINE_SECS {
+        return Err(format!(
+            "{n} is longer than a year; give at most {}",
+            una_interp::stopping::MAX_DEADLINE_SECS
+        ));
+    }
+    Ok(n)
+}
+
+/// A value of `--stop-grace`: whole seconds, from 1 to a day (ADR 0116).
+fn stop_grace(text: &str) -> Result<u64, String> {
+    let n = at_least_one(text)?;
+    if n > una_interp::stopping::MAX_GRACE_SECS {
+        return Err(format!(
+            "{n} is longer than a day; give at most {}",
+            una_interp::stopping::MAX_GRACE_SECS
+        ));
     }
     Ok(n)
 }

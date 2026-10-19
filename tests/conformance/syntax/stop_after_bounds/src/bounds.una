@@ -1,5 +1,5 @@
--- test: `stop after` takes an integer literal from 1 to 2^63 - 1 and is the last line of its example (U0101, spec/26 §6, ADR 0116 rule 19)
--- spec: spec/26 §6
+-- test: `stop after` takes an integer literal from 1 to 2^63 - 1 and is the last line of its example (U0101, spec/26 §8, ADR 0116 rule 19)
+-- spec: spec/26 §8
 -- expect: error U0101 at src/bounds.una:13:14
 -- expect: error U0101 at src/bounds.una:18:14
 -- expect: error U0101 at src/bounds.una:24:3

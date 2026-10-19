@@ -1,5 +1,5 @@
--- test: a test's `do` line may call a function that says `diverges` only under a `stop after` line, and its `expect` lines never may (U3027, spec/26 §6, ADR 0116 rule 8)
--- spec: spec/26 §6
+-- test: a test's `do` line may call a function that says `diverges` only under a `stop after` line, and its `expect` lines never may (U3027, spec/26 §8, ADR 0116 rule 8)
+-- spec: spec/26 §8
 -- expect: error U3027 at src/spin.una:34:6
 -- expect: error U3027 at src/spin.una:40:20
 module spin

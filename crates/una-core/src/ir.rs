@@ -1418,7 +1418,12 @@ pub enum LoopSource {
     },
     /// `ever`: no element and no end but `stop`, a host stop at the start of an iteration, a
     /// failure of the body or a cancellation (`spec/26 §5`). Only in a loop.
-    Ever,
+    Ever {
+        /// `within d`: the deadline of each iteration, in milliseconds, evaluated once before
+        /// the first iteration, and the span of `d`, where its obligation `d >= 1` is reported
+        /// (`spec/26 §7`, ADR 0116 rule 11).
+        within: Option<(Atom, Span)>,
+    },
 }
 
 /// The `on stop` block of a loop (`spec/26 §5`, ADR 0116 rule 20): its binders of the state,
@@ -1852,7 +1857,7 @@ pub struct Example {
     /// The expectations, in order.
     pub expectations: Vec<Expectation>,
     /// The `N` of its `stop after N` line, in edition 0.4: a host stop arrives once `N`
-    /// iterations of `for ever` loops have started (ADR 0116 rule 19, `spec/26 §6`).
+    /// iterations of `for ever` loops have started (ADR 0116 rule 19, `spec/26 §8`).
     pub stop_after: Option<u64>,
 }
 

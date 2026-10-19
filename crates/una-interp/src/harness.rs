@@ -20,7 +20,7 @@ pub struct Host {
     /// The keys of `keys:` grants, by name.
     pub keys: BTreeMap<String, Vec<u8>>,
     /// `--virtual-time`: the run's clock is virtual, from 0 at its start, and only the run's
-    /// own waits move it (ADR 0116 rule 19, `spec/26 §6`).
+    /// own waits move it (ADR 0116 rule 19, `spec/26 §8`).
     pub virtual_time: bool,
 }
 
@@ -182,7 +182,7 @@ fn run_example<'p>(
     let keys = BTreeMap::new();
     let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
     // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
-    // rule 19, `spec/26 §6`).
+    // rule 19, `spec/26 §8`).
     machine.clock = Clock::virtual_time();
     machine.stop_after = example.stop_after;
     let result = machine.eval_closed(&mut Env::new(), &example.body);
@@ -342,7 +342,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
                 LoopSource::Until { cond, .. } => mentions(cond, name),
-                LoopSource::Ever => false,
+                LoopSource::Ever { within } => within.as_ref().is_some_and(|(d, _)| atom(d)),
             }) || mentions(task, name)
         }
         Expr::Loop {
@@ -356,7 +356,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
                 LoopSource::Until { cond, .. } => mentions(cond, name),
-                LoopSource::Ever => false,
+                LoopSource::Ever { within } => within.as_ref().is_some_and(|(d, _)| atom(d)),
             }) || init.iter().any(atom)
                 || mentions(body, name)
                 || on_stop

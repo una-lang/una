@@ -2165,3 +2165,123 @@ fn function_values_never_change_a_list_another_name_holds() {
     assert_eq!(stdout(&output), ALIASED_OUTPUT);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A package of edition 0.4 under the test's temporary directory, with `ita.una` (its
+/// sections `sections`), the lock of the conformance cases of edition 0.4, and `files`.
+fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n{sections}"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    root
+}
+
+const TICKS: &str = "module ticks
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let edit n = 0
+  for ever
+    @console.print(\"tick {n}\")
+    n = n + 1
+  on stop
+    @console.print(\"stopped at {n}\")
+  @console.print(\"after {n}\")
+";
+
+const LONG_STOP: &str = "module ticks
+
+pub main() -> Unit
+  diverges
+=
+  let edit n = 0
+  for ever
+    n = n + 1
+  on stop
+    for i in 0..<1000000000000
+      n = n + 1
+  unit
+";
+
+#[test]
+fn a_for_ever_stops_after_its_iterations_and_runs_on_stop() {
+    // ADR 0116 rules 14 and 19, `spec/26 §6` rule 1: the run's own stop arrives once three
+    // iterations have started; the loop stops at the fourth start with a `stop` event, and
+    // `on stop` and the code after the loop run.
+    let root = ita_package(
+        "ticks",
+        "\nrun\n  entry ticks\n  grants\n    console\n",
+        &[("src/ticks.una", TICKS)],
+    );
+    let output = una_in(&root, &["--json", "run", "--stop-after-iterations", "3"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(
+        document["output"],
+        json!(["tick 0", "tick 1", "tick 2", "stopped at 3", "after 3"])
+    );
+    assert_eq!(
+        document["trace"][3],
+        json!({"seq": 4, "outcome": {"kind": "stop"}})
+    );
+}
+
+#[test]
+fn the_hard_stop_after_a_deadline_is_u6007_with_the_trace_of_an_abort() {
+    // ADR 0116 rules 14 and 16, `spec/26 §6` rule 6: `--deadline 1` requests the stop, the
+    // `on stop` outlasts `--stop-grace 1`, and the run is cancelled at a loop iteration.
+    let root = ita_package(
+        "long",
+        "\nrun\n  entry ticks\n",
+        &[("src/ticks.una", LONG_STOP)],
+    );
+    let output = una_in(
+        &root,
+        &["--json", "run", "--deadline", "1", "--stop-grace", "1"],
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["status"], "aborted");
+    assert_eq!(document["diagnostics"][0]["code"], "U6007");
+    assert_eq!(
+        document["diagnostics"][0]["message"],
+        "the host stopped the run before it finished, after the grace period of 1 second"
+    );
+    assert_eq!(document["diagnostics"][0]["primary"]["start"]["line"], 10);
+    assert_eq!(
+        document["trace"],
+        json!([{"seq": 1, "outcome": {"kind": "stop"}}])
+    );
+}
+
+#[test]
+fn deadline_and_stop_grace_take_whole_seconds_in_range() {
+    // ADR 0116 Diagnostics: usage errors, exit code 2, before anything runs.
+    for (flag, value) in [
+        ("--deadline", "0"),
+        ("--deadline", "31536001"),
+        ("--stop-grace", "0"),
+        ("--stop-grace", "86401"),
+        ("--stop-grace", "ten"),
+    ] {
+        let output = una(&["run", "examples/hello", flag, value]);
+        assert_eq!(output.status.code(), Some(2), "{flag} {value}");
+        assert_eq!(stdout(&output), "");
+    }
+}

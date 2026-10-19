@@ -70,7 +70,11 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                     atoms(std::slice::from_ref(high), out);
                 }
                 LoopSource::Until { cond, .. } => vars(cond, out),
-                LoopSource::Ever => {}
+                LoopSource::Ever { within } => {
+                    if let Some((deadline, _)) = within {
+                        atoms(std::slice::from_ref(deadline), out);
+                    }
+                }
             }
             atoms(init, out);
             vars(body, out);
@@ -91,7 +95,11 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
                     atoms(std::slice::from_ref(high), out);
                 }
                 LoopSource::Until { cond, .. } => vars(cond, out),
-                LoopSource::Ever => {}
+                LoopSource::Ever { within } => {
+                    if let Some((deadline, _)) = within {
+                        atoms(std::slice::from_ref(deadline), out);
+                    }
+                }
             }
             vars(task, out);
         }

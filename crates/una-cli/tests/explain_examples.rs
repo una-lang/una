@@ -67,6 +67,25 @@ fn example(text: &str, heading: &str) -> Option<Example> {
     }
 }
 
+/// The flags of `una run` that the example under `heading` names, in a line with
+/// ``Run it with `una run <flags>` ``: a runtime code that only a flag causes, such as U6007
+/// after `--deadline` (ADR 0116).
+fn run_flags(text: &str, heading: &str) -> Vec<String> {
+    let Some(section) = text
+        .split(heading)
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+    else {
+        return Vec::new();
+    };
+    section
+        .lines()
+        .find_map(|line| line.strip_prefix("Run it with `una run "))
+        .and_then(|rest| rest.split('`').next())
+        .map(|flags| flags.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
 /// The headings of the fixed examples of `text`, in order: `## Fixed example`, and
 /// `## Fixed example: <case>` for each further case.
 fn fixed_headings(text: &str) -> Vec<String> {
@@ -78,7 +97,7 @@ fn fixed_headings(text: &str) -> Vec<String> {
 
 /// The codes `check` reports for `example`, written under a directory named after the code.
 /// A fixed example is checked at tier 1, a failing one at the tier of its code.
-fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
+fn codes(code: Code, name: &str, example: &Example, fixed: bool, flags: &[String]) -> Vec<Code> {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("explain-examples")
         .join(code.as_str())
@@ -115,7 +134,9 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
     if code.domain() == Domain::Runtime {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let args = ["una", "--json", "run", target.to_str().unwrap()];
+        let mut args = vec!["una", "--json", "run"];
+        args.extend(flags.iter().map(String::as_str));
+        args.push(target.to_str().unwrap());
         una_cli::run(
             args,
             &mut stdout,
@@ -158,7 +179,13 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         ) else {
             continue;
         };
-        let reported = codes(code, "failing", &failing, false);
+        let reported = codes(
+            code,
+            "failing",
+            &failing,
+            false,
+            &run_flags(text, "## Failing example"),
+        );
         assert!(
             !reported.is_empty() && reported.iter().all(|found| *found == code),
             "{code}: the failing example reports {reported:?}"
@@ -167,7 +194,13 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         for (n, heading) in fixed_headings(text).iter().enumerate() {
             let fixed = example(text, heading).unwrap();
             assert_eq!(
-                codes(code, &format!("fixed{n}"), &fixed, true),
+                codes(
+                    code,
+                    &format!("fixed{n}"),
+                    &fixed,
+                    true,
+                    &run_flags(text, heading)
+                ),
                 [],
                 "{code}: {heading}"
             );

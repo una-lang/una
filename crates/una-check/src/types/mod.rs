@@ -43,6 +43,7 @@ mod shared;
 mod sharing_tests;
 mod stmt;
 mod summary;
+mod timing;
 mod ty;
 mod unify;
 mod units;
@@ -70,6 +71,11 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
 /// `Decimal` (`spec/29 §16`, ADR 0120), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
+
+/// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
+/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
+/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -197,7 +203,11 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
 pub fn standard_source(edition: Edition) -> StandardSource {
     let (prelude, keywords) = if edition >= Edition::V0_4 {
         (
-            format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+            format!(
+                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}",
+                of_prelude(),
+                PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
+            ),
             KeywordSet::V0_4,
         )
     } else if edition >= Edition::V0_3 {
@@ -306,6 +316,22 @@ pub struct TypeCheck {
     pub program: una_core::Program,
     /// What the checker resolved, by span, for the language server (ADR 0063).
     pub index: Index,
+    /// The sites whose deadlines turn timing into values, in source order, with their timing
+    /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
+    pub timing: Vec<TimingSite>,
+}
+
+/// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingSite {
+    /// The construct, as `for ever within`.
+    pub construct: &'static str,
+    /// The qualified name of the function that holds it, or empty outside a function.
+    pub function: String,
+    /// Where it is.
+    pub location: Location,
+    /// Its timing label.
+    pub label: una_core::Label,
 }
 
 impl Default for TypeCheck {
@@ -320,6 +346,7 @@ impl Default for TypeCheck {
             headers: Vec::new(),
             program: una_core::Program::default(),
             index: Index::default(),
+            timing: Vec::new(),
         }
     }
 }
@@ -595,6 +622,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
+    let timing_sites = authority::deadline_timing(&env, &findings, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -682,6 +710,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        timing: timing_sites
+            .into_iter()
+            .map(|(construct, function, span, label)| TimingSite {
+                construct,
+                function,
+                location: report.location(span),
+                label,
+            })
+            .collect(),
         index,
         headers,
         program,
@@ -819,6 +856,18 @@ pub(crate) struct Findings {
     /// The functions whose bodies hold a task construct, `together` or `together for` (ADR 0116
     /// IF6).
     pub(crate) task_functions: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a part of a task construct, lambdas written there
+    /// included (ADR 0116 IF6).
+    pub(crate) task_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a lambda, which may run wherever the lambda is
+    /// called (ADR 0116 IF6).
+    pub(crate) lambda_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a handler's operations, which run wherever the
+    /// handler serves an operation (ADR 0116 IF6).
+    pub(crate) handler_edges: std::collections::BTreeSet<usize>,
+    /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
+    /// function, and the seed of its body's timing label.
+    pub(crate) deadline_loops: Vec<DeadlineLoop>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the
@@ -1332,6 +1381,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+        assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
+        let line = |edition| {
+            standard_source(edition)
+                .prelude
+                .lines()
+                .find(|line| line.starts_with("pub kind HttpError ="))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            line(Edition::V0_4).as_deref(),
+            Some(
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+            )
+        );
+        for edition in [Edition::V0_2, Edition::V0_3] {
+            assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+        }
+    }
+
+    #[test]
     fn every_rewrite_of_the_prelude_applies_exactly_once() {
         // `str::replace` does nothing when its text is missing, so an edit of the prelude could
         // turn a rewrite of edition 0.2 off without a word (#648).
@@ -1358,8 +1429,10 @@ mod tests {
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
+                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
-                    format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
                     KeywordSet::V0_4,
                 )
             } else if *edition >= Edition::V0_3 {
@@ -1974,4 +2047,16 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
             assert_eq!(codes, Vec::new(), "{edition:?}");
         }
     }
+}
+
+/// A `for ever within d` loop, for IF8 and the report's `timing` list (ADR 0116 rules 11 and
+/// 21).
+#[derive(Clone, Debug)]
+pub(crate) struct DeadlineLoop {
+    /// The loop.
+    pub(crate) span: Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of the timing label of its body, the deadline's label included.
+    pub(crate) seed: timing::TimingSeed,
 }

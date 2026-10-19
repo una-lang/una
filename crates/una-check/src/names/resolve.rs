@@ -205,7 +205,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || (self.checker.package.settings.edition >= Edition::V0_3 && name == "F64")
                     // Edition 0.4: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
                     || (self.checker.package.settings.edition >= Edition::V0_4
-                        && prelude::ROUNDING_0_4.contains(&name))
+                        && (prelude::ROUNDING_0_4.contains(&name)
+                            || prelude::HTTP_0_4.contains(&name)))
             }
         }
     }
@@ -309,6 +310,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::ROUNDING_0_4);
+                    names.extend(prelude::HTTP_0_4);
                 }
             }
         }
@@ -653,6 +655,10 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.block(&stmt.block);
             }
             Stmt::Ever(stmt) => {
+                // The deadline is evaluated once, before the first iteration (`spec/26 §7`).
+                if let Some(within) = &stmt.within {
+                    self.expr(within);
+                }
                 self.block(&stmt.block);
                 if let Some(on_stop) = &stmt.on_stop {
                     self.block(&on_stop.block);

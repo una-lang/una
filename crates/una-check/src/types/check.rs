@@ -226,6 +226,8 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// In the `do` line of an example with a `stop after` line, which may run a `for ever`
     /// loop until the stop (U3027, ADR 0116 rule 19).
     pub(crate) do_stops: bool,
+    /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
+    pub(crate) timing: Vec<super::timing::TimingFrame>,
     /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
     pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
@@ -503,6 +505,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             in_on_stop: false,
             in_ever: false,
             do_stops: false,
+            timing: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             needs_fields: Vec::new(),
@@ -773,6 +776,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 if let Some(current) = self.current {
                     self.findings.installs.insert((current, id));
                 }
+                self.timing_install(id);
                 let (params, capability, module, needs) = match self.env.handlers.get(id) {
                     Some(handler) => (
                         handler.params.clone(),

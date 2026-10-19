@@ -1,5 +1,5 @@
--- test: a test's `stop after N` line stops the `for ever` loop of its `do` line at the start of iteration N + 1, `on stop` runs, and `elapse` moves the test's virtual clock at once, so hours of handler time cost none (spec/26 §6, ADR 0116 rule 19)
--- spec: spec/26 §6
+-- test: a test's `stop after N` line stops the `for ever` loop of its `do` line at the start of iteration N + 1, `on stop` runs, and `elapse` moves the test's virtual clock at once, so hours of handler time cost none (spec/26 §8, ADR 0116 rule 19)
+-- spec: spec/26 §8
 -- expect: test-pass
 module poller
 

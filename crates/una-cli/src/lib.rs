@@ -147,6 +147,8 @@ struct Analysis {
     file_state: una_core::Label,
     /// The mounted dependencies of the program (ADR 0122 rule 47).
     mounts: Vec<una_project::Mount>,
+    /// The sites with deadlines and their timing labels (ADR 0116 rule 21), for the report.
+    timing: Vec<una_check::TimingSite>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -295,6 +297,7 @@ fn analyze_and(
         index: types.index,
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
+        timing: types.timing,
     };
     (analysis, rejected)
 }
@@ -327,6 +330,7 @@ fn environment_failure(probe: &str) -> Analysis {
         of_lambdas: Vec::new(),
         file_state: una_core::Label::public(),
         mounts: Vec::new(),
+        timing: Vec::new(),
     }
 }
 
@@ -1042,6 +1046,8 @@ fn run_command(
                 solver_wallclock,
                 stop_after_iterations,
                 virtual_time,
+                deadline,
+                stop_grace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1055,6 +1061,8 @@ fn run_command(
                     solving: solving(solver_wallclock),
                     stop_after: stop_after_iterations,
                     virtual_time,
+                    deadline,
+                    stop_grace,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1091,6 +1099,8 @@ fn run_command(
                     stop_after: None,
                     // Time in a test is always virtual (ADR 0116 rule 19).
                     virtual_time: true,
+                    deadline: None,
+                    stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

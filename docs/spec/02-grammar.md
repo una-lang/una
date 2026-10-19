@@ -138,7 +138,7 @@ example_decl    = "example" text_lit NEWLINE INDENT
                     { "given" cap_ref "=" handler_call NEWLINE }
                     "do" line_expr NEWLINE
                     expectation { expectation }
-                    [ "stop" "after" integer_literal NEWLINE ]    (* edition 0.4, spec/26 §6 *)
+                    [ "stop" "after" integer_literal NEWLINE ]    (* edition 0.4, spec/26 §8 *)
                   DEDENT ;
 handler_call    = lower_ident "(" [ args ] ")" ;
 expectation     = "expect" ( "fails" upper_ident

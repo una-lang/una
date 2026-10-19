@@ -2795,6 +2795,11 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// its body and its `on stop` update, whose `on stop` block binds the state afresh and
     /// returns it (ADR 0116 rules 10 and 20).
     fn ever_loop(&mut self, lets: &mut Vec<Let>, stmt: &EverStmt) {
+        // `within d`: evaluated once, before the first iteration (`spec/26 §7`).
+        let within = stmt
+            .within
+            .as_ref()
+            .map(|deadline| (self.atom(lets, deadline), deadline.span));
         let mut names = Vec::new();
         self.scan_block(&stmt.block, &[], &mut names);
         if let Some(on_stop) = &stmt.on_stop {
@@ -2844,7 +2849,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             })
         });
         let looped = CoreExpr::Loop {
-            source: Box::new(LoopSource::Ever),
+            source: Box::new(LoopSource::Ever { within }),
             var: Box::new(var),
             state,
             init,

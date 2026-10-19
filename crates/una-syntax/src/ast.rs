@@ -577,12 +577,12 @@ pub struct ExampleDecl {
     pub action: Expr,
     /// The `expect` lines.
     pub expectations: Vec<Expectation>,
-    /// The final `stop after N` line, in edition 0.4 (ADR 0116 rule 19, `spec/26 §6`).
+    /// The final `stop after N` line, in edition 0.4 (ADR 0116 rule 19, `spec/26 §8`).
     pub stop_after: Option<StopAfter>,
 }
 
 /// `"stop" "after" integer_literal`: the stop schedule of an example, whose `do` line may then
-/// run a `for ever` loop (ADR 0116 rule 19, `spec/26 §6`).
+/// run a `for ever` loop (ADR 0116 rule 19, `spec/26 §8`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StopAfter {
     /// `N`: a host stop arrives once `N` iterations of `for ever` loops have started, from 1.
@@ -680,9 +680,12 @@ pub enum Stmt {
     OnStop(Box<OnStop>),
 }
 
-/// `"for" "ever" NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`, ADR 0116 rule 10).
+/// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`,
+/// §7, ADR 0116 rules 10 and 11).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EverStmt {
+    /// The deadline of each iteration, after `within`, when there is one (`spec/26 §7`).
+    pub within: Option<Expr>,
     /// The body.
     pub block: Block,
     /// The `on stop` block, when there is one.

@@ -185,7 +185,7 @@ pub fn console_print(line: i64) -> i64 {
 }
 
 /// `Clock.now()`: milliseconds since the Unix epoch; under virtual time, the milliseconds of
-/// the run's virtual clock, from 0 at its start (ADR 0116 rule 19, `spec/26 §6`).
+/// the run's virtual clock, from 0 at its start (ADR 0116 rule 19, `spec/26 §8`).
 pub fn clock_now() -> i64 {
     let clock = crate::runtime::clock();
     let now = if clock.is_virtual() {
@@ -393,6 +393,8 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
         Error::TooLarge => 5,
         Error::Tls => 6,
         Error::Protocol => 7,
+        // Edition 0.4 only, after the eight variants of `spec/24 §1` (ADR 0116 rule 12).
+        Error::Interrupted => 8,
         // Not a failure: `http` aborts before.
         Error::HeaderValue => 2,
     }
@@ -451,7 +453,39 @@ fn http(
         body: body.as_bytes(),
         bearer: bearer.as_deref(),
     };
-    match send(&request, &grants, &settings) {
+    // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request fails
+    // at once with `TimedOut`; before it, it waits no longer than the time left. In the body of
+    // a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12): whichever comes
+    // first cuts the wait, in the same poll.
+    //
+    // Under virtual time, a network wait takes no virtual time (ADR 0116 rule 19), so only a
+    // deadline the virtual clock has already reached cuts the request, at once.
+    let mut settings = settings;
+    let mut cut = false;
+    if let Some(left) = crate::deadline::left()
+        && left < settings.timeout
+        && (left.is_zero() || !crate::runtime::clock().is_virtual())
+    {
+        settings.timeout = left;
+        cut = true;
+    }
+    let sent = if cut && settings.timeout.is_zero() {
+        Err(Error::TimedOut)
+    } else {
+        match crate::runtime::op_interrupt() {
+            Some(stop) => una_http::client::send_interruptible(
+                &request,
+                &grants,
+                &settings,
+                &stop.interrupt(),
+            ),
+            None => send(&request, &grants, &settings),
+        }
+    };
+    if cut && sent == Err(Error::TimedOut) {
+        crate::deadline::timed_out();
+    }
+    match sent {
         Ok(response) => {
             let list = values::list();
             for (name, value) in response.headers {
@@ -561,6 +595,8 @@ mod tests {
             (Error::Tls, "Tls"),
             (Error::Protocol, "Protocol"),
         ];
+        // Edition 0.4 adds `Interrupted` last (ADR 0116 rule 12).
+        assert_eq!(http_error_index(Error::Interrupted), 8);
         assert_eq!(declared.len(), cases.len(), "{declared:?}");
         for (error, name) in cases {
             let index = usize::try_from(http_error_index(error)).expect("an index");
