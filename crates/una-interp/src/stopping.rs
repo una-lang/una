@@ -282,6 +282,11 @@ pub struct OpInterrupt<'a> {
 }
 
 impl Interrupt for OpInterrupt<'_> {
+    /// Each wait really waits, through `poll`.
+    fn waits(&self) -> bool {
+        true
+    }
+
     fn stopped(&self) -> bool {
         self.stop.stopped()
     }

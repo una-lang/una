@@ -206,6 +206,10 @@ fn a_release_build_never_trusts_the_test_authority() {
 struct NeverStopped;
 
 impl una_http::client::Interrupt for NeverStopped {
+    fn waits(&self) -> bool {
+        true
+    }
+
     fn stopped(&self) -> bool {
         false
     }

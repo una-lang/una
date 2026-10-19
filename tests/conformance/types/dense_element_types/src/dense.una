@@ -1,0 +1,18 @@
+-- test: Matrix takes F64 or a fixed-width integer element type, so Matrix of Text, of Int and of a type parameter are U2002, and so is a constructor or `map` that makes one
+-- spec: spec/29 §17
+-- expect: error U2002 at src/dense.una:10:14
+-- expect: error U2002 at src/dense.una:12:13
+-- expect: error U2002 at src/dense.una:14:15
+-- expect: error U2002 at src/dense.una:16:23
+-- expect: error U2002 at src/dense.una:18:37
+module dense
+
+pub texts(m: Matrix[Text]) -> Int = 0
+
+pub ints(m: Matrix[Int]) -> Int = 0
+
+pub any[T](m: Matrix[T]) -> Int = 0
+
+pub filled() -> Int = matrix_filled(rows: 1, columns: 1, value: "a").rows
+
+pub mapped(m: Matrix[F64]) -> Int = m.map(each: fn(x) -> x.is_nan()).rows

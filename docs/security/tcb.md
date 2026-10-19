@@ -136,6 +136,17 @@ Every component is compiled by `rustc` at the version that `rust-toolchain.toml`
 - **Guards:** the pinned toolchain; `Cargo.lock`, which `scripts/local-ci.sh` enforces with `--locked`; the reproducible gate, which shows that an archive is what its source and lock determine; the `deps` release gate (#770, `docs/release-gates.md`), which checks `Cargo.lock` against the RustSec advisory database fetched for each run (its commit in the record), with no ignored advisory, and checks licenses, wildcard requirements and sources, crates.io only, with `cargo-deny` at a pinned version; and the supply-chain review record `supply-chain/crates.tsv`, which must list every crates.io package by name, version and checksum, so that a new or moved dependency fails `scripts/local-ci.sh` until a reviewed change adds it. Its first run found four advisories against `rustls` 0.23.45, fixed by an update (S-26, #779). A second, nightly toolchain is pinned in `scripts/check-toolchain.toml` for the `sanitize` gate only: it checks, and builds no artifact.
 - **Open gaps:** the record's 158 crates at the gate's introduction are a baseline, not a review of each; a compromised version published before that baseline, and not yet known to the advisory database, would pass. A per-crate audit record (such as `cargo-vet`) would close it.
 
+**`getrandom` (ADR 0119 rule 9).** Keyed hashing reads its process key, 128 bits, from the operating system's cryptographic random source through `getrandom` 0.4.3, the one crate `una-hash` depends on. Its own `unsafe` code, which calls the system, puts it in this zone.
+
+- **A bug can cause:** a key that is not random, or that an attacker can learn. Then the attacker can choose keys that collide in one table, and each operation of that table takes time linear in its size instead of constant expected time: a denial of service, not a leak, since no listing, trace or message depends on a hash.
+- **Guards:**
+  - the crate's source on each target, reviewed at 0.4.3: on Linux with glibc, the `getrandom` system call with no flags, which blocks until the kernel's pool is seeded, with the crate's fallback where the call is missing or refused (it polls `/dev/random`, then reads `/dev/urandom`); on macOS, `getentropy`; on Windows, `ProcessPrng`;
+  - no fallback key: when the source gives nothing, the run aborts with U6009 before any effect;
+  - the crate's source can be switched at compile time with `--cfg getrandom_backend=...`; `scripts/release.sh` refuses build flags, in the environment or a cargo configuration file, that set it;
+  - the process key hashes only table keys, two SipHash-2-4 results per table, so one table's key reveals nothing of another's;
+  - the test-only feature of `una-hash` (a fixed key, a probe counter, a constant hash) is not in any shipped artifact: `scripts/check-release.sh` looks for its marker in `una` and `libuna_rt.a`.
+- **Open gaps:** the crate's `unsafe` code is trusted as published at 0.4.3, not audited line by line here; a sandbox that denies the random source turns every run that can make a hash table into U6009, by design.
+
 ### 3.9 Release scripts and archives
 
 `scripts/local-release.sh` builds the archives from a clean worktree of the tagged commit, and `scripts/release-gates.sh` runs every gate on that commit in a fresh clone (`docs/release-gates.md`).

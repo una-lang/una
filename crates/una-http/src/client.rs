@@ -108,10 +108,9 @@ pub trait Interrupt {
 
     /// Whether [`Interrupt::wait`] waits. When it does, the request's socket is non-blocking,
     /// so no read, write or step of the TLS handshake blocks past one wait, and a stop is seen
-    /// at the next one.
-    fn waits(&self) -> bool {
-        true
-    }
+    /// at the next one. It has no default: an implementor whose `wait` returns at once must
+    /// say `false`, or the non-blocking loop would spin until the deadline.
+    fn waits(&self) -> bool;
 }
 
 /// No interruption: every wait is left to the socket's own timeouts.
@@ -406,8 +405,11 @@ impl Connection {
                 Connection::Tls(stream) => stream.write(rest),
             })?;
             match written {
-                // A TLS stream whose buffer is full takes nothing until the socket drains.
-                Ok(0) if interrupt.waits() => self.wait_on(true, deadline, interrupt)?,
+                // A TLS stream whose buffer is full takes nothing until the socket drains. A
+                // plain socket that takes nothing is a failed connection, never a wait.
+                Ok(0) if interrupt.waits() && matches!(self, Connection::Tls(_)) => {
+                    self.wait_on(true, deadline, interrupt)?;
+                }
                 Ok(0) => return Err(Error::Unreachable),
                 Ok(n) => rest = rest.get(n..).unwrap_or_default(),
                 Err(error) => return Err(io_error(&error, deadline)),

@@ -265,6 +265,8 @@ pub enum Code {
     U6006,
     /// The host stopped the run before it finished (ADR 0116 rule 16).
     U6007,
+    /// The host gave no random bytes for keyed hashing.
+    U6009,
     /// Non-canonical formatting.
     U7001,
     /// Invalid `una.toml`.
@@ -287,7 +289,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 109] = [
+    pub const ALL: [Code; 110] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -388,6 +390,7 @@ impl Code {
         Code::U6005,
         Code::U6006,
         Code::U6007,
+        Code::U6009,
         Code::U7001,
         Code::U7002,
         Code::U7003,
@@ -915,6 +918,11 @@ impl Code {
                 code: "U6007",
                 domain: Domain::Runtime,
                 meaning: "The host stopped the run before it finished",
+            },
+            Code::U6009 => &Entry {
+                code: "U6009",
+                domain: Domain::Runtime,
+                meaning: "The host gave no random bytes for keyed hashing",
             },
             Code::U7001 => &Entry {
                 code: "U7001",

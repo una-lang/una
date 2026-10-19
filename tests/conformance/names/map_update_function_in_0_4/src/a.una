@@ -1,0 +1,11 @@
+-- test: in edition 0.4, a package function `update` whose first parameter is a `Map` or a type parameter is U1002 at its name, since `m.update(...)` is the map's built-in method, and so is an import of one; an `update` on another type is accepted (ADR 0119 rule 18)
+-- spec: spec/21 §2
+-- expect: error U1002 at src/a.una:8:5
+-- expect: error U1002 at src/b.una:3:11
+-- expect: error U1002 at src/c.una:3:5
+module a
+
+pub update(m: Map[Text, Int], key: Text) -> Map[Text, Int] = m
+
+pub kind Counter
+  count: Int

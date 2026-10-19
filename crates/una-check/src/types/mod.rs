@@ -16,10 +16,12 @@ mod authority;
 mod boundary;
 mod call;
 mod check;
+mod collections;
 mod conditions;
 mod crossing;
 mod dead;
 mod decimal;
+mod dense;
 mod edit_labels;
 mod effects;
 mod elab;
@@ -38,6 +40,8 @@ mod lock;
 mod map;
 mod memory;
 mod records;
+mod seq;
+mod set;
 mod shared;
 #[cfg(test)]
 mod sharing_tests;
@@ -69,7 +73,8 @@ const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 /// ADR 0114 rule 3.9), appended after those of edition 0.2.
 const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
-/// `Decimal` (`spec/29 §16`, ADR 0120), appended after those of edition 0.3.
+/// `Decimal` (`spec/29 §16`), then the constructors of dense values and the functions their
+/// methods resolve to (`spec/29 §17`, ADR 0120), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
@@ -133,6 +138,14 @@ const TIME: &str = include_str!("../std/time.una");
 /// `std.drive` (`spec/26 §2`), edition 0.4, as Una source.
 const DRIVE: &str = include_str!("../std/drive.una");
 
+/// `std.collections` (ADR 0119) as Una source: its kind `Ranked` and its functions. The checker
+/// loads it only for a package of edition 0.4 that imports it.
+const COLLECTIONS: &str = include_str!("../std/collections.una");
+
+/// The built-in method `update` of maps in edition 0.4 (ADR 0119 rule 18) as Una source, in a
+/// module that no scope holds: method syntax on a map reaches it, its name never does.
+const MAP_0_4: &str = include_str!("../std/map_0_4.una");
+
 /// The standard modules as the checker reads them in one edition: the prelude's source, with
 /// the declarations edition 0.2 rewrites and adds, `std.testing`'s source, and the keyword
 /// set the prelude is lexed with (`spec/14`). Read-only: the checker loads exactly this text
@@ -151,17 +164,37 @@ pub struct StandardSource {
 }
 
 /// The built-in methods and properties that the checker resolves by the type of their
-/// receiver, as `(receiver, name)`: `.len` on `Text`, `List` and `Map` (`spec/14 §2`), the
-/// methods of maps (`spec/21 §2`), the conversions (`spec/18 §4`), and the wrapping,
-/// saturating and bit operations of the fixed-width integers (`spec/18 §5`). The receivers are
-/// `"len"`, `"Map"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
-/// checker resolves them with, for the standard library reference (#690).
+/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and `Set`,
+/// the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`) and of sets
+/// (`spec/28 §6`), the conversions (`spec/18 §4`), and the wrapping, saturating and bit
+/// operations of the fixed-width integers (`spec/18 §5`). The receivers are `"len"`, `"Map"`,
+/// `"Stack"`, `"Queue"`, `"Set"`, `"conversion"` and `"fixed"`. Read-only: it is built from the
+/// tables the checker resolves them with, for the standard library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
     methods.extend(
         map::MAP_METHODS
             .iter()
             .map(|(name, ..)| ("Map", (*name).to_owned())),
+    );
+    // Edition 0.4: `update`, which method syntax on a map reaches (ADR 0119 rule 18).
+    methods.push(("Map", "update".to_owned()));
+    // Edition 0.4: the methods of `Stack` and `Queue` (`spec/28 §5`).
+    methods.extend(
+        seq::STACK_METHODS
+            .iter()
+            .map(|(name, ..)| ("Stack", (*name).to_owned())),
+    );
+    methods.extend(
+        seq::QUEUE_METHODS
+            .iter()
+            .map(|(name, ..)| ("Queue", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `Set` (ADR 0119 rule 7).
+    methods.extend(
+        set::SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("Set", (*name).to_owned())),
     );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (
@@ -378,10 +411,26 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .iter()
         .map(|category| category.value.clone())
         .collect();
+    // ADR 0119 rule 0: `std.collections` is in scope only for a package of edition 0.4 that
+    // imports it, so no other package's checks or Core IR change.
+    let imports_collections = package.settings.edition >= Edition::V0_4
+        && package.modules.iter().any(|module| {
+            module.tree.imports.iter().any(|import| {
+                let path: Vec<&str> = import
+                    .module
+                    .segments
+                    .iter()
+                    .map(|segment| package.interner.resolve(segment.name))
+                    .collect();
+                path.join(".") == una_core::COLLECTIONS_MODULE
+            })
+        });
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.after_prelude(),
+        (package.settings.edition >= Edition::V0_4).then(|| standard.source(&standard.map_0_4)),
+        imports_collections.then(|| standard.source(&standard.collections)),
         categories,
         package.settings.edition,
         &mut report,
@@ -413,6 +462,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     env.blocked_vias = vias.blocked;
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
+    // Edition 0.4: functions named like a built-in method of a collection (ADR 0119 rules 0
+    // and 18).
+    if package.settings.edition >= Edition::V0_4 {
+        collections::method_names(&env, &mut report);
+    }
     authority::stored_effects(&env, &mut report);
     // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
@@ -921,6 +975,10 @@ struct Standard {
     testing: File,
     /// The standard modules of edition 0.4 after `std.testing`, in their order.
     later: Vec<File>,
+    /// `std.collections` (ADR 0119), loaded when a package of edition 0.4 imports it.
+    collections: File,
+    /// The hidden module of the built-in `update` of maps in edition 0.4 (ADR 0119 rule 18).
+    map_0_4: File,
 }
 
 impl Standard {
@@ -938,6 +996,8 @@ impl Standard {
         } = standard_source(edition);
         let prelude = sources.add("std/prelude.una", text.as_bytes());
         let testing = sources.add("std/testing.una", testing.as_bytes());
+        let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
+        let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
         // The modules of edition 0.4 declare measures, a construct of edition 0.3.
@@ -949,12 +1009,17 @@ impl Standard {
                 parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
             })
             .collect();
+        // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
+        let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_2);
+        let map_0_4 = parse_standard(&sources, map_0_4, &mut interner, KeywordSet::V0_2);
         Standard {
             sources,
             interner,
             prelude,
             testing,
             later,
+            collections,
+            map_0_4,
         }
     }
 
@@ -1550,7 +1615,8 @@ mod tests {
         }
         for kind in una_core::PRELUDE_ENGINE_KINDS {
             assert!(
-                kinds.iter().any(|k| k == kind) || ["List", "Map"].contains(&kind),
+                kinds.iter().any(|k| k == kind)
+                    || ["List", "Map", "Array", "Matrix"].contains(&kind),
                 "`{kind}` is not a kind of the prelude"
             );
         }
@@ -1627,7 +1693,7 @@ mod tests {
         }
         let mut expected: Vec<String> = una_core::PRELUDE_ENGINE_KINDS
             .iter()
-            .filter(|kind| !["List", "Map"].contains(kind))
+            .filter(|kind| !["List", "Map", "Array", "Matrix"].contains(kind))
             .map(|kind| (*kind).to_owned())
             .collect();
         expected.sort();
@@ -1657,6 +1723,8 @@ mod tests {
                 .chain(&standard.later)
                 .map(source)
                 .collect(),
+            (edition >= Edition::V0_4).then(|| source(&standard.map_0_4)),
+            (edition >= Edition::V0_4).then(|| source(&standard.collections)),
             Vec::new(),
             edition,
             &mut report,
