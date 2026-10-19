@@ -441,6 +441,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `Base` | `int`, `fixed`, `f64`, `decimal`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
 | `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
 | `Bound` | `rhs`, `expr` |
+| `Coll` | `stack`, `queue`, `set`, `hash_map`, `hash_set`, `priority_queue`, `bit_set` |
 | `Constraint` | `none`, `eq`, `ord`, `integer` |
 | `DecimalOp` | `add`, `sub`, `mul`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `widen`, `rescale`, `rescale_exact`, `divide`, `remainder`, `to_int`, `abs`, `coefficient`, `from_int`, `from_f64`, `to_f64`, `to_text`, `parse`, `from_json`, `to_json` |
 | `Decl` | `alias`, `data`, `pred`, `cap`, `handler`, `fun`, `policy` |

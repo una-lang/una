@@ -234,6 +234,23 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         ],
         removed: &[],
     },
+    // ADR 0116 rule 5: `stop when` and `skip` are statements from edition 0.4.
+    Difference04 {
+        case: "syntax/loop_exits_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:10:10")],
+    },
+    // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
+    // package that declares them is refused there.
+    Difference04 {
+        case: "types/dense_edition_0_3",
+        added: &[
+            ("U1002", "src/dense.una:6:10"),
+            ("U1002", "src/dense.una:8:10"),
+            ("U2003", "src/dense.una:13:33"),
+        ],
+        removed: &[],
+    },
 ];
 
 const EDITION_0_2: &str = "edition = \"0.2\"";
