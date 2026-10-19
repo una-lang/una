@@ -16,8 +16,8 @@ use una_syntax::{SourceDb, Span};
 
 use crate::run::Problem;
 use crate::smt::{
-    ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP,
-    MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
+    ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, LU, MAP,
+    MATRIX, Query, Sort, TENSOR, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// A proof obligation of `spec/12 §3`, with its query.
@@ -2472,6 +2472,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     if is_prelude(&function.module) {
                         self.text_facts(&function.name, &values, &x, ctx);
+                        self.dense_facts(&function.name, &values, &x, ctx);
                     }
                 } else if let Some((params, formula)) = self.index.predicates.get(&key) {
                     self.arguments(params, args, arg_spans, ctx);
@@ -3773,26 +3774,95 @@ impl<'p, 'i> Walker<'p, 'i> {
         has_len.then(|| len_of(&value.f))
     }
 
-    /// `m.rows` or `m.columns` of a matrix, `i!rows!<Sort>` or `i!columns!<Sort>` (ADR 0120
-    /// V4).
+    /// `m.rows` or `m.columns` of a matrix, `t.rank` or the element count of a tensor, and
+    /// `f.size` of an `Lu[T]`: `i!<fun>!<Sort>` (ADR 0120 V4).
     fn shape(&self, value: &Tv, fun: ShapeFun) -> Option<F> {
-        value
-            .f
-            .sort()
-            .starts_with(MATRIX)
-            .then(|| shape_of(&value.f, fun))
+        let sort = value.f.sort();
+        let has = match fun {
+            ShapeFun::Rows | ShapeFun::Columns => sort.starts_with(MATRIX),
+            ShapeFun::Rank | ShapeFun::Count => sort.starts_with(TENSOR),
+            ShapeFun::Size => sort.starts_with(LU),
+        };
+        has.then(|| shape_of(&value.f, fun))
     }
 
     /// The shape of a value as the terms that the frame of a loop keeps (ADR 0071, ADR 0120
-    /// V4): its length, or its rows and its columns.
+    /// V4): its length; or its rows and its columns; or a tensor's rank, its element count
+    /// and its length along each of the 8 axes a rank allows.
     fn shape_terms(&self, value: &Tv) -> Vec<F> {
-        if value.f.sort().starts_with(MATRIX) {
+        let sort = value.f.sort();
+        if sort.starts_with(MATRIX) {
             vec![
                 shape_of(&value.f, ShapeFun::Rows),
                 shape_of(&value.f, ShapeFun::Columns),
             ]
+        } else if sort.starts_with(TENSOR) {
+            let mut terms = vec![
+                shape_of(&value.f, ShapeFun::Rank),
+                shape_of(&value.f, ShapeFun::Count),
+            ];
+            terms.extend((0..MAX_RANK).map(|axis| dim_of(&value.f, &F::Int(axis.to_string()))));
+            terms
         } else {
             self.len(value).into_iter().collect()
+        }
+    }
+
+    /// The facts of the prelude's dense methods whose result is an `Option` (ADR 0120 rule
+    /// 38), which a clause cannot state: on `Some`, `lu` holds an `Lu[T]` of the matrix's size,
+    /// `solve` a matrix of the right-hand side's shape, `solve_array` an array of its length,
+    /// and `cholesky` a matrix of the receiver's shape. Each kernel checks the shape it gives
+    /// before it returns.
+    fn dense_facts(&mut self, name: &str, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        if !matches!(
+            name,
+            "dense_matrix_lu"
+                | "dense_matrix_solve"
+                | "dense_matrix_solve_array"
+                | "dense_matrix_cholesky"
+        ) {
+            return;
+        }
+        let (Some(tag), Some(payload), Some(m)) =
+            (self.tag(x), self.field(x, 0, 0), values.first())
+        else {
+            return;
+        };
+        let some = F::eq(tag, F::Int("0".to_owned()));
+        let (Some(rows), Some(columns)) = (
+            self.shape(m, ShapeFun::Rows),
+            self.shape(m, ShapeFun::Columns),
+        ) else {
+            return;
+        };
+        let facts = match name {
+            "dense_matrix_lu" => self
+                .shape(&payload, ShapeFun::Size)
+                .map(|size| vec![F::eq(size, rows)]),
+            "dense_matrix_solve" => {
+                let rhs = values.get(1);
+                match (
+                    self.shape(&payload, ShapeFun::Rows),
+                    self.shape(&payload, ShapeFun::Columns),
+                    rhs.and_then(|rhs| self.shape(rhs, ShapeFun::Columns)),
+                ) {
+                    (Some(r), Some(c), Some(rhs_columns)) => {
+                        Some(vec![F::eq(r, rows), F::eq(c, rhs_columns)])
+                    }
+                    _ => None,
+                }
+            }
+            "dense_matrix_solve_array" => self.len(&payload).map(|len| vec![F::eq(len, rows)]),
+            _ => match (
+                self.shape(&payload, ShapeFun::Rows),
+                self.shape(&payload, ShapeFun::Columns),
+            ) {
+                (Some(r), Some(c)) => Some(vec![F::eq(r, rows), F::eq(c, columns)]),
+                _ => None,
+            },
+        };
+        if let Some(facts) = facts {
+            ctx.assume(F::op("=>", vec![some, F::and(facts)]));
         }
     }
 
@@ -4596,12 +4666,28 @@ impl<'p, 'i> Walker<'p, 'i> {
                     ty: int(),
                 }
             }
+            // `t.dim(axis: k)`, `i!dim!<Sort>` (ADR 0120 V4).
+            Term::Dim { value, axis } => {
+                let value = self.term(value, env)?;
+                let axis = self.term(axis, env)?;
+                if !value.f.sort().starts_with(TENSOR) || axis.f.sort() != "Int" {
+                    return None;
+                }
+                Tv {
+                    f: dim_of(&value.f, &axis.f),
+                    ty: int(),
+                }
+            }
             // The element of a dense value, uninterpreted, of its element type's sort (ADR
-            // 0120 V4): no fact relates it to other elements, which would need a quantifier.
-            Term::Element { value, indices } => {
+            // 0120 V4): no fact relates it to other elements, which would need a quantifier. A
+            // tensor has one function per rank, so each application has a fixed arity.
+            Term::Element { value, indices, .. } => {
                 let value = self.term(value, env)?;
                 let sort = value.f.sort();
-                if !(sort.starts_with(ARRAY) || sort.starts_with(MATRIX)) {
+                if !(sort.starts_with(ARRAY)
+                    || sort.starts_with(MATRIX)
+                    || sort.starts_with(TENSOR))
+                {
                     return None;
                 }
                 let element = match &value.ty {
@@ -5412,6 +5498,21 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let mut new = Vec::new();
                 match &term {
                     F::App { fun, args } => match &fun.role {
+                        // A rank is from 1 to 8, and a tensor's element count is the product
+                        // of its lengths, by its rank: products of terms, which
+                        // the model check of `spec/12 §6` and ADR 0054 handle as any other.
+                        FunRole::Shape if fun.name.starts_with("i!rank!") => {
+                            new.push(F::and(vec![
+                                F::op("<=", vec![F::Int("1".to_owned()), term.clone()]),
+                                F::op("<=", vec![term.clone(), F::Int(MAX_RANK.to_string())]),
+                            ]));
+                        }
+                        FunRole::Shape if fun.name.starts_with("i!count!") => {
+                            new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
+                            if let Some(tensor) = args.first() {
+                                new.extend(count_facts(&term, tensor));
+                            }
+                        }
                         FunRole::Len | FunRole::Shape => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
                         }
@@ -5784,7 +5885,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                 match &fun.role {
                     FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
                     FunRole::Len => (format!("{}.len", first()), 1),
+                    FunRole::Shape if args.len() == 2 => {
+                        let axis = args.get(1).map_or_else(String::new, |a| operand(a, 10));
+                        (format!("{}.{base}(axis: {axis})", first()), 1)
+                    }
                     FunRole::Shape => (format!("{}.{base}", first()), 1),
+                    FunRole::Element
+                        if args
+                            .first()
+                            .is_some_and(|value| value.sort().starts_with(TENSOR)) =>
+                    {
+                        let shown: Vec<String> =
+                            args.iter().skip(1).map(|a| operand(a, 10)).collect();
+                        (format!("{}.get(at: [{}])", first(), shown.join(", ")), 1)
+                    }
                     FunRole::Element => {
                         let labels: &[&str] = if args.len() == 2 {
                             &["index"]
@@ -6152,13 +6266,63 @@ fn shape_of(value: &F, fun: ShapeFun) -> F {
     }
 }
 
-/// The element of a dense value at its indices, `i!get!<Sort>` with the value first, then one
-/// `Int` per axis, of the element's sort (ADR 0120 V4).
-fn element_of(args: &[F], element: &Sort) -> F {
-    let sort = args.first().map_or_else(String::new, F::sort);
+/// The element count of `tensor` by its rank (ADR 0120 V4): for each r from 1 to 8, `rank = r`
+/// implies `count = dim 0 × ... × dim (r - 1)`. The products of terms stay uninterpreted
+/// (`spec/12 §2`), so a refutation that rests on them is model-checked as any other (ADR 0053,
+/// ADR 0054). O(1) per tensor: 8 facts.
+fn count_facts(count: &F, tensor: &F) -> Vec<F> {
+    let rank = shape_of(tensor, ShapeFun::Rank);
+    let mut product = dim_of(tensor, &F::Int("0".to_owned()));
+    let mut facts = Vec::new();
+    for r in 1..=MAX_RANK {
+        if r > 1 {
+            product = arithmetic(
+                BinOp::Mul,
+                product,
+                dim_of(tensor, &F::Int((r - 1).to_string())),
+            );
+        }
+        facts.push(F::op(
+            "=>",
+            vec![
+                F::eq(rank.clone(), F::Int(r.to_string())),
+                F::eq(count.clone(), product.clone()),
+            ],
+        ));
+    }
+    facts
+}
+
+/// `t.dim(axis: k)`, `i!dim!<Sort>` from the tensor and the axis (ADR 0120 V4).
+fn dim_of(value: &F, axis: &F) -> F {
+    let sort = value.sort();
     F::App {
         fun: SmtFun {
-            name: format!("i!get!{sort}"),
+            name: format!("i!dim!{sort}"),
+            args: vec![sort, "Int".to_owned()],
+            result: "Int".to_owned(),
+            role: FunRole::Shape,
+        },
+        args: vec![value.clone(), axis.clone()],
+    }
+}
+
+/// The most axes a tensor has (ADR 0120 rule 27).
+const MAX_RANK: usize = 8;
+
+/// The element of a dense value at its indices, `i!get!<Sort>` with the value first, then one
+/// `Int` per axis, of the element's sort (ADR 0120 V4). A tensor's is `i!get!<Sort>!<r>` for r
+/// indices, one function per rank.
+fn element_of(args: &[F], element: &Sort) -> F {
+    let sort = args.first().map_or_else(String::new, F::sort);
+    let name = if sort.starts_with(TENSOR) {
+        format!("i!get!{sort}!{}", args.len().saturating_sub(1))
+    } else {
+        format!("i!get!{sort}")
+    };
+    F::App {
+        fun: SmtFun {
+            name,
             args: args.iter().map(F::sort).collect(),
             result: element.clone(),
             role: FunRole::Element,

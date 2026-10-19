@@ -287,22 +287,33 @@ pub enum Term {
     },
     /// `a.len`.
     Len(Box<Term>),
-    /// A shape function of a dense value other than `len`: `m.rows`, `m.columns`
-    /// (`spec/29 §17`, ADR 0120 rule 33).
+    /// A shape function of a dense value other than `len`: `m.rows`, `m.columns`, `t.rank`,
+    /// `f.size` (`spec/29 §17`, ADR 0120 rules 33 and 38).
     Shape {
         /// Which function.
         fun: ShapeFun,
         /// The dense value.
         value: Box<Term>,
     },
-    /// `a.get(index: i)` or `m.get(row: i, column: j)` of a dense value, in the refinement
-    /// language (`spec/29 §17`, ADR 0120 rule 33): the element at the indices, which a
-    /// precondition keeps in range wherever code reads it.
+    /// `a.get(index: i)`, `m.get(row: i, column: j)` or `t.get(at: [i, ...])` of a dense
+    /// value, in the refinement language (`spec/29 §17`, ADR 0120 rule 33): the element at the
+    /// indices, which a precondition keeps in range wherever code reads it.
     Element {
         /// The dense value.
         value: Box<Term>,
         /// The indices, one per axis.
         indices: Vec<Term>,
+        /// Whether the value is a tensor, whose indices are written as one list literal.
+        tensor: bool,
+    },
+    /// `t.dim(axis: k)` of a tensor (`spec/29 §17`, ADR 0120 rule 33): the length of axis k.
+    /// A program writes k as an integer literal (U2038); the prelude's contracts also write
+    /// it as a term over their parameters.
+    Dim {
+        /// The tensor.
+        value: Box<Term>,
+        /// The axis.
+        axis: Box<Term>,
     },
     /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
     Has {
@@ -729,14 +740,22 @@ impl DecimalOp {
     }
 }
 
-/// The shape functions of a dense value beside `len`, which `Array` has as a list does
-/// (`spec/29 §17`, ADR 0120 rule 33). Each is an `Int` of at least 0.
+/// The shape functions of a dense value beside `len`, which `Array` has as a list does, and
+/// beside `dim`, which takes an axis (`spec/29 §17`, ADR 0120 rules 33 and 38). Each is an `Int`
+/// of at least 0, and a rank is from 1 to 8.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ShapeFun {
     /// `m.rows`.
     Rows,
     /// `m.columns`.
     Columns,
+    /// `t.rank` of a tensor: from 1 to 8.
+    Rank,
+    /// The number of elements of a tensor, the product of its lengths. Only the prelude's
+    /// contracts write it: it states the precondition of `reshape` linearly.
+    Count,
+    /// `f.size` of an `Lu[T]`.
+    Size,
 }
 
 impl ShapeFun {
@@ -745,6 +764,9 @@ impl ShapeFun {
         match self {
             ShapeFun::Rows => "rows",
             ShapeFun::Columns => "columns",
+            ShapeFun::Rank => "rank",
+            ShapeFun::Count => "count",
+            ShapeFun::Size => "size",
         }
     }
 }
@@ -2043,14 +2065,17 @@ pub const PRELUDE_MODULE: &str = "prelude";
 
 /// The kinds of the prelude that Core IR does not declare, which each engine knows itself: the
 /// collections and a map's `Entry`, `Option` and `Result`, the failure kinds of `Files` and
-/// `Keys`, `ParseError`, and the dense types of edition 0.4 (`spec/29 §17`). Every other kind of the prelude is a [`Decl::Data`] of the module
-/// [`PRELUDE_MODULE`]. A `Named` kind that is neither, nor declared by the package, is a bug of
-/// elaboration, and the verifier and the native backend stop on it (#407).
-pub const PRELUDE_ENGINE_KINDS: [&str; 10] = [
+/// `Keys`, `ParseError`, and the dense types of edition 0.4 (`spec/29 §17`). Every other kind
+/// of the prelude is a [`Decl::Data`] of the module [`PRELUDE_MODULE`]. A `Named` kind that is
+/// neither, nor declared by the package, is a bug of elaboration, and the verifier and the
+/// native backend stop on it (#407).
+pub const PRELUDE_ENGINE_KINDS: [&str; 12] = [
     "List",
     "Map",
     "Array",
     "Matrix",
+    "Tensor",
+    "Lu",
     "Entry",
     "Option",
     "Result",

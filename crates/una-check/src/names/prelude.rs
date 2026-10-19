@@ -191,12 +191,14 @@ pub(crate) const FLOAT_0_3: [&str; 6] = [
 /// 0120 rule 32). The methods of dense values are resolved by their receiver, through
 /// functions of the prelude whose names start with [`DENSE_HIDDEN`], which no name in a program
 /// reaches.
-pub(crate) const DENSE_0_4: [&str; 5] = [
+pub(crate) const DENSE_0_4: [&str; 7] = [
     "array",
     "array_filled",
     "matrix",
     "matrix_filled",
     "matrix_diagonal",
+    "tensor",
+    "tensor_filled",
 ];
 
 /// The prefix of the prelude functions that implement the methods and operators of dense

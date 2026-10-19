@@ -117,6 +117,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::Constant(_)
             | Res::Shape(_)
             | Res::DenseElement(_)
+            | Res::TensorElement(_)
+            | Res::Dim(_)
             | Res::DenseOp { .. } => None,
         };
         // Only declarations of the package have a place to go to; the standard modules are

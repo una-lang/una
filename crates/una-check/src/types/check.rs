@@ -221,6 +221,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The receiver of the method call being checked, with its call-site marker, for its
     /// parameter's convention and exclusivity (`spec/17 §3`).
     pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
+    /// For the call being checked that passes the elements of a list literal as its arguments
+    /// (`spec/29 §17`): the position of the first of them among its arguments, how many there
+    /// are, and the parameter the first binds. The next ones bind the parameters after it.
+    pub(crate) spread: Option<(usize, usize, usize)>,
     /// The spans of the calls that are the whole expression of a statement, a `let` or an
     /// assignment: the only places for a call with `edit` or `take`, U3013 elsewhere
     /// (`spec/17 §3` rule 5), and where the desugar binds its tuple (`spec/17 §4`).
@@ -476,6 +480,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             pass,
             collected,
             receiver_marker: None,
+            spread: None,
             statement_calls: Vec::new(),
             inherited: 0,
             of_callee: None,
@@ -857,6 +862,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// Records, in pass 2, that the call at `span` passes the elements of its argument at
+    /// `position`, a list literal, as its arguments (`spec/29 §17`).
+    pub(crate) fn spread_at(&mut self, span: Span, position: usize) {
+        if self.pass == Pass::Check {
+            self.records.spread.insert(span, position);
+        }
+    }
+
     /// Records, in pass 2, the written type of the annotated `let` whose name is at `span`.
     pub(crate) fn annotated(&mut self, span: Span, declared: &Declared) {
         if self.pass == Pass::Check {
@@ -877,6 +890,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn refit(&mut self, span: Span, from: Ty) {
         if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
             self.records.refits.push((span, from));
+        }
+    }
+
+    /// Records, in pass 2 and edition `0.3`, that the call at `span` computes new elements
+    /// (ADR 0120, `super::dense::SYNTHESIZING`): its flows keep no refinement of the type
+    /// arguments a later unification settles, as elaboration does.
+    pub(crate) fn synthesized(&mut self, span: Span) {
+        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+            self.records.synthesized.insert(span);
         }
     }
 

@@ -1,6 +1,6 @@
 //! What pass 2 of the checker resolves, recorded for elaboration to Core IR (`spec/09`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use una_syntax::Span;
 
@@ -52,11 +52,18 @@ pub(crate) enum Res {
     /// A built-in constant of `std.time`, elaborated to its value (ADR 0116 rule 0, amended
     /// 2026-10-19).
     Constant(i64),
-    /// `m.rows` or `m.columns` of a matrix (`spec/29 §17`, ADR 0120 rule 33).
+    /// `m.rows`, `m.columns`, `t.rank` or `f.size` of a dense value (`spec/29 §17`, ADR 0120
+    /// rules 33 and 38).
     Shape(una_core::ShapeFun),
     /// `a.get(index: i)` or `m.get(row: i, column: j)` in a clause (ADR 0120 rule 33): the
     /// element term, with the position of each axis's argument in the written arguments.
     DenseElement(Vec<usize>),
+    /// `t.get(at: [i, ...])` in a clause (ADR 0120 rule 33): the element term of a tensor,
+    /// with the position of the argument whose list literal holds the indices.
+    TensorElement(usize),
+    /// `t.dim(axis: k)` in a clause (ADR 0120 rule 33), with the position of the axis
+    /// argument.
+    Dim(usize),
     /// An operator of dense values, elaborated as `map` or `zip_map` (the prelude function
     /// `id`) with a lambda that applies the element type's operator (ADR 0120 rule 34).
     DenseOp { id: usize, op: DenseOp },
@@ -90,6 +97,10 @@ pub(crate) struct Records {
     /// The written type of each annotated `let`, by the span of its name, with its
     /// refinements.
     pub(crate) annotations: BTreeMap<Span, Declared>,
+    /// For each call that passes the elements of a list literal as its arguments, the position
+    /// of that argument among the written ones: a tensor's shape, index or permutation, whose
+    /// length selects the function of its rank (`spec/29 §17`).
+    pub(crate) spread: BTreeMap<Span, usize>,
     /// The refinements of each lambda parameter, by the span of its name: its annotation's,
     /// or the expected parameter type's (ADR 0037 rule 1).
     pub(crate) lambda_params: BTreeMap<Span, Vec<Refinement>>,
@@ -101,6 +112,10 @@ pub(crate) struct Records {
     /// obligations that ADR 0103 adds: where tier 1 generates one, as
     /// `una_core::flow::Kinds::pending` decides over Core IR (#615).
     pub(crate) refined_flows: Vec<RefinedFlow>,
+    /// The span of each call of a function that computes new elements (ADR 0120,
+    /// `super::dense::SYNTHESIZING`): the value it gives keeps no refinement of the element
+    /// type, even of a type argument solved to a refined type after the call.
+    pub(crate) synthesized: BTreeSet<Span>,
 }
 
 /// A flow of a value at `span` into `target`, in the module `module` and the function
@@ -131,6 +146,7 @@ impl Records {
             self.res.insert(span, res);
         }
         self.args.extend(other.args);
+        self.spread.extend(other.spread);
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
         // A lambda's own type takes the refinements of the type arguments its call settles
@@ -145,6 +161,14 @@ impl Records {
             let source = match refitted.get(&flow.span) {
                 Some(settled) => source.refit(settled),
                 None => source,
+            };
+            // ADR 0120: the result of a call that computes new elements is the base of its
+            // type arguments as they finally resolve, as elaboration gives it, so a refinement
+            // solved after the call is never carried into the flow.
+            let source = if other.synthesized.contains(&flow.span) {
+                source.without_refinements()
+            } else {
+                source
             };
             self.refined_flows.push(RefinedFlow {
                 target: resolve(&flow.target),

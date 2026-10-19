@@ -179,6 +179,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2033 | types | A comparison of an `F64` with a float literal zero |
 | U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary |
 | U2037 | types | A decimal scale out of place |
+| U2038 | types | A tensor shape, index, permutation or axis out of place |
 | U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
@@ -457,9 +458,9 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `SeqOp` | `push_front`, `push_back`, `pop_front`, `pop_back`, `peek_front`, `peek_back`, `items` |
 | `SetOp` | `has`, `with`, `without`, `first`, `last`, `between`, `items`, `union`, `intersection`, `difference`, `is_subset` |
-| `ShapeFun` | `rows`, `columns` |
+| `ShapeFun` | `rows`, `columns`, `rank`, `count`, `size` |
 | `Source` | `rebind`, `handler` |
-| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `shape`, `element`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64` |
+| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `shape`, `element`, `dim`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64` |
 | `Type` | `base`, `fn` |
 
 **What inference adds** (#443). Core holds what elaboration gives it. The document adds facts the checker infers, each as an additive key, in the order shown:

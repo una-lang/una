@@ -50,6 +50,10 @@ pub(crate) const MAP: &str = "i!Map_";
 pub(crate) const ARRAY: &str = "i!Array_";
 /// The prefix of the sorts of matrices, `i!Matrix_<T>` (`spec/29 §17`, ADR 0120 V4).
 pub(crate) const MATRIX: &str = "i!Matrix_";
+/// The prefix of the sorts of tensors, `i!Tensor_<T>` (`spec/29 §17`, ADR 0120 V4).
+pub(crate) const TENSOR: &str = "i!Tensor_";
+/// The prefix of the sorts of LU factorizations, `i!Lu_<T>` (`spec/29 §17`, ADR 0120 V4).
+pub(crate) const LU: &str = "i!Lu_";
 
 /// A term or formula of the solver's logic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,8 +145,8 @@ pub(crate) enum FunRole {
     },
     /// `.len`: at least 0.
     Len,
-    /// A shape function of a dense value beside `len`, `rows` or `columns`: at least 0
-    /// (ADR 0120 V4).
+    /// A shape function of a dense value beside `len`: `rows`, `columns`, `rank`, `count`,
+    /// `size` and `dim`, at least 0, and a rank from 1 to 8 (ADR 0120 V4).
     Shape,
     /// The element of a dense value at its indices, `i!get!<Sort>`, uninterpreted (ADR 0120
     /// V4).

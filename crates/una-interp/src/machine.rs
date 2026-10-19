@@ -344,6 +344,12 @@ impl<'p> Index<'p> {
                     }
                     parts.push(Task::Text(close.to_owned()));
                 }
+                // An `Lu[T]` renders as `<lu size n>`, which is not source, as `<hashed>` is not
+                // (ADR 0120 rule 38).
+                Value::Dense(dense) if dense.kind == crate::value::DenseKind::Lu => {
+                    let size = dense.shape.get(1).copied().unwrap_or(0);
+                    out.push_str(&format!("<lu size {size}>"));
+                }
                 // The construction call that rebuilds a dense value, its elements in
                 // row-major order (ADR 0120 rule 41), each a task like a list's, so a deep
                 // value never recurses on the native stack.
@@ -351,6 +357,11 @@ impl<'p> Index<'p> {
                     let open = match (dense.kind, dense.shape.as_slice()) {
                         (crate::value::DenseKind::Matrix, [rows, columns]) => {
                             format!("matrix(rows: {rows}, columns: {columns}, elements: [")
+                        }
+                        (crate::value::DenseKind::Tensor, shape) => {
+                            let lengths: Vec<String> =
+                                shape.iter().map(ToString::to_string).collect();
+                            format!("tensor(shape: [{}], elements: [", lengths.join(", "))
                         }
                         _ => "array([".to_owned(),
                     };
@@ -2532,17 +2543,22 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::Set(op) => return sets::set_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
-        // The shape of a matrix (`spec/29 §17`).
+        // The shape of a matrix, a tensor or an `Lu[T]` (`spec/29 §17`).
         Prim::Shape(fun) => match arg(0)? {
             Value::Dense(dense) => {
-                let axis = match fun {
-                    una_core::ShapeFun::Rows => 0,
-                    una_core::ShapeFun::Columns => 1,
-                };
                 // Exact, as `len` is: a dimension is the one the program gave.
-                Value::Int(BigInt::from(dense.shape.get(axis).copied().unwrap_or(0)))
+                let value = match fun {
+                    una_core::ShapeFun::Rows => dense.shape.first().copied().unwrap_or(0),
+                    // An `Lu[T]` of size n holds n + 1 rows of n (`DenseKind::Lu`).
+                    una_core::ShapeFun::Columns | una_core::ShapeFun::Size => {
+                        dense.shape.get(1).copied().unwrap_or(0)
+                    }
+                    una_core::ShapeFun::Rank => dense.shape.len(),
+                    una_core::ShapeFun::Count => dense.count(),
+                };
+                Value::Int(BigInt::from(value))
             }
-            _ => return Err(fault("a shape of a value that is not a matrix")),
+            _ => return Err(fault("a shape of a value that is not a dense value")),
         },
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),

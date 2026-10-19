@@ -86,6 +86,7 @@ fn precedence(term: &Term) -> u8 {
         Term::Field { .. }
         | Term::Len(_)
         | Term::Shape { .. }
+        | Term::Dim { .. }
         | Term::Proj { .. }
         | Term::Call { .. } => 9,
         Term::Float { op, .. } => match op {
@@ -150,21 +151,44 @@ fn write_term(
             write_term(out, value, 9, replace);
             let _ = write!(out, ".{}", fun.as_str());
         }
-        // `a.get(index: i)`, `m.get(row: i, column: j)` (ADR 0120 rule 33).
-        Term::Element { value, indices } => {
+        // `a.get(index: i)`, `m.get(row: i, column: j)`, `t.get(at: [i, j, k])` (ADR 0120
+        // rule 33).
+        Term::Element {
+            value,
+            indices,
+            tensor,
+        } => {
             write_term(out, value, 9, replace);
-            out.push_str(".get(");
-            let labels: &[&str] = match indices.len() {
-                1 => &["index"],
-                _ => &["row", "column"],
-            };
-            for (n, (index, label)) in indices.iter().zip(labels).enumerate() {
-                if n > 0 {
-                    out.push_str(", ");
+            if *tensor {
+                out.push_str(".get(at: [");
+                for (n, index) in indices.iter().enumerate() {
+                    if n > 0 {
+                        out.push_str(", ");
+                    }
+                    write_term(out, index, 0, replace);
                 }
-                let _ = write!(out, "{label}: ");
-                write_term(out, index, 0, replace);
+                out.push_str("])");
+            } else {
+                out.push_str(".get(");
+                let labels: &[&str] = match indices.len() {
+                    1 => &["index"],
+                    _ => &["row", "column"],
+                };
+                for (n, (index, label)) in indices.iter().zip(labels).enumerate() {
+                    if n > 0 {
+                        out.push_str(", ");
+                    }
+                    let _ = write!(out, "{label}: ");
+                    write_term(out, index, 0, replace);
+                }
+                out.push(')');
             }
+        }
+        // `t.dim(axis: k)` (ADR 0120 rule 33).
+        Term::Dim { value, axis } => {
+            write_term(out, value, 9, replace);
+            out.push_str(".dim(axis: ");
+            write_term(out, axis, 0, replace);
             out.push(')');
         }
         Term::Proj { value, index } => {

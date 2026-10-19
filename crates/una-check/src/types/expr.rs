@@ -646,6 +646,28 @@ impl<'a> Checker<'_, 'a, '_> {
             self.report.push(diagnostic);
             return Ty::error();
         }
+        // ADR 0120 rule 32: the shape of `tensor` and `tensor_filled` is a list literal that
+        // each call reads to choose the contract of its rank; a function value would take it at
+        // run time (U2038).
+        if def.module == self.env.prelude
+            && self.module != self.env.prelude
+            && matches!(def.name, "tensor" | "tensor_filled")
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2038,
+                span,
+                format!(
+                    "`{}` reads its shape from a list literal at each call, so it is not a function value",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write a lambda that calls `{}` with a list literal as its `shape:`",
+                def.name
+            )));
+            self.report.push(diagnostic);
+            return Ty::error();
+        }
         // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
         // `checked`.
         if def.kind == (FnKind::Predicate { reflect: false })

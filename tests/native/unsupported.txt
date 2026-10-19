@@ -5,3 +5,6 @@ tests/conformance/runtime/dense_memory_budget
 tests/conformance/runtime/dense_memory_budget_integers
 tests/conformance/runtime/stack_queue_run
 tests/conformance/runtime/set_run
+tests/conformance/runtime/tensor_run
+tests/conformance/runtime/lu_run
+tests/conformance/runtime/tensor_memory_budget
