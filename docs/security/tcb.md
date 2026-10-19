@@ -125,8 +125,8 @@ The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implement
 The theorems hold for the Core that the Lean importer reads from `una.core/1`. Elaboration from the surface language to Core, the importer (`formal/UnaFormal/F1/Import.lean`) and the Lean kernel, at the version that `formal/lean-toolchain` pins, are trusted (formal status document).
 
 - **A bug can cause:** soundness: a program whose Core is proven while its source means something else.
-- **Guards:** the identity runs of the export (#397, #407), and the conformance suite, which checks the source.
-- **Open gap:** elaboration is not modeled.
+- **Guards:** the identity runs of the export (#397, #407), and the conformance suite, which checks the source. Elaboration fails closed (#1050): a final cross-check requires every declaration that type-checked to be in Core, with every contract of the standard library, host capability and prelude kind that Core carries, and the consistency check of `spec/10 §2` requires each Core type to keep its checked components (ADR 0038 D1). A gap in either is U8001 and rejects the package, never a declaration accepted without its obligations. A unit test injects an elaboration failure through a hook compiled only in tests.
+- **Open gap:** elaboration is not modeled. The cross-check sees a declaration that is missing, not one present in Core with a wrong meaning.
 
 ### 3.8 The Rust toolchain and the crate dependencies
 

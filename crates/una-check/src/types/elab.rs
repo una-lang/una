@@ -65,39 +65,163 @@ impl Let {
     }
 }
 
+/// What [`program`] could not carry into Core IR, each an internal error (U8001) unless
+/// something else rejects the package.
+#[derive(Debug, Default)]
+pub(crate) struct Gaps {
+    /// The components of checker types that a Core IR binder type lost, with the span of
+    /// their declaration ([`lost`]).
+    pub(crate) lost: Vec<(Span, String)>,
+    /// The declarations of the package that type-checked yet have no Core IR, by span, and
+    /// what they are (#1050): none of their obligations would be generated.
+    pub(crate) missing: Vec<(Span, &'static str)>,
+    /// The declarations of the standard modules whose contract, host capability or prelude
+    /// kind did not elaborate, by span in the standard sources (#1050): a call into one would
+    /// be verified without its `requires`.
+    pub(crate) standard: Vec<(Span, &'static str)>,
+}
+
 /// Elaborates the package's modules, in path order, and the contracts of the standard
 /// library; a declaration with a diagnostic, or with a resolution missing, is left out.
-/// Returns the program, and the components of checker types that a Core IR binder type
-/// lost, with the span of their declaration ([`lost`]).
+/// Returns the program, and its [`Gaps`]: what Core IR lost of the checked types, and every
+/// declaration that type-checked but is missing from it, found by [`missing`] over the program
+/// built, whatever path of the elaboration left it out (#1050).
 pub(crate) fn program(
     env: &Env<'_>,
     findings: &Findings,
     sources: &SourceDb,
     standard: &SourceDb,
-) -> (Program, Vec<(Span, String)>) {
+) -> (Program, Gaps) {
     let dbs = Dbs { sources, standard };
-    let mut lost = Vec::new();
+    let mut gaps = Gaps::default();
     let mut modules: Vec<CoreModule> = (0..env.prelude)
         .filter(|module| env.reports(*module))
-        .map(|module| elaborate_module(env, findings, dbs, module, &mut lost))
+        .map(|module| elaborate_module(env, findings, dbs, module, &mut gaps.lost))
         .collect();
-    if let Some(kinds) = prelude_kinds(env, findings, dbs) {
+    if let Some(kinds) = prelude_kinds(env, findings, dbs, &mut gaps.standard) {
         modules.push(kinds);
     }
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     let library = (env.prelude..env.modules.len())
-        .flat_map(|module| library(env, findings, dbs, module))
+        .flat_map(|module| library(env, findings, dbs, module, &mut gaps.standard))
         .collect();
-    let host = host(env, findings, dbs);
-    (
-        Program {
-            modules,
-            library,
-            host,
-            condition_edits: condition_edits(findings),
-        },
-        lost,
-    )
+    let host = host(env, findings, dbs, &mut gaps.standard);
+    let program = Program {
+        modules,
+        library,
+        host,
+        condition_edits: condition_edits(findings),
+    };
+    gaps.missing = missing(env, &program);
+    (program, gaps)
+}
+
+/// What a declaration of the package is in Core IR, and its name there, when it has one: a
+/// type, a function (predicates and policies included), a capability, a handler or an
+/// example. `None` for a requirement or a unit of measure, which Core IR does not hold.
+fn core_key<'a>(
+    env: &Env<'a>,
+    module: usize,
+    kind: &'a DeclKind,
+    entity: Option<Entity>,
+) -> Option<(&'static str, String)> {
+    let key = match (kind, entity) {
+        (DeclKind::Example(example), _) => ("example", example_name(example)),
+        (DeclKind::Kind(_), Some(Entity::Alias(id))) => {
+            ("type", env.aliases.get(id).map_or("", |a| a.name).to_owned())
+        }
+        (DeclKind::Kind(_), Some(Entity::Kind(id))) => {
+            ("type", env.kinds.get(id).map_or("", |k| k.name).to_owned())
+        }
+        (DeclKind::Kind(kind), _) => ("type", env.text(module, kind.name.name).to_owned()),
+        (DeclKind::Function(function), _) => {
+            ("function", env.text(module, function.name.name).to_owned())
+        }
+        (DeclKind::Predicate(predicate), _) => {
+            ("predicate", env.text(module, predicate.name.name).to_owned())
+        }
+        (DeclKind::Policy(policy), _) => ("policy", env.text(module, policy.name.name).to_owned()),
+        (DeclKind::Capability(capability), _) => (
+            "capability",
+            env.text(module, capability.name.name).to_owned(),
+        ),
+        (DeclKind::Handler(handler), _) => {
+            ("handler", env.text(module, handler.name.name).to_owned())
+        }
+        (DeclKind::Requirement(_) | DeclKind::Measure(_), _) => return None,
+    };
+    Some(key)
+}
+
+/// The key of a Core IR declaration, as [`core_key`] names the source declaration it comes
+/// from.
+fn decl_key(decl: &Decl) -> (&'static str, &str) {
+    match decl {
+        Decl::Alias { name, .. } | Decl::Data { name, .. } => ("type", name),
+        Decl::Fun(fun) => ("function", &fun.name),
+        Decl::Pred { name, .. } => ("predicate", name),
+        Decl::Policy { name, .. } => ("policy", name),
+        Decl::Cap { name, .. } => ("capability", name),
+        Decl::Handler { name, .. } => ("handler", name),
+    }
+}
+
+/// The final cross-check of elaboration (#1050): each declaration of a package module that
+/// reports, which Core IR holds, must be in the module's Core IR, an example among its
+/// examples. Returns the spans of those that are not, with what they are; each is an internal
+/// error unless something else rejects the package, never a declaration accepted without its
+/// obligations. A declaration with a diagnostic is not in Core IR and is listed too, as that
+/// diagnostic rejects the package. Two declarations of a module with one key are counted, and
+/// both are listed when Core IR holds fewer. O(d log d) in the d declarations.
+pub(crate) fn missing(env: &Env<'_>, program: &Program) -> Vec<(Span, &'static str)> {
+    let mut held: BTreeMap<(&str, &'static str, &str), usize> = BTreeMap::new();
+    for module in &program.modules {
+        for decl in &module.decls {
+            let (what, name) = decl_key(decl);
+            *held.entry((module.path.as_str(), what, name)).or_default() += 1;
+        }
+        for example in &module.examples {
+            *held
+                .entry((module.path.as_str(), "example", example.name.as_str()))
+                .or_default() += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for module in (0..env.prelude).filter(|module| env.reports(*module)) {
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        let mut wanted: BTreeMap<(&'static str, String), Vec<Span>> = BTreeMap::new();
+        for (decl, entity) in m.tree.decls.iter().zip(m.decls.iter().copied()) {
+            if let Some(key) = core_key(env, module, &decl.kind, entity) {
+                wanted.entry(key).or_default().push(decl.span);
+            }
+        }
+        for ((what, name), spans) in wanted {
+            let count = held
+                .get(&(m.path.as_str(), what, name.as_str()))
+                .copied()
+                .unwrap_or(0);
+            if count < spans.len() {
+                out.extend(spans.into_iter().map(|span| (span, what)));
+            }
+        }
+    }
+    out.sort_by_key(|(span, _)| (span.file, span.start, span.end));
+    out
+}
+
+/// The name of an example, its text without interpolations.
+fn example_name(example: &ExampleDecl) -> String {
+    example
+        .name
+        .parts
+        .iter()
+        .map(|part| match part {
+            TextPart::Text(text) => text.clone(),
+            TextPart::Interpolation(_) => String::new(),
+        })
+        .collect()
 }
 
 /// The edits of callees' conditions that the package's sites ask for (ADR 0092, amendment of
@@ -184,15 +308,34 @@ pub(crate) const PRELUDE_CORE_KINDS: [&str; 6] = [
 /// from the facts of `checked`, and both engines read their fields, as for a kind of the
 /// package. Both engines call the predicate by name, never its placeholder body. `None` in
 /// edition 0.1, where the prelude does not declare them.
-fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<CoreModule> {
+/// A kind of [`PRELUDE_CORE_KINDS`] or the predicate that does not elaborate is recorded in
+/// `dropped` (#1050).
+fn prelude_kinds(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Option<CoreModule> {
     let m = env.modules.get(env.prelude)?;
     let mut decls = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        let Some(entity) = entity else {
-            continue;
+        let wanted = match &decl.kind {
+            DeclKind::Kind(kind) => PRELUDE_CORE_KINDS
+                .contains(&env.text(env.prelude, kind.name.name))
+                .then_some("prelude kind"),
+            DeclKind::Predicate(predicate) => (env.text(env.prelude, predicate.name.name)
+                == "is_json_number")
+                .then_some("prelude predicate"),
+            _ => None,
         };
-        let mut fx = Fx::new(env, findings, dbs, env.prelude);
-        let Some(core) = fx.decl(&decl.kind, entity) else {
+        let core = entity.and_then(|entity| {
+            let mut fx = Fx::new(env, findings, dbs, env.prelude);
+            fx.decl(&decl.kind, entity)
+        });
+        let Some(core) = core else {
+            if let Some(what) = wanted {
+                dropped.push((decl.span, what));
+            }
             continue;
         };
         let json = match &core {
@@ -211,19 +354,30 @@ fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<Cor
     })
 }
 
-/// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`).
-fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
+/// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`). One that
+/// does not elaborate is recorded in `dropped` (#1050).
+fn host(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Vec<Decl> {
     let Some(m) = env.modules.get(env.prelude) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
-            (&decl.kind, entity)
-        {
-            let mut fx = Fx::new(env, findings, dbs, env.prelude);
-            if let Some(core) = fx.decl(&decl.kind, entity) {
-                out.push(core);
+        if let DeclKind::Capability(_) = &decl.kind {
+            let core = match entity {
+                Some(entity @ Entity::Capability(_)) => {
+                    let mut fx = Fx::new(env, findings, dbs, env.prelude);
+                    fx.decl(&decl.kind, entity)
+                }
+                _ => None,
+            };
+            match core {
+                Some(core) => out.push(core),
+                None => dropped.push((decl.span, "host capability")),
             }
         }
     }
@@ -317,17 +471,32 @@ fn elaborate_module(
     out
 }
 
-/// The signatures of the functions of a standard module.
-fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> Vec<Signature> {
+/// The signatures of the functions of a standard module. A function whose signature does not
+/// elaborate is recorded in `dropped` (#1050): a call into it would otherwise be verified
+/// without its contract.
+fn library(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    module: usize,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Vec<Signature> {
     let Some(m) = env.modules.get(module) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if let (DeclKind::Function(function), Some(Entity::Function(id))) = (&decl.kind, entity) {
-            let mut fx = Fx::new(env, findings, dbs, module);
-            if let Some(signature) = fx.signature(function, id) {
-                out.push(signature);
+        if let DeclKind::Function(function) = &decl.kind {
+            let signature = match entity {
+                Some(Entity::Function(id)) => {
+                    let mut fx = Fx::new(env, findings, dbs, module);
+                    fx.signature(function, id)
+                }
+                _ => None,
+            };
+            match signature {
+                Some(signature) => out.push(signature),
+                None => dropped.push((decl.span, "standard function")),
             }
         }
     }
@@ -353,7 +522,7 @@ struct Fx<'e, 'a> {
     it: Option<Name>,
     result: Option<Name>,
     /// A resolution was missing: the declaration is not elaborated.
-    broken: bool,
+    broken: std::cell::Cell<bool>,
     /// What the Core IR types of this declaration lost of the checker types they come from
     /// (ADR 0038 D1, the consistency check of `spec/10 §2`).
     lost: std::cell::RefCell<Vec<String>>,
@@ -398,7 +567,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             error: None,
             it: None,
             result: None,
-            broken: false,
+            broken: std::cell::Cell::new(false),
             lost: std::cell::RefCell::new(Vec::new()),
             types: BTreeMap::new(),
             returning: None,
@@ -561,6 +730,13 @@ impl<'e, 'a> Fx<'e, 'a> {
             .iter()
             .filter_map(|refinement| fx.refinement(refinement))
             .collect();
+        // A clause that did not elaborate holds a placeholder, never a refinement to keep:
+        // the declaration is not elaborated, and what the clause's types lost is this
+        // declaration's (#1050).
+        if fx.broken.get() {
+            self.broken.set(true);
+        }
+        self.lost.borrow_mut().extend(fx.lost.take());
         if let Type::Base {
             refinements: slot, ..
         } = &mut ty
@@ -832,7 +1008,7 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     fn ctor(&mut self, kind: usize, variant: Option<usize>) -> Ctor {
         let Some(def) = self.env.kinds.get(kind) else {
-            self.broken = true;
+            self.broken.set(true);
             return Ctor {
                 kind: self.path(self.module, "?"),
                 name: "?".to_owned(),
@@ -901,7 +1077,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn res(&mut self, span: Span) -> Option<Res> {
         let res = self.records.res.get(&span).cloned();
         if res.is_none() {
-            self.broken = true;
+            self.broken.set(true);
         }
         res
     }
@@ -969,6 +1145,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                         value: Box::new(Term::Result),
                         index,
                     };
+                }
+                #[cfg(test)]
+                if hook::eager() {
+                    let _ = self.res(ident.span);
                 }
                 match self.local(name) {
                     Some(binder) => Term::Var(binder),
@@ -1124,7 +1304,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// A form outside the refinement language, which the checker reports (U2014): the
     /// declaration is not elaborated.
     fn outside(&mut self) -> Term {
-        self.broken = true;
+        self.broken.set(true);
         Term::Bool(false)
     }
 
@@ -1136,14 +1316,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             written.push(self.term(&arg.value));
         }
         if written.len() != order.len() {
-            self.broken = true;
+            self.broken.set(true);
         }
         let count = order.iter().flatten().max().map_or(0, |max| max + 1);
         let mut slots: Vec<Option<Term>> = vec![None; count.max(written.len())];
         for (value, target) in written.into_iter().zip(order.iter().copied()) {
             match target.and_then(|t| slots.get_mut(t)) {
                 Some(slot) => *slot = Some(value),
-                None => self.broken = true,
+                None => self.broken.set(true),
             }
         }
         slots.into_iter().flatten().collect()
@@ -1160,7 +1340,11 @@ impl<'e, 'a> Fx<'e, 'a> {
         let result = self.returning(&def.params, &params, declared_result);
         let (requires, ensures) = self.contracts(&function.clauses);
         self.returning = None;
-        (!self.broken).then(|| Signature {
+        #[cfg(test)]
+        if hook::breaks(def.name) {
+            self.broken.set(true);
+        }
+        (!self.broken.get()).then(|| Signature {
             path: self.path(def.module, def.name),
             type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
             constraints: core_constraints(&def.constraints, def.type_params.len()),
@@ -1406,7 +1590,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             _ => return None,
         };
-        (!self.broken).then_some(decl)
+        #[cfg(test)]
+        if hook::breaks(decl_key(&decl).1) {
+            self.broken.set(true);
+        }
+        (!self.broken.get()).then_some(decl)
     }
 
     fn params(&mut self, params: &[super::env::ParamDef<'a>]) -> Vec<(Name, Type)> {
@@ -1422,15 +1610,11 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     fn example(&mut self, example: &'a ExampleDecl) -> Option<Example> {
-        let name: String = example
-            .name
-            .parts
-            .iter()
-            .map(|part| match part {
-                TextPart::Text(text) => text.clone(),
-                TextPart::Interpolation(_) => String::new(),
-            })
-            .collect();
+        let name = example_name(example);
+        #[cfg(test)]
+        if hook::breaks(&name) {
+            self.broken.set(true);
+        }
         let mut lets = Vec::new();
         let mut givens = Vec::new();
         for given in &example.givens {
@@ -1497,7 +1681,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             });
         }
-        (!self.broken).then_some(Example {
+        (!self.broken.get()).then_some(Example {
             name,
             body,
             expectations,
@@ -1855,7 +2039,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             .collect();
         lets.push(Let::destructure(names.clone(), Atom::Var(t), span));
         let Some(((option, option_ty), kept)) = names.split_last() else {
-            self.broken = true;
+            self.broken.set(true);
             return close(lets, otherwise);
         };
         let inner = match option_ty {
@@ -1968,7 +2152,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
                 let Some(old) = self.local(name) else {
-                    self.broken = true;
+                    self.broken.set(true);
                     return;
                 };
                 let ty = self.binding_type(&old, ident.span);
@@ -1979,7 +2163,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             ExprKind::Field { target, .. } => {
                 let Some(Res::Field { kind, index }) = self.res(place.span) else {
-                    self.broken = true;
+                    self.broken.set(true);
                     return;
                 };
                 let v = self.temp();
@@ -2036,7 +2220,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     span,
                 );
             }
-            _ => self.broken = true,
+            _ => self.broken.set(true),
         }
     }
 
@@ -2137,7 +2321,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Wrap::Return => match self.returning.clone() {
                 Some((names, ty)) => (names, ty),
                 None => {
-                    self.broken = true;
+                    self.broken.set(true);
                     return tail;
                 }
             },
@@ -2155,7 +2339,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut types = Vec::new();
         for name in &names {
             let Some(binder) = self.local(name) else {
-                self.broken = true;
+                self.broken.set(true);
                 continue;
             };
             types.push(self.binding_type(&binder, span));
@@ -2236,7 +2420,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut types = Vec::new();
         for name in names {
             let Some(binder) = self.local(name) else {
-                self.broken = true;
+                self.broken.set(true);
                 continue;
             };
             types.push(self.binding_type(&binder, span));
@@ -2333,7 +2517,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut names = Vec::new();
         for branch in &stmt.body {
             let Stmt::Let(branch) = branch else {
-                self.broken = true;
+                self.broken.set(true);
                 return;
             };
             let mark = self.scope.len();
@@ -2491,7 +2675,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         // is `m = without(m, k)` (`spec/21 §2` rule 1).
         if let Some(Res::MapUpdate(op)) = self.res(span) {
             let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
-                self.broken = true;
+                self.broken.set(true);
                 return Atom::Unit;
             };
             let mut arg_spans = vec![target.span];
@@ -2521,11 +2705,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             return Atom::Unit;
         }
         let Some(Res::Function { id, type_args }) = self.res(span) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
         let Some(def) = self.env.functions.get(id) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
         let mut components: Vec<Type> = Vec::new();
@@ -2544,7 +2728,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         }));
         let places = self.edit_places(expr);
         if places.len() + 1 != components.len() {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         }
         let current: Vec<Atom> = places.iter().map(|place| self.atom(lets, place)).collect();
@@ -2709,7 +2893,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         span: Span,
     ) -> CoreExpr {
         let Some(kind) = self.env.prelude_kind("Option") else {
-            self.broken = true;
+            self.broken.set(true);
             return option;
         };
         let t = self.temp();
@@ -2943,7 +3127,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.lost
                 .borrow_mut()
                 .push("a text literal with interpolation in a pattern (U4008)".to_owned());
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         }
         self.literal_atom(lets, literal, span)
@@ -3084,7 +3268,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Old(_) => {
-                self.broken = true;
+                self.broken.set(true);
                 Atom::Unit
             }
             ExprKind::Literal(literal) => self.literal_atom(lets, literal, span),
@@ -3454,7 +3638,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::It => self.it.clone().map_or(Atom::Unit, Atom::Var),
             ExprKind::Error => self.error.clone().map_or(Atom::Unit, Atom::Var),
             ExprKind::CapRef(_) => {
-                self.broken = true;
+                self.broken.set(true);
                 Atom::Unit
             }
         }
@@ -3482,7 +3666,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 una_core::float::Literal::Value(value) => Atom::F64(value.to_bits()),
                 // U2031, which the checker reported.
                 _ => {
-                    self.broken = true;
+                    self.broken.set(true);
                     Atom::F64(0)
                 }
             },
@@ -3643,7 +3827,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         args: &[Arg],
     ) -> Atom {
         let Some(def) = self.env.functions.get(id) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
         let (values, arg_spans) = self.ordered_values(lets, span, receiver, args);
@@ -3666,14 +3850,14 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
         if def.kind == FnKind::Policy {
             let FnAst::Policy(policy) = def.ast else {
-                self.broken = true;
+                self.broken.set(true);
                 return Atom::Unit;
             };
             let via_name = self.env.text(def.module, policy.via.name);
             let via = match self.env.lower(def.module, via_name) {
                 Some(Entity::Function(via)) => self.function_path(via),
                 _ => {
-                    self.broken = true;
+                    self.broken.set(true);
                     return Atom::Unit;
                 }
             };
@@ -3721,7 +3905,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         "the tuple of a call with `edit` arguments outside a statement or `let`"
                             .to_owned(),
                     );
-                    self.broken = true;
+                    self.broken.set(true);
                 }
                 self.push(lets, span, call)
             }
@@ -3753,14 +3937,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             written.push((atom, arg.value.span));
         }
         if written.len() != order.len() {
-            self.broken = true;
+            self.broken.set(true);
         }
         let count = order.iter().flatten().max().map_or(0, |max| max + 1);
         let mut slots: Vec<Option<(Atom, Span)>> = vec![None; count.max(written.len())];
         for (value, target) in written.into_iter().zip(order.iter().copied()) {
             match target.and_then(|t| slots.get_mut(t)) {
                 Some(slot) => *slot = Some(value),
-                None => self.broken = true,
+                None => self.broken.set(true),
             }
         }
         slots.into_iter().flatten().unzip()
@@ -3770,7 +3954,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// the declared names and types, refinements included (ADR 0037 rule 1).
     fn function_value(&mut self, id: usize, type_args: &[Ty], span: Span) -> Rhs {
         let Some(def) = self.env.functions.get(id) else {
-            self.broken = true;
+            self.broken.set(true);
             return Rhs::Atom(Atom::Unit);
         };
         let mark = self.scope.len();
@@ -4212,6 +4396,56 @@ fn core_constraints(constraints: &[Constraint], count: usize) -> Vec<una_core::C
             },
         )
         .collect()
+}
+
+/// A failure injected into elaboration, compiled only in tests (#1050): while a [`Break`] is
+/// held on this thread, the declaration, standard signature or example of its name does not
+/// elaborate, and no diagnostic says so, as a bug of the elaboration would leave it.
+#[cfg(test)]
+pub(crate) mod hook {
+    use std::cell::RefCell;
+
+    use std::cell::Cell;
+
+    thread_local! {
+        static BROKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+        static EAGER: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// An injected failure, until dropped.
+    pub(crate) struct Break;
+
+    impl Break {
+        /// Breaks the elaboration of the declaration named `name`.
+        pub(crate) fn of(name: &str) -> Break {
+            BROKEN.with(|broken| *broken.borrow_mut() = Some(name.to_owned()));
+            Break
+        }
+
+        /// Looks every name of a formula up as a resolution, a local's too, whose span the
+        /// records never hold: [`super::Fx::res`] then finds nothing and marks the declaration
+        /// broken without a diagnostic, the regression found while adding the host-driven step
+        /// (#1050).
+        pub(crate) fn eager_resolution() -> Break {
+            EAGER.with(|eager| eager.set(true));
+            Break
+        }
+    }
+
+    impl Drop for Break {
+        fn drop(&mut self) {
+            BROKEN.with(|broken| *broken.borrow_mut() = None);
+            EAGER.with(|eager| eager.set(false));
+        }
+    }
+
+    pub(super) fn breaks(name: &str) -> bool {
+        BROKEN.with(|broken| broken.borrow().as_deref() == Some(name))
+    }
+
+    pub(super) fn eager() -> bool {
+        EAGER.with(Cell::get)
+    }
 }
 
 #[cfg(test)]
