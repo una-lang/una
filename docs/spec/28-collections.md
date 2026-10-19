@@ -25,7 +25,7 @@ Status: Normative, edition `0.4` (ADR 0119). This chapter grows with the impleme
 ## 2. The module `std.collections`
 
 1. **Edition.** `std.collections` exists only in edition `0.4`. In earlier editions an import of it is U1001 at the module path (`spec/10 §11` rule 10), and the names it would export are ordinary names.
-2. **Exports.** In edition `0.4`, `std.collections` is an importable standard module (`spec/10 §11` rule 10). It exports the types `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, and the kind `Ranked[T, P]`, a record with the fields `item: T` and `priority: P`. It exports the functions `empty_stack` and `empty_queue` (§5), `empty_set` (§6), and `empty_hash_map` and `empty_hash_set` (§7); its other functions join the exports with the types they make, as ADR 0119 lands.
+2. **Exports.** In edition `0.4`, `std.collections` is an importable standard module (`spec/10 §11` rule 10). It exports the types `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, and the kind `Ranked[T, P]`, a record with the fields `item: T` and `priority: P`. It exports the functions `empty_stack` and `empty_queue` (§5), `empty_set` (§6), `empty_hash_map` and `empty_hash_set` (§7), and `lowest_first` and `highest_first` (§8); its other functions join the exports with the types they make, as ADR 0119 lands.
 3. **Names are not reserved.** A module that does not import a name of `std.collections` may declare its own `Queue` or `Set`. A module that imports one and declares the same name is U1002, as for any import (`spec/10 §11`).
 4. **Methods need no import.** The operations of each type are built-in methods resolved by the receiver, as a map's are (`spec/21 §2`). Only names written in the source, a type in an annotation or a function called by name, are imported.
 5. **Functions named like a built-in method.** A built-in method resolves ahead of a function of the same name in scope (`spec/04 §3`, `spec/21 §2`), so such a function could never be reached by method syntax on the type. In edition `0.4`, a package function is U1002 at its name when its name is a built-in method of a type of this chapter and its first parameter has that type, refined or not, or is a type parameter; so is an import of such a function, at the imported name. The message names the built-in method: "`pop` is a built-in method of `Queue`; rename this function". The names are `push`, `pop`, `peek`, `push_front`, `pop_back`, `peek_back`, `items`, `has`, `add`, `remove`, `with`, `without`, `first`, `last`, `between`, `union`, `intersection`, `difference`, `is_subset`, `get`, `set`, `update`, `keys`, `values`, `entries`, `same_entries`, `same_items`, `pop_ranked` and `peek_priority`. A function `update` whose first parameter is a `Map` is U1002 likewise (`spec/21 §2` rule 5).
@@ -211,4 +211,50 @@ pub count_words(words: List[Text]) -> HashMap[Text, Int]
   for word in words
     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
   counts
+```
+
+## 8. `PriorityQueue`
+
+`PriorityQueue[T, P]` gives back the item of the first priority (ADR 0119 rule 13). Its priority type `P` MUST satisfy `Ord` (§3 rule 2); its item type `T` may be any type.
+
+1. **Direction.** `lowest_first()` makes a queue whose `pop` gives the item of the least priority first, and `highest_first()` one whose `pop` gives the item of the greatest priority first, by the order of `spec/03 §1` and `spec/20 §5`. Both take their types from the expected type, as `empty_map()` does (`spec/21 §2`). The direction is part of the value.
+2. **Stability.** Among equal priorities, `pop` gives the item pushed first. So the order of the pops is fixed by the pushes alone, and is the same in both engines.
+3. **`Ranked[T, P]`** is the record of `std.collections` with the fields `item: T` and `priority: P` (§2 rule 2), which `pop_ranked` gives.
+4. **Listing order and form.** Its listing order is the order of the pops. Its Una form is a list's, in that order: `["chest pain", "fever"]` (§4). A priority queue has no `==` (§3 rules 3 and 4): compare their `items()`.
+
+The operations are the two functions and built-in methods resolved by the receiver, as a map's are (`spec/21 §2`); the methods need no import (§2 rule 4). Every argument after the receiver is labeled. n is `q.len`.
+
+| Operation | Type | Contract | Cost |
+| --- | --- | --- | --- |
+| `lowest_first()`, `highest_first()` | `PriorityQueue[T, P]`, from the expected type | `result.len == 0` | O(1) |
+| `q.len` | `Int` | `q.len >= 0` | O(1) |
+| `edit q.push(item: x, priority: p)` | `Unit` | `q.len == old(q).len + 1`; `q.peek() == Some(x)` when `old(q).len == 0` | O(log n) comparisons, amortized |
+| `edit q.pop()` | `Option[T]` | `result == old(q).peek()`; `q.len == old(q).len - 1` when `old(q).len > 0`, else `q.len == 0` | O(log n) comparisons, amortized |
+| `edit q.pop_ranked()` | `Option[Ranked[T, P]]` | as `pop`, with the priority | O(log n) comparisons, amortized |
+| `q.peek()` | `Option[T]` | the item `pop` would give; `None` exactly when `q.len == 0` | O(1) |
+| `q.peek_priority()` | `Option[P]` | the priority of that item; `None` exactly when `q.len == 0` | O(1) |
+| `q.items()` | `List[T]` | every item, in the order of the pops, as many as `q.len` | O(n log n) comparisons |
+
+5. **Updates.** `push`, `pop` and `pop_ranked` take the receiver as `edit` and follow `spec/17 §3`: the receiver is a place, and the call is the whole expression of a statement or a `let`, U3013 otherwise. Without `edit` it is U2020, and so is `edit` before `peek`, `peek_priority` or `items`, which read the queue. A removal's result is bound with `let`, since a statement call of a non-`Unit` type is U2011. `old(q)` in the table is the receiver's value before the call. Another number of arguments, or an argument of another type, is U2001.
+6. **Absence.** `pop`, `pop_ranked`, `peek` and `peek_priority` on an empty queue give `None`; a removal then leaves it empty. No operation of this section fails or aborts, except on the memory budget (U6003, `spec/11 §7`).
+7. **Values and costs.** A queue is a value. An update of a queue that no other binding holds happens in place; on a queue that another binding holds, it copies it first, in O(n) (`spec/16 §4` rule 7). Every other binding that held the old queue keeps it. A comparison of `Text` priorities costs O(the shorter length), and the table counts it as one comparison. The buffer grows by doubling and shrinks by half when fewer than a quarter of its slots are used, so a queue holds memory for its current length, not for the largest it ever had.
+8. **Refined items and priorities** (ADR 0103). With a refined item type or priority type, `push` stores `item` at `T` and `priority` at `P`, each a flow site with a `refinement` obligation (`spec/12 §3`). The items that `pop`, `peek` and `items()` give back, the priorities that `peek_priority` gives back, and the fields of a `Ranked` that `pop_ranked` gives back carry their position's refinement as a fact.
+9. **Labels** (`spec/07`, ADR 0119 IF4 and IF5). The priorities decide which item comes out, so they are the shape of a queue, as a map's keys are (`spec/21 §3` rule 1):
+   - every label of the priority position, `ℓ*(P)` with the labels that a kind's fields declare, is below the queue's top label: a `PriorityQueue[Text, secret Int]` has a `secret` top label, written or not (§4 rule 2). `q.len` carries that top label;
+   - `pop`, `pop_ranked`, `peek`, `peek_priority` and `items()` carry the top label of `q`; the payloads of `pop`, `peek` and `items()` carry the item position's labels, and those of `peek_priority` and the `priority` of a `Ranked` the priority position's labels;
+   - an editable binding keeps its declared labels (`spec/17 §6` rule 1), so a `push` whose priority is labeled above the binding's top label, with the labels of its priority position, is U4001 at the priority, and a `push` whose item is labeled above the item position's labels is U4001 at the item. An update under a condition whose label is above the binding's top label is U4001, since the length would reveal it;
+   - the ties of a queue list in the order of their pushes, each made under a program counter at most the top label (IF5).
+10. **The refinement language.** In this edition, `q.len` and the methods of a priority queue are outside the refinement language (`spec/03 §3`): a contract, a `where` clause or a predicate that uses one is U2014. ADR 0119 V5 adds `q.len` to it.
+
+```una
+import std.collections (PriorityQueue, lowest_first)
+
+pub next_patient() -> Option[Text]
+=
+  let edit waiting: PriorityQueue[Text, Int] = lowest_first()
+  edit waiting.push(item: "sprained ankle", priority: 3)
+  edit waiting.push(item: "chest pain", priority: 1)
+  edit waiting.push(item: "fever", priority: 3)
+  let next = edit waiting.pop()
+  next
 ```

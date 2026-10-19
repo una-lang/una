@@ -433,6 +433,11 @@ impl Writer<'_> {
             Prim::HashSet(op) => {
                 node!(HashSet, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
             }
+            // ADR 0119 rule 13: the operations of the heap that holds a `PriorityQueue`, by
+            // their Core names.
+            Prim::Priority(op) => {
+                node!(Priority, "value" => J::Obj(vec![("kind", s(op.as_str()))]))
+            }
             // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
             Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
                 "kind",

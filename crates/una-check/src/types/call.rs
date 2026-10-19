@@ -282,6 +282,17 @@ impl<'a> Checker<'_, 'a, '_> {
         ) {
             return ty;
         }
+        if let Some(ty) = self.priority_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
         // Edition 0.4: `edit m.update(key:, initial:, change:)` on a map is a built-in method
         // (ADR 0119 rule 18), declared where no name reaches it, so it resolves ahead of any
         // function `update` in scope, as every built-in method does.

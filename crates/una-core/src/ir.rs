@@ -533,6 +533,9 @@ pub enum Prim {
     /// A built-in method of a `HashSet` of `std.collections` (`spec/28 §7`, ADR 0119 rules 8 to
     /// 12); `add` and `remove` are rebinds to `With` and `Without`.
     HashSet(HashSetOp),
+    /// A built-in method of a `PriorityQueue` of `std.collections` (`spec/28 §8`, ADR 0119 rule
+    /// 13); `push`, `pop` and `pop_ranked` are rebinds of the receiver to the new queue.
+    Priority(PriorityOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1344,6 +1347,49 @@ impl HashSetOp {
     }
 }
 
+/// The operations of the stable heap that holds a `PriorityQueue[T, P]` (`spec/28 §8`, ADR 0119
+/// rules 13 and 19), each over the queue in its first argument. The first item is the one of the
+/// least priority for a queue made by `lowest_first`, of the greatest for one made by
+/// `highest_first`, and among equal priorities the one pushed first. `Push` and `Pop` are
+/// O(log n) comparisons, amortized, `Items` O(n log n), and the reads O(1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PriorityOp {
+    /// The queue with `item` added at `priority`: `push(item:, priority:)`.
+    Push,
+    /// The queue without its first item, the same queue when it is empty: the update of `pop`
+    /// and of `pop_ranked`.
+    Pop,
+    /// `Some` of the first item, `None` when empty: `peek`, and the result of `pop`.
+    Peek,
+    /// `Some` of the first item's priority, `None` when empty: `peek_priority`.
+    PeekPriority,
+    /// `Some` of the first item with its priority, a `Ranked`, `None` when empty: the result of
+    /// `pop_ranked`.
+    PeekRanked,
+    /// The items in the order of the pops, as a `List`: `items()`.
+    Items,
+}
+
+impl PriorityOp {
+    /// The operation's name in Core.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PriorityOp::Push => "push",
+            PriorityOp::Pop => "pop",
+            PriorityOp::Peek => "peek",
+            PriorityOp::PeekPriority => "peek_priority",
+            PriorityOp::PeekRanked => "peek_ranked",
+            PriorityOp::Items => "items",
+        }
+    }
+
+    /// Whether the operation gives a new queue built from its receiver, which it may update in
+    /// place when the receiver is given up (`spec/28 §8`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(self, PriorityOp::Push | PriorityOp::Pop)
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1470,6 +1516,7 @@ impl Prim {
             Prim::Set(op) => op.as_str(),
             Prim::HashMap(op) => op.as_str(),
             Prim::HashSet(op) => op.as_str(),
+            Prim::Priority(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),

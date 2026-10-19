@@ -8,7 +8,7 @@ use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
     DataVariant, Decl, Example, ExitTag, Expectation, Expr as CoreExpr, FloatOp, Fun,
     HandlerOp as CoreHandlerOp, Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim,
-    Program, Refinement as CoreRefinement, Rhs, SeqOp, Signature, Source, Term, Type, Use,
+    Program, Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
@@ -2946,7 +2946,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             return Atom::Unit;
         }
         if let Some(Res::SeqUpdate(op)) = self.res(span) {
-            return self.seq_update(lets, expr, op);
+            return self.removing_update(lets, expr, Prim::Seq(op), op.removed().map(Prim::Seq));
+        }
+        if let Some(Res::PriorityUpdate { op, read }) = self.res(span) {
+            return self.removing_update(lets, expr, Prim::Priority(op), read.map(Prim::Priority));
         }
         let Some(Res::Function { id, type_args }) = self.res(span) else {
             self.broken.set(true);
@@ -3006,11 +3009,19 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     /// `edit q.push(item: x)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`
-    /// (`spec/28 §5`): `q = op(q, x)`, as a map's `set` is `m = with(m, k, v)`. A removal first
-    /// reads the end it removes, `PeekFront` or `PeekBack`, which is the call's value; a push's
-    /// value is `unit`. The read holds no reference to the sequence, so the removal still
-    /// updates it in place when nothing else holds it. O(1) amortized each.
-    fn seq_update(&mut self, lets: &mut Vec<Let>, expr: &Expr, op: SeqOp) -> Atom {
+    /// (`spec/28 §5`) and of a `PriorityQueue` (`spec/28 §8`): `q = update(q, x)`, as a map's
+    /// `set` is `m = with(m, k, v)`. A removal first reads what it removes, by `read`
+    /// (`PeekFront` or `PeekBack` of a sequence, `Peek` or `PeekRanked` of a priority queue),
+    /// which is the call's value; a push's value is `unit`. The read holds no reference to the
+    /// collection, so the removal still updates it in place when nothing else holds it. O(1)
+    /// besides the arguments.
+    fn removing_update(
+        &mut self,
+        lets: &mut Vec<Let>,
+        expr: &Expr,
+        update: Prim,
+        read: Option<Prim>,
+    ) -> Atom {
         let span = expr.span;
         let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
             self.broken.set(true);
@@ -3022,7 +3033,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             arg_spans.push(arg.value.span);
             values.push(self.atom(lets, &arg.value));
         }
-        let result = match op.removed() {
+        let result = match read {
             Some(read) => {
                 let r = self.temp();
                 let ty = self.type_at(span);
@@ -3030,7 +3041,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     r.clone(),
                     ty,
                     Bound::Rhs(Rhs::Prim {
-                        prim: Prim::Seq(read),
+                        prim: read,
                         args: values.clone(),
                         arg_spans: arg_spans.clone(),
                         span,
@@ -3047,7 +3058,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             t.clone(),
             ty,
             Bound::Rhs(Rhs::Prim {
-                prim: Prim::Seq(op),
+                prim: update,
                 args: values,
                 arg_spans,
                 span,
@@ -3972,14 +3983,16 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
                 // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set,
-                // a hash map or a hash set that reads it or gives a new one (`spec/28 §6`, `§7`).
+                // a hash map or a hash set that reads it or gives a new one (`spec/28 §6`, `§7`),
+                // or one of a priority queue that reads it (`spec/28 §8`).
                 Some(
                     res @ (Res::IntMethod(_)
                     | Res::MapMethod(_)
                     | Res::SeqMethod(_)
                     | Res::SetMethod(_)
                     | Res::HashMapMethod(_)
-                    | Res::HashSetMethod(_)),
+                    | Res::HashSetMethod(_)
+                    | Res::PriorityMethod(_)),
                 ) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
@@ -3987,6 +4000,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         Res::SetMethod(op) => Prim::Set(op),
                         Res::HashMapMethod(op) => Prim::HashMap(op),
                         Res::HashSetMethod(op) => Prim::HashSet(op),
+                        Res::PriorityMethod(op) => Prim::Priority(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };

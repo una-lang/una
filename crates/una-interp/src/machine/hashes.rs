@@ -281,7 +281,9 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
                     }
                 }
             }
-            Value::Closure(_) | Value::HashMap(_) | Value::HashSet(_) => return false,
+            Value::Closure(_) | Value::HashMap(_) | Value::HashSet(_) | Value::Priority(_) => {
+                return false;
+            }
         }
     }
     true

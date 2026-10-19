@@ -320,6 +320,7 @@ fn the_builtins_are_exactly_the_methods_the_checker_resolves() {
         (_, "Set[T]") => "Set",
         (_, "HashMap[K, V]") => "HashMap",
         (_, "HashSet[T]") => "HashSet",
+        (_, "PriorityQueue[T, P]") => "PriorityQueue",
         (name, _) if name.starts_with("to_") => "conversion",
         _ => "fixed",
     };
@@ -348,7 +349,7 @@ fn instantiate(ty: &str, fixed: &str) -> String {
     let flush = |word: &mut String, out: &mut String| {
         out.push_str(match word.as_str() {
             "K" => "Text",
-            "V" | "T" => "Int",
+            "V" | "T" | "P" => "Int",
             "F" => fixed,
             other => other,
         });
@@ -422,9 +423,15 @@ fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
     };
     // A receiver of a collection type of `std.collections` names it, so the probe imports it
     // (ADR 0119 rule 0); before edition 0.4 the import itself is U1001.
+    // A result that names the kind `Ranked`, as `pop_ranked`'s does, imports it too.
     let head = receiver.split('[').next().unwrap_or_default();
     let import = if una_core::Coll::from_name(head).is_some() {
-        format!("import std.collections ({head})\n\n")
+        let ranked = if result.contains("Ranked[") {
+            ", Ranked"
+        } else {
+            ""
+        };
+        format!("import std.collections ({head}{ranked})\n\n")
     } else {
         String::new()
     };

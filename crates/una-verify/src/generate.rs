@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim, Program,
-    Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
+    FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim, PriorityOp,
+    Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -410,6 +410,26 @@ fn seq_element(ty: &Type) -> Option<&Type> {
             && args.len() == 1 =>
         {
             args.first()
+        }
+        _ => None,
+    }
+}
+
+/// The prefix of the sorts of `PriorityQueue[T, P]`, `i!PriorityQueue_<T>_<P>` (ADR 0119 V1).
+const PRIORITY_QUEUE: &str = "i!PriorityQueue_";
+
+/// The item and priority types of a `PriorityQueue[T, P]` of `std.collections`, refinements
+/// included; `None` for any other type.
+fn priority_positions(ty: &Type) -> Option<(&Type, &Type)> {
+    match ty {
+        Type::Base {
+            base: Base::Named { module, name, args },
+            ..
+        } if module == una_core::COLLECTIONS_MODULE && name == "PriorityQueue" => {
+            match args.as_slice() {
+                [item, priority] => Some((item, priority)),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -2353,6 +2373,31 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     self.seq_facts(*op, &values, &x, ctx);
                 }
+                if let Prim::Priority(op) = prim {
+                    // ADR 0119 rule 1 and ADR 0103 rule 3: a push stores its item at `T` and its
+                    // priority at `P`, each a flow site with its `refinement` obligations; the
+                    // other operations store nothing.
+                    if *op == PriorityOp::Push
+                        && let Some(Type::Base {
+                            base:
+                                Base::Named {
+                                    args: positions, ..
+                                },
+                            ..
+                        }) = values.first().map(|queue| &queue.ty)
+                    {
+                        let positions = positions.clone();
+                        for (index, target) in positions.iter().enumerate() {
+                            if let Some(value) = values.get(index + 1)
+                                && has_refinements(target)
+                            {
+                                let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                                self.refined_flow(target, value, at, ctx);
+                            }
+                        }
+                    }
+                    self.priority_facts(*op, &values, &x, ctx);
+                }
                 // ADR 0119 rule 1 and ADR 0103 rule 3: `add` and `with` store their item at
                 // the set's item type, a flow site with its `refinement` obligations; a lookup,
                 // `has`, `remove` and `without`, stores nothing.
@@ -3052,6 +3097,51 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 MapOp::Entries => {
                                     named("List", vec![named("Entry", vec![key, value])])
                                 }
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: what a priority queue gives back carries its item or priority
+                // position's refinements, as an element of a list does (ADR 0103 rule 6), and an
+                // update gives a queue of the receiver's type.
+                Prim::Priority(op) => {
+                    let receiver = args.first().map(|queue| self.atom(queue, ctx).ty);
+                    let positions = receiver
+                        .as_ref()
+                        .and_then(priority_positions)
+                        .map(|(item, priority)| (item.clone(), priority.clone()));
+                    match (receiver, positions) {
+                        (Some(queue), Some((item, priority))) => {
+                            let wrapped = |module: &str, name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: module.to_owned(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            let prelude = una_core::PRELUDE_MODULE;
+                            match op {
+                                PriorityOp::Peek => wrapped(prelude, "Option", vec![item]),
+                                PriorityOp::PeekPriority => {
+                                    wrapped(prelude, "Option", vec![priority])
+                                }
+                                PriorityOp::PeekRanked => {
+                                    let ranked = Type::Base {
+                                        base: Base::Named {
+                                            module: una_core::COLLECTIONS_MODULE.to_owned(),
+                                            name: "Ranked".to_owned(),
+                                            args: vec![item, priority],
+                                        },
+                                        refinements: Vec::new(),
+                                        label: type_label(binder).clone(),
+                                    };
+                                    wrapped(prelude, "Option", vec![ranked])
+                                }
+                                PriorityOp::Items => wrapped(prelude, "List", vec![item]),
+                                PriorityOp::Push | PriorityOp::Pop => queue,
                             }
                         }
                         _ => unknown(),
@@ -3907,7 +3997,8 @@ impl<'p, 'i> Walker<'p, 'i> {
             || sort.starts_with(MAP)
             || sort.starts_with(ARRAY)
             || sort.starts_with(STACK)
-            || sort.starts_with(QUEUE);
+            || sort.starts_with(QUEUE)
+            || sort.starts_with(PRIORITY_QUEUE);
         has_len.then(|| len_of(&value.f))
     }
 
@@ -4049,6 +4140,23 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
             }
         }
+    }
+
+    /// Facts of a `PriorityQueue`'s operation on its result `x` (ADR 0119 rule 13, V2): the
+    /// length facts of a sequence's, since a push adds one item, a pop removes one from a
+    /// nonempty queue and keeps an empty one, `items()` has the queue's length, and a read is
+    /// `None` exactly when the queue is empty. Which item a read gives back needs the
+    /// uninterpreted `peek` of V1, which this encoding does not have yet. O(1) facts per call.
+    fn priority_facts(&mut self, op: PriorityOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let same = match op {
+            PriorityOp::Push => SeqOp::PushBack,
+            PriorityOp::Pop => SeqOp::PopFront,
+            PriorityOp::Items => SeqOp::Items,
+            PriorityOp::Peek | PriorityOp::PeekPriority | PriorityOp::PeekRanked => {
+                SeqOp::PeekFront
+            }
+        };
+        self.seq_facts(same, values, x, ctx);
     }
 
     /// How many tasks a `together for` over `source` runs: the length of its list, or the
@@ -4434,7 +4542,8 @@ impl<'p, 'i> Walker<'p, 'i> {
             | Prim::Seq(_)
             | Prim::Set(_)
             | Prim::HashMap(_)
-            | Prim::HashSet(_) => {
+            | Prim::HashSet(_)
+            | Prim::Priority(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
