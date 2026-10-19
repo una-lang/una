@@ -42,6 +42,11 @@ const MOVEMENTS: &[&str] = &[
     "operation_argument",
     "operation_result",
     "return",
+    "seq_items",
+    "seq_peek",
+    "seq_update",
+    "set_items",
+    "set_with",
     "together",
     "with_argument",
 ];
@@ -52,11 +57,11 @@ const SCALAR: &str = "";
 // rhs-cases:begin
 /// The movement case of each form of a Core right-hand side bound to a refined binder (ADR
 /// 0103 rule 4), the forms the verifier's `rhs_type` types. The match has no catch-all: a new
-/// form of `Rhs`, `Prim` or `MapOp` does not compile until it names its case here, and
+/// form of `Rhs`, `Prim`, `MapOp`, `SeqOp` or `SetOp` does not compile until it names its case here, and
 /// `every_right_hand_side_has_a_case` then requires the case.
 #[allow(dead_code)]
 fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
-    use una_core::{MapOp, Prim, Rhs};
+    use una_core::{MapOp, Prim, Rhs, SeqOp, SetOp};
     match rhs {
         Rhs::Atom(_) => "annotated_let",
         // An `edit` call's results, rebound to the places.
@@ -70,6 +75,21 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
                 MapOp::Keys => "map_keys",
                 MapOp::Values => "map_values",
                 MapOp::Entries => "map_entries",
+            },
+            Prim::Seq(op) => match op {
+                SeqOp::PushFront | SeqOp::PushBack => "seq_update",
+                SeqOp::PopFront | SeqOp::PopBack => "seq_update",
+                SeqOp::PeekFront | SeqOp::PeekBack => "seq_peek",
+                SeqOp::Items => "seq_items",
+            },
+            Prim::Set(op) => match op {
+                SetOp::Has | SetOp::IsSubset => SCALAR,
+                SetOp::First | SetOp::Last | SetOp::Between | SetOp::Items => "set_items",
+                SetOp::With
+                | SetOp::Without
+                | SetOp::Union
+                | SetOp::Intersection
+                | SetOp::Difference => "set_with",
             },
             Prim::Add
             | Prim::Sub
@@ -90,6 +110,7 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
             | Prim::Convert(_)
             | Prim::Fixed(..)
             | Prim::Float(_)
+            | Prim::Shape(_)
             // A decimal's `Option` results take the binder's type without its refinements.
             | Prim::Decimal(_) => SCALAR,
         },

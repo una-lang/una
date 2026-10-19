@@ -150,8 +150,10 @@ impl Vars {
                 Ty::Refined(refinements.clone(), self.erase_node(inner))
             }
             Ty::List(element) => Ty::List(self.erase_node(element)),
+            Ty::Dense(dense, element) => Ty::Dense(*dense, self.erase_node(element)),
             Ty::Map(key, value) => Ty::Map(self.erase_node(key), self.erase_node(value)),
             Ty::Kind(id, args) => Ty::Kind(*id, self.erase_args(args)),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, self.erase_args(args)),
             Ty::Fn(function) => Ty::Fn(self.erase_function(function)),
             other => other.clone(),
         }
@@ -301,8 +303,10 @@ impl Vars {
                 Ty::Refined(refinements.clone(), reuse(inner, resolve(inner)))
             }
             Ty::List(element) => Ty::List(reuse(element, resolve(element))),
+            Ty::Dense(dense, element) => Ty::Dense(*dense, reuse(element, resolve(element))),
             Ty::Map(key, value) => Ty::Map(reuse(key, resolve(key)), reuse(value, resolve(value))),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, resolve)),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, resolve)),
             // The failure kind keeps its labels too, as every part of the type does (#216).
             Ty::Fn(function) => Ty::Fn(map_function(function, resolve, resolve, Some(&resolve))),
             other => other.clone(),
@@ -392,9 +396,9 @@ impl Vars {
         match self.shallow_ref(ty) {
             Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.occurs(var, inner),
             Ty::Var(other) => *other == var,
-            Ty::List(element) => self.occurs(var, element),
+            Ty::List(element) | Ty::Dense(_, element) => self.occurs(var, element),
             Ty::Map(key, value) => self.occurs(var, key) || self.occurs(var, value),
-            Ty::Kind(_, args) => args.iter().any(|arg| self.occurs(var, arg)),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(|arg| self.occurs(var, arg)),
             Ty::Fn(function) => {
                 function.params.iter().any(|p| self.occurs(var, p))
                     || self.occurs(var, &function.result)
@@ -537,6 +541,7 @@ impl Vars {
             | (Ty::F64, Ty::F64) => true,
             (Ty::Decimal(a), Ty::Decimal(b)) => a == b,
             (Ty::List(x), Ty::List(y)) => self.unify_in(x, y, fixed),
+            (Ty::Dense(a, x), Ty::Dense(b, y)) => a == b && self.unify_in(x, y, fixed),
             (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
                 self.unify_in(xk, yk, fixed) && self.unify_in(xv, yv, fixed)
             }
@@ -552,6 +557,14 @@ impl Vars {
                             let fixed = fixed || kinds.is_invariant(*i, index);
                             self.unify_in(x, y, fixed) && ok
                         })
+            }
+            (Ty::Coll(i, xs), Ty::Coll(j, ys)) => {
+                i == j
+                    && xs.len() == ys.len()
+                    && xs
+                        .iter()
+                        .zip(ys.iter())
+                        .fold(true, |ok, (x, y)| self.unify_in(x, y, fixed) && ok)
             }
             (Ty::Param(i), Ty::Param(j)) => i == j,
             (Ty::Fn(f), Ty::Fn(g)) => {
@@ -644,6 +657,9 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
         // A child that comes out as either side's child is that child's node: a join often
         // gives back `b`, as when `a` is `b` without its labels (ADR 0077 stage 3a, R-1).
         (Ty::List(x), Ty::List(y)) => Ty::List(either(x, y, combine(x, y, join, kinds))),
+        (Ty::Dense(a, x), Ty::Dense(b, y)) if a == b => {
+            Ty::Dense(*a, either(x, y, combine(x, y, join, kinds)))
+        }
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
             either(xk, yk, combine(xk, yk, join, kinds)),
             either(xv, yv, combine(xv, yv, join, kinds)),
@@ -668,6 +684,21 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
                 Ty::Kind(*i, ys.clone())
             } else {
                 Ty::Kind(*i, args.into_iter().collect())
+            }
+        }
+        (Ty::Coll(i, xs), Ty::Coll(j, ys)) if i == j && xs.len() == ys.len() => {
+            let args: Vec<Ty> = xs
+                .iter()
+                .zip(ys.iter())
+                .map(|(x, y)| combine(x, y, join, kinds))
+                .collect();
+            let all = |side: &[Ty]| args.iter().zip(side).all(|(new, old)| new.same(old));
+            if all(xs) {
+                Ty::Coll(*i, xs.clone())
+            } else if all(ys) {
+                Ty::Coll(*i, ys.clone())
+            } else {
+                Ty::Coll(*i, args.into_iter().collect())
             }
         }
         (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => {
@@ -724,10 +755,18 @@ fn overlay(ty: &Ty, from: &Ty) -> Ty {
     }
     let inner = match (ty.unlabeled(), from.unlabeled()) {
         (Ty::List(x), Ty::List(y)) => Ty::List(Shared::new(overlay(x, y))),
+        (Ty::Dense(a, x), Ty::Dense(b, y)) if a == b => Ty::Dense(*a, Shared::new(overlay(x, y))),
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
             Ty::Map(Shared::new(overlay(xk, yk)), Shared::new(overlay(xv, yv)))
         }
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
+            *i,
+            xs.iter()
+                .zip(ys.iter())
+                .map(|(x, y)| overlay(x, y))
+                .collect(),
+        ),
+        (Ty::Coll(i, xs), Ty::Coll(j, ys)) if i == j && xs.len() == ys.len() => Ty::Coll(
             *i,
             xs.iter()
                 .zip(ys.iter())

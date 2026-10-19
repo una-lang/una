@@ -267,6 +267,25 @@ fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
     }
 }
 
+/// `ldexp(y, k)`: the value `y × 2^k`, correctly rounded to nearest, ties to even (ADR 0120
+/// rule 47). It never forms `2^k`, which need not be a binary64 value: it scales the exact
+/// integer significand and rounds once, so only a subnormal result can round, and an overflow
+/// gives an infinity of `y`'s sign. NaN, the infinities and the zeros are returned as they are.
+/// O(1).
+pub fn ldexp(y: f64, k: i64) -> f64 {
+    if y.is_nan() {
+        return f64::from_bits(CANONICAL_NAN);
+    }
+    if y.is_infinite() || y == 0.0 {
+        return y;
+    }
+    let (negative, m, e) = decode(y);
+    // `e + k` saturates far beyond either end of the range, where the rounding is decided by
+    // the sign alone: an infinity or a signed zero.
+    let e = e.saturating_add(k.clamp(-1 << 20, 1 << 20));
+    round_to_f64(negative, &BigUint::from(m), e)
+}
+
 /// `x.rem(by: y)`: `x - y * n` with `n` the quotient truncated toward zero, computed exactly
 /// (C `fmod`). The result has the sign of `x`; NaN when `y` is zero or `x` is infinite or
 /// either is NaN; `x` when `y` is infinite and `x` finite. At most 34 steps of 64 bits of the
@@ -980,6 +999,26 @@ mod tests {
         assert_eq!(b(ieee_max(-0.0, 0.0)), b(0.0));
         assert_eq!(b(clamp(f64::NAN, 0.0, 1.0)), CANONICAL_NAN);
         assert_eq!(clamp(5.0, 2.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn ldexp_rounds_once_and_never_forms_the_power() {
+        assert_eq!(b(ldexp(1.0, 1023)), b(8.98846567431158e307));
+        assert_eq!(b(ldexp(1.0, 1024)), b(f64::INFINITY));
+        assert_eq!(b(ldexp(-1.0, 1024)), b(f64::NEG_INFINITY));
+        assert_eq!(b(ldexp(1.0, -1074)), 1);
+        // 2^-1075 is a tie between zero and the smallest subnormal: even, zero.
+        assert_eq!(b(ldexp(1.0, -1075)), 0);
+        assert_eq!(b(ldexp(1.5, -1075)), 1);
+        assert_eq!(b(ldexp(-1.0, -2000)), b(-0.0));
+        // Down and back up through the subnormal range: exact only where no bit is lost.
+        let largest = f64::MAX;
+        assert_eq!(b(ldexp(ldexp(largest, -1024), 1024)), b(largest));
+        assert_eq!(b(ldexp(5.0e-324, 1074)), b(1.0));
+        assert_eq!(b(ldexp(f64::NAN, 3)), CANONICAL_NAN);
+        assert_eq!(b(ldexp(-0.0, 7)), b(-0.0));
+        assert_eq!(b(ldexp(3.0, i64::MAX)), b(f64::INFINITY));
+        assert_eq!(b(ldexp(3.0, i64::MIN)), 0);
     }
 
     #[test]

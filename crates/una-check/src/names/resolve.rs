@@ -178,6 +178,10 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120).
                     || (prelude::DECIMAL_0_4.contains(&name)
                         && self.checker.package.settings.edition >= Edition::V0_4)
+                    // Edition 0.4: the constructors of dense values (`spec/29 §17`, ADR 0120
+                    // rule 32).
+                    || (prelude::DENSE_0_4.contains(&name)
+                        && self.checker.package.settings.edition >= Edition::V0_4)
             }
             Space::Upper => {
                 self.types.find(name).is_some()
@@ -206,6 +210,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.4: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
                     || (self.checker.package.settings.edition >= Edition::V0_4
                         && prelude::ROUNDING_0_4.contains(&name))
+                    // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
+                    || (self.checker.package.settings.edition >= Edition::V0_4
+                        && matches!(name, "Array" | "Matrix"))
             }
         }
     }
@@ -282,6 +289,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::DECIMAL_0_4);
+                    names.extend(prelude::DENSE_0_4);
                 }
             }
             Space::Upper => {
@@ -309,6 +317,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::ROUNDING_0_4);
+                    names.push("Matrix");
                 }
             }
         }
@@ -349,6 +358,19 @@ impl<'a> Resolver<'_, '_, 'a> {
         for param in params {
             let name = self.name(param);
             self.checker.upper_convention(param, "type parameter");
+            // Edition 0.4: no declaration hides a dense type (`spec/29 §17` rule 1).
+            if self.checker.package.settings.edition >= Edition::V0_4
+                && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
+            {
+                let diagnostic = self.checker.make(
+                    Code::U1002,
+                    param.span,
+                    format!(
+                        "`{name}` is a built-in dense type from edition 0.4, so a type parameter cannot take its name"
+                    ),
+                );
+                self.checker.diagnostics.push(diagnostic);
+            }
             if let Some(earlier) = frame.iter().find(|local| local.name == name).copied() {
                 self.checker.duplicate(
                     param.span,

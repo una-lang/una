@@ -233,6 +233,8 @@ mod tests {
             }],
             standard.source(&standard.prelude),
             standard.after_prelude(),
+            None,
+            None,
             Vec::new(),
             Edition::V0_3,
             &mut report,

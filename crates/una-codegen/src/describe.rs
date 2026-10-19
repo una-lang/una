@@ -83,6 +83,8 @@ impl<'p> Types<'p> {
                         let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
                         json!({ "shape": "map", "key": key, "value": value })
                     }
+                    // No dense value reaches native code yet (`spec/29 §17`).
+                    "Array" | "Matrix" => json!({ "shape": "other" }),
                     // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects,
                     // which refer to its own index.
                     "Json" => {
@@ -164,6 +166,14 @@ impl<'p> Types<'p> {
                         }
                     },
                 }
+            }
+            // The collections of `std.collections` (ADR 0119) are the runtime's own values, which
+            // no description reads until their types land.
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE
+                    && una_core::Coll::from_name(name).is_some() =>
+            {
+                json!({ "shape": "other" })
             }
             Base::Named { module, name, args } => match self.declared_shape(module, name, args) {
                 Some(shape) => shape,

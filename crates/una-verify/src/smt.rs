@@ -46,6 +46,10 @@ pub(crate) const HASHED: &str = "i!Hashed";
 pub(crate) const LIST: &str = "i!List_";
 /// The prefix of the sorts of maps, `i!Map_<K>_<V>` (`spec/21 §4`).
 pub(crate) const MAP: &str = "i!Map_";
+/// The prefix of the sorts of arrays, `i!Array_<T>` (`spec/29 §17`, ADR 0120 V4).
+pub(crate) const ARRAY: &str = "i!Array_";
+/// The prefix of the sorts of matrices, `i!Matrix_<T>` (`spec/29 §17`, ADR 0120 V4).
+pub(crate) const MATRIX: &str = "i!Matrix_";
 
 /// A term or formula of the solver's logic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -137,6 +141,12 @@ pub(crate) enum FunRole {
     },
     /// `.len`: at least 0.
     Len,
+    /// A shape function of a dense value beside `len`, `rows` or `columns`: at least 0
+    /// (ADR 0120 V4).
+    Shape,
+    /// The element of a dense value at its indices, `i!get!<Sort>`, uninterpreted (ADR 0120
+    /// V4).
+    Element,
     /// The variant of a value of the sum at `kind` (module, name): between 0 and `variants`.
     Tag {
         module: String,
