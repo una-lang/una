@@ -6,9 +6,7 @@ This chapter holds the numeric types beyond the integers of `spec/03` and `spec/
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`). In editions `0.1` and `0.2`, `F64` is an ordinary name, `1.0` keeps its error (U0101), `to_f64` resolves as any function name does, and the prelude has none of the functions of §3 rule 9.
 
-**What has landed.** The front end, the checker and the interpreter implement this chapter. Two parts are not implemented yet, and until they are, each refuses what it does not implement:
-- **Verification (§8).** No `F64` term is in the refinement language yet: a float literal, an operator, a comparison or a method of `F64` in a clause, a `where` or the predicate of `checked` is U2014. The verifier reads an `F64` value as a value of an uninterpreted sort, so it never states a fact about a float.
-- **Native code (§9).** `una build` reports a program that computes with `F64` as one the native backend does not compile yet. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
+**What has landed.** The front end, the checker, the interpreter and native code implement this chapter; the verifier's encoding (§8) lands in its own step, and until then a float in a clause is U2014. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
 
 ## 1. The type
 
@@ -135,7 +133,7 @@ The verifier's encoding of `F64` is the FloatingPoint theory of SMT-LIB, `(_ Flo
 
 ## 9. Representation
 
-The representation is not observable (`spec/16 §4`). The interpreter holds an `F64` inline in its value, as it holds a small `Int`, at no cost against the memory budget. Native code holds an `F64` as an untagged binary64 (ADR 0114 rule 9).
+The representation is not observable (`spec/16 §4`). The interpreter holds an `F64` inline in its value, as it holds a small `Int`, at no cost against the memory budget. Native code holds every `F64` boxed, a heap object of 8 bytes behind a handle, canonical, until the raw cells and packed lists of ADR 0107 land (ADR 0114 rule 9.6): the semantics are the same, only the cost differs. Every operation is the runtime's, computed by the same routines of `una-core` as the interpreter's, so both engines give the same bits. A boxed `F64` costs its slot and its object against the memory budget. A type descriptor (`spec/20 §7`) has a kind for `F64`: equality by its bits, and totalOrder. A native executable of edition `0.3` writes the default environment on its main thread and on each task's thread, and tests it once before `main` (§6 rule 4).
 
 ## 10. JSON
 

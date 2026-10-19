@@ -67,6 +67,8 @@ enum Kind {
     Fn,
     /// A handle to a keyed hash.
     Hashed,
+    /// A handle to a boxed `F64` (ADR 0114 rule 9.6).
+    F64,
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
@@ -84,7 +86,13 @@ impl Kind {
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple
+            Kind::Text
+                | Kind::List
+                | Kind::Map
+                | Kind::Fn
+                | Kind::Hashed
+                | Kind::Tuple
+                | Kind::F64
         )
     }
 }
@@ -109,8 +117,8 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             // A fixed-width integer is an integer word: its range is proven, so arithmetic on
             // it never leaves the type (`spec/18 §3`).
             Base::Fixed(_) => Ok(Kind::Int),
-            // `F64` waits for its native step (`spec/29`, ADR 0114 rule 9).
-            Base::F64 => Err(unsupported("`F64` (spec/29)")),
+            // Boxed until the raw cells of ADR 0107 land (ADR 0114 rule 9.6).
+            Base::F64 => Ok(Kind::F64),
             // A decimal is its coefficient, an integer word; its scale is static (ADR 0120
             // rule 20).
             Base::Decimal(_) => Ok(Kind::Int),
@@ -159,6 +167,7 @@ pub(crate) fn constant_descriptor(
         Base::Int => Descriptor::Int,
         Base::Fixed(int) => Descriptor::Fixed(*int),
         Base::Text => Descriptor::Text,
+        Base::F64 => Descriptor::F64,
         Base::Decimal(_) => Descriptor::Decimal(index(ty)),
         // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
         Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
@@ -1937,7 +1946,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 _ => (self.literal("una_rt_int_literal", digits)?, Kind::Int),
             },
             Atom::Text(text) => (self.literal("una_rt_text_literal", text)?, Kind::Text),
-            Atom::F64(_) => return Err(unsupported("`F64` (spec/29)")),
+            // A literal is made once by the runtime and borrowed, as an integer literal is.
+            Atom::F64(bits) => {
+                let bits = self.builder.ins().iconst(types::I64, i64::from_ne_bytes(bits.to_ne_bytes()));
+                (self.call("una_rt_f64_literal", &[bits])?, Kind::F64)
+            }
             // A decimal literal is its coefficient's word (ADR 0120 rule 20).
             Atom::Decimal { coefficient, .. } => match coefficient.parse::<i64>() {
                 Ok(small) if SMALL.contains(&small) => (
@@ -2361,6 +2374,36 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             "quote_json" => "una_rt_quote_json",
             "is_json_number" => "una_rt_is_json_number",
+            // The functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
+            "nan" => {
+                let bits = self.builder.ins().iconst(
+                    types::I64,
+                    i64::from_ne_bytes(una_core::float::CANONICAL_NAN.to_ne_bytes()),
+                );
+                let word = self.call("una_rt_f64_literal", &[bits])?;
+                self.retain(word, Kind::F64);
+                return Ok(word);
+            }
+            "infinity" => {
+                let bits = self.builder.ins().iconst(
+                    types::I64,
+                    i64::from_ne_bytes(f64::INFINITY.to_bits().to_ne_bytes()),
+                );
+                let word = self.call("una_rt_f64_literal", &[bits])?;
+                self.retain(word, Kind::F64);
+                return Ok(word);
+            }
+            "f64_from_bits" => "una_rt_f64_from_bits",
+            // A failure of `parse_f64` goes to `catch`, as `parse_int`'s does.
+            "parse_f64" => {
+                let t = arg(0)?;
+                let failure = self.call("una_rt_parse_f64_failure", &[t])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_f64", &[t]);
+            }
+            "as_f64" => "una_rt_as_f64",
+            "json_number" => "una_rt_json_number",
             other => return Err(unsupported(format!("`{other}` of the prelude"))),
         };
         self.call(function, args)
@@ -2565,7 +2608,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             // Lowered with their arguments' ownership, in `rhs`.
             Prim::Map(op) => Err(internal(format!("map `{}` out of place", op.as_str()))),
-            Prim::Float(_) => Err(unsupported("`F64` (spec/29)")),
+            // Every operation of `F64` is the runtime's, over boxed values (ADR 0114 rule 9.6):
+            // the same routines of `una-core` as the interpreter's, so the bits agree.
+            Prim::Float(op) => {
+                let code = una_core::FloatOp::ALL
+                    .iter()
+                    .position(|x| *x == op)
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| internal("an unknown operation of `F64`"))?;
+                let code = self.builder.ins().iconst(types::I64, code);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let word = |i: usize| args.get(i).map_or(zero, |(value, _)| *value);
+                let (a, b, c) = (word(0), word(1), word(2));
+                self.call("una_rt_f64_op", &[code, a, b, c])
             // The conversions with `F64` wait for its native step (`spec/29`).
             Prim::Decimal(una_core::DecimalOp::FromF64(_) | una_core::DecimalOp::ToF64(_)) => {
                 Err(unsupported("`F64` (spec/29)"))
@@ -2709,6 +2764,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 match kind {
                     Kind::Int => self.call("una_rt_int_text", &[a]),
                     Kind::Bool => self.call("una_rt_bool_text", &[a]),
+                    Kind::F64 => {
+                        let code = una_core::FloatOp::ALL
+                            .iter()
+                            .position(|x| *x == una_core::FloatOp::ToText)
+                            .and_then(|i| i64::try_from(i).ok())
+                            .unwrap_or(0);
+                        let code = self.builder.ins().iconst(types::I64, code);
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        self.call("una_rt_f64_op", &[code, a, zero, zero])
+                    }
                     Kind::Text => {
                         self.retain(a, Kind::Text);
                         Ok(a)

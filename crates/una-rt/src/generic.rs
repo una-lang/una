@@ -63,6 +63,8 @@ pub(crate) enum Written {
     Int,
     /// A text, quoted.
     Text,
+    /// An `F64`, by its shortest round-trip text.
+    F64,
     /// By the type description at this index, with these parameter descriptors.
     Typed(usize, Vec<i64>),
 }
@@ -73,6 +75,7 @@ pub(crate) fn shape_of(desc: i64) -> Option<Written> {
     Some(match Descriptor::from_word(desc)? {
         Descriptor::Int | Descriptor::Fixed(_) => Written::Int,
         Descriptor::Text => Written::Text,
+        Descriptor::F64 => Written::F64,
         Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty) => {
             Written::Typed(ty, Vec::new())
         }
@@ -100,6 +103,10 @@ fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
         Some(Descriptor::Sum(_)) if values::is_data(a) && values::is_data(b) => {
             Some(tag(a).cmp(&tag(b)))
         }
+        // IEEE totalOrder on canonical values (ADR 0114 rule 5.2).
+        Some(Descriptor::F64) if values::is_f64(a) && values::is_f64(b) => Some(
+            una_core::float::total_cmp(values::f64_value(a), values::f64_value(b)),
+        ),
         _ => None,
     };
     if found.is_none() {
@@ -171,6 +178,9 @@ pub fn write(desc: i64, x: i64) -> i64 {
         Some(Descriptor::Text) => {
             retain(x);
             x
+        }
+        Some(Descriptor::F64) => {
+            values::text_word(una_core::float::render(values::f64_value(x)))
         }
         Some(Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty)) => {
             runtime::written(ty, x, &[])

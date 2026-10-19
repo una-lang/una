@@ -288,6 +288,10 @@ pub(crate) fn count_limit_reached() -> ! {
     std::process::exit(if written.is_ok() { exit } else { USAGE });
 }
 
+/// Whether the program writes the floating-point environment on each of its threads (ADR 0114
+/// rule 6.4): set once at start, read by every thread the runtime spawns for it.
+pub(crate) static FLOATS: AtomicBool = AtomicBool::new(false);
+
 /// What `una build` embeds in the executable (`spec/16 §2`), as JSON: the `[run] grants`, every
 /// `uses` of `main` with its operations and where it is written, where each call of the
 /// program is written, for U6003, and the types and operations that traces and U6001 render.
@@ -305,6 +309,9 @@ pub struct Meta {
     pub ops: Vec<OpSite>,
     /// What U6001 needs when `main` can fail.
     pub failure: Option<Failure>,
+    /// Whether the program is of edition 0.3, which writes and tests the floating-point
+    /// environment before `main` (ADR 0114 rule 6.4).
+    pub float_environment: bool,
 }
 
 /// One `uses` clause of `main`.
@@ -375,6 +382,10 @@ impl Meta {
             }),
             None => None,
         };
+        let float_environment = value
+            .get("float_environment")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Some(Meta {
             grants,
             uses,
@@ -382,6 +393,7 @@ impl Meta {
             types,
             ops,
             failure,
+            float_environment,
         })
     }
 }
@@ -927,11 +939,28 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         operations: Vec::new(),
         stopped: None,
     };
+    // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
+    // any code of the program runs; each thread the program runs on writes it too.
+    let floats = meta.float_environment;
+    if floats {
+        crate::ffi::write_float_environment();
+        if let Err(probe) = una_core::float::probe_environment() {
+            let _ = writeln!(
+                stderr,
+                "error[U6006]: the floating-point environment of this platform is not the default one ({probe})"
+            );
+            return 1;
+        }
+        FLOATS.store(true, Ordering::SeqCst);
+    }
     let budget = options.max_memory.saturating_mul(1024 * 1024);
     let worker = std::thread::Builder::new()
         .name("una-main".to_owned())
         .stack_size(stack)
         .spawn(move || {
+            if floats {
+                crate::ffi::write_float_environment();
+            }
             let _stack = StackCount::new(stack);
             let mut state = state;
             state.stack_base = stack_position(&state);

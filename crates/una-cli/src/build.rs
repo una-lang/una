@@ -167,6 +167,13 @@ pub(crate) fn build_command(
             "types": described.types,
             "ops": described.ops,
         });
+        // ADR 0114 rule 6.4: an executable of edition 0.3 writes and tests the floating-point
+        // environment; one of an earlier edition never does.
+        if manifest.edition >= una_project::Edition::V0_3
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("float_environment".to_owned(), json!(true));
+        }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(
                 "failure".to_owned(),

@@ -789,6 +789,52 @@ pub enum FloatResult {
 }
 
 impl FloatOp {
+    /// Every operation, in declaration order: the code the native backend passes to the
+    /// runtime is the position here.
+    pub const ALL: [FloatOp; 41] = [
+        FloatOp::Add,
+        FloatOp::Sub,
+        FloatOp::Mul,
+        FloatOp::Div,
+        FloatOp::Neg,
+        FloatOp::Eq,
+        FloatOp::Ne,
+        FloatOp::Lt,
+        FloatOp::Le,
+        FloatOp::Gt,
+        FloatOp::Ge,
+        FloatOp::Abs,
+        FloatOp::Sqrt,
+        FloatOp::Fma,
+        FloatOp::Rem,
+        FloatOp::Floor,
+        FloatOp::Ceil,
+        FloatOp::Trunc,
+        FloatOp::RoundHalfEven,
+        FloatOp::RoundHalfAway,
+        FloatOp::CopySign,
+        FloatOp::IeeeMin,
+        FloatOp::IeeeMax,
+        FloatOp::Clamp,
+        FloatOp::IeeeEq,
+        FloatOp::IeeeNe,
+        FloatOp::IeeeLt,
+        FloatOp::IeeeLe,
+        FloatOp::IeeeGt,
+        FloatOp::IeeeGe,
+        FloatOp::IsNan,
+        FloatOp::IsFinite,
+        FloatOp::IsInfinite,
+        FloatOp::IsSignNegative,
+        FloatOp::IsZero,
+        FloatOp::IsPositiveZero,
+        FloatOp::IsNegativeZero,
+        FloatOp::ToBits,
+        FloatOp::ToIntExact,
+        FloatOp::FromInt,
+        FloatOp::ToText,
+    ];
+
     /// The methods of `F64`, in the order of ADR 0114's table.
     pub const METHODS: [FloatOp; 28] = [
         FloatOp::Abs,
