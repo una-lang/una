@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+## v0.3.17
+
+A patch of the Beta, with one security fix, made from the v0.3.16 tag: no other change of main is in it. In the interpreter, a function value releases the values it closes over by the worklist that releases records, so a value that a loop nests deeply through function values no longer overflows the stack of `una run` when it is released (#1071, advisory UNA-SA-017). Validation: `docs/releases/0.3.17-validation.md`.
+
 - **Function values release what they hold without recursion** (#1071, advisory UNA-SA-017). In the interpreter, a function value releases the values it closes over and the handlers of its capabilities by the same worklist as records, so a value that a loop nests deeply through function values ends normally. Before, releasing such a value recursed on the native stack, and a deep enough one aborted `una run` with a stack overflow, in every release up to v0.3.16. Native executables are not affected.
 
 ## v0.3.16
