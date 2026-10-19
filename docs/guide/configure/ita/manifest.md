@@ -92,7 +92,7 @@ module shop
 pub one() -> Int = 1
 ```
 
-A section that is not one of the forms, such as `foreign`, is U7008: a package holds Una code only.
+A section that is not one of the forms, such as `settings`, is U7008 at its line: the grammar is closed.
 
 `ita.una`
 
@@ -102,8 +102,8 @@ ita shop
   version 0.1.0
   edition 0.4
 
-foreign
-  c "lib.c"
+settings
+  color "red"
 ```
 
 `src/shop.una`
@@ -134,4 +134,4 @@ Edition `0.4` only, a preview. Editions `0.1` to `0.3` are described by `una.tom
 
 - `spec/30 §1`: the lexical rules; `spec/30 §2`: the grammar and the head.
 - `spec/13 §7`: the settings that `una.toml` and `ita.una` share.
-- Decision record: ADR 0122, Itá: packages and the registry.
+- Decision record: [ADR 0122](../../../adr/0122-ita-packages-and-the-registry.md), for packages, dependencies and the registry.
