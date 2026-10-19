@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
-# the tests, then packing and checking the release archive of the host's target. With --linux,
+# the tests, then packing the release archive of the host's target, the load commands of its
+# `una` and of a program it links (#1103), and checking the archive. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
@@ -172,6 +173,9 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
+# The release `una` just packed, and examples/hello that it links, ask the dynamic loader only
+# for what scripts/load-commands.txt lists (#1103).
+step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
 step "Check the release archive of $target" scripts/check-release.sh "$target"
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
