@@ -273,6 +273,23 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                 versions.insert(dependency.dir.clone(), version.value.clone());
             }
             let local = una_project::ita::local_name(need);
+            // Never mounted under a name that is not a local name, that is reserved or has the
+            // skeleton of one, or that another need already mounts: a dependency's module must
+            // never take the path of a standard module such as `std.host`, or of another
+            // package's (rule 7). `ita.una` reports each as U7008 already.
+            let unusable = !una_project::names::is_name_word(&local.value, 1, 64)
+                || una_project::names::reserved_like(&local.value).is_some()
+                || manifest.mounts.iter().any(|mount| mount.local == local.value);
+            if unusable {
+                located(
+                    manifest_id,
+                    vec![refuse(format!(
+                        "`{}` cannot be the local name of a dependency",
+                        local.value
+                    ))],
+                );
+                continue;
+            }
             manifest.mounts.push(una_project::Mount {
                 local: local.value.clone(),
                 src: format!("{}/src/", dependency.dir),
