@@ -753,6 +753,15 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.block(&together.block);
                 self.leave();
             }
+            // Each branch sees the names before the block, in a scope of its own (ADR 0117
+            // rule 6).
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.enter();
+                    self.stmt(branch);
+                    self.leave();
+                }
+            }
         }
     }
 

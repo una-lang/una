@@ -181,7 +181,9 @@ impl<'e> Facts<'e> {
                     self.expr(&on_stop.body, owned);
                 }
             }
-            Expr::Together { tasks, .. } => tasks.iter().for_each(|task| self.expr(task, owned)),
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
+                tasks.iter().for_each(|task| self.expr(task, owned));
+            }
             Expr::TogetherFor { task, .. } => self.expr(task, owned),
             Expr::If {
                 then, otherwise, ..

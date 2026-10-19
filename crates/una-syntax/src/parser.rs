@@ -13,7 +13,7 @@ use crate::ast::{
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
     OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
     Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopAfter, StopStmt, TextLit,
-    TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
+    TextPart, TogetherFor, TogetherStmt, FirstOf, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
     Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
@@ -2242,6 +2242,7 @@ impl<'a> Parser<'a> {
                         BlockExpr::When(_) => "a `when`",
                         BlockExpr::If(_) => "an `if` with blocks",
                         BlockExpr::TogetherFor(_) => "a `together for`",
+                        BlockExpr::FirstOf(_) => "a `first of`",
                     };
                     return self.fail(
                         first,
@@ -2278,6 +2279,11 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::For) if self.v0_4 && self.for_word("ever") => {
                 self.ever_stmt()
             }
+            // Edition 0.4: `first of` alone on its line, a race (`spec/27 §6`); elsewhere
+            // `first` is a name.
+            TokenKind::LowerIdent(_) if self.at_first_of() => Ok(Stmt::BlockExpr(
+                BlockExpr::FirstOf(Box::new(self.first_of()?)),
+            )),
             // `on stop` after a loop that is not `for ever`, for U2034.
             TokenKind::LowerIdent(_) if self.v0_4 && self.at_on_stop() => {
                 Ok(Stmt::OnStop(Box::new(self.on_stop()?)))
@@ -2481,6 +2487,10 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Keyword(Keyword::When) => {
                 LetValue::BlockExpr(BlockExpr::When(self.when_expr()?))
+            }
+            // Edition 0.4: `first of`, a race (`spec/27 §6`).
+            TokenKind::LowerIdent(_) if self.at_first_of() => {
+                LetValue::BlockExpr(BlockExpr::FirstOf(Box::new(self.first_of()?)))
             }
             TokenKind::Keyword(Keyword::If) => match self.if_statement()? {
                 IfForm::Line(expr) => LetValue::Handled(self.handled_rest(expr)?),
@@ -2918,6 +2928,34 @@ impl<'a> Parser<'a> {
             body: body?,
             keyword,
             span: self.since(keyword),
+        })
+    }
+
+    /// Edition 0.4: whether the cursor is at `first of` followed by the end of its line, which
+    /// opens a race (`spec/27 §6`, ADR 0117 rule 6). Elsewhere `first` is a name, so the
+    /// prelude's `first` stays a method.
+    fn at_first_of(&self) -> bool {
+        self.v0_4
+            && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "first")
+            && matches!(self.peek_at(1), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "of")
+            && matches!(self.peek_at(2), TokenKind::Newline)
+    }
+
+    /// `first of` and its indented branches, whose statements the checker examines (`spec/27
+    /// §6`).
+    fn first_of(&mut self) -> Parse<FirstOf> {
+        let start = self.advance();
+        let of = self.advance();
+        let keyword = start.to(of);
+        self.expect(&TokenKind::Newline, "end of line after `first of`")?;
+        let outer = self.nesting;
+        self.deeper()?;
+        let body = self.indented("the indented branches", Self::statement);
+        self.nesting = outer;
+        Ok(FirstOf {
+            body: body?,
+            keyword,
+            span: self.since(start),
         })
     }
 

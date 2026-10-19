@@ -1713,6 +1713,17 @@ pub enum Expr {
         /// The expression in the source.
         span: Span,
     },
+    /// `first_of(e₁ | ... | eₙ)`: the branches of a `first of` race (`spec/27 §6`, ADR 0117
+    /// rule 6), each a task closed over the bindings before it. Its value is the result of the
+    /// first branch to return, and the other branches are cancelled; when every branch fails,
+    /// it fails with the failure of the lowest-indexed one. The interpreter runs the branches
+    /// in index order and stops at the first that returns, one legal schedule.
+    FirstOf {
+        /// The branches, in index order.
+        tasks: Vec<Expr>,
+        /// The expression in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.

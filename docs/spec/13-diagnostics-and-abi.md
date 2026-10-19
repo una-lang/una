@@ -178,6 +178,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2032 | types | A float literal other than zero, or a float range, as a pattern |
 | U2033 | types | A comparison of an `F64` with a float literal zero |
 | U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary |
+| U2035 | types | `first of` with fewer than two branches, or a line that is not an expression |
 | U2037 | types | A decimal scale out of place |
 | U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
 | U3001 | authority | Capability not in scope |
@@ -331,7 +332,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
   "requirements": [ { "id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"] } ],
   "coverage": { "pub_functions": 3, "with_ensures": 1, "with_derived_from": 1, "trivial_ensures": 0 },
   "native": { "target": "aarch64-apple-darwin", "arbitrary_precision": ["events.seating.clamp_seats.raw"] },
-  "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path", "hard links", "order of effects across concurrent tasks", "the time of a host stop", "interference of the host's load with the timing of an expression", "uncatchable termination"]
+  "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path", "hard links", "order of effects across concurrent tasks", "the time of a host stop", "interference of the host's load with the timing of an expression", "uncatchable termination", "which branch of `first of` wins, beyond its label"]
 }
 ```
 
@@ -353,7 +354,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
 - `native` (v0.2, ADR 0055): `target`, the host target of `una build` (`spec/16 §1`), and `arbitrary_precision`, the bindings whose `Int` the native backend keeps at arbitrary precision: every parameter and result of type `Int` of the package's functions whose refinements do not prove a range within a machine word, as `module.function.parameter` and `module.function.result` (NB-3, FW-1). A parameter's refinements are proven by each call and a result's by the function, so `clamp_seats`, whose result is `Seats = Int in 0..5000`, lists only its parameter.
 - `generic_results` (v0.2, ADR 0067), after `native`: every public generic function of the package, by qualified name, with its `result_labels` as `una contract` prints them, or `[]` for one whose summaries are all empty (`spec/07 §7` rule 8), and its `of_raises`, as `una contract` prints them. The key is additive, and the schema stays `una.report/2`.
-- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, hard links, order of effects across concurrent tasks, the time of a host stop, interference of the host's load with the timing of an expression, and uncatchable termination (`spec/14 §3` for hard links; v0.2, ADR 0065 and `spec/19 §3` for the order of effects, which the list gained with the release that implements `spec/19`; ADR 0116 rule 21 and `spec/26 §6` for the last three, additions within `una.report/2`).
+- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, hard links, order of effects across concurrent tasks, the time of a host stop, interference of the host's load with the timing of an expression, uncatchable termination, and which branch of `first of` wins, beyond its label (`spec/14 §3` for hard links; v0.2, ADR 0065 and `spec/19 §3` for the order of effects, which the list gained with the release that implements `spec/19`; ADR 0116 rule 21 and `spec/26 §6` for the time of a host stop, the interference of the host's load and uncatchable termination, and ADR 0117 rule 13 and `spec/27 §6` for the winner of `first of`, additions within `una.report/2`).
 
 Without `--json`, the same sections print as labeled lines.
 

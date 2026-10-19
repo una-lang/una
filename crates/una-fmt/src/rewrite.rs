@@ -639,6 +639,11 @@ impl Collector<'_> {
                 self.for_source(&together.source);
                 self.block(&together.block);
             }
+            BlockExpr::FirstOf(first) => {
+                for branch in &first.body {
+                    self.stmt(branch);
+                }
+            }
         }
     }
 

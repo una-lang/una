@@ -797,6 +797,20 @@ pub struct TogetherFor {
     pub span: Span,
 }
 
+/// `"first" "of" NEWLINE INDENT handled handled { handled } DEDENT` (`spec/27 §6`, ADR 0117
+/// rule 6): a race of its branches, whose value is the first branch to return. The body is
+/// kept as parsed; the checker reports a line that is not a `handled` expression, or fewer
+/// than two branches (U2035).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstOf {
+    /// The statements of the body, each `handled` expression a branch.
+    pub body: Vec<Stmt>,
+    /// The words `first of`, where U2035 points.
+    pub keyword: Span,
+    /// The whole expression.
+    pub span: Span,
+}
+
 /// What a `for` loop visits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForSource {
@@ -928,6 +942,8 @@ pub enum BlockExpr {
     If(IfBlock),
     /// `together for`, from edition 0.2 (`spec/19 §1`).
     TogetherFor(Box<TogetherFor>),
+    /// `first of`, in edition 0.4 (`spec/27 §6`, ADR 0117 rule 6).
+    FirstOf(Box<FirstOf>),
 }
 
 /// `"when" line_expr` and its arms.

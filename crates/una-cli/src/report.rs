@@ -30,7 +30,7 @@ const PROOF_CACHE: &str = ".una/cache/";
 /// exhaustion", since native executables exhaust their stack too (ADR 0055), and ends with the
 /// order of effects across `together` tasks (ADR 0065, `spec/19 §3`), then the three entries of
 /// long-running programs (ADR 0116 rule 21).
-const OUT_OF_MODEL: [&str; 11] = [
+const OUT_OF_MODEL: [&str; 12] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
@@ -42,6 +42,7 @@ const OUT_OF_MODEL: [&str; 11] = [
     "the time of a host stop",
     "interference of the host's load with the timing of an expression",
     "uncatchable termination",
+    "which branch of `first of` wins, beyond its label",
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
@@ -65,7 +66,7 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: [&'static str; 11],
+    out_of_model: [&'static str; 12],
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
@@ -714,7 +715,7 @@ impl Sites {
                 self.expr(body);
             }
             Expr::LetTuple { body, .. } | Expr::Loop { body, .. } => self.expr(body),
-            Expr::Together { tasks, .. } => {
+            Expr::Together { tasks, .. } | Expr::FirstOf { tasks, .. } => {
                 for task in tasks {
                     self.expr(task);
                 }

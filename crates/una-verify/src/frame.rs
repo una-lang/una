@@ -165,11 +165,12 @@ impl<'p, 'l> Frames<'p, 'l> {
                 }
                 None
             }
-            // The value of `attempt` is a `Result`, and those of `together` say nothing about
-            // the state.
-            Expr::Attempt { .. } | Expr::Together { .. } | Expr::TogetherFor { .. } => {
-                Some(Vec::new())
-            }
+            // The value of `attempt` is a `Result`, and those of `together` and `first of` say
+            // nothing about the state.
+            Expr::Attempt { .. }
+            | Expr::Together { .. }
+            | Expr::TogetherFor { .. }
+            | Expr::FirstOf { .. } => Some(Vec::new()),
         }
     }
 

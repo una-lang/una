@@ -773,6 +773,10 @@ impl Writer<'_> {
                 "tasks" => list(tasks, |t| self.expr(t)),
                 "span" => self.span(*span),
             ),
+            Expr::FirstOf { tasks, span } => node!(FirstOf,
+                "tasks" => list(tasks, |t| self.expr(t)),
+                "span" => self.span(*span),
+            ),
             Expr::TogetherFor {
                 source,
                 var,
