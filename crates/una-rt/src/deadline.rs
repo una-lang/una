@@ -227,13 +227,34 @@ pub(crate) fn cut() -> bool {
     }
     LOCAL.with(|cell| {
         let local = cell.borrow();
-        local
-            .withins
-            .iter()
-            .map(|frame| &frame.flag)
-            .chain(&local.inherited_flags)
-            .any(|flag| flag.load(Ordering::SeqCst) == 0)
+        // Only the `within`s that the operation in progress does not shield, those whose
+        // cancellation entries come at or after the ones it began with, as the interpreter
+        // reads its own (`Machine::within_shield`, `spec/19 §6` rule 4).
+        crate::runtime::unshielded_entries(|entries| {
+            entries.iter().any(|(count, _)| {
+                count.load(Ordering::SeqCst) == 0
+                    && local
+                        .withins
+                        .iter()
+                        .map(|frame| &frame.flag)
+                        .chain(&local.inherited_flags)
+                        .any(|flag| Arc::ptr_eq(flag, count))
+            })
+        })
+        .unwrap_or(false)
     })
+}
+
+impl Inherited {
+    /// The bytes it owns beyond itself, for the reservation of a task's start (ADR 0113 rule
+    /// 2): the entries of the `within`s that cover the task, and the path of the task that runs
+    /// a `for ever within`.
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.flags
+            .len()
+            .saturating_mul(size_of::<Arc<AtomicUsize>>())
+            .saturating_add(self.ever.as_ref().map_or(0, |ever| ever.owner.len()))
+    }
 }
 
 /// Which deadline bounds an interruptible operation that starts now.

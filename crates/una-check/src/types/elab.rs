@@ -3309,16 +3309,19 @@ impl<'e, 'a> Fx<'e, 'a> {
             self.broken.set(true);
             return Some(Atom::Unit);
         };
+        // Only the place's current value is read before the `within`; the arguments are
+        // computed inside it, so its deadline bounds them, after `d` (`spec/27 §5` rules 2
+        // and 5), as for a call with `edit` arguments.
         let mut arg_spans = vec![target.span];
         let old = self.atom(lets, target);
         let mut values = vec![old.clone()];
+        let mut inner = Vec::new();
         for arg in args {
             arg_spans.push(arg.value.span);
-            values.push(self.atom(lets, &arg.value));
+            values.push(self.atom(&mut inner, &arg.value));
         }
         let target_ty = self.type_at(target.span);
         let result_ty = self.type_at(span);
-        let mut inner = Vec::new();
         let result = match read {
             Some(read) => {
                 let r = self.temp();

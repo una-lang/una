@@ -772,13 +772,14 @@ impl TaskTemplate {
         unshielded(&self.cancel, self.shielded)
     }
 
-    /// The bytes the template owns: its path, its cancellation entries and its location's file
-    /// (ADR 0113 rule 2, `T`).
+    /// The bytes the template owns: its path, its cancellation entries, its location's file and
+    /// its deadlines (ADR 0113 rule 2, `T`).
     pub(crate) fn owned_bytes(&self) -> usize {
         self.path
             .len()
             .saturating_add(self.location.file.len())
             .saturating_add(self.cancel.len().saturating_mul(size_of::<Cancel>()))
+            .saturating_add(self.deadline.owned_bytes())
     }
 }
 
@@ -1394,6 +1395,12 @@ pub(crate) fn pop_cancel(flag: &Arc<AtomicUsize>) {
         }
         HOT.with(|hot| hot.flags.set(state.cancel.len()));
     });
+}
+
+/// `f` of the task's cancellation entries that the operation in progress does not shield
+/// (`spec/19 §6` rule 4); `None` without a run's state.
+pub(crate) fn unshielded_entries<R>(f: impl FnOnce(&[Cancel]) -> R) -> Option<R> {
+    with_state(|state| f(state.cancel.get(state.shielded..).unwrap_or_default()))
 }
 
 /// Whether the thread's task stops: it was cancelled, or an abort stopped it.
