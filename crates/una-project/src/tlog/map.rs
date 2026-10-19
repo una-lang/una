@@ -71,12 +71,10 @@ fn empty() -> &'static [Hash; 257] {
     static EMPTY: OnceLock<[Hash; 257]> = OnceLock::new();
     EMPTY.get_or_init(|| {
         let mut table = [[0u8; 32]; 257];
-        for height in 1..257 {
-            if let (Some(below), Some(_)) = (table.get(height - 1).copied(), table.get(height)) {
-                if let Some(slot) = table.get_mut(height) {
-                    *slot = node(&below, &below);
-                }
-            }
+        let mut below = [0u8; 32];
+        for slot in table.iter_mut().skip(1) {
+            below = node(&below, &below);
+            *slot = below;
         }
         table
     })
@@ -134,10 +132,10 @@ pub fn verify(root: &Hash, name: &str, head: Option<&Head>, proof: &Proof) -> bo
 }
 
 /// A sparse map built in memory, for tests and a witness's replay: the root and the proof of
-/// any name. O(n · 256) to build for n names.
+/// any name. Setting a head is O(log n); the root and a proof are O(n · 256) for n names.
 #[derive(Clone, Debug, Default)]
 pub struct Map {
-    leaves: Vec<(Hash, Hash)>,
+    leaves: std::collections::BTreeMap<Hash, Hash>,
 }
 
 impl Map {
@@ -145,19 +143,17 @@ impl Map {
     pub fn set(&mut self, name: &str, head: &Head) {
         let key = key(name);
         let value = leaf(&key, head);
-        match self.leaves.binary_search_by(|(k, _)| k.cmp(&key)) {
-            Ok(at) => {
-                if let Some(slot) = self.leaves.get_mut(at) {
-                    slot.1 = value;
-                }
-            }
-            Err(at) => self.leaves.insert(at, (key, value)),
-        }
+        self.leaves.insert(key, value);
+    }
+
+    /// The leaves in key order.
+    fn sorted(&self) -> Vec<(Hash, Hash)> {
+        self.leaves.iter().map(|(k, v)| (*k, *v)).collect()
     }
 
     /// The map's root.
     pub fn root(&self) -> Hash {
-        subtree(&self.leaves, 0)
+        subtree(&self.sorted(), 0)
     }
 
     /// The proof of `name`'s leaf or absence.
@@ -165,12 +161,17 @@ impl Map {
         let key = key(name);
         let mut bitmap = [0u8; 32];
         let mut siblings = Vec::new();
-        let mut leaves: &[(Hash, Hash)] = &self.leaves;
+        let all = self.sorted();
+        let mut leaves: &[(Hash, Hash)] = &all;
         let mut path: Vec<Hash> = Vec::with_capacity(256);
         for depth in 0..256 {
             let split = leaves.partition_point(|(k, _)| !bit(k, depth));
             let (left, right) = leaves.split_at(split);
-            let (own, other) = if bit(&key, depth) { (right, left) } else { (left, right) };
+            let (own, other) = if bit(&key, depth) {
+                (right, left)
+            } else {
+                (left, right)
+            };
             path.push(subtree(other, depth + 1));
             leaves = own;
         }
@@ -249,12 +250,16 @@ pub fn walk(
         }
         let link = fetch(index)?;
         if link.index != index || link.leaf != leaf {
-            return Err(format!("the entry at {index} is not the one its successor names"));
+            return Err(format!(
+                "the entry at {index} is not the one its successor names"
+            ));
         }
         if let Some((previous, _)) = link.previous
             && previous >= index
         {
-            return Err(format!("the entry at {index} names a later one as its previous"));
+            return Err(format!(
+                "the entry at {index} names a later one as its previous"
+            ));
         }
         next = link.previous;
         links.push(link);

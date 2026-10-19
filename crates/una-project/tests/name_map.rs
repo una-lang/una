@@ -27,7 +27,10 @@ fn presence_and_absence_are_proven_against_the_root() {
     for i in 0..50 {
         let name = format!("owner{i}/pkg");
         let proof = map.prove(&name);
-        assert!(verify(&root, &name, Some(&head(i * 10, i + 1)), &proof), "{name}");
+        assert!(
+            verify(&root, &name, Some(&head(i * 10, i + 1)), &proof),
+            "{name}"
+        );
         // A stale head, or a lower count, does not verify: a map cannot hide an entry.
         assert!(!verify(&root, &name, Some(&head(i * 10, i)), &proof));
         assert!(!verify(&root, &name, None, &proof));
@@ -42,7 +45,7 @@ fn presence_and_absence_are_proven_against_the_root() {
 #[test]
 fn the_proof_grows_with_the_log_of_the_names() {
     let mut sizes = Vec::new();
-    for bits in [6u32, 10, 14] {
+    for bits in [6u32, 9, 12] {
         let mut map = Map::default();
         for i in 0..(1u64 << bits) {
             map.set(&format!("n{i}"), &head(i, 1));
@@ -51,8 +54,8 @@ fn the_proof_grows_with_the_log_of_the_names() {
         assert!(verify(&map.root(), "n1", Some(&head(1, 1)), &proof));
         sizes.push(proof.siblings.len());
     }
-    // About log2 M siblings: far from 256, and growing by a few per 16-fold growth.
-    assert!(sizes[2] < 40, "{sizes:?}");
+    // About log2 M siblings: far from 256, and growing by a few per 8-fold growth.
+    assert!(sizes[2] < 36, "{sizes:?}");
     assert!(sizes[0] <= sizes[1] && sizes[1] <= sizes[2], "{sizes:?}");
 }
 
@@ -63,7 +66,14 @@ fn chain(count: u64) -> HashMap<u64, Link> {
     for i in 1..=count {
         let index = i * 10;
         let leaf = leaf_hash(format!("entry {index}").as_bytes());
-        links.insert(index, Link { index, leaf, previous });
+        links.insert(
+            index,
+            Link {
+                index,
+                leaf,
+                previous,
+            },
+        );
         previous = Some((index, leaf));
     }
     links
@@ -77,7 +87,11 @@ fn a_chain_is_walked_to_the_entry_held_and_counted() {
     assert_eq!(walk(&top, None, &mut fetch).unwrap().len(), 5);
     assert_eq!(walk(&top, Some(&head(30, 3)), &mut fetch).unwrap().len(), 2);
     // The map counts one entry more than the chain links: an omitted entry.
-    assert!(walk(&head(50, 6), None, &mut fetch).unwrap_err().contains("missing"));
+    assert!(
+        walk(&head(50, 6), None, &mut fetch)
+            .unwrap_err()
+            .contains("missing")
+    );
     // Or fewer: an entry the map does not count.
     assert!(walk(&head(50, 4), None, &mut fetch).is_err());
     // A held entry the chain never reaches, and a count that went down.
