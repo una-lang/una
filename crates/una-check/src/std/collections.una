@@ -82,3 +82,11 @@ pub to_queue[T](xs: List[T]) -> Queue[T]
 --- A set of the elements of `xs`, each once (`spec/28 §10`). O(n log n) comparisons, and O(n)
 --- when `xs` is sorted.
 pub to_set[T: Ord](xs: List[T]) -> Set[T] = to_set(xs)
+
+--- A hash set of the elements of `xs`, each once, listed in the order of its first occurrence
+--- in `xs` (`spec/28 §10`). O(n · |k|) expected.
+pub to_hash_set[T: Eq](xs: List[T]) -> HashSet[T] = to_hash_set(xs)
+
+--- A hash map of the entries of `es`, each key listed in the order of its first occurrence in
+--- `es`, with the value of its last entry (`spec/28 §10`). O(n · |k|) expected.
+pub to_hash_map[K: Eq, V](es: List[Entry[K, V]]) -> HashMap[K, V] = to_hash_map(es)

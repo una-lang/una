@@ -2643,7 +2643,8 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         // takes every label of `size`; a conversion takes the list's top label, and its
         // positions keep the labels of their type variables.
         "empty_bit_set" => &[("size", true)],
-        "to_stack" | "to_queue" | "to_set" => &[("xs", false)],
+        "to_stack" | "to_queue" | "to_set" | "to_hash_set" => &[("xs", false)],
+        "to_hash_map" => &[("es", false)],
         "matrix" => &[("rows", true), ("columns", true), ("elements", false)],
         "matrix_filled" => &[("rows", true), ("columns", true)],
         "matrix_diagonal" => &[("values", false)],
@@ -2703,7 +2704,14 @@ fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
 /// shape (ADR 0119 IF2), and the conversions of rule 16, whose results hold the list's items in
 /// its order. Their bodies are placeholders that both engines replace, so no summary of a body
 /// could label them.
-const COLLECTIONS_LABELED: [&str; 4] = ["empty_bit_set", "to_stack", "to_queue", "to_set"];
+const COLLECTIONS_LABELED: [&str; 6] = [
+    "empty_bit_set",
+    "to_stack",
+    "to_queue",
+    "to_set",
+    "to_hash_set",
+    "to_hash_map",
+];
 
 /// Whether `def` is a function of `std.collections` whose result is labeled by its arguments
 /// (`COLLECTIONS_LABELED`), with `structural_inputs`.

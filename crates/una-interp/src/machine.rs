@@ -1814,18 +1814,34 @@ impl<'p, 'w> Machine<'p, 'w> {
             "empty_bit_set" => return Some(self.empty_bit_set(args, span)),
             // The conversions of a list (`spec/28 §10`).
             "to_stack" | "to_queue" | "to_set" => return Some(Self::conversion(name, args)),
+            // The conversions into a hash table, under a key of its own (`spec/28 §1` rule 4).
+            "to_hash_set" | "to_hash_map" => return Some(self.to_hash_table(name, args, span)),
             _ => return None,
         }))
+    }
+
+    /// The memory budget of the key comparisons of a hash table operation at `span`, as
+    /// `equal_at` compares.
+    fn hash_budget(&self, span: Span) -> hashes::Budget {
+        hashes::Budget {
+            pairs: self.max_memory.saturating_mul(1024 * 1024) / EQUALITY_PAIR_BYTES,
+            span,
+            limit: self.max_memory,
+        }
+    }
+
+    /// `xs.to_hash_set()` or `es.to_hash_map()` at `span` (`spec/28 §10`, ADR 0119 rule 16): a
+    /// new table under a key of its own, made as `empty_hash_set` and `empty_hash_map` make
+    /// theirs, filled from the list. O(n · |k|) expected.
+    fn to_hash_table(&self, name: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
+        let key = hashes::table_key(self.hashing.as_ref(), span)?;
+        hashes::from_list(name, key, args, &self.hash_budget(span))
     }
 
     /// A method of a hash map or a hash set at `span`, its keys compared by `==` within the
     /// memory budget, as `equal_at` compares (`spec/28 §7`).
     fn hash_apply(&self, prim: Prim, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
-        let budget = hashes::Budget {
-            pairs: self.max_memory.saturating_mul(1024 * 1024) / EQUALITY_PAIR_BYTES,
-            span,
-            limit: self.max_memory,
-        };
+        let budget = self.hash_budget(span);
         match prim {
             Prim::HashMap(op) => hashes::map_apply(op, args, &budget),
             Prim::HashSet(op) => hashes::set_apply(op, args, &budget),
