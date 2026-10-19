@@ -1745,6 +1745,90 @@ fn tasks_package(name: &str, module: &str, program: &str) -> PathBuf {
 }
 
 #[test]
+fn one_worker_runs_blocks_nested_three_levels_deep_without_deadlock() {
+    // ADR 0117 rule 3 and its Conformance section: a join parks its task, so a `together` whose
+    // parent and children share the one worker, nested three levels deep, ends with the
+    // interpreter's results, with one worker and with several.
+    let program = "module nest\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\nmiddle(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let x = leaf(\"{label}.1\", n: n)\n    let y = leaf(\"{label}.2\", n: n + 1)\n  x + y\n\ntop(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let x = middle(\"{label}.1\", n: n)\n    let y = middle(\"{label}.2\", n: n + 10)\n  x + y\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = top(\"a\", n: 1)\n    let b = top(\"b\", n: 100)\n  @console.print(\"{a} {b}\")\n";
+    let dir = tasks_package("nest", "nest", program);
+    let exe = dir.join("target/una/nest");
+    for workers in ["1", "2", "64"] {
+        let native = Command::new(&exe)
+            .args(["--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let stdout = String::from_utf8_lossy(&native.stdout);
+        let mut lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.pop(), Some("26 422"), "--workers {workers}: {stdout}");
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            [
+                "a.1.1", "a.1.2", "a.2.1", "a.2.2", "b.1.1", "b.1.2", "b.2.1", "b.2.2"
+            ],
+            "--workers {workers}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_flags_of_tasks_out_of_range_are_usage_errors_in_both_engines() {
+    // ADR 0117, Diagnostics: a `--workers`, `--task-depth`, `--io-threads` or `--file-threads`
+    // that is not a number or is out of its range is a usage error, exit code 2, before `main`.
+    let program = "module flags\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"ran\")\n";
+    let dir = tasks_package("flags", "flags", program);
+    let exe = dir.join("target/una/flags");
+    for args in [
+        &["--workers", "0"][..],
+        &["--workers", "1025"],
+        &["--workers", "many"],
+        &["--max-depth", "50", "--task-depth", "51"],
+        &["--io-threads", "4097"],
+        &["--file-threads", "257"],
+    ] {
+        let native = Command::new(&exe)
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(2), "{args:?}: {native:?}");
+        assert!(native.stdout.is_empty(), "{args:?}");
+        let mut run = vec!["run", "."];
+        run.extend_from_slice(args);
+        let interpreted = una(&dir, &run);
+        assert_eq!(
+            interpreted.status.code(),
+            Some(2),
+            "{args:?}: {interpreted:?}"
+        );
+    }
+    let native = Command::new(&exe)
+        .args([
+            "--workers",
+            "1",
+            "--task-depth",
+            "7",
+            "--io-threads",
+            "1",
+            "--file-threads",
+            "1",
+        ])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "ran\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_task_counts_its_depth_from_its_block() {
     // `spec/19 §8` rule 3: `--max-depth` bounds each task's depth, counted from the depth of the
     // block that started it, as the interpreter counts it; past it, the run is U6003.
