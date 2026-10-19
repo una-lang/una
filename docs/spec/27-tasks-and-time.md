@@ -4,7 +4,7 @@ Status: Normative, edition 0.4 preview (ADR 0117).
 
 How tasks run, wait and are bounded: lightweight tasks on a few workers, and later `within`, `first of`, `tasks` and `start`, and limits on grants. The rules of ADR 0117 join this chapter as they land, each with its conformance cases; until a rule has landed, the construct it defines is a syntax error (U0101) or its word is reserved (U0103).
 
-**What has landed.** Sections 1 to 4, the runtime of tasks (ADR 0117 rules 1 to 3, slice S1). They add no construct and change no output, failure or trace of any edition: they say how the native backend runs the tasks of `together` and `together for` (`spec/19 §8`), and which flags bound it. Section 5, `within` and interruption (ADR 0117 rules 4, 5 and 13, IF2, slice S2), in edition `0.4`. Section 6, `first of` (ADR 0117 rules 4, 6, 10, 12 and 13, IF3, slice S3), in edition `0.4`. Sections 7 and 8, `tasks` and `start`, traces written as they happen, the interpreter's coroutines and the schedule both engines share under virtual time (ADR 0117 rules 7, 10, 11, 12 and 13, slice S4), in edition `0.4`.
+**What has landed.** Sections 1 to 4, the runtime of tasks (ADR 0117 rules 1 to 3, slice S1). They add no construct and change no output, failure or trace of any edition: they say how the native backend runs the tasks of `together` and `together for` (`spec/19 §8`), and which flags bound it. Section 5, `within` and interruption (ADR 0117 rules 4, 5 and 13, IF2, slice S2), in edition `0.4`. Section 6, `first of` (ADR 0117 rules 4, 6, 10, 12 and 13, IF3, slice S3), in edition `0.4`. Sections 7 and 8, `tasks` and `start`, traces written as they happen, the interpreter's coroutines and the schedule both engines share under virtual time (ADR 0117 rules 7, 10, 11, 12 and 13, slice S4), in edition `0.4`. Section 9, limits on `Http` grants (ADR 0117 rule 8, IF4, slice S5), in edition `0.4`.
 
 ## 1. Tasks and workers
 
@@ -194,3 +194,49 @@ A value that is not a number, or is out of its range, is a usage error, exit cod
 3. **Native code under virtual time** (ADR 0117 rule 12). Under `--virtual-time`, native code follows the interpreter's schedule: one worker, whatever `--workers` says; the root on a coroutine of it in a program with a `tasks` statement; the tasks of `together`, `together for` and `first of` one after another, in index order, each to its end, on the turn of the task that runs the block; every check point counted, and the switch after 1024 of them between the root and started tasks; host operations run on the worker. So both engines MUST give the same output, exit status, failure and trace for any run of the constructs of this chapter, `tasks` included.
    - An executable built with check elision (ADR 0112) refuses `--virtual-time`: a usage error, exit code 2, before `main` starts, since a check point compiled away would move the switches. The equivalence tests build with `--no-elision`.
 4. **Native code under the real clock** (ADR 0117 rule 2). Started tasks run on `--workers` workers, pinned, each worker's queue first in, first out; a task's turn ends at a check point once it has lasted 10 ms while another task waits on its worker, through the worker's attention word. A run in which the schedule decides the outcome is compared only for being an outcome the UAM allows under some timing: each task's events and lines in its own order (`spec/19 §8` rule 4).
+
+## 9. Limits on grants
+
+1. **Syntax** (ADR 0117 rule 8). In edition `0.4`, an `http` grant MAY carry limits. In `ita.una` they are lines under the grant (`spec/30 §2`):
+
+   ```ebnf
+   limit_line = "at" "most" int_lit ( "per" ( "second" | "minute" | "hour" ) | "at" "once" ) NEWLINE
+              | "waiting" "at" "most" int_lit NEWLINE ;
+   ```
+
+   ```una
+   run
+     grants
+       http "https://api.payments.example" get, post
+         at most 100 per minute
+         at most 8 at once
+         waiting at most 1000
+   ```
+
+   In the text form of a grant spec (`spec/13 §5`), as `--grant` takes it, they are suffixes after the methods, each `;` and one of `<n>/second`, `<n>/minute`, `<n>/hour`, `<n>/once` and `waiting=<n>`, in any order: `http:https://api.payments.example:get,post;100/minute;8/once;waiting=1000`.
+   - **Errors.** Each of these is U7008 at its line in `ita.una`, and makes a `--grant` spec invalid, a usage error: a limit line of another form, or one with lines below it; a count below 1 or above 2^31 − 1; a limit on a grant other than `http`; a kind of limit given twice on one grant, two rates counting as one kind whatever their periods.
+   - **Editions.** Limits exist in edition `0.4` only: `una.toml` (editions `0.1` to `0.3`) has no form of them, and a limited `--grant` for a package of an earlier edition, or for an executable that embeds no `L_lim` (rule 5), is a usage error, exit code 2, before `main` starts.
+2. **Meaning.**
+   - **Per period:** at most `n` requests per second, minute or hour, in a burst of up to `n`, then one every period divided by `n`: a token bucket kept by GCRA, the generic cell rate algorithm, over the monotonic clock of the host, never the virtual clock of `--virtual-time` (`spec/26 §8`).
+   - **At once:** at most `n` requests of the grant in flight.
+   - **Waiting:** at most `n` requests waiting at the grant's limits, 1024 without the line.
+   - **Several grants.** A request is charged to every grant that allows it (`spec/24 §2` rule 2), so a broader grant without limits does not bypass a narrower one with limits. Each hop of a redirect chain (`spec/24 §2` rule 3) is a request of its own, charged to the grants that allow its target.
+   - **Below every handler.** The limits are enforced in the host layer that both engines share, below every handler and every rebinding: a rebinding shares the instance (`spec/11 §2`), so `with @x = @y` and `with @x = @y[ops]` stay limited.
+   - **Scope.** Limits are per run: several processes, or a restart, each have their own.
+3. **No deadlock.**
+   - A request takes the tokens and slots of every grant that allows its target all at once, or none, holds its slots while it is in flight, and releases them when its response is read, before a redirect asks for its own.
+   - A request holds nothing while it waits, and a request that holds slots never waits for a limit, so no cycle of waits can form.
+   - **First come, first served.** A request that must wait gets a ticket, and is served when, for every limited grant it needs, it has the lowest ticket among that grant's waiters and the grant has a token and a slot free. A new request is served at once only when no request waits at any grant it needs. So the waiter with the lowest ticket waits only for capacity, and no waiter starves.
+   - Until the reactor of ADR 0117 rule 3, a request that runs on a helper of the I/O pool holds its slots until the helper returns, also after its task saw it interrupted (§5 rule 6), so the count in flight is never understated; and its wait at a limit holds its helper (`spec/24 §4` rule 4).
+4. **Waiting.** A request over a limit waits in the grant's queue, an interruptible wait:
+   - **A full queue.** When a queue it must join holds `waiting` requests, it fails at once with `HttpError.RateLimited`, a variant `HttpError` has in edition `0.4` only, after `Interrupted` (`spec/24 §1` rule 3).
+   - **Time.** `--http-timeout` covers the time it waits (`spec/24 §4` rule 2), and so do the deadlines of a `within` (§5) and of a `for ever within` iteration (`spec/26 §7`): past the earliest, it fails with `HttpError.TimedOut`, without being sent.
+   - **Cancellation and stops.** A cancellation of its task that interrupts a waiting operation (§6 rule 7, §7 rule 4) ends it `interrupted` and takes it out of the queue, never sent; a host stop in the body of a `for ever` ends it with `HttpError.Interrupted` (`spec/26 §6`).
+5. **Information flow** (ADR 0117 IF4). Whether a queue is full depends on when every request on its grant was made. Let `L_lim` be the join, over every site that performs an operation of `Http`, of `τ⁰` of the body of the function that holds the site and `τ_conc` at the site (`spec/26 §7` rule 5). `RateLimited` is labeled with the join of `internal` and `L_lim`, so a program whose grants carry limits MUST have `L_lim` at most `internal`:
+   - `una check` reports U4001 at each `Http` site whose own label is above `internal`, when a grant of `run grants` carries limits;
+   - `una build` embeds `L_lim` in the executable of an edition `0.4` package;
+   - `una run` and the executable refuse a `--grant` with limits when `L_lim` is above `internal`: a usage error, exit code 2, before `main` starts, with the message "the grant `<spec>` has limits, but this program's requests are timed by `<label>` data".
+
+   Under the preview over-approximation of `τ_conc` (`spec/26 §2` rule 5), a request that a part of a task construct can make has `τ_conc = ⊤`, so the grants of such a program cannot carry limits yet.
+6. **Report.** How long a request waits at a limit is timing, out of model: the report's `out_of_model` list (`spec/13 §6`) holds "waits at limits and at `start`" (§7 rule 8). A full queue becomes a value only through `RateLimited`, which rule 5 labels.
+7. **Costs** (ADR 0117 Costs). Finding the grants that allow a request takes O(G) for its `G` grants of `Http`, as before. Charging it takes O(1) per limited grant that allows it, under one lock per run held for that work only; a request that waits takes one queue entry per such grant, joined in O(1) and left in O(1) amortized. A run without limits pays nothing more.
