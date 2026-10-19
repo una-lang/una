@@ -7221,85 +7221,79 @@ fn combine_of(op: Combine, args: &[F], item: Sort) -> F {
     }
 }
 
-/// The facts of the records of ADR 0119 V3 and V4 in `query`, each instantiated at every term
-/// of its key or item sort that the query holds, other than the updated key itself: for a
-/// frame `frame(s, s', x)` and a term `y`, `frame(s, s', x) and y != x => has(s', y) = has(s,
-/// y)`, and the same of `get` for a map; for a set relation, its membership law at `y`. Each
-/// fact holds of every run, since a run makes its record true and the law holds of the
-/// operation; `y` and `x` may denote the same key, so the frame says nothing at `y` unless the
-/// query proves them distinct (V3). No quantifier enters the query. The key terms are those of
-/// the query before these facts, so a query with k records and t key terms gains O(k · t)
-/// facts (V8).
+/// The facts of the records of ADR 0119 V3 and V4 in `query`, each instantiated at every key
+/// term of its key or item sort, other than the updated key itself: for a frame `frame(s, s',
+/// x)` and a key term `y`, `frame(s, s', x) and y != x => has(s', y) = has(s, y)`, and the
+/// same of `get` for a map; for a set relation, its membership law at `y`. Each fact holds of
+/// every run, since a run makes its record true and the law holds of the operation; `y` and
+/// `x` may denote the same key, so a frame says nothing at `y` unless the query proves them
+/// distinct (V3). No quantifier enters the query.
+///
+/// The key terms are the keys and items that the query looks up, the second argument of a
+/// `has` or a `get`, and the keys of the frames. A term looked up nowhere gains nothing from an
+/// instance: every `has` and `get` at it would occur only in the instances, which a model
+/// satisfies by making each `has` false and each `get` equal along the frames, so leaving it
+/// out loses no proof. They are read from the query before these facts, so a query with k
+/// records and t key terms gains O(k · t) facts (V8).
 fn instances(query: &Query) -> Vec<F> {
-    let mut records: Vec<F> = query
-        .applications()
-        .into_iter()
-        .filter(|term| {
-            matches!(
-                term,
-                F::App {
-                    fun: SmtFun {
-                        role: FunRole::Frame { .. } | FunRole::Combine { .. },
-                        ..
-                    },
-                    ..
-                }
-            )
-        })
-        .collect();
-    if records.is_empty() {
-        return Vec::new();
+    let applications = query.applications();
+    let mut records: Vec<&F> = Vec::new();
+    let mut keys: BTreeMap<Sort, BTreeSet<&F>> = BTreeMap::new();
+    for term in &applications {
+        let F::App { fun, args } = term else {
+            continue;
+        };
+        let key = match fun.role {
+            FunRole::Has | FunRole::Get => args.get(1),
+            FunRole::Frame { .. } => {
+                records.push(term);
+                args.get(2)
+            }
+            FunRole::Combine { .. } => {
+                records.push(term);
+                None
+            }
+            _ => None,
+        };
+        if let Some(key) = key {
+            keys.entry(key.sort()).or_default().insert(key);
+        }
     }
-    records.sort();
-    let mut keys: BTreeMap<Sort, BTreeSet<F>> = BTreeMap::new();
-    let mut terms_of = |sort: &Sort| -> BTreeSet<F> {
-        keys.entry(sort.clone())
-            .or_insert_with(|| {
-                let mut out = BTreeSet::new();
-                for assertion in &query.assertions {
-                    key_terms(assertion, sort, &mut out);
-                }
-                out
-            })
-            .clone()
-    };
+    let none = BTreeSet::new();
     let mut facts = Vec::new();
     for record in records {
-        let F::App { fun, args } = &record else {
+        let F::App { fun, args } = record else {
             continue;
         };
         match (&fun.role, args.as_slice()) {
             (FunRole::Frame { get }, [old, new, key]) => {
-                for y in terms_of(&key.sort()) {
-                    if &y == key {
+                for &y in keys.get(&key.sort()).unwrap_or(&none) {
+                    if y == key {
                         continue;
                     }
                     let guard = F::and(vec![record.clone(), F::not(F::eq(y.clone(), key.clone()))]);
                     facts.push(F::op(
                         "=>",
-                        vec![guard.clone(), F::eq(has_of(new, &y), has_of(old, &y))],
+                        vec![guard.clone(), F::eq(has_of(new, y), has_of(old, y))],
                     ));
                     if let Some(option) = get {
                         facts.push(F::op(
                             "=>",
-                            vec![
-                                guard,
-                                F::eq(get_of(new, &y, option), get_of(old, &y, option)),
-                            ],
+                            vec![guard, F::eq(get_of(new, y, option), get_of(old, y, option))],
                         ));
                     }
                 }
             }
             (FunRole::Combine { op, item }, [s, t, rest @ ..]) => {
-                for y in terms_of(item) {
-                    let (in_s, in_t) = (has_of(s, &y), has_of(t, &y));
+                for &y in keys.get(item).unwrap_or(&none) {
+                    let (in_s, in_t) = (has_of(s, y), has_of(t, y));
                     let law = match (op, rest) {
-                        (Combine::Union, [r]) => F::eq(has_of(r, &y), F::or(vec![in_s, in_t])),
+                        (Combine::Union, [r]) => F::eq(has_of(r, y), F::or(vec![in_s, in_t])),
                         (Combine::Intersection, [r]) => {
-                            F::eq(has_of(r, &y), F::and(vec![in_s, in_t]))
+                            F::eq(has_of(r, y), F::and(vec![in_s, in_t]))
                         }
                         (Combine::Difference, [r]) => {
-                            F::eq(has_of(r, &y), F::and(vec![in_s, F::not(in_t)]))
+                            F::eq(has_of(r, y), F::and(vec![in_s, F::not(in_t)]))
                         }
                         (Combine::Subset, []) => F::op("=>", vec![in_s, in_t]),
                         _ => continue,
@@ -7311,42 +7305,6 @@ fn instances(query: &Query) -> Vec<F> {
         }
     }
     facts
-}
-
-/// The terms of `f` of the sort `sort` that a frame or a set relation is instantiated at
-/// (ADR 0119 V3, V4): constants, applications and literals, and for `Int` the sums,
-/// differences and products. The records of V3 and V4 themselves are no keys.
-fn key_terms(f: &F, sort: &str, out: &mut BTreeSet<F>) {
-    match f {
-        F::Int(_) | F::Float(_) | F::Bool(_) => {
-            if f.sort() == sort {
-                out.insert(f.clone());
-            }
-        }
-        F::Const(c) => {
-            if c.sort == sort {
-                out.insert(f.clone());
-            }
-        }
-        F::Local { .. } => {}
-        F::App { fun, args } => {
-            for arg in args {
-                key_terms(arg, sort, out);
-            }
-            let record = matches!(fun.role, FunRole::Frame { .. } | FunRole::Combine { .. });
-            if !record && fun.result == sort {
-                out.insert(f.clone());
-            }
-        }
-        F::Op { op, args } => {
-            for arg in args {
-                key_terms(arg, sort, out);
-            }
-            if sort == "Int" && matches!(*op, "+" | "-" | "*") {
-                out.insert(f.clone());
-            }
-        }
-    }
 }
 
 /// The source name in a function's symbol: the field of `u!f!<field>!...` and
