@@ -22,7 +22,7 @@ pub not_integer(n: Int) -> Int
 pub not_refinement(n: Int) -> Int
 =
   let edit i = 0
-  for until i >= n decreases distance(i, n)
+  for until i >= n decreases distance(a: i, b: n)
     i = i + 1
   i
 

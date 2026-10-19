@@ -1,6 +1,7 @@
--- test: the body of `for until c` runs under the label of `c`, since how many iterations run depends on it (spec/26 §4, ADR 0116 IF1)
+-- test: the body of `for until c` runs under the label of `c`, since how many iterations run depends on it, so every binding it updates is labeled at least that (spec/26 §4, ADR 0116 IF1)
 -- spec: spec/26 §4
--- expect: error U4001 at src/flows.una:12:13
+-- expect: error U4001 at src/flows.una:12:9
+-- expect: error U4001 at src/flows.una:13:13
 module flows
 
 pub count(s: secret Int) -> Int
