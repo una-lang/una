@@ -129,11 +129,14 @@ pub enum Edition {
     /// Edition `0.3`, a preview until ADRs 0092 to 0094 land: every construct of edition
     /// `0.2`, and the rules that target edition `0.3` (`spec/13 §7`).
     V0_3,
+    /// Edition `0.4`, a preview until the rules that target it land: every construct of
+    /// edition `0.3`, and those of ADR 0116 (`spec/26`) as they land.
+    V0_4,
 }
 
 impl Edition {
     /// Every edition, oldest first.
-    pub const ALL: [Edition; 3] = [Edition::V0_1, Edition::V0_2, Edition::V0_3];
+    pub const ALL: [Edition; 4] = [Edition::V0_1, Edition::V0_2, Edition::V0_3, Edition::V0_4];
 
     /// The edition's name, as `una.toml` writes it.
     pub fn name(self) -> &'static str {
@@ -141,10 +144,11 @@ impl Edition {
             Edition::V0_1 => "0.1",
             Edition::V0_2 => "0.2",
             Edition::V0_3 => "0.3",
+            Edition::V0_4 => "0.4",
         }
     }
 
-    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2" and "0.3"`.
+    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2", "0.3" and "0.4"`.
     fn listed() -> String {
         let names: Vec<String> = Edition::ALL
             .iter()
@@ -163,6 +167,7 @@ impl Edition {
             "0.1" => Some(Edition::V0_1),
             "0.2" => Some(Edition::V0_2),
             "0.3" => Some(Edition::V0_3),
+            "0.4" => Some(Edition::V0_4),
             _ => None,
         }
     }

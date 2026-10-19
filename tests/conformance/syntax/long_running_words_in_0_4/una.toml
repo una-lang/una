@@ -1,0 +1,4 @@
+[package]
+name = "long_running_words_in_0_4"
+version = "0.1.0"
+edition = "0.4"

@@ -306,6 +306,9 @@ pub enum KeywordSet {
     V0_2,
     /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`).
     V0_3,
+    /// Edition 0.4: the keywords of edition 0.3, with `diverges` and `within` reserved
+    /// (`spec/26 §1`, ADR 0116 rule 0).
+    V0_4,
 }
 
 /// The kind of a token.

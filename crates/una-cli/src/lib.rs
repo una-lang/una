@@ -1418,6 +1418,7 @@ fn keyword_set(edition: una_project::Edition) -> KeywordSet {
         una_project::Edition::V0_1 => KeywordSet::V0_1,
         una_project::Edition::V0_2 => KeywordSet::V0_2,
         una_project::Edition::V0_3 => KeywordSet::V0_3,
+        una_project::Edition::V0_4 => KeywordSet::V0_4,
     }
 }
 

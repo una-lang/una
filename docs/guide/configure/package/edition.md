@@ -1,7 +1,7 @@
 ---
 construct: "[package] edition"
 editions: ["0.1", "0.2"]
-spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1"]
+spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1", "spec/26 §1"]
 codes: [U0103, U7002]
 ---
 
@@ -34,7 +34,7 @@ pub price(cents: Int) -> Int = cents
 
 ```text
 [package]
-edition = "0.1" | "0.2" | "0.3"
+edition = "0.1" | "0.2" | "0.3" | "0.4"
 ```
 
 - **Edition `0.1`** is the v0.1 language.
@@ -47,6 +47,7 @@ edition = "0.1" | "0.2" | "0.3"
   - **Units of measure.** `measure` declares a unit, and `Int of Meter` is an integer in meters, which never mixes with seconds.
 
   Edition `0.3` is a preview: the rules that target it join it as they land, so a later `0.3.x` release may add obligations or errors to an edition `0.3` package. It only gets stricter for the programs that edition `0.2` can express. A construct that a rule targeting edition `0.3` adds, such as a condition on an operation (`uses @log: Log[write where not dry_run]`), is a syntax error in earlier releases and may become accepted; it only narrows what a program may do, since erasing it gives a program that edition `0.2` accepts. Editions `0.1` and `0.2` keep their stability promise.
+- **Edition `0.4`** has every construct, keyword and rule of edition `0.3`, and is a preview under the same terms. It is the edition of long-running programs (`spec/26`): `diverges` and `within` are reserved in it, and its constructs join it as they land.
 - **A single file**, outside a package, has edition `"0.1"`.
 
 ## Examples
@@ -59,7 +60,7 @@ An edition the compiler does not know is rejected:
 [package]
 name = "shop"
 version = "0.1.0"
-edition = "0.4"
+edition = "0.5"
 ```
 
 `src/shop.una`
