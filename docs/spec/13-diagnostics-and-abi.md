@@ -177,9 +177,9 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2031 | types | A float literal rounds to an infinity, or is not zero and rounds to zero |
 | U2032 | types | A float literal other than zero, or a float range, as a pattern |
 | U2033 | types | A comparison of an `F64` with a float literal zero |
-| U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary (edition 0.4, `spec/26 §3`) |
+| U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary |
 | U2037 | types | A decimal scale out of place |
-| U2040 | types | A statement after `stop` or `skip` in the same block, which never runs (edition 0.4, `spec/26 §3`) |
+| U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |
