@@ -353,10 +353,10 @@ impl Reactor {
                         WAKE => {
                             let mut drain = [0u8; 64];
                             while matches!((&self.nudged).read(&mut drain), Ok(n) if n > 0) {}
-                            nudgeable = self
-                                .poller
-                                .add(self.nudged.as_fd(), Interest::Read, WAKE)
-                                .is_ok();
+                            // On `epoll` a one-shot registration stays until deleted.
+                            let socket = self.nudged.as_fd();
+                            let _ = self.poller.delete(socket, Interest::Read);
+                            nudgeable = self.poller.add(socket, Interest::Read, WAKE).is_ok();
                         }
                         PIPE => {
                             table.pipe = Pipe::Fired;

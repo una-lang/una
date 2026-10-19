@@ -45,6 +45,8 @@ fn a_registration_reports_its_token_once() {
         tokens(&poller, &mut events, Duration::from_secs(5)),
         [u64::MAX - 1]
     );
+    // On `epoll` a registration that fired stays until it is deleted, as the reactor does.
+    poller.delete(a.as_fd(), Interest::Write).unwrap();
     // A deleted registration reports nothing, though the socket is ready.
     poller.add(b.as_fd(), Interest::Read, 9).unwrap();
     poller.delete(b.as_fd(), Interest::Read).unwrap();
