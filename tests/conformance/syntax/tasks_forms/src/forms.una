@@ -1,0 +1,41 @@
+-- test: in edition 0.4, `tasks` takes a block with or without `at most n at once`, and `start` takes an expression with a deadline and handling clauses; a block may end with either statement, whose value is `unit` (spec/27 §7, ADR 0117 rule 7)
+-- spec: spec/27 §7
+-- expect: ok
+module forms
+
+import std.time (millisecond)
+
+pub kind JobError = Broken
+
+run_job(n: Int) -> Unit
+  fails JobError
+=
+  if n < 0 then fail Broken else unit
+
+note(n: Int) -> Unit = unit
+
+pub all(jobs: List[Int]) -> Unit
+=
+  tasks
+    for job in jobs
+      start run_job(job)
+        if error use note(job)
+
+pub bounded(jobs: List[Int]) -> Unit
+=
+  tasks at most 2 at once
+    for job in jobs
+      start note(job)
+  note(0)
+
+pub timed(n: Int) -> Unit
+  requires n >= 0
+=
+  tasks at most n + 1 at once
+    start run_job(n) within 50 * millisecond
+      if error use unit
+
+pub last(n: Int) -> Unit
+=
+  tasks
+    start note(n)

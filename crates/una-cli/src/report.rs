@@ -29,8 +29,8 @@ const PROOF_CACHE: &str = ".una/cache/";
 /// in their order (R-041; the last entry is ADR 0038 D9 rule 4). `una.report/2` says "stack
 /// exhaustion", since native executables exhaust their stack too (ADR 0055), and ends with the
 /// order of effects across `together` tasks (ADR 0065, `spec/19 §3`), then the three entries of
-/// long-running programs (ADR 0116 rule 21).
-const OUT_OF_MODEL: [&str; 12] = [
+/// long-running programs (ADR 0116 rule 21), then the two of ADR 0117 rule 13.
+const OUT_OF_MODEL: [&str; 13] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
@@ -42,6 +42,7 @@ const OUT_OF_MODEL: [&str; 12] = [
     "the time of a host stop",
     "interference of the host's load with the timing of an expression",
     "uncatchable termination",
+    "waits at limits and at `start`",
     "which branch of `first of` wins, beyond its label",
 ];
 
