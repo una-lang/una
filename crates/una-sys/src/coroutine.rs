@@ -92,10 +92,14 @@ impl Stack {
         }
         // No transparent huge pages on Linux, so the pages a stack holds are the pages its task
         // touched, which the memory budget charges; `MAP_STACK` implies it from Linux 6.7, and
-        // older kernels need the advice. A stack the advice fails on is not used (fail closed).
+        // older kernels need the advice. A stack the advice fails on is not used (fail closed),
+        // except for `EINVAL`, which a kernel built without transparent huge pages returns: it
+        // has no huge pages to give the stack.
         // SAFETY: the advice covers exactly the mapping just made, and changes no data in it.
         #[cfg(target_os = "linux")]
-        if unsafe { libc::madvise(base.as_ptr().cast(), len, libc::MADV_NOHUGEPAGE) } != 0 {
+        if unsafe { libc::madvise(base.as_ptr().cast(), len, libc::MADV_NOHUGEPAGE) } != 0
+            && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINVAL)
+        {
             return Err(StackError);
         }
         Ok(stack)
