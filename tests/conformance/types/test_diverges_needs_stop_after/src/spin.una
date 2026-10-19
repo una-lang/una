@@ -1,7 +1,7 @@
 -- test: a test's `do` line may call a function that says `diverges` only under a `stop after` line, and its `expect` lines never may (U3027, spec/26 §6, ADR 0116 rule 8)
 -- spec: spec/26 §6
--- expect: error U3027 at src/spin.una:27:6
--- expect: error U3027 at src/spin.una:33:10
+-- expect: error U3027 at src/spin.una:34:6
+-- expect: error U3027 at src/spin.una:40:20
 module spin
 
 pub capability Log
@@ -20,6 +20,15 @@ pub spin() -> Int
     n = n + 1
   n
 
+pub count_to(limit: Int) -> Int
+  diverges
+=
+  let edit n = 0
+  for ever
+    stop when n >= limit
+    n = n + 1
+  n
+
 example "no stop schedule"
   given @log = memory_log()
   do spin()
@@ -28,7 +37,7 @@ example "no stop schedule"
 example "an expectation may not diverge"
   given @log = memory_log()
   do spin()
-  expect result == spin()
+  expect result == count_to(3)
   stop after 1
 
 example "under a stop schedule"

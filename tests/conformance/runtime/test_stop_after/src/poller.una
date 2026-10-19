@@ -12,7 +12,10 @@ pub capability Store
 pub capability Log
   op write(line: Text) -> Unit
 
-pub handler slow_store(delay: Int of Millisecond) for Store
+--- A duration that moves time forward.
+pub kind Delay = Int of Millisecond where it >= 0
+
+pub handler slow_store(delay: Delay) for Store
   op get(key) =
     elapse(delay)
     "v"

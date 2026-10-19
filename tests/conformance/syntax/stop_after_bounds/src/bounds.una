@@ -19,5 +19,6 @@ example "too many"
 
 example "not last"
   do one()
+  expect result == 1
   stop after 2
   expect result == 1
