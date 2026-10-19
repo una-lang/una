@@ -1028,7 +1028,7 @@ Edition `0.2` adds functions that take a text apart, search it, change it and pa
   - `chars()`, one text per scalar value; `bytes()`, the UTF-8 encoding as `List[U8]`.
   - `to_upper()` and `to_lower()`, which change ASCII letters only and keep the length.
   - `trim_start()` and `trim_end()`, as `trim` at one end.
-  - `parse_int()`, which fails with `ParseError`: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first wrong position. Handle it as any failure. The prelude's `to_int(t)` gives an `Option[Int]` instead, `None` for any text that is not an integer.
+  - `parse_int()`, which fails with `ParseError`: `Empty`, `NoDigits` for `-` alone, `NotADigit(at: i)` at the first wrong position, or `TooLong` for more than 4300 digits. Handle it as any failure. The prelude's `to_int(t)` gives an `Option[Int]` instead, `None` for any text that is not an integer or has more than 4300 digits.
 - **Cost:** `find`, `split` and `replace` are linear in the text; `.len` is O(1).
 - **Proofs:** the contracts are hypotheses after each call, such as `split`'s `result.len >= 1` and `slice`'s `result.len == end - start`. There is no theory of strings beyond them.
 - **Labels:** every result carries every label of every argument, including the top and the elements of `split`'s and `chars`' lists. Whether a secret parses is secret too.

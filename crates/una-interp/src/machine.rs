@@ -1875,11 +1875,16 @@ impl<'p, 'w> Machine<'p, 'w> {
             "to_int" => {
                 let t = text(0)?;
                 let digits = t.strip_prefix('-').unwrap_or(&t);
-                match t.parse::<BigInt>() {
-                    Ok(n) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
-                        some(Value::Int(n))
-                    }
-                    _ => none(),
+                // Checked in O(b) before the O(d²) conversion, which only a text of at most
+                // MAX_INT_DIGITS digits reaches (`spec/14 §1`, #914).
+                let valid = !digits.is_empty()
+                    && digits.len() <= una_core::MAX_INT_DIGITS
+                    && digits.bytes().all(|b| b.is_ascii_digit());
+                if valid {
+                    t.parse::<BigInt>()
+                        .map_or_else(|_| none(), |n| some(Value::Int(n)))
+                } else {
+                    none()
                 }
             }
             "is_empty" => Value::Bool(list(0)?.is_empty()),
@@ -2266,8 +2271,9 @@ fn search(t: &str, part: &str) -> Option<usize> {
 }
 
 /// `parse_int(t)` (`spec/22 §4`): an optional `-` and one or more ASCII digits, or a failure
-/// that says why: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first
-/// position that is neither.
+/// that says why: `Empty`, `NoDigits` for `-` alone, `NotADigit(at: i)` at the first
+/// position that is neither, or `TooLong` for more than `MAX_INT_DIGITS` digits, found in O(b)
+/// before the O(d²) conversion (#914).
 fn parse_int<'p>(t: &str) -> Flow<'p> {
     let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
         Err(Stop::Fail(Value::data(
@@ -2294,6 +2300,9 @@ fn parse_int<'p>(t: &str) -> Flow<'p> {
     }
     if digits.is_empty() {
         return failure("NoDigits", 2, Vec::new());
+    }
+    if digits.len() > una_core::MAX_INT_DIGITS {
+        return failure("TooLong", 3, Vec::new());
     }
     match t.parse::<BigInt>() {
         Ok(n) => Ok(Value::Int(n)),
