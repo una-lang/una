@@ -1,0 +1,100 @@
+-- test: the blocked kernels of ADR 0120 rules 48 to 50 give the bits of their chains: LU and its solve of one, two and three panels (n = 3, 70, 130); Cholesky of a definite matrix of two panels, and of matrices not positive definite in the second panel and in the first; a matrix singular only at its last pivot, in the second panel, whose `lu` and `solve` are None after the whole factorization ran; lower and upper triangular solves of two panels and two right-hand sides, with and without a unit diagonal; and a zero on the diagonal, which gives infinities and NaN. Each solution is shown as the bits of its lane-blocked sum and of its scaled norm
+-- spec: spec/29 §17
+-- grant: console
+-- expect: run-output "solve 4606758123900477980 4603221599517966036 4626886463318013730 4613293229912485921 4630947658559356816 4615510509253458778"
+-- expect: run-output "cholesky Some 4638483735676172744 4622924015123627596 None None"
+-- expect: run-output "singular None None Some Some"
+-- expect: run-output "lower 4632487045804835665 4616615536997731780 4635537189922915890 4619607636682500280"
+-- expect: run-output "upper 4632487045804835665 4616852306529523965 4635537189922915890 4620608181552645121"
+-- expect: run-output "zero matrix(rows: 2, columns: 1, elements: [nan, nan]) matrix(rows: 2, columns: 1, elements: [-inf, inf])"
+module dense
+
+-- The bits of the lane-blocked sum and of the scaled norm of x.
+summary(x: Matrix[F64]) -> Text = "{x.sum().to_bits()} {x.norm2().to_bits()}"
+
+-- `solve` with a column of ones, of the n × n matrix whose row i, column j holds
+-- 1 / (i + j + 1), plus 2 on the diagonal.
+solved(n: Int) -> Text
+  requires n >= 1
+=
+  let zero = 0.0
+  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  for i in 0..<n
+    for j in 0..<n
+      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      let shift = if i == j then 2.0 else 0.0
+      edit a.set(row: i, column: j, item: x + shift)
+  let b = matrix_filled(rows: n, columns: 1, value: 1.0)
+  when a.solve(rhs: b)
+    is Some(x) -> summary(x)
+    is None -> "None"
+
+-- `cholesky` of the matrix of `solved`, with -3 instead of 2 on the diagonal at row `low`.
+factored(n: Int, low: Int) -> Text
+  requires n >= 1
+=
+  let zero = 0.0
+  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  for i in 0..<n
+    for j in 0..<n
+      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      let d = if i == low then -3.0 else 2.0
+      let shift = if i == j then d else 0.0
+      edit a.set(row: i, column: j, item: x + shift)
+  when a.cholesky()
+    is Some(l) -> "Some {summary(l)}"
+    is None -> "None"
+
+-- `lu` and `solve` of the matrix of `solved`, its last row zero when `zero_last` holds.
+singular(n: Int, zero_last: Bool) -> Text
+  requires n >= 1
+=
+  let zero = 0.0
+  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  for i in 0..<n
+    for j in 0..<n
+      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      let shift = if i == j then 2.0 else 0.0
+      let item = if zero_last and i == n - 1 then 0.0 else x + shift
+      edit a.set(row: i, column: j, item: item)
+  let b = matrix_filled(rows: n, columns: 1, value: 1.0)
+  let by_lu = when a.lu()
+    is Some(f) -> "Some"
+    is None -> "None"
+  let by_solve = when a.solve(rhs: b)
+    is Some(x) -> "Some"
+    is None -> "None"
+  "{by_lu} {by_solve}"
+
+-- A triangular solve with two columns of ones, of the matrix of `solved`.
+triangular(n: Int, lower: Bool, unit: Bool) -> Text
+  requires n >= 1
+=
+  let zero = 0.0
+  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  for i in 0..<n
+    for j in 0..<n
+      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      let shift = if i == j then 2.0 else 0.0
+      edit a.set(row: i, column: j, item: x + shift)
+  let b = matrix_filled(rows: n, columns: 2, value: 1.0)
+  let x = if lower then a.solve_lower(rhs: b, unit_diagonal: unit) else a.solve_upper(rhs: b, unit_diagonal: unit)
+  summary(x)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("solve {solved(3)} {solved(70)} {solved(130)}")
+  @console.print("cholesky {factored(70, -1)} {factored(70, 68)} {factored(70, 3)}")
+  @console.print("singular {singular(66, true)} {singular(66, false)}")
+  @console.print("lower {triangular(70, true, false)} {triangular(70, true, true)}")
+  @console.print("upper {triangular(70, false, false)} {triangular(70, false, true)}")
+  let lower: List[F64] = [0.0, 0.0, 1.0, 2.0]
+  let upper: List[F64] = [2.0, 1.0, 0.0, 0.0]
+  let zeros: List[F64] = [0.0, 1.0]
+  let ones: List[F64] = [1.0, 1.0]
+  let l = matrix(rows: 2, columns: 2, elements: lower)
+  let u = matrix(rows: 2, columns: 2, elements: upper)
+  let x = l.solve_lower(rhs: matrix(rows: 2, columns: 1, elements: zeros), unit_diagonal: false)
+  let y = u.solve_upper(rhs: matrix(rows: 2, columns: 1, elements: ones), unit_diagonal: false)
+  @console.print("zero {x} {y}")
