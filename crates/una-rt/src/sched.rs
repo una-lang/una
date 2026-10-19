@@ -841,10 +841,13 @@ enum Waited<T> {
 /// the job returns, or until a cancellation of one of `entries` wakes it, whichever comes
 /// first ([`crate::interrupt`]). `None` when the cancellation came first: the job may still
 /// run, or complete, on its helper, an effect in doubt, and its result is then dropped there.
-/// Outside a task's coroutine it runs `job` inline, as [`blocking`] does.
+/// `also`, when given, is called on that interruption too, as the request's wait at a limit is
+/// abandoned so that it leaves its queues unsent (ADR 0117 rule 8). Outside a task's coroutine
+/// it runs `job` inline, as [`blocking`] does.
 pub(crate) fn blocking_interruptible<T: Send + 'static>(
     pool: Pool,
     entries: &[crate::runtime::Cancel],
+    also: Option<crate::interrupt::Wake>,
     job: impl FnOnce() -> T + Send + 'static,
 ) -> Option<T> {
     let shared = if una_sys::coroutine::inside() && !crate::runtime::clock().is_virtual() {
@@ -867,8 +870,12 @@ pub(crate) fn blocking_interruptible<T: Send + 'static>(
     drop(shared);
     let (sender, receiver) = channel::<Waited<T>>();
     let mailbox = Arc::clone(&sender.0);
-    let wake: crate::interrupt::Wake =
-        Arc::new(move || close(&mailbox, Some(Waited::Interrupted)));
+    let wake: crate::interrupt::Wake = Arc::new(move || {
+        close(&mailbox, Some(Waited::Interrupted));
+        if let Some(also) = &also {
+            also();
+        }
+    });
     let registration = crate::interrupt::register(entries, &wake);
     drop(wake);
     // A cancellation that came before the registration woke nothing: seen here, the operation
@@ -1007,7 +1014,7 @@ mod tests {
         let (entry, helper_gate) = (Arc::clone(&count), Arc::clone(&gate));
         let task = start(&sched, move || {
             let entries = vec![(entry, 2)];
-            let waited = blocking_interruptible(Pool::Io, &entries, move || {
+            let waited = blocking_interruptible(Pool::Io, &entries, None, move || {
                 let _ = lock(&helper_gate).recv();
                 7
             });
@@ -1025,7 +1032,7 @@ mod tests {
         // Without a cancellation, the wait gives the job's result.
         let task = start(&sched, || {
             let entries = vec![(Arc::new(AtomicUsize::new(3)), 2)];
-            assert_eq!(blocking_interruptible(Pool::Io, &entries, || 9), Some(9));
+            assert_eq!(blocking_interruptible(Pool::Io, &entries, None, || 9), Some(9));
         });
         assert_eq!(task.recv(), Some(()));
     }

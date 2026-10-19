@@ -217,10 +217,18 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/m.una:6:22")],
     },
-    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4.
+    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4, and so is
+    // `RateLimited` (ADR 0117 rule 8), which the `when` then lacks.
     Difference04 {
         case: "names/http_interrupted_0_3",
-        added: &[],
+        added: &[("U2007", "src/poll.una:9:3")],
+        removed: &[("U1001", "src/poll.una:18:8")],
+    },
+    // ADR 0117 rule 8: `HttpError.RateLimited` is a variant from edition 0.4, and so is
+    // `Interrupted` (ADR 0116 rule 12), which the `when` then lacks.
+    Difference04 {
+        case: "names/http_rate_limited_0_3",
+        added: &[("U2007", "src/poll.una:9:3")],
         removed: &[("U1001", "src/poll.una:18:8")],
     },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.

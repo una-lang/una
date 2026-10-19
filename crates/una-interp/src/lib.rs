@@ -24,7 +24,10 @@ pub use harness::{
     Completion, DriveShape, ExampleFailure, ExampleRun, Host, Run, run_drive, run_examples,
     run_main,
 };
-pub use host::{FileFault, Grant, NotText, World, confine, hex, hmac_sha256, parse_keys};
+pub use host::{
+    FileFault, Grant, LimitLabel, NotText, World, check_limited_flags, confine, hex, hmac_sha256,
+    parse_keys,
+};
 pub use machine::{Abort, Drive, Event, EventOutcome, Limits, fixed_method};
 pub use trace::{EventDoc, OutcomeDoc, Pairs, event_json, trace_json};
 

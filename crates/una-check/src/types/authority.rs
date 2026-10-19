@@ -1962,11 +1962,14 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
             "clock" => ("Clock", vec!["now"]),
             "env" => ("Env", vec!["get"]),
             _ if grant.starts_with("keys:") => ("Keys", vec!["hmac"]),
-            // An `http:` grant gives the operations of its methods (`spec/24 §2`).
-            _ if grant.starts_with("http:") => match una_core::http::Grant::parse(grant) {
-                Some(http) => ("Http", http.methods().iter().map(|m| m.op()).collect()),
-                None => continue,
-            },
+            // An `http:` grant gives the operations of its methods (`spec/24 §2`), with or
+            // without limits (`spec/27 §9`).
+            _ if grant.starts_with("http:") => {
+                match una_core::http::Grant::parse_limited(grant).and_then(Result::ok) {
+                    Some(http) => ("Http", http.methods().iter().map(|m| m.op()).collect()),
+                    None => continue,
+                }
+            }
             _ => match grant
                 .strip_prefix("files:")
                 .and_then(|rest| rest.rsplit_once(':'))
@@ -2263,6 +2266,82 @@ pub(crate) fn drive_timing(
         input.name, input.name
     )));
     report.push(diagnostic);
+}
+
+/// IF4 (ADR 0117): `L_lim`, the timing label of the package's `Http` requests, which labels
+/// `HttpError.RateLimited` with `internal`. When a grant of the manifest's `run grants` carries
+/// limits and `L_lim` is above `internal`, U4001 at each `Http` operation whose own label is
+/// above it, in source order, naming the grant and the source of the label (`spec/27 §9` rule
+/// 5). Returns `L_lim`, which `una build` embeds and `una run` checks a limited `--grant`
+/// against.
+///
+/// O(functions + call edges + operations + handlers) for `L_lim`; on the error path, the same
+/// again for each function that holds an operation of `Http`.
+pub(crate) fn limit_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    report: &mut Report<'_>,
+) -> Label {
+    let concurrent = super::timing::concurrent_functions(findings);
+    let limit = super::timing::limit_label(env, findings, &concurrent);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    if limit.label.flows_to(&internal) {
+        return limit.label;
+    }
+    let Some(grant) = settings.grants.iter().find(|grant| {
+        una_core::http::Grant::parse_limited(&grant.value)
+            .and_then(Result::ok)
+            .is_some_and(|http| http.limits().any())
+    }) else {
+        return limit.label;
+    };
+    let section = settings.format.section("[run] grants");
+    let section = if section.starts_with('`') {
+        section
+    } else {
+        format!("`{section}`")
+    };
+    let mut sites: Vec<&super::timing::HttpSite> = findings.http_sites.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.span);
+    for site in sites {
+        let seed = match site.function {
+            Some(function) => super::timing::body_seed(env, function, site.unplaced),
+            None => super::timing::TimingSeed {
+                unplaced: true,
+                ..super::timing::TimingSeed::default()
+            },
+        };
+        let own = super::timing::timing(
+            env,
+            findings,
+            &seed,
+            site.function,
+            super::timing::HostHandlers::All,
+            &concurrent,
+        );
+        if own.label.flows_to(&internal) {
+            continue;
+        }
+        let culprit = own.culprit(&internal);
+        let mut diagnostic = report.make(
+            Code::U4001,
+            site.span,
+            format!(
+                "the grant `{}` of {section} has limits, but when this request is made depends on {culprit}, labeled `{}`, so `RateLimited` would reveal it; requests of a program with limits must be timed by `internal` data at most",
+                grant.value, own.label
+            ),
+        );
+        diagnostic.repairs.push(Report::advice(format!(
+            "move the work on data above `internal` out of the function that makes this request, or remove the limits from the grant in {section}"
+        )));
+        report.push(diagnostic);
+    }
+    limit.label
 }
 
 /// IF8 (ADR 0116): the operations that the deadline of a `for ever within d` can interrupt run

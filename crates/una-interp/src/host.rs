@@ -123,6 +123,11 @@ impl Grant {
         }
     }
 
+    /// Whether the grant carries limits (ADR 0117 rule 8, `spec/27 §9`).
+    pub fn limited(&self) -> bool {
+        matches!(self, Grant::Http(http) if http.limits().any())
+    }
+
     /// Parses a grant spec of `spec/13 §5`, resolving relative paths against `base`.
     pub fn parse(spec: &str, base: &Path) -> Option<Grant> {
         match spec {
@@ -130,8 +135,12 @@ impl Grant {
             "clock" => Some(Grant::Clock),
             "env" => Some(Grant::Env),
             _ => {
+                // With the limit suffixes of edition 0.4 (`spec/27 §9`): a spec whose limits are
+                // invalid is no grant. Whether a run may take limits is the caller's to check.
                 if spec.starts_with("http:") {
-                    return una_core::http::Grant::parse(spec).map(Grant::Http);
+                    return una_core::http::Grant::parse_limited(spec)
+                        .and_then(Result::ok)
+                        .map(Grant::Http);
                 }
                 if let Some(file) = spec.strip_prefix("keys:") {
                     return (!file.is_empty()).then(|| Grant::Keys {
@@ -154,6 +163,36 @@ impl Grant {
             }
         }
     }
+}
+
+/// What a run knows of its program's `L_lim` (ADR 0117 IF4, `spec/27 §9` rule 5): the label as
+/// a message writes it, and whether it flows to `internal`. `None` for a program of an edition
+/// before `0.4`, or an executable built without it, which may take no limits.
+pub type LimitLabel<'l> = Option<(&'l str, bool)>;
+
+/// Refuses each `--grant` spec of `flags` that carries limits, unless the program's `limit`
+/// lets it: a usage error, exit code 2, before `main` starts (ADR 0117 IF4, `spec/27 §9`), so
+/// limits given at start-up cannot bypass the check that `una check` makes of `run grants`.
+pub fn check_limited_flags(flags: &[String], limit: LimitLabel<'_>) -> Result<(), String> {
+    for spec in flags {
+        if !Grant::parse(spec, Path::new("")).is_some_and(|grant| grant.limited()) {
+            continue;
+        }
+        match limit {
+            Some((_, true)) => {}
+            Some((label, false)) => {
+                return Err(format!(
+                    "the grant `{spec}` has limits, but this program's requests are timed by `{label}` data"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "the grant `{spec}` has limits, which only a program of edition 0.4 may take"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `path` with `.` removed and `..` applied, lexically.
@@ -377,5 +416,32 @@ mod tests {
         );
         assert_eq!(Grant::parse("files:./data:execute", base), None);
         assert_eq!(Grant::parse("network", base), None);
+        // Limits on `http` grants (`spec/27 §9`), valid or not; none on other grants.
+        let limited = Grant::parse("http:https://h:get;3/second;waiting=5", base).unwrap();
+        assert!(limited.limited());
+        assert!(!Grant::parse("http:https://h", base).unwrap().limited());
+        assert_eq!(Grant::parse("http:https://h;0/second", base), None);
+        assert_eq!(Grant::parse("http:https://h;1/once;2/once", base), None);
+        assert_eq!(Grant::parse("console;1/once", base), None);
+    }
+
+    #[test]
+    fn limited_flags_need_a_label_at_most_internal() {
+        let flags = vec![
+            "console".to_owned(),
+            "http:https://h".to_owned(),
+            "http:https://h:get;1/once".to_owned(),
+        ];
+        assert_eq!(check_limited_flags(&flags, Some(("internal", true))), Ok(()));
+        assert_eq!(
+            check_limited_flags(&flags, Some(("secret", false))),
+            Err(
+                "the grant `http:https://h:get;1/once` has limits, but this program's requests are timed by `secret` data"
+                    .to_owned()
+            )
+        );
+        assert!(check_limited_flags(&flags, None).is_err());
+        // Without limits, nothing is refused.
+        assert_eq!(check_limited_flags(&flags[..2], None), Ok(()));
     }
 }

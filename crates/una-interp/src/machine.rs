@@ -809,8 +809,17 @@ impl<'p, 'w> Machine<'p, 'w> {
         } else {
             seen
         };
-        let run = Run::new(world, clock, index.tasks);
+        let mut run = Run::new(world, clock, index.tasks);
         run.stop_after.set(limits.stop_after);
+        run.http_limits = una_http::limit::Governor::new(
+            grants
+                .iter()
+                .filter_map(|grant| match grant {
+                    Grant::Http(http) => Some(http.clone()),
+                    _ => None,
+                })
+                .collect(),
+        );
         Machine {
             index,
             grants,
@@ -2899,7 +2908,8 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send, send_interruptible};
+        use una_http::client::{Error, Request, send_governed};
+        use una_http::limit::Abandon;
         use una_http::grant::Method;
         let fail = |error: Error| {
             let (name, index) = match error {
@@ -2911,8 +2921,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
-                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`.
+                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`, and
+                // limits need edition 0.4 (ADR 0117 rule 8, `spec/27 §9`).
                 Error::Interrupted => ("Interrupted", 8),
+                Error::RateLimited => ("RateLimited", 9),
                 // Not a failure: the run aborts.
                 Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
@@ -2962,14 +2974,6 @@ impl<'p, 'w> Machine<'p, 'w> {
             ),
             None => None,
         };
-        let grants: Vec<una_core::http::Grant> = self
-            .grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Http(http) => Some(http.clone()),
-                _ => None,
-            })
-            .collect();
         let request = Request {
             method,
             url: &url,
@@ -3008,9 +3012,24 @@ impl<'p, 'w> Machine<'p, 'w> {
         let sent = if cut && settings.timeout.is_zero() {
             Err(Error::TimedOut)
         } else if self.in_ever {
-            send_interruptible(&request, &grants, &settings, &self.stop.interrupt())
+            // The run's limits are shared by its tasks (ADR 0117 rule 8). The interpreter runs
+            // one task at a time, so no other request of the run is in flight while this one
+            // waits at a limit, and nothing abandons the wait but its deadline or a host stop.
+            send_governed(
+                &request,
+                &self.run.http_limits,
+                &settings,
+                &self.stop.interrupt(),
+                &Abandon::new(),
+            )
         } else {
-            send(&request, &grants, &settings)
+            send_governed(
+                &request,
+                &self.run.http_limits,
+                &settings,
+                &una_http::client::Uninterrupted,
+                &Abandon::new(),
+            )
         };
         if cut && by_ever && sent == Err(Error::TimedOut) {
             self.timeout_event();

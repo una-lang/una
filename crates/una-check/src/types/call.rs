@@ -1435,6 +1435,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked_unknown(args);
             return Ty::unknown();
         };
+        // An operation of the host's `Http`, whose timing `L_lim` covers (ADR 0117 IF4).
+        if capability.module == self.env.prelude && capability.name == "Http" {
+            self.http_site(span);
+        }
         let Some(def) = capability.ops.iter().find(|o| o.name == op_name).cloned() else {
             let names: Vec<&str> = capability.ops.iter().map(|o| o.name).collect();
             let mut diagnostic = self.report.make(

@@ -74,6 +74,9 @@ pub(crate) struct Run<'p, 'w> {
     /// stack and raised again on the thread's once the driver has ended, where the command
     /// reports it as U8001 (`spec/13 §5`).
     panic: RefCell<Option<Box<dyn std::any::Any + Send>>>,
+    /// The run's `Http` grants and the state of their limits, which every task shares (ADR
+    /// 0117 rule 8, `spec/27 §9`).
+    pub(crate) http_limits: una_http::limit::Governor,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -98,6 +101,7 @@ impl<'p, 'w> Run<'p, 'w> {
             cap: crate::concurrency::task_cap(),
             serving: Cell::new(false),
             panic: RefCell::new(None),
+            http_limits: una_http::limit::Governor::new(Vec::new()),
         }
     }
 

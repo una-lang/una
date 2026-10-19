@@ -231,6 +231,20 @@ pub(crate) fn build_command(
         if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
             object.insert("drive".to_owned(), drive.clone());
         }
+        // ADR 0117 IF4: `L_lim`, which a grant with limits needs at most `internal`, for an
+        // executable of edition 0.4 only; one without it takes no limits (`spec/27 §9`).
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert(
+                "limit_label".to_owned(),
+                json!(analysis.limit_label.to_string()),
+            );
+            object.insert(
+                "limits_allowed".to_owned(),
+                json!(analysis.limit_label.flows_to(&internal_label())),
+            );
+        }
         meta.to_string()
     };
     let compiled = if manifest.drive.is_some() {
@@ -452,5 +466,13 @@ mod tests {
             None
         );
         assert_eq!(stale_runtime_hint("ld: library not found", runtime), None);
+    }
+}
+
+/// The label `internal`, the most `L_lim` may be for grants with limits (ADR 0117 IF4).
+pub(crate) fn internal_label() -> una_core::Label {
+    una_core::Label {
+        level: una_syntax::ast::Level::Internal,
+        ..una_core::Label::public()
     }
 }

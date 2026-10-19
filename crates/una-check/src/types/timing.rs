@@ -74,6 +74,18 @@ pub(crate) enum HostHandlers {
     All,
 }
 
+/// An operation of the host's `Http`, for `L_lim` (ADR 0117 IF4): where it is, the function
+/// whose body holds it, and whether it is unplaced, as a timing seed is ([`TimingSeed`]).
+#[derive(Clone, Debug)]
+pub(crate) struct HttpSite {
+    /// The operation.
+    pub(crate) span: una_syntax::Span,
+    /// The function whose body holds it, or `None` outside a function (a handler's operation).
+    pub(crate) function: Option<usize>,
+    /// Whether it lies inside a lambda, a task, a `tasks` block or outside a function.
+    pub(crate) unplaced: bool,
+}
+
 /// One frame of [`Checker::timing_start`]: where the site's locals start, and its seed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TimingFrame {
@@ -87,10 +99,7 @@ impl Checker<'_, '_, '_> {
     /// its own, and the ones before it are its free variables. Sites nest.
     pub(crate) fn timing_start(&mut self) {
         let mut seed = TimingSeed {
-            unplaced: self.lambda_depth > 0
-                || self.task_depth > 0
-                || !self.tasks_frames.is_empty()
-                || self.current.is_none(),
+            unplaced: self.unplaced(),
             ..TimingSeed::default()
         };
         seed.sources
@@ -100,6 +109,29 @@ impl Checker<'_, '_, '_> {
             read: BTreeSet::new(),
             seed,
         });
+    }
+
+    /// Whether code checked here runs where the structure of its function does not show what
+    /// runs beside it: inside a lambda, a task, the block of a `tasks` statement, or outside a
+    /// function, as a handler's operation (ADR 0116 IF6). `τ_conc` is then `⊤`.
+    pub(crate) fn unplaced(&self) -> bool {
+        self.lambda_depth > 0
+            || self.task_depth > 0
+            || !self.tasks_frames.is_empty()
+            || self.current.is_none()
+    }
+
+    /// Records an operation of the host's `Http` at `span`, for `L_lim` (ADR 0117 IF4).
+    pub(crate) fn http_site(&mut self, span: una_syntax::Span) {
+        if self.pass != super::authority::Pass::Check {
+            return;
+        }
+        let site = HttpSite {
+            span,
+            function: self.current,
+            unplaced: self.unplaced(),
+        };
+        self.findings.http_sites.push(site);
     }
 
     /// Ends the innermost site of [`Self::timing_start`] and returns its seed.
@@ -167,6 +199,65 @@ impl Checker<'_, '_, '_> {
             frame.seed.value_call = true;
         }
     }
+}
+
+/// The seed of the body of `function` as a whole (ADR 0116 IF7, ADR 0117 IF4): its parameters'
+/// labels, and the function itself as its one callee, as the step of a `[drive]` module is.
+pub(crate) fn body_seed(env: &Env<'_>, function: usize, unplaced: bool) -> TimingSeed {
+    let kinds = env.kind_labels.as_ref();
+    let sources = env
+        .functions
+        .get(function)
+        .map(|def| {
+            def.params
+                .iter()
+                .map(|param| {
+                    (
+                        param.ty.base.deep_label(kinds),
+                        format!("the parameter `{}`", param.name),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    TimingSeed {
+        sources,
+        callees: BTreeSet::from([function]),
+        unplaced,
+        ..TimingSeed::default()
+    }
+}
+
+/// `L_lim` of the package (ADR 0117 IF4): the join, over every operation of the host's `Http`,
+/// of `τ⁰` of the body of the function that holds it and `τ_conc` at it. The closure of
+/// [`timing`] distributes over joins of seeds, so the label is one closure of the union of the
+/// sites' seeds: O(functions + call edges + operations + handlers), once per package. A package
+/// without such an operation has `public`.
+pub(crate) fn limit_label(
+    env: &Env<'_>,
+    findings: &Findings,
+    concurrent: &BTreeSet<usize>,
+) -> Timing {
+    let mut seed = TimingSeed::default();
+    for site in &findings.http_sites {
+        match site.function {
+            Some(function) => {
+                let own = body_seed(env, function, site.unplaced);
+                seed.sources.extend(own.sources);
+                seed.callees.extend(own.callees);
+                seed.unplaced |= own.unplaced || concurrent.contains(&function);
+            }
+            None => seed.unplaced = true,
+        }
+    }
+    if findings.http_sites.is_empty() {
+        return Timing {
+            label: Label::public(),
+            sources: Vec::new(),
+            ops: BTreeSet::new(),
+        };
+    }
+    timing(env, findings, &seed, None, HostHandlers::All, concurrent)
 }
 
 /// The callees of each function, from the package's call edges.

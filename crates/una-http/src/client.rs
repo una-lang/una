@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::grant::{Grant, Method, Url, allowed};
+use crate::limit::{Abandon, Governor};
 use crate::parse::{self, Limits, Parser};
 
 /// Why a request got no response it may return (`spec/24 §1` rule 3), as `HttpError` names it.
@@ -30,8 +31,12 @@ pub enum Error {
     /// The response is not valid HTTP/1.1, or its body is not UTF-8.
     Protocol,
     /// A host stop request came before the request started, or while it waited on its
-    /// connection (ADR 0116 rule 12): it may or may not have reached its server.
+    /// connection (ADR 0116 rule 12): it may or may not have reached its server. A wait at a
+    /// limit that a host stop or a cancellation ends is one too, never sent (ADR 0117 rule 8).
     Interrupted,
+    /// The queue of a limit the request had to wait at was full (ADR 0117 rule 8, `spec/27 §9`):
+    /// it was not sent.
+    RateLimited,
     /// A header value has a control character other than a tab. It is not an `HttpError`: the
     /// value may be `internal`, so the engines abort the run with U6004 instead.
     HeaderValue,
@@ -113,8 +118,11 @@ pub trait Interrupt {
     fn waits(&self) -> bool;
 }
 
-/// No interruption: every wait is left to the socket's own timeouts.
-struct Uninterrupted;
+/// No interruption: every wait is left to the socket's own timeouts, and a wait at a limit to
+/// the request's deadline and its [`crate::limit::Abandon`]. The engines use it for a request
+/// outside the body of a `for ever` (ADR 0116 rule 12).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Uninterrupted;
 
 impl Interrupt for Uninterrupted {
     fn stopped(&self) -> bool {
@@ -136,7 +144,8 @@ pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 /// The most redirects followed in a row (`spec/24 §2` rule 3).
 const MAX_REDIRECTS: usize = 5;
 
-/// Sends `request` where `grants` allow, within `settings` (`spec/24`).
+/// Sends `request` where `grants` allow, within `settings` (`spec/24`). Limits on `grants` hold
+/// for this request only; a run shares them across its requests with [`send_governed`].
 pub fn send(
     request: &Request<'_>,
     grants: &[Grant],
@@ -145,20 +154,41 @@ pub fn send(
     send_interruptible(request, grants, settings, &Uninterrupted)
 }
 
-/// [`send`], which `interrupt` interrupts (ADR 0116 rule 12): after the header values are
-/// checked, a request whose stop has come fails with `Interrupted` before anything is sent.
-/// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
-/// write and step of the TLS handshake that would block waits through `interrupt` instead, and
-/// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
-/// Name resolution and the TCP connection are not waited on with `interrupt`: a stop that comes
-/// during them takes effect when they return, within the request's deadline (ADR 0116,
-/// implementation plan, item 6).
+/// [`send_governed`] with a governor of `grants` for this request only: limits on `grants`
+/// hold within it, and are not shared with any other request.
 pub fn send_interruptible(
     request: &Request<'_>,
     grants: &[Grant],
     settings: &Settings,
     interrupt: &dyn Interrupt,
 ) -> Result<Response, Error> {
+    let governor = Governor::new(grants.to_vec());
+    send_governed(request, &governor, settings, interrupt, &Abandon::new())
+}
+
+/// Sends `request` where the grants of `governor` allow, within `settings` and their limits
+/// (`spec/24`, `spec/27 §9`), which `interrupt` interrupts (ADR 0116 rule 12): after the header
+/// values are checked, a request whose stop has come fails with `Interrupted` before anything is
+/// sent.
+///
+/// Each hop, the first and each redirect followed, is charged to the limited grants that allow
+/// its target before its exchange, waiting in their queues when it must, and releases its slots
+/// once its response is read, before the next hop asks for its own (ADR 0117 rule 8). The wait
+/// counts toward the request's deadline; `abandon` ends it when the engine cancels the task.
+/// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
+/// write and step of the TLS handshake that would block waits through `interrupt` instead, and
+/// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
+/// Name resolution and the TCP connection are not waited on with `interrupt`: a stop that comes
+/// during them takes effect when they return, within the request's deadline (ADR 0116,
+/// implementation plan, item 6).
+pub fn send_governed(
+    request: &Request<'_>,
+    governor: &Governor,
+    settings: &Settings,
+    interrupt: &dyn Interrupt,
+    abandon: &Abandon,
+) -> Result<Response, Error> {
+    let grants = governor.grants();
     // Capped at a day, as the flags are, so the deadline never overflows the clock.
     let timeout = settings.timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
     let deadline = Instant::now().checked_add(timeout).ok_or(Error::TimedOut)?;
@@ -201,6 +231,8 @@ pub fn send_interruptible(
         } else {
             elsewhere.as_slice()
         };
+        // The hop's tokens and slots, held until its response is read (ADR 0117 rule 8).
+        let permit = governor.acquire(&url, method, deadline, interrupt, abandon)?;
         let response = exchange(
             method,
             &url,
@@ -209,7 +241,9 @@ pub fn send_interruptible(
             bearer,
             settings,
             (deadline, interrupt),
-        )?;
+        );
+        drop(permit);
+        let response = response?;
         let next = matches!(response.status, 301 | 302 | 303 | 307 | 308)
             .then(|| location(&response, &url))
             .flatten();
