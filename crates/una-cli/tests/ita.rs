@@ -174,3 +174,89 @@ fn fmt_leaves_an_ita_una_with_grammar_errors() {
     assert!(err.contains("U7008"), "{err}");
     assert_eq!(std::fs::read_to_string(&manifest).unwrap(), broken);
 }
+
+const TOML_LOCK: &str = "encoding_version = \"una-smt-1\"\nsolver = \"z3\"\nsolver_version = \"5.1.0\"\nlogic = \"QF_UFLIA\"\nstep_budget = 5000000\nrandom_seed = 0\n";
+
+/// A fresh package of `una.toml` and `verification.lock`, with one module of `source`.
+fn toml_package(name: &str, edition: &str, source: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("ita")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        format!("[package]\nname = \"demo-pkg\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("verification.lock"), TOML_LOCK).unwrap();
+    std::fs::write(dir.join("src/demo.una"), source).unwrap();
+    dir
+}
+
+#[test]
+fn migrate_moves_the_project_files_and_the_package_checks() {
+    let dir = toml_package("migrate", "0.2", MODULE);
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "wrote ita.una, ita.lock; removed una.toml, verification.lock\nname: demo-pkg -> demo_pkg\nedition 0.2 -> 0.4: 0 diagnostics\n"
+    );
+    assert!(!dir.join("una.toml").exists());
+    assert!(!dir.join("verification.lock").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo_pkg\n  version 0.1.0\n  edition 0.4\n"
+    );
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(checked.diagnostics, []);
+    // Edition-gated: a package with ita.una is not migrated again.
+    let (code, _, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("already has ita.una"), "{err}");
+}
+
+#[test]
+fn migrate_dry_run_writes_nothing() {
+    let dir = toml_package("migrate-dry", "0.1", MODULE);
+    let (code, out, _) = una(&["una", "--json", "migrate", "--dry-run", path(&dir)]);
+    assert_eq!(code, 0);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(out.starts_with("{\"schema\":\"una.migrate/1\""), "{out}");
+    assert_eq!(document["written"], serde_json::json!([]));
+    assert_eq!(document["edition"]["from"], "0.1");
+    assert!(document["ita_una"].as_str().unwrap().starts_with("ita demo_pkg\n"));
+    assert!(dir.join("una.toml").exists());
+    assert!(!dir.join("ita.una").exists());
+}
+
+#[test]
+fn migrate_prints_the_clashes_of_edition_0_4() {
+    let source = "module demo\n\npub within() -> Int = 1\n";
+    let dir = toml_package("migrate-clash", "0.3", source);
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0);
+    assert!(out.ends_with("edition 0.3 -> 0.4: 1 diagnostic\n"), "{out}");
+    assert!(err.contains("U0103"), "{err}");
+    // It applies no repair: the module is unchanged.
+    assert_eq!(std::fs::read_to_string(dir.join("src/demo.una")).unwrap(), source);
+}
+
+#[test]
+fn una_toml_naming_edition_0_4_is_refused_with_migrate() {
+    let dir = toml_package("toml-0-4", "0.4", MODULE);
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    let codes: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .map(|d| format!("{} {}", d.code, d.message))
+        .collect();
+    assert_eq!(
+        codes,
+        ["U7002 edition 0.4 is described by ita.una, not una.toml; run `una migrate`"]
+    );
+    let (code, _, _) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0);
+    assert!(dir.join("ita.una").exists());
+}

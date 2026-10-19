@@ -12,6 +12,7 @@ pub mod ita;
 pub mod literal;
 mod lock;
 mod manifest;
+pub mod migrate;
 pub mod names;
 mod package;
 pub mod version;

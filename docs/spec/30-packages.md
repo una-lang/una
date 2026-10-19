@@ -160,3 +160,28 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
 ## 7. The proof cache
 
 For a package of edition `0.4`, the key of a proof cache entry (`spec/12 §9`) is the hex SHA-256 of the domain tag `una-proof-cache/2`, then, for each of the canonical text of the lock's `solver` section and the query, its length in decimal, a NUL byte, and the text. It does not cover the packages of the lock, so adding a dependency invalidates no entry, and the tag and the length prefixes keep it apart from the key of editions `0.1` to `0.3`. The entry's HMAC of ADR 0064 authenticates it either way. The build report's lock digest is the SHA-256 of `ita.lock` as written.
+
+## 8. Migration: `una migrate`
+
+1. **Edition 0.4 is not written in `una.toml`.** `una.toml` naming `edition = "0.4"` is U7002 at the value, with the repair `una migrate`; the package is still checked in edition `0.4`. No released `una` accepted that form, so this changes no released form (ADR 0122 Question 8.1).
+2. **`una migrate [path] [--dry-run] [--name <name>]`** moves the package at `path`, `.` by default, from `una.toml` and `verification.lock`, of any edition from `0.1` to `0.4`, to `ita.una` and `ita.lock` of edition `0.4`, and nothing else: a directory that already has `ita.una`, or that is not a package with `una.toml` and `src/`, is a usage error (exit code 2).
+3. **What it maps.**
+
+   | `una.toml` / `verification.lock` | `ita.una` / `ita.lock` |
+   | --- | --- |
+   | `[package] name = "events-example"` | `ita events_example`: `-` becomes `_`; a name that is still not a package name needs `--name` |
+   | `version`, `edition` | head lines; `edition` becomes `0.4`; a version that is not `MAJOR.MINOR.PATCH` is refused |
+   | `[labels] categories` | `labels`, one per line |
+   | `[trusted] modules` | `trusted` |
+   | `[escape_budget] checked_per_module` | `escapes`, `checked per module <n>`, when not 0 |
+   | `[boundaries]` | `boundaries`, with `may` lines |
+   | `[contracts]` | `contracts`, the clause strings as lines |
+   | `[run] entry`, `grants` | `run`, `entry`, `grants` with one line per spec, as `files "data/" read, write` |
+   | `verification.lock` | the `solver` section of `ita.lock`; the release's default when the package has none |
+
+   A text is written with `"`, `\`, `{` and `}` escaped, and every control or bidirectional character as `\u{…}`.
+4. **Comments.** A run of comment lines of `una.toml` directly before a table header or a key is carried, as `--` comments, above the line it becomes. Every other comment is listed in the output, with its line.
+5. **Refusals.** An invalid `una.toml`, other than its edition `0.4`, or an invalid `verification.lock` is refused, with each problem printed, and nothing is written (exit code 2).
+6. **Writing.** It writes `ita.una` and `ita.lock`, each through a temporary file and a rename, then removes `una.toml` and `verification.lock`.
+7. **The clashes of the edition.** It then checks the package at tier 0 in edition `0.4`, and prints every diagnostic the change of edition causes, those the package has in edition `0.4` and not in its own, with their repairs, such as a function named `within` (U0103). It applies none: `una fix` does that. Its exit code is 0: the diagnostics are the next steps of the migration.
+8. **Output.** `--dry-run` prints the two files and the diagnostics, and writes nothing. `--json` prints one document, `una.migrate/1`: `schema` first, then `dry_run`, `written`, `removed`, `name` (`from`, `to`), `edition` (`from`, `to`), `default_lock`, `comments_not_carried` (`line`, `text`), `ita_una` and `ita_lock` (the files' texts with `--dry-run`, `null` otherwise), and `diagnostics`.

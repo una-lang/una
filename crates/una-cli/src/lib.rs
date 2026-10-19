@@ -13,6 +13,7 @@ mod core_json;
 mod fix;
 mod ita;
 mod lsp;
+mod migrate;
 mod package;
 mod proof_key;
 mod recovery;
@@ -697,6 +698,7 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             | Command::Report { path, .. }
             | Command::Obligations { path, .. }
             | Command::Fmt { path, .. }
+            | Command::Migrate { path, .. }
             | Command::Fix { path, .. }
             | Command::Run { path, .. }
             | Command::Build { path, .. }
@@ -933,6 +935,19 @@ fn run_command(
                     stderr,
                 };
                 ita::fmt_command(&path, check, output)
+            }
+            Command::Migrate {
+                path,
+                dry_run,
+                name,
+            } => {
+                let options = migrate::MigrateOptions {
+                    dry_run,
+                    name: name.as_deref(),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                };
+                migrate::migrate_command(&path, options, stdout, stderr)
             }
             Command::Ita { command } => {
                 let output = ita::Output {

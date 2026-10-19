@@ -140,6 +140,20 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ItaCommand,
     },
+    /// Move a package from una.toml to ita.una and ita.lock, edition 0.4
+    Migrate {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Print the files and the diagnostics, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// The package's name in ita.una, when its una.toml name is not one
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
     /// Run `main` of the `[run] entry` module
     Run {
         /// The package directory, or a single file

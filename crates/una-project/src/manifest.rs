@@ -324,6 +324,16 @@ fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
                     ));
                 } else if name == "edition" {
                     match Edition::parse(&located.value) {
+                        // Edition 0.4 is described by `ita.una` (ADR 0122 Question 8.1): the
+                        // package is still checked in edition 0.4, and `una migrate` moves it.
+                        Some(Edition::V0_4) => {
+                            manifest.edition = Edition::V0_4;
+                            errors.push(ProjectError::new(
+                                Code::U7002,
+                                located.range,
+                                "edition 0.4 is described by ita.una, not una.toml; run `una migrate`",
+                            ));
+                        }
                         Some(edition) => manifest.edition = edition,
                         None => errors.push(ProjectError::new(
                             Code::U7002,
