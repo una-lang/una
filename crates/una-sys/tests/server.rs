@@ -51,27 +51,42 @@ fn the_descriptor_limit_rises_or_says_where_it_stays() {
 }
 
 #[test]
-fn a_listener_accepts_and_its_port_is_not_shared() {
+fn a_listener_accepts_connections() {
     let first = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
     let bound = first.local_addr().unwrap();
     assert!(TcpStream::connect(bound).is_ok());
-    assert!(listen(bound, 16).is_err());
-    assert!(TcpListener::bind(bound).is_err());
 }
 
-/// On macOS the listener has no `SO_REUSEADDR`, and a second bind to its address and port
-/// fails whatever the second socket sets (`spec/31 §2` rule 7).
-#[cfg(target_os = "macos")]
+/// A restart rebinds its port while connections of the previous listener are in `TIME_WAIT`,
+/// which `SO_REUSEADDR` allows (`spec/31 §2` rule 7).
 #[test]
-fn on_macos_a_second_bind_to_the_same_port_fails() {
+fn a_restart_rebinds_while_old_connections_are_in_time_wait() {
+    use std::io::Read;
     let first = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
     let bound = first.local_addr().unwrap();
-    // `TcpListener::bind` sets `SO_REUSEADDR` on its own socket.
-    let error = TcpListener::bind(bound).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
-    let wildcard = listen(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)), 16).unwrap();
-    let port = wildcard.local_addr().unwrap().port();
-    assert!(listen(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), 16).is_err());
+    let client = TcpStream::connect(bound).unwrap();
+    let (served, _) = first.accept().unwrap();
+    // The server side closes first, so its end of the connection enters `TIME_WAIT`.
+    drop(served);
+    let mut rest = Vec::new();
+    let _ = (&client).read_to_end(&mut rest);
+    drop(client);
+    drop(first);
+    let again = listen(bound, 16);
+    assert!(again.is_ok(), "{again:?}");
+}
+
+/// A second listener on the same exact address and port is refused while the first listens,
+/// whatever options it sets: no `SO_REUSEPORT` is ever set.
+#[test]
+fn a_second_listener_on_the_same_address_and_port_is_refused() {
+    let first = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
+    let bound = first.local_addr().unwrap();
+    let ours = listen(bound, 16).unwrap_err();
+    assert_eq!(ours.kind(), std::io::ErrorKind::AddrInUse);
+    // `TcpListener::bind` sets `SO_REUSEADDR` on its own socket, and is refused as well.
+    let std = TcpListener::bind(bound).unwrap_err();
+    assert_eq!(std.kind(), std::io::ErrorKind::AddrInUse);
 }
 
 #[test]

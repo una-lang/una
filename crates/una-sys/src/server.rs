@@ -66,9 +66,9 @@ pub fn raise_descriptor_limit(wanted: u64) -> io::Result<u64> {
     Ok(if set == 0 { raised.rlim_cur } else { limit.rlim_cur })
 }
 
-/// A blocking, close-on-exec socket listening on `address`: `IPV6_V6ONLY` on IPv6,
-/// `SO_REUSEADDR` on Linux only, never `SO_REUSEPORT` (`spec/31 §2` rule 7).
-/// Std's `TcpListener::bind` sets `SO_REUSEADDR` everywhere and cannot set `IPV6_V6ONLY`.
+/// A blocking, close-on-exec socket listening on `address`: `SO_REUSEADDR`, `IPV6_V6ONLY` on
+/// IPv6, never `SO_REUSEPORT` (`spec/31 §2` rule 7).
+/// Std's `TcpListener::bind` cannot set `IPV6_V6ONLY` before it binds.
 pub fn listen(address: SocketAddr, backlog: u32) -> io::Result<TcpListener> {
     let six = address.is_ipv6();
     let family = if six { libc::AF_INET6 } else { libc::AF_INET };
@@ -89,8 +89,6 @@ pub fn listen(address: SocketAddr, backlog: u32) -> io::Result<TcpListener> {
     // SAFETY: `raw` is open; `F_SETFD` sets its descriptor flags. The runtime starts no
     // process, so no exec comes between `socket` and this call.
     ok(unsafe { libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) })?;
-    // On macOS and the BSDs no `SO_REUSEADDR`: a restart waits out `TIME_WAIT`.
-    #[cfg(target_os = "linux")]
     set(libc::SOL_SOCKET, libc::SO_REUSEADDR)?;
     if six {
         set(libc::IPPROTO_IPV6, libc::IPV6_V6ONLY)?;
