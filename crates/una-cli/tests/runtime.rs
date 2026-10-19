@@ -1983,6 +1983,78 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n() {
     );
 }
 
+/// A `HashMap` and a `HashSet` of `COUNT` keys built by `set` and `add`, each key looked up in
+/// both, a set intersected with a copy missing one item, then both emptied by `remove`
+/// (`spec/28 §7`).
+const HASH_SCALE: &str = "module scale
+
+import std.collections (HashMap, HashSet, empty_hash_map, empty_hash_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit m: HashMap[Int, Int] = empty_hash_map()
+  for i in 0..<COUNT
+    edit m.set(key: (i * 7919) mod COUNT, value: i)
+  let edit s: HashSet[Int] = empty_hash_set()
+  for i in 0..<COUNT
+    edit s.add(item: i)
+  let edit found = 0
+  for i in 0..<COUNT
+    if m.has(key: i) and s.has(item: i)
+      found = found + 1
+  let common = s.intersection(other: s.without(item: 0))
+  for i in 0..<COUNT
+    edit m.remove(key: i)
+    edit s.remove(item: i)
+  @console.print(\"{found} {common.len} {m.len} {s.len}\")
+";
+
+#[test]
+fn hash_table_updates_lookups_and_operations_scale_linearly() {
+    // `spec/28 §7`: `set`, `add`, `has` and `remove` are O(|k|) expected, amortized, and
+    // `intersection` is O(n · |k|); an update of a table nothing else holds is in place. Ten
+    // times the keys take under 25 times as long: expected O(1) per operation gives about 10,
+    // a copy per update or a hash that collides about 100.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("hash_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita hash_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` keys (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            HASH_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} {} 0 0\n", n - 1));
+        seconds
+    };
+    timing::assert_growth(
+        "keys",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        25.0,
+        measure,
+    );
+}
+
 /// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
 /// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
 fn appends_through_calls(shape: &str, steps: usize) -> String {
