@@ -15,6 +15,7 @@ reason(failure: ParseError) -> Text
     is Empty -> "nothing typed"
     is NoDigits -> "a sign and no digits"
     is NotADigit(at) -> "not a digit at {at}"
+    is TooLong -> "more digits than an integer may have"
 
 pub main() -> Unit
   uses @console: Console[print]

@@ -2025,7 +2025,8 @@ pub fn bytes_of(t: i64) -> i64 {
 
 /// Why `parse_int(t)` fails, as the `ParseError` it fails with, or 0 when it does not
 /// (`spec/22 §4`): `Empty`, `NotADigit(at: i)` at the first position that is neither the
-/// leading `-` nor a digit, or `NoDigits` for `-` alone.
+/// leading `-` nor a digit, `NoDigits` for `-` alone, or `TooLong` for more than
+/// `MAX_INT_DIGITS` digits, found in O(b) before the O(d²) conversion (#914).
 pub fn parse_failure(t: i64) -> i64 {
     let t = text_value(t);
     if t.is_empty() {
@@ -2047,6 +2048,9 @@ pub fn parse_failure(t: i64) -> i64 {
     if digits.is_empty() {
         return (2 << 1) | 1;
     }
+    if digits.len() > una_core::MAX_INT_DIGITS {
+        return (3 << 1) | 1;
+    }
     0
 }
 
@@ -2059,8 +2063,16 @@ pub fn parse_int(t: i64) -> i64 {
 pub fn to_int(t: i64) -> i64 {
     let text = text_value(t);
     let digits = text.strip_prefix('-').unwrap_or(&text);
+    // Checked in O(b) before the O(d²) conversion, which only a text of at most
+    // MAX_INT_DIGITS digits reaches (`spec/14 §1`, #914).
+    let valid = !digits.is_empty()
+        && digits.len() <= una_core::MAX_INT_DIGITS
+        && digits.bytes().all(|b| b.is_ascii_digit());
+    if !valid {
+        return NONE;
+    }
     match text.parse::<BigInt>() {
-        Ok(value) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
+        Ok(value) => {
             let word = int_word(&value);
             let option = some(word);
             release(word);
@@ -3293,6 +3305,56 @@ mod tests {
             push(same, n(value));
         }
         assert_eq!(equal(0, xs, same), 1);
+    }
+
+    #[test]
+    fn a_text_of_more_than_max_int_digits_is_refused_before_any_conversion() {
+        // #914: converting d digits takes O(d²), so `parse_int` fails with `TooLong` and
+        // `to_int` is `None` past `MAX_INT_DIGITS` digits, both found in one O(b) scan. The
+        // sign does not count; leading zeros do.
+        let cap = una_core::MAX_INT_DIGITS;
+        let at_cap = format!("-{}", "9".repeat(cap));
+        assert_eq!(parse_failure(text_word(at_cap.clone())), 0);
+        assert_eq!(int(parse_int(text_word(at_cap.clone()))), at_cap);
+        assert_eq!(
+            int(or_else(to_int(text_word(at_cap.clone())), n(0))),
+            at_cap
+        );
+        let too_long = (3 << 1) | 1;
+        let zeros = "0".repeat(cap + 1);
+        assert_eq!(parse_failure(text_word(zeros.clone())), too_long);
+        assert_eq!(to_int(text_word(zeros)), NONE);
+        // A wrong character is found first, wherever it is.
+        let wrong = format!("{}x", "1".repeat(cap + 1));
+        assert_eq!(tag(parse_failure(text_word(wrong))), 1);
+        // Linear: a text ten times longer takes about ten times as long, far from the hundred
+        // times of a quadratic conversion.
+        // Both sizes are over the cap, Miri's too.
+        let sizes = if cfg!(miri) {
+            [cap + 1, 4 * cap]
+        } else {
+            [100_000, 1_000_000]
+        };
+        let times: Vec<std::time::Duration> = sizes
+            .iter()
+            .map(|&size| {
+                let digits = "7".repeat(size);
+                let started = std::time::Instant::now();
+                assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                assert_eq!(to_int(text_word(digits)), NONE);
+                started.elapsed()
+            })
+            .collect();
+        if !cfg!(miri) {
+            assert!(
+                times[1].as_secs_f64() <= 30.0 * times[0].as_secs_f64() + 0.05,
+                "{} digits took {:?}, {} took {:?}",
+                sizes[1],
+                times[1],
+                sizes[0],
+                times[0]
+            );
+        }
     }
 
     /// `x0 = [leaf]`, `x(k+1) = [xk, xk]`: a value of `depth` levels whose every level shares

@@ -987,7 +987,7 @@
             "0.2",
             "0.3"
           ],
-          "declaration": "pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits",
+          "declaration": "pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits | TooLong",
           "docs": [
             "Why `parse_int` fails (`spec/22 §4`)."
           ]

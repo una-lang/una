@@ -186,7 +186,13 @@ impl<'a> Resolver<'_, '_, 'a> {
                         && (IntType::from_name(name).is_some()
                             || matches!(
                                 name,
-                                "Map" | "Entry" | "ParseError" | "Empty" | "NotADigit" | "NoDigits"
+                                "Map"
+                                    | "Entry"
+                                    | "ParseError"
+                                    | "Empty"
+                                    | "NotADigit"
+                                    | "NoDigits"
+                                    | "TooLong"
                             )
                             || JSON_NAMES.contains(&name)
                             || HTTP_NAMES.contains(&name)))
@@ -277,6 +283,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                         "Empty",
                         "NotADigit",
                         "NoDigits",
+                        "TooLong",
                     ]);
                     names.extend(JSON_NAMES.iter().copied());
                     names.extend(HTTP_NAMES.iter().copied());
