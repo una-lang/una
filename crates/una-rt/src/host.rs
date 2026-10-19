@@ -578,7 +578,13 @@ fn http(
                     &stop.interrupt(),
                     &waiting,
                 ),
-                None => send_governed(&request, &governor, &settings, &una_http::client::Uninterrupted, &waiting),
+                None => send_governed(
+                    &request,
+                    &governor,
+                    &settings,
+                    &una_http::client::Uninterrupted,
+                    &waiting,
+                ),
             }
         };
         // A request is interruptible (ADR 0117 rule 4): a cancellation that comes while it
