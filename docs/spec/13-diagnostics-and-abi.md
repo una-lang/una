@@ -440,6 +440,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `Atom` | `var`, `int`, `f64`, `decimal`, `bool`, `text`, `unit` |
 | `Base` | `int`, `fixed`, `f64`, `decimal`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
 | `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
+| `BitSetOp` | `size`, `has`, `with`, `without`, `union`, `intersection`, `difference`, `is_subset`, `first`, `last`, `items` |
 | `Bound` | `rhs`, `expr` |
 | `Coll` | `stack`, `queue`, `set`, `hash_map`, `hash_set`, `priority_queue`, `bit_set` |
 | `Constraint` | `none`, `eq`, `ord`, `integer` |
@@ -455,7 +456,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
 | `LoopSource` | `list`, `range` |
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
-| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `seq`, `set`, `hash_map`, `hash_set`, `priority`, `float`, `shape`, `decimal` |
+| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `seq`, `set`, `hash_map`, `hash_set`, `priority`, `bit_set`, `float`, `shape`, `decimal` |
 | `PriorityOp` | `push`, `pop`, `peek`, `peek_priority`, `peek_ranked`, `items` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `SeqOp` | `push_front`, `push_back`, `pop_front`, `pop_back`, `peek_front`, `peek_back`, `items` |

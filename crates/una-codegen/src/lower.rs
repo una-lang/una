@@ -157,6 +157,12 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             {
                 Err(unsupported("`PriorityQueue` (spec/28)"))
             }
+            // A `BitSet` waits for its native layout too (`spec/28 §9`, ADR 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE && name == "BitSet" =>
+            {
+                Err(unsupported("`BitSet` (spec/28)"))
+            }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
             Base::Param(_) | Base::Unknown => Ok(Kind::Any),
@@ -2785,6 +2791,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
             }
             Prim::Priority(_) => Err(unsupported("`PriorityQueue` (spec/28)")),
+            Prim::BitSet(_) => Err(unsupported("`BitSet` (spec/28)")),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {

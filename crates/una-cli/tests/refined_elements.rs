@@ -119,6 +119,9 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
                 | PriorityOp::PeekRanked
                 | PriorityOp::Items => "priority_items",
             },
+            // A bit set's items are `Int`, with no refinement of their own, so nothing it
+            // gives back has a refined nested position.
+            Prim::BitSet(_) => SCALAR,
             Prim::Add
             | Prim::Sub
             | Prim::Mul

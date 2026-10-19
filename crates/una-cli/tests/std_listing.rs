@@ -321,6 +321,7 @@ fn the_builtins_are_exactly_the_methods_the_checker_resolves() {
         (_, "HashMap[K, V]") => "HashMap",
         (_, "HashSet[T]") => "HashSet",
         (_, "PriorityQueue[T, P]") => "PriorityQueue",
+        (_, "BitSet") => "BitSet",
         (name, _) if name.starts_with("to_") => "conversion",
         _ => "fixed",
     };
@@ -378,6 +379,7 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
         ("Set[Int]", false) => "r",
         // A hash set or a hash map of the receiver's type: the receiver itself.
         ("HashSet[Int]" | "HashMap[Text, Int]", false) => "r",
+        ("BitSet", false) => "r",
         (_, false) => "1",
         (_, true) => "\"k\"",
     }

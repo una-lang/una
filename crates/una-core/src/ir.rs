@@ -536,6 +536,9 @@ pub enum Prim {
     /// A built-in method of a `PriorityQueue` of `std.collections` (`spec/28 §8`, ADR 0119 rule
     /// 13); `push`, `pop` and `pop_ranked` are rebinds of the receiver to the new queue.
     Priority(PriorityOp),
+    /// A built-in method or property of a `BitSet` of `std.collections` (`spec/28 §9`, ADR 0119
+    /// rule 14); `add` and `remove` are rebinds to `With` and `Without`.
+    BitSet(BitSetOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1390,6 +1393,75 @@ impl PriorityOp {
     }
 }
 
+/// The built-in methods of `BitSet` (`spec/28 §9`, ADR 0119 rule 14), each over the bit set in
+/// its first argument, with its property `size`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BitSetOp {
+    /// `.size`, the number of bits, fixed when the bit set is made.
+    Size,
+    /// `has(item:)`, `false` outside the range.
+    Has,
+    /// `with(item:)`, and `edit add`: the item MUST be in the range.
+    With,
+    /// `without(item:)`, and `edit remove`: an item outside the range changes nothing.
+    Without,
+    /// `union(other:)`, of two bit sets of one size.
+    Union,
+    /// `intersection(other:)`, of two bit sets of one size.
+    Intersection,
+    /// `difference(other:)`, of two bit sets of one size.
+    Difference,
+    /// `is_subset(of:)`, of two bit sets of one size.
+    IsSubset,
+    /// `first()`, the least member.
+    First,
+    /// `last()`, the greatest member.
+    Last,
+    /// `items()`, ascending.
+    Items,
+}
+
+impl BitSetOp {
+    /// The method's or the property's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BitSetOp::Size => "size",
+            BitSetOp::Has => "has",
+            BitSetOp::With => "with",
+            BitSetOp::Without => "without",
+            BitSetOp::Union => "union",
+            BitSetOp::Intersection => "intersection",
+            BitSetOp::Difference => "difference",
+            BitSetOp::IsSubset => "is_subset",
+            BitSetOp::First => "first",
+            BitSetOp::Last => "last",
+            BitSetOp::Items => "items",
+        }
+    }
+
+    /// Whether the operation gives a new bit set built from its receiver, which it may update in
+    /// place when the receiver is given up (`spec/28 §9`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            BitSetOp::With
+                | BitSetOp::Without
+                | BitSetOp::Union
+                | BitSetOp::Intersection
+                | BitSetOp::Difference
+        )
+    }
+
+    /// Whether its other operand is a bit set that MUST have the receiver's size (ADR 0119
+    /// rule 14).
+    pub fn pairs(self) -> bool {
+        matches!(
+            self,
+            BitSetOp::Union | BitSetOp::Intersection | BitSetOp::Difference | BitSetOp::IsSubset
+        )
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1517,6 +1589,7 @@ impl Prim {
             Prim::HashMap(op) => op.as_str(),
             Prim::HashSet(op) => op.as_str(),
             Prim::Priority(op) => op.as_str(),
+            Prim::BitSet(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),

@@ -61,6 +61,11 @@ pub(crate) enum Res {
         op: una_core::PriorityOp,
         read: Option<una_core::PriorityOp>,
     },
+    /// A built-in method of a `BitSet` that reads it or gives a new bit set, or its property
+    /// `size` (`spec/28 §9`).
+    BitSetMethod(una_core::BitSetOp),
+    /// `edit b.add(...)` or `edit b.remove(...)`: the bit set rebound to `With` or `Without`.
+    BitSetUpdate(una_core::BitSetOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

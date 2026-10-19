@@ -172,6 +172,8 @@ mod sets;
 
 pub(crate) mod hashes;
 
+mod bitsets;
+
 /// The fault of a `slice` outside the text (#693).
 const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
 
@@ -461,6 +463,13 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(&entry.item));
                     }
                     parts.push(Task::Text("]".to_owned()));
+                }
+                // A bit set's members in braces, ascending, `{}` when empty (`spec/28 §4`, ADR
+                // 0119 rule 3): integers, written at once.
+                Value::BitSet(bits) => {
+                    let members: Vec<String> =
+                        bits.members().iter().map(ToString::to_string).collect();
+                    parts.push(Task::Text(format!("{{{}}}", members.join(", "))));
                 }
                 Value::Data(data) => {
                     let names = self.fields(&data.ctor);
@@ -1072,6 +1081,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } if op.rebuilds() => args.get(..1)?,
+            // A bit set given up to `add`, `remove`, `with`, `without` or a set operation that
+            // builds on its receiver (`spec/28 §9`).
+            Rhs::Prim {
+                prim: Prim::BitSet(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -1167,6 +1183,11 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         prim: Prim::Priority(op),
                                         ..
                                     } => priority::priority_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::BitSet(op),
+                                        span,
+                                        ..
+                                    } => bitsets::bit_set_apply(*op, args, Some(*span))?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -1620,6 +1641,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 {
                     return Ok(Value::text(&self.index.written(value)));
                 }
+                // A bit set's precondition aborts at the call (ADR 0119 rule 14).
+                if let Prim::BitSet(op) = *prim {
+                    return bitsets::bit_set_apply(op, args, Some(*span));
+                }
                 prim_apply(*prim, &args)
             }
             Rhs::Call {
@@ -1723,7 +1748,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         match function.module.as_str() {
             "prelude" => return self.prelude(&function.name, args, span),
             una_core::COLLECTIONS_MODULE => {
-                if let Some(made) = self.collections(&function.name, span) {
+                if let Some(made) = self.collections(&function.name, &args, span) {
                     return made;
                 }
             }
@@ -1761,9 +1786,9 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.leave(result)
     }
 
-    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), called at
-    /// `span`, or `None` for one the module declares in Una.
-    fn collections(&mut self, name: &str, span: Span) -> Option<Flow<'p>> {
+    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), called with
+    /// `args` at `span`, or `None` for one the module declares in Una.
+    fn collections(&mut self, name: &str, args: &[Value<'p>], span: Span) -> Option<Flow<'p>> {
         Some(Ok(match name {
             // O(1): an empty ring buffer allocates nothing.
             "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
@@ -1785,6 +1810,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             // O(1): an empty heap allocates nothing; the direction is part of the value.
             "lowest_first" => priority::empty(false),
             "highest_first" => priority::empty(true),
+            // O(size / 64), within the memory budget (`spec/28 §9`).
+            "empty_bit_set" => return Some(self.empty_bit_set(args, span)),
+            // The conversions of a list (`spec/28 §10`).
+            "to_stack" | "to_queue" | "to_set" => return Some(Self::conversion(name, args)),
             _ => return None,
         }))
     }
@@ -2610,13 +2639,15 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
                 Value::Int(BigInt::from(table.entries.len()))
             }
             Value::Priority(heap) => Value::Int(BigInt::from(heap.entries.len())),
+            // A bit set's count of members, kept with its words (`spec/28 §9`).
+            Value::BitSet(bits) => Value::Int(BigInt::from(bits.count)),
             // An array's length (`spec/29 §17`).
             Value::Dense(dense) => {
                 Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
             }
             _ => {
                 return Err(fault(
-                    "`len` of a value that is not a text, list, map, sequence, set, hash table, priority queue or array",
+                    "`len` of a value that is not a text, list, map, sequence, set, hash table, priority queue, bit set or array",
                 ));
             }
         },
@@ -2654,6 +2685,8 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             return Err(fault("a hash table operation outside the machine"));
         }
         Prim::Priority(op) => return priority::priority_apply(op, args.to_vec()),
+        // Applied at its call, with its span, in `Machine::rhs`.
+        Prim::BitSet(op) => return bitsets::bit_set_apply(op, args.to_vec(), None),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
         // The shape of a matrix (`spec/29 §17`).

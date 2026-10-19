@@ -54,6 +54,9 @@ pub(crate) enum Value<'p> {
     /// A `PriorityQueue` of `std.collections`, a stable 4-ary heap (`spec/28 §8`, ADR 0119 rule
     /// 19). It has no `==` (ADR 0119 rule 2), so no equality ever compares two of them.
     Priority(Rc<Heap<'p>>),
+    /// A `BitSet` of `std.collections` (`spec/28 §9`, ADR 0119 rule 19): its words of 64 bits,
+    /// its size and its count of members. It holds no values.
+    BitSet(Rc<Bits>),
     /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`): a view of a
     /// buffer, with its own offset, shape and strides, so a view shares its parent's storage.
     Dense(Rc<Dense<'p>>),
@@ -130,6 +133,19 @@ pub(crate) struct Ranked<'p> {
     pub(crate) priority: Value<'p>,
     /// The item.
     pub(crate) item: Value<'p>,
+}
+
+/// The members of a bit set (ADR 0119 rule 19): bit `i % 64` of word `i / 64` is set exactly
+/// when `i` is a member, for `i` below `size`; the bits past the size stay zero, so two bit
+/// sets of one size and the same members have the same words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Bits {
+    /// `size.div_ceil(64)` words.
+    pub(crate) words: Vec<u64>,
+    /// The size, fixed when the bit set is made.
+    pub(crate) size: usize,
+    /// The number of members, kept with the words so that `len` is O(1).
+    pub(crate) count: usize,
 }
 
 /// The items of a set, by their order.
@@ -306,6 +322,8 @@ fn unwind<'p>(mut pending: Vec<Value<'p>>, mut caps: Vec<Caps<'p>>) {
                         }
                     }
                 }
+                // A bit set holds words, never values: dropping it frees them at once.
+                Value::BitSet(_) => {}
                 Value::Dense(dense) => {
                     if let Ok(mut dense) = Rc::try_unwrap(dense)
                         && let Some(items) = take_values(&mut dense)
@@ -429,6 +447,9 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Map(x), Value::Map(y)) => x.is_empty() && y.is_empty(),
         (Value::Seq(x), Value::Seq(y)) => x.is_empty() && y.is_empty(),
         (Value::Set(x), Value::Set(y)) => x.is_empty() && y.is_empty(),
+        // A bit set is a leaf: the same size and the same members (`spec/28 §3` rule 3), its
+        // words compared at once, in O(size / 64), since they hold no values.
+        (Value::BitSet(x), Value::BitSet(y)) => Rc::ptr_eq(x, y) || x == y,
         _ => false,
     }
 }

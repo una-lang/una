@@ -25,12 +25,12 @@ pub const MAX_INT_DIGITS: usize = 4300;
 
 pub use descriptor::Descriptor;
 pub use ir::{
-    Arm, Atom, Base, BinOp, Bound, COLLECTIONS_MODULE, CapOp, Clause, Coll, ConditionEdit,
-    Constraint, Ctor, DataVariant, DecimalOp, Decl, Example, ExitTag, Expectation, Expr, FixedOp,
-    FloatOp, FloatResult, Fun, HOST_MODULE, HandlerOp, HashMapOp, HashSetOp, IntType, Lock,
-    LoopSource, MapOp, Module, Name, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Path, PreludeField,
-    PreludeVariant, Prim, PriorityOp, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Signature,
-    Source, Term, Type, Use, prelude_variants,
+    Arm, Atom, Base, BinOp, BitSetOp, Bound, COLLECTIONS_MODULE, CapOp, Clause, Coll,
+    ConditionEdit, Constraint, Ctor, DataVariant, DecimalOp, Decl, Example, ExitTag, Expectation,
+    Expr, FixedOp, FloatOp, FloatResult, Fun, HOST_MODULE, HandlerOp, HashMapOp, HashSetOp,
+    IntType, Lock, LoopSource, MapOp, Module, Name, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Path,
+    PreludeField, PreludeVariant, Prim, PriorityOp, Program, Refinement, Rhs, SeqOp, SetOp,
+    ShapeFun, Signature, Source, Term, Type, Use, prelude_variants,
 };
 pub use label::{Accepts, Label, Level, Names, counters as label_counters};
 pub use names::{binders, rhs_vars, vars};

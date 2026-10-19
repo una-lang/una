@@ -9,3 +9,5 @@ tests/conformance/runtime/hash_map_run
 tests/conformance/runtime/hash_set_run
 tests/conformance/runtime/hash_keys_equal
 tests/conformance/runtime/priority_queue_run
+tests/conformance/runtime/bit_set_run
+tests/conformance/runtime/collection_conversions_run

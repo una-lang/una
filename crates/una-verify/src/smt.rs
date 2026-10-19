@@ -141,8 +141,8 @@ pub(crate) enum FunRole {
     },
     /// `.len`: at least 0.
     Len,
-    /// A shape function of a dense value beside `len`, `rows` or `columns`: at least 0
-    /// (ADR 0120 V4).
+    /// A shape function of a dense value beside `len`, `rows` or `columns` (ADR 0120 V4), or
+    /// the `size` of a bit set (ADR 0119 V1): at least 0.
     Shape,
     /// The element of a dense value at its indices, `i!get!<Sort>`, uninterpreted (ADR 0120
     /// V4).

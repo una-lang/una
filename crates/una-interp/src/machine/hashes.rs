@@ -281,6 +281,12 @@ fn encode<S: Sink>(encoder: &mut Encoder<'_, S>, value: &Value<'_>) -> bool {
                     }
                 }
             }
+            // Its size as an integer, then its words, little-endian (ADR 0119 rule 9). The bits
+            // past the size stay zero, so two equal bit sets encode alike.
+            Value::BitSet(bits) => {
+                encoder.len(bits.size);
+                encoder.words(&bits.words);
+            }
             Value::Closure(_) | Value::HashMap(_) | Value::HashSet(_) | Value::Priority(_) => {
                 return false;
             }

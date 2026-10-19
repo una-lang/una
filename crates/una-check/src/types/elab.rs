@@ -2905,13 +2905,15 @@ impl<'e, 'a> Fx<'e, 'a> {
         let span = expr.span;
         // `edit m.set(key: k, value: v)` is `m = with(m, k, v)`, and `edit m.remove(key: k)`
         // is `m = without(m, k)` (`spec/21 §2` rule 1); `edit s.add(item: x)` is
-        // `s = with(s, x)`, and `edit s.remove(item: x)` is `s = without(s, x)` (`spec/28 §6`).
+        // `s = with(s, x)`, and `edit s.remove(item: x)` is `s = without(s, x)` (`spec/28 §6`), as
+        // they are on a bit set (`spec/28 §9`).
         let update = match self.res(span) {
             Some(Res::MapUpdate(op)) => Some(Prim::Map(op)),
             Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
             // The same for a hash map and a hash set (`spec/28 §7`).
             Some(Res::HashMapUpdate(op)) => Some(Prim::HashMap(op)),
             Some(Res::HashSetUpdate(op)) => Some(Prim::HashSet(op)),
+            Some(Res::BitSetUpdate(op)) => Some(Prim::BitSet(op)),
             _ => None,
         };
         if let Some(prim) = update {
@@ -3956,6 +3958,21 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
+                // `b.size` of a bit set (`spec/28 §9`).
+                Some(Res::BitSetMethod(op)) => {
+                    let target_span = target.span;
+                    let value = self.atom(lets, target);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim: Prim::BitSet(op),
+                            args: vec![value],
+                            arg_spans: vec![target_span],
+                            span,
+                        },
+                    )
+                }
                 Some(Res::Function { id, type_args }) => {
                     let receiver = self.atom(lets, target);
                     let receiver = (receiver, target.span);
@@ -3984,7 +4001,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                 // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
                 // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set,
                 // a hash map or a hash set that reads it or gives a new one (`spec/28 §6`, `§7`),
-                // or one of a priority queue that reads it (`spec/28 §8`).
+                // or one of a priority queue that reads it (`spec/28 §8`), or one of a bit set
+                // that reads it or gives a new one (`spec/28 §9`).
                 Some(
                     res @ (Res::IntMethod(_)
                     | Res::MapMethod(_)
@@ -3992,7 +4010,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                     | Res::SetMethod(_)
                     | Res::HashMapMethod(_)
                     | Res::HashSetMethod(_)
-                    | Res::PriorityMethod(_)),
+                    | Res::PriorityMethod(_)
+                    | Res::BitSetMethod(_)),
                 ) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
@@ -4001,6 +4020,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         Res::HashMapMethod(op) => Prim::HashMap(op),
                         Res::HashSetMethod(op) => Prim::HashSet(op),
                         Res::PriorityMethod(op) => Prim::Priority(op),
+                        Res::BitSetMethod(op) => Prim::BitSet(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };

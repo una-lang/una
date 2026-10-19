@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
-    Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim, PriorityOp,
-    Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
+    Atom, Base, BinOp, BitSetOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr,
+    FixedOp, FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim,
+    PriorityOp, Program, Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use,
+    print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -397,6 +398,9 @@ const STACK: &str = "i!Stack_";
 
 /// The prefix of the sorts of `Queue[T]`, `i!Queue_<T>` (ADR 0119 V1).
 const QUEUE: &str = "i!Queue_";
+
+/// The sort of `BitSet`, `i!BitSet` (ADR 0119 V1): it has no type argument.
+const BITSET: &str = "i!BitSet";
 
 /// The element type of a `Stack[T]` or a `Queue[T]` of `std.collections`, refinements
 /// included; `None` for any other type.
@@ -2474,6 +2478,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                     let at = arg_spans.get(1).copied().unwrap_or(*span);
                     self.refined_flow(&target, other, at, ctx);
                 }
+                // ADR 0119 rule 14 and V2: the range and size preconditions of a bit set, then
+                // the facts of its operation.
+                if let Prim::BitSet(op) = prim {
+                    self.bit_set_sites(*op, &values, arg_spans, *span, ctx);
+                    self.bit_set_facts(*op, &values, &x, ctx);
+                }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -2558,6 +2568,16 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     if is_prelude(&function.module) {
                         self.text_facts(&function.name, &values, &x, ctx);
+                    }
+                    // ADR 0119 rule 14: `empty_bit_set(size: n)` ensures `result.size == n`
+                    // and `result.len == 0`, which its declaration cannot write until V5: facts
+                    // after the call's precondition, as its `ensures` would be.
+                    if key == (una_core::COLLECTIONS_MODULE, "empty_bit_set")
+                        && x.f.sort() == BITSET
+                        && let Some(size) = values.first()
+                    {
+                        ctx.assume(F::eq(size_of(&x.f), size.f.clone()));
+                        ctx.assume(F::eq(len_of(&x.f), F::Int("0".to_owned())));
                     }
                 } else if let Some((params, formula)) = self.index.predicates.get(&key) {
                     self.arguments(params, args, arg_spans, ctx);
@@ -3169,7 +3189,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Float(_)
                 | Prim::Shape(_)
                 // A decimal's `Option` results have no fact behind their nested positions.
-                | Prim::Decimal(_) => unknown(),
+                | Prim::Decimal(_)
+                // A bit set's items are `Int`, with no refinement: nothing it gives back has a
+                // refined nested position.
+                | Prim::BitSet(_) => unknown(),
                 // ADR 0119 V6: what a `Stack` or a `Queue` gives back carries its element
                 // position's refinements, as an element of a list does (ADR 0103 rule 6), and an
                 // update gives a sequence of the receiver's type.
@@ -3990,15 +4013,16 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// `.len` of a text, list or map, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
-        // A `Stack` and a `Queue` have a length too (ADR 0119 V1), with its ground fact
-        // `len >= 0`.
+        // A `Stack`, a `Queue` and a `BitSet` have a length too (ADR 0119 V1), with its ground
+        // fact `len >= 0`, and a bit set's `len <= size` besides (V2).
         let has_len = sort == TEXT
             || sort.starts_with(LIST)
             || sort.starts_with(MAP)
             || sort.starts_with(ARRAY)
             || sort.starts_with(STACK)
             || sort.starts_with(QUEUE)
-            || sort.starts_with(PRIORITY_QUEUE);
+            || sort.starts_with(PRIORITY_QUEUE)
+            || sort == BITSET;
         has_len.then(|| len_of(&value.f))
     }
 
@@ -4157,6 +4181,116 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         };
         self.seq_facts(same, values, x, ctx);
+    }
+
+    /// The preconditions of a bit set's operation (ADR 0119 rule 14), each a `precondition`
+    /// obligation at its argument: `0 <= i and i < b.size` for `add` and `with`, and
+    /// `c.size == b.size` for a set operation. O(1) per call.
+    fn bit_set_sites(
+        &mut self,
+        op: BitSetOp,
+        values: &[Tv],
+        arg_spans: &[Span],
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        let (Some(bits), Some(argument)) = (values.first(), values.get(1)) else {
+            return;
+        };
+        if bits.f.sort() != BITSET {
+            return;
+        }
+        let at = arg_spans.get(1).copied().unwrap_or(span);
+        let receiver = arg_spans
+            .first()
+            .map_or_else(String::new, |receiver| self.text(*receiver));
+        let shown = self.text(at);
+        let (goal, text) = if op == BitSetOp::With {
+            (
+                F::and(vec![
+                    F::op("<=", vec![F::Int("0".to_owned()), argument.f.clone()]),
+                    F::op("<", vec![argument.f.clone(), size_of(&bits.f)]),
+                ]),
+                format!("0 <= {shown} and {shown} < {receiver}.size"),
+            )
+        } else if op.pairs() && argument.f.sort() == BITSET {
+            (
+                F::eq(size_of(&argument.f), size_of(&bits.f)),
+                format!("{shown}.size == {receiver}.size"),
+            )
+        } else {
+            return;
+        };
+        self.site(
+            ObligationKind::Precondition,
+            ctx,
+            Some(goal),
+            text,
+            at,
+            None,
+        );
+    }
+
+    /// The facts of a bit set's operation as facts of its result `x` (ADR 0119 V2): an update
+    /// keeps the size, makes its item a member or not one, and changes the length by the `ite`
+    /// of its membership before; a set operation keeps the size; `first` and `last` are `None`
+    /// exactly when the bit set is empty; `items` has its length. `size` and `has` are terms
+    /// (`Walker::prim`). The frame facts of V3 and V4 wait for the verifier's slice. O(1) per
+    /// call.
+    fn bit_set_facts(&mut self, op: BitSetOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let Some(bits) = values.first() else {
+            return;
+        };
+        if bits.f.sort() != BITSET {
+            return;
+        }
+        let b = &bits.f;
+        let zero = || F::Int("0".to_owned());
+        let one = || F::Int("1".to_owned());
+        match op {
+            BitSetOp::With | BitSetOp::Without => {
+                let Some(item) = values.get(1) else {
+                    return;
+                };
+                if x.f.sort() != BITSET {
+                    return;
+                }
+                let i = &item.f;
+                ctx.assume(F::eq(size_of(&x.f), size_of(b)));
+                let was = has_of(b, i);
+                let old = len_of(b);
+                if op == BitSetOp::With {
+                    ctx.assume(has_of(&x.f, i));
+                    ctx.assume(F::eq(
+                        len_of(&x.f),
+                        F::op("ite", vec![was, old.clone(), F::op("+", vec![old, one()])]),
+                    ));
+                } else {
+                    ctx.assume(F::not(has_of(&x.f, i)));
+                    ctx.assume(F::eq(
+                        len_of(&x.f),
+                        F::op("ite", vec![was, F::op("-", vec![old.clone(), one()]), old]),
+                    ));
+                }
+            }
+            BitSetOp::Union | BitSetOp::Intersection | BitSetOp::Difference => {
+                if x.f.sort() == BITSET {
+                    ctx.assume(F::eq(size_of(&x.f), size_of(b)));
+                }
+            }
+            // `None` is variant 1 of `Option`.
+            BitSetOp::First | BitSetOp::Last => {
+                if let Some(tag) = self.tag(x) {
+                    ctx.assume(F::eq(F::eq(tag, one()), F::eq(len_of(b), zero())));
+                }
+            }
+            BitSetOp::Items => {
+                if let Some(len) = self.len(x) {
+                    ctx.assume(F::eq(len, len_of(b)));
+                }
+            }
+            BitSetOp::Size | BitSetOp::Has | BitSetOp::IsSubset => {}
+        }
     }
 
     /// How many tasks a `together for` over `source` runs: the length of its list, or the
@@ -4546,6 +4680,24 @@ impl<'p, 'i> Walker<'p, 'i> {
             | Prim::Priority(_) => {
                 return None;
             }
+            // A bit set's size and its membership are terms, `i!size!i!BitSet` and
+            // `i!has!i!BitSet` (ADR 0119 V1); its other operations are known by their facts
+            // (`bit_set_facts`).
+            Prim::BitSet(BitSetOp::Size) => {
+                let bits = arg(0)?.f;
+                if bits.sort() != BITSET {
+                    return None;
+                }
+                size_of(&bits)
+            }
+            Prim::BitSet(BitSetOp::Has) => {
+                let bits = arg(0)?.f;
+                if bits.sort() != BITSET {
+                    return None;
+                }
+                has_of(&bits, &arg(1)?.f)
+            }
+            Prim::BitSet(_) => return None,
             Prim::Decimal(op) => return self.decimal(op, values),
         })
     }
@@ -5664,6 +5816,13 @@ impl<'p, 'i> Walker<'p, 'i> {
                     F::App { fun, args } => match &fun.role {
                         FunRole::Len | FunRole::Shape => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
+                            // A bit set has at most `size` members (ADR 0119 V2).
+                            if fun.role == FunRole::Len
+                                && let Some(bits) = args.first()
+                                && bits.sort() == BITSET
+                            {
+                                new.push(F::op("<=", vec![term.clone(), size_of(bits)]));
+                            }
                         }
                         // A map that has a key is not empty, so an empty one has none.
                         FunRole::Has => {
@@ -5673,6 +5832,21 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     vec![
                                         term.clone(),
                                         F::op(">=", vec![len_of(map), F::Int("1".to_owned())]),
+                                    ],
+                                ));
+                            }
+                            // A member of a bit set is in its range (ADR 0119 V2).
+                            if let (Some(bits), Some(item)) = (args.first(), args.get(1))
+                                && bits.sort() == BITSET
+                            {
+                                new.push(F::op(
+                                    "=>",
+                                    vec![
+                                        term.clone(),
+                                        F::and(vec![
+                                            F::op("<=", vec![F::Int("0".to_owned()), item.clone()]),
+                                            F::op("<", vec![item.clone(), size_of(bits)]),
+                                        ]),
                                     ],
                                 ));
                             }
@@ -6052,7 +6226,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                     FunRole::Tag { .. } => (format!("tag({})", first()), 1),
                     FunRole::Has | FunRole::Get => {
                         let key = args.get(1).map_or_else(String::new, |a| operand(a, 10));
-                        (format!("{}.{base}(key: {key})", first()), 1)
+                        // A bit set's argument is an item (`spec/28 §9`), a map's a key.
+                        let label = match args.first() {
+                            Some(bits) if bits.sort() == BITSET => "item",
+                            _ => "key",
+                        };
+                        (format!("{}.{base}({label}: {key})", first()), 1)
                     }
                     FunRole::Predicate => {
                         let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
@@ -6371,6 +6550,20 @@ fn has_of(map: &F, key: &F) -> F {
             role: FunRole::Has,
         },
         args: vec![map.clone(), key.clone()],
+    }
+}
+
+/// `b.size` of a bit set, `i!size!i!BitSet`, uninterpreted, at least 0 (ADR 0119 V1).
+fn size_of(bits: &F) -> F {
+    let sort = bits.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!size!{sort}"),
+            args: vec![sort],
+            result: "Int".to_owned(),
+            role: FunRole::Shape,
+        },
+        args: vec![bits.clone()],
     }
 }
 
