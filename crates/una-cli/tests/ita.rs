@@ -275,3 +275,101 @@ fn una_toml_naming_edition_0_4_is_refused_with_migrate() {
     assert_eq!(code, 0);
     assert!(dir.join("ita.una").exists());
 }
+
+/// A package with the path dependency `deps/util`, needed with `ceiling` as its `may` lines.
+fn with_dependency(name: &str, may: &str) -> PathBuf {
+    let manifest = format!(
+        "ita demo\n  version 0.1.0\n  edition 0.4\n\nneeds\n  util from path \"deps/util\"\n{may}    accept name\n"
+    );
+    let dir = package(name, &manifest);
+    std::fs::create_dir_all(dir.join("deps/util/src")).unwrap();
+    std::fs::write(
+        dir.join("deps/util/ita.una"),
+        "ita util\n  version 0.2.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("deps/util/src/say.una"),
+        "module say\n\npub say(line: Text) -> Unit\n  uses @console: Console[print]\n=\n  @console.print(line)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/demo.una"),
+        "module demo\n\nimport util.say (say)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  say(\"hi\") with @console = @console[print]\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn lock_records_a_path_dependency_and_its_consented_ceiling() {
+    let dir = with_dependency("path-lock", "    may Console[print]\n");
+    // A ceiling is recorded only when accepted.
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7009") && err.contains("--accept-authority"), "{err}");
+    assert!(!dir.join("ita.lock").exists());
+    let (code, out, err) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(lock.contains("\npackage util 0.2.0\n  from path \"deps/util\"\n  digest \"sha256:"), "{lock}");
+    assert!(lock.ends_with("  granted by demo may Console[print]\n"), "{lock}");
+    // The package checks, and the lock is what `una ita lock` writes.
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(checked.diagnostics, []);
+    let (code, _, _) = una(&["una", "ita", "lock", "--check", path(&dir)]);
+    assert_eq!(code, 0);
+    // A changed byte of the dependency makes the lock stale for `--check`.
+    std::fs::write(
+        dir.join("deps/util/src/say.una"),
+        "module say\n\npub say(line: Text) -> Unit\n  uses @console: Console[print]\n=\n  @console.print(line)\n\npub two() -> Int = 2\n",
+    )
+    .unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", "--check", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7009"), "{err}");
+}
+
+#[test]
+fn a_wider_ceiling_needs_accept_authority() {
+    let dir = with_dependency("path-widen", "    may Console[print]\n");
+    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    assert_eq!(code, 0);
+    let manifest = std::fs::read_to_string(dir.join("ita.una"))
+        .unwrap()
+        .replace("may Console[print]", "may Console[print], Clock[now]");
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    // Loading reports the widening at the `may` line.
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert!(
+        checked.diagnostics.iter().any(|d| d.code.as_str() == "U7009"),
+        "{:?}",
+        checked.diagnostics
+    );
+    let before = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("widens to `Clock[now]`"), "{err}");
+    assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), before);
+    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    assert_eq!(code, 0);
+    assert!(std::fs::read_to_string(dir.join("ita.lock")).unwrap().contains("may Clock[now], Console[print]"));
+}
+
+#[test]
+fn a_dependency_reached_through_a_link_is_refused() {
+    let dir = with_dependency("path-link", "");
+    #[cfg(unix)]
+    {
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("x.una"), "module x\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("deps/util/src/linked")).unwrap();
+        let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+        let messages: Vec<String> = checked.diagnostics.iter().map(|d| d.message.clone()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("symbolic link")),
+            "{messages:?}"
+        );
+    }
+}
