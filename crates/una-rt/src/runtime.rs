@@ -43,6 +43,40 @@ impl Drop for StackCount {
     }
 }
 
+/// The bytes of stack that the live tasks have used, each counted up to the highest point its
+/// stack reached, in steps of [`STACK_STEP`]: charged to the memory budget with the heap (ADR
+/// 0061 amendment of 2026-10-18, ADR 0117 rule 2).
+static STACK_CHARGE: AtomicUsize = AtomicUsize::new(0);
+
+/// The step in which a task's stack is charged, so that the charge moves once per 16 KiB of
+/// growth rather than at every call.
+const STACK_STEP: usize = 16 * 1024;
+
+/// What the run holds against its memory budget: the heap, and the stacks its tasks used.
+fn charged() -> usize {
+    crate::held().saturating_add(STACK_CHARGE.load(Ordering::Relaxed))
+}
+
+/// Charges the stack of the thread's task up to `used` bytes, when that is within its budget:
+/// the charge rises to the next step, at most the budget. False when `used` is past the budget,
+/// which the caller reports as too deep. O(1), at most once per step of growth.
+fn charge_stack(hot: &Hot, used: usize) -> bool {
+    let budget = hot.stack_budget.get();
+    if used > budget {
+        return false;
+    }
+    let target = used
+        .checked_next_multiple_of(STACK_STEP)
+        .unwrap_or(budget)
+        .min(budget);
+    let charged = hot.stack_charged.get();
+    if target > charged {
+        STACK_CHARGE.fetch_add(target - charged, Ordering::Relaxed);
+        hot.stack_charged.set(target);
+    }
+    true
+}
+
 /// Whether a stop is ending the process (ADR 0113): the first thread to stop ends it, and any
 /// thread that stops afterwards waits for the end instead of writing a second report.
 static ENDING: AtomicBool = AtomicBool::new(false);
@@ -146,7 +180,7 @@ pub(crate) fn try_reserve(bytes: usize) -> Option<Reservation> {
     let reservation = Reservation(bytes);
     #[cfg(test)]
     LIVE_RESERVATIONS.with(|live| live.set(live.get() + 1));
-    let held = crate::held();
+    let held = charged();
     HOT.with(|hot| !hot.active.get() || held.saturating_add(reserved) <= hot.mem_ceiling.get())
         .then_some(reservation)
 }
@@ -659,6 +693,10 @@ pub(crate) struct State {
     /// Whether the thread's task runs the body of a `for ever`, callees included: its `Http`
     /// operations are interruptible there (ADR 0116 rule 14). A task starts outside one.
     pub(crate) in_ever: bool,
+    /// The settings of the run's tasks (ADR 0117 rules 2 and 3).
+    concurrency: una_interp::Concurrency,
+    /// The run's scheduler, made at its first block: none in a run without tasks.
+    sched: Option<Arc<crate::sched::Scheduler>>,
 }
 
 /// Makes an abort say, on stderr, the debug high-water mark of the heap and the run's ceiling, in
@@ -699,12 +737,15 @@ pub(crate) struct TaskTemplate {
     cancel: Vec<Cancel>,
     /// The entries of `cancel` that an operation in progress shields (`State::shielded`).
     shielded: usize,
-    /// The stack of a task's thread.
+    /// The stack of a task.
     pub(crate) stack: usize,
     /// Where the block is written.
     pub(crate) location: Location,
     /// The deadline of the `for ever within` iteration that starts the block (`spec/26 §7`).
     deadline: Option<crate::deadline::Deadline>,
+    /// The settings of the run's tasks, and its scheduler.
+    concurrency: una_interp::Concurrency,
+    pub(crate) sched: Arc<crate::sched::Scheduler>,
 }
 
 impl TaskTemplate {
@@ -739,10 +780,18 @@ fn unshielded(cancel: &[Cancel], shielded: usize) -> bool {
 
 impl State {
     /// What the tasks of a block at `site` start from.
-    pub(crate) fn for_tasks(&self, site: usize) -> TaskTemplate {
+    /// The run's scheduler is made here, at its first block.
+    pub(crate) fn for_tasks(&mut self, site: usize) -> TaskTemplate {
         let depth = HOT.with(|hot| hot.depth.get());
         let left = self.max_depth.saturating_sub(depth);
+        let concurrency = self.concurrency;
+        let sched = Arc::clone(
+            self.sched
+                .get_or_insert_with(|| crate::sched::Scheduler::new(concurrency)),
+        );
         TaskTemplate {
+            concurrency,
+            sched,
             tracing: self.trace.is_some(),
             depth,
             max_depth: self.max_depth,
@@ -1085,6 +1134,10 @@ struct Hot {
     max_depth: Cell<usize>,
     stack_base: Cell<usize>,
     stack_budget: Cell<usize>,
+    /// The highest point of the task's stack charged to the memory budget so far, at most
+    /// `stack_budget` (ADR 0061 amendment of 2026-10-18): the stack check of a call compares
+    /// with it, so the fast path stays one comparison.
+    stack_charged: Cell<usize>,
     /// The heap the run may hold before a check reports it ([`mem_ceiling`]).
     mem_ceiling: Cell<usize>,
     /// `State::shielded`, and the length of `State::cancel`: no flag is unshielded when
@@ -1106,6 +1159,7 @@ impl Hot {
             max_depth: Cell::new(0),
             stack_base: Cell::new(0),
             stack_budget: Cell::new(0),
+            stack_charged: Cell::new(0),
             mem_ceiling: Cell::new(usize::MAX),
             shielded: Cell::new(0),
             flags: Cell::new(0),
@@ -1139,6 +1193,78 @@ impl Hot {
     }
 }
 
+/// A task's thread-locals of this module while it is parked (`sched`, ADR 0117 rule 2): its
+/// state, its [`Hot`] record, the guard of a copy in progress, and its test counters.
+pub(crate) struct Slots {
+    state: Option<State>,
+    active: bool,
+    /// `Hot`'s depth, max_depth, stack_base, stack_budget, stack_charged, mem_ceiling, shielded
+    /// and flags.
+    hot: [usize; 8],
+    guarded: bool,
+    panicked: Option<String>,
+    #[cfg(test)]
+    counters: [usize; 3],
+    #[cfg(test)]
+    refuse: Option<(usize, usize)>,
+}
+
+impl Default for Slots {
+    /// The slots of a thread with no run: those of [`Hot::inactive`].
+    fn default() -> Slots {
+        Slots {
+            state: None,
+            active: false,
+            hot: [0, 0, 0, 0, 0, usize::MAX, 0, 0],
+            guarded: false,
+            panicked: None,
+            #[cfg(test)]
+            counters: [0; 3],
+            #[cfg(test)]
+            refuse: None,
+        }
+    }
+}
+
+/// Exchanges the thread's state and its mirror with `slots`. The state is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' states.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut state) => std::mem::swap(&mut *state, &mut slots.state),
+        Err(_) => std::process::abort(),
+    });
+    HOT.with(|hot| {
+        slots.active = hot.active.replace(slots.active);
+        let cells = [
+            &hot.depth,
+            &hot.max_depth,
+            &hot.stack_base,
+            &hot.stack_budget,
+            &hot.stack_charged,
+            &hot.mem_ceiling,
+            &hot.shielded,
+            &hot.flags,
+        ];
+        for (cell, saved) in cells.into_iter().zip(slots.hot.iter_mut()) {
+            *saved = cell.replace(*saved);
+        }
+    });
+    slots.guarded = GUARDED.with(|cell| cell.replace(slots.guarded));
+    PANICKED.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut panicked) => std::mem::swap(&mut *panicked, &mut slots.panicked),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [live, growths, slow] = &mut slots.counters;
+        *live = LIVE_RESERVATIONS.with(|cell| cell.replace(*live));
+        *growths = TRACE_GROWTHS.with(|cell| cell.replace(*growths));
+        *slow = SLOW_PATHS.with(|cell| cell.replace(*slow));
+        slots.refuse = REFUSE_STEP.with(|cell| cell.replace(slots.refuse));
+    }
+}
+
 /// The heap a run may hold before a check reports it: `baseline` plus the budget of
 /// `max_memory` MiB, both saturating. `held > mem_ceiling(baseline, max_memory)` exactly when
 /// [`over_budget`] reports (ADR 0102 rule 5).
@@ -1154,6 +1280,7 @@ fn install(state: State, depth: usize) {
         hot.max_depth.set(state.max_depth);
         hot.stack_base.set(state.stack_base);
         hot.stack_budget.set(state.stack_budget);
+        hot.stack_charged.set(0);
         hot.mem_ceiling
             .set(mem_ceiling(state.baseline, state.max_memory));
         hot.shielded.set(state.shielded);
@@ -1183,6 +1310,7 @@ fn take_state(cell: &mut Option<State>) -> Option<State> {
         hot.max_depth.set(0);
         hot.stack_base.set(0);
         hot.stack_budget.set(0);
+        STACK_CHARGE.fetch_sub(hot.stack_charged.replace(0), Ordering::Relaxed);
         hot.mem_ceiling.set(usize::MAX);
         hot.shielded.set(0);
         hot.flags.set(0);
@@ -1341,6 +1469,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        concurrency: options.concurrency,
+        sched: None,
     };
     // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
     // any code of the program runs; each thread the program runs on writes it too.
@@ -1590,7 +1720,7 @@ fn stack_position<T>(local: &T) -> usize {
 pub fn enter(site: usize) -> i64 {
     let marker = site;
     let position = stack_position(&marker);
-    let held = crate::held();
+    let held = charged();
     // ADR 0102: the conjunction of the negated abort conditions, on `Hot`; when it fails, the
     // check below decides, with the same position and `held`.
     let proceed = HOT.with(|hot| {
@@ -1598,8 +1728,9 @@ pub fn enter(site: usize) -> i64 {
             return true;
         }
         let depth = hot.depth.get();
+        let used = hot.stack_base.get().abs_diff(position);
         let clear = depth < hot.max_depth.get()
-            && hot.stack_base.get().abs_diff(position) <= hot.stack_budget.get()
+            && (used <= hot.stack_charged.get() || charge_stack(hot, used))
             && held <= hot.mem_ceiling.get()
             && !hot.cancelled()
             && !hot.attention();
@@ -1657,7 +1788,7 @@ pub fn enter(site: usize) -> i64 {
 /// the budget, the run aborts with U6003 at the loop, as at a call. Returns 1 when the task
 /// must stop, as [`enter`] does, and 0 otherwise.
 pub fn budget(site: usize) -> i64 {
-    let held = crate::held();
+    let held = charged();
     // ADR 0102: the negated abort conditions, on `Hot`.
     let proceed = HOT.with(|hot| {
         !hot.active.get() || (held <= hot.mem_ceiling.get() && !hot.cancelled() && !hot.attention())
@@ -1697,7 +1828,7 @@ pub fn budget(site: usize) -> i64 {
 /// the budget, the run aborts with U6003 at the loop. Returns false when the run or the task
 /// stops, and true otherwise. Cancellation is not checked here: the tasks check it.
 pub(crate) fn within_budget(site: usize) -> bool {
-    let held = crate::held();
+    let held = charged();
     if HOT.with(|hot| !hot.active.get() || held <= hot.mem_ceiling.get()) {
         return true;
     }
@@ -1847,6 +1978,8 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        concurrency: template.concurrency,
+        sched: Some(Arc::clone(&template.sched)),
     };
     state.stack_base = stack_position(&state);
     install(state, template.depth);
@@ -1881,8 +2014,10 @@ pub(crate) fn take_report() -> Option<Report> {
 /// task's is, instead of ending the process.
 #[cfg(test)]
 pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
-    // A small call depth, so that a test's task threads, which blocks nest, take small stacks.
-    let Ok(options) = parse_args(&["--max-depth".to_owned(), "64".to_owned()]) else {
+    // A small call depth, so that a test's tasks, which blocks nest, take small stacks; four
+    // workers, so that the tests whose tasks wait for each other run them on distinct workers.
+    let args = ["--max-depth", "64", "--workers", "4"].map(str::to_owned);
+    let Ok(options) = parse_args(&args) else {
         return;
     };
     let at = Position { line: 1, col: 1 };
@@ -1925,6 +2060,8 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         operations: Vec::new(),
         stopped: None,
         in_ever: false,
+        concurrency: options.concurrency,
+        sched: None,
     };
     state.stack_base = stack_position(&state);
     install(state, 0);
@@ -1960,7 +2097,7 @@ pub(crate) fn test_trace() -> Vec<String> {
 #[cfg(test)]
 pub(crate) fn test_room() -> usize {
     HOT.with(|hot| hot.mem_ceiling.get())
-        .saturating_sub(crate::held())
+        .saturating_sub(charged())
 }
 
 /// The abort that stopped the test task the thread runs, if any: its code and message.
