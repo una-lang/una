@@ -390,8 +390,11 @@ impl Writer<'_> {
                 "values" => J::Arr(vec![self.fixed_op(*op), self.int_type(*int)]),
             ),
             Prim::Map(op) => node!(Map, "value" => self.map_op(*op)),
-            // ADR 0114 rule 17: one kind per operation, `f64_` and its name.
-            Prim::Float(op) => J::Obj(vec![("kind", s(op.as_str()))]),
+            // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
+            Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
+                "kind",
+                s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+            )])),
         }
     }
 
@@ -1125,9 +1128,11 @@ mod tests {
                 listed.insert(name, kinds);
             }
         }
-        // Enums that are not nodes of Core: the prelude's field types (#415).
+        // Enums that are not nodes of Core: the prelude's field types (#415), and what an
+        // operation of `F64` returns.
         let mut declared = declared;
         declared.remove("PreludeField");
+        declared.remove("FloatResult");
         assert_eq!(listed, declared);
     }
 }
