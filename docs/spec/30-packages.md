@@ -209,3 +209,20 @@ For a package of edition `0.4`, the key of a proof cache entry (`spec/12 §9`) i
 6. **Costs.** O(N + R) time and space for N releases reached and R need edges, with hash maps; O(log K + S) per raise for an identity of K releases of which S are skipped; O(P log P) to sort the list. There is no backtracking and no search.
 
 This release resolves in memory only; the commands that read release statements and per-name state join as the registry client lands.
+
+## 11. Verifying a registry's documents
+
+The registry client verifies what it fetches with these rules, each a pure function of the bytes; the commands that fetch join with the client.
+
+1. **The log's tree** is that of RFC 9162 §2.1: a leaf's hash is SHA-256 of `0x00` and the leaf, a node's of `0x01` and its children's hashes. An inclusion proof (§2.1.3.2) and a consistency proof (§2.1.4.2) are verified as RFC 9162 states; a consistency proof from a tree of no leaf is empty, and one between equal sizes needs equal roots. Each costs O(log L) hashes for a log of L leaves.
+2. **Ed25519 is verified strictly**, by one rule: a key of 32 bytes and a signature of 64; the public key and `R` canonical encodings (`y` below p) of points not of small order; `S` below the group order; and the cofactorless equation.
+3. **A signed note** (C2SP `signed-note`) is a text of lines without control characters, ending with a line feed, a blank line, and lines `— <name> <base64>`, whose base64 is canonical and decodes to a 4-byte key hash and the signature. The key hash of an Ed25519 key is the first four bytes of SHA-256 of its name, a line feed, `0x01` and the key; a note is signed by a key when a line of its name and key hash verifies the text. A note is at most 64 KiB.
+4. **A checkpoint** (C2SP `tlog-checkpoint`) is a note whose text is the origin, the size in decimal without a leading zero, the root hash in base64, and non-empty extension lines. **A cosignature/v1** (C2SP `tlog-cosignature`) of a checkpoint by a witness is a signature line whose key hash uses `0x04`, holding an 8-byte big-endian timestamp and a signature of `cosignature/v1`, `time <t>`, each on its line, then the checkpoint's text.
+5. **Witness time** (ADR 0122 rule 36.4). With k the witness threshold:
+   - an entry is **logged at** the k-th earliest of the distinct witnesses' earliest cosignatures on checkpoints that include it;
+   - the **witness time of a checkpoint** is the k-th latest of the distinct witnesses' cosignatures on it;
+   - a wait is the witness time of the later checkpoint minus the logged-at time of the entry;
+   - a witness whose timestamps decrease as the log grows is refused (U7010);
+   - freshness alone compares a witness time with the local clock, and a local clock more than one hour behind the newest witness time is clock skew (U7010).
+
+   Fewer than k witnesses can move none of these times in an attacker's favor.
