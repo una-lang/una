@@ -842,7 +842,7 @@ impl Writer<'_> {
                 "deadline_span" => self.span(*deadline_span),
                 "body" => self.expr(body),
                 "timeout" => self.ctor(timeout),
-                "wrap" => opt(wrap.as_ref(), |c| self.ctor(c)),
+                "wrap" => opt(wrap.as_deref(), |c| self.ctor(c)),
                 "span" => self.span(*span),
             ),
             Expr::With { cap, source, body } => node!(With,

@@ -2304,8 +2304,8 @@ impl<'e, 'a> Fx<'e, 'a> {
             deadline,
             deadline_span,
             body: Box::new(body),
-            timeout,
-            wrap,
+            timeout: Box::new(timeout),
+            wrap: wrap.map(Box::new),
             span,
         }
     }

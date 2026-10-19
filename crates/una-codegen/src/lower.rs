@@ -685,7 +685,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     wrap,
                     ..
                 } => {
-                    return self.within(deadline, body, timeout, wrap.as_ref(), env, scope, catch);
+                    return self.within(
+                        deadline,
+                        body,
+                        timeout,
+                        wrap.as_deref(),
+                        env,
+                        scope,
+                        catch,
+                    );
                 }
                 Expr::With { cap, source, body } => {
                     let instance = match source {

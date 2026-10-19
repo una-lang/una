@@ -1559,7 +1559,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         }
                         _ => return Err(fault("a deadline that is not an `Int`")),
                     };
-                    return self.within(env, &caps, ms, body, timeout, wrap.as_ref());
+                    return self.within(env, &caps, ms, body, timeout, wrap.as_deref());
                 }
                 Expr::With { cap, source, body } => {
                     let instance = self.instance(env, &caps, cap, source)?;

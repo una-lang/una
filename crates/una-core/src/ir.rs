@@ -1773,10 +1773,10 @@ pub enum Expr {
         body: Box<Expr>,
         /// The failure when the deadline passes: `Timed.TimedOut` or `Deadline.Expired` of
         /// `std.time`, or the function's own `TimedOut` under `if error pass`.
-        timeout: Ctor,
+        timeout: Box<Ctor>,
         /// The variant that wraps a failure of `e` in time: `Timed.Failed`, whose one field is
         /// the failure; none under `if error pass`, or when `e` cannot fail.
-        wrap: Option<Ctor>,
+        wrap: Option<Box<Ctor>>,
         /// The whole `e within d` in the source, where its time-out is located.
         span: Span,
     },
