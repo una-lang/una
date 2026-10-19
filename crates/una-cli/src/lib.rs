@@ -676,11 +676,11 @@ where
     })
 }
 
-/// Whether the program name, `argv[0]`, has the basename `ita` (or `ita.exe`).
+/// Whether the program name, `argv[0]`, has the basename `ita`, or `ita.exe`.
 fn invoked_as_ita(program: Option<&OsString>) -> bool {
     program
-        .and_then(|program| Path::new(program).file_stem().map(|stem| stem == "ita"))
-        .unwrap_or(false)
+        .and_then(|program| Path::new(program).file_name())
+        .is_some_and(|name| name == "ita" || name == "ita.exe")
 }
 
 /// Where U8001 for a panic goes (ADR 0022 rule 2): 1:1 of the `una.toml` of the package the

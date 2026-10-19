@@ -113,7 +113,10 @@ pub(crate) fn lock_command(path: &Path, check: bool, out: Output<'_>) -> io::Res
     };
     let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
     let mut diagnostics = located(&sources, manifest_id, errors);
-    let needs = manifest.ita.as_ref().map_or(&[][..], |read| &read.needs[..]);
+    let needs: &[una_syntax::ita::Need] = manifest
+        .ita
+        .as_ref()
+        .map_or(&[], |read| read.needs.as_slice());
     diagnostics.extend(located(
         &sources,
         manifest_id,
