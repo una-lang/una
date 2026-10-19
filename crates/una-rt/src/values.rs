@@ -3244,6 +3244,41 @@ mod tests {
         int_word(&BigInt::from(value))
     }
 
+    /// The position of `op` in `FloatOp::ALL`, the code the generated code passes.
+    fn code(op: una_core::FloatOp) -> i64 {
+        una_core::FloatOp::ALL
+            .iter()
+            .position(|x| *x == op)
+            .and_then(|i| i64::try_from(i).ok())
+            .unwrap_or(-1)
+    }
+
+    #[test]
+    fn floats_compute_as_the_interpreter_does_and_keep_one_nan() {
+        use una_core::FloatOp;
+        let zero = f64_literal(0);
+        let one = f64_literal(1f64.to_bits() as i64);
+        let nan = f64_op(code(FloatOp::Div), zero, zero, 0);
+        assert_eq!(
+            int_value(f64_op(code(FloatOp::ToBits), nan, 0, 0)),
+            BigInt::from(una_core::float::CANONICAL_NAN)
+        );
+        assert_eq!(f64_op(code(FloatOp::Eq), nan, nan, 0), 1);
+        assert_eq!(f64_op(code(FloatOp::Lt), one, nan, 0), 1);
+        let negative = f64_op(code(FloatOp::Neg), zero, 0, 0);
+        assert_eq!(f64_op(code(FloatOp::Eq), negative, zero, 0), 0);
+        assert_eq!(f64_op(code(FloatOp::IeeeEq), negative, zero, 0), 1);
+        let text = f64_op(code(FloatOp::ToText), negative, 0, 0);
+        assert_eq!(text_value(text), "-0.0");
+        let fused = f64_op(code(FloatOp::Fma), one, one, negative);
+        assert_eq!(text_value(f64_op(code(FloatOp::ToText), fused, 0, 0)), "1.0");
+        assert_eq!(parse_f64_failure(text_word("1.".to_owned())) & 1, 0);
+        assert_eq!(parse_f64_failure(text_word(String::new())), 1);
+        assert_eq!(f64_value(parse_f64(text_word("-0".to_owned()))).to_bits(), 1 << 63);
+        assert_eq!(f64_literal(0), zero, "a literal is made once");
+        assert!(leaf_equal(nan, f64_op(code(FloatOp::Div), zero, zero, 0)));
+    }
+
     #[test]
     fn integers_are_tagged_when_they_fit_and_promoted_when_they_do_not() {
         assert_eq!(n(5), 11);
