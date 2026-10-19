@@ -1,4 +1,4 @@
--- test: integers past 2^64 (a power by repeated multiplication, a product, Euclidean division and remainder by either sign, rendering, parse_int of a repeated text), F64 arithmetic and conversions, text, lists and maps run alike in both engines, so the native differential links an executable that uses each of them and the release check of scripts/no-libm.sh finds no C math library symbol in it (#1092)
+-- test: integers past 2^64 (a power by repeated multiplication, a product, Euclidean division and remainder by either sign, rendering, parse_int of a repeated text), F64 arithmetic and conversions, text, lists and maps run alike in both engines, and the release check of #1092 links this program with the release `una` (scripts/no-libm-build.sh) and finds no C math library symbol in the executable (scripts/no-libm.sh)
 -- spec: spec/29 §6
 -- grant: console
 -- expect: run-output "power 1267650600228229401496703205376 2503155504993241601315571986085849"

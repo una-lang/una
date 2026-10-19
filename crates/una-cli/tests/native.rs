@@ -183,41 +183,11 @@ fn unsupported() -> BTreeSet<String> {
         .collect()
 }
 
-/// The directory named by `UNA_NATIVE_KEEP`, when it is set and not empty: the differential
-/// then keeps a copy of every executable it builds there, for the release check of the C math
-/// library's symbols (`scripts/no-libm.sh`, #1092). The directory is made when missing and
-/// must be empty, so the check never reads an executable of an earlier run; the test deletes
-/// nothing there.
-fn keep_directory() -> Option<PathBuf> {
-    // A test, not a library crate: scripts/local-ci.sh and the build gate set the variable.
-    #[allow(clippy::disallowed_methods)]
-    let dir = PathBuf::from(std::env::var_os("UNA_NATIVE_KEEP").filter(|d| !d.is_empty())?);
-    std::fs::create_dir_all(&dir).unwrap();
-    assert!(
-        std::fs::read_dir(&dir).unwrap().next().is_none(),
-        "UNA_NATIVE_KEEP={} is not an empty directory",
-        dir.display()
-    );
-    Some(dir)
-}
-
-/// Copies the executable `exe` of the program `name` into `dir`, under the program's path with
-/// each `/` written as `__`, so every program keeps its own file.
-fn keep_executable(exe: &Path, dir: &Path, name: &str) {
-    let target = dir.join(name.replace('/', "__"));
-    assert!(
-        !target.exists(),
-        "{name}: a second executable under one name"
-    );
-    std::fs::copy(exe, &target).unwrap();
-}
-
 #[test]
 fn every_runnable_program_runs_natively_as_in_the_interpreter() {
     runtime();
     let root = root();
     let listed = unsupported();
-    let keep = keep_directory();
     let scratch = std::env::temp_dir().join(format!("una-native-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
@@ -281,9 +251,6 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             continue;
         }
         compiled.push(name.clone());
-        if let Some(kept) = &keep {
-            keep_executable(&exe, kept, &name);
-        }
         if listed.contains(&name) {
             failures.push(format!(
                 "{name}: compiles now; remove it from tests/native/unsupported.txt"
