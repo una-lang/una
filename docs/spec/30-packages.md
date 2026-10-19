@@ -65,7 +65,8 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
                   | "keys" text_lit
                   | "files" text_lit file_mode { "," file_mode }
                   | "http" text_lit [ http_method { "," http_method } ] ) NEWLINE
-                  [ INDENT limit_line { limit_line } DEDENT ] ;
+                  [ INDENT limit_line { limit_line } DEDENT ]
+                | serve_grant ;                          (* spec/31 §2 rule 3 *)
    file_mode    = "read" | "write" ;
    http_method  = "get" | "post" | "put" | "delete" ;
    drive        = "drive" NEWLINE INDENT "module" module_path NEWLINE
@@ -85,7 +86,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - `escapes`: `checked per module <n>`, `[escape_budget] checked_per_module`.
    - `boundaries` (ADR 0093): a module path, then its ceiling as `may` lines; no `may` line is the empty ceiling.
    - `contracts` (ADR 0092 rule 8): a function's qualified name, then its locked `uses` clauses, one per line, each parsed by the production a header uses.
-   - `run`: `entry`, then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`. Paths resolve against the package root.
+   - `run`: `entry`, then `grants`, one grant per line, each the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post`; and `serve "<origin>"` with its item lines (`spec/31 §2` rule 3), whose problems are U7008 at their lines. Paths resolve against the package root.
    - The limit lines under a grant (ADR 0117) are U7008 in this release, which does not implement them: a grant read without its limit would allow more than written. The `drive` section names the module the host drives (`spec/26 §2`): `module`, `ticks` and an optional `budget`, each of `ticks` and `budget` from 1 to 86,400,000 milliseconds; a missing key, a value out of range, a `run entry` beside it and a module that is not in the package are U7008.
 6. **Canonical form.** `una fmt ita.una` and `una fmt itaty.una` rewrite the file in its canonical form: two spaces per level; one blank line between top-level blocks and none inside them; the head's lines in the order of the production `head_line`; one space between words, none before `,`, `.`, `:`, `/` or `]`, none after `[`, `.` or `/`, and none between a capability and its `[`; a comment kept before the line it precedes, or two spaces after the line it ends. A line whose tokens this spacing would join into others, such as `1.` before `2`, keeps one space between every two tokens. `una fmt --check ita.una` reports U7001 where the file differs. `una fmt` of a package directory does not touch `ita.una`, and `una fix` never edits `ita.una`, `ita.lock` or `itaty.una`.
 
