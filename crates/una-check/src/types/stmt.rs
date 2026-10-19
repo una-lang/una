@@ -233,7 +233,10 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
         // `within d` (`spec/26 §7`, ADR 0116 rule 11): evaluated once, before the loop.
-        let deadline = stmt.within.as_ref().map(|within| self.deadline(within));
+        let deadline = stmt
+            .within
+            .as_ref()
+            .map(|within| self.deadline(within, "`for ever within`"));
         let before = self.taken_state();
         let before_len = self.locals.len();
         let mark = self.locals.len();
@@ -285,8 +288,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The deadline `d` of `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): an `Int of
     /// Millisecond` (U2028 for another unit or none, U2001 for a type that is not an integer)
     /// of at least 1, a `refinement` obligation (U5001 for `within 0`). Returns its label,
-    /// which the timing label of the body joins (IF5 item 5).
-    fn deadline(&mut self, within: &Expr) -> Label {
+    /// which the timing label of the body joins (IF5 item 5). `e within d` checks its deadline
+    /// the same way (ADR 0117 rule 5); `what` names the construct.
+    pub(crate) fn deadline(&mut self, within: &Expr, what: &str) -> Label {
         let found = self.expr(within, None);
         let found = self.resolve(&found);
         let label = self.deep(&found);
@@ -298,9 +302,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.report.error(
                 Code::U2001,
                 within.span,
-                format!(
-                    "the deadline of `for ever within` is an `Int of Millisecond`, found `{shown}`"
-                ),
+                format!("the deadline of {what} is an `Int of Millisecond`, found `{shown}`"),
             );
             return label;
         }
@@ -321,7 +323,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let mut diagnostic = self.report.make(
                 Code::U2028,
                 within.span,
-                format!("the deadline of `for ever within` is an `Int of Millisecond` from `std.time`, found `{shown}`"),
+                format!("the deadline of {what} is an `Int of Millisecond` from `std.time`, found `{shown}`"),
             );
             diagnostic.repairs.push(Report::advice(
                 "write the deadline in milliseconds, as `100 * millisecond` with `import std.time (millisecond)`",
@@ -422,6 +424,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let (ty, value) = match &stmt.value {
             LetValue::Handled(handled) => {
                 let probe = handled.with.is_empty()
+                    && handled.within.is_none()
                     && handled.handlings.is_empty()
                     && self.ctx.rl == Rl::Off;
                 let ty = if probe {
@@ -495,10 +498,21 @@ impl<'a> Checker<'_, 'a, '_> {
             return;
         };
         let (value, span) = match &stmt.value {
-            LetValue::Handled(handled) => (
-                self.handled(handled, Some(&place_ty), Role::Plain, false),
-                handled.expr.span,
-            ),
+            LetValue::Handled(handled) => {
+                let value = self.handled(handled, Some(&place_ty), Role::Plain, false);
+                // ADR 0117 IF2: whether the place changes depends on whether `e` met its
+                // deadline.
+                if let Some(deadline) = &handled.within {
+                    let tau = self
+                        .env
+                        .within_timing
+                        .get(&deadline.span)
+                        .cloned()
+                        .unwrap_or_else(Label::public);
+                    self.within_place(&stmt.place, tau, handled.expr.span.to(deadline.span));
+                }
+                (value, handled.expr.span)
+            }
             LetValue::BlockExpr(expr) => (
                 self.block_expr(expr, Some(&place_ty), Role::Plain, false),
                 block_expr_span(expr),
@@ -921,6 +935,12 @@ impl<'a> Checker<'_, 'a, '_> {
         if !handled.handlings.is_empty() {
             self.outside_rl(handled.span, || "a handling clause".to_owned());
         }
+        // Edition 0.4: `e within d` (ADR 0117 rule 5). `d` is evaluated first, outside the
+        // `with` bindings; the timing label's seed covers the handlers they install.
+        let within = handled.within.as_ref().map(|deadline| {
+            let span = handled.expr.span.to(deadline.span);
+            self.within_open(deadline, span)
+        });
         // The `with` bindings of a statement form one frame over its expression (`spec/10 §6`);
         // their right-hand sides resolve outside it.
         let mut frame = Frame::default();
@@ -1005,7 +1025,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // with the expected type after unwrapping, so a value that is no `Option` gets the
         // precise diagnostic.
         let value_expected = if unwraps { None } else { expected.cloned() };
-        self.ctx.handled = catches;
+        // A `within` takes the failure of `e` into its own (rule 5).
+        self.ctx.handled = catches || within.is_some();
         self.ctx.top = true;
         let end = handled
             .with
@@ -1030,18 +1051,40 @@ impl<'a> Checker<'_, 'a, '_> {
         self.statement = saved;
         self.ctx.handled = false;
         self.ctx.top = false;
-        let error = self.fails_of(&handled.expr).unwrap_or(Ty::error());
+        let inner = self.fails_of(&handled.expr);
+        // `e within d` fails with `Timed[E]` or `Deadline`, labeled with `τ(e)` (IF2).
+        let timed = within.as_ref().map(|open| {
+            self.within_places(&handled.expr, open);
+            let failure = self.within_close(open, inner.as_ref());
+            if !catches {
+                self.within_unhandled(open.span(), &failure);
+            }
+            (failure, open.tau().clone(), open.span())
+        });
+        let error = match &timed {
+            Some((failure, _, _)) => failure.clone(),
+            None => inner.clone().unwrap_or(Ty::error()),
+        };
         // The label that decides whether the call fails, when its arguments' values do:
-        // a handling clause branches on it.
-        let decided = self
+        // a handling clause branches on it. A deadline's adds the timing label.
+        let mut decided = self
             .decided_of(&handled.expr)
             .filter(|label| !label.is_public());
-        let decided_by = decided.as_ref().map(|label| (label, handled.expr.span));
+        let mut decided_at = handled.expr.span;
+        if let Some((_, tau, span)) = &timed
+            && !tau.is_public()
+        {
+            decided = Some(decided.map_or_else(|| tau.clone(), |label| label.join(tau)));
+            decided_at = *span;
+        }
+        let decided_by = decided.as_ref().map(|label| (label, decided_at));
         // Edition 0.3 (ADR 0100): the `if error` clauses of an expression with no failure type
         // never run. Their own U3008 and U3009 are held with them until the package is judged.
+        // A `within` can always fail.
         let dead = self.pass == super::authority::Pass::Check
             && self.env.edition >= una_project::Edition::V0_3
-            && self.fails_of(&handled.expr).is_none();
+            && timed.is_none()
+            && inner.is_none();
         if self.pass == super::authority::Pass::Check
             && handled.handlings.iter().any(|h| {
                 matches!(
@@ -1072,7 +1115,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 HandlingKind::ErrorPass => {
                     self.impure(handling.span, || "`if error pass`".to_owned());
                     self.fail_under_pc(handling.span, "`if error pass`", decided_by);
-                    self.pass_clause(handling.span, &handled.expr);
+                    if let Some(open) = &within {
+                        self.within_pass(handling.span, inner.as_ref(), open);
+                    } else {
+                        self.pass_clause(handling.span, &handled.expr);
+                    }
                 }
                 HandlingKind::ErrorUse(value) => {
                     let ctx = Ctx {
@@ -1082,7 +1129,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     let expected = current.clone();
                     let saved = decided
                         .as_ref()
-                        .map(|label| self.raise_pc(label, handled.expr.span));
+                        .map(|label| self.raise_pc(label, decided_at));
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).
@@ -1188,7 +1235,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> super::dead::Site {
         let inner = unparenthesized(expr);
         let (args, what): (Vec<Span>, String) = match &inner.kind {
-            ExprKind::Attempt(_) => (
+            ExprKind::Attempt { .. } => (
                 Vec::new(),
                 "`attempt`, which already turns the failure into a value,".to_owned(),
             ),

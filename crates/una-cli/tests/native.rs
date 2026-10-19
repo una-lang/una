@@ -3518,3 +3518,125 @@ pub main() -> Unit
     assert_eq!(traces[0], traces[1]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A package of edition 0.4 whose `run` entry is `module`, built.
+fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
+    let dir = package(
+        name,
+        &format!("\n[run]\nentry = \"{module}\"\ngrants = [\"console\"]\n"),
+        &[(&format!("src/{module}.una"), program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.4\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+#[test]
+fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
+    // `spec/27 §5`, ADR 0117 rule 5: once the deadline passes, the expression is cancelled at
+    // its next check point, here an iteration of a loop that would run for minutes, and the
+    // `within` fails with its time-out, `Deadline.Expired`, which `if error use` handles. The
+    // timing label is `public`, so the result prints. One `timeout` event is in the trace.
+    let program = "module busy\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("busy", "busy", program);
+    let started = std::time::Instant::now();
+    let interpreted = una(&dir, &["--json", "run"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    assert_eq!(
+        document["trace"],
+        serde_json::json!([{"seq": 1, "outcome": {"kind": "timeout"}}])
+    );
+    let exe = dir.join("target/una/busy");
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(&exe)
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"]);
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline cut nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
+    // ADR 0117 rule 5: tasks started inside `e` are cancelled with it, and `e` ends once they
+    // have stopped; the `within` then fails with its time-out. Natively each task sees the
+    // `within`'s cancellation at its own check points, with one worker and with several.
+    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("tasks", "tasks", program);
+    let started = std::time::Instant::now();
+    let interpreted = una(&dir, &["run"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "total -1\n");
+    let exe = dir.join("target/una/tasks");
+    for workers in ["1", "2"] {
+        let native = Command::new(&exe)
+            .args(["--workers", workers])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the deadline cut nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_deadline_met_keeps_the_value_under_virtual_time_in_both_engines() {
+    // `spec/27 §5` and `spec/26 §8`: under `--virtual-time` nothing but the run's own waits
+    // moves the clock, so a computation meets any deadline, and both engines give the same
+    // output and trace.
+    let program = "module met\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = spin(100000) within 1 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("met", "met", program);
+    let interpreted = una(&dir, &["--json", "run", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total 100000"]),
+        "{document}"
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/met"))
+        .args(["--virtual-time", "--trace"])
+        .arg(&trace)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "total 100000\n");
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+    assert_eq!(written, document["trace"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

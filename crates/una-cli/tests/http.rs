@@ -686,6 +686,97 @@ pub main() -> Unit
 }
 
 #[test]
+fn a_within_cuts_a_request_to_a_server_that_never_answers_in_both_engines() {
+    // `spec/27 §5`, ADR 0117 rules 4 and 5: the request waits no longer than the `within`'s
+    // deadline, long before the run's own `--http-timeout`, and fails with `TimedOut`; the
+    // deadline has passed when the expression returns, so the `within` fails with its own
+    // `TimedOut`, after a `timeout` event. Both engines write the same trace.
+    let port = silent_server();
+    let program = format!(
+        r#"module cut
+
+import std.time (millisecond)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None) within 50 * millisecond
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-cut-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita cut\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry cut\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/cut.una"), program).unwrap();
+    let flags = ["--http-timeout", "30"];
+
+    let started = std::time::Instant::now();
+    let mut args = vec!["--json", "run", "."];
+    args.extend(flags);
+    let interpreted = una(&dir, &args);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the deadline cut nothing"
+    );
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["done"]),
+        "{document}"
+    );
+    let trace = document["trace"].clone();
+    let outcomes: Vec<String> = trace
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            let outcome = &event["outcome"];
+            match outcome["variant"].as_str() {
+                Some(variant) => format!("{}:{variant}", event["op"].as_str().unwrap_or("")),
+                None => outcome["kind"].as_str().unwrap_or("").to_owned(),
+            }
+        })
+        .collect();
+    assert_eq!(outcomes, ["get:TimedOut", "timeout", "ok"], "{trace}");
+
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let trace_file = dir.join("trace.json");
+    let started = std::time::Instant::now();
+    let native = Command::new(dir.join("target/una/cut"))
+        .args(flags)
+        .arg("--trace")
+        .arg(&trace_file)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the deadline cut nothing"
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    let native: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+    assert_eq!(trace, native);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_timeout_event_of_tasks_is_the_same_in_every_run_and_both_engines() {
     // `spec/26 §7`: two tasks of a `together` block in the body both wait on a server that
     // never answers and meet the deadline at about the same time, natively on two threads.

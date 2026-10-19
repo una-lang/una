@@ -230,6 +230,7 @@ impl Normalizer<'_> {
         if let Body::Block(block) = body
             && let [Stmt::Handled(handled)] = block.stmts.as_slice()
             && handled.with.is_empty()
+            && handled.within.is_none()
             && handled.handlings.is_empty()
         {
             *body = Body::Line(handled.expr.clone());
@@ -323,6 +324,9 @@ impl Normalizer<'_> {
                 self.args(&mut call.args);
             }
         }
+        if let Some(within) = &mut handled.within {
+            self.expr(within);
+        }
         for handling in &mut handled.handlings {
             match &mut handling.kind {
                 HandlingKind::ErrorFail(variant) | HandlingKind::NoneFail(variant) => {
@@ -415,9 +419,13 @@ impl Normalizer<'_> {
                 self.variant(failure);
             }
             ExprKind::Old(operand) => self.expr(operand),
-            ExprKind::Attempt(operand)
-            | ExprKind::Unary { operand, .. }
-            | ExprKind::Paren(operand) => self.expr(operand),
+            ExprKind::Attempt { operand, within } => {
+                self.expr(operand);
+                if let Some(within) = within {
+                    self.expr(within);
+                }
+            }
+            ExprKind::Unary { operand, .. } | ExprKind::Paren(operand) => self.expr(operand),
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {
                 self.expr(left);

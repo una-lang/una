@@ -1979,6 +1979,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     if index == last
                         && returning
                         && handled.with.is_empty()
+                        && handled.within.is_none()
                         && handled.handlings.is_empty()
                         && !self.marked(&handled.expr) =>
                 {
@@ -2109,6 +2110,11 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut lets: Vec<Let> = Vec::new();
         let mut bindings = Vec::new();
         let span = handled.expr.span;
+        // `e within d`: `d` is evaluated first (`spec/27 §5`).
+        let deadline = handled
+            .within
+            .as_ref()
+            .map(|deadline| (self.atom(&mut lets, deadline), deadline.span));
         for binding in &handled.with {
             let cap = self.name(&binding.cap).to_owned();
             let source = match &binding.value {
@@ -2149,6 +2155,19 @@ impl<'e, 'a> Fx<'e, 'a> {
             bindings.push((cap, source));
         }
         let mut current = self.expr(&handled.expr);
+        if let Some((atom, deadline_span)) = deadline {
+            let passing = handled
+                .handlings
+                .iter()
+                .any(|handling| matches!(handling.kind, HandlingKind::ErrorPass));
+            current = self.within_core(
+                current,
+                atom,
+                deadline_span,
+                passing,
+                span.to(deadline_span),
+            );
+        }
         let value_ty = self.type_at(handled.expr.span);
         for handling in &handled.handlings {
             current = match &handling.kind {
@@ -2232,6 +2251,63 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
         }
         (close(lets, current), components)
+    }
+
+    /// `body` bounded by the deadline `deadline`, whose source is `deadline_span`, as the
+    /// whole `e within d` at `span` (`spec/27 §5`, ADR 0117 rule 5). Its time-out is `TimedOut`
+    /// of `Timed` with failures wrapped in `Failed`, or `Expired` of `Deadline`, as the checker
+    /// typed it; under `if error pass` (`passing`), the function's own `TimedOut`, with failures
+    /// passed as they are.
+    fn within_core(
+        &mut self,
+        body: CoreExpr,
+        deadline: Atom,
+        deadline_span: Span,
+        passing: bool,
+        span: Span,
+    ) -> CoreExpr {
+        let variant = |fx: &mut Self, kind: usize, name: &str| -> Option<Ctor> {
+            let index = fx
+                .env
+                .kinds
+                .get(kind)?
+                .variants
+                .iter()
+                .position(|v| v.name == name)?;
+            Some(fx.ctor(kind, Some(index)))
+        };
+        let failure = self.records.withins.get(&deadline_span).cloned();
+        let own = self.records.within_passes.get(&deadline_span).cloned();
+        let shape = match (passing, own, failure) {
+            (true, Some(Ty::Kind(own, _)), _) => {
+                variant(self, own, "TimedOut").map(|timeout| (timeout, None))
+            }
+            (false, _, Some(Ty::Kind(kind, args))) if !args.is_empty() => {
+                match (
+                    variant(self, kind, "TimedOut"),
+                    variant(self, kind, "Failed"),
+                ) {
+                    (Some(timeout), Some(wrap)) => Some((timeout, Some(wrap))),
+                    _ => None,
+                }
+            }
+            (false, _, Some(Ty::Kind(kind, _))) => {
+                variant(self, kind, "Expired").map(|timeout| (timeout, None))
+            }
+            _ => None,
+        };
+        let Some((timeout, wrap)) = shape else {
+            self.broken.set(true);
+            return body;
+        };
+        CoreExpr::Within {
+            deadline,
+            deadline_span,
+            body: Box::new(body),
+            timeout,
+            wrap,
+            span,
+        }
     }
 
     /// `if none` on the last component of a call's tuple: the places keep their new values,
@@ -3729,10 +3805,24 @@ impl<'e, 'a> Fx<'e, 'a> {
                 )
             }
             ExprKind::Fail(variant) => self.fail(variant),
-            ExprKind::Attempt(operand) => CoreExpr::Attempt {
-                body: Box::new(self.expr(operand)),
-                span: expr.span,
-            },
+            ExprKind::Attempt { operand, within } => {
+                // `attempt e within d`: `d` first, then `e` bounded by it (`spec/27 §5`).
+                let mut lets = Vec::new();
+                let deadline = within
+                    .as_ref()
+                    .map(|deadline| (self.atom(&mut lets, deadline), deadline.span));
+                let mut body = self.expr(operand);
+                if let Some((atom, deadline_span)) = deadline {
+                    body = self.within_core(body, atom, deadline_span, false, expr.span);
+                }
+                close(
+                    lets,
+                    CoreExpr::Attempt {
+                        body: Box::new(body),
+                        span: expr.span,
+                    },
+                )
+            }
             _ => {
                 let mut lets = Vec::new();
                 let atom = self.atom(&mut lets, expr);
@@ -4040,7 +4130,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let value = self.atom(lets, value);
                 self.range_test(lets, &value, value_span, range)
             }
-            ExprKind::IfLine { .. } | ExprKind::Fail(_) | ExprKind::Attempt(_) => {
+            ExprKind::IfLine { .. } | ExprKind::Fail(_) | ExprKind::Attempt { .. } => {
                 let inner = self.expr(expr);
                 self.push_expr(lets, span, inner)
             }

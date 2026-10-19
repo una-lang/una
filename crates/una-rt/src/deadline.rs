@@ -70,6 +70,9 @@ struct Frame {
     /// What a cut restores: whether the task ran a `for ever` body, and that loop's deadline.
     in_ever: bool,
     ever: Option<Deadline>,
+    /// The position of its cancellation entry in the task's: an operation in progress shields
+    /// the entries before the ones it started with (`spec/19 §6` rule 4).
+    entry: usize,
 }
 
 /// A task's deadlines.
@@ -322,7 +325,7 @@ pub fn within_enter(word: i64) -> i64 {
         _ => None,
     };
     let in_ever = with_state(|state| state.in_ever).unwrap_or(false);
-    crate::runtime::push_cancel(Arc::clone(&flag));
+    let entry = crate::runtime::push_cancel(Arc::clone(&flag));
     local(|local| {
         let id = local.next;
         local.next += 1;
@@ -334,6 +337,7 @@ pub fn within_enter(word: i64) -> i64 {
             timer,
             in_ever,
             ever,
+            entry,
         });
         id
     })
@@ -373,7 +377,15 @@ pub fn within_end(id: i64, stopped: i64) -> i64 {
     // An abort, or a cancellation of the task that is not this deadline's (a failed sibling, a
     // `within` of a task above it), stops the task on, and so does an outer deadline that
     // passed, which its own `within` reports (rule 5, Nesting).
-    let outer = local(|local| local.withins.iter().any(|outer| passed(outer, now)));
+    // An operation in progress completes: the `within`s it shields, those whose entries come
+    // before the ones it started with, cannot cut its handler's code (`spec/19 §6` rule 4).
+    let shielded = crate::runtime::shielded();
+    let outer = local(|local| {
+        local
+            .withins
+            .iter()
+            .any(|outer| outer.entry >= shielded && passed(outer, now))
+    });
     if outer || crate::runtime::task_stopping() {
         return STOPPED;
     }

@@ -52,6 +52,7 @@ mod ty;
 mod unify;
 mod units;
 mod via;
+mod within;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
@@ -495,6 +496,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // 0.2 they then reach their least fixpoint, below.
     let mut collected = authority::Collected::default();
     let mut edges = Vec::new();
+    let withins;
     {
         let mut scratch = Report::new(package.sources);
         let mut findings = Findings::default();
@@ -517,6 +519,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 .iter()
                 .map(|(caller, callee, _)| (*caller, *callee)),
         );
+        withins = !findings.withins.is_empty();
         env.opaque_plain = opaque_plain(&env, &findings.edges);
     }
     if package.settings.edition >= Edition::V0_2 {
@@ -590,6 +593,59 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // and operations of the locked headers that they do not grant.
     lock::resolve(&mut env, package.locks, &mut report);
     lock::drift(&env, &mut report);
+    // ADR 0117 IF2: the timing label of each `within` needs the whole package's call graph, so
+    // pass 2 is probed, its diagnostics dropped, until no label rises. Labels only rise, and
+    // each round that goes on raises one by at least one atom, so a round past that bound is an
+    // internal error, never a silent stop with a label too low. Before the file-state probe,
+    // whose label the timing labels can raise.
+    if withins {
+        let atoms = 4 + env.categories.len() + 1;
+        let mut rounds = 0usize;
+        loop {
+            rounds += 1;
+            let mut scratch = Report::new(package.sources);
+            let mut probe = Findings::default();
+            let mut unused = authority::Collected::default();
+            for module in 0..package.modules.len() {
+                if env.reports(module) {
+                    check::module(
+                        &mut env,
+                        &facts,
+                        &mut scratch,
+                        &mut probe,
+                        &mut unused,
+                        authority::Pass::Check,
+                        module,
+                    );
+                }
+            }
+            let labels = authority::within_labels(&env, &probe);
+            if labels == env.within_timing {
+                break;
+            }
+            let joined: std::collections::BTreeMap<Span, label::Label> = labels
+                .into_iter()
+                .map(|(key, label)| match env.within_timing.get(&key) {
+                    Some(before) => (key, before.join(&label)),
+                    None => (key, label),
+                })
+                .collect();
+            if rounds > joined.len() * atoms + 2 {
+                if let Some(site) = probe.withins.first() {
+                    report.error(
+                        Code::U8001,
+                        site.span,
+                        "internal error: the timing labels of `within` did not reach a fixpoint (ADR 0117 IF2)".to_owned(),
+                    );
+                }
+                break;
+            }
+            if joined == env.within_timing {
+                break;
+            }
+            env.within_timing = joined;
+        }
+    }
     // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
     // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
     // so that a read checked before a write has the label too. The probe's label is the least
@@ -676,7 +732,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
-    let timing_sites = authority::deadline_timing(&env, &findings, &mut report);
+    let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
+    timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
+    timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -922,6 +980,9 @@ pub(crate) struct Findings {
     /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
     /// function, and the seed of its body's timing label.
     pub(crate) deadline_loops: Vec<DeadlineLoop>,
+    /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
+    /// the seed of its timing label.
+    pub(crate) withins: Vec<within::WithinSite>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

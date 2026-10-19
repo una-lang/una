@@ -291,7 +291,7 @@ mod tests {
             ExprKind::IfLine { .. }
             | ExprKind::Lambda { .. }
             | ExprKind::Checked { .. }
-            | ExprKind::Attempt(_)
+            | ExprKind::Attempt { .. }
             | ExprKind::Fail(_)
             | ExprKind::Binary { .. }
             | ExprKind::Unary { .. }

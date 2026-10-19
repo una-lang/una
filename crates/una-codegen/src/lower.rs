@@ -678,6 +678,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     return self.joined(join, reached);
                 }
                 Expr::Attempt { body, .. } => return self.attempt(body, env, scope).map(Some),
+                Expr::Within {
+                    deadline,
+                    body,
+                    timeout,
+                    wrap,
+                    ..
+                } => {
+                    return self.within(deadline, body, timeout, wrap.as_ref(), env, scope, catch);
+                }
                 Expr::With { cap, source, body } => {
                     let instance = match source {
                         // E-Rebind shares the instance.
@@ -1580,6 +1589,127 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(done, &[err.into()]);
         self.builder.switch_to_block(done);
         self.param(done)
+    }
+
+    /// `e within d` (`spec/27 §5`, ADR 0117 rule 5): `body` bounded by the deadline
+    /// `deadline`. The runtime arms it (`una_rt_within_enter`), and every way out of `body`
+    /// ends it (`una_rt_within_end`), which says whether `body`'s outcome stands, the deadline
+    /// passed (the time-out `timeout`), or the task stops on.
+    ///
+    /// `body` is lowered with a scope of its own, so it borrows the words of `scope` and never
+    /// releases them: a value that returned too late becomes the time-out with `scope` still
+    /// owned, which is released here on every path.
+    ///
+    /// While `body` is lowered, a stop of the task goes to this `within`'s own block instead of
+    /// the function's: a passed deadline cancels `body` at a check point, and the stop reaches
+    /// here. Nothing is released on a stop's way, as for a stopped task: the words `body` held
+    /// stay allocated, charged to the run's memory budget, until the task's heap ends
+    /// (`docs/plan/0117-s2-design.md` §5, decision S2-D5).
+    #[allow(clippy::too_many_arguments)]
+    fn within(
+        &mut self,
+        deadline: &Atom,
+        body: &'p Expr,
+        timeout: &Ctor,
+        wrap: Option<&Ctor>,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let (ms, _) = self.atom(deadline, env)?;
+        let id = self.call("una_rt_within_enter", &[ms])?;
+        let succeeded = self.join();
+        let failed = self.join();
+        let done = self.join();
+        let cut = self.builder.create_block();
+        // A failure of `body` in time goes to `failed`, which releases what `body` made; Core
+        // puts no `skip` or `stop` in a handled expression.
+        let inner = Catch {
+            block: failed,
+            outer: Scope::new(),
+            base: 0,
+            exit: None,
+        };
+        let stop = std::mem::replace(&mut self.stop, cut);
+        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner);
+        self.stop = stop;
+        let reached = reached?;
+        let timeout_index = i64::try_from(timeout.index).map_err(crate::internal)?;
+        // The time-out: a variant without fields, an immediate word.
+        let timed_out = |lowerer: &mut Self| {
+            lowerer
+                .builder
+                .ins()
+                .iconst(types::I64, (timeout_index << 1) | 1)
+        };
+
+        // `body` returned, in time or not.
+        self.builder.switch_to_block(succeeded);
+        if reached {
+            let value = self.param(succeeded)?;
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            let outcome = self.call("una_rt_within_end", &[id, zero])?;
+            let late = self.builder.create_block();
+            let stands = self.builder.create_block();
+            self.builder.ins().brif(outcome, late, &[], stands, &[]);
+            self.builder.switch_to_block(stands);
+            for &(owned, kind) in scope.iter().rev() {
+                self.release(owned, kind);
+            }
+            self.builder.ins().jump(done, &[value.into()]);
+            self.builder.switch_to_block(late);
+            self.release(value, Kind::Any);
+            let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
+            let stopping = self.flag(stopping);
+            self.stop_if(stopping);
+            let failure = timed_out(self);
+            self.fail(failure, scope, catch);
+        } else {
+            self.builder.ins().trap(TRAP);
+        }
+
+        // `body` failed with `x`: in time, `wrap(x)` or `x`; late, the time-out.
+        self.builder.switch_to_block(failed);
+        let failure = self.param(failed)?;
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let outcome = self.call("una_rt_within_end", &[id, zero])?;
+        let late = self.builder.create_block();
+        let stands = self.builder.create_block();
+        self.builder.ins().brif(outcome, late, &[], stands, &[]);
+        self.builder.switch_to_block(stands);
+        let passed = match wrap {
+            Some(wrap) => {
+                let index = i64::try_from(wrap.index).map_err(crate::internal)?;
+                self.wrap(index, failure)?
+            }
+            None => failure,
+        };
+        self.fail(passed, scope, catch);
+        self.builder.switch_to_block(late);
+        self.release(failure, Kind::Any);
+        let stopping = self.builder.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
+        let stopping = self.flag(stopping);
+        self.stop_if(stopping);
+        let failure = timed_out(self);
+        self.fail(failure, scope, catch);
+
+        // The task stopped inside `body`: this deadline's time-out, or a stop that goes on.
+        self.builder.switch_to_block(cut);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let outcome = self.call("una_rt_within_end", &[id, one])?;
+        let stopping = self.builder.ins().icmp_imm_s(IntCC::NotEqual, outcome, 1);
+        let stopping = self.flag(stopping);
+        self.stop_if(stopping);
+        let failure = timed_out(self);
+        self.fail(failure, scope, catch);
+
+        self.builder.switch_to_block(done);
+        if reached {
+            Ok(Some(self.param(done)?))
+        } else {
+            self.builder.ins().trap(TRAP);
+            Ok(None)
+        }
     }
 
     /// The variant at position `tag` of `Result` or `Option` holding `value`, which it takes
@@ -3412,7 +3542,9 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             borrowed_from(body, out);
             borrowed_from(handler, out);
         }
-        Expr::Attempt { body, .. } | Expr::With { body, .. } => borrowed_from(body, out),
+        Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            borrowed_from(body, out);
+        }
         Expr::Together { .. } | Expr::TogetherFor { .. } => {
             // A task's captures are never moved: every name the block reads stays pinned
             // (#162).

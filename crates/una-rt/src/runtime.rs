@@ -1367,11 +1367,19 @@ fn take_state(cell: &mut Option<State>) -> Option<State> {
 
 /// Pushes the cancellation entry of a `within` (ADR 0117 rule 5): the task's check points, and
 /// those of the tasks it starts, see it once its deadline sets it. O(1).
-pub(crate) fn push_cancel(flag: Arc<AtomicUsize>) {
+pub(crate) fn push_cancel(flag: Arc<AtomicUsize>) -> usize {
     with_state(|state| {
         state.cancel.push((flag, 1));
         HOT.with(|hot| hot.flags.set(state.cancel.len()));
-    });
+        state.cancel.len() - 1
+    })
+    .unwrap_or(0)
+}
+
+/// How many of the task's cancellation entries the operation in progress shields: those before
+/// it began (`spec/19 §6` rule 4).
+pub(crate) fn shielded() -> usize {
+    with_state(|state| state.shielded).unwrap_or(0)
 }
 
 /// Removes the cancellation entry `flag` of a `within` that ended. O(entries).

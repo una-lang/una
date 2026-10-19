@@ -155,6 +155,9 @@ impl Scan<'_, '_> {
                 self.args(&call.args, false);
             }
         }
+        if let Some(within) = &handled.within {
+            self.expr(within);
+        }
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorUse(expr) | HandlingKind::NoneUse(expr) => self.expr(expr),
@@ -252,9 +255,22 @@ impl Scan<'_, '_> {
                 self.lambda -= 1;
             }
             // `attempt f(x)` and `(f(x))` stand where the call does (#270).
-            ExprKind::Paren(inner) | ExprKind::Attempt(inner) => {
+            ExprKind::Paren(inner)
+            | ExprKind::Attempt {
+                operand: inner,
+                within: None,
+            } => {
                 self.top = top;
                 self.expr(inner);
+            }
+            ExprKind::Attempt {
+                operand: inner,
+                within: Some(within),
+            } => {
+                self.top = top;
+                self.expr(inner);
+                self.top = false;
+                self.expr(within);
             }
             // `is` reads only its value: its literal is a constant, since interpolating in it is
             // U4008 (`spec/07 §7` rule 3, S-28), so walking `value` alone is complete.

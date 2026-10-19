@@ -103,7 +103,8 @@ pub enum EventOutcome {
     Stop,
     /// An iteration of a `for ever within` passed its deadline (ADR 0116 rule 11): the event
     /// after the first operation that the deadline made fail in the iteration. Like `Stop`, it
-    /// names no operation.
+    /// names no operation. Also the event of a `within` that timed out, after the outcomes of
+    /// the operations it interrupted (ADR 0117 rule 5).
     Timeout,
 }
 
@@ -202,6 +203,10 @@ pub(crate) enum Stop<'p> {
     /// `exit_k(b, ...)`: the end of an iteration of the innermost loop, by `skip` or `stop`,
     /// with the loop's state (`spec/26 §3`); the loop catches it.
     Exit(ExitTag, Vec<Value<'p>>),
+    /// The deadline of the `within` with this id passed: its expression is cancelled at a
+    /// check point, and nothing inside runs further, until that `within` catches it and fails
+    /// with its time-out (`spec/27 §5`, ADR 0117 rule 5).
+    Cut(u64),
 }
 
 /// The result of evaluating an expression.
@@ -696,6 +701,15 @@ pub(crate) struct Machine<'p, 'w> {
     task: Vec<usize>,
     /// The deadline of the iteration of the `for ever within` in progress (ADR 0116 rule 11).
     deadline: Option<Deadline>,
+    /// The `within`s in progress, outermost first: each one's id and when its deadline passes
+    /// on the run's clock, `None` beyond it (`spec/27 §5`).
+    withins: Vec<(u64, Option<u64>)>,
+    /// The id of the next `within`.
+    next_within: u64,
+    /// The `within`s an operation in progress shields, the first ones of `withins`: an
+    /// operation completes whatever deadline passes meanwhile (`spec/19 §6` rule 4, `spec/26
+    /// §7` rule 3), and only the `within`s its handler's own code starts can cut that code.
+    within_shield: usize,
     /// What the function in progress evaluates after the expression in progress, innermost
     /// last, with the names that each rebinds before reading them: a binding none of them
     /// reads is dead once the expression no longer reads it (#201).
@@ -757,6 +771,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             installs: BTreeMap::new(),
             deadline: None,
+            withins: Vec::new(),
+            next_within: 0,
+            within_shield: 0,
             frames: Vec::new(),
             task: Vec::new(),
             later: Vec::new(),
@@ -969,7 +986,94 @@ impl<'p, 'w> Machine<'p, 'w> {
                 limit: self.max_memory,
             }));
         }
+        // `spec/27 §5`: past the deadline of a `within` in progress, its expression is
+        // cancelled here; the outermost one that passed reports it (rule 5, Nesting).
+        if let Some(id) = self.passed_within(self.within_shield) {
+            return Err(Stop::Cut(id));
+        }
         Ok(())
+    }
+
+    /// The outermost `within` in progress from position `from` on whose deadline has passed on
+    /// the run's clock. O(withins), and no clock reading without one.
+    fn passed_within(&self, from: usize) -> Option<u64> {
+        if self.withins.len() <= from {
+            return None;
+        }
+        let now = self.clock.now();
+        self.withins
+            .iter()
+            .skip(from)
+            .find(|(_, at)| at.is_some_and(|at| at <= now))
+            .map(|(id, _)| *id)
+    }
+
+    /// The time left before the earliest deadline of the `within`s in progress, zero once it
+    /// has passed; `None` without one that passes.
+    fn within_left(&self) -> Option<std::time::Duration> {
+        let at = self.withins.iter().filter_map(|(_, at)| *at).min()?;
+        Some(std::time::Duration::from_millis(
+            at.saturating_sub(self.clock.now()),
+        ))
+    }
+
+    /// `e within d` (`spec/27 §5`, ADR 0117 rule 5): `body` bounded by the deadline `ms`
+    /// milliseconds after now. Its outcome stands when it returns before the deadline, which is
+    /// checked once more when it returns; past it, the `within` fails with `timeout` after its
+    /// `timeout` event. A failure `x` in time fails as `wrap(x)`, or as `x` without a `wrap`.
+    /// An outer `within` whose deadline passed too reports instead.
+    fn within(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        ms: u64,
+        body: &'p Expr,
+        timeout: &'p Ctor,
+        wrap: Option<&'p Ctor>,
+    ) -> Flow<'p> {
+        let id = self.next_within;
+        self.next_within += 1;
+        let at = self.clock.now().checked_add(ms);
+        let depth = self.withins.len();
+        self.withins.push((id, at));
+        let result = self.eval(env, caps, body);
+        self.withins.truncate(depth);
+        let timed_out = |machine: &mut Self| {
+            machine.within_timeout_event();
+            Err(Stop::Fail(Value::data(timeout.clone(), Vec::new())))
+        };
+        match result {
+            Err(Stop::Cut(cut)) if cut == id => timed_out(self),
+            Err(stop @ (Stop::Cut(_) | Stop::Abort(_) | Stop::Exit(..))) => Err(stop),
+            result => {
+                if let Some(outer) = self.passed_within(self.within_shield) {
+                    return Err(Stop::Cut(outer));
+                }
+                if at.is_some_and(|at| at <= self.clock.now()) {
+                    return timed_out(self);
+                }
+                match (result, wrap) {
+                    (Err(Stop::Fail(failure)), Some(wrap)) => {
+                        Err(Stop::Fail(Value::data(wrap.clone(), vec![failure])))
+                    }
+                    (result, _) => result,
+                }
+            }
+        }
+    }
+
+    /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
+    fn within_timeout_event(&mut self) {
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq: self.trace.len() + 1,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Timeout,
+        });
     }
 
     /// Structural equality at `span`, within the memory budget: a comparison visits at most as
@@ -1424,6 +1528,27 @@ impl<'p, 'w> Machine<'p, 'w> {
                         }
                         Err(abort) => Err(abort),
                     };
+                }
+                Expr::Within {
+                    deadline,
+                    body,
+                    timeout,
+                    wrap,
+                    ..
+                } => {
+                    // A deadline below 1 is refuted by verification, and has passed at once; one
+                    // that does not fit `u64` never passes.
+                    let ms = match self.atom(env, deadline)? {
+                        Value::Int(n) => {
+                            if n.sign() == Sign::Minus {
+                                0
+                            } else {
+                                u64::try_from(&n).unwrap_or(u64::MAX)
+                            }
+                        }
+                        _ => return Err(fault("a deadline that is not an `Int`")),
+                    };
+                    return self.within(env, &caps, ms, body, timeout, wrap.as_ref());
                 }
                 Expr::With { cap, source, body } => {
                     let instance = self.instance(env, &caps, cap, source)?;
@@ -2065,7 +2190,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .zip(values.iter().cloned())
                     .collect();
                 env.extend(implementation.params.iter().map(String::as_str).zip(args));
+                let shield = std::mem::replace(&mut self.within_shield, self.withins.len());
                 let result = self.eval(&mut env, own, &implementation.body);
+                self.within_shield = shield;
                 self.leave(result)
             }
         };
@@ -2075,7 +2202,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                 variant: variant(failure),
                 value: self.index.render(failure),
             },
-            Err(Stop::Abort(_) | Stop::Exit(..)) => EventOutcome::Aborted,
+            // An operation in progress completes (`spec/19 §6` rule 4): a cut inside its
+            // handler is only one of a `within` that the handler's own code started, which
+            // catches it there.
+            Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => EventOutcome::Aborted,
         };
         if let Some(event) = self.trace.get_mut(slot) {
             event.outcome = outcome;
@@ -2219,12 +2349,21 @@ impl<'p, 'w> Machine<'p, 'w> {
         //
         // Under virtual time, a network wait takes no virtual time (ADR 0116 rule 19), so only a
         // deadline the virtual clock has already reached cuts the request, at once.
+        // The deadlines of the `within`s in progress bound the wait the same way (`spec/27 §5`);
+        // a cut by one is observed at the next check point, or when its expression returns.
         let mut settings = self.http;
         let mut cut = false;
-        if let Some(left) = self
+        let ever = self
             .deadline
             .as_ref()
-            .and_then(|deadline| deadline.left(&self.clock))
+            .and_then(|deadline| deadline.left(&self.clock));
+        let within = self.within_left();
+        let (left, by_ever) = match (ever, within) {
+            (Some(ever), Some(within)) if within < ever => (Some(within), false),
+            (Some(ever), _) => (Some(ever), true),
+            (None, within) => (within, false),
+        };
+        if let Some(left) = left
             && left < settings.timeout
             && (left.is_zero() || !self.clock.is_virtual())
         {
@@ -2238,7 +2377,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         } else {
             send(&request, &grants, &settings)
         };
-        if cut && sent == Err(Error::TimedOut) {
+        if cut && by_ever && sent == Err(Error::TimedOut) {
             self.timeout_event();
         }
         let response = sent.map_err(fail)?;
