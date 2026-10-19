@@ -1,4 +1,4 @@
-//! The registry's HTTP/1.1 endpoints (ADR 0122 rules 34, 36.2 and 43; `spec/30 §12`), on the
+//! The registry's HTTP/1.1 endpoints (ADR 0122 rules 34, 36.2 and 43; `spec/30 §13`), on the
 //! standard library alone.
 //!
 //! **Reading** (`GET`) serves files of the store as they are, at the paths of rule 34, and

@@ -1,4 +1,4 @@
-//! The entries of the log (ADR 0122 rules 36 to 38 and 41, `spec/30 §11` and `§12`): each a
+//! The entries of the log (ADR 0122 rules 36 to 38 and 41, `spec/30 §11` and `§13`): each a
 //! signed note, the leaf's bytes being the whole note, signature lines included.
 //!
 //! Release statements, yanks and advisories are the client's formats, read by its parsers.

@@ -1,5 +1,5 @@
 //! The registry: its state, the checks of every submission, and the log's files (ADR 0122
-//! rules 26, 34 to 38, 41, 43 to 45; `spec/30 §12`).
+//! rules 26, 34 to 38, 41, 43 to 45; `spec/30 §13`).
 //!
 //! **Fail closed.** A submission is logged only when every check passes: its format, its
 //! source, its place in its name's chain, its signatures by keys valid at that point of the log,
