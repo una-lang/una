@@ -4,6 +4,8 @@
 
 pub mod client;
 pub mod parse;
+pub mod reply;
+pub mod request;
 pub mod strict;
 
 /// URLs and grants, which `una-core` holds for every crate that reads grants.
