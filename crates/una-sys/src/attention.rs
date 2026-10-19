@@ -26,7 +26,9 @@ pub struct Word(usize);
 impl Word {
     /// The word's current value, a relaxed load: the one load of a check point's fast path.
     pub fn load(self) -> u64 {
-        WORDS.get(self.0).map_or(0, |word| word.load(Ordering::Relaxed))
+        WORDS
+            .get(self.0)
+            .map_or(0, |word| word.load(Ordering::Relaxed))
     }
 
     /// Raises the word: its thread's next check point takes the slow path.
@@ -62,7 +64,9 @@ pub fn raise_all() {
 /// Records a host stop request and raises every word; returns how many requests have arrived,
 /// this one included. Async-signal-safe: atomics only.
 pub fn request_stop() -> u32 {
-    let count = STOP_REQUESTS.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+    let count = STOP_REQUESTS
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
     raise_all();
     count
 }

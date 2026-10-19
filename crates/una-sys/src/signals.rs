@@ -52,7 +52,9 @@ pub fn install() -> Result<(), InstallError> {
                 && libc::fcntl(fd, libc::F_SETFD, descriptor | libc::FD_CLOEXEC) == 0
         };
         if !set {
-            return Err(InstallError("cannot set the flags of the wake pipe".to_owned()));
+            return Err(InstallError(
+                "cannot set the flags of the wake pipe".to_owned(),
+            ));
         }
     }
     let [read, write] = fds;
@@ -70,7 +72,9 @@ pub fn install() -> Result<(), InstallError> {
         // `on_signal`, an `extern "C"` function that does only async-signal-safe work; the
         // old action is not asked for (null).
         if unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) } != 0 {
-            return Err(InstallError("cannot install the signal handlers".to_owned()));
+            return Err(InstallError(
+                "cannot install the signal handlers".to_owned(),
+            ));
         }
     }
     Ok(())
