@@ -14,7 +14,7 @@ use super::Report;
 use super::authority::{Bound, Frame};
 use super::check::{Checker, Ctx, LoopFrame, Rl, Role};
 use super::closest;
-use super::env::KindDef;
+use super::env::{Entity, KindDef};
 use super::label::Label;
 use super::locals::TakenState;
 use super::records::Res;
@@ -226,6 +226,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 format!("`for ever` may run forever here: {reason}"),
             );
         }
+        // `within d` (`spec/26 §6`, ADR 0116 rule 11): evaluated once, before the loop.
+        let deadline = stmt.within.as_ref().map(|within| self.deadline(within));
         let before = self.taken_state();
         let before_len = self.locals.len();
         let mark = self.locals.len();
@@ -236,7 +238,22 @@ impl<'a> Checker<'_, 'a, '_> {
             on_stop: false,
         });
         let in_ever = std::mem::replace(&mut self.in_ever, true);
+        // IF8: the timing label of the body, for the failures the deadline causes.
+        if let Some(label) = &deadline {
+            self.timing_start();
+            self.timing_source(label.clone(), "the deadline".to_owned());
+        }
         let ty = self.block(&stmt.block, None, Role::Plain, false);
+        if deadline.is_some() {
+            let seed = self.timing_end();
+            if self.pass == super::authority::Pass::Check {
+                self.findings.deadline_loops.push(super::DeadlineLoop {
+                    span: stmt.span,
+                    function: self.current,
+                    seed,
+                });
+            }
+        }
         self.in_ever = in_ever;
         self.loops.pop();
         self.locals.truncate(mark);
@@ -257,6 +274,57 @@ impl<'a> Checker<'_, 'a, '_> {
             self.discarded(value_span(&on_stop.block), &ty);
         }
         self.join_skipped(&before);
+    }
+
+    /// The deadline `d` of `for ever within d` (`spec/26 §6`, ADR 0116 rule 11): an `Int of
+    /// Millisecond` (U2028 for another unit or none, U2001 for a type that is not an integer)
+    /// of at least 1, a `refinement` obligation (U5001 for `within 0`). Returns its label,
+    /// which the timing label of the body joins (IF5 item 5).
+    fn deadline(&mut self, within: &Expr) -> Label {
+        let found = self.expr(within, None);
+        let found = self.resolve(&found);
+        let label = self.deep(&found);
+        if matches!(found.unlabeled(), Ty::Error(_)) {
+            return label;
+        }
+        let shown = self.show(&found);
+        if !matches!(found.magnitude(), Ty::Int) {
+            self.report.error(
+                Code::U2001,
+                within.span,
+                format!(
+                    "the deadline of `for ever within` is an `Int of Millisecond`, found `{shown}`"
+                ),
+            );
+            return label;
+        }
+        let millisecond = self
+            .env
+            .modules
+            .iter()
+            .find(|module| module.path == crate::names::prelude::STD_TIME)
+            .and_then(|module| match module.upper.get("Millisecond") {
+                Some(&Entity::Unit(id)) => self.env.units.get(id).and_then(|u| u.norm.clone()),
+                _ => None,
+            });
+        let is_millisecond = match (found.unit(), &millisecond) {
+            (Some(unit), Some(expected)) => unit == expected.as_ref(),
+            _ => false,
+        };
+        if !is_millisecond {
+            let mut diagnostic = self.report.make(
+                Code::U2028,
+                within.span,
+                format!("the deadline of `for ever within` is an `Int of Millisecond` from `std.time`, found `{shown}`"),
+            );
+            diagnostic.repairs.push(Report::advice(
+                "write the deadline in milliseconds, as `100 * millisecond` with `import std.time (millisecond)`",
+            ));
+            self.report.push(diagnostic);
+            return label;
+        }
+        self.obligation(ObligationKind::Refinement, within.span, None);
+        label
     }
 
     /// U2040: statements after an unconditional `stop` or `skip` in the same block never run

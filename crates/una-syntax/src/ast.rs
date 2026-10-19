@@ -668,9 +668,12 @@ pub enum Stmt {
     OnStop(Box<OnStop>),
 }
 
-/// `"for" "ever" NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`, ADR 0116 rule 10).
+/// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`,
+/// §6, ADR 0116 rules 10 and 11).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EverStmt {
+    /// The deadline of each iteration, after `within`, when there is one (`spec/26 §6`).
+    pub within: Option<Expr>,
     /// The body.
     pub block: Block,
     /// The `on stop` block, when there is one.

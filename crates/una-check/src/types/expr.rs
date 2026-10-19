@@ -729,6 +729,17 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.edges.push((current, callee, span));
         }
+        // What can run beside a part of a task construct (ADR 0116 IF6).
+        if self.task_depth > 0 {
+            self.findings.task_edges.insert(callee);
+        }
+        if self.lambda_depth > 0 {
+            self.findings.lambda_edges.insert(callee);
+        }
+        if self.handler.is_some() {
+            self.findings.handler_edges.insert(callee);
+        }
+        self.timing_callee(callee);
     }
 
     /// An upper-case name used as a value: a variant without fields.

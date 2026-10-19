@@ -95,6 +95,36 @@ pub enum EventOutcome {
     /// A loop of the host stopped at the start of an iteration (ADR 0116 rule 14): the driver's,
     /// when the run's stop came. Like `Cancelled`, it names no operation.
     Stop,
+    /// An iteration of a `for ever within` passed its deadline (ADR 0116 rule 11): the event
+    /// after the first operation that the deadline made fail in the iteration. Like `Stop`, it
+    /// names no operation.
+    Timeout,
+}
+
+/// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Deadline {
+    /// When it passes; `None` when it is beyond what the clock can hold.
+    pub(crate) at: Option<std::time::Instant>,
+    /// Whether the iteration's `timeout` event is in the trace already.
+    pub(crate) reported: bool,
+}
+
+impl Deadline {
+    /// The deadline `ms` milliseconds from now.
+    pub(crate) fn after(ms: u64) -> Deadline {
+        Deadline {
+            at: std::time::Instant::now().checked_add(std::time::Duration::from_millis(ms)),
+            reported: false,
+        }
+    }
+
+    /// The time left before it, zero once it has passed; `None` for a deadline that never
+    /// passes.
+    pub(crate) fn left(&self) -> Option<std::time::Duration> {
+        self.at
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
+    }
 }
 
 /// Why a run stops without a value or a failure.
@@ -559,6 +589,8 @@ pub(crate) struct Machine<'p, 'w> {
     /// The path of the `together` task in progress, one 1-based index per enclosing block
     /// (`spec/19 §6`).
     task: Vec<usize>,
+    /// The deadline of the iteration of the `for ever within` in progress (ADR 0116 rule 11).
+    deadline: Option<Deadline>,
     /// What the function in progress evaluates after the expression in progress, innermost
     /// last, with the names that each rebinds before reading them: a binding none of them
     /// reads is dead once the expression no longer reads it (#201).
@@ -598,6 +630,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             stack_budget: crate::stack_bytes(max_depth)
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             installs: BTreeMap::new(),
+            deadline: None,
             frames: Vec::new(),
             task: Vec::new(),
             later: Vec::new(),
@@ -1306,15 +1339,44 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
             // `ever`: until `stop` or a failure (`spec/26 §5`).
-            LoopSource::Ever => loop {
-                self.within_budget(span)?;
-                let stopped;
-                (current, stopped) =
-                    self.iteration(env, caps, var, state, current, &Value::Unit, body)?;
-                if stopped {
-                    break;
+            // With `within d`, each iteration has the deadline `d` after its start, which every
+            // interruptible operation it waits on or starts honors (`spec/26 §6`).
+            LoopSource::Ever { within } => {
+                let period = match within {
+                    Some((deadline, _)) => match self.atom(env, deadline)? {
+                        // A deadline below 1 is refuted by verification; one that does not
+                        // fit `u64` never passes.
+                        Value::Int(n) => Some(if n.sign() == Sign::Minus {
+                            0
+                        } else {
+                            u64::try_from(&n).unwrap_or(u64::MAX)
+                        }),
+                        _ => return Err(fault("a deadline that is not an `Int`")),
+                    },
+                    None => None,
+                };
+                let outer = self.deadline.take();
+                loop {
+                    if let Err(stop) = self.within_budget(span) {
+                        self.deadline = outer;
+                        return Err(stop);
+                    }
+                    self.deadline = period.map(Deadline::after);
+                    match self.iteration(env, caps, var, state, current, &Value::Unit, body) {
+                        Ok((next, stopped)) => {
+                            current = next;
+                            if stopped {
+                                break;
+                            }
+                        }
+                        Err(stop) => {
+                            self.deadline = outer;
+                            return Err(stop);
+                        }
+                    }
                 }
-            },
+                self.deadline = outer;
+            }
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
             LoopSource::Until { cond, .. } => loop {
                 self.within_budget(span)?;
@@ -1471,7 +1533,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::List(items) => Ok(items.as_ref().clone()),
                 _ => Err(fault("a `together for` over a value that is not a list")),
             },
-            LoopSource::Until { .. } | LoopSource::Ever => {
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => {
                 Err(fault("a `together for` with an `until` or `ever` source"))
             }
             LoopSource::Range {
@@ -1766,6 +1828,28 @@ impl<'p, 'w> Machine<'p, 'w> {
         result
     }
 
+    /// Appends the `timeout` event of the iteration in progress, once per iteration (ADR 0116
+    /// rule 11), with the path of its task.
+    fn timeout_event(&mut self) {
+        let Some(deadline) = self.deadline.as_mut() else {
+            return;
+        };
+        if deadline.reported {
+            return;
+        }
+        deadline.reported = true;
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq: self.trace.len() + 1,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Timeout,
+        });
+    }
+
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
         use una_http::client::{Error, Request, send};
@@ -1844,7 +1928,25 @@ impl<'p, 'w> Machine<'p, 'w> {
             body: body.as_bytes(),
             bearer: bearer.as_deref(),
         };
-        let response = send(&request, &grants, &self.http).map_err(fail)?;
+        // The deadline of a `for ever within` iteration (`spec/26 §6`): past it, the request
+        // fails at once with `TimedOut`; before it, it waits no longer than the time left.
+        let mut settings = self.http;
+        let mut cut = false;
+        if let Some(left) = self.deadline.as_ref().and_then(Deadline::left)
+            && left < settings.timeout
+        {
+            settings.timeout = left;
+            cut = true;
+        }
+        let sent = if cut && settings.timeout.is_zero() {
+            Err(Error::TimedOut)
+        } else {
+            send(&request, &grants, &settings)
+        };
+        if cut && sent == Err(Error::TimedOut) {
+            self.timeout_event();
+        }
+        let response = sent.map_err(fail)?;
         let headers: Vec<Value<'p>> = response
             .headers
             .iter()

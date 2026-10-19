@@ -1086,7 +1086,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 (None, high, low)
             }
             LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
-            LoopSource::Ever => return self.lower_ever(expr, env, scope, catch),
+            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
         };
         let inclusive = matches!(
             source.as_ref(),
@@ -1473,7 +1473,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             true,
                         )
                     }
-                    LoopSource::Until { .. } | LoopSource::Ever => {
+                    LoopSource::Until { .. } | LoopSource::Ever { .. } => {
                         return Err(internal(
                             "a `together for` with an `until` or `ever` source",
                         ));
@@ -3336,7 +3336,7 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             match source.as_ref() {
                 LoopSource::List(list) => add(list, out),
                 LoopSource::Until { cond, .. } => borrowed_from(cond, out),
-                LoopSource::Range { .. } | LoopSource::Ever => {}
+                LoopSource::Range { .. } | LoopSource::Ever { .. } => {}
             }
             borrowed_from(body, out);
             if let Some(on_stop) = on_stop {
