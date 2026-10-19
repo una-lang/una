@@ -30,6 +30,15 @@ use una_core::Text;
 
 use crate::ffi::Code;
 
+mod collections;
+
+pub use collections::{
+    bit_set_empty, bit_set_op, bit_set_op_owned, collection_len, priority_empty, priority_op,
+    priority_op_owned, seq_empty, seq_of, seq_op, seq_op_owned, set_empty, set_of, set_op,
+    set_op_owned,
+};
+pub(crate) use collections::{bit_set_members, collection_words};
+
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
 /// The largest integer that a tagged word holds.
@@ -70,6 +79,18 @@ enum Object {
     },
     /// A map, by the order of its keys (`spec/21 §5`): the word of each key, and of its value.
     Map(BTreeMap<MapKey, (i64, i64)>),
+    /// A `Stack` or a `Queue` of `std.collections`, its own layout (ADR 0119 rule 19, ADR 0107
+    /// rule 2): a ring buffer of words, front first, a stack's top at its front.
+    Seq(VecDeque<i64>),
+    /// A `Set` of `std.collections`, its own layout: its items by their order (`spec/28 §6`),
+    /// each kept as its word for listing and rendering, as a map keeps its keys.
+    Set(BTreeMap<MapKey, i64>),
+    /// A `PriorityQueue` of `std.collections`, its own layout: a stable 4-ary heap of words
+    /// (`spec/28 §8`).
+    Priority(collections::PriorityHeap),
+    /// A `BitSet` of `std.collections`, its own layout: internal words that no walk reads as
+    /// values, its size and its count of members (`spec/28 §9`).
+    Bits(collections::Bits),
 }
 
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
@@ -107,8 +128,20 @@ impl Object {
                 .values()
                 .flat_map(|(key, value)| [*key, *value])
                 .collect(),
+            Object::Seq(items) => items.iter().copied().collect(),
+            Object::Set(items) => items.values().copied().collect(),
+            Object::Priority(heap) => heap.words().collect(),
             other => other.cells().to_vec(),
         }
+    }
+
+    /// Whether the object holds words that [`Object::cells`] does not give: a map's or a
+    /// collection's, which [`Object::children`] gives.
+    fn has_children_apart(&self) -> bool {
+        matches!(
+            self,
+            Object::Map(_) | Object::Seq(_) | Object::Set(_) | Object::Priority(_)
+        )
     }
 
     /// The words the object references.
@@ -118,7 +151,11 @@ impl Object {
             | Object::Text(_)
             | Object::Hashed(_)
             | Object::F64(_)
-            | Object::Map(_) => &[],
+            | Object::Map(_)
+            | Object::Seq(_)
+            | Object::Set(_)
+            | Object::Priority(_)
+            | Object::Bits(_) => &[],
             Object::Data { fields, .. } => fields,
             Object::List(items) => items,
             Object::Closure { env, .. } => env,
@@ -132,7 +169,11 @@ impl Object {
             | Object::Text(_)
             | Object::Hashed(_)
             | Object::F64(_)
-            | Object::Map(_) => None,
+            | Object::Map(_)
+            | Object::Seq(_)
+            | Object::Set(_)
+            | Object::Priority(_)
+            | Object::Bits(_) => None,
             Object::Data { fields, .. } => Some(fields),
             Object::List(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
@@ -342,9 +383,10 @@ pub fn release(word: i64) {
             object
         });
         if let Some(object) = freed {
-            match &object {
-                Object::Map(_) => pending.extend(object.children()),
-                _ => pending.extend_from_slice(object.cells()),
+            if object.has_children_apart() {
+                pending.extend(object.children());
+            } else {
+                pending.extend_from_slice(object.cells());
             }
         }
     }
@@ -800,12 +842,15 @@ pub(crate) fn equal_at(site: i64, a: i64, b: i64) -> Option<bool> {
 }
 
 /// A value with parts, compared through a worklist: a variant with fields, a record, a
-/// non-empty list or a non-empty map. Every other word is a leaf, compared as it is met.
+/// non-empty list, map, stack, queue or set. Every other word is a leaf, compared as it is met,
+/// a bit set included, as the interpreter compares them (`spec/28 §3` rule 3).
 fn has_parts(word: i64) -> bool {
     is_handle(word)
         && with(word, |object| match object {
             Object::Data { fields, .. } | Object::List(fields) => !fields.is_empty(),
             Object::Map(entries) => !entries.is_empty(),
+            Object::Seq(items) => !items.is_empty(),
+            Object::Set(items) => !items.is_empty(),
             _ => false,
         })
         .unwrap_or(false)
@@ -824,6 +869,11 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         Variant(i64),
         List,
         Map,
+        Seq,
+        Set,
+        /// A bit set's size and words: the same size and the same members (`spec/28 §3` rule
+        /// 3), compared at once, in O(size / 64), since they hold no values.
+        Bits(usize, Vec<u64>),
         Other,
     }
     if a == b {
@@ -842,6 +892,9 @@ fn leaf_equal(a: i64, b: i64) -> bool {
             Object::Data { tag, fields } if fields.is_empty() => Leaf::Variant(*tag),
             Object::List(items) if items.is_empty() => Leaf::List,
             Object::Map(entries) if entries.is_empty() => Leaf::Map,
+            Object::Seq(items) if items.is_empty() => Leaf::Seq,
+            Object::Set(items) if items.is_empty() => Leaf::Set,
+            Object::Bits(bits) => Leaf::Bits(bits.size, bits.words.clone()),
             _ => Leaf::Other,
         })
     };
@@ -881,20 +934,24 @@ fn admit(a: i64, b: i64, pending: &mut Vec<(i64, i64)>) -> bool {
 /// value has a `==` that is not reflexive. A type with one, such as a float under IEEE `==`,
 /// where NaN differs from itself, must revisit both (#819).
 fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
-    /// The parts of a value with parts: a variant's tag or a list's `None`, then its words, or
-    /// a map's keys and values.
+    /// The parts of a value with parts: a variant's tag or a list's, a stack's or a queue's
+    /// `None`, then its words; a map's keys and values; or a set's items, compared whole.
     enum Parts {
         Cells(Option<i64>, Vec<i64>),
         Map(Vec<MapKey>, Vec<i64>),
+        Keys(Vec<MapKey>),
     }
     let parts = |word: i64| {
         with(word, |object| match object {
             Object::Data { tag, fields } => Some(Parts::Cells(Some(*tag), fields.clone())),
             Object::List(items) => Some(Parts::Cells(None, items.clone())),
+            // The same elements in the same order, front first (`spec/28 §3` rule 3).
+            Object::Seq(items) => Some(Parts::Cells(None, items.iter().copied().collect())),
             Object::Map(entries) => Some(Parts::Map(
                 entries.keys().cloned().collect(),
                 entries.values().map(|(_, value)| *value).collect(),
             )),
+            Object::Set(items) => Some(Parts::Keys(items.keys().cloned().collect())),
             _ => None,
         })
         .flatten()
@@ -929,6 +986,9 @@ fn equal_words(a: i64, b: i64, pairs: usize) -> Option<bool> {
             (Some(Parts::Map(kx, x)), Some(Parts::Map(ky, y))) => {
                 kx == ky && x.into_iter().zip(y).all(|(a, b)| admit(a, b, &mut pending))
             }
+            // The same items in the same order (`spec/28 §3` rule 3): a set's items are keys,
+            // compared whole, so no pair is left pending, as in the interpreter.
+            (Some(Parts::Keys(x)), Some(Parts::Keys(y))) => x == y,
             _ => false,
         };
         if !same {
@@ -1046,6 +1106,23 @@ enum Node {
         cells: Vec<Cell>,
     },
     Map(Vec<(Cell, Cell)>),
+    /// A stack's or a queue's elements, front first.
+    Seq(Vec<Cell>),
+    /// A set's items, in their order.
+    Set(Vec<Cell>),
+    /// A priority queue: its direction, the sequence number of its next push, and its entries
+    /// in heap order, each its sequence number, its priority and its item.
+    Priority {
+        highest: bool,
+        next: u64,
+        entries: Vec<(u64, Cell, Cell)>,
+    },
+    /// A bit set: its size, its count of members and its words.
+    Bits {
+        size: usize,
+        count: usize,
+        words: Vec<u64>,
+    },
 }
 
 /// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
@@ -1188,6 +1265,21 @@ impl Object {
                     f(*value)?;
                 }
             }
+            Object::Seq(items) => {
+                for &item in items {
+                    f(item)?;
+                }
+            }
+            Object::Set(items) => {
+                for &item in items.values() {
+                    f(item)?;
+                }
+            }
+            Object::Priority(heap) => {
+                for word in heap.words() {
+                    f(word)?;
+                }
+            }
             other => {
                 for &child in other.cells() {
                     f(child)?;
@@ -1215,6 +1307,10 @@ impl Object {
                 cells: held,
             } => id.len() + code.len() * size_of::<i64>() + cells(held.len()),
             Object::Map(entries) => entries.len() * size_of::<(Cell, Cell)>(),
+            Object::Seq(items) => cells(items.len()),
+            Object::Set(items) => cells(items.len()),
+            Object::Priority(heap) => heap.entries.len() * size_of::<(u64, Cell, Cell)>(),
+            Object::Bits(bits) => bits.words.len() * size_of::<u64>(),
         }
     }
 
@@ -1251,6 +1347,22 @@ impl Object {
                     .map(|(key, value)| (cell(*key), cell(*value)))
                     .collect(),
             ),
+            Object::Seq(items) => Node::Seq(items.iter().map(|&item| cell(item)).collect()),
+            Object::Set(items) => Node::Set(items.values().map(|&item| cell(item)).collect()),
+            Object::Priority(heap) => Node::Priority {
+                highest: heap.highest,
+                next: heap.next,
+                entries: heap
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.sequence, cell(entry.priority), cell(entry.item)))
+                    .collect(),
+            },
+            Object::Bits(bits) => Node::Bits {
+                size: bits.size,
+                count: bits.count,
+                words: bits.words.clone(),
+            },
         }
     }
 }
@@ -1487,6 +1599,38 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
                     .zip(pairs)
                     .all(|((key, value), &(k, v))| cell_of(*key) == k && cell_of(*value) == v)
         }
+        (Object::Seq(items), Node::Seq(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .iter()
+                    .zip(cells)
+                    .all(|(&item, &cell)| cell_of(item) == cell)
+        }
+        (Object::Set(items), Node::Set(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .values()
+                    .zip(cells)
+                    .all(|(&item, &cell)| cell_of(item) == cell)
+        }
+        (
+            Object::Priority(heap),
+            Node::Priority {
+                highest,
+                next,
+                entries,
+            },
+        ) => {
+            heap.highest == *highest
+                && heap.next == *next
+                && heap.entries.len() == entries.len()
+                && heap.entries.iter().zip(entries).all(|(entry, &(s, p, i))| {
+                    entry.sequence == s && cell_of(entry.priority) == p && cell_of(entry.item) == i
+                })
+        }
+        (Object::Bits(bits), Node::Bits { size, count, words }) => {
+            bits.size == *size && bits.count == *count && bits.words == *words
+        }
         _ => false,
     }
 }
@@ -1697,6 +1841,46 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
                     made_word(k, words) == Some(*key) && made_word(v, words) == Some(*value)
                 })
         }
+        (Object::Seq(items), Node::Seq(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .iter()
+                    .zip(cells)
+                    .all(|(&item, cell)| made_word(cell, words) == Some(item))
+        }
+        // A set's items are in their order, which the node keeps.
+        (Object::Set(items), Node::Set(cells)) => {
+            items.len() == cells.len()
+                && items
+                    .values()
+                    .zip(cells)
+                    .all(|(&item, cell)| made_word(cell, words) == Some(item))
+        }
+        (
+            Object::Priority(heap),
+            Node::Priority {
+                highest,
+                next,
+                entries,
+            },
+        ) => {
+            heap.highest == *highest
+                && heap.next == *next
+                && heap.entries.len() == entries.len()
+                && heap.entries.iter().zip(entries).all(|(entry, (s, p, i))| {
+                    entry.sequence == *s
+                        && made_word(p, words) == Some(entry.priority)
+                        && made_word(i, words) == Some(entry.item)
+                })
+        }
+        (
+            Object::Bits(bits),
+            Node::Bits {
+                size,
+                count,
+                words: w,
+            },
+        ) => bits.size == *size && bits.count == *count && bits.words == *w,
         _ => false,
     }
 }
@@ -1795,6 +1979,70 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
                 drop(entry);
             }
             map
+        }
+        Node::Seq(items) => {
+            let _step = step(cells(items.len()))?;
+            let mut held_items = VecDeque::with_capacity(items.len());
+            for cell in items {
+                let word = cell_word(cell, words);
+                retain(word);
+                held_items.push_back(word);
+            }
+            alloc(Object::Seq(held_items))
+        }
+        // Each item a step, as a map's entry: its key is copied out of the item made before it.
+        Node::Set(items) => {
+            let set = alloc(Object::Set(BTreeMap::new()));
+            for cell in items {
+                let item = cell_word(cell, words);
+                let entry = match step(key_bytes(item).saturating_add(MAP_INSERT_BOUND)) {
+                    Ok(entry) => entry,
+                    Err(refused) => {
+                        release(set);
+                        return Err(refused);
+                    }
+                };
+                collections::set_insert(set, item);
+                drop(entry);
+            }
+            set
+        }
+        Node::Priority {
+            highest,
+            next,
+            entries,
+        } => {
+            let bytes = entries
+                .iter()
+                .map(|(_, priority, _)| key_bytes(cell_word(priority, words)))
+                .fold(
+                    entries.len() * size_of::<collections::Ranked>(),
+                    usize::saturating_add,
+                );
+            let _step = step(bytes)?;
+            alloc(Object::Priority(collections::PriorityHeap::imported(
+                *highest,
+                *next,
+                entries.iter().map(|(sequence, priority, item)| {
+                    (
+                        *sequence,
+                        cell_word(priority, words),
+                        cell_word(item, words),
+                    )
+                }),
+            )))
+        }
+        Node::Bits {
+            size,
+            count,
+            words: bits,
+        } => {
+            let _step = step(bits.len() * size_of::<u64>())?;
+            alloc(Object::Bits(collections::Bits {
+                words: bits.clone(),
+                size: *size,
+                count: *count,
+            }))
         }
     };
     Ok(made)
