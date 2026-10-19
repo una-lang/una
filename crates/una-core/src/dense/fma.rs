@@ -198,7 +198,9 @@ mod tests {
         let want = float::fma(x, y, z);
         assert_eq!(b(emulated(x, y, z)), b(want), "{x:e} {y:e} {z:e}");
         assert_eq!(b(baseline(x, y, z)), b(want), "{x:e} {y:e} {z:e}");
-        // The platform's fused multiply-add, where the test runs, agrees too.
+        // The hardware's fused multiply-add agrees too, where it is the instruction itself:
+        // elsewhere `mul_add` may call the platform's C library, which no part of Una uses.
+        #[cfg(target_arch = "aarch64")]
         assert_eq!(b(x.mul_add(y, z)), b(want), "{x:e} {y:e} {z:e}");
     }
 
