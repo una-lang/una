@@ -289,3 +289,71 @@ fn witness_time_resists_fewer_than_the_threshold() {
     assert_eq!(fresh(5001, 5001 + 90_000, 86_400, 3600), Ok(false));
     assert_eq!(fresh(10_000, 5000, 86_400, 3600), Err(5000));
 }
+
+const STATEMENT: &str = "ita-release/1
+source itaty
+name acme/ledger
+version 0.3.1
+previous 47755 sha256:aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04
+digest sha256:3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f3b1f
+manifest sha256:77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa77aa
+edition 0.4
+needs itaty json 2.1.0
+needs itaty text_utf8 1.0.3
+authority Http[get], ledger.store.Store[find, put]
+trust modules ledger.keys
+";
+
+#[test]
+fn release_statements_parse_strictly() {
+    use una_project::tlog::release::{parse_statement, within};
+    let statement = parse_statement(STATEMENT).unwrap();
+    assert_eq!(statement.name, "acme/ledger");
+    assert_eq!(statement.previous.as_ref().unwrap().index, 47755);
+    assert_eq!(statement.needs.len(), 2);
+    assert_eq!(statement.authority.len(), 2);
+    assert!(statement.trust.contains("ledger.keys"));
+    let first = STATEMENT.replacen(
+        "previous 47755 sha256:aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04",
+        "previous none",
+        1,
+    );
+    assert!(parse_statement(&first).unwrap().previous.is_none());
+    for (from, to) in [
+        ("ita-release/1", "ita-release/2"),
+        ("needs itaty json", "needs other json"),
+        ("needs itaty text_utf8 1.0.3\n", ""),
+        ("Http[get]", "Http[get, get]"),
+        ("trust modules ledger.keys\n", "trust modules ledger.keys\nextra\n"),
+        ("version 0.3.1", "version 0.3"),
+        ("digest sha256:3b1f", "digest sha256:XX1f"),
+    ] {
+        let changed = STATEMENT.replacen(from, to, 1);
+        if from == "needs itaty text_utf8 1.0.3\n" {
+            // One need fewer is still a statement.
+            assert!(parse_statement(&changed).is_ok());
+            continue;
+        }
+        assert!(parse_statement(&changed).is_err(), "{from} -> {to}");
+    }
+    // Rule 26: authority and trust may only shrink within an identity.
+    let wider = parse_statement(&STATEMENT.replacen("Http[get]", "Http[get, post]", 1)).unwrap();
+    assert!(within(&statement, &wider).is_ok());
+    assert!(within(&wider, &statement).unwrap_err().contains("Http[post]"));
+    let mailer = parse_statement(&STATEMENT.replacen(
+        "authority Http[get], ledger.store.Store[find, put]",
+        "authority Mail[send]",
+        1,
+    ))
+    .unwrap();
+    assert!(within(&mailer, &statement).unwrap_err().contains("`Mail`"));
+    let trusting = parse_statement(&STATEMENT.replacen("ledger.keys", "ledger.keys, ledger.more", 1)).unwrap();
+    assert!(within(&trusting, &statement).unwrap_err().contains("ledger.more"));
+    let none = parse_statement(&STATEMENT.replacen(
+        "authority Http[get], ledger.store.Store[find, put]",
+        "authority none",
+        1,
+    ))
+    .unwrap();
+    assert!(none.authority.is_empty());
+}
