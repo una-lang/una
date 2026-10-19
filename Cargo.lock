@@ -1353,6 +1353,7 @@ dependencies = [
  "una-diag",
  "una-explain",
  "una-fmt",
+ "una-hash",
  "una-http",
  "una-interp",
  "una-lsp",
@@ -1441,6 +1442,7 @@ dependencies = [
  "toml",
  "una-core",
  "una-diag",
+ "una-hash",
  "una-http",
  "una-syntax",
 ]
