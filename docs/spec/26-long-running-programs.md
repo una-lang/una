@@ -31,7 +31,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    - **Shapes.** A module without `init` or `step` of these shapes, or with an `on_stop` of another shape, is a usage error of `una run` and `una build`, exit code 2, as an entry without `main` is (`spec/13 §5`).
 3. **The driver.** `una run` and the executable that `una build` writes run the driver instead of `main`:
    - It calls `init` once. Its result is the state.
-   - Tick `k` is due `k × ticks` milliseconds after `init` returns, on the monotonic clock. Before each step, the driver waits for the next tick that is due, or, when some are already due, delivers the latest one with `missed` set to the number it skipped. A slow step therefore never makes the state fall further and further behind.
+   - Tick `k` is due `k × ticks` milliseconds after `init` returns, on the run's clock: the monotonic one, or the virtual one of §6 under `--virtual-time`. Before each step, the driver waits for the next tick that is due, or, when some are already due, delivers the latest one with `missed` set to the number it skipped. A slow step therefore never makes the state fall further and further behind.
    - It calls `step(edit state, input: tick)` with each tick, and the state `step` leaves is the state of the next one.
    - When the loop stops, it calls `on_stop(state)` when the module declares it, and the run ends with exit code 0.
    - Both engines run the same driver, and their outputs and traces compare under `spec/16 §5`.
