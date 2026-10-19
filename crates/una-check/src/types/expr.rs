@@ -622,6 +622,27 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return Ty::error();
         }
+        // ADR 0120: a trusted function that computes new elements gives a result without the
+        // refinement of its element type at each call (`super::dense::SYNTHESIZING`). A function
+        // value's result type is fixed where the value flows, after its type arguments take
+        // their refinements, so it would claim the refinement for elements the function made;
+        // such a function is not a value, and a lambda that calls it is.
+        if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                format!(
+                    "`{}` computes new elements, so it is not a function value; call it in a lambda",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write a lambda that calls `{}` with its arguments",
+                def.name
+            )));
+            self.report.push(diagnostic);
+            return Ty::error();
+        }
         // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
         // `checked`.
         if def.kind == (FnKind::Predicate { reflect: false })

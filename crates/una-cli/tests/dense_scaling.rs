@@ -41,17 +41,19 @@ impl World for Quiet {
     }
 }
 
-/// A package of edition 0.4 in `dir` with `source` as its one module, `main`.
+/// A package of edition 0.4 in `dir` with `source` as its one module, `main`: described by
+/// `ita.una` and locked by `ita.lock` (ADR 0122), the lock of a conformance case of edition 0.4.
 fn package(dir: &Path, source: &str) {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("una.toml"),
-        "[package]\nname = \"scaling\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n",
+        dir.join("ita.una"),
+        "ita scaling\n  version 0.1.0\n  edition 0.4\n",
     )
     .unwrap();
     std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
-        dir.join("verification.lock"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/conformance/syntax/long_running_words_in_0_4/ita.lock"),
+        dir.join("ita.lock"),
     )
     .unwrap();
     std::fs::write(dir.join("src/main.una"), source).unwrap();
