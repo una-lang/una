@@ -173,9 +173,11 @@ impl Checker<'_, '_, '_> {
             .map(|(_, op, update, params)| (*op, *update, *params))?;
         let key = kv.first().cloned().unwrap_or_else(Ty::error);
         let value = kv.get(1).cloned().unwrap_or_else(Ty::error);
-        // The refinement language gains `m.has(key: k)` with ADR 0119 V5; until then, every
-        // method of a hash map is outside it.
-        self.outside_rl(span, || format!("the method `{method}`"));
+        // `m.has(key: k)` is in the refinement language, as `m.len` is (ADR 0119 V5); every
+        // other method of a hash map is outside it.
+        if op != HashMapOp::Has {
+            self.outside_rl(span, || format!("the method `{method}`"));
+        }
         let receiver = self.report.text(target.span).to_owned();
         if !self.table_call_shape(
             "hash map", target, marker, method, update, params, args, span,
@@ -315,9 +317,11 @@ impl Checker<'_, '_, '_> {
             .find(|(name, ..)| *name == method)
             .map(|(_, op, update, params)| (*op, *update, *params))?;
         let item = set_args.first().cloned().unwrap_or_else(Ty::error);
-        // The refinement language gains `s.has(item: x)` with ADR 0119 V5; until then, every
-        // method of a hash set is outside it.
-        self.outside_rl(span, || format!("the method `{method}`"));
+        // `s.has(item: x)` is in the refinement language, as `s.len` is (ADR 0119 V5); every
+        // other method of a hash set is outside it.
+        if op != HashSetOp::Has {
+            self.outside_rl(span, || format!("the method `{method}`"));
+        }
         let receiver = self.report.text(target.span).to_owned();
         if !self.table_call_shape(
             "hash set", target, marker, method, update, params, args, span,

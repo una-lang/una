@@ -5468,15 +5468,38 @@ impl<'p, 'i> Walker<'p, 'i> {
                     ty: element,
                 }
             }
-            Term::Has { map, key } => {
-                let map = self.term(map, env)?;
-                let key = self.term(key, env)?;
-                if !map.f.sort().starts_with(MAP) {
+            // A key of a map or a hash map, an item of a set, a hash set or a bit set (ADR 0119
+            // V5), each at the sort of its members, so that `has` is declared once per sort.
+            Term::Has {
+                map: set,
+                key: item,
+            }
+            | Term::Member { set, item } => {
+                let set = self.term(set, env)?;
+                let item = self.term(item, env)?;
+                let sort = set.f.sort();
+                let members = if sort.starts_with(MAP) {
+                    Some(item.f.sort())
+                } else {
+                    member_type(&set.ty).map(|ty| self::sort(&ty))
+                };
+                if !has_membership(&sort) || members != Some(item.f.sort()) {
                     return None;
                 }
                 Tv {
-                    f: has_of(&map.f, &key.f),
+                    f: has_of(&set.f, &item.f),
                     ty: boolean(),
+                }
+            }
+            // `b.size` of a bit set (ADR 0119 V5).
+            Term::Size(value) => {
+                let value = self.term(value, env)?;
+                if value.f.sort() != BITSET {
+                    return None;
+                }
+                Tv {
+                    f: size_of(&value.f),
+                    ty: int(),
                 }
             }
             Term::Neg(value) => Tv {

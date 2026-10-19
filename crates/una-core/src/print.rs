@@ -85,6 +85,7 @@ fn precedence(term: &Term) -> u8 {
         Term::Int(digits) if digits.starts_with('-') => 8,
         Term::Field { .. }
         | Term::Len(_)
+        | Term::Size(_)
         | Term::Shape { .. }
         | Term::Proj { .. }
         | Term::Call { .. } => 9,
@@ -145,6 +146,16 @@ fn write_term(
             out.push_str(".has(key: ");
             write_term(out, key, 0, replace);
             out.push(')');
+        }
+        Term::Member { set, item } => {
+            write_term(out, set, 9, replace);
+            out.push_str(".has(item: ");
+            write_term(out, item, 0, replace);
+            out.push(')');
+        }
+        Term::Size(value) => {
+            write_term(out, value, 9, replace);
+            out.push_str(".size");
         }
         Term::Shape { fun, value } => {
             write_term(out, value, 9, replace);

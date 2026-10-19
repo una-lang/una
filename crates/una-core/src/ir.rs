@@ -304,13 +304,22 @@ pub enum Term {
         /// The indices, one per axis.
         indices: Vec<Term>,
     },
-    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
+    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4), or of a `HashMap` (ADR 0119 V5).
     Has {
         /// The map.
         map: Box<Term>,
         /// The key.
         key: Box<Term>,
     },
+    /// `s.has(item: x)` of a `Set`, a `HashSet` or a `BitSet` (ADR 0119 V5).
+    Member {
+        /// The set.
+        set: Box<Term>,
+        /// The item.
+        item: Box<Term>,
+    },
+    /// `b.size` of a `BitSet` (ADR 0119 V5).
+    Size(Box<Term>),
     /// The component `index` of a tuple, as `result` of a function with `edit` parameters
     /// (`spec/17 §4`).
     Proj {

@@ -135,7 +135,7 @@ The operations are a function of `std.collections`, `empty_set`, and built-in me
    - `first`, `last` and `items()` carry the top label of `s`, and `between` that label joined with `ℓ*` of `low` and `high`;
    - `union`, `intersection`, `difference` and `is_subset` carry the top labels of both sets, each with its item position's labels. The items of a union come from both sets, so its item type is the join of theirs;
    - a set lists in the order of its items' values, which its top label covers (IF5).
-6. **The refinement language.** In this edition, `s.len` and the methods of a set are outside the refinement language (`spec/03 §3`): a contract, a `where` clause or a predicate that uses one is U2014. ADR 0119 V5 adds `s.len` and `s.has(item: x)` to it.
+6. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `s.len` and `s.has(item: x)` are in it. The other methods of a set are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 
 ```una
 import std.collections (Set, empty_set)
@@ -199,7 +199,7 @@ The operations are functions of `std.collections`, `empty_hash_map` and `empty_h
    - `union`, `intersection`, `difference` and `is_subset` carry the top labels of both sets, each with its item position's labels, and `same_entries` and `same_items` every label of both tables' types;
    - `update` runs `change` under the map's top label joined with its key position's labels and `ℓ*` of the key, since whether `change` sees `initial` depends on the presence of the key; its result flows into the value position;
    - a table lists in the order of its updates, each made under a program counter at most its top label, so its order is covered by its top label too.
-8. **The refinement language.** In this edition, `.len` and the methods of a table are outside the refinement language (`spec/03 §3`): a contract, a `where` clause or a predicate that uses one is U2014. ADR 0119 V5 adds `.len`, `m.has(key: k)` and `s.has(item: x)` to it.
+8. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `.len`, `m.has(key: k)` and `s.has(item: x)` are in it. The other methods of a table are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 9. **Runs.** The interpreter runs both types. Native code reports them as not supported until their layout (ADR 0119 rule 19).
 
 ```una
@@ -244,7 +244,7 @@ The operations are the two functions and built-in methods resolved by the receiv
    - `pop`, `pop_ranked`, `peek`, `peek_priority` and `items()` carry the top label of `q`; the payloads of `pop`, `peek` and `items()` carry the item position's labels, and those of `peek_priority` and the `priority` of a `Ranked` the priority position's labels;
    - an editable binding keeps its declared labels (`spec/17 §6` rule 1), so a `push` whose priority is labeled above the binding's top label, with the labels of its priority position, is U4001 at the priority, and a `push` whose item is labeled above the item position's labels is U4001 at the item. An update under a condition whose label is above the binding's top label is U4001, since the length would reveal it;
    - the ties of a queue list in the order of their pushes, each made under a program counter at most the top label (IF5).
-10. **The refinement language.** In this edition, `q.len` and the methods of a priority queue are outside the refinement language (`spec/03 §3`): a contract, a `where` clause or a predicate that uses one is U2014. ADR 0119 V5 adds `q.len` to it.
+10. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `q.len` is in it. The methods of a priority queue are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 
 ```una
 import std.collections (PriorityQueue, lowest_first)
@@ -288,7 +288,7 @@ The operations are a function of `std.collections`, `empty_bit_set`, and built-i
    - `b.has(item: i)` carries the top label of `b` joined with `ℓ*(i)`;
    - `add`, `remove`, `with` and `without` raise the top label by `ℓ*(i)`. An editable binding keeps its declared labels (`spec/17 §6` rule 1), so an `add` or a `remove` whose item is labeled above the binding's top label is U4001 at the item;
    - `union`, `intersection`, `difference` and `is_subset` carry the top labels of both bit sets.
-7. **The refinement language.** In this edition, `b.size`, `b.len` and the methods of a bit set are outside the refinement language (`spec/03 §3`): a contract, a `where` clause or a predicate that uses one is U2014. ADR 0119 V5 adds `b.len`, `b.size` and `b.has(item: i)` to it.
+7. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `b.len`, `b.size` and `b.has(item: i)` are in it, so `kind Hall = BitSet where it.size == 100` can be written. The other methods of a bit set are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 
 ```una
 import std.collections (BitSet, empty_bit_set)
@@ -316,7 +316,7 @@ The conversions are functions of `std.collections`, called with method syntax on
 | `es.to_hash_map()` | `HashMap[K, V]`, `K: Eq`, from `es: List[Entry[K, V]]`: each key in the order of its first occurrence in `es`, with the value of its last entry | at most `es.len` entries | O(n · \|k\|) expected |
 
 1. **Labels.** A result takes the top label of `xs` or `es`, and its items, keys and values keep the labels of the list's elements (ADR 0119 IF1, IF2); the top label of a set, a hash set or a hash map also covers its items' or keys' labels (§4 rule 2).
-2. **The refinement language.** `result.len` of `to_stack` and `to_queue` is in it, as a stack's and a queue's `len` is (§5); the bounds of `to_set`, `to_hash_set` and `to_hash_map` wait for ADR 0119 V5, with `.len` of a set and of a hash table.
+2. **The refinement language.** `result.len` of every conversion is in it, as every collection's `len` is (ADR 0119 V5). The verifier knows `result.len == xs.len` of `to_stack` and `to_queue`, and `result.len <= xs.len` of `to_set`, `to_hash_set` and `to_hash_map` (ADR 0119 rule 16).
 3. **Hash tables.** `to_hash_set` and `to_hash_map` make a new table with a key of its own, as `empty_hash_set` and `empty_hash_map` do (§1 rule 4), and fill it in the list's order: `to_hash_set` adds each element as `add` does, so a later equal element changes nothing, and `to_hash_map` sets each entry as `set` does, so a later entry of a present key replaces its value and keeps its place (§7 rule 2). n is the list's length, and |k| the size of the largest key's hash encoding (§1 rule 2).
 
 ```una
@@ -328,3 +328,14 @@ pub seen(names: List[Text]) -> HashSet[Text] = names.to_hash_set()
 
 pub waiting(names: List[Text]) -> Queue[Text] = names.to_queue()
 ```
+
+## 11. Verification
+
+(ADR 0119 V1 to V8.) The verifier encodes the collections of this chapter as follows (`spec/12 §4`); every query stays quantifier-free.
+
+1. **Sorts and functions.** Each instantiation is one sort, as a list's is: `i!Stack_<T>`, `i!Queue_<T>`, `i!Set_<T>`, `i!HashMap_<K>_<V>`, `i!HashSet_<T>`, `i!PriorityQueue_<T>_<P>` and `i!BitSet`. Refinements and labels are erased. Its functions are uninterpreted: `i!len!<Sort>` of every type, with the ground fact `len >= 0`; `i!has!<Sort>` of a `Set`, a `HashSet`, a `HashMap` and a `BitSet`, and `i!get!<Sort>` of a `HashMap`, as for a map (`spec/21 §4`); `i!peek!<Sort>` of a `Stack`, a `Queue` and a `PriorityQueue`, `i!peekback!<Sort>` of a `Queue`, and `i!below!<Sort>` of a `Stack`, the stack under its top; `i!first!<Sort>` and `i!last!<Sort>` of a `Set` and a `BitSet`; `i!size!i!BitSet`; and `i!same!<Sort>` of `same_entries` and `same_items`, which is never the solver's equality.
+2. **Facts of each operation.** Each call adds the contract of its table above as hypotheses, with `s'` the value after it: a push adds 1 to the length and puts its item at its end (`peek` or `peekback` is `Some` of it), keeps the other end of a nonempty queue, and has the stack before as `below` of a stack; a stack's pop of a nonempty stack gives its `below`; a priority queue's push puts its item first when the queue was empty, and otherwise puts its item first or keeps the first one; `add`, `set` and `update` at `x` make `x` a member, `remove` makes it none, and the length changes by 1 exactly when the membership changes; `set` gives `get` of `Some` of its value; `first` and `last` are members; every read is `None` exactly when its collection is empty; a bit set has `0 <= len <= size`, and a member of it lies in its range; each empty collection has length 0.
+3. **Frames.** For a `Set`, a `HashSet`, a `HashMap` and a `BitSet`, and in edition `0.4` for a `Map` (`spec/21 §4`), an update at the key `x` keeps `has`, and `get` for a map, at every other key: each term `y` of the key's sort in a query gives `y != x => has(s', y) == has(s, y)`. A term that may equal `x` gets nothing, so a membership that holds only when `y` and `x` differ is never proven for an aliased key.
+4. **Set operations.** `union`, `intersection`, `difference` and `is_subset` give the length facts of their contracts and, for each item term `y` of a query, `has` of the result at `y` from `has` of the operands at `y`.
+5. **Cost.** The facts of rule 2 are O(1) per call. The frames and set operations of rules 3 and 4 are O(t) per call, for t key terms in the query, so a query with k such calls gains O(k · t) ground facts.
+6. **Loops.** A loop that updates a collection of this chapter keeps no fact about it after the loop (`spec/17 §5` rule 3); inside the body, the facts hold call by call.

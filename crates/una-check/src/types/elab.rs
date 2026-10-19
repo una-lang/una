@@ -1331,6 +1331,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             },
             ExprKind::Field { target, .. } => match self.res(expr.span) {
                 Some(Res::Len) => Term::Len(Box::new(self.term(target))),
+                // `b.size` of a bit set (ADR 0119 V5).
+                Some(Res::BitSetMethod(una_core::BitSetOp::Size)) => {
+                    Term::Size(Box::new(self.term(target)))
+                }
                 // `m.rows` and `m.columns` (`spec/29 §17`).
                 Some(Res::Shape(fun)) => Term::Shape {
                     fun,
@@ -1396,14 +1400,29 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                     Term::Element { value, indices }
                 }
-                // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
-                Some(Res::MapMethod(MapOp::Has)) => match args.first() {
-                    Some(key) => Term::Has {
-                        map: Box::new(self.term(target)),
-                        key: Box::new(self.term(&key.value)),
+                // `s.has(item: x)` of a set, a hash set or a bit set (ADR 0119 V5).
+                Some(
+                    Res::SetMethod(una_core::SetOp::Has)
+                    | Res::HashSetMethod(una_core::HashSetOp::Has)
+                    | Res::BitSetMethod(una_core::BitSetOp::Has),
+                ) => match args.first() {
+                    Some(item) => Term::Member {
+                        set: Box::new(self.term(target)),
+                        item: Box::new(self.term(&item.value)),
                     },
                     None => self.outside(),
                 },
+                // `m.has(key: k)` of a map (`spec/21 §4` rule 4), and of a hash map (ADR 0119
+                // V5).
+                Some(Res::MapMethod(MapOp::Has) | Res::HashMapMethod(una_core::HashMapOp::Has)) => {
+                    match args.first() {
+                        Some(key) => Term::Has {
+                            map: Box::new(self.term(target)),
+                            key: Box::new(self.term(&key.value)),
+                        },
+                        None => self.outside(),
+                    }
+                }
                 Some(Res::Function { id, .. }) => {
                     let receiver = self.term(target);
                     let args = self.ordered_terms(expr.span, Some(receiver), args);

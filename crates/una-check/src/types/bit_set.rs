@@ -39,8 +39,8 @@ fn bit_set() -> Ty {
 
 impl Checker<'_, '_, '_> {
     /// `b.size` when `b` is a `BitSet` in edition 0.4 (`spec/28 §9`): an `Int` with the bit set's
-    /// top label, since the size is part of its shape (ADR 0119 IF2); `None` otherwise. Outside
-    /// the refinement language until ADR 0119 V5.
+    /// top label, since the size is part of its shape (ADR 0119 IF2); `None` otherwise. In the
+    /// refinement language (ADR 0119 V5).
     pub(crate) fn bit_set_size(&mut self, target_ty: &Ty, field: &str, span: Span) -> Option<Ty> {
         if field != "size" || self.env.edition < Edition::V0_4 {
             return None;
@@ -50,7 +50,6 @@ impl Checker<'_, '_, '_> {
             return None;
         };
         self.resolved(span, Res::BitSetMethod(BitSetOp::Size));
-        self.outside_rl(span, || "`.size` of a `BitSet`".to_owned());
         Some(Ty::Int.with_label(&labeled.top_label()))
     }
 
@@ -80,9 +79,11 @@ impl Checker<'_, '_, '_> {
             .iter()
             .find(|(name, ..)| *name == method)
             .map(|(_, op, update, params)| (*op, *update, *params))?;
-        // The refinement language gains `has` with ADR 0119 V5; until then, every method of a
-        // bit set is outside it.
-        self.outside_rl(span, || format!("the method `{method}`"));
+        // `b.has(item: i)` is in the refinement language, as `b.len` and `b.size` are (ADR 0119
+        // V5); every other method of a bit set is outside it.
+        if op != BitSetOp::Has {
+            self.outside_rl(span, || format!("the method `{method}`"));
+        }
         let receiver = self.report.text(target.span).to_owned();
         // `add` and `remove` update the bit set in place, as an `edit` receiver (ADR 0119 rule 1,
         // `spec/17 §3`); the other methods read it.
