@@ -12,7 +12,93 @@ The declarations of `HttpServer`, `Request`, `Reply`, `Exchange` and reply right
 
 ## 2. Grants
 
-The `serve:` grant and its limits (ADR 0123 rules 6 to 9) join this section when grants land. The limits named below, `line`, `headers`, `header` and `body`, are the grant's items of ADR 0123 rule 7.
+A `serve:` grant lets a run accept connections on one address and port, with limits that every server has whether its grant writes them or not (ADR 0123 rules 6 to 9). The limits named in §3, `line`, `headers`, `header` and `body`, are items of this section.
+
+1. **The text form.** In `--grant` (`spec/13 §5`): `serve:<scheme>://<address>:<port>`, then items as suffixes `;<item>`.
+   - `<scheme>` is `http` or `https`, in lower case.
+   - `<address>` is an IPv4 address in dotted-quad form, or an IPv6 address in brackets, written in its canonical form (RFC 5952: lower case, the longest run of zero groups compressed, no leading zeros), so one address has one spelling. `0.0.0.0` and `[::]` mean every interface. A host name, a zone, an IPv4-mapped IPv6 address (`[::ffff:127.0.0.1]`, written as the IPv4 address instead) and a multicast address are refused: nothing resolves a grant, and a socket bound with `IPV6_V6ONLY` receives no IPv4 connection.
+   - `<port>` is from 1 to 65535, always written, with no leading zero. Nothing follows it but items.
+   - A number in an item is decimal digits with no sign and no leading zero (`0` alone where the range allows it).
+2. **Items.** Each item has a default, and each is given at most once; one rate at most, of any period, since a grant keeps one token bucket.
+
+   | Item | Meaning | Default | Range |
+   | --- | --- | --- | --- |
+   | `N/once` | exchanges delivered and not yet answered | 256 | 1 to 2^31 − 1 |
+   | `N/second`, `N/minute`, `N/hour` | exchanges delivered per period, a token bucket | none | 1 to 2^31 − 1 |
+   | `waiting=N` | requests read and waiting to be delivered | 1024 | 0 to 2^31 − 1 |
+   | `connections=N` | open connections | 1024 | 1 to 1,048,576 |
+   | `peer=N` | open connections from one peer | `max(16, connections / 16)` | 1 to 1,048,576, or `none` |
+   | `handshakes=N` | TLS handshakes started per second; one peer may start `max(4, N / 16)` | 512 | 1 to 2^31 − 1 |
+   | `requests=N` | requests on one connection | 1000 | 1 to 2^31 − 1 |
+   | `line=K` | the request line, in KiB | 8 | 1 to 64 |
+   | `headers=N` | header lines of a request, trailers included | 100 | 1 to 1000 |
+   | `header=K` | the header section, trailers included, in KiB | 16 | 1 to 256 |
+   | `body=K` | a request's body, in KiB | 1024 | 0 to 1,048,576 |
+   | `buffers=M` | bytes of request bodies held for the grant, in MiB | 64 | 1 to 65,536 |
+   | `peer_buffers=M` | the share of `buffers` of one peer, in MiB | `max(1, buffers / 64)` | 1 to 65,536, or `none` |
+   | `replies=M` | bytes of replies not yet written, in MiB | 64 | 1 to 65,536 |
+   | `peer_replies=M` | the share of `replies` of one peer under pressure, in MiB | `max(1, replies / 64)` | 1 to 65,536, or `none` |
+   | `delivered=M` | bytes of the requests of open exchanges, in MiB | 256 | 1 to 65,536 |
+   | `idle=S` | seconds a connection waits for a request's first byte | 5 | 1 to 3600 |
+   | `read=S` | seconds to read a whole request | 20 | 1 to 3600 |
+   | `write=S` | seconds to write a whole reply | 30 | 1 to 3600 |
+   | `answer=S` | seconds from the end of a request to the start of its reply | 30 | 1 to 86,400 |
+   | `hosts=a,b` | the names `Host` may carry (rule 5) | IP literals and `localhost` | names, or `*` |
+   | `certificate=F`, `key=F` | the certificate chain and the private key, PEM files | none | `https` only, and required there |
+   | `tls12` | also accept TLS 1.2 | off | `https` only |
+
+   A derived default is computed from the values the grant gives, so `connections=4096` makes the default `peer` 256. Sizes and counts are compared in unsigned 64-bit arithmetic that never wraps. Every default is settled: a later release may only tighten one.
+3. **The `ita.una` form.** Under `run grants`, `serve "<scheme>://<address>:<port>"`, then one item per line below it, each the item of rule 2 it names:
+
+   ```ebnf
+   serve_grant = "serve" text_lit NEWLINE [ INDENT serve_item { serve_item } DEDENT ] ;
+   serve_item  = ( "certificate" text_lit | "key" text_lit | "tls12"
+                 | "at" "most" int_lit ( "at" "once" | "per" ( "second" | "minute" | "hour" ) )
+                 | ( "waiting" | "connections" | "requests" | "headers" ) "at" "most" int_lit
+                 | "peer" ( "at" "most" int_lit | "none" )
+                 | "handshakes" "at" "most" int_lit "per" "second"
+                 | ( "line" | "header" | "body" ) "at" "most" int_lit "KiB"
+                 | ( "buffers" | "replies" | "delivered" ) "at" "most" int_lit "MiB"
+                 | ( "peer_buffers" | "peer_replies" ) ( "at" "most" int_lit "MiB" | "none" )
+                 | ( "idle" | "read" | "write" | "answer" ) "within" int_lit ( "second" | "seconds" )
+                 | "hosts" text_lit { "," text_lit } ) NEWLINE ;
+   ```
+
+   ```una
+   run
+     grants
+       serve "https://0.0.0.0:8443"
+         certificate "tls/chain.pem"
+         key "tls/key.pem"
+         at most 256 at once
+         at most 6000 per minute
+         body at most 64 KiB
+         answer within 10 seconds
+         hosts "shop.example", "*.shop.example"
+   ```
+
+   A unit is written where the table has one, and only that unit, so no line is read in a unit it does not name.
+4. **Errors and editions.**
+   - In `ita.una`, each of these is U7008 at its line: a line of another form, an item given twice or a second rate, a value out of range, `certificate`, `key` or `tls12` on an `http` grant, an empty path or a path with `;`, and a `hosts` line of rule 5's errors; at the grant's line, an invalid scheme, address or port, an `https` grant without `certificate` or `key`, and an overlap (rule 6).
+   - With `--grant`, each is a usage error, exit code 2, before anything runs; so is a `serve:` grant for a single file or a package of an edition before `0.4`.
+   - In `una.toml`, a `serve:` grant is U7002 in every edition: before `0.4` there is no server, and from `0.4` the grants are read from `ita.una`.
+   - A grant allows all three operations of `HttpServer`.
+5. **`hosts`.** Each name is a registered name of letters, digits, `-`, `_` and `.`, with no empty label and a last label that is neither all digits nor starts with `0x`, as `Host` writes one (§3 rule 5); one trailing `.` is removed and the name is compared in ASCII lower case. A name MAY start with `*.`, which stands for exactly one label (`spec/24 §2`); `*` alone accepts every name of valid syntax and is the only item of its list. An IP literal, a port, an empty name and a name given twice are errors. With the `Host` read by §3 rule 5:
+   - without `hosts`, on every grant whatever its address, the name MUST be `localhost` or an IP literal, else `421`;
+   - with `hosts`, the name MUST equal a listed name or match a `*.` name, else `421`; an IP literal matches no name.
+6. **Overlap.** Each address and port is granted once, and a wildcard address may not share its port with another grant of its family, whatever the schemes. IPv6 sockets are bound with `IPV6_V6ONLY`, so `[::]:p` and `0.0.0.0:p` do not overlap. In `ita.una` the later of two grants that overlap is U7008; among the grants of a run, manifest and flags together, an overlap is a usage error.
+7. **Before `main`.** After the checks of `spec/13 §5` and before `main` starts, the host, in this order:
+   1. raises the run's limit of open descriptors to the sum of `connections` over the grants, plus 64, within the hard limit; a run that cannot is a usage error;
+   2. for each `https` grant, opens the certificate file and the key file once each, checks each open descriptor, and reads each from that descriptor (rule 8);
+   3. binds one listening socket per grant, without `SO_REUSEPORT`, with `IPV6_V6ONLY` on IPv6, so no other process shares its connections; an address that cannot be bound is a usage error that names it.
+8. **TLS files.**
+   - **Opening.** Each file is opened once, following symbolic links, without blocking on a FIFO, and checked on the open descriptor with `fstat`, never by its path, so a file swapped between the check and the read is impossible. Each MUST be a regular file of at most 1 MiB. Relative paths resolve as other grants' paths do (`spec/13 §5`).
+   - **The key file** MUST also be owned by the run's effective user or by root, have no write bit for its group and no bit for others (`st_mode & 0o027 == 0`), and have its group read bit only when its group is the run's effective group or a supplementary group. A key owned by another user is refused even when the run is root's.
+   - **Contents.** The certificate file holds a chain of `CERTIFICATE` blocks, leaf first; the key file a private key in PKCS#8, SEC1 or PKCS#1 form. A file that cannot be read, or that holds no such block, is a usage error.
+   - **The key stays in the host.** No operation returns it, and it is in no value, trace, diagnostic or report.
+   - **The protocol, pinned.** TLS 1.3 only, unless the grant says `tls12`, which adds TLS 1.2 with the extended master secret required. No renegotiation, no early data, no stateless session tickets (resumption through a bounded in-memory cache only), no key log, ALPN `http/1.1` only, and no client certificates.
+   - **Pending.** The check that the key matches the certificate, and the TLS server itself, wait for the decision on the project's TLS provider (#1059); until then a run with an `https` grant loads and checks its files and binds, as every grant does, and nothing accepts on any listener.
+   - **Other platforms.** An `https` grant is a usage error on a platform other than macOS and Linux, until a later record defines the check of a file's access list.
 
 ## 3. Reading a request
 
@@ -35,7 +121,7 @@ The host refuses every request that two HTTP implementations might read differen
    6. A `Content-Length` value that is not 1 to 19 ASCII digits alone, with no sign, whitespace or list: `400`. A value above `body`: `413`, before any byte of the body is read.
    7. Neither header: an empty body.
    8. **Chunked bodies.** Each chunk size MUST be 1 to 16 hex digits alone, with no whitespace, sign or extension; anything else is `400`. This departs from RFC 9112 §7.1.1, which asks a recipient to ignore unknown chunk extensions, because lenient reading there has been a route for smuggling. The line after a chunk's data MUST be empty. A chunk whose size would take the body past `body` is `413` at its size line, before any of its data is kept. Trailers are header lines of rule 3, read and dropped; their lines and bytes count against what the header section left of `headers` and `header`, not a fresh allowance.
-5. **`Host`.** A request MUST carry exactly one `Host`, `HTTP/1.0` requests included, else `400`. Its value is a host and an optional `:` with a port of 1 to 5 digits, at most 65535. The host is a registered name of letters, digits, `-`, `_` and `.`, with no empty label; an IPv4 address in dotted-quad form; or an IPv6 address in brackets, without a zone. A registered name whose last label is all digits, or starts with `0x`, and which is not an IPv4 address, such as `127.1`, is `400`, since resolvers read such names as addresses in different ways. Anything else, such as an empty value, `a/b@c`, or an empty port, is `400`. One trailing `.` of a registered name is removed, and the name is compared in ASCII lower case; the program sees the value as sent. Which names a grant accepts (`421`) is the grant's (ADR 0123 rule 8).
+5. **`Host`.** A request MUST carry exactly one `Host`, `HTTP/1.0` requests included, else `400`. Its value is a host and an optional `:` with a port of 1 to 5 digits, at most 65535. The host is a registered name of letters, digits, `-`, `_` and `.`, with no empty label; an IPv4 address in dotted-quad form; or an IPv6 address in brackets, without a zone. A registered name whose last label is all digits, or starts with `0x`, and which is not an IPv4 address, such as `127.1`, is `400`, since resolvers read such names as addresses in different ways. Anything else, such as an empty value, `a/b@c`, or an empty port, is `400`. One trailing `.` of a registered name is removed, and the name is compared in ASCII lower case; the program sees the value as sent. Which names a grant accepts (`421`) is the grant's (§2 rule 5).
 6. **Encodings and expectations.** A `Content-Encoding` other than `identity`, in any letter case, is `415`. In an `HTTP/1.1` request, `Expect: 100-continue`, in any letter case, asks the host to send `100 Continue` once it admits a body; any other expectation is `417`. In an `HTTP/1.0` request, `Expect` is ignored.
 7. **Order.** The request line is checked when it ends. The whole head is checked when its empty line arrives, before any byte of the body is read, in this order: the framing of rule 4, `Connection`, `Host`, the target of §4, `Content-Encoding`, `Expect`.
 8. **The body** is read to the end its framing gives, and no further: the bytes after it belong to the next request, which is read only after the reply to this one is written. A body that is not valid UTF-8 is `400`.
