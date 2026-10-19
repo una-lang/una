@@ -20,7 +20,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use una_sys::coroutine::{Coroutine, Resumed, Stack};
@@ -178,17 +178,18 @@ enum Job {
     Resume(TaskId),
 }
 
-/// A worker's queue, first in, first out, and whether its scheduler is gone.
+/// A worker's queue, first in, first out, whether its scheduler is gone, and whether its thread
+/// started, which its first job starts under this queue's lock.
 struct Queue {
     jobs: VecDeque<Job>,
     closed: bool,
+    started: bool,
 }
 
 /// One worker: its queue, and the thread that serves it, started at its first job.
 struct Worker {
     queue: Mutex<Queue>,
     ready: Condvar,
-    started: AtomicBool,
 }
 
 impl Worker {
@@ -218,7 +219,7 @@ impl Worker {
 
 /// A task a worker holds: its coroutine, and its slots while it is parked.
 struct Entry {
-    coroutine: Coroutine<'static>,
+    coroutine: Coroutine,
     slots: Slots,
     generation: u64,
     finish: Box<dyn FnOnce() + Send>,
@@ -323,9 +324,14 @@ impl Shared {
         }
     }
 
-    /// Keeps `stack` for reuse, or unmaps it when the pool is full. The pool is keyed by the
+    /// Keeps `stack` for reuse, its pages discarded, or unmaps it when the pool is full. The pool is keyed by the
     /// usable size, and a request takes the smallest stack at least as large.
-    fn give(&self, stack: Stack) {
+    fn give(&self, mut stack: Stack) {
+        // Its pages go back to the system first, so a pooled stack holds no memory outside
+        // `--max-memory` and no data of its last task; one that cannot be cleared is unmapped.
+        if stack.discard().is_err() {
+            return;
+        }
         if self.pooled.fetch_add(1, Ordering::SeqCst) >= POOL_STACKS {
             self.pooled.fetch_sub(1, Ordering::SeqCst);
             return;
@@ -356,9 +362,9 @@ impl Scheduler {
                     queue: Mutex::new(Queue {
                         jobs: VecDeque::new(),
                         closed: false,
+                        started: false,
                     }),
                     ready: Condvar::new(),
-                    started: AtomicBool::new(false),
                 })
             })
             .collect();
@@ -386,20 +392,25 @@ impl Scheduler {
         let count = self.workers.len().max(1);
         let index = self.next.fetch_add(1, Ordering::Relaxed) % count;
         let worker = self.workers.get(index).ok_or(NotStarted)?;
-        if !worker.started.swap(true, Ordering::SeqCst) {
+        let stack = self.shared.take(stack).ok_or(NotStarted)?;
+        // The thread starts and the job is queued under one hold of the queue's lock, so no job
+        // ever waits on a worker whose thread failed to start: that start fails the fork.
+        let mut queue = lock(&worker.queue);
+        if !queue.started {
             let serving = Arc::clone(worker);
             let shared = Arc::clone(&self.shared);
-            let started = std::thread::Builder::new()
+            std::thread::Builder::new()
                 .name(format!("una-worker-{}", index + 1))
                 .stack_size(WORKER_STACK)
-                .spawn(move || serve(serving, shared));
-            if started.is_err() {
-                worker.started.store(false, Ordering::SeqCst);
-                return Err(NotStarted);
-            }
+                .spawn(move || serve(serving, shared))
+                .map_err(|_| NotStarted)?;
+            queue.started = true;
         }
-        let stack = self.shared.take(stack).ok_or(NotStarted)?;
-        worker.push(Job::Start(stack, Box::new(body), Box::new(finish)));
+        queue
+            .jobs
+            .push_back(Job::Start(stack, Box::new(body), Box::new(finish)));
+        drop(queue);
+        worker.ready.notify_one();
         Ok(())
     }
 }
@@ -451,7 +462,11 @@ impl Helpers {
         job: Box<dyn FnOnce() + Send>,
     ) -> Result<(), Box<dyn FnOnce() + Send>> {
         let mut queue = lock(&self.queue);
-        if queue.idle == 0 && queue.threads < self.most {
+        queue.jobs.push_back(job);
+        // A helper lowers `idle` only when it wakes and takes a job, in one hold of the lock, so
+        // every queued job beyond the idle helpers needs a thread of its own: two jobs queued at
+        // once never share one idle helper while the pool has room.
+        if queue.jobs.len() > queue.idle && queue.threads < self.most {
             let helpers = Arc::clone(self);
             let started = std::thread::Builder::new()
                 .name("una-helper".to_owned())
@@ -460,10 +475,9 @@ impl Helpers {
             if started.is_ok() {
                 queue.threads += 1;
             } else if queue.threads == 0 {
-                return Err(job);
+                return queue.jobs.pop_back().map_or(Ok(()), Err);
             }
         }
-        queue.jobs.push_back(job);
         drop(queue);
         self.ready.notify_one();
         Ok(())
@@ -677,6 +691,46 @@ mod tests {
         for task in stalled {
             assert_eq!(task.recv(), Some(()));
         }
+    }
+
+    #[test]
+    fn two_jobs_queued_at_once_never_share_one_idle_helper() {
+        // Review of S1, finding 4: with one idle helper, two blocking jobs submitted back to
+        // back both run at once, the second on a new helper, while the pool has room.
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let helpers = Arc::new(Helpers::new(2));
+        let (warm, warmed) = mpsc::channel();
+        assert!(
+            helpers
+                .submit(Box::new(move || warm.send(()).unwrap()))
+                .is_ok()
+        );
+        warmed.recv_timeout(Duration::from_secs(5)).unwrap();
+        for _ in 0..5000 {
+            if lock(&helpers.queue).idle == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(lock(&helpers.queue).idle, 1);
+        let (started, starts) = mpsc::channel();
+        let (release, gate) = mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        for _ in 0..2 {
+            let (started, gate) = (started.clone(), Arc::clone(&gate));
+            let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+                started.send(()).unwrap();
+                let _ = lock(&gate).recv();
+            });
+            assert!(helpers.submit(job).is_ok());
+        }
+        for _ in 0..2 {
+            starts.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        helpers.close();
     }
 
     #[test]

@@ -35,7 +35,7 @@ fn a_body_suspends_and_resumes_and_its_values_cross() {
     assert_eq!(coroutine.resume(), Resumed::Finished);
     assert_eq!(seen.get(), 10);
     assert_eq!(coroutine.resume(), Resumed::Finished);
-    let reused = coroutine.into_stack().unwrap();
+    let reused = coroutine.into_stack().ok().unwrap();
     let mut again = Coroutine::new(reused, || {
         let floats = [1.5f64, 2.5];
         suspend();
@@ -78,14 +78,46 @@ fn a_body_never_started_is_dropped_and_its_stack_given_back() {
         suspend();
     });
     suspended.resume();
-    let mut suspended = suspended.into_stack().unwrap_err();
+    let mut suspended = suspended.into_stack().err().unwrap();
     assert_eq!(suspended.resume(), Resumed::Finished);
+}
+
+/// The resident pages of the usable part of `stack`, by `mincore`.
+#[allow(unsafe_code)]
+fn resident(stack: &Stack) -> usize {
+    // SAFETY: `sysconf` reads a constant of the system.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+    let start = std::ptr::with_exposed_provenance_mut::<libc::c_void>(stack.top() - stack.usable());
+    let mut pages = vec![0u8; stack.usable().div_ceil(page)];
+    // SAFETY: the range is mapped by `stack`, and `pages` holds one byte per page of it.
+    let done = unsafe { libc::mincore(start, stack.usable(), pages.as_mut_ptr().cast()) };
+    assert_eq!(done, 0);
+    pages.iter().filter(|page| **page & 1 != 0).count()
+}
+
+#[test]
+fn a_discarded_stack_holds_no_resident_page_and_runs_again() {
+    // The pool gives a stack back to the system before it keeps it, so pooled stacks never hold
+    // memory outside `--max-memory` (review of S1, finding 3).
+    let mut coroutine = Coroutine::new(Stack::new(1024 * 1024).unwrap(), || {
+        let touched = std::hint::black_box([7u8; 256 * 1024]);
+        std::hint::black_box(&touched);
+    });
+    assert_eq!(coroutine.resume(), Resumed::Finished);
+    let mut stack = coroutine.into_stack().ok().unwrap();
+    assert!(resident(&stack) >= 4, "{}", resident(&stack));
+    stack.discard().unwrap();
+    assert_eq!(resident(&stack), 0);
+    let mut again = Coroutine::new(stack, || {
+        std::hint::black_box([1u8; 256 * 1024]);
+    });
+    assert_eq!(again.resume(), Resumed::Finished);
 }
 
 #[test]
 fn ten_thousand_coroutines_wait_at_once() {
     let total = Rc::new(Cell::new(0usize));
-    let mut all: Vec<Coroutine<'_>> = (0..10_000)
+    let mut all: Vec<Coroutine> = (0..10_000)
         .map(|index| {
             let total = Rc::clone(&total);
             Coroutine::new(Stack::new(16 * 1024).unwrap(), move || {
