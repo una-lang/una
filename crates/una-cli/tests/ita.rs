@@ -446,3 +446,79 @@ fn remove_takes_the_need_out_and_relocks() {
     assert_eq!(code, 2);
     assert!(err.contains("does not need `util`"), "{err}");
 }
+
+#[test]
+fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
+    let dir = with_dependency("trust", "    may Console[print]\n");
+    let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("{manifest}\ntrust\n  util modules keys\n    may Console[print]\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("deps/util/ita.una"),
+        "ita util\n  version 0.2.0\n  edition 0.4\n\ntrusted\n  keys\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("deps/util/src/keys.una"),
+        "trusted module keys\n\npub policy reveal\n  from secret Text\n  to Text\n  via shown\n  purpose \"show a token\"\n  owner team\n\nshown(t: secret Text) -> Text = t\n",
+    )
+    .unwrap();
+    // No consent yet: refused, and nothing written.
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("U7012") && err.contains("--accept-trust util"),
+        "{err}"
+    );
+    assert!(!dir.join("ita.lock").exists());
+    // Consent to another package accepts nothing.
+    let (code, _, _) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "--accept-trust",
+        "other",
+        path(&dir),
+    ]);
+    assert_eq!(code, 1);
+    let (code, out, err) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "--accept-trust",
+        "util",
+        path(&dir),
+    ]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(
+        lock.contains("  consented \"sha256:") && lock.contains("  trusted modules keys\n"),
+        "{lock}"
+    );
+    // The consent holds while the content is the same.
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "ita.lock is up to date\n"),
+        "{err}"
+    );
+    let (code, _, err) = una(&["una", "check", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    // Any byte of the package changed, even outside the trusted module: consent again.
+    std::fs::write(
+        dir.join("deps/util/src/say.una"),
+        "module say\n\npub say(line: Text) -> Unit\n  uses @console: Console[print]\n=\n  @console.print(line)\n\npub two() -> Int = 2\n",
+    )
+    .unwrap();
+    let (code, _, err) = una(&["una", "check", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7012"), "{err}");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--accept-trust util"), "{err}");
+}
