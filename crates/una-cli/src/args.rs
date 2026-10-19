@@ -238,6 +238,12 @@ pub(crate) enum Command {
 /// The commands of `una ita` implemented so far (ADR 0122 rule 57).
 #[derive(Debug, Subcommand)]
 pub(crate) enum ItaCommand {
+    /// Print the program's packages, with their ceilings, authority and trust
+    Tree {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Write `ita.lock` for the package, or check it with --check
     Lock {
         /// The package directory

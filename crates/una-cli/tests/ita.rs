@@ -396,3 +396,24 @@ fn a_dependency_reached_through_a_link_is_refused() {
         );
     }
 }
+
+#[test]
+fn tree_prints_each_dependency_with_its_ceiling_and_authority() {
+    let dir = with_dependency("tree", "    may Console[print]\n");
+    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    assert_eq!(code, 0);
+    let (code, out, err) = una(&["una", "ita", "tree", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "demo 0.1.0\n  util 0.2.0 (path deps/util): may Console[print] (by demo); uses Console[print]; trust none\n"
+    );
+    let (_, out, _) = una(&["una", "--json", "ita", "tree", path(&dir)]);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["schema"], "una.ita/1");
+    let util = &document["packages"][0];
+    assert_eq!(util["package"], "util");
+    assert_eq!(util["effective_ceiling"], serde_json::json!(["Console[print]"]));
+    assert_eq!(util["granted_by"][0]["package"], "demo");
+    assert!(util["digest"].as_str().unwrap().starts_with("sha256:"));
+}

@@ -136,7 +136,7 @@ struct AuthorityDoc {
 /// A dependency of the program (ADR 0122 rule 58): where it comes from, what each dependent
 /// grants it, what it can ever exercise, what it uses, and the trust it adds.
 #[derive(Serialize)]
-struct DependencyDoc {
+pub(crate) struct DependencyDoc {
     package: String,
     version: String,
     local: String,
@@ -946,38 +946,7 @@ fn human(report: &Report) -> String {
     if !report.dependencies.is_empty() {
         line("dependencies:".to_owned());
         for dependency in &report.dependencies {
-            let origin = match &dependency.path {
-                Some(path) => format!("path {path}"),
-                None => dependency.source.to_owned(),
-            };
-            let granted: Vec<String> = dependency
-                .granted_by
-                .iter()
-                .map(|g| {
-                    let may = if g.may.is_empty() {
-                        "nothing".to_owned()
-                    } else {
-                        g.may.join(", ")
-                    };
-                    format!("may {may} (by {})", g.package)
-                })
-                .collect();
-            let uses = if dependency.authority.is_empty() {
-                "nothing".to_owned()
-            } else {
-                dependency.authority.join(", ")
-            };
-            let trust = if dependency.trust.modules.is_empty() {
-                "none".to_owned()
-            } else {
-                dependency.trust.modules.join(", ")
-            };
-            line(format!(
-                "  {} {} ({origin}): {}; uses {uses}; trust {trust}",
-                dependency.package,
-                dependency.version,
-                granted.join("; ")
-            ));
+            line(format!("  {}", dependency_line(dependency)));
         }
     }
     line("information:".to_owned());
@@ -1083,7 +1052,7 @@ fn human(report: &Report) -> String {
 /// The `dependencies` of the report (ADR 0122 rule 58): each mounted path dependency, its
 /// ceiling as the root writes it, its effective ceiling (rule 51), and the union of the `uses`
 /// of its functions and handlers. O(H + P log P) for H headers and P dependencies.
-fn dependencies(
+pub(crate) fn dependencies(
     package: &Package,
     manifest: &una_project::Manifest,
     analysis: &crate::Analysis,
@@ -1221,4 +1190,41 @@ fn render_authority(set: una_project::authority::Authority) -> Vec<String> {
         .into_iter()
         .map(|(capability, ops)| format!("{capability}[{}]", ops.join(", ")))
         .collect()
+}
+
+/// The human line of a dependency (ADR 0122 rule 58): `http 1.4.2 (itaty): may Http[get] (by
+/// store); uses Http[get]; trust none`.
+pub(crate) fn dependency_line(dependency: &DependencyDoc) -> String {
+    let origin = match &dependency.path {
+        Some(path) => format!("path {path}"),
+        None => dependency.source.to_owned(),
+    };
+    let granted: Vec<String> = dependency
+        .granted_by
+        .iter()
+        .map(|g| {
+            let may = if g.may.is_empty() {
+                "nothing".to_owned()
+            } else {
+                g.may.join(", ")
+            };
+            format!("may {may} (by {})", g.package)
+        })
+        .collect();
+    let uses = if dependency.authority.is_empty() {
+        "nothing".to_owned()
+    } else {
+        dependency.authority.join(", ")
+    };
+    let trust = if dependency.trust.modules.is_empty() {
+        "none".to_owned()
+    } else {
+        dependency.trust.modules.join(", ")
+    };
+    format!(
+        "{} {} ({origin}): {}; uses {uses}; trust {trust}",
+        dependency.package,
+        dependency.version,
+        granted.join("; ")
+    )
 }

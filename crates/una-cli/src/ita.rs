@@ -468,3 +468,52 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
         out.stderr,
     )
 }
+
+/// `una ita tree [path]` (ADR 0122 rule 57): the program's packages, each with its source,
+/// version, the ceilings its dependents write, its effective ceiling, the authority it uses and
+/// the trust it adds, after checking the program at tier 0. With `--json`, one `una.ita/1`
+/// document whose `packages` are the report's `dependencies`. No network.
+pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatus> {
+    let package = match crate::package::load(path) {
+        Ok(package) => package,
+        Err(error) => {
+            writeln!(out.stderr, "error: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let analysis = crate::on_large_stack(|| crate::analyze(&package, None));
+    let (manifest, _) = crate::package::project(&package);
+    let packages = crate::report::dependencies(&package, &manifest, &analysis);
+    let root = format!(
+        "{} {}",
+        manifest.name.as_ref().map_or("", |name| name.value.as_str()),
+        manifest.version.as_ref().map_or("", |version| version.value.as_str())
+    );
+    let status = if analysis.diagnostics.is_empty() {
+        ExitStatus::Success
+    } else {
+        ExitStatus::Errors
+    };
+    if out.json {
+        let document = json!({
+            "schema": "una.ita/1",
+            "command": "tree",
+            "root": root,
+            "packages": packages,
+            "diagnostics": analysis.diagnostics,
+        });
+        writeln!(out.stdout, "{document}")?;
+        out.stdout.flush()?;
+    } else {
+        write!(
+            out.stderr,
+            "{}",
+            render_human(&analysis.diagnostics, &package.sources.texts(), out.color)
+        )?;
+        writeln!(out.stdout, "{root}")?;
+        for dependency in &packages {
+            writeln!(out.stdout, "  {}", crate::report::dependency_line(dependency))?;
+        }
+    }
+    Ok(status)
+}
