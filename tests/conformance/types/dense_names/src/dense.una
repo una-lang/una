@@ -1,9 +1,10 @@
 -- test: in edition 0.4 a kind, variant or capability named Array, Matrix, Tensor or Lu is U1002: the dense types are built in
 -- spec: spec/29 §17
--- expect: error U1002 at src/dense.una:9:10
--- expect: error U1002 at src/dense.una:11:10
--- expect: error U1002 at src/dense.una:13:18
--- expect: error U1002 at src/dense.una:15:16
+-- expect: error U1002 at src/dense.una:10:10
+-- expect: error U1002 at src/dense.una:12:10
+-- expect: error U1002 at src/dense.una:14:18
+-- expect: error U1002 at src/dense.una:16:16
+-- expect: error U1002 at src/dense.una:19:14
 module dense
 
 pub kind Matrix = Rows | Columns

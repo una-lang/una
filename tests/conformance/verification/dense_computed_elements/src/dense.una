@@ -1,6 +1,7 @@
 -- test: a function that computes new elements keeps no refinement of the element type: the `+0` that `matrix_diagonal` places off the diagonal is an `I32`, not an `I32 in 1..10`, so a division by it is refuted
 -- spec: spec/29 §17
 -- expect: error U5001 at src/dense.una:12:3
+-- expect: error U5002 at src/dense.una:18:3
 module dense
 
 pub f(a: Array[I32 in 1..10]) -> I32

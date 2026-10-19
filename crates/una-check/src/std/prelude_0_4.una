@@ -102,7 +102,7 @@ pub dense_array_zip_map[T, U, V](a: Array[T], with_: Array[U], each: fn(T, U) ->
 pub dense_array_update[T](edit a: Array[T], each: fn(T) -> T) -> Unit
   ensures a.len == old(a).len
 =
-  dense_array_update(a, each: each)
+  dense_array_update(edit a, each: each)
 
 pub dense_array_fold[T, U](a: Array[T], initial: U, step: fn(U, T) -> U) -> U
 =
@@ -222,7 +222,7 @@ pub dense_matrix_update[T](edit m: Matrix[T], each: fn(T) -> T) -> Unit
   ensures m.rows == old(m).rows
   ensures m.columns == old(m).columns
 =
-  dense_matrix_update(m, each: each)
+  dense_matrix_update(edit m, each: each)
 
 pub dense_matrix_fold[T, U](m: Matrix[T], initial: U, step: fn(U, T) -> U) -> U
 =
