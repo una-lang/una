@@ -1,8 +1,11 @@
 //! The tasks of `together` and `together for` (`spec/19 §6` to `§8`, ADR 0065 C7).
 //!
-//! Each task runs on its own operating-system thread, with its own heap: [`crate::values`]
-//! keeps its heap per thread, so reference counts stay non-atomic. The values a task captures
-//! are copied into its heap at the fork, and its result is copied back at the join.
+//! Each task runs on a coroutine of its own, pinned to one worker of the run's scheduler
+//! ([`crate::sched`], ADR 0117 rules 1 to 3), with its own heap: [`crate::values`] keeps a heap
+//! per thread, and the worker swaps the task's heap in while it runs, so reference counts stay
+//! non-atomic. The values a task captures are copied into its heap at the fork, and its result
+//! is copied back at the join. Every wait of the fork and the join parks the waiting task, so
+//! its worker runs other tasks meanwhile (ADR 0113 amendment of 2026-10-18).
 //!
 //! - **State.** Each task has a copy of the run's settings, its own trace buffer, its path, and
 //!   its cancellation entries, its own block's and its ancestors' (ADR 0113 rule 1).
@@ -38,7 +41,7 @@ use crate::values::{self, Portable};
 pub type Invoke = fn(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64);
 
 /// How many tasks a batch holds at most (ADR 0113 rule 1): the next batch forks only once the
-/// whole batch has been joined. Each task still has its own thread (`spec/19 §8`).
+/// whole batch has been joined. Each task has its own coroutine (`spec/27 §1`).
 const WAVE: usize = 64;
 
 /// The uses of released values, and the values left referenced, in the heaps of tasks that
