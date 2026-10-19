@@ -143,7 +143,10 @@ impl<'e> Facts<'e> {
 
     fn expr(&mut self, expr: &'e Expr, owned: &BTreeMap<String, Vec<bool>>) {
         match expr {
-            Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+            Expr::Atom { .. }
+            | Expr::Fail { .. }
+            | Expr::Exit { .. }
+            | Expr::Unreachable { .. } => {}
             Expr::Let {
                 name, value, body, ..
             } => {

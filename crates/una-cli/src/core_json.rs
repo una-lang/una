@@ -767,6 +767,11 @@ impl Writer<'_> {
                 "arg_spans" => self.spans(arg_spans),
                 "span" => self.span(*span),
             ),
+            Expr::Exit { tag, state, span } => node!(Exit,
+                "tag" => s(tag.as_str()),
+                "state" => self.atoms(state),
+                "span" => self.span(*span),
+            ),
             Expr::Handle {
                 body,
                 error,

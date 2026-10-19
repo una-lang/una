@@ -46,3 +46,37 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    A `step` whose effects only print `public` values and whose state is `public` has a `public` `τ`, and its `input` needs no label.
 
    **Preview over-approximations.** Items 4 and 5 are coarser than ADR 0116 IF5 and IF6, which look at the captures of the function values a site calls and at the sibling parts of each task construct. They are sound: `⊤` is the most `τ` can be. In the preview they MAY become more precise, so that a package accepted today stays accepted, and they MUST NOT become stricter.
+
+## 3. `stop` and `skip`
+
+1. **Grammar.** In edition `0.4`, a statement MAY be `stop`, `stop when` followed by a line expression, or `skip`, each alone on its line (ADR 0116 rule 5):
+
+   ```ebnf
+   stop_stmt = "stop" [ "when" line_expr ] NEWLINE ;
+   skip_stmt = "skip" NEWLINE ;
+   ```
+
+   - `stop` and `skip` are words, not keywords: they start these statements only at the start of a statement line, alone or before `when`, and they stay identifiers elsewhere. Before edition `0.4` they are identifiers, so these statements do not parse (U0101).
+   - `skip` takes no `when` (U0101): an `if` around `skip` says the same.
+   - A block that ends in `stop` or `skip` has `unit` as its value.
+   - A statement after an unconditional `stop` or `skip` in the same block never runs, and is U2040 at the first such statement, whose repair removes them (ADR 0116, amendment of 2026-10-19). Statements after `stop when c`, and after the block that holds the exit, stay legal.
+2. **Meaning** (ADR 0116 rule 6).
+   - `stop` ends the innermost enclosing `for` loop. `stop when c` does so when `c`, a `Bool`, holds (U2001 otherwise), and does nothing otherwise.
+   - `skip` ends the current iteration and goes on to the next.
+   - The bindings the loop updates keep the values they have at the statement: after `stop` they are the loop's final values, and after `skip` the next iteration starts with them.
+   ```una
+   let edit total = 0
+   for order in orders
+     if order.cancelled
+       skip
+     stop when total > limit
+     total = total + order.amount
+   ```
+3. **Where** (U2034). `stop` and `skip` belong to the body of their innermost loop. Each is U2034:
+   - outside any loop body;
+   - when the innermost loop lies outside the nearest enclosing task: the body of a `together for` and a branch of `together` (`spec/19`) are not loops for them, and a loop inside the task is.
+4. **Core** (ADR 0116 rule 20). `stop` and `skip` lower to `exit_k(b, ...)`, with the tag `k`, `stop` or `next`, and the current values of the loop's state `b, ...` (`spec/09`). The end of the body is the tag `next` with the body's value. A `stop` ends the loop, whose value is that state. `stop when c` is `if c` around `stop`. Both engines run them alike (`spec/16 §5`).
+5. **Verification** (ADR 0116 V2). Each `stop` and `skip` is a join of the bindings the body updates. Each rebind of a binding with a refined declared type carries its obligation where it happens (`spec/17 §5` rule 2), so the refinements hold at each `stop` and `skip` as at the end of the body. On the path past `stop when c`, `c` is false. After the loop, the bindings it updates are fresh at their declared types, as after any loop (`spec/17 §5` rule 3). The length frame of ADR 0071 counts `skip` and `stop` as paths that complete an iteration.
+6. **Information flow** (ADR 0116 IF2, IF3).
+   - Whether later iterations run must not depend on data the body did not start with. `stop` and `stop when c` are legal only where the program counter, joined with the label of `c`, is the one the loop's body starts with. Otherwise the statement is U4002, with the condition that raised it as a related location, as for `fail` (`spec/07 §3` rule 3).
+   - `skip` inside a branch on `c` makes the rest of the body run only when the branch was not taken: the statements of the body after it are checked under the program counter joined with the label of `c`.

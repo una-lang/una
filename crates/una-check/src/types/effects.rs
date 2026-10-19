@@ -88,6 +88,12 @@ impl Scan<'_, '_> {
             }
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
+            Stmt::Stop(stmt) => {
+                if let Some(condition) = &stmt.condition {
+                    self.expr(condition);
+                }
+            }
+            Stmt::Skip(_) => {}
         }
     }
 

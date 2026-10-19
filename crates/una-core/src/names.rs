@@ -46,6 +46,7 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             }
         }
         Expr::Fail { args, .. } => atoms(args, out),
+        Expr::Exit { state, .. } => atoms(state, out),
         Expr::Handle { body, handler, .. } => {
             vars(body, out);
             vars(handler, out);
@@ -144,7 +145,7 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
         _ => {}
     };
     match expr {
-        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
         Expr::Let {
             name, value, body, ..
         } => {

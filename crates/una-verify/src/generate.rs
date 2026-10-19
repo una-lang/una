@@ -2036,6 +2036,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.declared_fields(ctor, args, arg_spans, &ctx);
                     return;
                 }
+                // `skip` or `stop`: the path leaves the body with the state, whose refinements
+                // its rebinds already proved (ADR 0116 V2); the loop's value says nothing but
+                // their types.
+                Expr::Exit { .. } => return,
                 Expr::Handle {
                     body,
                     error: _,

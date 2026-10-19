@@ -21,6 +21,9 @@ pub(crate) type Callee<'p> = (&'p [(Name, Type)], &'p [Clause]);
 pub(crate) struct Frames<'p, 'l> {
     contract: &'l dyn Fn(&Path) -> Option<Callee<'p>>,
     done: &'l mut BTreeMap<Span, Vec<bool>>,
+    /// For each loop whose body is being read, innermost last, the join of the states its
+    /// `skip` and `stop` exits give: paths that complete an iteration too (ADR 0116 V2).
+    exits: Vec<Option<Shape>>,
 }
 
 impl<'p, 'l> Frames<'p, 'l> {
@@ -29,7 +32,11 @@ impl<'p, 'l> Frames<'p, 'l> {
         contract: &'l dyn Fn(&Path) -> Option<Callee<'p>>,
         done: &'l mut BTreeMap<Span, Vec<bool>>,
     ) -> Frames<'p, 'l> {
-        Frames { contract, done }
+        Frames {
+            contract,
+            done,
+            exits: Vec::new(),
+        }
     }
 
     /// Whether each state binding of the loop at `span` is length-preserving (ADR 0071 D1):
@@ -48,7 +55,10 @@ impl<'p, 'l> Frames<'p, 'l> {
         for (index, (name, _)) in state.iter().enumerate() {
             env.insert(name.clone(), vec![BTreeSet::from([index])]);
         }
+        self.exits.push(None);
         let shape = self.expr(body, &mut env);
+        let exits = self.exits.pop().flatten();
+        let shape = join(shape, exits);
         let preserved: Vec<bool> = (0..state.len())
             .map(|index| match &shape {
                 // No path completes an iteration: the loop fails at its first one, or has none.
@@ -141,6 +151,14 @@ impl<'p, 'l> Frames<'p, 'l> {
             }
             Expr::With { body, .. } => self.expr(body, env),
             Expr::Fail { .. } | Expr::Unreachable { .. } => None,
+            // `skip` and `stop` complete the iteration with their state, and the path ends.
+            Expr::Exit { state, .. } => {
+                let shape: Shape = state.iter().map(|atom| single(atom, env)).collect();
+                if let Some(exits) = self.exits.last_mut() {
+                    *exits = join(exits.take(), Some(shape));
+                }
+                None
+            }
             // The value of `attempt` is a `Result`, and those of `together` say nothing about
             // the state.
             Expr::Attempt { .. } | Expr::Together { .. } | Expr::TogetherFor { .. } => {

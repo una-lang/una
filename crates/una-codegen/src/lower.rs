@@ -36,8 +36,8 @@ use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
-    Atom, Base, Bound, Constraint, Ctor, Decl, Descriptor, Expr, HOST_MODULE, Label, LoopSource,
-    MapOp, Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
+    Atom, Base, Bound, Constraint, Ctor, Decl, Descriptor, ExitTag, Expr, HOST_MODULE, Label,
+    LoopSource, MapOp, Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
 };
 use una_syntax::Span;
 
@@ -279,6 +279,25 @@ struct Catch {
     outer: Scope,
     /// Where the words of the current scope since the catch was installed start.
     base: usize,
+    /// Where `skip` and `stop` go, inside a loop's body (`spec/26 §3`).
+    exit: Option<Exit>,
+}
+
+/// The blocks that `skip` and `stop` of the innermost loop jump to, whose parameters are the
+/// loop's state, with the words to release on the way: those of the body's scopes, never the
+/// loop's own, which it keeps for its next iteration.
+#[derive(Clone)]
+struct Exit {
+    /// The block of the next iteration.
+    next: Block,
+    /// The block that ends the loop.
+    stop: Block,
+    /// The kinds of the state.
+    kinds: Vec<Kind>,
+    /// The words that enclosing expressions of the body own.
+    outer: Scope,
+    /// Where the words of the current scope that the body owns start.
+    base: usize,
 }
 
 impl Catch {
@@ -291,6 +310,15 @@ impl Catch {
             block: self.block,
             outer,
             base: 0,
+            exit: self.exit.as_ref().map(|exit| {
+                let mut outer = exit.outer.clone();
+                outer.extend(scope.iter().skip(exit.base).copied());
+                Exit {
+                    outer,
+                    base: 0,
+                    ..exit.clone()
+                }
+            }),
         }
     }
 }
@@ -402,6 +430,7 @@ pub(crate) fn function<'p>(
         block: failed,
         outer: Scope::new(),
         base: 0,
+        exit: None,
     };
     if let Some(result) = lowerer.expr(body.body, &mut env, &mut scope, &catch)? {
         let ok = lowerer.builder.ins().iconst(types::I64, 0);
@@ -576,6 +605,32 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     self.fail(failure, scope, catch);
                     return Ok(None);
                 }
+                // `skip` or `stop`: the state, owned, goes to the loop's block for it, and the
+                // body's words are released (`spec/26 §3`).
+                Expr::Exit { tag, state, .. } => {
+                    let exit = catch
+                        .exit
+                        .clone()
+                        .ok_or_else(|| internal("an exit outside a loop"))?;
+                    let mut values: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+                    for (atom, &kind) in state.iter().zip(&exit.kinds) {
+                        let (value, _) = self.atom(atom, env)?;
+                        self.retain(value, kind);
+                        values.push(value.into());
+                    }
+                    for &(owned, kind) in scope.iter().skip(exit.base).rev() {
+                        self.release(owned, kind);
+                    }
+                    for &(owned, kind) in exit.outer.iter().rev() {
+                        self.release(owned, kind);
+                    }
+                    let block = match tag {
+                        ExitTag::Next => exit.next,
+                        ExitTag::Stop => exit.stop,
+                    };
+                    self.builder.ins().jump(block, &values);
+                    return Ok(None);
+                }
                 Expr::Handle {
                     body,
                     error,
@@ -589,6 +644,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         block: handling,
                         outer: Scope::new(),
                         base: scope.len(),
+                        exit: catch.exit.clone(),
                     };
                     let mut reached = self.branch(body, env, scope, join, &inner)?;
                     self.builder.switch_to_block(handling);
@@ -809,21 +865,55 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         // The iteration owns the current state, which its body releases at its end or moves to
         // its last use, so `acc = acc.append(item: x)` updates the list in place (#30). A
-        // failure in the body releases the state with the body's scope, and the cursor.
+        // failure in the body releases the state with the body's scope, and the cursor; a
+        // `skip` or a `stop` releases the body's scope only (`spec/26 §3`).
+        let following = self.builder.create_block();
+        let stopping = self.builder.create_block();
+        for _ in &kinds {
+            self.builder.append_block_param(following, types::I64);
+            self.builder.append_block_param(stopping, types::I64);
+        }
         let mut nested = catch.nested(scope);
         if list.is_none() {
             nested.outer.push((bound, Kind::Int));
             nested.outer.push((cursor, Kind::Int));
         }
+        nested.exit = Some(Exit {
+            next: following,
+            stop: stopping,
+            kinds: kinds.clone(),
+            outer: Scope::new(),
+            base: 0,
+        });
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
-            let mut next = Vec::new();
+            let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
                 let value = self.field(tuple, index)?;
                 self.retain(value, kind);
-                next.push(value);
+                next.push(value.into());
             }
             self.release(tuple, Kind::Tuple);
+            self.builder.ins().jump(following, &next);
+        }
+
+        // `stop`: a range's cursor is released, and the state goes to the exit.
+        self.builder.switch_to_block(stopping);
+        let stopped: Vec<cranelift_codegen::ir::BlockArg> = self
+            .builder
+            .block_params(stopping)
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+        if list.is_none() {
+            self.release(cursor, Kind::Int);
+        }
+        self.builder.ins().jump(exit, &stopped);
+
+        // The next iteration, from the end of the body or a `skip`.
+        self.builder.switch_to_block(following);
+        {
+            let next = self.builder.block_params(following).to_vec();
             let mut next_arguments: Vec<cranelift_codegen::ir::BlockArg> =
                 next.iter().map(|&v| v.into()).collect();
             match list {
@@ -1114,10 +1204,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let succeeded = self.join();
         let failed = self.join();
         let done = self.join();
+        // Core puts no `skip` or `stop` in the body of `attempt`, a handled expression.
         let inner = Catch {
             block: failed,
             outer: Scope::new(),
             base: scope.len(),
+            exit: None,
         };
         // The body's path releases the whole scope when it ends; a failure releases what the
         // body made, and the scope is released here.
@@ -2963,7 +3055,7 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             // (#162).
             vars(expr, out);
         }
-        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
     }
 }
 

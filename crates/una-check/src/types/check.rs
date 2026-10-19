@@ -156,6 +156,19 @@ pub(crate) struct Local<'a> {
     pub(crate) refined: bool,
 }
 
+/// A `for` loop whose body is being checked, for its `stop` and `skip` (`spec/26 §3`, ADR
+/// 0116 rule 6, IF2, IF3).
+#[derive(Clone, Debug)]
+pub(crate) struct LoopFrame {
+    /// The program counter its body starts with (IF2).
+    pub(crate) pc: Label,
+    /// The task and lambda depths of its body: a `stop` or `skip` at a deeper one is U2034.
+    pub(crate) depth: (usize, usize),
+    /// The program counter that a `skip` under a branch raises the rest of the body to, and
+    /// the condition that raised it (IF3).
+    pub(crate) skipped: Option<(Label, Option<Span>)>,
+}
+
 /// What a normal return path must satisfy, for pending obligations.
 #[derive(Clone, Debug)]
 pub(crate) struct Returning {
@@ -199,6 +212,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// Where the locals of the innermost enclosing `together` task start: a local before it
     /// is captured by the task, which cannot change it (U2023, `spec/19 §2` rule 3).
     pub(crate) task_mark: Option<usize>,
+    /// How many `together` tasks enclose the expression checked (`spec/26 §3`).
+    pub(crate) task_depth: usize,
+    /// The loops whose bodies enclose the statement checked, innermost last (`spec/26 §3`).
+    pub(crate) loops: Vec<LoopFrame>,
+    /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
+    pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
     /// parameter's convention and exclusivity (`spec/17 §3`).
     pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
@@ -468,6 +487,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             unknown_callee_argument: false,
             prelude_lambda: false,
             task_mark: None,
+            task_depth: 0,
+            loops: Vec::new(),
+            misplaced_exits: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             needs_fields: Vec::new(),

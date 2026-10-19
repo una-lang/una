@@ -543,6 +543,11 @@ impl Dumper<'_> {
             Stmt::Together(stmt) => list("together", stmt.body.iter().map(|s| self.stmt(s))),
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
+            Stmt::Stop(stmt) => match &stmt.condition {
+                Some(condition) => list("stop-when", [self.expr(condition)]),
+                None => atom("stop"),
+            },
+            Stmt::Skip(_) => atom("skip"),
         }
     }
 

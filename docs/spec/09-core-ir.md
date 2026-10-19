@@ -48,6 +48,8 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
 
 (v0.2, ADR 0065.) Core IR gains `together` and `together_for` (`spec/19 §5`).
 
+(Edition 0.4, ADR 0116 rule 20.) Core IR gains `exit_k(a, ...)`, with the tag `k`, `next` or `stop`, and the values of the innermost loop's state: it ends the current iteration of that loop, which goes on to the next one with that state (`next`, from `skip`) or ends with it as its value (`stop`). It occurs only in a loop's body, outside the tasks in it (`spec/26 §3`).
+
 (v0.2, ADR 0056.) Core IR gains tuple types `(τ, ...)`, tuple construction and the binder `let (x, ...) = r in e`. Only the desugaring of the memory model uses them, and they are not surface syntax (`spec/17 §4`).
 
 Refinements, `requires` and `ensures` clauses, the bodies of reflect predicates and the predicates of `checked` are terms of the refinement language (`spec/03 §3`): trees over binders, `it` and `result`, not A-normal expressions. A clause keeps its source text and span, and the contracts of the standard library are signatures in the program. Returned atoms, the value of each `let` (with whether its type is written), each argument, each division and each exhaustiveness check carry their source spans. A `when` over literals or ranges without `else` ends in an `unreachable` branch, whose `exhaustive` obligation proves it cannot be taken; reaching it at run time is a fault (ADR 0033).

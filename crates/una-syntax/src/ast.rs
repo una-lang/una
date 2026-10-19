@@ -653,6 +653,21 @@ pub enum Stmt {
     Handled(Handled),
     /// `block_expr`, only as the final statement.
     BlockExpr(BlockExpr),
+    /// `stop [when c]`, in edition 0.4: ends the innermost loop (`spec/26 §3`).
+    Stop(Box<StopStmt>),
+    /// `skip`, in edition 0.4: ends the iteration (`spec/26 §3`). The span of the word.
+    Skip(Span),
+}
+
+/// `"stop" [ "when" line_expr ]` (`spec/26 §3`, ADR 0116 rule 6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopStmt {
+    /// The condition, when the statement is `stop when c`.
+    pub condition: Option<Expr>,
+    /// The word `stop`.
+    pub keyword: Span,
+    /// The whole statement.
+    pub span: Span,
 }
 
 /// `place "=" ( handled | block_expr )` (`spec/17 §1`).

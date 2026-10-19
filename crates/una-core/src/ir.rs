@@ -1404,6 +1404,25 @@ pub enum LoopSource {
     },
 }
 
+/// How an iteration of a loop ends (`spec/26 §3`, ADR 0116 rule 20).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExitTag {
+    /// `skip`, or the end of the body: on to the next iteration.
+    Next,
+    /// `stop`: the loop ends.
+    Stop,
+}
+
+impl ExitTag {
+    /// The tag as Core prints it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExitTag::Next => "next",
+            ExitTag::Stop => "stop",
+        }
+    }
+}
+
 /// An expression (`spec/09 §2`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
@@ -1457,6 +1476,19 @@ pub enum Expr {
         /// The body, whose value is the tuple of the new state.
         body: Box<Expr>,
         /// The loop in the source.
+        span: Span,
+    },
+    /// `exit_k(b, ...)`: ends the current iteration of the innermost enclosing loop with the
+    /// state `b, ...`, by the exit tag `k`: `Next` goes on to the next iteration, as the end
+    /// of the body does with the body's value, and `Stop` ends the loop, whose value is then
+    /// that state (`spec/26 §3`, ADR 0116 rule 20). It occurs only in a loop's body, outside
+    /// any lambda or task in it.
+    Exit {
+        /// The tag: `skip` or `stop`.
+        tag: ExitTag,
+        /// The values of the loop's state, in the order of its binders.
+        state: Vec<Atom>,
+        /// The `stop` or `skip` in the source.
         span: Span,
     },
     /// `together(e₁ ∥ ... ∥ eₙ)`: the tasks of a `together` block (`spec/19 §5`). Its value
