@@ -499,15 +499,12 @@ pub(crate) fn float_weight(query: &crate::smt::Query) -> usize {
             F::Op { op, args } => match *op {
                 "fp.mul" | "fp.div" | "fp.sqrt" => 4,
                 "fp.add" | "fp.sub" => 1,
-                op if op.contains("to_fp") => {
-                    if args
+                op if op.contains("to_fp")
+                    && args
                         .iter()
-                        .any(|a| a.text().contains("int2bv") && !is_literal_conversion(a))
-                    {
-                        4
-                    } else {
-                        0
-                    }
+                        .any(|a| a.text().contains("int2bv") && !is_literal_conversion(a)) =>
+                {
+                    4
                 }
                 _ => 0,
             },
@@ -1030,10 +1027,9 @@ pub(crate) fn float_value(text: &str) -> Option<u64> {
     for part in inner.split_whitespace() {
         let (value, size) = if let Some(binary) = part.strip_prefix("#b") {
             (u64::from_str_radix(binary, 2).ok()?, binary.len())
-        } else if let Some(hex) = part.strip_prefix("#x") {
-            (u64::from_str_radix(hex, 16).ok()?, hex.len() * 4)
         } else {
-            return None;
+            let hex = part.strip_prefix("#x")?;
+            (u64::from_str_radix(hex, 16).ok()?, hex.len() * 4)
         };
         bits = bits.checked_shl(u32::try_from(size).ok()?).unwrap_or(0) | value;
         width += size;
@@ -1046,6 +1042,70 @@ fn identity(kind: &str, raw: &str) -> String {
     match raw.rsplit_once("!val!") {
         Some((_, n)) => format!("{kind}#{n}"),
         None => format!("{kind}#{raw}"),
+    }
+}
+
+#[cfg(test)]
+mod float_tests {
+    // Tests may unwrap freely (compiler/conventions.md §1).
+    #![allow(clippy::unwrap_used)]
+
+    use std::collections::BTreeMap;
+
+    use super::{F, float_value, float_weight};
+    use crate::smt::{Const, ConstRole, FLOAT64, Query};
+
+    #[test]
+    fn the_solver_s_float_values_read_back_to_their_bits() {
+        // ADR 0114 rule 8.6: the forms Z3 prints, each part in binary or hexadecimal.
+        let cases: [(&str, u64); 7] = [
+            ("(fp #b0 #b01111111111 #x0000000000000)", 1.0f64.to_bits()),
+            (
+                "(fp #b1 #b10000000000 #x8000000000000)",
+                (-3.0f64).to_bits(),
+            ),
+            ("(fp #b0 #b00000000000 #x0000000000001)", 1),
+            ("(_ +zero 11 53)", 0),
+            ("(_ -zero 11 53)", 1 << 63),
+            ("(_ -oo 11 53)", f64::NEG_INFINITY.to_bits()),
+            ("(_ NaN 11 53)", 0x7FF8_0000_0000_0000),
+        ];
+        for (text, bits) in cases {
+            assert_eq!(float_value(text), Some(bits), "{text}");
+        }
+        // A NaN with a payload reads as the canonical one; a short form is no value.
+        assert_eq!(
+            float_value("(fp #b1 #b11111111111 #x0000000000001)"),
+            Some(0x7FF8_0000_0000_0000)
+        );
+        assert_eq!(float_value("(fp #b0 #b0111 #x0)"), None);
+        assert_eq!(float_value("42"), None);
+    }
+
+    #[test]
+    fn the_weight_counts_distinct_terms_once() {
+        // ADR 0114 rule 8.3: `fp.mul` weighs 4 and `fp.add` 1, over distinct terms, so a
+        // product that occurs twice weighs 4.
+        let x = F::Const(Const {
+            name: "x".to_owned(),
+            sort: FLOAT64.to_owned(),
+            role: ConstRole::Plain,
+        });
+        let product = F::op(
+            "fp.mul",
+            vec![F::op("RNE", Vec::new()), x.clone(), x.clone()],
+        );
+        let sum = F::op("fp.add", vec![F::op("RNE", Vec::new()), product.clone(), x]);
+        let query = |assertions: Vec<F>| Query {
+            assertions,
+            definitions: BTreeMap::new(),
+        };
+        assert_eq!(
+            float_weight(&query(vec![F::eq(product.clone(), product.clone())])),
+            4
+        );
+        assert_eq!(float_weight(&query(vec![F::eq(sum.clone(), product)])), 5);
+        assert_eq!(float_weight(&query(vec![F::Bool(true)])), 0);
     }
 }
 

@@ -1,18 +1,18 @@
 -- test: the encoding never proves a fact that the run-time semantics falsifies: the real sum, a misrounded quotient, zeros equal by identity, NaN equal or ordered below itself under IEEE, an ordering of the zeros reversed, NaN below a value, a square root of a negative number, a flushed subnormal, a signed conversion read as unsigned and an unsigned one read as signed, and an integer tie rounded up are each refuted
 -- spec: spec/29 §8
--- expect: error U5001 at 9:3
--- expect: error U5001 at 14:3
--- expect: error U5001 at 20:3
--- expect: error U5001 at 25:3
--- expect: error U5001 at 30:3
--- expect: error U5001 at 36:3
--- expect: error U5001 at 41:3
--- expect: error U5001 at 46:3
--- expect: error U5001 at 51:3
--- expect: error U5001 at 57:3
--- expect: error U5001 at 62:3
--- expect: error U5001 at 67:3
--- expect: error U5001 at 73:3
+-- expect: error U5001 at src/m.una:21:3
+-- expect: error U5001 at src/m.una:26:3
+-- expect: error U5001 at src/m.una:32:3
+-- expect: error U5001 at src/m.una:37:3
+-- expect: error U5001 at src/m.una:42:3
+-- expect: error U5001 at src/m.una:48:3
+-- expect: error U5001 at src/m.una:53:3
+-- expect: error U5001 at src/m.una:58:3
+-- expect: error U5001 at src/m.una:63:3
+-- expect: error U5001 at src/m.una:69:3
+-- expect: error U5001 at src/m.una:74:3
+-- expect: error U5001 at src/m.una:79:3
+-- expect: error U5001 at src/m.una:85:3
 module m
 
 pub add() -> F64

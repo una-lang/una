@@ -1,6 +1,6 @@
 -- test: an off-by-one index in a function with float lets is refuted from the cone query, with its counterexample
 -- spec: spec/29 §8
--- expect: error U5001 at 18:3
+-- expect: error U5001 at src/m.una:18:3
 module m
 
 get(xs: List[F64], i: Int) -> F64

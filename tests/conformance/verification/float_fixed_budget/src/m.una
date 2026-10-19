@@ -1,7 +1,7 @@
 -- test: a float query runs with the fixed step budget of the encoding whatever the lock sets: with a raised step_budget, facts that the solver proves only beyond the fixed budget stay U5002 with the float reason
 -- spec: spec/29 §8
--- expect: error U5002 at 9:11
--- expect: error U5002 at 14:11
+-- expect: error U5002 at src/m.una:10:11
+-- expect: error U5002 at src/m.una:15:11
 module m
 
 pub kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0

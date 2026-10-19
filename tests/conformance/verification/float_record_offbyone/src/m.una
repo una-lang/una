@@ -1,6 +1,6 @@
 -- test: an off-by-one index in a function that constructs a record with float fields goes to the full query, which is over the weight bound: U5002 with the float reason, not a refutation from the cone query
 -- spec: spec/29 §8
--- expect: error U5002 at 22:14
+-- expect: error U5002 at src/m.una:22:14
 module m
 
 pub kind Body
