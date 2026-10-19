@@ -6,7 +6,9 @@
 #
 # Gates, in order (all of them when none is named):
 #   clone        a fresh clone of the commit, from the repository's remote
-#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold
+#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
+#                then scripts/no-libm.sh on the release `una` and `libuna_rt.a` and on the
+#                executables the tests' native differential linked (#1092)
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -176,11 +178,18 @@ gate_clone() {
 }
 
 gate_build() {
+    # The tests' native differential keeps each executable it links in target/no-libm-executables
+    # (UNA_NATIVE_KEEP; target/ is ignored, so the clone stays exact). Then no C math library
+    # symbol (#1092, scripts/no-libm.sh): in the release `una` and `libuna_rt.a` just built, the
+    # runtime against scripts/no-libm-allow.txt, and in every one of those executables.
     run build sh -c '
         if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
+        keep=$(pwd)/target/no-libm-executables
+        rm -rf "${keep:?}"
         scripts/check-solver.sh \
             && cargo build --locked --release -p una-cli -p una-rt \
-            && cargo test --workspace --locked'
+            && UNA_NATIVE_KEEP="$keep" cargo test --workspace --locked \
+            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$keep"'
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }

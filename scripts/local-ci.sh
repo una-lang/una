@@ -138,12 +138,22 @@ step "Format" cargo fmt --all --check
 step "Clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
 # Under emulation (--linux on an arm64 Mac, through Rosetta), the tests run one at a time, on
 # one thread each: processes spawned from many threads at once can hang there (#286). The
-# native runs, --linux-arm64 among them, keep full parallelism.
+# native runs, --linux-arm64 among them, keep full parallelism. The native differential
+# (crates/una-cli/tests/native.rs) keeps a copy of every executable it links in
+# UNA_NATIVE_KEEP, a directory it requires empty, for the check that follows (#1092).
+keep="$root/target/no-libm-executables"
+rm -rf "${keep:?}"
 if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
-    step "Test (serial)" env RAYON_NUM_THREADS=1 cargo test --workspace --locked -- --test-threads=1
+    step "Test (serial)" env RAYON_NUM_THREADS=1 UNA_NATIVE_KEEP="$keep" \
+        cargo test --workspace --locked -- --test-threads=1
 else
-    step "Test" cargo test --workspace --locked
+    step "Test" env UNA_NATIVE_KEEP="$keep" cargo test --workspace --locked
 fi
+# No C math library symbol (#1092): the `una` and `libuna_rt.a` that the tests built in
+# target/debug, the runtime against scripts/no-libm-allow.txt, and every executable the native
+# differential linked with them, strict.
+step "No C math library symbol" \
+    scripts/no-libm.sh "$root/target/debug/una" "$root/target/debug/libuna_rt.a" "$keep"
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
