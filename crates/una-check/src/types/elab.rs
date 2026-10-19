@@ -1152,9 +1152,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 if hook::eager() {
                     let _ = self.res(ident.span);
                 }
-                match self.local(name) {
-                    Some(binder) => Term::Var(binder),
-                    None => self.outside(),
+                // `res` marks the elaboration broken when nothing is recorded, as for a local:
+                // it is asked only for a name that is not one.
+                if let Some(binder) = self.local(name) {
+                    return Term::Var(binder);
+                }
+                match self.res(ident.span) {
+                    Some(Res::Constant(value)) => Term::Int(value.to_string()),
+                    _ => self.outside(),
                 }
             }
             ExprKind::Old(inner) => match &inner.kind {
@@ -3285,6 +3290,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         let lambda = self.function_value(id, &type_args, ident.span);
                         self.push(lets, span, lambda)
                     }
+                    Some(Res::Constant(value)) => Atom::Int(value.to_string()),
                     _ => Atom::Unit,
                 }
             }

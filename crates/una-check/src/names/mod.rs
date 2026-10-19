@@ -943,20 +943,30 @@ impl<'p, 'a> Checker<'p, 'a> {
                 table.edges.push((target, import.module.span));
             }
             // The importable standard modules (`spec/10 §11` rule 10).
+            let edition = self.package.settings.edition;
+            let importable = prelude::importable(edition);
+            let is_std = importable.contains(&path.as_str());
             let standard: &[&str] = match path.as_str() {
+                _ if !is_std => &[],
                 prelude::STD_TESTING => &prelude::STD_TESTING_NAMES,
-                prelude::STD_HOST => prelude::std_host_names(self.package.settings.edition),
+                prelude::STD_HOST => prelude::std_host_names(edition),
+                prelude::STD_TIME => &prelude::STD_TIME_NAMES,
+                prelude::STD_DRIVE => &prelude::STD_DRIVE_NAMES,
                 _ => &[],
             };
-            let is_std = path == prelude::STD_TESTING || path == prelude::STD_HOST;
             if target.is_none() && !is_std {
+                let listed: Vec<String> = importable.iter().map(|m| format!("`{m}`")).collect();
+                let listed = match listed.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => {
+                        format!("{} and {last}", rest.join(", "))
+                    }
+                    _ => listed.join(""),
+                };
                 self.error(
                     Code::U1001,
                     import.module.span,
                     format!(
-                        "module `{path}` is not a module of this package; the standard modules that can be imported are `{}` and `{}`",
-                        prelude::STD_HOST,
-                        prelude::STD_TESTING
+                        "module `{path}` is not a module of this package; the standard modules that can be imported are {listed}"
                     ),
                 );
                 continue;
@@ -1237,6 +1247,20 @@ impl<'p, 'a> Checker<'p, 'a> {
                     "{} `{}` is not a module of this package",
                     settings.format.section("[run] entry"),
                     entry.value
+                ),
+            );
+        }
+        // ADR 0116 rule 1: `[drive] module` names a module of the package, as `[run] entry`.
+        if let Some(drive) = &settings.drive
+            && !paths.contains_key(&drive.module.value)
+            && !unparsed_entry(&drive.module.value)
+        {
+            self.error(
+                Code::U7002,
+                Span::new(manifest, drive.module.range.start, drive.module.range.end),
+                format!(
+                    "[drive] module `{}` is not a module of this package",
+                    drive.module.value
                 ),
             );
         }

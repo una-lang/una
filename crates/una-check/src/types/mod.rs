@@ -121,6 +121,12 @@ fn of_prelude() -> String {
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
 
+/// `std.time` (`spec/26 §2`), edition 0.4, as Una source.
+const TIME: &str = include_str!("../std/time.una");
+
+/// `std.drive` (`spec/26 §2`), edition 0.4, as Una source.
+const DRIVE: &str = include_str!("../std/drive.una");
+
 /// The standard modules as the checker reads them in one edition: the prelude's source, with
 /// the declarations edition 0.2 rewrites and adds, `std.testing`'s source, and the keyword
 /// set the prelude is lexed with (`spec/14`). Read-only: the checker loads exactly this text
@@ -133,6 +139,9 @@ pub struct StandardSource {
     pub testing: &'static str,
     /// The keywords the prelude is lexed with; `std.testing` is lexed with those of 0.1.
     pub keywords: KeywordSet,
+    /// The standard modules of edition 0.4 after `std.testing`, as `(path, source)`:
+    /// `std.time`, then `std.drive`, which imports it (ADR 0116). Empty before 0.4.
+    pub later: Vec<(&'static str, &'static str)>,
 }
 
 /// The built-in methods and properties that the checker resolves by the type of their
@@ -180,10 +189,16 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     } else {
         (PRELUDE.to_owned(), KeywordSet::V0_1)
     };
+    let later = if edition >= Edition::V0_4 {
+        vec![("std.time", TIME), ("std.drive", DRIVE)]
+    } else {
+        Vec::new()
+    };
     StandardSource {
         prelude,
         testing: TESTING,
         keywords,
+        later,
     }
 }
 
@@ -339,7 +354,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
-        standard.source(&standard.testing),
+        standard.after_prelude(),
         categories,
         package.settings.edition,
         &mut report,
@@ -841,6 +856,8 @@ struct Standard {
     interner: Interner,
     prelude: File,
     testing: File,
+    /// The standard modules of edition 0.4 after `std.testing`, in their order.
+    later: Vec<File>,
 }
 
 impl Standard {
@@ -854,17 +871,36 @@ impl Standard {
             prelude: text,
             testing,
             keywords,
+            later,
         } = standard_source(edition);
         let prelude = sources.add("std/prelude.una", text.as_bytes());
         let testing = sources.add("std/testing.una", testing.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
+        // The modules of edition 0.4 declare measures, a construct of edition 0.3.
+        let later = later
+            .into_iter()
+            .map(|(path, text)| {
+                let file = format!("std/{}.una", path.trim_start_matches("std."));
+                let id = sources.add(&file, text.as_bytes());
+                parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
+            })
+            .collect();
         Standard {
             sources,
             interner,
             prelude,
             testing,
+            later,
         }
+    }
+
+    /// `std.testing`, then the later standard modules, in the order `Env::build` takes them.
+    fn after_prelude(&self) -> Vec<Source<'_>> {
+        std::iter::once(&self.testing)
+            .chain(&self.later)
+            .map(|tree| self.source(tree))
+            .collect()
     }
 
     fn source<'a>(&'a self, tree: &'a File) -> Source<'a> {
@@ -1530,7 +1566,10 @@ mod tests {
         let mut env = Env::build(
             Vec::new(),
             source(&standard.prelude),
-            source(&standard.testing),
+            std::iter::once(&standard.testing)
+                .chain(&standard.later)
+                .map(source)
+                .collect(),
             Vec::new(),
             edition,
             &mut report,

@@ -109,7 +109,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::IntMethod(_)
             | Res::UnitMethod { .. }
             | Res::MapMethod(_)
-            | Res::MapUpdate(_) => None,
+            | Res::MapUpdate(_)
+            | Res::Constant(_) => None,
         };
         // Only declarations of the package have a place to go to; the standard modules are
         // left out above, since their sources are another database.

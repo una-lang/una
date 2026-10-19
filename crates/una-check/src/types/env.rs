@@ -58,6 +58,12 @@ pub(crate) enum Entity {
     Builtin(Builtin),
     /// A unit of measure, edition 0.3 (ADR 0104 rule 1).
     Unit(usize),
+    /// A built-in constant of `std.time`, edition 0.4: its value in the unit `unit`, an index
+    /// of `units` (ADR 0116 rule 0, amended 2026-10-19).
+    Constant {
+        value: i64,
+        unit: usize,
+    },
 }
 
 /// The built-in types (`spec/03 §1`).
@@ -480,7 +486,7 @@ impl<'a> Env<'a> {
     pub(crate) fn build(
         package: Vec<Source<'a>>,
         prelude: Source<'a>,
-        testing: Source<'a>,
+        after_prelude: Vec<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
         report: &mut Report<'_>,
@@ -527,7 +533,11 @@ impl<'a> Env<'a> {
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
         };
-        for source in package.into_iter().chain([prelude, testing]) {
+        for source in package
+            .into_iter()
+            .chain(std::iter::once(prelude))
+            .chain(after_prelude)
+        {
             env.register(source);
         }
         if let Some(module) = env.modules.get_mut(count) {
@@ -786,17 +796,23 @@ impl<'a> Env<'a> {
         self.functions.len() - 1
     }
 
-    /// Resolves the imports of the package modules, the first `count` modules. Imports that
-    /// resolve to nothing were reported by M3 and are skipped.
+    /// Resolves the imports of the package modules, the first `count` modules, and of the
+    /// standard modules after `std.testing`, which may import one another (`std.drive` imports
+    /// `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
     fn imports(&mut self, count: usize) {
         let mut paths: BTreeMap<String, usize> = BTreeMap::new();
         for (index, module) in self.modules.iter().enumerate().take(count) {
             paths.entry(module.path.clone()).or_insert(index);
         }
         paths.insert("std.testing".to_owned(), count + 1);
+        // The standard modules of edition 0.4, after `std.testing` (ADR 0116).
+        for (index, module) in self.modules.iter().enumerate().skip(count + 2) {
+            paths.insert(module.path.clone(), index);
+        }
         // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10).
         paths.insert(prelude::STD_HOST.to_owned(), count);
-        for index in 0..count {
+        let later = (count + 2)..self.modules.len();
+        for index in (0..count).chain(later) {
             let Some(module) = self.modules.get(index) else {
                 continue;
             };
@@ -811,7 +827,11 @@ impl<'a> Env<'a> {
                     .collect();
                 let joined = path.join(".");
                 let host = joined == prelude::STD_HOST;
-                let standard = host || joined == "std.testing";
+                let time = joined == prelude::STD_TIME;
+                let standard = host
+                    || time
+                    || joined == "std.testing"
+                    || joined == prelude::STD_DRIVE;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {
@@ -824,6 +844,18 @@ impl<'a> Env<'a> {
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
                     if host && !prelude::std_host_names(self.edition).contains(&name) {
+                        continue;
+                    }
+                    // `millisecond`, `second` and `minute` are built-in names of `std.time`, of
+                    // type `Int of Millisecond` (ADR 0116 rule 0, amended 2026-10-19).
+                    if time
+                        && let Some(&(_, value)) =
+                            prelude::STD_TIME_CONSTANTS.iter().find(|(c, _)| *c == name)
+                        && let Some(&Entity::Unit(unit)) = target.upper.get("Millisecond")
+                    {
+                        if !(module.upper.contains_key(name) || module.lower.contains_key(name)) {
+                            imports.insert(name, Entity::Constant { value, unit });
+                        }
                         continue;
                     }
                     let Some(&entity) = target.upper.get(name).or_else(|| target.lower.get(name))
@@ -2227,6 +2259,7 @@ impl<'a> Env<'a> {
             Some(Entity::Unit(_)) => {
                 format!("`{name}` is a unit, not a type; write `Int of {name}`")
             }
+            Some(Entity::Constant { .. }) => return Declared::error(),
             // Unknown names are U1001, reported by M3.
             None => return Declared::unknown(),
             Some(Entity::Function(_) | Entity::Handler(_)) => return Declared::error(),

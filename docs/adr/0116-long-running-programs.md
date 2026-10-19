@@ -666,3 +666,7 @@ Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`
 - **Bindings only.** `libc` is Rust declarations of the operating system's interface, as the standard library itself uses. No C source is built, and nothing is compiled from anything but Rust.
 - **No new supply chain.** `libc` is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`). Its build script only queries `rustc`.
 - **The other option,** writing the declarations in `una-sys`, would mean writing the layout of `struct sigaction` for each platform by hand, more `unsafe` code that a review would have to check against each system's headers.
+
+## Amendment (2026-10-19): the constants of `std.time`
+
+Rule 0 says that `std.time` declares the constants `millisecond`, `second` and `minute`. Una has no module-level value declaration (`spec/02 §1`), so no Una source can declare them. They are built-in names of `std.time`: a module that imports one of them from `std.time` sees a name of type `Int of Millisecond`, whose value is 1, 1000 or 60000, and both engines lower it to that integer literal. The source of `std.time` declares only its measures. ADR 0117's `import std.time (second)` resolves the same way. A general module-level constant is left to a later record.
