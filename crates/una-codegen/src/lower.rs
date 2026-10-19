@@ -72,6 +72,9 @@ enum Kind {
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
+    /// A handle to a collection of `std.collections` with a native layout: a `Stack`, a
+    /// `Queue`, a `Set`, a `PriorityQueue` or a `BitSet` (ADR 0119 rule 19).
+    Coll,
     /// A value of a type parameter: any of the above.
     Any,
 }
@@ -86,7 +89,14 @@ impl Kind {
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple | Kind::F64
+            Kind::Text
+                | Kind::List
+                | Kind::Map
+                | Kind::Fn
+                | Kind::Hashed
+                | Kind::Tuple
+                | Kind::F64
+                | Kind::Coll
         )
     }
 }
@@ -97,6 +107,28 @@ fn unsupported(what: impl Into<String>) -> CodegenError {
 
 fn internal(what: impl Into<String>) -> CodegenError {
     CodegenError::Internal(what.into())
+}
+
+/// The runtime's code of the collection operation `prim`, its position in its kind's `ALL`, and
+/// whether it gives a new collection built from its receiver (ADR 0119 rule 1).
+fn collection_code(prim: Prim) -> Result<(i64, bool), CodegenError> {
+    fn position<T: PartialEq>(all: &[T], op: &T) -> Option<i64> {
+        all.iter()
+            .position(|x| x == op)
+            .and_then(|i| i64::try_from(i).ok())
+    }
+    let found = match prim {
+        Prim::Seq(op) => position(&una_core::SeqOp::ALL, &op).map(|code| (code, op.rebuilds())),
+        Prim::Set(op) => position(&una_core::SetOp::ALL, &op).map(|code| (code, op.rebuilds())),
+        Prim::Priority(op) => {
+            position(&una_core::PriorityOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        Prim::BitSet(op) => {
+            position(&una_core::BitSetOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        _ => None,
+    };
+    found.ok_or_else(|| internal(format!("`{}` is no collection operation", prim.as_str())))
 }
 
 /// The kind of a value of type `ty`, or what the backend does not compile yet.
@@ -128,20 +160,6 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             {
                 Err(unsupported("dense values (spec/29)"))
             }
-            // `Stack` and `Queue` wait for their native layout (`spec/28 §5`, ADR 0119 rule 19).
-            Base::Named { module, name, .. }
-                if module == una_core::COLLECTIONS_MODULE
-                    && (name == "Stack" || name == "Queue") =>
-            {
-                Err(unsupported("`Stack` and `Queue` (spec/28)"))
-            }
-            // The sets of `std.collections` wait for their native layout (`spec/28 §6`, ADR
-            // 0119 rule 19).
-            Base::Named { module, name, .. }
-                if module == una_core::COLLECTIONS_MODULE && name == "Set" =>
-            {
-                Err(unsupported("`Set` (spec/28)"))
-            }
             // The hash tables of `std.collections` wait for their native layout (`spec/28 §7`,
             // ADR 0119 rule 19).
             Base::Named { module, name, .. }
@@ -150,18 +168,16 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             {
                 Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
             }
-            // The priority queues of `std.collections` wait for their native layout (`spec/28
-            // §8`, ADR 0119 rule 19).
+            // `Stack`, `Queue`, `Set`, `PriorityQueue` and `BitSet`: one object each, with a
+            // layout of its own in the runtime (`spec/28`, ADR 0119 rule 19).
             Base::Named { module, name, .. }
-                if module == una_core::COLLECTIONS_MODULE && name == "PriorityQueue" =>
+                if module == una_core::COLLECTIONS_MODULE
+                    && matches!(
+                        name.as_str(),
+                        "Stack" | "Queue" | "Set" | "PriorityQueue" | "BitSet"
+                    ) =>
             {
-                Err(unsupported("`PriorityQueue` (spec/28)"))
-            }
-            // A `BitSet` waits for its native layout too (`spec/28 §9`, ADR 0119 rule 19).
-            Base::Named { module, name, .. }
-                if module == una_core::COLLECTIONS_MODULE && name == "BitSet" =>
-            {
-                Err(unsupported("`BitSet` (spec/28)"))
+                Ok(Kind::Coll)
             }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
@@ -1764,6 +1780,72 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 };
                 self.call(runtime, &values)
             }
+            // The methods of `Stack`, `Queue`, `Set`, `PriorityQueue` and `BitSet` (`spec/28`):
+            // an operation that gives a new collection takes its receiver over at its last use,
+            // and updates it in place when nothing else holds it (ADR 0119 rule 1), unless the
+            // receiver is also another argument, which the update would change.
+            Rhs::Prim {
+                prim: prim @ (Prim::Seq(_) | Prim::Set(_) | Prim::Priority(_) | Prim::BitSet(_)),
+                args,
+                span,
+                ..
+            } => {
+                let mut values = Vec::new();
+                for arg in args {
+                    values.push(self.atom(arg, env)?.0);
+                }
+                let (code, rebuilds) = collection_code(*prim)?;
+                let moved = match args.split_first() {
+                    Some((receiver, others)) if rebuilds && !others.contains(receiver) => {
+                        self.moving(receiver, env, scope, catch, rest)
+                    }
+                    _ => None,
+                };
+                if let Some(position) = moved {
+                    scope.remove(position);
+                }
+                let owned = moved.is_some();
+                let code = self.builder.ins().iconst(types::I64, code);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let word = |i: usize| values.get(i).copied().unwrap_or(zero);
+                let (receiver, a, b) = (word(0), word(1), word(2));
+                match prim {
+                    Prim::Seq(_) => {
+                        let function = if owned {
+                            "una_rt_seq_op_owned"
+                        } else {
+                            "una_rt_seq_op"
+                        };
+                        self.call(function, &[code, receiver, a])
+                    }
+                    Prim::Set(_) => {
+                        let function = if owned {
+                            "una_rt_set_op_owned"
+                        } else {
+                            "una_rt_set_op"
+                        };
+                        self.call(function, &[code, receiver, a, b])
+                    }
+                    Prim::Priority(_) => {
+                        let function = if owned {
+                            "una_rt_priority_op_owned"
+                        } else {
+                            "una_rt_priority_op"
+                        };
+                        self.call(function, &[code, receiver, a, b])
+                    }
+                    // A bit set's precondition aborts at the call, with U8001 (ADR 0119 rule
+                    // 14), so it takes the call's site and stops after it.
+                    _ => {
+                        let function = if owned {
+                            "una_rt_bit_set_op_owned"
+                        } else {
+                            "una_rt_bit_set_op"
+                        };
+                        self.set(function, &[code, receiver, a], *span)
+                    }
+                }
+            }
             Rhs::Prim {
                 prim, args, span, ..
             } => {
@@ -1943,6 +2025,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         );
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
+                }
+                // The functions of `std.collections` whose bodies are native (`spec/28`).
+                if function.module == una_core::COLLECTIONS_MODULE
+                    && let Some(made) = self.collections(&function.name, &values, *span)?
+                {
+                    return Ok(made);
                 }
                 let borrowed = self.give(function, args, &values, env, scope, catch, rest)?;
                 self.call_function(
@@ -2404,6 +2492,46 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.param(done)
     }
 
+    /// A call of a function of `std.collections` whose body is native (`spec/28`, ADR 0119), on
+    /// borrowed arguments at `span`: its owned result, or `None` for a function the module
+    /// declares in Una.
+    fn collections(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Result<Option<Value>, CodegenError> {
+        let arg = |i: usize| {
+            args.get(i)
+                .copied()
+                .ok_or_else(|| internal(format!("`{name}` lacks an argument")))
+        };
+        let made = match name {
+            // O(1): an empty collection allocates no buffer.
+            "empty_stack" | "empty_queue" => self.call("una_rt_seq_empty", &[])?,
+            "empty_set" => self.call("una_rt_set_empty", &[])?,
+            "lowest_first" | "highest_first" => {
+                let highest = i64::from(name == "highest_first");
+                let highest = self.builder.ins().iconst(types::I64, highest);
+                self.call("una_rt_priority_empty", &[highest])?
+            }
+            // O(size / 64), within the memory budget, and U8001 for a negative size, at the call.
+            "empty_bit_set" => self.set("una_rt_bit_set_empty", &[arg(0)?], span)?,
+            // The conversions of a list (`spec/28 §10`): O(n), and O(n log n) for a set.
+            "to_stack" | "to_queue" => {
+                let stack = i64::from(name == "to_stack");
+                let stack = self.builder.ins().iconst(types::I64, stack);
+                self.call("una_rt_seq_of", &[arg(0)?, stack])?
+            }
+            "to_set" => self.call("una_rt_set_of", &[arg(0)?])?,
+            "empty_hash_map" | "empty_hash_set" | "to_hash_set" | "to_hash_map" => {
+                return Err(unsupported("`HashMap` and `HashSet` (spec/28)"));
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(made))
+    }
+
     /// A call of the prelude (`spec/14 §1`), on borrowed arguments.
     fn prelude(
         &mut self,
@@ -2785,13 +2913,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 self.call("una_rt_decimal", &words)
             }
-            Prim::Seq(_) => Err(unsupported("`Stack` and `Queue` (spec/28)")),
-            Prim::Set(_) => Err(unsupported("`Set` (spec/28)")),
+            // Lowered with their receiver's ownership, in `rhs`.
+            Prim::Seq(_) | Prim::Set(_) | Prim::Priority(_) | Prim::BitSet(_) => Err(internal(
+                format!("collection `{}` out of place", prim.as_str()),
+            )),
             Prim::HashMap(_) | Prim::HashSet(_) => {
                 Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
             }
-            Prim::Priority(_) => Err(unsupported("`PriorityQueue` (spec/28)")),
-            Prim::BitSet(_) => Err(unsupported("`BitSet` (spec/28)")),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {
@@ -2886,6 +3014,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     Kind::Text => self.call("una_rt_text_len", &[a]),
                     Kind::List => self.call("una_rt_list_len", &[a]),
                     Kind::Map => self.call("una_rt_map_len", &[a]),
+                    // O(1) for every collection with a native layout (`spec/28`).
+                    Kind::Coll => self.call("una_rt_collection_len", &[a]),
                     _ => Err(unsupported("this length")),
                 }
             }
