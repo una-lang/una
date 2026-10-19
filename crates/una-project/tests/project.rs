@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use pretty_assertions::assert_eq;
 use una_project::{
-    DEFAULT_SOLVER_VERSION, LoadError, Lock, Role, discover, is_grant,
-    is_module_path, parse_lock, parse_manifest,
+    DEFAULT_SOLVER_VERSION, LoadError, Lock, Role, discover, is_grant, is_module_path, parse_lock,
+    parse_manifest,
 };
 
 fn repository() -> PathBuf {

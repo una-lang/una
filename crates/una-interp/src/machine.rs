@@ -92,6 +92,9 @@ pub enum EventOutcome {
     /// failed one, which names no operation. The interpreter, which runs tasks one after
     /// another, never cancels one; a native run can.
     Cancelled,
+    /// A loop of the host stopped at the start of an iteration (ADR 0116 rule 14): the driver's,
+    /// when the run's stop came. Like `Cancelled`, it names no operation.
+    Stop,
 }
 
 /// Why a run stops without a value or a failure.
@@ -474,6 +477,18 @@ pub(crate) enum Form {
     Shown,
 }
 
+/// The host-driven step's settings (ADR 0116 rules 1 and 3, `spec/26 §2`): the tick period and
+/// the step budget in milliseconds, and the count of iterations after which the run stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Drive {
+    /// The tick period, from 1 millisecond.
+    pub ticks: u64,
+    /// The step budget, when one is set.
+    pub budget: Option<u64>,
+    /// `--stop-after-iterations`: the run stops when this many steps have started.
+    pub stop_after: Option<u64>,
+}
+
 /// The limits of a run (`spec/11 §7`): its maximum call depth, and its memory budget, in MiB,
 /// with a probe of the bytes the process holds on the heap (ADR 0061). The machine never
 /// touches the allocator: the binary that counts allocations passes the probe.
@@ -604,6 +619,122 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.locate(result);
         self.frames.pop();
         result
+    }
+
+    /// Calls `fun`, a function the host calls, with `args` and the host capabilities of its
+    /// `uses`, as `main` is run.
+    fn call_hosted(&mut self, fun: &'p Fun, args: Vec<Value<'p>>) -> Flow<'p> {
+        let caps: BTreeMap<&'p str, Rc<Instance<'p>>> = fun
+            .uses
+            .iter()
+            .map(|u| {
+                let id = format!("host:{}", u.capability);
+                (u.cap.as_str(), Rc::new(Instance::Host { id }))
+            })
+            .collect();
+        self.frames.push(fun.span);
+        let mut env: Env<'p> = fun
+            .params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .zip(args)
+            .collect();
+        let result = self.eval(&mut env, &Rc::new(caps), &fun.body);
+        let result = self.locate(result);
+        self.frames.pop();
+        result
+    }
+
+    /// Runs the host-driven step (ADR 0116 rule 3): `init` once, then `step` once per tick of
+    /// `drive.ticks` milliseconds on the monotonic clock, delivering the latest due tick with the
+    /// count of the due ticks skipped before it, then `on_stop` when one is declared. The loop
+    /// stops at the start of an iteration once `drive.stop_after` iterations have started (the
+    /// stop of `--stop-after-iterations`, rule 19); until host stops land, that is its only
+    /// stop. A failure of `init` ends the run as one of `main` does; `step` and `on_stop`
+    /// cannot fail (U3029).
+    pub(crate) fn drive(
+        &mut self,
+        init: &'p Fun,
+        step: &'p Fun,
+        on_stop: Option<&'p Fun>,
+        drive: &Drive,
+    ) -> Flow<'p> {
+        let mut state = self.call_hosted(init, Vec::new())?;
+        let period = std::time::Duration::from_millis(drive.ticks);
+        let start = std::time::Instant::now();
+        let mut next: u64 = 0;
+        let mut iterations: u64 = 0;
+        let ended = loop {
+            if drive.stop_after.is_some_and(|limit| iterations >= limit) {
+                let slot = self.trace.len();
+                self.trace.push(Event {
+                    seq: slot + 1,
+                    task: String::new(),
+                    instance: String::new(),
+                    capability: String::new(),
+                    op: String::new(),
+                    args: Vec::new(),
+                    outcome: EventOutcome::Stop,
+                });
+                break Ok(());
+            }
+            iterations += 1;
+            // Tick `k` is due `k * ticks` after the first: wait for the next one, or deliver the
+            // latest one due, with the count of those skipped.
+            let due = |k: u64| start + period.saturating_mul(u32::try_from(k).unwrap_or(u32::MAX));
+            let now = std::time::Instant::now();
+            if now < due(next) {
+                std::thread::sleep(due(next) - now);
+            }
+            let elapsed = start.elapsed().as_millis();
+            let latest =
+                u64::try_from(elapsed / u128::from(drive.ticks.max(1))).unwrap_or(u64::MAX);
+            let latest = latest.max(next);
+            let missed = latest - next;
+            let at = latest.saturating_mul(drive.ticks);
+            next = latest + 1;
+            let tick = Value::data(
+                Ctor {
+                    kind: Path {
+                        module: "std.drive".to_owned(),
+                        name: "Tick".to_owned(),
+                    },
+                    name: "Tick".to_owned(),
+                    index: 0,
+                },
+                vec![
+                    Value::int(i64::try_from(at).unwrap_or(i64::MAX)),
+                    Value::int(i64::try_from(missed).unwrap_or(i64::MAX)),
+                ],
+            );
+            // `step(edit state, input)` returns `(state', unit)` in Core (`spec/17 §3`).
+            match self.call_hosted(step, vec![state.clone(), tick]) {
+                Ok(Value::Tuple(parts)) => match parts.first() {
+                    Some(updated) => state = updated.clone(),
+                    None => {
+                        break Err(Stop::Abort(Abort::Fault {
+                            message: "`step` returned no state".to_owned(),
+                            span: Some(step.span),
+                        }));
+                    }
+                },
+                Ok(_) => {
+                    break Err(Stop::Abort(Abort::Fault {
+                        message: "`step` returned no state".to_owned(),
+                        span: Some(step.span),
+                    }));
+                }
+                Err(stop) => break Err(stop),
+            }
+        };
+        ended?;
+        match on_stop {
+            Some(on_stop) => {
+                self.call_hosted(on_stop, vec![state])?;
+                Ok(Value::Unit)
+            }
+            None => Ok(Value::Unit),
+        }
     }
 
     /// Evaluates `expr` in `env` without capabilities: an example's body, whose `given` lines

@@ -6,7 +6,7 @@ use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs
 
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
+    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
 };
 use crate::value::Value;
 
@@ -62,6 +62,40 @@ pub fn run_main(
     let result = machine.run_main(main);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
+        completion,
+        trace: machine.trace,
+    })
+}
+
+/// Why a module cannot be driven (ADR 0116 rule 2): a usage error of `una run`, as an entry
+/// without `main` is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriveShape {
+    /// The module has no function `init`.
+    NoInit,
+    /// The module has no function `step`.
+    NoStep,
+}
+
+/// Runs the host-driven step of module `module` (ADR 0116 rule 3): `init`, then `step` once
+/// per tick, then `on_stop` when the module declares it, with the host capabilities of each
+/// one's `uses`, in `world`. The shapes of the functions were checked with the package.
+pub fn run_drive(
+    program: &Program,
+    module: &str,
+    world: &mut dyn World,
+    host: &Host,
+    limits: Limits<'_>,
+    drive: Drive,
+) -> Result<Run, DriveShape> {
+    let index = Index::new(program);
+    let init = index.function(module, "init").ok_or(DriveShape::NoInit)?;
+    let step = index.function(module, "step").ok_or(DriveShape::NoStep)?;
+    let on_stop = index.function(module, "on_stop");
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    let result = machine.drive(init, step, on_stop, &drive);
+    let completion = completion(&index, result, Form::Redacted);
+    Ok(Run {
         completion,
         trace: machine.trace,
     })
