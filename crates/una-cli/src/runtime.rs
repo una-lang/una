@@ -17,6 +17,7 @@ use una_interp::{
     Abort, Completion, EventDoc, ExampleRun, FileFault, Grant, Host, NotText, OutcomeDoc, Pairs,
     World,
 };
+use una_syntax::ast::Convention;
 use una_syntax::{SourceDb, Span};
 
 use crate::contract::Modules;
@@ -63,6 +64,9 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) environment: Environment<'a>,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
+    /// `--stop-after-iterations`: the host's stop after this many iterations have started
+    /// (ADR 0116 rule 19).
+    pub(crate) stop_after: Option<u64>,
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -238,20 +242,38 @@ pub(crate) fn run_command(
             status,
         );
     }
-    // The entry is `[run] entry`, or the module of a single file.
-    let Some(entry) = analysis.entry.clone() else {
-        writeln!(
-            stderr,
-            "error: una.toml has no `[run] entry`; name the module whose `main` runs"
-        )?;
-        return Ok(ExitStatus::Usage);
-    };
-    let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
-        writeln!(
-            stderr,
-            "error: the module `{entry}` has no `pub main() -> Unit` to run"
-        )?;
-        return Ok(ExitStatus::Usage);
+    // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
+    // `[run] entry` or the module of a single file, whose `main` runs.
+    let drive = manifest.drive.as_ref().map(|drive| una_interp::Drive {
+        ticks: drive.ticks,
+        budget: drive.budget,
+        stop_after: options.stop_after,
+    });
+    let (entry, start) = if let Some(driven) = &manifest.drive {
+        let module = driven.module.value.clone();
+        match driven_init(&analysis, &package.sources, &module) {
+            Ok(init) => (module, init),
+            Err(message) => {
+                writeln!(stderr, "error: {message}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    } else {
+        let Some(entry) = analysis.entry.clone() else {
+            writeln!(
+                stderr,
+                "error: una.toml has no `[run] entry`; name the module whose `main` runs"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
+            writeln!(
+                stderr,
+                "error: the module `{entry}` has no `pub main() -> Unit` to run"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        (entry, main)
     };
     let keys = match load_keys(&grants) {
         Ok(keys) => keys,
@@ -288,7 +310,13 @@ pub(crate) fn run_command(
                     lines: sender,
                     environment,
                 };
-                una_interp::run_main(program, entry_path, &mut world, host, limits)
+                match drive {
+                    Some(drive) => {
+                        una_interp::run_drive(program, entry_path, &mut world, host, limits, drive)
+                            .ok()
+                    }
+                    None => una_interp::run_main(program, entry_path, &mut world, host, limits),
+                }
             })?;
         for line in receiver {
             if options.json {
@@ -322,7 +350,7 @@ pub(crate) fn run_command(
     };
     let root_location = root_location(&package);
     let diagnostics: Vec<Diagnostic> =
-        completion_diagnostic(&run.completion, main.span, &package.sources, &root_location)
+        completion_diagnostic(&run.completion, start.span, &package.sources, &root_location)
             .into_iter()
             .collect();
     // The program ran to its end after stdout failed. Its failure or abort is still reported,
@@ -439,6 +467,115 @@ pub(crate) fn entry_main<'a>(
         }
     )
     .then_some(main)
+}
+
+/// `init` of the driven module `module`, when the module has the shapes of ADR 0116 rule 2:
+/// `pub init() -> S`, `pub step(edit state: S, input: Tick) -> Unit` and, when declared,
+/// `pub on_stop(state: S) -> Unit`, with `Tick` of `std.drive`. Otherwise the message of the
+/// usage error.
+fn driven_init<'a>(
+    analysis: &'a Analysis,
+    sources: &SourceDb,
+    module: &str,
+) -> Result<&'a Fun, String> {
+    let modules = Modules {
+        sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+    };
+    let header = |name: &str| {
+        modules
+            .function(&format!("{module}.{name}"))
+            .map(|(_, _, function)| function)
+            .filter(|function| function.public && function.type_params.is_empty())
+    };
+    let core = |name: &str| {
+        let found = analysis.program.modules.iter().find(|m| m.path == module)?;
+        found.decls.iter().find_map(|decl| match decl {
+            Decl::Fun(fun) if fun.name == name => Some(fun.as_ref()),
+            _ => None,
+        })
+    };
+    let init = header("init")
+        .filter(|function| function.params.is_empty())
+        .and(core("init"))
+        .ok_or_else(|| format!("the driven module `{module}` has no `pub init() -> S` to start"))?;
+    let state = &init.result;
+    let step = header("step").is_some_and(|function| {
+        matches!(function.params.as_slice(), [held, input]
+            if held.convention == Some(Convention::Edit) && input.convention.is_none())
+    }) && core("step").is_some_and(|step| {
+        // `step(edit state: S, input)` returns `(S, Unit)` in Core (`spec/17 §3`).
+        matches!(step.params.as_slice(), [(_, held), (_, input)]
+            if same_type(held, state) && is_tick(input))
+            && matches!(&step.result, Type::Base { base: Base::Tuple(parts), .. }
+                if matches!(parts.as_slice(), [held, done] if same_type(held, state) && is_unit(done)))
+    });
+    if !step {
+        return Err(format!(
+            "the driven module `{module}` has no `pub step(edit state: S, input: Tick) -> Unit`, with S the result of `init`"
+        ));
+    }
+    let on_stop = match modules.function(&format!("{module}.on_stop")) {
+        None => true,
+        Some(_) => {
+            header("on_stop").is_some_and(|function| {
+                matches!(function.params.as_slice(), [held] if held.convention.is_none())
+            }) && core("on_stop").is_some_and(|on_stop| {
+                matches!(on_stop.params.as_slice(), [(_, held)] if same_type(held, state))
+                    && is_unit(&on_stop.result)
+            })
+        }
+    };
+    if !on_stop {
+        return Err(format!(
+            "`on_stop` of the driven module `{module}` is not `pub on_stop(state: S) -> Unit`, with S the result of `init`"
+        ));
+    }
+    Ok(init)
+}
+
+/// Whether two types are the same, labels and refinements aside.
+fn same_type(a: &Type, b: &Type) -> bool {
+    let all = |xs: &[Type], ys: &[Type]| {
+        xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
+    };
+    match (a, b) {
+        (Type::Base { base: x, .. }, Type::Base { base: y, .. }) => match (x, y) {
+            (
+                Base::Named {
+                    module: m,
+                    name: n,
+                    args: xs,
+                },
+                Base::Named {
+                    module: k,
+                    name: o,
+                    args: ys,
+                },
+            ) => m == k && n == o && all(xs, ys),
+            (Base::Tuple(xs), Base::Tuple(ys)) => all(xs, ys),
+            _ => x == y,
+        },
+        _ => a == b,
+    }
+}
+
+/// Whether `ty` is `Tick` of `std.drive`.
+fn is_tick(ty: &Type) -> bool {
+    matches!(ty, Type::Base { base: Base::Named { module, name, .. }, .. }
+        if module == "std.drive" && name == "Tick")
+}
+
+/// Whether `ty` is `Unit`.
+fn is_unit(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Base {
+            base: Base::Unit,
+            ..
+        }
+    )
 }
 
 fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {

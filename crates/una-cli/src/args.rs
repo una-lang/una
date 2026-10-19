@@ -183,6 +183,10 @@ pub(crate) enum Command {
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
+
+        /// Stop the run once this many iterations of the host's loop have started (ADR 0116)
+        #[arg(long, value_name = "N", value_parser = iterations)]
+        stop_after_iterations: Option<u64>,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {
@@ -269,6 +273,15 @@ fn at_least_one(text: &str) -> Result<u64, String> {
         Ok(n) => Ok(n),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// A value of `--stop-after-iterations`: from 1 to 2^63 - 1 (ADR 0116 rule 19).
+fn iterations(text: &str) -> Result<u64, String> {
+    let n = at_least_one(text)?;
+    if n > i64::MAX.unsigned_abs() {
+        return Err(format!("{n} is too many; give at most {}", i64::MAX));
+    }
+    Ok(n)
 }
 
 /// A value of `--http-timeout`: a whole number of seconds, from 1 to a day (`spec/24 §4`).
