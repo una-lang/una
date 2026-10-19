@@ -178,7 +178,7 @@ hundreds(text: confidential[Private] Text) -> public Nat
   text.len / 100
 ```
 
-**No release under a labeled program counter.** At a call `p(v)`, the program counter (the label of the conditions that decided whether this line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)) must be below the `to` label. Choosing whether to release by a `secret` condition would reveal it:
+**No release under a labeled program counter.** At a call `p(v)`, the program counter (the label of the conditions that decided whether this line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)) must be below the `to` label. Choosing whether to release by a `secret` condition would reveal it:
 
 `una.toml`
 

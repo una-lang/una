@@ -47,7 +47,7 @@ module shop
 pub show_balance(balance: secret Int) -> Int = balance
 ```
 
-Branching raises the program counter (the label of the conditions that decided whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). A value chosen by a `secret` condition is `secret`, even when the branches are constants:
+Branching raises the program counter (the label of the conditions that decided whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)). A value chosen by a `secret` condition is `secret`, even when the branches are constants:
 
 ```una
 -- fails with U4001

@@ -125,7 +125,7 @@ Further rules:
 
 - **Labels do not count.** `secret Int` satisfies `Integer`.
 - **Operators keep their meaning.** `==` is structural equality and `<` the built-in order, on every type that satisfies the constraint.
-- **Information flow.** A comparison on values of `T` carries the labels of its operands, the symbolic label of `T` included, a stand-in for whatever label the caller's type carries. Branching on it raises the program counter, the label of the conditions that decide whether a line runs (see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)).
+- **Information flow.** A comparison on values of `T` carries the labels of its operands, the symbolic label of `T` included, a stand-in for whatever label the caller's type carries. Branching on it raises the program counter, the label of the conditions that decide whether a line runs (see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)).
 - **Verification.** In a generic body, the verifier knows nothing about `<` on a `T: Ord` but its name, so no law such as transitivity (`a < b` and `b < c` give `a < c`) is assumed.
 - **The prelude.** In edition `0.2`, `min`, `max`, `contains`, `sum` and `sort` are generic over these constraints.
 

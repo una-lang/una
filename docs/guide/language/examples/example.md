@@ -186,7 +186,7 @@ Further rules:
 
 ## Edition
 
-Examples are the same in editions `0.1` and `0.2`. Edition `0.3` adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
+Examples are the same in editions `0.1` and `0.2`. Edition `0.3` adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 
