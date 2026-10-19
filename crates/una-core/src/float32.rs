@@ -475,11 +475,236 @@ mod tests {
         }
     }
 
+    /// The `F32` `(-1)^negative * m * 2^q`, assembled from its IEEE bits with integer
+    /// arithmetic only: `m` is shifted left until its leading bit is the hidden bit of a normal
+    /// value, or `q` reaches the subnormal quantum 2^-149. The caller's value must be exactly an
+    /// `F32`: `m < 2^24` and, once normalized, a quantum between 2^-149 and 2^104.
+    fn exact(negative: bool, m: u64, q: i64) -> f32 {
+        assert!(m < 1 << 24 && q >= MIN_QUANTUM, "{m} {q}");
+        let sign = if negative { SIGN } else { 0 };
+        let (mut m, mut q) = (m, q);
+        if m == 0 {
+            return f32::from_bits(sign);
+        }
+        while m < HIDDEN && q > MIN_QUANTUM {
+            m <<= 1;
+            q -= 1;
+        }
+        assert!(q <= MAX_QUANTUM, "{q}");
+        let m = u32::try_from(m).unwrap();
+        if m < HIDDEN as u32 {
+            // A subnormal: biased exponent 0, the quantum 2^-149.
+            return f32::from_bits(sign | m);
+        }
+        let biased = u32::try_from(q + 150).unwrap();
+        f32::from_bits(sign | (biased << 23) | (m & FRACTION))
+    }
+
+    /// 2^k, exactly, for every `k` from -149 (the smallest subnormal) to 127.
+    fn pow2(k: i64) -> f32 {
+        exact(false, 1, k)
+    }
+
+    /// A finite nonzero `x` as `(negative, m, q)` with `|x| = m * 2^q` and `m < 2^24`.
+    fn decompose(x: f32) -> (bool, u64, i64) {
+        let bits = x.to_bits();
+        let biased = i64::from((bits >> 23) & 0xFF);
+        let fraction = u64::from(bits & FRACTION);
+        if biased == 0 {
+            (bits & SIGN != 0, fraction, MIN_QUANTUM)
+        } else {
+            (bits & SIGN != 0, fraction | HIDDEN, biased - 150)
+        }
+    }
+
+    /// The direction of a rounding to an integral value.
+    #[derive(Clone, Copy, Debug)]
+    enum Mode {
+        Floor,
+        Ceil,
+        Trunc,
+        HalfEven,
+        HalfAway,
+    }
+
+    /// The oracle of the roundings to an integral value, on integers only: `|x| = m * 2^q`; for
+    /// `q >= 0` (`|x| >= 2^23`) `x` is an integer already; otherwise its integer part is
+    /// `m >> -q` and the fraction `m mod 2^-q`, compared with the half `2^(-q-1)`.
+    fn integral_oracle(x: f32, toward: Mode) -> f32 {
+        if x.is_nan() {
+            return f32::from_bits(CANONICAL_NAN);
+        }
+        if x.is_infinite() || x == 0.0 {
+            return x;
+        }
+        let (negative, m, q) = decompose(x);
+        if q >= 0 {
+            return x;
+        }
+        // m < 2^24, so for every shift of 25 or more the integer part is 0 and the fraction,
+        // m, is below the half: a shift capped at 40 decides the same and fits in a u64.
+        let shift = (-q).min(40);
+        let unit = 1u64 << shift;
+        let integer = m >> shift;
+        let fraction = m & (unit - 1);
+        let half = unit >> 1;
+        let away = match toward {
+            Mode::Floor => negative && fraction != 0,
+            Mode::Ceil => !negative && fraction != 0,
+            Mode::Trunc => false,
+            Mode::HalfEven => fraction > half || (fraction == half && integer & 1 == 1),
+            Mode::HalfAway => fraction >= half,
+        };
+        exact(negative, integer + u64::from(away), 0)
+    }
+
+    /// `2^k mod n`, by squaring: O(log k).
+    fn pow2_mod(mut k: i64, n: u64) -> u64 {
+        let (mut result, mut base) = (1 % n, 2 % n);
+        while k > 0 {
+            if k & 1 == 1 {
+                result = result * base % n;
+            }
+            base = base * base % n;
+            k >>= 1;
+        }
+        result
+    }
+
+    /// The oracle of `rem` (C `fmodf`), on integers only: with `|x| = mx * 2^qx` and
+    /// `|y| = my * 2^qy`, the remainder is `(mx * 2^(qx - qy) mod my) * 2^qy` when `qx >= qy`,
+    /// computed as `(mx mod my) * (2^(qx - qy) mod my) mod my` (every product below 2^48), and
+    /// `|x|` itself when `qx < qy`, where `|x| < |y|`. It has the sign of `x`.
+    fn rem_oracle(x: f32, y: f32) -> f32 {
+        if x.is_nan() || y.is_nan() || x.is_infinite() || y == 0.0 {
+            return f32::from_bits(CANONICAL_NAN);
+        }
+        if y.is_infinite() || x == 0.0 {
+            return x;
+        }
+        let (negative, mx, qx) = decompose(x);
+        let (_, my, qy) = decompose(y);
+        if qx < qy {
+            // y is normal here, so |y| >= 2^23 * 2^qy >= 2^24 * 2^qx > |x|.
+            return x;
+        }
+        let r = (mx % my) * pow2_mod(qx - qy, my) % my;
+        exact(negative, r, qy)
+    }
+
+    #[test]
+    fn the_exact_helper_assembles_boundary_powers() {
+        assert_eq!(b(pow2(-149)), 1);
+        assert_eq!(b(pow2(-148)), 2);
+        assert_eq!(b(pow2(-127)), 0x0040_0000);
+        assert_eq!(b(pow2(-126)), b(f32::MIN_POSITIVE));
+        assert_eq!(b(pow2(-23)), b(f32::EPSILON));
+        assert_eq!(b(pow2(0)), b(1.0));
+        assert_eq!(b(pow2(23)), b(8_388_608.0));
+        assert_eq!(b(pow2(127)), 0x7F00_0000);
+        assert_eq!(b(exact(false, (1 << 24) - 1, 104)), b(f32::MAX));
+        assert_eq!(b(exact(true, 3, -1)), b(-1.5));
+        assert_eq!(b(exact(true, 0, 0)), b(-0.0));
+        assert_eq!(b(exact(false, (1 << 23) - 1, -149)), 0x007F_FFFF);
+        // `decompose` is the inverse of `exact` on every class of finite value.
+        for x in [
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            -1.5,
+            f32::MAX,
+            -f32::from_bits(0x007F_FFFF),
+        ] {
+            let (negative, m, q) = decompose(x);
+            assert_eq!(b(exact(negative, m, q)), b(x));
+        }
+    }
+
+    #[test]
+    fn the_rounding_oracles_give_the_exact_cases() {
+        let cases: [(f32, [f32; 5]); 8] = [
+            (2.5, [2.0, 3.0, 2.0, 2.0, 3.0]),
+            (-2.5, [-3.0, -2.0, -2.0, -2.0, -3.0]),
+            (3.5, [3.0, 4.0, 3.0, 4.0, 4.0]),
+            (-0.25, [-1.0, -0.0, -0.0, -0.0, -0.0]),
+            (0.5, [0.0, 1.0, 0.0, 0.0, 1.0]),
+            (-0.75, [-1.0, -0.0, -0.0, -1.0, -1.0]),
+            (
+                8_388_607.5,
+                [
+                    8_388_607.0,
+                    8_388_608.0,
+                    8_388_607.0,
+                    8_388_608.0,
+                    8_388_608.0,
+                ],
+            ),
+            (f32::from_bits(1), [0.0, 1.0, 0.0, 0.0, 0.0]),
+        ];
+        let modes = [
+            Mode::Floor,
+            Mode::Ceil,
+            Mode::Trunc,
+            Mode::HalfEven,
+            Mode::HalfAway,
+        ];
+        for (x, expected) in cases {
+            for (mode, want) in modes.iter().zip(expected) {
+                assert_eq!(b(integral_oracle(x, *mode)), b(want), "{x:e} {mode:?}");
+            }
+        }
+        assert_eq!(b(rem_oracle(5.5, 2.0)), b(1.5));
+        assert_eq!(b(rem_oracle(-5.5, 2.0)), b(-1.5));
+        assert_eq!(b(rem_oracle(-4.0, 2.0)), b(-0.0));
+        assert_eq!(b(rem_oracle(1.0, f32::INFINITY)), b(1.0));
+        assert_eq!(b(rem_oracle(f32::MAX, f32::from_bits(1))), b(0.0));
+        // 2^24 - 1 is a multiple of 3, and 2^127 = 2 mod 3.
+        assert_eq!(b(rem_oracle(f32::MAX, 3.0)), b(0.0));
+        assert_eq!(b(rem_oracle(pow2(127), 3.0)), b(2.0));
+        assert_eq!(b(rem_oracle(1.0, 0.0)), CANONICAL_NAN);
+    }
+
     #[test]
     fn roundings_and_remainders_match_the_references() {
         let mut bits = Bits(0x0123_4567_89AB_CDEF);
-        for _ in 0..200_000 {
+        for i in 0..200_000_u32 {
             let (x, y) = (bits.f32(), bits.f32());
+            // Every other value has its exponent moved between 2^-8 and 2^23, where the
+            // roundings have a fraction to decide.
+            let x = if i % 2 == 0 {
+                x
+            } else {
+                f32::from_bits((x.to_bits() & 0x807F_FFFF) | ((119 + (i / 2) % 32) << 23))
+            };
+            assert_eq!(b(floor(x)), b(integral_oracle(x, Mode::Floor)), "{x:e}");
+            assert_eq!(b(ceil(x)), b(integral_oracle(x, Mode::Ceil)), "{x:e}");
+            assert_eq!(b(trunc(x)), b(integral_oracle(x, Mode::Trunc)), "{x:e}");
+            assert_eq!(
+                b(round_half_even(x)),
+                b(integral_oracle(x, Mode::HalfEven)),
+                "{x:e}"
+            );
+            assert_eq!(
+                b(round_half_away(x)),
+                b(integral_oracle(x, Mode::HalfAway)),
+                "{x:e}"
+            );
+            assert_eq!(b(rem(x, y)), b(rem_oracle(x, y)), "{x:e} {y:e}");
+            assert_eq!(b(sqrt(x)), b(canonical(x.sqrt())), "{x:e}");
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    #[allow(clippy::disallowed_methods)]
+    fn roundings_match_the_hardware_on_random_values() {
+        // The references: `f32::floor`, `ceil`, `trunc`, `round_ties_even` and `round`, which on
+        // AArch64 are the `frintm`, `frintp`, `frintz`, `frintn` and `frinta` instructions.
+        // Elsewhere they may call the platform's C library, which no part of Una uses, so the
+        // test runs only here; the integer oracles above check every target. `%` has no such
+        // instruction (it is `fmodf`), so `rem` has only its integer oracle.
+        let mut bits = Bits(0x0123_4567_89AB_CDEF);
+        for _ in 0..200_000 {
+            let x = bits.f32();
             assert_eq!(b(floor(x)), b(canonical(x.floor())), "{x:e}");
             assert_eq!(b(ceil(x)), b(canonical(x.ceil())), "{x:e}");
             assert_eq!(b(trunc(x)), b(canonical(x.trunc())), "{x:e}");
@@ -489,8 +714,6 @@ mod tests {
                 "{x:e}"
             );
             assert_eq!(b(round_half_away(x)), b(canonical(x.round())), "{x:e}");
-            assert_eq!(b(rem(x, y)), b(canonical(x % y)), "{x:e} {y:e}");
-            assert_eq!(b(sqrt(x)), b(canonical(x.sqrt())), "{x:e}");
         }
     }
 
