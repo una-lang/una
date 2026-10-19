@@ -2103,6 +2103,7 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
 ///   type, and by the operations it needs;
 /// - a call of a function value anywhere the step reaches makes it the top label (#1023);
 /// - concurrent tasks: the top label when a function holding a task construct reaches the step.
+///
 /// O(functions + call edges + operations).
 pub(crate) fn drive_timing(
     env: &Env<'_>,
