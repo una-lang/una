@@ -50,7 +50,9 @@ mod via;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
-use una_diag::{Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair};
+use una_diag::{
+    Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair, Severity,
+};
 use una_project::Edition;
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, SourceDb, Span, lex_in, parse};
@@ -569,7 +571,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .obligations
         .dedup_by(|a, b| a.0 == ObligationKind::EffectCondition && a == b);
     let headers = headers(&env);
-    let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
+    let (program, gaps) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0103: the pending `refinement` obligations of the flows into refined positions,
     // decided by the rule tier 1 uses (#615).
     let kinds = una_core::flow::Kinds::new(&program);
@@ -590,7 +592,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never
     // a silent pass (`spec/10 §2`). D-144: switched to B, ADR 0045: the
     // check runs in every build, not only in debug builds, and reports at the declaration.
-    for (span, what) in lost {
+    for (span, what) in gaps.lost {
         report.error(
             Code::U8001,
             span,
@@ -598,6 +600,36 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 "internal error: the Core IR of this declaration lost {what} of its checked types"
             ),
         );
+    }
+    // #1050: a declaration that type-checked but has no Core IR would get no obligations, so
+    // its contracts and its arithmetic checks would never be verified. Unless an error already
+    // rejects the package, as one of its own diagnostics does, that is an internal error, never
+    // an accepted package. The same holds for a contract of the standard library, without which
+    // a call into it would be verified without its `requires`.
+    let rejected_already = package.earlier_errors
+        || report
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error);
+    if !rejected_already {
+        for (span, what) in gaps.missing {
+            report.error(
+                Code::U8001,
+                span,
+                format!(
+                    "internal error: this {what} type-checked but did not elaborate to Core IR, so none of its obligations could be verified; the package is rejected"
+                ),
+            );
+        }
+        for (span, what) in gaps.standard {
+            report.push(Diagnostic::error(
+                Code::U8001,
+                format!(
+                    "internal error: this {what} of the standard library did not elaborate to Core IR, so calls into it could not be verified; the package is rejected"
+                ),
+                standard.sources.location(span),
+            ));
+        }
     }
     let index = index::build(&env, &findings);
     // ADR 0091 decision 5: elaborated only on request, after the program, and read by nothing
@@ -1577,5 +1609,280 @@ mod tests {
         assert_eq!(closest("value", ["name", "seats"]), None);
         assert_eq!(edit_distance("kitten", "sitting"), 3);
         assert_eq!(edit_distance("ab", "ba"), 1);
+    }
+}
+
+/// #1050: a declaration that type-checked but did not elaborate to Core IR rejects the package
+/// with U8001, through the final cross-check, whatever path of the elaboration dropped it.
+#[cfg(test)]
+mod elaboration_gaps {
+    use una_project::Manifest;
+
+    use super::elab::hook::Break;
+    use super::*;
+    use crate::names::ModuleInput;
+
+    const SOURCE: &str = "module gaps
+
+pub kind Positive = Int where it > 0
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub handler quiet() for Log
+  op write(line) = unit
+
+pub predicate reflect small(n: Int) -> Bool = n < 100
+
+pub step(n: Int) -> Int
+  requires n > 0
+  ensures result > n
+=
+  n + 1
+
+pub halve(n: Int) -> Int = n / 2
+
+example \"step adds one\"
+  do step(1)
+  expect result == 2
+";
+
+    /// The type check of `text` in `edition`, its codes and the lines they are at.
+    fn run(text: &str, edition: Edition) -> (TypeCheck, Vec<(Code, u32)>) {
+        let mut sources = SourceDb::new();
+        let mut interner = Interner::new();
+        let id = sources.add("gaps.una", text.as_bytes());
+        let keywords = match edition {
+            Edition::V0_1 => KeywordSet::V0_1,
+            Edition::V0_2 => KeywordSet::V0_2,
+            Edition::V0_3 => KeywordSet::V0_3,
+            Edition::V0_4 => KeywordSet::V0_4,
+        };
+        let lexed = lex_in(sources.file(id), id, &mut interner, keywords);
+        let parsed = parse(&lexed, id, &interner);
+        assert!(lexed.errors.is_empty(), "{:?}", lexed.errors);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let settings = Manifest {
+            edition,
+            ..Manifest::default()
+        };
+        let input = PackageInput {
+            sources: &sources,
+            interner: &interner,
+            single: true,
+            modules: vec![ModuleInput {
+                id,
+                tree: &parsed.file,
+                broken: false,
+            }],
+            manifest: None,
+            settings: &settings,
+            run: None,
+            earlier_errors: false,
+            locks: &[],
+        };
+        let check = check_types(&input);
+        let codes = check
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.primary.start.line))
+            .collect();
+        (check, codes)
+    }
+
+    fn names(check: &TypeCheck) -> Vec<String> {
+        check
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path == "gaps")
+            .flat_map(|m| {
+                m.decls
+                    .iter()
+                    .map(|d| elab::decl_key(d).1.to_owned())
+                    .chain(m.examples.iter().map(|e| e.name.clone()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_package_checks_and_elaborates_without_a_failure() {
+        for edition in Edition::ALL {
+            let (check, codes) = run(SOURCE, edition);
+            assert_eq!(codes, Vec::new(), "{edition:?}");
+            let module = check
+                .program
+                .modules
+                .iter()
+                .find(|m| m.path == "gaps")
+                .expect("the module");
+            assert_eq!(module.decls.len(), 6, "{edition:?}: {:?}", names(&check));
+            assert_eq!(module.examples.len(), 1, "{edition:?}");
+        }
+    }
+
+    #[test]
+    fn a_declaration_that_does_not_elaborate_is_an_internal_error() {
+        // Each declaration, its line, broken in turn: none is accepted without its Core IR.
+        for (name, line) in [
+            ("Positive", 3),
+            ("Log", 5),
+            ("quiet", 8),
+            ("small", 11),
+            ("step", 13),
+            ("halve", 19),
+            ("step adds one", 21),
+        ] {
+            for edition in Edition::ALL {
+                let _broken = Break::of(name);
+                let (check, codes) = run(SOURCE, edition);
+                assert!(
+                    codes.contains(&(Code::U8001, line)),
+                    "{name} in {edition:?}: {codes:?}"
+                );
+                assert!(
+                    codes.iter().all(|(code, _)| *code == Code::U8001),
+                    "{name} in {edition:?}: {codes:?}"
+                );
+                let message = &check
+                    .diagnostics
+                    .iter()
+                    .find(|d| d.primary.start.line == line)
+                    .expect("the diagnostic")
+                    .message;
+                assert!(message.contains("did not elaborate"), "{message}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_reflected_predicate_whose_local_has_no_resolution_is_an_internal_error() {
+        // The regression found while adding the host-driven step: a parameter named in a
+        // reflected predicate's formula looked up as a resolution, which the records never
+        // hold for a local, so `Fx::res` marked the predicate broken with no diagnostic and it
+        // vanished from Core IR; a refinement naming it was then refuted, or worse proven
+        // without it. The lookup is forced here; the package must be rejected with U8001.
+        let text = "module gaps
+
+pub predicate reflect small(n: Int) -> Bool = n < 100
+
+pub kind Small = Int where small(it)
+
+pub keep(n: Small) -> Small = n
+";
+        for edition in Edition::ALL {
+            let (check, codes) = run(text, edition);
+            assert_eq!(codes, Vec::new(), "{edition:?}");
+            assert!(names(&check).iter().any(|d| d == "small"));
+            let _eager = Break::eager_resolution();
+            let (check, codes) = run(text, edition);
+            assert!(codes.contains(&(Code::U8001, 3)), "{edition:?}: {codes:?}");
+            assert!(!names(&check).iter().any(|d| d == "small"));
+        }
+    }
+
+    #[test]
+    fn a_standard_contract_that_does_not_elaborate_is_an_internal_error() {
+        // `abs` is a function of the prelude: without its signature a call into it would be
+        // verified without its contract.
+        let _broken = Break::of("abs");
+        let (check, codes) = run(SOURCE, Edition::V0_1);
+        assert_eq!(codes.len(), 1, "{codes:?}");
+        let diagnostic = check.diagnostics.first().expect("one diagnostic");
+        assert_eq!(diagnostic.code, Code::U8001);
+        assert_eq!(diagnostic.primary.file, "std/prelude.una");
+        assert!(diagnostic.message.contains("standard function"));
+    }
+
+    #[test]
+    fn an_error_that_rejects_the_package_already_needs_no_internal_error() {
+        // A type error rejects the package; the declaration it leaves out of Core IR, and any
+        // other, adds nothing.
+        let text = format!("{SOURCE}\npub wrong() -> Int = true\n");
+        let _broken = Break::of("step");
+        let (_, codes) = run(&text, Edition::V0_1);
+        assert!(!codes.is_empty());
+        assert!(
+            codes.iter().all(|(code, _)| *code != Code::U8001),
+            "{codes:?}"
+        );
+    }
+
+    const DECIMAL: &str = "module gaps
+
+pub kind Amount = Decimal[2] where it >= 0.00
+
+pub total(a: Amount, b: Amount) -> Amount = a + b
+
+pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
+  requires rate >= 0.0000
+=
+  a + rate >= 0.0
+";
+
+    #[test]
+    fn a_decimal_declaration_that_does_not_elaborate_is_an_internal_error() {
+        // Edition 0.4's `Decimal` (`spec/29 §16`): its literals, aligned operands and
+        // refinements elaborate on their own paths, which the cross-check covers as any other.
+        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        assert_eq!(codes, Vec::new());
+        assert_eq!(names(&check), ["Amount", "total", "scaled"]);
+        for (name, line) in [("Amount", 3), ("total", 5), ("scaled", 7)] {
+            let _broken = Break::of(name);
+            let (_, codes) = run(DECIMAL, Edition::V0_4);
+            assert_eq!(codes, [(Code::U8001, line)], "{name}");
+        }
+    }
+
+    #[test]
+    fn a_decimal_declaration_of_the_prelude_that_does_not_elaborate_is_an_internal_error() {
+        // The functions of `Decimal` and the kind `Rounding`, which edition 0.4's prelude
+        // declares: each is in Core IR, and one that does not elaborate rejects the package.
+        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        assert_eq!(codes, Vec::new());
+        let functions = ["parse_decimal", "as_decimal", "json_decimal"];
+        for name in functions {
+            assert!(
+                check
+                    .program
+                    .library
+                    .iter()
+                    .any(|s| s.path.module == "prelude" && s.path.name == name),
+                "{name}"
+            );
+        }
+        assert!(check.program.modules.iter().any(|m| {
+            m.path == una_core::PRELUDE_MODULE
+                && m.decls
+                    .iter()
+                    .any(|d| elab::decl_key(d) == ("type", "Rounding"))
+        }));
+        for (name, what) in functions
+            .iter()
+            .map(|name| (*name, "standard function"))
+            .chain([("Rounding", "prelude kind")])
+        {
+            let _broken = Break::of(name);
+            let (check, codes) = run(DECIMAL, Edition::V0_4);
+            assert_eq!(codes.len(), 1, "{name}: {codes:?}");
+            let diagnostic = check.diagnostics.first().expect("one diagnostic");
+            assert_eq!(diagnostic.code, Code::U8001, "{name}");
+            assert_eq!(diagnostic.primary.file, "std/prelude.una", "{name}");
+            assert!(
+                diagnostic.message.contains(what),
+                "{name}: {}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn every_standard_declaration_elaborates_in_every_edition() {
+        // The audit of #1050: no contract of the standard library, host capability or prelude
+        // kind of Core IR is dropped today, in any edition.
+        for edition in Edition::ALL {
+            let (_, codes) = run("module gaps\n\npub one() -> Int = 1\n", edition);
+            assert_eq!(codes, Vec::new(), "{edition:?}");
+        }
     }
 }

@@ -77,6 +77,8 @@ Refinements, `requires` and `ensures` clauses, the bodies of reflect predicates 
 
 A Core `let` binds a right-hand side or an expression, so the value of a handled statement or of a branching construct can be bound. The checker records its resolutions by the span of each expression (callees and their type arguments, the parameter of each argument, fields, operations, variants, capability bindings, and the labeled type of each expression and binder), and the desugaring applies to the syntax tree with these records; only declarations without diagnostics are elaborated (ADR 0032).
 
+Elaboration fails closed (#1050). Every declaration of the package that type-checked is in Core IR: its types, functions, predicates, policies, capabilities and handlers among the declarations of its module, and its examples among the module's examples. So are the contracts of the standard library, the host capabilities and the kinds of the prelude that Core IR declares. A declaration missing from Core IR would have no obligations, so the compiler checks this once Core IR is built. Unless another error already rejects the package, a declaration that is missing is U8001 and the package is rejected.
+
 Examples are not Core IR declarations. The test harness (`spec/11 §6`) runs their `do` expression, desugared, inside nested `with` bindings for their `given` lines.
 
 ## 4. Debug output
