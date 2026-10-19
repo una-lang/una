@@ -12,6 +12,7 @@ use una_core::{
 };
 use una_syntax::Span;
 
+use crate::clock::Clock;
 use crate::host::{self, FileFault, Grant, World};
 use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
 
@@ -545,6 +546,15 @@ pub(crate) struct Machine<'p, 'w> {
     pub(crate) trace: Vec<Event>,
     depth: usize,
     max_depth: usize,
+    /// The run's clock, real or virtual (ADR 0116 rule 19, `spec/26 §6`).
+    pub(crate) clock: Clock,
+    /// The stop schedule of a test's `stop after N` line (ADR 0116 rule 19): a host stop
+    /// arrives once `N` iterations of `for ever` loops have started in the run.
+    pub(crate) stop_after: Option<u64>,
+    /// The iterations of `for ever` loops started so far.
+    ever_started: u64,
+    /// Whether the host stop has arrived: sticky (ADR 0116 rule 14).
+    host_stopped: bool,
     /// The memory budget in MiB, the probe of the heap, and what the heap held when the run
     /// started, which does not count.
     max_memory: usize,
@@ -590,6 +600,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             trace: Vec::new(),
             depth: 0,
             max_depth,
+            clock: Clock::real(),
+            stop_after: None,
+            ever_started: 0,
+            host_stopped: false,
             max_memory: limits.max_memory,
             http: limits.http,
             held: limits.held,
@@ -649,7 +663,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Runs the host-driven step (ADR 0116 rule 3): `init` once, then `step` once per tick of
-    /// `drive.ticks` milliseconds on the monotonic clock, delivering the latest due tick with the
+    /// `drive.ticks` milliseconds on the run's clock (real or virtual), delivering the latest due tick with the
     /// count of the due ticks skipped before it, then `on_stop` when one is declared. The loop
     /// stops at the start of an iteration once `drive.stop_after` iterations have started (the
     /// stop of `--stop-after-iterations`, rule 19); until host stops land, that is its only
@@ -663,8 +677,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         drive: &Drive,
     ) -> Flow<'p> {
         let mut state = self.call_hosted(init, Vec::new())?;
-        let period = std::time::Duration::from_millis(drive.ticks);
-        let start = std::time::Instant::now();
+        // Tick `k` is due `k * ticks` after `init` returns, on the run's clock: the monotonic
+        // one, or the virtual one, which the wait moves at once (ADR 0116 rule 19).
+        let origin = self.clock.now();
+        let period = drive.ticks.max(1);
         let mut next: u64 = 0;
         let mut iterations: u64 = 0;
         let ended = loop {
@@ -682,17 +698,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 break Ok(());
             }
             iterations += 1;
-            // Tick `k` is due `k * ticks` after the first: wait for the next one, or deliver the
-            // latest one due, with the count of those skipped.
-            let due = |k: u64| start + period.saturating_mul(u32::try_from(k).unwrap_or(u32::MAX));
-            let now = std::time::Instant::now();
-            if now < due(next) {
-                std::thread::sleep(due(next) - now);
-            }
-            let elapsed = start.elapsed().as_millis();
-            let latest =
-                u64::try_from(elapsed / u128::from(drive.ticks.max(1))).unwrap_or(u64::MAX);
-            let latest = latest.max(next);
+            // Wait for the next tick, or deliver the latest one due, with the count of those
+            // skipped.
+            self.clock
+                .wait_until(origin.saturating_add(next.saturating_mul(period)));
+            let elapsed = self.clock.now().saturating_sub(origin);
+            let latest = (elapsed / period).max(next);
             let missed = latest - next;
             let at = latest.saturating_mul(drive.ticks);
             next = latest + 1;
@@ -1305,8 +1316,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         mut current: Vec<Value<'p>>,
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
-            // `ever`: until `stop` or a failure (`spec/26 §5`).
+            // `ever`: until `stop`, a failure, or a host stop at the start of an iteration
+            // (`spec/26 §5`, `§6`).
             LoopSource::Ever => loop {
+                if self.ever_start() {
+                    self.stop_event();
+                    break;
+                }
                 self.within_budget(span)?;
                 let stopped;
                 (current, stopped) =
@@ -1388,6 +1404,41 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
         }
         Ok(current)
+    }
+
+    /// Whether a `for ever` stops at the iteration that starts now (ADR 0116 rules 13, 14 and
+    /// 19): once the host stop has arrived, which is sticky, every `for ever` stops at its next
+    /// iteration start, a loop entered later included. Under a test's `stop after N` line the
+    /// stop arrives once `N` iterations of `for ever` loops have started in the run, counted in
+    /// the order the interpreter starts them. Otherwise the iteration is counted and runs. O(1).
+    fn ever_start(&mut self) -> bool {
+        if !self.host_stopped
+            && self
+                .stop_after
+                .is_some_and(|limit| self.ever_started >= limit)
+        {
+            self.host_stopped = true;
+        }
+        if !self.host_stopped {
+            self.ever_started = self.ever_started.saturating_add(1);
+        }
+        self.host_stopped
+    }
+
+    /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
+    /// rule 14), in the current task.
+    fn stop_event(&mut self) {
+        let seq = self.trace.len() + 1;
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Stop,
+        });
     }
 
     /// The `on stop` block of a loop with the state `current` bound; returns the state it gives
@@ -1641,6 +1692,23 @@ impl<'p, 'w> Machine<'p, 'w> {
                     _ => Err(fault("`fake_hash` without an `Int` seed")),
                 };
             }
+            // `elapse(d)` moves the test's virtual clock forward by `d` milliseconds at once
+            // (ADR 0116 rule 19, `spec/14 §4`). Its `requires d >= 0` is verified at each call,
+            // and only tests call it, whose clock is always virtual.
+            "std.testing" if function.name == "elapse" => {
+                let by = match args.first() {
+                    Some(Value::Int(d)) if d.sign() != Sign::Minus => {
+                        u64::try_from(d).unwrap_or(u64::MAX)
+                    }
+                    _ => return Err(fault("`elapse` without a duration of at least 0")),
+                };
+                return match self.clock.elapse(by) {
+                    Ok(_) => Ok(Value::Unit),
+                    Err(crate::clock::NotVirtual) => {
+                        Err(fault("`elapse` outside a test, on the real clock"))
+                    }
+                };
+            }
             _ => {}
         }
         let key = (function.module.as_str(), function.name.as_str());
@@ -1882,7 +1950,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                 self.world.print(&text(0));
                 Ok(Value::Unit)
             }
-            ("Clock", "now") => Ok(Value::int(self.world.now())),
+            // Under virtual time, the run's virtual clock, from 0 at its start, instead of the
+            // wall clock (ADR 0116 rule 19, `spec/26 §6`).
+            ("Clock", "now") => Ok(Value::int(if self.clock.is_virtual() {
+                i64::try_from(self.clock.now()).unwrap_or(i64::MAX)
+            } else {
+                self.world.now()
+            })),
             // A value that is not valid UTF-8 aborts the run: its content, not the name,
             // would decide the `Option`'s `public` tag (S-16, ADR 0086).
             ("Env", "get") => match self.world.env_var(&text(0)) {

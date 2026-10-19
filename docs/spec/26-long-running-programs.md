@@ -136,4 +136,49 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 
 5. **Verification** (ADR 0116 V3, V4). After a `for ever`, the bindings it updates are fresh at their declared types, and `on stop` is verified with them fresh. A function that says `diverges` keeps partial correctness: its `ensures` holds whenever it returns.
 6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `ever`, with its `on stop` block, which binds the state afresh and returns it as the loop's value.
-7. **Preview.** Until host stops land (ADR 0116 rule 14), a `for ever` without `stop` ends only by a failure of its body or by the process ending.
+7. **Preview.** Until host stops land (ADR 0116 rule 14), a `for ever` without `stop` ends only by a failure of its body, by the stop schedule of a test (§6 rule 1), or by the process ending.
+
+## 6. Tests and virtual time
+
+1. **`stop after N`** (ADR 0116 rule 19). In edition `0.4`, an example (`spec/08 §2`) MAY end with the line `stop after N`:
+
+   ```ebnf
+   stop_after = "stop" "after" integer_literal NEWLINE ;      (* the last line of an example *)
+   ```
+
+   - `N` is an integer literal from 1 to 2^63 − 1. Another value is U0101, and so is a line after it. `stop` and `after` are words, not keywords. Before edition `0.4` the line does not parse (U0101).
+   - **The stop schedule.** A host stop request arrives once `N` iterations of `for ever` loops have started in the example's run, counted across all of its loops in the order the interpreter starts them. The request is sticky: from then on, every `for ever` that reaches the start of an iteration ends there, a loop entered later included. Each such loop appends the event `{"seq": n, "outcome": {"kind": "stop"}}`, with the `task` field of its task, and then its `on stop` runs (§5 rule 4). With `stop after 2`, the stop comes at the start of the third iteration.
+   - **Divergence.** Only under this line may the `do` line call a function that says `diverges` (U3027 otherwise, §5 rule 2). The `expect` lines never may (U3027).
+   - Until the host stops of ADR 0116 rule 14 land, this is the only stop that reaches a `for ever` loop: `--stop-after-iterations` stops the driver's loop only (§2 rule 4).
+
+   ```una
+   import std.testing (elapse)
+   import std.time (Millisecond, millisecond)
+
+   pub handler slow_store(delay: Int of Millisecond) for Store
+     op get(key) =
+       elapse(delay)
+       "v"
+
+   example "the loop reads the store twice, then stops"
+     given @store = slow_store(delay: 150 * millisecond)
+     given @log = memory_log()
+     do poll("k")                -- a `diverges` function whose `for ever` reads and logs
+     expect result == 2
+     expect performed @log.write
+     stop after 2
+   ```
+
+   Each read takes 150 virtual milliseconds, so the test is instant in real time. The stop arrives at the start of the third iteration, `on stop` runs, and `poll` returns the count of its reads.
+2. **Virtual time.** Time in a test is virtual. The run's clock counts milliseconds from 0, at the start of the run:
+   - It moves only forward, and it never waits on the wall clock.
+   - `std.testing.elapse(d)` moves it forward by `d` at once (`spec/14 §4`). `d` is an `Int of Millisecond` of at least 0, an obligation of each call (`requires d >= 0`, U5001 when refuted), and the move saturates at 2^64 − 1 milliseconds.
+   - It also moves when the run waits on time and nothing else can run: it then jumps to the earliest moment waited for, so a test never hangs on a wait that only time could end. In this preview, the one such wait is the driver's wait for its next tick (§2 rule 3). The deadlines of ADR 0116 rule 11 and of ADR 0117 wait on the same clock once they land, and a deadline expires at the first check point at which the clock has reached it.
+   - Nothing else moves it: computation, host operations and their waits on the network take no virtual time.
+   - A host operation of a test is served by a handler of its `given` lines (`spec/08 §2` rule 1), so a test never reads the wall clock.
+3. **`--virtual-time`.** `una run` and executables take `--virtual-time` (`spec/13 §5`, `spec/16 §3`), which gives the run the clock of rule 2:
+   - `Clock.now` reads it, in milliseconds from the start of the run, instead of the wall clock.
+   - The driver's tick `k` is due `k × ticks` milliseconds after `init` returns, and the wait for it moves the clock there at once. A step takes no virtual time, so each tick is delivered when it is due: `at` is `k × ticks`, and `missed` is 0.
+   - Under it, both engines MUST give the same output, exit status, failure and trace, the readings of `Clock.now` included (`spec/16 §5`).
+   - The flag is a property of the host, not a construct, so it is accepted for a package of any edition.
+4. **One clock per run.** A run has exactly one clock, made when it starts and shared by all of its tasks. A virtual one moves only at the run's waits on time, never back. Reading it, moving it and jumping it to a moment are O(1) each.

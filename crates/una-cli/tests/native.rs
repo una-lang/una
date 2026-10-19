@@ -2895,6 +2895,94 @@ fn a_driven_counter_runs_alike_in_both_engines() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A step that prints its tick and the clock's reading, a tick a day.
+const CLOCKED: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  count = count + 1
+  let now = @clock.now()
+  @console.print(\"step {count} at {input.at} missed {input.missed} now {now}\")
+";
+
+const CLOCKED_DRIVE: &str =
+    "\nrun\n  grants\n    console\n    clock\n\ndrive\n  module counter\n  ticks 86400000\n";
+
+#[test]
+fn under_virtual_time_both_engines_read_the_same_clock_and_never_wait() {
+    // ADR 0116 rule 19, `spec/26 §6`: under `--virtual-time` the clock starts at 0 and only the
+    // driver's waits move it, so a tick a day runs at once, and the output and the whole trace,
+    // the clock's readings included, are identical in both engines.
+    runtime();
+    let dir = ita_package("clocked", CLOCKED_DRIVE, &[("src/counter.una", CLOCKED)]);
+    let started = std::time::Instant::now();
+    let run = una(
+        &dir,
+        &[
+            "--json",
+            "run",
+            "--virtual-time",
+            "--stop-after-iterations",
+            "3",
+        ],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    let expected = [
+        "step 1 at 0 missed 0 now 0",
+        "step 2 at 86400000 missed 0 now 86400000",
+        "step 3 at 172800000 missed 0 now 172800000",
+    ];
+    assert_eq!(document["output"], serde_json::json!(expected));
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/clocked"))
+        .current_dir(&dir)
+        .args(["--virtual-time", "--stop-after-iterations", "3", "--trace"])
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        format!("{}\n", expected.join("\n"))
+    );
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    // Not `timeless`: virtual readings agree exactly.
+    assert_eq!(native_trace, document["trace"]);
+    // Two days of ticks took no real time.
+    assert!(started.elapsed() < std::time::Duration::from_secs(600));
+    let flagged = Command::new(dir.join("target/una/clocked"))
+        .current_dir(&dir)
+        .arg("--virtual-time=yes")
+        .output()
+        .unwrap();
+    assert_eq!(flagged.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_driven_module_without_its_shapes_or_a_bad_stop_count_is_a_usage_error() {
     // ADR 0116 rules 2 and 19: a usage error, exit code 2, in `una run` and `una build`, and

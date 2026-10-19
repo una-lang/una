@@ -800,8 +800,8 @@ impl<'a> Env<'a> {
     }
 
     /// Resolves the imports of the package modules, the first `count` modules, and of the
-    /// standard modules after `std.testing`, which may import one another (`std.drive` imports
-    /// `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
+    /// standard modules from `std.testing` on, which may import one another (`std.drive` and,
+    /// in edition 0.4, `std.testing` import `std.time`). Imports that resolve to nothing were reported by M3 and are skipped.
     fn imports(&mut self, count: usize) {
         let mut paths: BTreeMap<String, usize> = BTreeMap::new();
         for (index, module) in self.modules.iter().enumerate().take(count) {
@@ -814,8 +814,9 @@ impl<'a> Env<'a> {
         }
         // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10).
         paths.insert(prelude::STD_HOST.to_owned(), count);
+        // `std.testing` imports `Millisecond` from `std.time` in edition 0.4 (ADR 0116 rule 19).
         let later = (count + 2)..self.modules.len();
-        for index in (0..count).chain(later) {
+        for index in (0..count).chain(std::iter::once(count + 1)).chain(later) {
             let Some(module) = self.modules.get(index) else {
                 continue;
             };

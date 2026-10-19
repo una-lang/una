@@ -315,6 +315,12 @@ impl Dumper<'_> {
                         ExpectationKind::Holds(expr) => list("expect", [self.expr(expr)]),
                     });
                 }
+                if let Some(stop_after) = &example.stop_after {
+                    items.push(list(
+                        "stop-after",
+                        [atom(stop_after.iterations.to_string())],
+                    ));
+                }
                 items
             }
             DeclKind::Measure(measure) => {

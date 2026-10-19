@@ -184,9 +184,16 @@ pub fn console_print(line: i64) -> i64 {
     0
 }
 
-/// `Clock.now()`: milliseconds since the Unix epoch.
+/// `Clock.now()`: milliseconds since the Unix epoch; under virtual time, the milliseconds of
+/// the run's virtual clock, from 0 at its start (ADR 0116 rule 19, `spec/26 §6`).
 pub fn clock_now() -> i64 {
-    values::int_word(&num_bigint::BigInt::from(Machine.now()))
+    let clock = crate::runtime::clock();
+    let now = if clock.is_virtual() {
+        i64::try_from(clock.now()).unwrap_or(i64::MAX)
+    } else {
+        Machine.now()
+    };
+    values::int_word(&num_bigint::BigInt::from(now))
 }
 
 /// `Env.get(name)` at the call `site`: the variable, or `None`. A value that is not valid UTF-8

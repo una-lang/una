@@ -1041,6 +1041,7 @@ fn run_command(
                 http_timeout,
                 solver_wallclock,
                 stop_after_iterations,
+                virtual_time,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1053,6 +1054,7 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock),
                     stop_after: stop_after_iterations,
+                    virtual_time,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1087,6 +1089,8 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock),
                     stop_after: None,
+                    // Time in a test is always virtual (ADR 0116 rule 19).
+                    virtual_time: true,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

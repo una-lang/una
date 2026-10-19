@@ -67,6 +67,9 @@ pub(crate) struct RunOptions<'a> {
     /// `--stop-after-iterations`: the host's stop after this many iterations have started
     /// (ADR 0116 rule 19).
     pub(crate) stop_after: Option<u64>,
+    /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §6`). A test's
+    /// clock is virtual whatever this says.
+    pub(crate) virtual_time: bool,
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -282,7 +285,11 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    let host = Host { grants, keys };
+    let host = Host {
+        grants,
+        keys,
+        virtual_time: options.virtual_time,
+    };
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         writeln!(
             stderr,

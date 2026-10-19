@@ -5,12 +5,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
-use una_interp::{Event, EventOutcome, Grant};
+use una_interp::{Clock, Event, EventOutcome, Grant};
 
 use crate::host::OpSite;
 use crate::render::{Failure, Types};
@@ -465,6 +465,8 @@ pub struct Options {
     /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
     /// 0116 rule 19).
     pub stop_after: Option<u64>,
+    /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §6`).
+    pub virtual_time: bool,
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -539,9 +541,16 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 options.stop_after = Some(n);
             }
+            // A switch: it takes no value.
+            "--virtual-time" => {
+                if inline.is_some() {
+                    return Err(format!("`{flag}` takes no value"));
+                }
+                options.virtual_time = true;
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds> and --stop-after-iterations <n>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n> and --virtual-time"
                 ));
             }
         }
@@ -829,13 +838,29 @@ thread_local! {
 }
 
 /// The host's loop of a driven program (ADR 0116 rule 3), on the thread that runs it: its
-/// settings, when it started, the next tick due and the iterations started.
+/// settings, when its first tick was due on the run's clock, the next tick due and the
+/// iterations started.
 struct Driver {
     ticks: u64,
     stop_after: Option<u64>,
-    start: Option<std::time::Instant>,
+    origin: Option<u64>,
     next: u64,
     iterations: u64,
+}
+
+/// The clock of the run in this process (ADR 0116 rule 19): set once when the executable
+/// starts, real, or virtual under `--virtual-time`, and shared by every thread of the run.
+static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
+
+/// Makes `clock` the run's clock.
+fn set_clock(clock: Clock) {
+    *CLOCK.lock().unwrap_or_else(PoisonError::into_inner) = Some(clock);
+}
+
+/// The run's clock: the one the executable set, or the real clock before any run started.
+pub(crate) fn clock() -> Clock {
+    let mut cell = CLOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    cell.get_or_insert_with(Clock::real).clone()
 }
 
 /// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
@@ -854,17 +879,14 @@ pub fn drive_tick() -> i64 {
             return None;
         }
         driver.iterations += 1;
-        let start = *driver.start.get_or_insert_with(std::time::Instant::now);
-        let period = std::time::Duration::from_millis(driver.ticks);
-        let due = start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
-        let now = std::time::Instant::now();
-        if now < due {
-            std::thread::sleep(due - now);
-        }
-        let elapsed = start.elapsed().as_millis();
-        let latest = u64::try_from(elapsed / u128::from(driver.ticks.max(1)))
-            .unwrap_or(u64::MAX)
-            .max(driver.next);
+        // On the run's clock, real or virtual: under virtual time the wait moves the clock to
+        // the tick at once (ADR 0116 rule 19).
+        let clock = clock();
+        let origin = *driver.origin.get_or_insert_with(|| clock.now());
+        let period = driver.ticks.max(1);
+        clock.wait_until(origin.saturating_add(driver.next.saturating_mul(period)));
+        let elapsed = clock.now().saturating_sub(origin);
+        let latest = (elapsed / period).max(driver.next);
         let missed = latest - driver.next;
         let at = latest.saturating_mul(driver.ticks);
         driver.next = latest + 1;
@@ -1048,10 +1070,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
         stop_after: options.stop_after,
-        start: None,
+        origin: None,
         next: 0,
         iterations: 0,
     });
+    set_clock(Clock::for_run(options.virtual_time));
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
@@ -1821,6 +1844,20 @@ mod tests {
         assert!(parse_args(&strings(&["--json"])).is_err());
         assert!(parse_args(&strings(&["--grant"])).is_err());
         assert!(parse_args(&strings(&["--max-depth", "many"])).is_err());
+    }
+
+    #[test]
+    fn the_command_line_takes_virtual_time_as_a_switch() {
+        assert!(!parse_args(&[]).unwrap().virtual_time);
+        let options = parse_args(&strings(&[
+            "--virtual-time",
+            "--stop-after-iterations",
+            "3",
+        ]))
+        .unwrap();
+        assert!(options.virtual_time);
+        assert_eq!(options.stop_after, Some(3));
+        assert!(parse_args(&strings(&["--virtual-time=yes"])).is_err());
     }
 
     #[test]

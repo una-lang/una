@@ -187,6 +187,10 @@ pub(crate) enum Command {
         /// Stop the run once this many iterations of the host's loop have started (ADR 0116)
         #[arg(long, value_name = "N", value_parser = iterations)]
         stop_after_iterations: Option<u64>,
+
+        /// Run on a virtual clock that starts at 0 and never waits (ADR 0116)
+        #[arg(long)]
+        virtual_time: bool,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {

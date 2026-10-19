@@ -948,7 +948,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             let is_std = importable.contains(&path.as_str());
             let standard: &[&str] = match path.as_str() {
                 _ if !is_std => &[],
-                prelude::STD_TESTING => &prelude::STD_TESTING_NAMES,
+                prelude::STD_TESTING => prelude::std_testing_names(edition),
                 prelude::STD_HOST => prelude::std_host_names(edition),
                 prelude::STD_TIME => &prelude::STD_TIME_NAMES,
                 prelude::STD_DRIVE => &prelude::STD_DRIVE_NAMES,

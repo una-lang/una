@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use una_project::Edition;
 use una_syntax::ast::{Decl, DeclKind, File};
-use una_syntax::{Interner, KeywordSet, SourceDb, Span, lex_in, parse};
+use una_syntax::{Interner, SourceDb, Span, lex_in, parse};
 
 /// The schema of the listing: unstable, not part of the specification.
 pub const STD_LISTING_SCHEMA: &str = "una.std-listing/1";
@@ -67,7 +67,7 @@ pub fn std_items() -> Vec<Item> {
         let source = una_check::standard_source(edition);
         let texts = [
             (MODULES[0], source.prelude.as_str(), source.keywords),
-            (MODULES[1], source.testing, KeywordSet::V0_1),
+            (MODULES[1], source.testing.as_str(), source.keywords),
         ];
         for (module, text, keywords) in texts {
             let mut sources = SourceDb::new();

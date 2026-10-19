@@ -11,7 +11,7 @@ use una_syntax::ast::{
 };
 
 use super::Report;
-use super::authority::{Bound, Frame};
+use super::authority::{Base, Bound, Frame};
 use super::check::{Checker, Ctx, LoopFrame, Rl, Role};
 use super::closest;
 use super::env::KindDef;
@@ -183,9 +183,10 @@ impl<'a> Checker<'_, 'a, '_> {
         ty
     }
 
-    /// Whether code here may run forever: in a function that says `diverges`, outside lambdas,
-    /// `together` tasks, `on stop` blocks and the bodies of `for ever` loops (ADR 0116 rules 8
-    /// to 10). Otherwise, the reason, for U3027.
+    /// Whether code here may run forever: in a function that says `diverges`, or in the `do`
+    /// line of a test with a `stop after` line, outside lambdas, `together` tasks, `on stop`
+    /// blocks and the bodies of `for ever` loops (ADR 0116 rules 8 to 10 and 19). Otherwise,
+    /// the reason, for U3027.
     pub(crate) fn divergence_refused(&self) -> Option<&'static str> {
         let diverges = self
             .current
@@ -204,6 +205,11 @@ impl<'a> Checker<'_, 'a, '_> {
         } else if self.in_ever {
             Some(
                 "each iteration of a `for ever` loop must end, so its body runs no `for ever` and calls no function that says `diverges`",
+            )
+        } else if self.base == Base::Example {
+            // A test (ADR 0116 rule 19): only its `do` line, under its `stop after` line.
+            (!(self.ctx.in_do && self.do_stops)).then_some(
+                "a test runs forever only in its `do` line, under a stop schedule; end the test with a `stop after N` line",
             )
         } else if !diverges {
             Some(

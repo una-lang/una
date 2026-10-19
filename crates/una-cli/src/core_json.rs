@@ -1024,14 +1024,20 @@ impl Writer<'_> {
     }
 
     fn example(&self, example: &Example) -> J {
-        J::Obj(vec![
+        let mut fields = vec![
             ("name", s(&example.name)),
             ("body", self.expr(&example.body)),
             (
                 "expectations",
                 list(&example.expectations, |e| self.expectation(e)),
             ),
-        ])
+        ];
+        // Only an example with a `stop after` line has the key (ADR 0116 rule 19), so the
+        // export of every other example is unchanged.
+        if let Some(iterations) = example.stop_after {
+            fields.push(("stop_after", J::Num(iterations)));
+        }
+        J::Obj(fields)
     }
 
     /// A declaration of the module `module`: a function with what its header adds (`fun_in`).
