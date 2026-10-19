@@ -177,9 +177,17 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     // Every code has its examples, but U8001, an internal error, which no program should
     // cause, U6005, which the host's data causes and no program text does (ADR 0086), and
     // U6006, which the platform's floating-point environment causes (ADR 0114), and U6009, which
-    // the host's random source causes (ADR 0119 rule 9).
+    // the host's random source causes (ADR 0119 rule 9). U7010 and U7011 are reachable only with
+    // a registry need, which this release refuses (U7008), so a locked registry package is U7009
+    // too and no example can report the code alone: remove with #998, which lets registry needs
+    // load and writes their examples.
     for code in Code::ALL {
-        if code == Code::U8001 || code == Code::U6005 || code == Code::U6006 || code == Code::U6009
+        if code == Code::U8001
+            || code == Code::U6005
+            || code == Code::U6006
+            || code == Code::U6009
+            || code == Code::U7010
+            || code == Code::U7011
         {
             assert!(
                 !una_explain::text(code).contains("Stub explanation."),
