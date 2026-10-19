@@ -1,4 +1,4 @@
--- test: the memory budget of a dense buffer of integers counts the heap that each element's copy allocates of its own, so filling ten million elements with an integer of 1,200 digits stops with U6003 before any allocation, though the element slots alone would fit
+-- test: the memory budget of a dense buffer of integers counts the heap that each element's copy allocates of its own, so filling an array of ten million elements with an integer of 1,200 digits stops with U6003 before any allocation, though the element slots alone would fit
 -- spec: spec/29 §17
 -- grant: console
 -- expect: run-output "starting"
@@ -12,5 +12,5 @@ pub main() -> Unit
   let edit big = 1
   for i in 0..<1200
     big = big * 10
-  let wide = matrix_filled(rows: 1000, columns: 10000, value: big)
-  @console.print("rows {wide.rows}")
+  let wide = array_filled(length: 10000000, value: big)
+  @console.print("length {wide.len}")
