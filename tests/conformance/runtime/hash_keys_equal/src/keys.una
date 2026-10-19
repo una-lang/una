@@ -1,0 +1,67 @@
+-- test: in edition 0.4, keys that are equal by `==` are one entry of a hash set, whatever their representation: `Bool` and `Int` items added directly and through a generic function, a `U64` of 2^63 and of 2^64 - 1 added directly, through a generic function and through a record field, integers past 2^62 written and computed, and a `List[U8]` written and built by a generic function; `F64` keys `0.0` and `-0.0` are two entries, and NaN made in three ways is one; both engines agree (ADR 0119 rule 9)
+-- spec: spec/28 §1
+-- grant: console
+-- expect: run-output "bools: {false, true} 2"
+-- expect: run-output "ints: {0, 1} 2"
+-- expect: run-output "wide: 2 2 2 {9223372036854775808, 18446744073709551615}"
+-- expect: run-output "promoted: 2"
+-- expect: run-output "bytes: {[1, 2]} 1"
+-- expect: run-output "floats: {0.0, -0.0, nan} 3"
+module keys
+
+import std.collections (HashSet, empty_hash_set)
+
+pub kind Wide
+  value: U64
+
+--- `s` with every item of `xs` added, through a type parameter.
+pub fill[T: Eq](s: HashSet[T], xs: List[T]) -> HashSet[T]
+=
+  let edit out = s
+  for x in xs
+    edit out.add(item: x)
+  out
+
+--- The list of `x` and `y`, built through a type parameter.
+pub pair[T](x: T, y: T) -> List[T] = [x, y]
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit bools: HashSet[Bool] = empty_hash_set()
+  edit bools.add(item: false)
+  let bools2 = fill(s: bools, xs: [true, false, true])
+  @console.print("bools: {bools2} {bools2.len}")
+  let edit ints: HashSet[Int] = empty_hash_set()
+  edit ints.add(item: 0)
+  edit ints.add(item: 1)
+  let ints2 = fill(s: ints, xs: [1, 0])
+  @console.print("ints: {ints2} {ints2.len}")
+  let big: U64 = 9223372036854775808
+  let top: U64 = 18446744073709551615
+  let edit wide: HashSet[U64] = empty_hash_set()
+  edit wide.add(item: big)
+  edit wide.add(item: top)
+  let generic = fill(s: wide, xs: [top, big])
+  let edit fields = wide
+  edit fields.add(item: Wide(value: big).value)
+  edit fields.add(item: Wide(value: top).value)
+  @console.print("wide: {wide.len} {generic.len} {fields.len} {fields}")
+  let half = 4611686018427387904
+  let promoted = fill(s: empty_hash_set(), xs: [half, half * 2, 9223372036854775808, 2305843009213693952 * 2])
+  @console.print("promoted: {promoted.len}")
+  let one: U8 = 1
+  let two: U8 = 2
+  let written: List[U8] = [one, two]
+  let edit bytes: HashSet[List[U8]] = empty_hash_set()
+  edit bytes.add(item: written)
+  edit bytes.add(item: pair(x: one, y: two))
+  @console.print("bytes: {bytes} {bytes.len}")
+  let zero = 0.0
+  let edit floats: HashSet[F64] = empty_hash_set()
+  edit floats.add(item: zero)
+  edit floats.add(item: -zero)
+  edit floats.add(item: nan())
+  edit floats.add(item: zero / zero)
+  edit floats.add(item: infinity() - infinity())
+  @console.print("floats: {floats} {floats.len}")
