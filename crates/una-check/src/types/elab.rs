@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
-    DataVariant, Decl, Example, Expectation, Expr as CoreExpr, FloatOp, Fun, HandlerOp as CoreHandlerOp,
-    Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim, Program,
-    Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
+    DataVariant, Decl, Example, Expectation, Expr as CoreExpr, FloatOp, Fun,
+    HandlerOp as CoreHandlerOp, Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim,
+    Program, Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,

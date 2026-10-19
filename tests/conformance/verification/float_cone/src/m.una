@@ -35,7 +35,7 @@ pub bucket(x: F64) -> Int
 =
   if x.is_nan() then 15 else 3
 
-pub lookup(table: List[Int], x: F64) -> Int
-  requires table.len == 16
+pub lookup(slots: List[Int], x: F64) -> Int
+  requires slots.len == 16
 =
-  geti(table, i: bucket(x))
+  geti(slots, i: bucket(x))

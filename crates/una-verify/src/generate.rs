@@ -17,8 +17,7 @@ use una_syntax::{SourceDb, Span};
 use crate::run::Problem;
 use crate::smt::{
     Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query,
-    Sort, TEXT,
-    UNIT, kind_sort, path_selector,
+    Sort, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// A proof obligation of `spec/12 §3`, with its query.
@@ -815,7 +814,10 @@ fn float_order_definitions() -> BTreeMap<String, Definition> {
         ("a".to_owned(), FLOAT64.to_owned()),
         ("b".to_owned(), FLOAT64.to_owned()),
     ];
-    let le = F::or(vec![float_order("i!lt!F64", a.clone(), b.clone()), F::eq(a, b)]);
+    let le = F::or(vec![
+        float_order("i!lt!F64", a.clone(), b.clone()),
+        F::eq(a, b),
+    ]);
     let mut definitions = BTreeMap::new();
     definitions.insert(
         "i!lt!F64".to_owned(),
@@ -845,7 +847,8 @@ fn float_order(name: &str, a: F, b: F) -> F {
 /// (ADR 0114 rule 8.1); `None` for a code-only method, whose result is a fresh binder.
 fn float_term(op: FloatOp, args: &[F]) -> Option<F> {
     let arg = |i: usize| args.get(i).cloned();
-    let rounded = |name: &'static str| -> Option<F> { Some(F::op(name, vec![rne(), arg(0)?, arg(1)?])) };
+    let rounded =
+        |name: &'static str| -> Option<F> { Some(F::op(name, vec![rne(), arg(0)?, arg(1)?])) };
     let unary = |name: &'static str| -> Option<F> { Some(F::op(name, vec![arg(0)?])) };
     let binary = |name: &'static str| -> Option<F> { Some(F::op(name, vec![arg(0)?, arg(1)?])) };
     Some(match op {
@@ -4751,12 +4754,25 @@ impl<'p, 'i> Walker<'p, 'i> {
         let base = entry.hyps.len();
         let mut assertions: Vec<F> = entry.hyps.iter().map(|h| h.f.clone()).collect();
         let mut selectors = Vec::new();
+        let mut paths_f = Vec::new();
         for (number, leaf) in leaves.iter().enumerate() {
             let selector = path_selector(number + 1);
-            assertions.push(F::eq(selector.clone(), self.path(leaf, base, result)));
+            let path = self.path(leaf, base, result);
+            assertions.push(F::eq(selector.clone(), path.clone()));
             selectors.push(selector);
+            paths_f.push(path);
         }
         assertions.push(F::or(selectors));
+        // A single path with an `F64` term is also asserted on its own: its selector is true,
+        // so this adds nothing a model does not already satisfy, and the solver bit-blasts
+        // the float facts of the path once instead of under the selector's equivalence,
+        // which the pinned Z3 does not simplify first (a product's NaN fact costs 2.3M steps
+        // so, and 67M under the equivalence). Queries without floats are unchanged.
+        if let [path] = paths_f.as_slice()
+            && path.mentions_float()
+        {
+            assertions.push(path.clone());
+        }
         let place = self.place(kind, goal.as_ref().map(|g| &g.f));
         assertions.push(F::not(goal.map_or(F::Bool(false), |g| g.f)));
         let hypotheses = self.shown_hypotheses(&entry.hyps);
@@ -4797,7 +4813,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         // ADR 0114 rule 8.3: an obligation's query keeps the `F64` hypotheses of its cone; the
         // full query decides a refutation that is not final.
         let (assertions, sliced) = slice_floats(assertions, &self.let_defs);
-        let full = match sliced {
+        let mut full = match sliced {
             Some((full, refutation_final)) => {
                 let mut full = Query {
                     assertions: full,
@@ -4850,9 +4866,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         // query would not declare it, and the model could not be read (#902): it is declared
         // here with its range, a fact every model of the query already satisfies.
         let used = query.applications();
+        let used_full = full.as_ref().map(Query::applications);
         for item in &shown {
             if let Show::Variant { tag, .. } = &item.show
-                && !used.contains(tag)
                 && let F::App {
                     fun:
                         SmtFun {
@@ -4865,10 +4881,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // is never empty and the fact never makes a satisfiable query unsatisfiable.
                 && *variants >= 1
             {
-                query.assertions.push(F::and(vec![
+                let range = F::and(vec![
                     F::op("<=", vec![F::Int("0".to_owned()), tag.clone()]),
                     F::op("<", vec![tag.clone(), F::Int(variants.to_string())]),
-                ]));
+                ]);
+                // The full query of `spec/29 §8` reads the same values, so it declares the
+                // tag too.
+                if let (Some(full), Some(used_full)) = (full.as_mut(), used_full.as_ref())
+                    && !used_full.contains(tag)
+                {
+                    full.assertions.push(range.clone());
+                }
+                if !used.contains(tag) {
+                    query.assertions.push(range);
+                }
             }
         }
         let mut forgotten = std::mem::take(&mut self.returned_forgotten);
@@ -5415,6 +5441,12 @@ impl<'p, 'i> Walker<'p, 'i> {
         match f {
             F::Int(digits) => (digits.clone(), if digits.starts_with('-') { 2 } else { 1 }),
             F::Bool(value) => (value.to_string(), 1),
+            // A float literal shows its rendering (`spec/29 §7`).
+            F::Float(bits) => {
+                let text = una_core::float::render(f64::from_bits(*bits));
+                let level = if text.starts_with('-') { 2 } else { 1 };
+                (text, level)
+            }
             F::Const(Const { name, role, .. }) => match role {
                 ConstRole::Text(text) => (una_core::quote(text), 1),
                 _ => self.show_binder(name),
@@ -5991,9 +6023,7 @@ fn slice_floats(assertions: Vec<F>, let_defs: &BTreeSet<F>) -> (Vec<F>, Option<(
             kept.push((*part).clone());
             continue;
         }
-        let in_cone = mine
-            .iter()
-            .any(|&i| roots.contains(&find(&mut parent, i)));
+        let in_cone = mine.iter().any(|&i| roots.contains(&find(&mut parent, i)));
         if in_cone {
             kept.push((*part).clone());
             continue;
@@ -6018,10 +6048,14 @@ fn slice_floats(assertions: Vec<F>, let_defs: &BTreeSet<F>) -> (Vec<F>, Option<(
         .filter(|t| matches!(t, F::Const(_)))
         .map(F::text)
         .collect();
-    let definitions_unused = dropped_definitions.iter().all(|definition| match definition {
-        F::Op { op: "=", args } => args.first().is_some_and(|binder| !used.contains(&binder.text())),
-        _ => false,
-    });
+    let definitions_unused = dropped_definitions
+        .iter()
+        .all(|definition| match definition {
+            F::Op { op: "=", args } => args
+                .first()
+                .is_some_and(|binder| !used.contains(&binder.text())),
+            _ => false,
+        });
     let refutation_final = !abstracted && definitions_unused;
     kept.push(goal.clone());
     (kept, Some((assertions, refutation_final)))

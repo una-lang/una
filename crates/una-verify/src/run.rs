@@ -324,6 +324,9 @@ fn check_version(settings: &Settings) -> Result<(), Problem> {
 /// parallel; outcomes come in the order of the obligations.
 pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Outcome>, Problem> {
     let mut outcomes = verify_once(obligations, settings)?;
+    // The obligation whose query decided each status, when it is not the obligation itself:
+    // the full query of a refutation (ADR 0114 rule 8.3).
+    let mut decided_by: Vec<Option<Obligation>> = vec![None; obligations.len()];
     // ADR 0114 rule 8.3, "Order": a refutation of a cone query that dropped an `F64`
     // hypothesis it may need is decided by the full query, through the whole pipeline again.
     let fulls: Vec<(usize, Obligation)> = obligations
@@ -343,7 +346,7 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
     if !fulls.is_empty() {
         let wholes: Vec<Obligation> = fulls.iter().map(|(_, o)| o.clone()).collect();
         let decided = verify_once(&wholes, settings)?;
-        for ((index, _), mut outcome) in fulls.iter().zip(decided) {
+        for ((index, whole), mut outcome) in fulls.into_iter().zip(decided) {
             if outcome.status == ObligationStatus::Unknown
                 && !outcome
                     .reason
@@ -352,18 +355,62 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             {
                 outcome.reason = Some(FLOAT_REFUTATION.to_owned());
             }
-            if let Some(slot) = outcomes.get_mut(*index) {
+            if let Some(slot) = outcomes.get_mut(index) {
                 *slot = outcome;
+            }
+            if let Some(slot) = decided_by.get_mut(index) {
+                *slot = Some(whole);
             }
         }
     }
-    // ADR 0114 rule 8.6: a model that gives `i!to_f64!Int` a value is not checked against the
-    // runtime's conversion here, so such a refutation is not reported as one.
-    for (obligation, outcome) in obligations.iter().zip(outcomes.iter_mut()) {
-        if outcome.status == ObligationStatus::Refuted && uses_to_f64(obligation) {
-            outcome.status = ObligationStatus::Unknown;
-            outcome.reason = Some(TO_F64_UNCHECKED.to_owned());
-            outcome.bindings.clear();
+    // ADR 0114 rule 8.6: the model of a refutation through `i!to_f64!Int` gives the conversion
+    // of an `Int` outside -2^63..2^63 a value that nothing checks against the runtime. Such a
+    // refutation is solved once more with every argument of the conversion in that range,
+    // where the encoding is exact: a model there is an execution, and the obligation stays
+    // refuted with it; otherwise it is unknown.
+    let pinned: Vec<(usize, Obligation)> = obligations
+        .iter()
+        .zip(&decided_by)
+        .zip(&outcomes)
+        .enumerate()
+        .filter_map(|(index, ((obligation, decided), outcome))| {
+            let sent = decided.as_ref().unwrap_or(obligation);
+            let arguments = to_f64_arguments(&sent.query);
+            (outcome.status == ObligationStatus::Refuted && !arguments.is_empty()).then(|| {
+                let mut within = sent.clone();
+                within.full = None;
+                // A conversion inside a predicate's definition has no argument to pin: the
+                // query that cannot be refuted, `false`, makes the obligation unknown.
+                if in_definitions(&sent.query) {
+                    within.query.assertions = vec![F::Bool(false)];
+                    return (index, within);
+                }
+                let goal = within.query.assertions.pop();
+                for argument in arguments {
+                    within.query.assertions.push(F::and(vec![
+                        F::op("<=", vec![F::Int(I64_MIN.to_owned()), argument.clone()]),
+                        F::op("<", vec![argument, F::Int(I64_END.to_owned())]),
+                    ]));
+                }
+                within.query.assertions.extend(goal);
+                (index, within)
+            })
+        })
+        .collect();
+    if !pinned.is_empty() {
+        let withins: Vec<Obligation> = pinned.iter().map(|(_, o)| o.clone()).collect();
+        let decided = verify_once(&withins, settings)?;
+        for ((index, _), outcome) in pinned.iter().zip(decided) {
+            let Some(slot) = outcomes.get_mut(*index) else {
+                continue;
+            };
+            if outcome.status == ObligationStatus::Refuted {
+                *slot = outcome;
+            } else {
+                slot.status = ObligationStatus::Unknown;
+                slot.reason = Some(TO_F64_UNCHECKED.to_owned());
+                slot.bindings.clear();
+            }
         }
     }
     // A float query the solver did not decide says so (ADR 0114 rule 8.3, "The float reason").
@@ -381,21 +428,51 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
     Ok(outcomes)
 }
 
+/// `-2^63` and `2^63`, the bounds of the interpreted conversion of an `Int` (ADR 0114 rule 8.1).
+const I64_MIN: &str = "-9223372036854775808";
+const I64_END: &str = "9223372036854775808";
+
 /// The reason of a refutation through the conversion of an `Int` beyond 64 bits to `F64`.
 pub(crate) const TO_F64_UNCHECKED: &str = "the refutation depends on the conversion of an `Int` outside -2^63..2^63 to `F64`, which the encoding leaves uninterpreted; give the integer a range refinement or a fixed-width type";
 
-/// Whether the query of `obligation` uses the uninterpreted conversion `i!to_f64!Int`.
-fn uses_to_f64(obligation: &Obligation) -> bool {
-    obligation.query.applications().iter().any(|term| {
-        matches!(term, F::App { fun, .. } if fun.name == "i!to_f64!Int")
+/// Whether a definition of `query` applies the uninterpreted conversion `i!to_f64!Int`.
+fn in_definitions(query: &crate::smt::Query) -> bool {
+    query.definitions.values().any(|definition| {
+        let mut terms = Vec::new();
+        definition.body.visit(&mut terms);
+        terms
+            .iter()
+            .any(|term| matches!(term, F::App { fun, .. } if fun.name == "i!to_f64!Int"))
     })
 }
 
+/// The arguments of the uninterpreted conversion `i!to_f64!Int` in `query`, each once; a
+/// placeholder `true` when only a definition applies it, so the caller sees a use.
+fn to_f64_arguments(query: &crate::smt::Query) -> Vec<F> {
+    let mut out: Vec<F> = Vec::new();
+    if in_definitions(query) {
+        out.push(F::Bool(true));
+    }
+    for term in query.applications() {
+        if let F::App { fun, args } = &term
+            && fun.name == "i!to_f64!Int"
+        {
+            for argument in args {
+                if !out.contains(argument) {
+                    out.push(argument.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The start of the reason of an obligation whose float query weighs more than the bound.
-pub(crate) const FLOAT_WEIGHT_PREFIX: &str = "this obligation needs floating-point reasoning of weight";
+pub(crate) const FLOAT_WEIGHT_PREFIX: &str =
+    "this obligation needs floating-point reasoning of weight";
 
 /// The reason of a float query the solver did not decide within its step budget.
-pub(crate) const FLOAT_UNDECIDED: &str = "this obligation needs floating-point reasoning that the solver did not decide within its step budget; move the fact to a checked boundary (`checked(value, p(it))`), split the contract so that each helper's `ensures` states a fact about one operation, or state a weaker property (finiteness, a sign, a bound by a constant)";
+pub(crate) const FLOAT_UNDECIDED: &str = "this obligation needs floating-point reasoning that the solver did not decide within its step budget; move the fact to a checked boundary (`checked(value, p(it))`), split the contract so that each helper's `ensures` states a fact about one operation, or state a weaker property, such as finiteness, a sign or a bound by a constant";
 
 /// The reason of a refutation that only floating-point facts could make unreachable.
 pub(crate) const FLOAT_REFUTATION: &str = "the refutation holds unless floating-point facts make this path unreachable, which the verifier did not decide";
@@ -423,7 +500,9 @@ pub(crate) fn float_weight(query: &crate::smt::Query) -> usize {
                 "fp.mul" | "fp.div" | "fp.sqrt" => 4,
                 "fp.add" | "fp.sub" => 1,
                 op if op.contains("to_fp") => {
-                    if args.iter().any(|a| a.text().contains("int2bv") && !is_literal_conversion(a))
+                    if args
+                        .iter()
+                        .any(|a| a.text().contains("int2bv") && !is_literal_conversion(a))
                     {
                         4
                     } else {
@@ -451,7 +530,7 @@ fn over_weight(obligation: &Obligation) -> Option<Answer> {
     (weight > FLOAT_WEIGHT_BOUND).then(|| Answer {
         status: Status::Unknown,
         reason: Some(format!(
-            "{FLOAT_WEIGHT_PREFIX} {weight}, more than the {FLOAT_WEIGHT_BOUND} the verifier decides; move the fact to a checked boundary (`checked(value, p(it))`), split the contract so that each helper's `ensures` states a fact about one operation, or state a weaker property (finiteness, a sign, a bound by a constant)"
+            "{FLOAT_WEIGHT_PREFIX} {weight}, more than the {FLOAT_WEIGHT_BOUND} the verifier decides; move the fact to a checked boundary (`checked(value, p(it))`), split the contract so that each helper's `ensures` states a fact about one operation, or state a weaker property, such as finiteness, a sign or a bound by a constant"
         )),
         values: Vec::new(),
         values_error: None,
@@ -614,6 +693,10 @@ fn verify_once(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Ou
             let Some(first) = retry else {
                 return Ok(None);
             };
+            // The size bound applies to every query sent (ADR 0114 rule 8.3).
+            if over_weight(first).is_some() {
+                return Ok(None);
+            }
             let (text, requested) = script(first, &settings.lock);
             let key = cache::key(&settings.lock.text, &text);
             let cached = settings
@@ -886,7 +969,13 @@ fn shown_bindings(shown: &[Shown], requested: &[F], answer: &Answer) -> Vec<Bind
                 };
                 match texts.iter().find(|(v, _)| *v == raw) {
                     Some((_, text)) => serde_json::Value::String(una_core::quote(text)),
-                    None => serde_json::Value::String(identity(kind, &raw)),
+                    // An `F64` shows its rendering, as a JSON string (ADR 0114 rule 8.6).
+                    None => match float_value(&raw) {
+                        Some(bits) => {
+                            serde_json::Value::String(una_core::float::render(f64::from_bits(bits)))
+                        }
+                        None => serde_json::Value::String(identity(kind, &raw)),
+                    },
                 }
             }
         };

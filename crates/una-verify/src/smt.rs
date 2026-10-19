@@ -284,9 +284,9 @@ impl F {
                     || fun.args.iter().any(|sort| sort == FLOAT64)
                     || args.iter().any(F::mentions_float)
             }
-            F::Op { op, args } => op.starts_with("fp.")
-                || op.contains("to_fp")
-                || args.iter().any(F::mentions_float),
+            F::Op { op, args } => {
+                op.starts_with("fp.") || op.contains("to_fp") || args.iter().any(F::mentions_float)
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 -- test: a float contract that weighs more than the bound, a dot product of four, is U5002 with the float reason, before any solving
 -- spec: spec/29 §8
--- expect: error U5002 at X
+-- expect: error U5002 at 9:11
 module m
 
 pub kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0

@@ -1,0 +1,85 @@
+-- test: the encoding never proves a fact that the run-time semantics falsifies: the real sum, a misrounded quotient, zeros equal by identity, NaN equal or ordered below itself under IEEE, an ordering of the zeros reversed, NaN below a value, a square root of a negative number, a flushed subnormal, a signed conversion read as unsigned and an unsigned one read as signed, and an integer tie rounded up are each refuted
+-- spec: spec/29 §8
+-- expect: error U5001 at 9:3
+-- expect: error U5001 at 14:3
+-- expect: error U5001 at 20:3
+-- expect: error U5001 at 25:3
+-- expect: error U5001 at 30:3
+-- expect: error U5001 at 36:3
+-- expect: error U5001 at 41:3
+-- expect: error U5001 at 46:3
+-- expect: error U5001 at 51:3
+-- expect: error U5001 at 57:3
+-- expect: error U5001 at 62:3
+-- expect: error U5001 at 67:3
+-- expect: error U5001 at 73:3
+module m
+
+pub add() -> F64
+  ensures result == 0.3
+=
+  0.1 + 0.2
+
+pub div() -> F64
+  ensures result == 0.33333333333333337
+=
+  1.0 / 3.0
+
+pub identity(a: F64, b: F64) -> Bool
+  requires a.is_negative_zero() and b.is_positive_zero()
+  ensures result
+=
+  a == b
+
+pub ieee_nan() -> Bool
+  ensures result
+=
+  nan().ieee_eq(other: nan())
+
+pub nan_below() -> Bool
+  ensures result
+=
+  nan() < nan()
+
+pub zeros_reversed(a: F64, b: F64) -> Bool
+  requires a.is_negative_zero() and b.is_positive_zero()
+  ensures result
+=
+  b < a
+
+pub below_nan(x: F64) -> Bool
+  ensures result
+=
+  x < nan()
+
+pub root_negative() -> F64
+  ensures result.is_finite()
+=
+  (-1.0).sqrt()
+
+pub subnormal() -> F64
+  ensures result.is_zero()
+=
+  1.0e-323 / 2.0
+
+pub negative_zero_sign(b: F64) -> Bool
+  requires b.is_positive_zero()
+  ensures result
+=
+  b.is_sign_negative()
+
+pub from_i8(n: I8) -> F64
+  ensures result.ieee_ge(other: 0.0)
+=
+  n.to_f64()
+
+pub from_u8(n: U8) -> F64
+  ensures result <= 127.0
+=
+  n.to_f64()
+
+pub from_int(n: Int) -> F64
+  requires n == 9007199254740993
+  ensures result == 9007199254740994.0
+=
+  n.to_f64()
