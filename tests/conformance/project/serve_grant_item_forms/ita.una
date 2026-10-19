@@ -1,0 +1,18 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    serve "http://127.0.0.1:8080"
+      line at most 8 MiB
+      body at most 1024
+      idle within 5 minutes
+      connections none
+      backlog at most 5
+      at most 10 per second
+      at most 600 per minute
+      waiting at most 5
+      waiting at most 6
+      peer at most 4
+      peer none
