@@ -469,6 +469,16 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
     )
 }
 
+/// `una.ita/1` of `una ita tree`, with `schema` first.
+#[derive(Serialize)]
+struct TreeDocument<'a> {
+    schema: &'static str,
+    command: &'static str,
+    root: &'a str,
+    packages: &'a [crate::report::DependencyDoc],
+    diagnostics: &'a [Diagnostic],
+}
+
 /// `una ita tree [path]` (ADR 0122 rule 57): the program's packages, each with its source,
 /// version, the ceilings its dependents write, its effective ceiling, the authority it uses and
 /// the trust it adds, after checking the program at tier 0. With `--json`, one `una.ita/1`
@@ -495,14 +505,20 @@ pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatu
         ExitStatus::Errors
     };
     if out.json {
-        let document = json!({
-            "schema": "una.ita/1",
-            "command": "tree",
-            "root": root,
-            "packages": packages,
-            "diagnostics": analysis.diagnostics,
-        });
-        writeln!(out.stdout, "{document}")?;
+        let document = TreeDocument {
+            schema: "una.ita/1",
+            command: "tree",
+            root: &root,
+            packages: &packages,
+            diagnostics: &analysis.diagnostics,
+        };
+        match serde_json::to_string(&document) {
+            Ok(text) => writeln!(out.stdout, "{text}")?,
+            Err(error) => {
+                writeln!(out.stderr, "internal compiler error (U8001): {error}")?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
         out.stdout.flush()?;
     } else {
         write!(
