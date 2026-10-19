@@ -17,6 +17,7 @@ mod manifest;
 pub mod migrate;
 pub mod names;
 mod package;
+pub mod resolve;
 pub mod version;
 
 use std::ops::Range;
