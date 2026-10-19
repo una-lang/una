@@ -478,6 +478,9 @@ pub struct Options {
     /// `--stop-grace <seconds>`: the grace period before the hard stop, 10 when not given
     /// (rule 16).
     pub stop_grace: Option<u64>,
+    /// `--workers`, `--task-depth`, `--io-threads` and `--file-threads` (ADR 0117 rules 2 and
+    /// 3).
+    pub concurrency: una_interp::Concurrency,
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -487,6 +490,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         max_memory: una_interp::DEFAULT_MAX_MEMORY,
         ..Options::default()
     };
+    // The flags of tasks, checked once every flag is read: `--task-depth` against `--max-depth`.
+    let mut tasks: [Option<usize>; 4] = [None; 4];
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -580,13 +585,33 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     options.stop_grace = Some(n);
                 }
             }
+            "--workers" | "--task-depth" | "--io-threads" | "--file-threads" => {
+                let n = una_interp::concurrency::number(flag, &value()?)?;
+                let slot = match flag {
+                    "--workers" => 0,
+                    "--task-depth" => 1,
+                    "--io-threads" => 2,
+                    _ => 3,
+                };
+                if let Some(cell) = tasks.get_mut(slot) {
+                    *cell = Some(n);
+                }
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds> and --virtual-time"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n> and --file-threads <n>"
                 ));
             }
         }
     }
+    let [workers, task_depth, io_threads, file_threads] = tasks;
+    options.concurrency = una_interp::Concurrency::from_flags(
+        options.max_depth,
+        workers,
+        task_depth,
+        io_threads,
+        file_threads,
+    )?;
     Ok(options)
 }
 
@@ -2119,6 +2144,43 @@ mod tests {
         assert!(options.virtual_time);
         assert_eq!(options.stop_after, Some(3));
         assert!(parse_args(&strings(&["--virtual-time=yes"])).is_err());
+    }
+
+    #[test]
+    fn the_flags_of_tasks_take_their_ranges_in_any_order() {
+        let options = parse_args(&strings(&[
+            "--task-depth",
+            "40",
+            "--max-depth",
+            "50",
+            "--workers=1",
+            "--io-threads",
+            "8",
+            "--file-threads",
+            "2",
+        ]))
+        .unwrap();
+        let tasks = options.concurrency;
+        assert_eq!(
+            (
+                tasks.workers,
+                tasks.task_depth,
+                tasks.io_threads,
+                tasks.file_threads
+            ),
+            (1, 40, 8, 2)
+        );
+        for wrong in [
+            &["--workers", "0"][..],
+            &["--workers", "1025"],
+            &["--workers", "many"],
+            &["--max-depth", "50", "--task-depth", "51"],
+            &["--io-threads", "4097"],
+            &["--file-threads", "257"],
+            &["--file-threads"],
+        ] {
+            assert!(parse_args(&strings(wrong)).is_err(), "{wrong:?}");
+        }
     }
 
     #[test]
