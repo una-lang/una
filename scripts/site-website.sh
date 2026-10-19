@@ -134,7 +134,9 @@ if [ -n "$learn" ]; then
     grep -q '^learn: [1-9][0-9]* pages from una-by-example' "$out/website-build.log" \
         || fail "the website built no Learn pages from una-by-example"
 fi
-UNA_BUNDLE=$bundle UNA_BY_EXAMPLE=$learn UNA_BIN=$una npm run --silent check:samples || fail "a code sample of the website does not check"
+# The book was checked above with the una its una.lock pins, so the samples check, which would
+# check it again with this checkout's una, leaves it out: an empty UNA_BY_EXAMPLE skips it (#1039).
+UNA_BUNDLE=$bundle UNA_BY_EXAMPLE= UNA_BIN=$una npm run --silent check:samples || fail "a code sample of the website does not check"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the website build changed tracked files"
 
 echo "site-website: PASS (website $commit, bundle $(sed -n 's/.*"version":"\([^"]*\)".*"commit":"\([0-9a-f]\{12\}\).*/una \1 at \2/p' "$bundle/manifest.json" | head -n 1))"
