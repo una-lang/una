@@ -12,4 +12,9 @@ disallowed-methods = [
     { path = "std::env::var_os", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
     { path = "std::env::vars", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
     { path = "std::env::vars_os", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
+    # No foreign code in Una: away from AArch64, `mul_add` may call the platform C library's
+    # `fma`. Una's fused multiply-add is `float::fma` and `dense::fma`; only the AArch64 path,
+    # where `mul_add` is the `fmadd` instruction, allows it, scoped and commented.
+    { path = "f64::mul_add", reason = "may call the platform C library's fma; use una_core::float::fma, or allow it scoped where it is the AArch64 fmadd instruction" },
+    { path = "f32::mul_add", reason = "may call the platform C library's fma; use Una's own exact fma, or allow it scoped where it is the AArch64 fmadd instruction" },
 ]

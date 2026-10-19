@@ -26,7 +26,10 @@ fn biased(x: f64) -> u64 {
 /// canonical. O(1).
 #[inline]
 pub fn baseline(x: f64, y: f64, z: f64) -> f64 {
+    // On AArch64 `mul_add` is the `fmadd` instruction, part of the baseline, and calls no C
+    // library: the one place outside tests that clippy's `disallowed_methods` lets it in.
     #[cfg(target_arch = "aarch64")]
+    #[allow(clippy::disallowed_methods)]
     {
         float::canonical(x.mul_add(y, z))
     }
@@ -201,6 +204,7 @@ mod tests {
         // The hardware's fused multiply-add agrees too, where it is the instruction itself:
         // elsewhere `mul_add` may call the platform's C library, which no part of Una uses.
         #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::disallowed_methods)]
         assert_eq!(b(x.mul_add(y, z)), b(want), "{x:e} {y:e} {z:e}");
     }
 

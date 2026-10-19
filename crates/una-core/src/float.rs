@@ -842,19 +842,27 @@ mod tests {
         assert_eq!(b(fma(-0.0, 1.0, -0.0)), b(-0.0));
         assert_eq!(b(fma(0.0, -1.0, 0.0)), b(0.0));
         assert_eq!(b(fma(1.0, 1.0, -1.0)), b(0.0));
-        let mut state: u64 = 0x1234_5678_9ABC_DEF1;
-        for _ in 0..100_000 {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            let x = f64::from_bits(state);
-            let y = f64::from_bits(state.rotate_left(21));
-            let z = f64::from_bits(state.rotate_left(43));
-            assert_eq!(
-                b(fma(x, y, z)),
-                b(canonical(x.mul_add(y, z))),
-                "{x} {y} {z}"
-            );
+        // The hardware's fused multiply-add agrees, where it is the instruction itself
+        // (AArch64's `fmadd`). Elsewhere `mul_add` may call the platform's C library, which no
+        // part of Una uses (clippy's `disallowed_methods`): there the exact cases above, the
+        // emulation's tests in `dense::fma` and the corpus of `dense_corpus` check `fma`.
+        #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::disallowed_methods)]
+        {
+            let mut state: u64 = 0x1234_5678_9ABC_DEF1;
+            for _ in 0..100_000 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let x = f64::from_bits(state);
+                let y = f64::from_bits(state.rotate_left(21));
+                let z = f64::from_bits(state.rotate_left(43));
+                assert_eq!(
+                    b(fma(x, y, z)),
+                    b(canonical(x.mul_add(y, z))),
+                    "{x} {y} {z}"
+                );
+            }
         }
     }
 
