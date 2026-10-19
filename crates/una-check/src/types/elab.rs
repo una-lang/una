@@ -3659,7 +3659,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     },
                     // U2037, which the checker reported.
                     _ => {
-                        self.broken = true;
+                        self.broken.set(true);
                         Atom::Unit
                     }
                 }

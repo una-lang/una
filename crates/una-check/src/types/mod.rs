@@ -1808,6 +1808,74 @@ pub keep(n: Small) -> Small = n
         );
     }
 
+    const DECIMAL: &str = "module gaps
+
+pub kind Amount = Decimal[2] where it >= 0.00
+
+pub total(a: Amount, b: Amount) -> Amount = a + b
+
+pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
+  requires rate >= 0.0000
+=
+  a + rate >= 0.0
+";
+
+    #[test]
+    fn a_decimal_declaration_that_does_not_elaborate_is_an_internal_error() {
+        // Edition 0.4's `Decimal` (`spec/29 §16`): its literals, aligned operands and
+        // refinements elaborate on their own paths, which the cross-check covers as any other.
+        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        assert_eq!(codes, Vec::new());
+        assert_eq!(names(&check), ["Amount", "total", "scaled"]);
+        for (name, line) in [("Amount", 3), ("total", 5), ("scaled", 7)] {
+            let _broken = Break::of(name);
+            let (_, codes) = run(DECIMAL, Edition::V0_4);
+            assert_eq!(codes, [(Code::U8001, line)], "{name}");
+        }
+    }
+
+    #[test]
+    fn a_decimal_declaration_of_the_prelude_that_does_not_elaborate_is_an_internal_error() {
+        // The functions of `Decimal` and the kind `Rounding`, which edition 0.4's prelude
+        // declares: each is in Core IR, and one that does not elaborate rejects the package.
+        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        assert_eq!(codes, Vec::new());
+        let functions = ["parse_decimal", "as_decimal", "json_decimal"];
+        for name in functions {
+            assert!(
+                check
+                    .program
+                    .library
+                    .iter()
+                    .any(|s| s.path.module == "prelude" && s.path.name == name),
+                "{name}"
+            );
+        }
+        assert!(check.program.modules.iter().any(|m| {
+            m.path == una_core::PRELUDE_MODULE
+                && m.decls
+                    .iter()
+                    .any(|d| elab::decl_key(d) == ("type", "Rounding"))
+        }));
+        for (name, what) in functions
+            .iter()
+            .map(|name| (*name, "standard function"))
+            .chain([("Rounding", "prelude kind")])
+        {
+            let _broken = Break::of(name);
+            let (check, codes) = run(DECIMAL, Edition::V0_4);
+            assert_eq!(codes.len(), 1, "{name}: {codes:?}");
+            let diagnostic = check.diagnostics.first().expect("one diagnostic");
+            assert_eq!(diagnostic.code, Code::U8001, "{name}");
+            assert_eq!(diagnostic.primary.file, "std/prelude.una", "{name}");
+            assert!(
+                diagnostic.message.contains(what),
+                "{name}: {}",
+                diagnostic.message
+            );
+        }
+    }
+
     #[test]
     fn every_standard_declaration_elaborates_in_every_edition() {
         // The audit of #1050: no contract of the standard library, host capability or prelude
