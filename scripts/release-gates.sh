@@ -7,8 +7,9 @@
 # Gates, in order (all of them when none is named):
 #   clone        a fresh clone of the commit, from the repository's remote
 #   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
-#                then scripts/no-libm.sh on the release `una` and `libuna_rt.a` and on the
-#                executables the tests' native differential linked (#1092)
+#                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
+#                `una` links the runtime conformance programs, and no C math library symbol
+#                in that `una`, the release `libuna_rt.a` or those executables
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -178,18 +179,20 @@ gate_clone() {
 }
 
 gate_build() {
-    # The tests' native differential keeps each executable it links in target/no-libm-executables
-    # (UNA_NATIVE_KEEP; target/ is ignored, so the clone stays exact). Then no C math library
-    # symbol (#1092, scripts/no-libm.sh): in the release `una` and `libuna_rt.a` just built, the
-    # runtime against scripts/no-libm-allow.txt, and in every one of those executables.
+    # Then no C math library symbol (#1092), in what ships: the release `una` just built links
+    # every runnable program of tests/conformance/runtime that the native backend compiles
+    # (scripts/no-libm-build.sh, into target/no-libm; target/ is ignored, so the clone stays
+    # exact), and scripts/no-libm.sh reads the release graph's features and the undefined symbols
+    # of that `una`, of the release `libuna_rt.a` and of those executables, strictly.
     run build sh -c '
         if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
-        keep=$(pwd)/target/no-libm-executables
-        rm -rf "${keep:?}"
+        no_libm=$(pwd)/target/no-libm
+        rm -rf "${no_libm:?}"
         scripts/check-solver.sh \
             && cargo build --locked --release -p una-cli -p una-rt \
-            && UNA_NATIVE_KEEP="$keep" cargo test --workspace --locked \
-            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$keep"'
+            && cargo test --workspace --locked \
+            && scripts/no-libm-build.sh target/release/una "$no_libm" \
+            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables"'
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
-# the tests, then packing and checking the release archive of the host's target. With --linux,
+# the tests, the C math library check of release artifacts (#1092), then packing and checking
+# the release archive of the host's target. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
 # at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
@@ -138,22 +139,26 @@ step "Format" cargo fmt --all --check
 step "Clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
 # Under emulation (--linux on an arm64 Mac, through Rosetta), the tests run one at a time, on
 # one thread each: processes spawned from many threads at once can hang there (#286). The
-# native runs, --linux-arm64 among them, keep full parallelism. The native differential
-# (crates/una-cli/tests/native.rs) keeps a copy of every executable it links in
-# UNA_NATIVE_KEEP, a directory it requires empty, for the check that follows (#1092).
-keep="$root/target/no-libm-executables"
-rm -rf "${keep:?}"
+# native runs, --linux-arm64 among them, keep full parallelism.
 if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
-    step "Test (serial)" env RAYON_NUM_THREADS=1 UNA_NATIVE_KEEP="$keep" \
-        cargo test --workspace --locked -- --test-threads=1
+    step "Test (serial)" env RAYON_NUM_THREADS=1 cargo test --workspace --locked -- --test-threads=1
 else
-    step "Test" env UNA_NATIVE_KEEP="$keep" cargo test --workspace --locked
+    step "Test" cargo test --workspace --locked
 fi
-# No C math library symbol (#1092): the `una` and `libuna_rt.a` that the tests built in
-# target/debug, the runtime against scripts/no-libm-allow.txt, and every executable the native
-# differential linked with them, strict.
+# No C math library symbol (#1092), in what ships: a test build unifies the features of
+# dev-dependencies in, so the check builds its own release `una` and `libuna_rt.a`, links with
+# that `una` every runnable program of tests/conformance/runtime that the native backend
+# compiles (scripts/no-libm-build.sh, into a fresh target/no-libm), and reads the release
+# graph's features and the undefined symbols of all of them (scripts/no-libm.sh), strictly.
+step "Build (release) for the C math library check" \
+    env CARGO_TARGET_DIR="$root/target" cargo build --locked --release -p una-cli -p una-rt
+no_libm="$root/target/no-libm"
+rm -rf "${no_libm:?}"
+step "Native executables of the release una" \
+    scripts/no-libm-build.sh "$root/target/release/una" "$no_libm"
 step "No C math library symbol" \
-    scripts/no-libm.sh "$root/target/debug/una" "$root/target/debug/libuna_rt.a" "$keep"
+    scripts/no-libm.sh "$root/target/release/una" "$root/target/release/libuna_rt.a" \
+    "$no_libm/executables"
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
