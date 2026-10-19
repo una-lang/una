@@ -1,7 +1,7 @@
 ---
 construct: "[package] edition"
 editions: ["0.1", "0.2"]
-spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1", "spec/26 §1"]
+spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1", "spec/26 §1", "spec/30 §2"]
 codes: [U0103, U7002]
 ---
 

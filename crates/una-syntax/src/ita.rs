@@ -2023,7 +2023,9 @@ fn package(line: &Line, errors: &mut Vec<Error>) -> Option<LockPackage> {
             errors.push(error);
         }
     }
-    if package.from.is_none() || package.digest.is_none() {
+    // A line that was written but did not read has its own error already.
+    let written = |key: &str| line.children.iter().any(|child| child.word(0) == Some(key));
+    if (package.from.is_none() && !written("from")) || (package.digest.is_none() && !written("digest")) {
         errors.push(Error::new(
             line.range.clone(),
             "a locked package has a `from` and a `digest` line",

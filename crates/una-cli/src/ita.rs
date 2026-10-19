@@ -9,7 +9,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde::Serialize;
 use una_diag::{Code, Diagnostic, render_human};
 use una_project::ita::{
     check_lock_consistency, parse_ita_lock, parse_ita_manifest, write_lock,
@@ -18,6 +18,15 @@ use una_project::{Lock, ProjectError};
 use una_syntax::{FileId, SourceDb, Span};
 
 use crate::ExitStatus;
+
+/// `una.ita/1`, with `schema` first (ADR 0122 rule 57).
+#[derive(Serialize)]
+struct ItaDocument<'a> {
+    schema: &'static str,
+    command: &'a str,
+    written: &'a [&'a str],
+    diagnostics: &'a [Diagnostic],
+}
 
 /// What `una ita` prints, and how.
 pub(crate) struct Output<'a> {
@@ -58,13 +67,19 @@ fn finish(
         ExitStatus::Errors
     };
     if out.json {
-        let document = json!({
-            "schema": "una.ita/1",
-            "command": command,
-            "written": written,
-            "diagnostics": diagnostics,
-        });
-        writeln!(out.stdout, "{document}")?;
+        let document = ItaDocument {
+            schema: "una.ita/1",
+            command,
+            written,
+            diagnostics,
+        };
+        match serde_json::to_string(&document) {
+            Ok(text) => writeln!(out.stdout, "{text}")?,
+            Err(error) => {
+                writeln!(out.stderr, "internal compiler error (U8001): {error}")?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
         out.stdout.flush()?;
     } else {
         write!(

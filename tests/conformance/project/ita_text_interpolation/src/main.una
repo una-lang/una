@@ -1,6 +1,7 @@
--- test: a text of ita.una is not interpolated
+-- test: a text of ita.una is not interpolated: `{` and `}` are written escaped
 -- spec: spec/30 §1
 -- expect: error U7008 at ita.una:4:12
+-- expect: error U7008 at ita.una:4:17
 module main
 
 pub one() -> Int = 1

@@ -177,7 +177,7 @@ mod key_tests {
         let mut expected = Sha256::new();
         expected.update(KEY_DOMAIN.as_bytes());
         expected.update(format!("{}\0{solver}", solver.len()).as_bytes());
-        expected.update(b"6\0(q 1)");
+        expected.update(b"5\0(q 1)");
         assert_eq!(key(&tagged, "(q 1)"), hex(&expected.finalize()));
         assert_ne!(key(&tagged, "(q 1)"), key(solver, "(q 1)"));
         // Moving bytes between the two parts changes the key.

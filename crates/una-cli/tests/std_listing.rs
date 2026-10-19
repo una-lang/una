@@ -241,14 +241,7 @@ fn probe(dir: &Path, item: &Item, edition: Edition) {
         ),
     };
     fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(
-        dir.join("una.toml"),
-        format!(
-            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"{}\"\n",
-            edition.name()
-        ),
-    )
-    .unwrap();
+    write_manifest(dir, edition);
     fs::write(
         dir.join("src/probe.una"),
         format!("module probe\n\n{import}{body}"),
@@ -438,18 +431,12 @@ fn each_builtin_signature_checks_in_exactly_its_editions_and_a_wrong_call_does_n
                     let dir = scratch.join(format!("{probes}"));
                     probes += 1;
                     fs::create_dir_all(dir.join("src")).unwrap();
-                    fs::write(
-                        dir.join("una.toml"),
-                        format!(
-                            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"{}\"\n",
-                            edition.name()
-                        ),
-                    )
-                    .unwrap();
+                    write_manifest(&dir, edition);
                     fs::write(dir.join("src/probe.una"), &source).unwrap();
-                    // A real verification.lock, so that no diagnostic of the package is
-                    // filtered out.
-                    fs::write(dir.join("verification.lock"), &lock).unwrap();
+                    // A real lock, so that no diagnostic of the package is filtered out.
+                    if edition < Edition::V0_4 {
+                        fs::write(dir.join("verification.lock"), &lock).unwrap();
+                    }
                     let checked = check(&dir, Tier::Zero).unwrap();
                     let errors: Vec<String> = checked
                         .diagnostics
@@ -2548,5 +2535,31 @@ fn copy_tree(from: &Path, to: &Path) {
         } else {
             fs::copy(entry.path(), target).unwrap();
         }
+    }
+}
+
+/// The manifest of a probe package in `edition`: `una.toml` to edition 0.3, and `ita.una` with
+/// its `ita.lock` from edition 0.4 (ADR 0122).
+fn write_manifest(dir: &std::path::Path, edition: Edition) {
+    if edition >= Edition::V0_4 {
+        fs::write(
+            dir.join("ita.una"),
+            format!("ita probe\n  version 0.1.0\n  edition {}\n", edition.name()),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("ita.lock"),
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+        )
+        .unwrap();
+    } else {
+        fs::write(
+            dir.join("una.toml"),
+            format!(
+                "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"{}\"\n",
+                edition.name()
+            ),
+        )
+        .unwrap();
     }
 }

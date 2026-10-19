@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 
-use una_diag::Code;
 use una_project::Manifest;
 use una_syntax::{FileId, Span};
 

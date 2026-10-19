@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::Path;
 
-use serde_json::json;
+use serde::Serialize;
 use una_diag::{Diagnostic, render_human};
 use una_project::Format;
 use una_project::migrate::migrate;
@@ -13,6 +13,40 @@ use una_syntax::SourceDb;
 
 use crate::ExitStatus;
 use crate::package::{Package, load};
+
+/// `una.migrate/1`, with `schema` first (ADR 0122 rule 64).
+#[derive(Serialize)]
+struct MigrateDocument<'a> {
+    schema: &'static str,
+    dry_run: bool,
+    written: &'a [&'a str],
+    removed: &'a [&'a str],
+    name: NameDoc<'a>,
+    edition: EditionDoc,
+    default_lock: bool,
+    comments_not_carried: Vec<CommentDoc<'a>>,
+    ita_una: Option<&'a str>,
+    ita_lock: Option<&'a str>,
+    diagnostics: &'a [Diagnostic],
+}
+
+#[derive(Serialize)]
+struct NameDoc<'a> {
+    from: &'a str,
+    to: &'a str,
+}
+
+#[derive(Serialize)]
+struct EditionDoc {
+    from: &'static str,
+    to: &'static str,
+}
+
+#[derive(Serialize)]
+struct CommentDoc<'a> {
+    line: usize,
+    text: &'a str,
+}
 
 /// The options of `una migrate`.
 pub(crate) struct MigrateOptions<'a> {
@@ -111,23 +145,37 @@ pub(crate) fn migrate_command(
     }
     let (from_name, to_name) = &migration.name;
     if options.json {
-        let document = json!({
-            "schema": "una.migrate/1",
-            "dry_run": options.dry_run,
-            "written": written,
-            "removed": removed,
-            "name": { "from": from_name, "to": to_name },
-            "edition": { "from": migration.edition.name(), "to": "0.4" },
-            "default_lock": migration.default_lock,
-            "comments_not_carried": migration
-                .comments_left
-                .iter()
-                .map(|(line, text)| json!({ "line": line, "text": text }))
-                .collect::<Vec<_>>(),
-            "ita_una": options.dry_run.then_some(&migration.manifest),
-            "ita_lock": options.dry_run.then_some(&migration.lock),
-            "diagnostics": caused,
-        });
+        let comments: Vec<CommentDoc<'_>> = migration
+            .comments_left
+            .iter()
+            .map(|(line, text)| CommentDoc { line: *line, text })
+            .collect();
+        let document = MigrateDocument {
+            schema: "una.migrate/1",
+            dry_run: options.dry_run,
+            written: &written,
+            removed: &removed,
+            name: NameDoc {
+                from: from_name,
+                to: to_name,
+            },
+            edition: EditionDoc {
+                from: migration.edition.name(),
+                to: "0.4",
+            },
+            default_lock: migration.default_lock,
+            comments_not_carried: comments,
+            ita_una: options.dry_run.then_some(migration.manifest.as_str()),
+            ita_lock: options.dry_run.then_some(migration.lock.as_str()),
+            diagnostics: &caused,
+        };
+        let document = match serde_json::to_string(&document) {
+            Ok(text) => text,
+            Err(error) => {
+                writeln!(stderr, "internal compiler error (U8001): {error}")?;
+                return Ok(ExitStatus::Internal);
+            }
+        };
         writeln!(stdout, "{document}")?;
     } else {
         if options.dry_run {
