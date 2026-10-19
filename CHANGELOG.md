@@ -4,6 +4,12 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+## v0.3.17
+
+A patch of the Beta, with one security fix, made from the v0.3.16 tag: no other change of main is in it. In the interpreter, a function value releases the values it closes over by the worklist that releases records, so a value that a loop nests deeply through function values no longer overflows the stack of `una run` when it is released (#1071, advisory UNA-SA-017). Validation: `docs/releases/0.3.17-validation.md`.
+
+- **Function values release what they hold without recursion** (#1071, advisory UNA-SA-017). In the interpreter, a function value releases the values it closes over and the handlers of its capabilities by the same worklist as records, so a value that a loop nests deeply through function values ends normally. Before, releasing such a value recursed on the native stack, and a deep enough one aborted `una run` with a stack overflow, in every release up to v0.3.16. Native executables are not affected.
+
 ## v0.3.16
 
 A patch of the Beta, with one security fix. In every edition, `to_int` returns `None`, and from edition `0.2` `parse_int` fails with the new `ParseError` variant `TooLong`, for a text of more than 4300 digits, checked before any conversion: converting d digits took O(d²) time, so untrusted text could make one call quadratic, in every release up to v0.3.15 (#914, advisory UNA-SA-016). A `when` that names each `ParseError` variant without an `else` arm must now handle `TooLong`. Structural equality compares each pair of shared parts once (#815), and counterexamples show a sum value reached through a record field (#902). A `together` block checks its bookkeeping, its copies and its joins against the memory budget (#777, ADR 0113). Accepted records: ADRs 0105 to 0112, 0114, 0116 and 0117. The `hunt` gate runs on Linux, samples every family of edition `0.3` and compares diagnostics' messages (#793, #813, #818, #874). Validation: `docs/releases/0.3.16-validation.md`.
