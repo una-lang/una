@@ -3,17 +3,20 @@
 # scripts/site-website.sh calls it, and the release gate `site` runs its self-test first.
 #
 # The book pins the una release it is written for in its una.lock (`version = "X"`), and its
-# expected outputs are that release's. When this checkout's version is the lock's, as at release
-# time, the book is checked with this checkout's `una`. Otherwise, on a development commit whose
-# `una` is ahead of the pin, it is checked with the published release of the lock's version:
-# this host's archive, una-<version>-<target>.tar.gz, is downloaded with `gh release download`
+# expected outputs are that release's. The book is checked with this checkout's `una` while that
+# release is being prepared: this checkout's version is the lock's, and it holds no validation
+# record docs/validation/<version>.md yet, since a release commits its record with its tag. Once
+# the release is published, or when the versions differ, a development commit's `una` may be
+# ahead of the pin (the version in Cargo.toml stays the released one until the next release), so
+# the book is checked with the published release of the lock's version: this host's archive, una-<version>-<target>.tar.gz, is downloaded with `gh release download`
 # from github.com/una-lang/una, its SHA-256 must be the one that release's validation record,
 # docs/validation/<version>.md of this checkout, gives it, and the unpacked `una --version` must
 # name the lock's version. A lock without exactly one version line, a version with no record or
 # no digest for this host's archive, a digest that differs and a binary of another version fail.
-# A release's own gate runs with equal versions, so a book is re-released for a new una before
-# the tag: scripts/release-gates.sh sets UNA_SITE_LEARN_SAME_VERSION=1, and then a lock that
-# pins another version fails instead of falling back to that release.
+# A release's own gate checks the book with the release's `una`, so a book is re-released for a
+# new una before the tag: scripts/release-gates.sh sets UNA_SITE_LEARN_SAME_VERSION=1, and then
+# a lock that pins another version fails instead of falling back to a published release, and
+# this checkout's `una` is used.
 #
 # UNA_SITE_LEARN_UNA_DIR names a directory that holds the archive in place of the download, for a
 # local test; the release gates unset it.
@@ -60,16 +63,21 @@ resolve() {
     [ "$count" -eq 1 ] || fail "una.lock must have exactly one version line, and has $count"
     pinned=$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$learn/una.lock")
     [ -n "$pinned" ] || fail "the version line of una.lock is not a version"
-    if [ "$pinned" = "$version" ]; then
-        echo "una-by-example: checked with this checkout's una $version, the version its una.lock pins" >&2
+    record="$records/$pinned.md"
+    if [ "${UNA_SITE_LEARN_SAME_VERSION:-}" = 1 ]; then
+        [ "$pinned" = "$version" ] \
+            || fail "this is una $version, and una.lock pins $pinned: a release checks the book with its own una, so release una-by-example for $version and pin it first"
+        echo "una-by-example: checked with this release's una $version, the version its una.lock pins" >&2
         echo "$una"
         return 0
     fi
-    [ "${UNA_SITE_LEARN_SAME_VERSION:-}" != 1 ] \
-        || fail "this is una $version, and una.lock pins $pinned: a release checks the book with its own una, so release una-by-example for $version and pin it first"
+    if [ "$pinned" = "$version" ] && [ ! -f "$record" ]; then
+        echo "una-by-example: checked with this checkout's una $version, the version its una.lock pins, not yet released" >&2
+        echo "$una"
+        return 0
+    fi
     target=$(host_target)
     name="una-$pinned-$target.tar.gz"
-    record="$records/$pinned.md"
     [ -f "$record" ] || fail "una.lock pins $pinned, which has no validation record $record"
     digest=$(sed -n "s/^| \`$name\` | \`\([0-9a-f]\{64\}\)\` |\$/\1/p" "$record")
     [ "$(printf '%s\n' "$digest" | grep -c .)" -eq 1 ] \
@@ -131,15 +139,19 @@ self_test() {
         fi
     }
     mkdir -p "$t/out"
-    record "$good"
     lock 'version = "9.8.7"'
-    expect pass "this checkout's version is the pin" 9.8.7
-    [ "$(cat "$t/path")" = "$t/this-una" ] || { echo "  WRONG: equal versions do not give this checkout's una"; failures=$((failures + 1)); }
+    expect pass "the pinned version, not yet released" 9.8.7
+    [ "$(cat "$t/path")" = "$t/this-una" ] || { echo "  WRONG: an unreleased pinned version does not give this checkout's una"; failures=$((failures + 1)); }
+    record "$good"
+    expect pass "the pinned version, released, with this checkout past it" 9.8.7 UNA_SITE_LEARN_UNA_DIR="$t/release"
+    [ "$(cat "$t/path")" = "$t/out/una-release/una-9.8.7-$target/una" ] \
+        || { echo "  WRONG: a released pinned version does not give the release's una"; failures=$((failures + 1)); }
     expect pass "a checkout ahead of the pin" 9.9.0 UNA_SITE_LEARN_UNA_DIR="$t/release"
     [ "$(cat "$t/path")" = "$t/out/una-release/una-9.8.7-$target/una" ] \
         || { echo "  WRONG: a checkout ahead does not give the pinned release's una"; failures=$((failures + 1)); }
     expect fail "a release gate, whose versions must be equal" 9.9.0 UNA_SITE_LEARN_UNA_DIR="$t/release" UNA_SITE_LEARN_SAME_VERSION=1
     expect pass "a release gate with equal versions" 9.8.7 UNA_SITE_LEARN_SAME_VERSION=1
+    [ "$(cat "$t/path")" = "$t/this-una" ] || { echo "  WRONG: a release gate does not give this checkout's una"; failures=$((failures + 1)); }
     expect fail "a binary of another version" 9.9.0 UNA_SITE_LEARN_UNA_DIR="$t/release" FAKE_UNA_VERSION=9.9.0
     record 0000000000000000000000000000000000000000000000000000000000000000
     expect fail "a digest that differs from the record's" 9.9.0 UNA_SITE_LEARN_UNA_DIR="$t/release"
