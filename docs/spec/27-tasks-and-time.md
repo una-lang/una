@@ -4,7 +4,7 @@ Status: Normative, edition 0.4 preview (ADR 0117).
 
 How tasks run, wait and are bounded: lightweight tasks on a few workers, and later `within`, `first of`, `tasks` and `start`, and limits on grants. The rules of ADR 0117 join this chapter as they land, each with its conformance cases; until a rule has landed, the construct it defines is a syntax error (U0101) or its word is reserved (U0103).
 
-**What has landed.** Sections 1 to 4, the runtime of tasks (ADR 0117 rules 1 to 3, slice S1). They add no construct and change no output, failure or trace of any edition: they say how the native backend runs the tasks of `together` and `together for` (`spec/19 §8`), and which flags bound it. Section 5, `within` and interruption (ADR 0117 rules 4, 5 and 13, IF2, slice S2), in edition `0.4`. Section 6, `first of` (ADR 0117 rules 4, 6, 10, 12 and 13, IF3, slice S3), in edition `0.4`. Sections 7 and 8, `tasks` and `start`, traces written as they happen, the interpreter's coroutines and the schedule both engines share under virtual time (ADR 0117 rules 7, 10, 11, 12 and 13, slice S4), in edition `0.4`.
+**What has landed.** Sections 1 to 4, the runtime of tasks (ADR 0117 rules 1 to 3, slice S1). They add no construct and change no output, failure or trace of any edition: they say how the native backend runs the tasks of `together` and `together for` (`spec/19 §8`), and which flags bound it. Section 5, `within` and interruption (ADR 0117 rules 4, 5 and 13, IF2, slice S2), in edition `0.4`. Section 6, `first of` (ADR 0117 rules 4, 6, 10, 12 and 13, IF3, slice S3), in edition `0.4`. Sections 7 and 8, `tasks` and `start`, traces written as they happen, the interpreter's coroutines and the schedule both engines share under virtual time (ADR 0117 rules 7, 10, 11, 12 and 13, slice S4), in edition `0.4`. Rule 3 of section 2, the reactor (ADR 0117 rules 3 and 4, slice S7), which changes when the waits of `Http` end, never an outcome, a failure or a trace.
 
 ## 1. Tasks and workers
 
@@ -20,10 +20,11 @@ How tasks run, wait and are bounded: lightweight tasks on a few workers, and lat
 2. **Helper pools.** A host operation of a task that may block runs on a helper thread while the task parks:
    - `Files.read` and `Files.write`, on the file pool of `--file-threads` threads;
    - a `Console.print` whose output cannot take the line without waiting, on the same pool; a line that stdout can take at once is written by the task's worker;
-   - every `Http` operation, on the I/O pool of `--io-threads` threads.
+   - the name resolution and the connection of an `Http` operation, on the I/O pool of `--io-threads` threads (rule 3).
 
-   Each pool serves its operations first in, first out. The pools are separate, so requests that wait on a server never delay a `Files` operation or a print of another task. Only the operation's arguments and result cross to a helper; the task's heap, trace and state stay on its worker.
-3. **Meaning.** Parking and helpers change when an operation runs, never what it does: its grants, its outcome, its event and its failure are those of `spec/14` and `spec/24`.
+   Each pool serves its operations first in, first out. The pools are separate, so requests never delay a `Files` operation or a print of another task. Only the operation's arguments and result cross to a helper; the task's heap, trace and state stay on its worker.
+3. **The reactor.** The rest of an `Http` operation of a task runs on the task's own worker, and each wait on its connection parks the task on the reactor: one thread of the process that waits on every parked connection at once, through `kqueue` on macOS and `epoll` on Linux, and makes a task ready again when its connection is ready, when its deadline passes, when a host stop reaches it (ADR 0116 rule 12), or when its task is cancelled (§5, §6, §7). So a request that waits on a server that never answers holds no thread, and as many requests wait at once as the run's tasks, bounded by the descriptors the process may open: a connection that cannot be opened fails with `Unreachable`. An interrupted request's connection is closed when its task resumes, before the task goes on. If the reactor cannot start, the whole operation runs on the I/O pool instead, with the same meaning.
+4. **Meaning.** Parking and helpers change when an operation runs, never what it does: its grants, its outcome, its event and its failure are those of `spec/14` and `spec/24`.
 
 ## 3. Flags
 

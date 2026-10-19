@@ -15,7 +15,7 @@ This note fixes how S7 is built, and lists the decisions it takes where the ADRs
 4. Name resolution and the TCP connection stay on the I/O pool (`--io-threads`), interruptibly (decision S7-D2).
 5. Conformance: 64 requests to a server that never answers delay no `Files` or `Console` operation of another task, with `--io-threads 1`; the scale tests of S4 with every task parked on a request at once.
 
-No construct, diagnostic code, flag or trace event is added, and no outcome changes: `spec/27 §2` rule 3 ("Meaning") holds, so the reactor changes when an operation's waits end, never what the operation does.
+No construct, diagnostic code, flag or trace event is added, and no outcome changes: `spec/27 §2` rule 4 ("Meaning") holds, so the reactor changes when an operation's waits end, never what the operation does.
 
 ## 2. The `una-sys` interface
 
