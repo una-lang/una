@@ -392,8 +392,9 @@ impl Reactor {
     }
 
     /// Parks the calling task until `fd` is ready for `interest`, `timeout` passes, a host stop
-    /// wakes the pipe (when `stop`), or a cancellation of one of `entries` comes. O(1), besides
-    /// the registration of `entries` ([`crate::interrupt`]).
+    /// wakes the pipe (when `stop`, which the caller passes only when it saw the pipe watched:
+    /// `Stopped` at once when its event has come since), or a cancellation of one of `entries`
+    /// comes. O(1), besides the registration of `entries` ([`crate::interrupt`]).
     pub(crate) fn wait(
         &self,
         fd: BorrowedFd<'_>,
@@ -407,6 +408,11 @@ impl Reactor {
         let at = deadline(timeout);
         let inserted = {
             let mut table = self.lock();
+            // The pipe's event came since the caller saw it watched: the caller reads its run's
+            // stop again, and waits in slices from now on.
+            if stop && table.pipe != Pipe::Watched {
+                return Woken::Stopped;
+            }
             let id = table.insert(Arc::clone(&wake), at, stop);
             let early = at < table.until;
             if id.is_some() && early {
@@ -522,15 +528,15 @@ impl Interrupt for Parked<'_> {
             }
             // A pipe that no longer tells of stops: the run's stop is read between slices, as
             // `OpInterrupt` does after a wake of another run.
-            let stop = self.stop.is_some();
-            let slice = if stop && !self.reactor.watches_stops() {
+            let watched = self.stop.is_some() && self.reactor.watches_stops();
+            let slice = if self.stop.is_some() && !watched {
                 left.min(una_interp::stopping::SLICE)
             } else {
                 left
             };
             match self
                 .reactor
-                .wait(socket, interest, slice, stop, self.entries)
+                .wait(socket, interest, slice, watched, self.entries)
             {
                 Woken::Ready => return Waited::Ready,
                 Woken::Failed => return Waited::Failed,

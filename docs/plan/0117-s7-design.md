@@ -31,6 +31,9 @@ impl Poller {
 }
 impl AsFd for Poller { .. }       // a poller may be nested in another one later (ADR 0123 rule 19)
 
+// signals.rs
+pub fn wake_pipe() -> Option<BorrowedFd<'static>>;  // the wake pipe's read end, once installed
+
 pub struct Events { /* a buffer of kevent or epoll_event, zeroed once */ }
 impl Events {
     pub fn with_capacity(capacity: usize) -> Events;
@@ -48,7 +51,7 @@ impl Events {
 
 ### Size of `una-sys` (decision S7-D6)
 
-`poll.rs` fits under the cap of 1,200 lines (ADR 0116 amendment of 2026-10-19): the crate grows from 1,004 lines to the count the report gives, below 1,200, with the cap unchanged. No amendment of the cap is proposed.
+`poll.rs` (180 lines), `signals::wake_pipe` (8 lines) and two lines of `lib.rs` fit under the cap of 1,200 lines (ADR 0116 amendment of 2026-10-19): the crate grows from 1,004 lines to 1,194, with the cap unchanged, so no amendment of the cap is proposed. The margin left is 6 lines: a later change to `una-sys`, such as the non-blocking `connect` of §5, needs the cap to be decided first.
 
 ## 3. The reactor (`una-rt`, safe code)
 
