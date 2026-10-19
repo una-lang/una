@@ -89,7 +89,9 @@ fn path(
 /// (RFC 9162 §2.1.4.1). Empty when `first` is 0 or `size`.
 pub fn consistency(hashes: &mut dyn Hashes, first: u64, size: u64) -> Result<Vec<Hash>, String> {
     if first > size {
-        return Err(format!("a tree of {first} is not a prefix of one of {size}"));
+        return Err(format!(
+            "a tree of {first} is not a prefix of one of {size}"
+        ));
     }
     let mut out = Vec::new();
     if 0 < first && first < size {

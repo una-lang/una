@@ -67,7 +67,9 @@ struct Keys {
 
 fn keys() -> Keys {
     Keys {
-        root: (0..3).map(|i| signer(&format!("root.{i}"), 10 + i)).collect(),
+        root: (0..3)
+            .map(|i| signer(&format!("root.{i}"), 10 + i))
+            .collect(),
         log: signer("itaty.test/log", 20),
         witnesses: (0..3)
             .map(|i| signer(&format!("witness.{i}"), 30 + i))
@@ -80,7 +82,8 @@ fn keys() -> Keys {
 }
 
 fn root_document(keys: &Keys) -> String {
-    let mut text = String::from("ita-root/1\nsource itaty\nversion 1\nexpires 4000000000\nroot 2\n");
+    let mut text =
+        String::from("ita-root/1\nsource itaty\nversion 1\nexpires 4000000000\nroot 2\n");
     for k in &keys.root {
         text.push_str(&format!("{}\n", key_line(k)));
     }
@@ -111,7 +114,13 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 /// One HTTP/1.1 request over a fresh connection: the status and the body.
-fn request(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> (u16, Vec<u8>) {
+fn request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, Vec<u8>) {
     let mut stream = TcpStream::connect(addr).unwrap();
     let mut head = format!("{method} /{path} HTTP/1.1\r\nHost: itaty.test\r\n");
     for (name, value) in headers {
@@ -171,7 +180,9 @@ fn entries(addr: SocketAddr, from: u64, to: u64) -> Vec<Vec<u8>> {
 /// Every witness replays the log since its last cosignature and cosigns the newest checkpoint.
 fn witness_round(addr: SocketAddr, witnesses: &mut [Witness], now: u64) {
     let next = String::from_utf8(get(addr, "witness/next").unwrap()).unwrap();
-    let size = parse_checkpoint(&parse_note(&next).unwrap().text).unwrap().size;
+    let size = parse_checkpoint(&parse_note(&next).unwrap().text)
+        .unwrap()
+        .size;
     for witness in witnesses.iter_mut() {
         let new = entries(addr, witness.size(), size);
         let line = witness.cosign(&next, &new, now).unwrap();
@@ -217,7 +228,12 @@ fn package(version: &str, needs: &str, body: &str) -> Package {
 fn authority(entries: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
     entries
         .iter()
-        .map(|(cap, ops)| ((*cap).to_owned(), ops.iter().map(|o| (*o).to_owned()).collect()))
+        .map(|(cap, ops)| {
+            (
+                (*cap).to_owned(),
+                ops.iter().map(|o| (*o).to_owned()).collect(),
+            )
+        })
         .collect()
 }
 
@@ -300,7 +316,12 @@ fn a_client_publishes_and_verifies_every_proof() {
         .witnesses
         .iter()
         .enumerate()
-        .map(|(i, _)| Witness::new(signer(&format!("witness.{i}"), 30 + i as u8), root.log.clone()))
+        .map(|(i, _)| {
+            Witness::new(
+                signer(&format!("witness.{i}"), 30 + i as u8),
+                root.log.clone(),
+            )
+        })
         .collect();
 
     // An owner registers: only with the operator's token, every key signing.
@@ -334,7 +355,13 @@ fn a_client_publishes_and_verifies_every_proof() {
         ),
         &[&other],
     );
-    let (status, _) = request(addr, "POST", "register", &[("Authorization", &auth)], held.as_bytes());
+    let (status, _) = request(
+        addr,
+        "POST",
+        "register",
+        &[("Authorization", &auth)],
+        held.as_bytes(),
+    );
     assert_eq!(status, 409);
 
     // The first release: Console[print], from a public function's `uses`.
@@ -365,7 +392,10 @@ fn a_client_publishes_and_verifies_every_proof() {
     let checkpoint_note = parse_note(&checkpoint_doc).unwrap();
     assert!(checkpoint_note.signed_by(&root.log));
     let cosigns = cosigned(&checkpoint_doc, &root.witnesses.keys);
-    assert_eq!(checkpoint_time(&cosigns, root.witnesses.threshold), Ok(1_900_000_100));
+    assert_eq!(
+        checkpoint_time(&cosigns, root.witnesses.threshold),
+        Ok(1_900_000_100)
+    );
     let checkpoint = parse_checkpoint(&checkpoint_note.text).unwrap();
     assert_eq!(checkpoint.size, 2);
 
@@ -376,19 +406,49 @@ fn a_client_publishes_and_verifies_every_proof() {
     let mut reader = TileReader::new(checkpoint.size, &mut fetch);
     let proof = inclusion(&mut reader, 1, checkpoint.size).unwrap();
     let leaf_1 = leaf_hash(&logged[1]);
-    assert!(verify_inclusion(1, checkpoint.size, &leaf_1, &proof, &checkpoint.root));
-    assert!(!verify_inclusion(1, checkpoint.size, &leaf_hash(b"other"), &proof, &checkpoint.root));
+    assert!(verify_inclusion(
+        1,
+        checkpoint.size,
+        &leaf_1,
+        &proof,
+        &checkpoint.root
+    ));
+    assert!(!verify_inclusion(
+        1,
+        checkpoint.size,
+        &leaf_hash(b"other"),
+        &proof,
+        &checkpoint.root
+    ));
 
     // The name map: the head of acme/ledger and its proof, then its chain.
     let map_root = map_root_of(&checkpoint).unwrap();
     let mut fetch = |path: &str| Ok(get(addr, path));
     let (head, map_proof) = prove_from_tiles(&map_root, "acme/ledger", &mut fetch).unwrap();
     let head = head.unwrap();
-    assert_eq!(head, Head { index: 1, leaf: leaf_1, count: 1 });
-    assert!(verify_map(&map_root, "acme/ledger", Some(&head), &map_proof));
+    assert_eq!(
+        head,
+        Head {
+            index: 1,
+            leaf: leaf_1,
+            count: 1
+        }
+    );
+    assert!(verify_map(
+        &map_root,
+        "acme/ledger",
+        Some(&head),
+        &map_proof
+    ));
     let mut fetch = |path: &str| Ok(get(addr, path));
-    let (owner_head, owner_proof) = prove_from_tiles(&map_root, &owner_chain("acme"), &mut fetch).unwrap();
-    assert!(verify_map(&map_root, &owner_chain("acme"), owner_head.as_ref(), &owner_proof));
+    let (owner_head, owner_proof) =
+        prove_from_tiles(&map_root, &owner_chain("acme"), &mut fetch).unwrap();
+    assert!(verify_map(
+        &map_root,
+        &owner_chain("acme"),
+        owner_head.as_ref(),
+        &owner_proof
+    ));
     let mut fetch = |path: &str| Ok(get(addr, path));
     let (absent, absent_proof) = prove_from_tiles(&map_root, "acme/nothing", &mut fetch).unwrap();
     assert_eq!(absent, None);
@@ -445,7 +505,11 @@ fn a_client_publishes_and_verifies_every_proof() {
     );
     let (status, _) = post(addr, "submit", note(&advisory, &[&acme]).as_bytes());
     assert_eq!(status, 400, "an owner key is not a security key");
-    let (status, why) = post(addr, "submit", note(&advisory, &[&keys.security[0]]).as_bytes());
+    let (status, why) = post(
+        addr,
+        "submit",
+        note(&advisory, &[&keys.security[0]]).as_bytes(),
+    );
     assert_eq!(status, 200, "{why}");
 
     clock.0.store(1_900_000_200, Ordering::SeqCst);
@@ -459,18 +523,32 @@ fn a_client_publishes_and_verifies_every_proof() {
     let mut fetch = |path: &str| Ok(get(addr, path));
     let mut reader = TileReader::new(newer.size, &mut fetch);
     let proof = consistency(&mut reader, checkpoint.size, newer.size).unwrap();
-    assert!(verify_consistency(checkpoint.size, newer.size, &checkpoint.root, &newer.root, &proof));
+    assert!(verify_consistency(
+        checkpoint.size,
+        newer.size,
+        &checkpoint.root,
+        &newer.root,
+        &proof
+    ));
     // The release was logged at the k-th earliest of the witnesses' first cosignatures.
     let mut all = cosigns.clone();
     all.extend(cosigned(&newer_doc, &root.witnesses.keys));
-    assert_eq!(logged_at(1, &all, root.witnesses.threshold), Ok(1_900_000_100));
+    assert_eq!(
+        logged_at(1, &all, root.witnesses.threshold),
+        Ok(1_900_000_100)
+    );
 
     // The client walks the name's chain from the map's head back to the entry it holds.
     let map_root = map_root_of(&newer).unwrap();
     let mut fetch = |path: &str| Ok(get(addr, path));
     let (new_head, proof) = prove_from_tiles(&map_root, "acme/ledger", &mut fetch).unwrap();
     let new_head = new_head.unwrap();
-    assert!(verify_map(&map_root, "acme/ledger", Some(&new_head), &proof));
+    assert!(verify_map(
+        &map_root,
+        "acme/ledger",
+        Some(&new_head),
+        &proof
+    ));
     assert_eq!(new_head.count, 4);
     let log = entries(addr, 0, newer.size);
     let mut link = |index: u64| -> Result<Link, String> {
@@ -482,7 +560,10 @@ fn a_client_publishes_and_verifies_every_proof() {
         })
     };
     let walked = walk(&new_head, Some(&head), &mut link).unwrap();
-    assert_eq!(walked.iter().map(|l| l.index).collect::<Vec<_>>(), vec![4, 3, 2]);
+    assert_eq!(
+        walked.iter().map(|l| l.index).collect::<Vec<_>>(),
+        vec![4, 3, 2]
+    );
 
     // Opened again on the same store, the registry replays the same log.
     let reopened = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
@@ -508,7 +589,11 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    let service = Arc::new(Service::new(Arc::clone(&store), registry, ServerConfig::default()));
+    let service = Arc::new(Service::new(
+        Arc::clone(&store),
+        registry,
+        ServerConfig::default(),
+    ));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {

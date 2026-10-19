@@ -189,7 +189,10 @@ fn servable(path: &str) -> Option<bool> {
         ["checkpoint", size] if decimal(size).is_some() => Some(false),
         ["root", n] if decimal(n).is_some_and(|n| n >= 1) => Some(true),
         ["blobs", "sha256", hex]
-            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+            if hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
         {
             Some(true)
         }
@@ -242,7 +245,10 @@ impl Service {
         match self.store.get(path, MAX_SERVED) {
             Ok(Some(body)) => Response {
                 status: 200,
-                content_type: if path.starts_with("tile/") || path.starts_with("map/") || path.starts_with("blobs/") {
+                content_type: if path.starts_with("tile/")
+                    || path.starts_with("map/")
+                    || path.starts_with("blobs/")
+                {
                     "application/octet-stream"
                 } else {
                     "text/plain; charset=utf-8"
@@ -420,7 +426,11 @@ pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Req
     let (method, path, headers) = parse_head(head.get(..end).unwrap_or_default())?;
     let already = head.get(end + 4..).unwrap_or_default().to_vec();
     let limit = Service::body_limit(&method, &path);
-    let length = match headers.iter().filter(|(n, _)| n == "content-length").count() {
+    let length = match headers
+        .iter()
+        .filter(|(n, _)| n == "content-length")
+        .count()
+    {
         0 => None,
         1 => Some(
             headers
@@ -437,7 +447,10 @@ pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Req
         (None, _) => return Err(text(400, "this request has no body")),
         (Some(_), None) => return Err(text(411, "a body needs `Content-Length`")),
         (Some(limit), Some(length)) if length > limit => {
-            return Err(text(413, format!("the body is larger than the {limit} bytes this endpoint takes")));
+            return Err(text(
+                413,
+                format!("the body is larger than the {limit} bytes this endpoint takes"),
+            ));
         }
         (Some(_), Some(length)) => read_body(stream, already, length, config)?,
     };
@@ -450,7 +463,10 @@ pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Req
 }
 
 fn is_timeout(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }
 
 fn read_body(
@@ -489,7 +505,8 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Reads a request's head: its line and its headers, strictly.
 pub fn parse_head(head: &[u8]) -> Result<(String, String, Vec<(String, String)>), Response> {
-    let head = std::str::from_utf8(head).map_err(|_| text(400, "the request's head is not text"))?;
+    let head =
+        std::str::from_utf8(head).map_err(|_| text(400, "the request's head is not text"))?;
     let mut lines = head.split("\r\n");
     let line = lines.next().unwrap_or_default();
     let parts: Vec<&str> = line.split(' ').collect();
@@ -609,7 +626,15 @@ mod tests {
         ] {
             assert_eq!(servable(path), immutable, "{path}");
         }
-        for path in ["state/size", "root/0", "checkpoint/012", "blobs/sha256/AB", "tile/../state", "", "x"] {
+        for path in [
+            "state/size",
+            "root/0",
+            "checkpoint/012",
+            "blobs/sha256/AB",
+            "tile/../state",
+            "",
+            "x",
+        ] {
             assert_eq!(servable(path), None, "{path}");
         }
     }

@@ -160,7 +160,10 @@ impl<'f> TileReader<'f> {
             } else if index == full && count % WIDTH != 0 {
                 count % WIDTH
             } else {
-                return Err(format!("the tile {level}/{index} is past the tree of {}", self.size));
+                return Err(format!(
+                    "the tile {level}/{index} is past the tree of {}",
+                    self.size
+                ));
             };
             let mut bytes = (self.fetch)(&hash_tile_path(level, index, width))?;
             if bytes.is_none() && width < WIDTH {
@@ -247,7 +250,10 @@ mod tests {
         let mut bundle = Vec::new();
         push_entry(&mut bundle, b"one").unwrap();
         push_entry(&mut bundle, b"").unwrap();
-        assert_eq!(read_bundle(&bundle, 2, 10).unwrap(), vec![b"one".to_vec(), Vec::new()]);
+        assert_eq!(
+            read_bundle(&bundle, 2, 10).unwrap(),
+            vec![b"one".to_vec(), Vec::new()]
+        );
         assert!(read_bundle(&bundle, 3, 10).is_err());
         assert!(read_bundle(&bundle, 2, 2).is_err());
         assert!(read_bundle(&bundle[..4], 1, 10).is_err());

@@ -187,13 +187,18 @@ fn threshold(value: &str) -> Result<usize, String> {
 }
 
 /// Reads an owner's registration from its text.
-pub fn parse_registration(text: &str) -> Result<(Registration, String, Option<(u64, Hash)>), String> {
+pub fn parse_registration(
+    text: &str,
+) -> Result<(Registration, String, Option<(u64, Hash)>), String> {
     let (format, f) = fields(text)?;
     if format != "ita-owner/1" {
         return Err("expected `ita-owner/1`".to_owned());
     }
     let order: Vec<&str> = f.iter().map(|(k, _)| *k).collect();
-    let keys_at = order.iter().position(|k| *k == "key").unwrap_or(order.len());
+    let keys_at = order
+        .iter()
+        .position(|k| *k == "key")
+        .unwrap_or(order.len());
     if order.get(..keys_at) != Some(&["source", "owner", "previous", "threshold"][..])
         || order.iter().skip(keys_at).any(|k| *k != "key")
     {
@@ -251,7 +256,10 @@ pub fn parse_key_event(text: &str) -> Result<(KeyEvent, String, Option<(u64, Has
         order.get(4),
         order.len(),
     ) else {
-        return Err("a key event is `source`, `owner`, `previous`, `add` or `revoke`, and `threshold`".to_owned());
+        return Err(
+            "a key event is `source`, `owner`, `previous`, `add` or `revoke`, and `threshold`"
+                .to_owned(),
+        );
     };
     let source = only(&f, "source")?.to_owned();
     let owner = only(&f, "owner")?.to_owned();
@@ -264,10 +272,9 @@ pub fn parse_key_event(text: &str) -> Result<(KeyEvent, String, Option<(u64, Has
         "revoke" => {
             let value = only(&f, "revoke")?;
             let (name, since) = match value.split_once(" since ") {
-                Some((name, since)) => (
-                    name,
-                    Some(decimal(since).ok_or("`since` is a log index")?),
-                ),
+                Some((name, since)) => {
+                    (name, Some(decimal(since).ok_or("`since` is a log index")?))
+                }
                 None => (value, None),
             };
             if name.is_empty() || name.contains(' ') {
@@ -368,7 +375,10 @@ mod tests {
             "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\nkey acme.a {k}\n"
         );
         let (reg, source, previous) = parse_registration(&text).unwrap();
-        assert_eq!((reg.owner.as_str(), reg.threshold, source.as_str(), previous), ("acme", 1, "itaty", None));
+        assert_eq!(
+            (reg.owner.as_str(), reg.threshold, source.as_str(), previous),
+            ("acme", 1, "itaty", None)
+        );
         for bad in [
             text.replace("threshold 1", "threshold 2"),
             text.replace("threshold 1", "threshold 0"),

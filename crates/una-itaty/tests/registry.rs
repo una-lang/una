@@ -58,7 +58,8 @@ fn open() -> (Arc<MemoryStore>, Registry, Config, Vec<Signer>) {
 }
 
 fn register(registry: &mut Registry, owner: &str, keys: &[&Signer], threshold: usize) -> [u8; 32] {
-    let mut text = format!("ita-owner/1\nsource itaty\nowner {owner}\nprevious none\nthreshold {threshold}\n");
+    let mut text =
+        format!("ita-owner/1\nsource itaty\nowner {owner}\nprevious none\nthreshold {threshold}\n");
     for k in keys {
         text.push_str(&format!("key {}\n", key_line(k)));
     }
@@ -83,10 +84,17 @@ fn key_events_follow_the_owners_threshold() {
         )
     };
     let text = add(0, leaf, &b, 2);
-    assert!(matches!(registry.submit(note(&text, &[&a]).as_bytes()), Err(Refusal::Invalid(_))));
+    assert!(matches!(
+        registry.submit(note(&text, &[&a]).as_bytes()),
+        Err(Refusal::Invalid(_))
+    ));
     // A threshold above the keys the owner would hold is refused.
     let too_high = add(0, leaf, &b, 3);
-    assert!(registry.submit(note(&too_high, &[&a, &b]).as_bytes()).is_err());
+    assert!(
+        registry
+            .submit(note(&too_high, &[&a, &b]).as_bytes())
+            .is_err()
+    );
     let document = note(&text, &[&a, &b]);
     let receipt = registry.submit(document.as_bytes()).unwrap();
     assert_eq!(receipt.index, 1);
@@ -98,15 +106,25 @@ fn key_events_follow_the_owners_threshold() {
         "ita-key/1\nsource itaty\nowner acme\nprevious 1 {}\nrevoke acme.b since 1\nthreshold 1\n",
         digest_string(&receipt.leaf)
     );
-    let receipt = registry.submit(note(&revoke, &[&a, &b]).as_bytes()).unwrap();
+    let receipt = registry
+        .submit(note(&revoke, &[&a, &b]).as_bytes())
+        .unwrap();
     let text = add(2, receipt.leaf, &c, 1);
     assert!(registry.submit(note(&text, &[&b, &c]).as_bytes()).is_err());
     assert!(registry.submit(note(&text, &[&a, &c]).as_bytes()).is_ok());
     // Another owner cannot register a key that is acme's.
-    let mut theirs = format!("ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\n");
-    theirs.push_str(&format!("key zenith.a {}\n", encode_base64(&a.key().public)));
+    let mut theirs =
+        format!("ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\n");
+    theirs.push_str(&format!(
+        "key zenith.a {}\n",
+        encode_base64(&a.key().public)
+    ));
     let stolen = signer("zenith.a", 10);
-    assert!(registry.register(note(&theirs, &[&stolen]).as_bytes(), false).is_err());
+    assert!(
+        registry
+            .register(note(&theirs, &[&stolen]).as_bytes(), false)
+            .is_err()
+    );
 }
 
 #[test]
@@ -116,22 +134,49 @@ fn registrations_follow_the_name_rules_and_the_chain() {
     register(&mut registry, "acme", &[&a], 1);
     let z = signer("x.a", 20);
     for owner in ["acme", "4cme", "std", "itauna", "a"] {
-        let text = format!("ita-owner/1\nsource itaty\nowner {owner}\nprevious none\nthreshold 1\nkey {}\n", key_line(&z));
+        let text = format!(
+            "ita-owner/1\nsource itaty\nowner {owner}\nprevious none\nthreshold 1\nkey {}\n",
+            key_line(&z)
+        );
         assert!(
-            matches!(registry.register(note(&text, &[&z]).as_bytes(), false), Err(Refusal::Invalid(_))),
+            matches!(
+                registry.register(note(&text, &[&z]).as_bytes(), false),
+                Err(Refusal::Invalid(_))
+            ),
             "{owner}"
         );
     }
-    let near = format!("ita-owner/1\nsource itaty\nowner acmes\nprevious none\nthreshold 1\nkey {}\n", key_line(&z));
-    assert!(matches!(registry.register(note(&near, &[&z]).as_bytes(), false), Err(Refusal::Held(_))));
-    assert!(registry.register(note(&near, &[&z]).as_bytes(), true).is_ok());
+    let near = format!(
+        "ita-owner/1\nsource itaty\nowner acmes\nprevious none\nthreshold 1\nkey {}\n",
+        key_line(&z)
+    );
+    assert!(matches!(
+        registry.register(note(&near, &[&z]).as_bytes(), false),
+        Err(Refusal::Held(_))
+    ));
+    assert!(
+        registry
+            .register(note(&near, &[&z]).as_bytes(), true)
+            .is_ok()
+    );
     // A key that does not sign its registration is refused.
     let y = signer("y.a", 21);
-    let text = format!("ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\nkey {}\n", key_line(&y));
-    assert!(registry.register(note(&text, &[&z]).as_bytes(), false).is_err());
+    let text = format!(
+        "ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\nkey {}\n",
+        key_line(&y)
+    );
+    assert!(
+        registry
+            .register(note(&text, &[&z]).as_bytes(), false)
+            .is_err()
+    );
     // Another source's entry is refused.
     let other = text.replace("source itaty", "source acme");
-    assert!(registry.register(note(&other, &[&y]).as_bytes(), false).is_err());
+    assert!(
+        registry
+            .register(note(&other, &[&y]).as_bytes(), false)
+            .is_err()
+    );
     assert_eq!(registry.size(), 2);
     assert_ne!(owner_chain("acme"), "acme");
 }
@@ -145,27 +190,70 @@ fn cosignatures_are_verified_and_monotonic() {
     let text = parse_note(&next).unwrap().text;
     // A key that is not a witness, a time from the future, a bad signature: refused.
     let stranger = signer("witness.9", 9);
-    assert!(registry.cosign(1, &stranger.cosignature(&text, 1_000)).is_err());
-    assert!(registry.cosign(1, &witnesses[0].cosignature(&text, 1_000_000)).is_err());
-    assert!(registry.cosign(1, &witnesses[0].cosignature("other\n1\nAAAA\n", 1_000)).is_err());
-    assert!(registry.cosign(9, &witnesses[0].cosignature(&text, 1_000)).is_err());
-    registry.cosign(1, &witnesses[0].cosignature(&text, 1_000)).unwrap();
+    assert!(
+        registry
+            .cosign(1, &stranger.cosignature(&text, 1_000))
+            .is_err()
+    );
+    assert!(
+        registry
+            .cosign(1, &witnesses[0].cosignature(&text, 1_000_000))
+            .is_err()
+    );
+    assert!(
+        registry
+            .cosign(1, &witnesses[0].cosignature("other\n1\nAAAA\n", 1_000))
+            .is_err()
+    );
+    assert!(
+        registry
+            .cosign(9, &witnesses[0].cosignature(&text, 1_000))
+            .is_err()
+    );
+    registry
+        .cosign(1, &witnesses[0].cosignature(&text, 1_000))
+        .unwrap();
     // The same witness twice on one checkpoint, and below its own time later: refused.
-    assert!(registry.cosign(1, &witnesses[0].cosignature(&text, 1_001)).is_err());
-    assert!(store.get("checkpoint", 1 << 20).unwrap().is_none(), "one of two witnesses");
-    registry.cosign(1, &witnesses[1].cosignature(&text, 1_000)).unwrap();
+    assert!(
+        registry
+            .cosign(1, &witnesses[0].cosignature(&text, 1_001))
+            .is_err()
+    );
+    assert!(
+        store.get("checkpoint", 1 << 20).unwrap().is_none(),
+        "one of two witnesses"
+    );
+    registry
+        .cosign(1, &witnesses[1].cosignature(&text, 1_000))
+        .unwrap();
     let served = String::from_utf8(store.get("checkpoint", 1 << 20).unwrap().unwrap()).unwrap();
-    assert_eq!(parse_checkpoint(&parse_note(&served).unwrap().text).unwrap().size, 1);
+    assert_eq!(
+        parse_checkpoint(&parse_note(&served).unwrap().text)
+            .unwrap()
+            .size,
+        1
+    );
     let b = signer("zenith.a", 11);
     register(&mut registry, "zenith", &[&b], 1);
     let next = String::from_utf8(store.get(WITNESS_NEXT, 1 << 20).unwrap().unwrap()).unwrap();
     let text = parse_note(&next).unwrap().text;
-    assert!(registry.cosign(2, &witnesses[0].cosignature(&text, 999)).is_err());
+    assert!(
+        registry
+            .cosign(2, &witnesses[0].cosignature(&text, 999))
+            .is_err()
+    );
     // A smaller checkpoint after a larger one: refused.
-    registry.cosign(2, &witnesses[0].cosignature(&text, 1_002)).unwrap();
-    let empty = String::from_utf8(store.get(&checkpoint_path(0), 1 << 20).unwrap().unwrap()).unwrap();
+    registry
+        .cosign(2, &witnesses[0].cosignature(&text, 1_002))
+        .unwrap();
+    let empty =
+        String::from_utf8(store.get(&checkpoint_path(0), 1 << 20).unwrap().unwrap()).unwrap();
     let empty = parse_note(&empty).unwrap().text;
-    assert!(registry.cosign(0, &witnesses[0].cosignature(&empty, 1_003)).is_err());
+    assert!(
+        registry
+            .cosign(0, &witnesses[0].cosignature(&empty, 1_003))
+            .is_err()
+    );
 }
 
 #[test]
@@ -177,7 +265,10 @@ fn a_store_changed_by_hand_refuses_to_open() {
     register(&mut registry, "zenith", &[&b], 1);
     let shared: Arc<dyn Store> = store.clone();
     let reopened = Registry::open(shared.clone(), &config, Arc::new(Fixed(1_000))).unwrap();
-    assert_eq!((reopened.size(), reopened.map_root()), (registry.size(), registry.map_root()));
+    assert_eq!(
+        (reopened.size(), reopened.map_root()),
+        (registry.size(), registry.map_root())
+    );
     // Swap the two entries of the bundle: the chains still hold, the checkpoint does not.
     let bundle = store.get("tile/entries/000.p/2", 1 << 20).unwrap().unwrap();
     let first_len = usize::from(u16::from_be_bytes([bundle[0], bundle[1]])) + 2;

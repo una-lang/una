@@ -57,17 +57,11 @@ pub fn interface(trusted: &[String], files: &[(String, Vec<u8>)]) -> Result<Inte
         .map_err(|_| "the parser stopped".to_owned())?
 }
 
-/// The prelude's capabilities, read by the same parser from the files the checker uses.
-const PRELUDES: [(&str, &str); 2] = [
-    (
-        "prelude.una",
-        include_str!("../../una-check/src/std/prelude.una"),
-    ),
-    (
-        "prelude_0_2.una",
-        include_str!("../../una-check/src/std/prelude_0_2.una"),
-    ),
-];
+/// The prelude's capabilities, read by the same parser from the files the checker uses: the
+/// prelude of edition 0.1 followed by the part edition 0.2 adds, lexed as edition 0.2, as the
+/// checker reads them from edition 0.2 on.
+const PRELUDE: &str = include_str!("../../una-check/src/std/prelude.una");
+const PRELUDE_0_2: &str = include_str!("../../una-check/src/std/prelude_0_2.una");
 
 /// Each capability declared by `files`, with all its operations.
 type Declared = BTreeMap<String, BTreeSet<String>>;
@@ -81,7 +75,7 @@ fn declared(interner: &Interner, decls: &[una_syntax::ast::Decl], into: &mut Dec
                     capability
                         .ops
                         .iter()
-                        .map(|op| interner.resolve(op.name).to_owned()),
+                        .map(|op| interner.resolve(op.name.name).to_owned()),
                 );
         }
     }
@@ -128,12 +122,13 @@ fn compute(trusted: &[String], modules: &[(String, Vec<u8>)]) -> Result<Interfac
         .map(|(path, bytes)| (db.add(path.clone(), bytes), path))
         .collect();
     let mut prelude = Declared::new();
-    for (path, text) in PRELUDES {
-        let id = db.add(path, text.as_bytes());
-        let lexed = lex_in(db.file(id), id, &mut interner, KeywordSet::V0_4);
+    {
+        let text = format!("{PRELUDE}\n{PRELUDE_0_2}");
+        let id = db.add("prelude.una", text.as_bytes());
+        let lexed = lex_in(db.file(id), id, &mut interner, KeywordSet::V0_2);
         let parsed = parse(&lexed, id, &interner);
         if !lexed.errors.is_empty() || !parsed.errors.is_empty() {
-            return Err(format!("the prelude `{path}` does not read"));
+            return Err("the prelude does not read".to_owned());
         }
         declared(&interner, &parsed.file.decls, &mut prelude);
     }
@@ -141,11 +136,15 @@ fn compute(trusted: &[String], modules: &[(String, Vec<u8>)]) -> Result<Interfac
     for (id, path) in ids {
         let lexed = lex_in(db.file(id), id, &mut interner, KeywordSet::V0_4);
         if !lexed.errors.is_empty() {
-            return Err(format!("`{path}` does not lex, so its authority cannot be computed"));
+            return Err(format!(
+                "`{path}` does not lex, so its authority cannot be computed"
+            ));
         }
         let parsed = parse(&lexed, id, &interner);
         if !parsed.errors.is_empty() {
-            return Err(format!("`{path}` does not parse, so its authority cannot be computed"));
+            return Err(format!(
+                "`{path}` does not parse, so its authority cannot be computed"
+            ));
         }
         let header = parsed
             .file
@@ -205,13 +204,23 @@ mod tests {
                 "src/fetch.una",
                 "module ledger.fetch\n\npub page(url: Text) -> Text\n  uses @net: Http[get]\n=\n  url\n\nquiet(url: Text) -> Text\n  uses @net: Http[post]\n=\n  url\n",
             ),
-            file("src/keys.una", "trusted module ledger.keys\n\npub one() -> Int = 1\n\npub say(t: Text) -> Unit\n  uses @c: Console\n=\n  @c.print(t)\n"),
+            file(
+                "src/keys.una",
+                "trusted module ledger.keys\n\npub one() -> Int = 1\n\npub say(t: Text) -> Unit\n  uses @c: Console\n=\n  @c.print(t)\n",
+            ),
             file("README.md", "not code"),
         ];
         let found = interface(&["ledger.audit".to_owned()], &files).unwrap();
         let ops: Vec<&str> = found.authority["Http"].iter().map(String::as_str).collect();
-        assert_eq!(ops, vec!["get"], "a private function's uses is not the interface");
-        let all: Vec<&str> = found.authority["Console"].iter().map(String::as_str).collect();
+        assert_eq!(
+            ops,
+            vec!["get"],
+            "a private function's uses is not the interface"
+        );
+        let all: Vec<&str> = found.authority["Console"]
+            .iter()
+            .map(String::as_str)
+            .collect();
         assert_eq!(all, vec!["print"], "no operations is all of them");
         assert_eq!(
             found.trust.iter().map(String::as_str).collect::<Vec<_>>(),

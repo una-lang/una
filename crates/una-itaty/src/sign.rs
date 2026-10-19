@@ -13,7 +13,9 @@ pub struct Signer {
 
 impl std::fmt::Debug for Signer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Signer").field("key", &self.key.name).finish()
+        f.debug_struct("Signer")
+            .field("key", &self.key.name)
+            .finish()
     }
 }
 

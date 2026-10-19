@@ -66,7 +66,12 @@ impl Witness {
     /// Checks the signed checkpoint `document` against the `entries` logged since the last
     /// checkpoint it cosigned, and returns its cosignature line at `now` (or its previous time,
     /// if later). Nothing changes when it refuses.
-    pub fn cosign(&mut self, document: &str, entries: &[Vec<u8>], now: u64) -> Result<String, String> {
+    pub fn cosign(
+        &mut self,
+        document: &str,
+        entries: &[Vec<u8>],
+        now: u64,
+    ) -> Result<String, String> {
         let note = parse_note(document)?;
         if !note.signed_by(&self.log) {
             return Err("the checkpoint is not signed by the log's key".to_owned());
@@ -84,13 +89,15 @@ impl Witness {
                 entries.len()
             ));
         }
-        let map_root = map_root_of(&checkpoint).ok_or("the checkpoint carries no `ita-map` line")?;
+        let map_root =
+            map_root_of(&checkpoint).ok_or("the checkpoint carries no `ita-map` line")?;
         let mut tree = self.tree.clone();
         let mut map = self.map.clone();
         let mut heads = self.heads.clone();
         for (offset, bytes) in entries.iter().enumerate() {
             let index = self.tree.size() + offset as u64;
-            let entry = parse_entry(bytes).map_err(|e| format!("the entry {index} does not read: {e}"))?;
+            let entry =
+                parse_entry(bytes).map_err(|e| format!("the entry {index} does not read: {e}"))?;
             let head = heads.get(&entry.chain).copied();
             if entry.previous != head.map(|h| (h.index, h.leaf)) {
                 return Err(format!(
@@ -111,7 +118,10 @@ impl Witness {
         let size = tree.size();
         let log_root: Hash = root(&mut tree, size)?;
         if log_root != checkpoint.root {
-            return Err("the entries do not give the checkpoint's root: the log was not only appended to".to_owned());
+            return Err(
+                "the entries do not give the checkpoint's root: the log was not only appended to"
+                    .to_owned(),
+            );
         }
         if map.root() != map_root {
             return Err("the entries do not give the checkpoint's name map".to_owned());

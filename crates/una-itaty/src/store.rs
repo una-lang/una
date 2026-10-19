@@ -6,7 +6,8 @@
 //! ([`MemoryStore`]). Every path is checked by [`check_path`] before it reaches either, so no
 //! path names a file outside the store. A write replaces a file whole: [`FileStore`] writes a
 //! temporary file in the same directory, syncs it, and renames it into place, so a reader sees
-//! the old bytes or the new ones, never a mix.
+//! the old bytes or the new ones, never a mix. A web server that serves the directory itself
+//! maps `checkpoint` to `checkpoint/latest` ([`FileStore`]).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -49,7 +50,9 @@ pub fn check_path(path: &str) -> Result<(), Error> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
         if !valid {
-            return Err(format!("the store path `{path}` has a segment `{segment}` it may not have"));
+            return Err(format!(
+                "the store path `{path}` has a segment `{segment}` it may not have"
+            ));
         }
     }
     Ok(())
@@ -73,8 +76,14 @@ impl FileStore {
         })
     }
 
+    /// The file of `path`. Rule 34 serves both `checkpoint` and `checkpoint/<size>`, which no
+    /// file system can hold as a file and a directory of one name, so the file `checkpoint` is
+    /// kept on disk as `checkpoint/latest`, a name no size can have.
     fn file(&self, path: &str) -> Result<PathBuf, Error> {
         check_path(path)?;
+        if path == "checkpoint" {
+            return Ok(self.root.join("checkpoint").join("latest"));
+        }
         Ok(self.root.join(path))
     }
 }
@@ -91,10 +100,16 @@ fn no_links(root: &Path, file: &Path) -> Result<(), Error> {
         at.push(component);
         match fs::symlink_metadata(&at) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(format!("the store path `{}` is a symbolic link", at.display()));
+                return Err(format!(
+                    "the store path `{}` is a symbolic link",
+                    at.display()
+                ));
             }
             Ok(meta) if i + 1 < components.len() && !meta.is_dir() => {
-                return Err(format!("the store path `{}` is not a directory", at.display()));
+                return Err(format!(
+                    "the store path `{}` is not a directory",
+                    at.display()
+                ));
             }
             Ok(meta) if i + 1 == components.len() && !meta.is_file() => {
                 return Err(format!("the store path `{}` is not a file", at.display()));
@@ -125,8 +140,7 @@ impl Store for FileStore {
         }
         let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
         // Read at most one byte past the limit, so a file that grew is refused too.
-        handle
-            .by_ref()
+        io::Read::by_ref(&mut handle)
             .take(limit as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| format!("cannot read `{path}`: {e}"))?;
@@ -235,10 +249,17 @@ mod tests {
 
     #[test]
     fn paths_stay_inside() {
-        for bad in ["", "/etc", "a/../b", "a//b", ".hidden", "a/.b", "a b", "a\\b", "a/b/"] {
+        for bad in [
+            "", "/etc", "a/../b", "a//b", ".hidden", "a/.b", "a b", "a\\b", "a/b/",
+        ] {
             assert!(check_path(bad).is_err(), "{bad:?}");
         }
-        for good in ["checkpoint", "tile/0/x001/234", "blobs/sha256/ab", "tile/entries/000.p/7"] {
+        for good in [
+            "checkpoint",
+            "tile/0/x001/234",
+            "blobs/sha256/ab",
+            "tile/entries/000.p/7",
+        ] {
             assert!(check_path(good).is_ok(), "{good:?}");
         }
     }

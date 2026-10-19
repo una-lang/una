@@ -290,7 +290,9 @@ impl Registry {
                 read_bundle(&bytes, width, MAX_ENTRY)?
             };
             if entries.len() as u64 != width {
-                return Err(format!("the entry bundle {n} holds fewer entries than the log"));
+                return Err(format!(
+                    "the entry bundle {n} holds fewer entries than the log"
+                ));
             }
             for bytes in entries {
                 let entry = parse_entry(&bytes)
@@ -308,7 +310,9 @@ impl Registry {
             let text = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
             let signed = parse_note(&text)?;
             let checkpoint = parse_checkpoint(&signed.text)?;
-            if (checkpoint.root, map_root_of(&checkpoint)) != (self.root_hash()?, Some(self.map.root())) {
+            if (checkpoint.root, map_root_of(&checkpoint))
+                != (self.root_hash()?, Some(self.map.root()))
+            {
                 return Err(format!(
                     "the log replayed does not have the checkpoint of size {size}: the store was changed"
                 ));
@@ -343,11 +347,12 @@ impl Registry {
 
     /// The text of the checkpoint of the log as it is.
     fn checkpoint_text(&mut self) -> Result<String, String> {
+        let root = self.root_hash()?;
         Ok(format!(
             "{}\n{}\n{}\n{} {}\n",
             self.root.log.name,
             self.tree.size(),
-            encode_base64(&self.root_hash()?),
+            encode_base64(&root),
             map::EXTENSION,
             encode_base64(&self.map.root())
         ))
@@ -362,7 +367,9 @@ impl Registry {
             Some(bytes) => {
                 let document = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
                 if parse_note(&document)?.text != text {
-                    return Err(format!("the stored {path} is not the log's: the store was changed"));
+                    return Err(format!(
+                        "the stored {path} is not the log's: the store was changed"
+                    ));
                 }
                 document
             }
@@ -467,7 +474,9 @@ impl Registry {
             .ok_or_else(|| invalid("the archive has no ita.una"))?;
         let manifest_digest = digest_string(&Sha256::digest(manifest_bytes).into());
         if manifest_digest != statement.manifest {
-            return Err(invalid("the statement's `manifest` is not the digest of the archive's ita.una"));
+            return Err(invalid(
+                "the statement's `manifest` is not the digest of the archive's ita.una",
+            ));
         }
         let text = std::str::from_utf8(manifest_bytes)
             .map_err(|_| invalid("the archive's ita.una is not UTF-8"))?;
@@ -478,7 +487,9 @@ impl Registry {
             .map(|e| e.message.clone())
             .or_else(|| checked.first().map(|e| e.message.clone()))
         {
-            return Err(invalid(format!("the archive's ita.una does not read: {message}")));
+            return Err(invalid(format!(
+                "the archive's ita.una does not read: {message}"
+            )));
         }
         if let Some(refusal) = publish::refusals(&manifest).into_iter().next() {
             return Err(invalid(refusal));
@@ -510,7 +521,9 @@ impl Registry {
             &statement.source,
         )?;
         if manifest.needs.len() > MAX_NEEDS {
-            return Err(invalid(format!("a release needs at most {MAX_NEEDS} packages")));
+            return Err(invalid(format!(
+                "a release needs at most {MAX_NEEDS} packages"
+            )));
         }
         let mut needs = Vec::with_capacity(manifest.needs.len());
         for need in &manifest.needs {
@@ -527,7 +540,9 @@ impl Registry {
         }
         needs.sort();
         if needs != statement.needs {
-            return Err(invalid("the statement's `needs` are not the archive's ita.una's"));
+            return Err(invalid(
+                "the statement's `needs` are not the archive's ita.una's",
+            ));
         }
         for (_, name, version) in &needs {
             if *name == statement.name && version.line() == statement.version.line() {
@@ -545,7 +560,9 @@ impl Registry {
             ));
         }
         if computed.trust != statement.trust {
-            return Err(invalid("the statement's `trust` is not the archive's trusted modules"));
+            return Err(invalid(
+                "the statement's `trust` is not the archive's trusted modules",
+            ));
         }
         let blob = read
             .digest
@@ -574,11 +591,9 @@ impl Registry {
         let (owner, last) = names::split(&statement.name);
         let package = self.packages.get(&statement.name);
         if package.is_none() {
-            self.names
-                .check_package(owner, last)
-                .map_err(|r| match r {
-                    names::Refusal::Refused(m) | names::Refusal::Held(m) => invalid(m),
-                })?;
+            self.names.check_package(owner, last).map_err(|r| match r {
+                names::Refusal::Refused(m) | names::Refusal::Held(m) => invalid(m),
+            })?;
         }
         self.signed_for(&entry.note, &statement.name)?;
         if let Some(package) = package {
@@ -602,9 +617,8 @@ impl Registry {
                 .map(|(_, s)| s)
                 .find(|s| s.version.line() == line)
             {
-                within(&statement, earlier).map_err(|e| {
-                    invalid(format!("{e}: publish it as the next major version"))
-                })?;
+                within(&statement, earlier)
+                    .map_err(|e| invalid(format!("{e}: publish it as the next major version")))?;
             }
         }
         for (_, name, version) in &statement.needs {
@@ -675,10 +689,9 @@ impl Registry {
                 }
             }
             Kind::Key(event) => {
-                let owner = self
-                    .owners
-                    .get(&event.owner)
-                    .ok_or_else(|| invalid(format!("the owner `{}` is not registered", event.owner)))?;
+                let owner = self.owners.get(&event.owner).ok_or_else(|| {
+                    invalid(format!("the owner `{}` is not registered", event.owner))
+                })?;
                 let valid = owner.valid();
                 let found = entry.note.signers(&valid);
                 if found < owner.threshold {
@@ -769,7 +782,10 @@ impl Registry {
                 )));
             }
             if self.key_taken(key) {
-                return Err(invalid(format!("the key `{}` is another owner's", key.name)));
+                return Err(invalid(format!(
+                    "the key `{}` is another owner's",
+                    key.name
+                )));
             }
         }
         self.append(entry, None)
@@ -790,7 +806,8 @@ impl Registry {
             .get(&path, MAX_DOCUMENT)
             .map_err(Refusal::Unavailable)?
             .ok_or_else(|| invalid(format!("the log has no checkpoint of size {size}")))?;
-        let document = String::from_utf8(document).map_err(|_| invalid("a checkpoint is not UTF-8"))?;
+        let document =
+            String::from_utf8(document).map_err(|_| invalid("a checkpoint is not UTF-8"))?;
         let signed = parse_note(&document).map_err(invalid)?;
         if line.len() > 1024 || !line.ends_with('\n') || line.matches('\n').count() != 1 {
             return Err(invalid("a cosignature is one signature line"));
@@ -812,7 +829,9 @@ impl Registry {
             .cosignature(witness)
             .ok_or_else(|| invalid(format!("the cosignature by `{name}` does not verify")))?;
         if signed.cosignature(witness).is_some() {
-            return Err(invalid(format!("`{name}` cosigned this checkpoint already")));
+            return Err(invalid(format!(
+                "`{name}` cosigned this checkpoint already"
+            )));
         }
         if let Some((last_size, last_time)) = self.witnesses.get(&name) {
             if size < *last_size {
@@ -827,7 +846,9 @@ impl Registry {
             }
         }
         if time > self.clock.now().saturating_add(MAX_WITNESS_AHEAD) {
-            return Err(invalid(format!("the cosignature by `{name}` is from the future")));
+            return Err(invalid(format!(
+                "the cosignature by `{name}` is from the future"
+            )));
         }
         let document = format!("{document}{line}");
         let all = parse_note(&document).map_err(invalid)?;
@@ -970,7 +991,8 @@ impl Registry {
                 }
                 let hashes = self.tree.row(8 * level, tile * WIDTH, width);
                 let bytes: Vec<u8> = hashes.iter().flatten().copied().collect();
-                self.store.put(&hash_tile_path(level, tile, width), &bytes)?;
+                self.store
+                    .put(&hash_tile_path(level, tile, width), &bytes)?;
                 if width == WIDTH {
                     for partial in 1..WIDTH {
                         self.store.remove(&hash_tile_path(level, tile, partial))?;

@@ -48,15 +48,17 @@ fn one_edit(a: &str, b: &str) -> bool {
     if a == b {
         return false;
     }
-    let (short, long) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
     match long.len() - short.len() {
         0 => {
             let diff: Vec<usize> = (0..a.len()).filter(|i| a.get(*i) != b.get(*i)).collect();
             match diff.as_slice() {
                 [_] => true,
-                [i, j] => {
-                    *j == i + 1 && a.get(*i) == b.get(*j) && a.get(*j) == b.get(*i)
-                }
+                [i, j] => *j == i + 1 && a.get(*i) == b.get(*j) && a.get(*j) == b.get(*i),
                 _ => false,
             }
         }
@@ -185,7 +187,9 @@ impl Names {
                     Some(owner) => format!(
                         "`{name}` has the skeleton of `{owner}/{existing}`, another of its owner's packages"
                     ),
-                    None => format!("`{name}` has the skeleton of the official package `{existing}`"),
+                    None => {
+                        format!("`{name}` has the skeleton of the official package `{existing}`")
+                    }
                 }));
             }
         }
@@ -223,19 +227,55 @@ mod tests {
         let mut names = Names::new();
         assert!(names.check_owner("acme", false).is_ok());
         names.add_owner("acme");
-        assert!(matches!(names.check_owner("acme", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("4cme", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("ac_me", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("std", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("s7d", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("a", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("Acme", false), Err(Refusal::Refused(_))));
+        assert!(matches!(
+            names.check_owner("acme", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("4cme", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("ac_me", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("std", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("s7d", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("a", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("Acme", false),
+            Err(Refusal::Refused(_))
+        ));
         // One edit from a popular owner: held, unless reviewed.
-        assert!(matches!(names.check_owner("acmes", false), Err(Refusal::Held(_))));
-        assert!(matches!(names.check_owner("cme", false), Err(Refusal::Held(_))));
-        assert!(matches!(names.check_owner("acne", false), Err(Refusal::Held(_))));
-        assert!(matches!(names.check_owner("camE", false), Err(Refusal::Refused(_))));
-        assert!(matches!(names.check_owner("came", false), Err(Refusal::Held(_))));
+        assert!(matches!(
+            names.check_owner("acmes", false),
+            Err(Refusal::Held(_))
+        ));
+        assert!(matches!(
+            names.check_owner("cme", false),
+            Err(Refusal::Held(_))
+        ));
+        assert!(matches!(
+            names.check_owner("acne", false),
+            Err(Refusal::Held(_))
+        ));
+        assert!(matches!(
+            names.check_owner("camE", false),
+            Err(Refusal::Refused(_))
+        ));
+        assert!(matches!(
+            names.check_owner("came", false),
+            Err(Refusal::Held(_))
+        ));
         assert!(names.check_owner("acmes", true).is_ok());
         assert!(names.check_owner("zenith", false).is_ok());
     }
@@ -250,7 +290,10 @@ mod tests {
             names.add_dependent(&owner);
         }
         assert!(names.check_owner("quiets", false).is_ok());
-        assert!(matches!(names.check_owner("busy7xz", false), Err(Refusal::Held(_))));
+        assert!(matches!(
+            names.check_owner("busy7xz", false),
+            Err(Refusal::Held(_))
+        ));
     }
 
     #[test]
@@ -259,8 +302,8 @@ mod tests {
         names.add_package(None, "json");
         names.add_package(Some("acme"), "ledger");
         assert!(names.check_package(Some("acme"), "ledger").is_ok());
-        assert!(names.check_package(Some("acme"), "1edger").is_err());
-        assert!(names.check_package(Some("other"), "1edger").is_ok());
+        assert!(names.check_package(Some("acme"), "ledgerr").is_err());
+        assert!(names.check_package(Some("other"), "ledgerr").is_ok());
         assert!(names.check_package(Some("acme"), "js0n").is_err());
         assert!(names.check_package(None, "jsoon").is_err());
         assert!(names.check_package(Some("acme"), "module").is_err());
