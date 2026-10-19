@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
-    SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
+    FloatOp, Fun, HashMapOp, HashSetOp, IntType, LoopSource, MapOp, Name, Path, Prim, Program,
+    Refinement, Rhs, SeqOp, SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -2388,6 +2388,47 @@ impl<'p, 'i> Walker<'p, 'i> {
                     let at = arg_spans.get(1).copied().unwrap_or(*span);
                     self.refined_flow(&target, other, at, ctx);
                 }
+                // ADR 0119 rule 1 and ADR 0103 rule 3: a hash map's `set`, `with` and the
+                // `with` of `update` store the key and the value at the map's types, and a hash
+                // set's `add` and `with` store the item, each a flow site with its `refinement`
+                // obligations; a lookup stores nothing.
+                if matches!(
+                    prim,
+                    Prim::HashMap(HashMapOp::With) | Prim::HashSet(HashSetOp::With)
+                ) && let Some(Type::Base {
+                    base: Base::Named { args: stored, .. },
+                    ..
+                }) = values.first().map(|table| &table.ty)
+                {
+                    let stored = stored.clone();
+                    for (index, target) in stored.iter().enumerate() {
+                        if let Some(value) = values.get(index + 1)
+                            && has_refinements(target)
+                        {
+                            let at = arg_spans.get(index + 1).copied().unwrap_or(*span);
+                            self.refined_flow(target, value, at, ctx);
+                        }
+                    }
+                }
+                // A hash set's `union` stores the other set's items at the receiver's item
+                // type, as a set's does.
+                if *prim == Prim::HashSet(HashSetOp::Union)
+                    && let (Some(set), Some(other)) = (values.first(), values.get(1))
+                    && let Type::Base {
+                        base: base @ Base::Named { .. },
+                        label,
+                        ..
+                    } = &set.ty
+                    && has_refinements(&set.ty)
+                {
+                    let target = Type::Base {
+                        base: base.clone(),
+                        refinements: Vec::new(),
+                        label: label.clone(),
+                    };
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, other, at, ctx);
+                }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -3111,6 +3152,103 @@ impl<'p, 'i> Walker<'p, 'i> {
                             &base,
                             Base::Named { module, name, args }
                                 if is_collection(module, name) && name == "Set" && args.len() == 1
+                        ) =>
+                        {
+                            Type::Base {
+                                base,
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: what a hash map or a hash set gives back carries its position's
+                // refinements, as for a map (ADR 0103 rule 6), and an update or a set operation
+                // gives a table of the receiver's type, each stored key, value and item a flow
+                // site of its own.
+                Prim::HashMap(op) => {
+                    let receiver = args.first().map(|map| self.atom(map, ctx).ty);
+                    match receiver {
+                        Some(Type::Base {
+                            base: base @ Base::Named { .. },
+                            ..
+                        }) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashMap" && args.len() == 2
+                        ) =>
+                        {
+                            let Base::Named { args: kv, .. } = &base else {
+                                return Some(unknown());
+                            };
+                            let Ok([key, value]) = <[Type; 2]>::try_from(kv.clone()) else {
+                                return Some(unknown());
+                            };
+                            let named = |name: &str, args: Vec<Type>| Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: name.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            match op {
+                                HashMapOp::Has | HashMapOp::SameEntries => unknown(),
+                                HashMapOp::Get => named("Option", vec![value]),
+                                HashMapOp::With | HashMapOp::Without => Type::Base {
+                                    base,
+                                    refinements: Vec::new(),
+                                    label: type_label(binder).clone(),
+                                },
+                                HashMapOp::Keys => named("List", vec![key]),
+                                HashMapOp::Values => named("List", vec![value]),
+                                HashMapOp::Entries => {
+                                    named("List", vec![named("Entry", vec![key, value])])
+                                }
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                Prim::HashSet(op) => {
+                    let receiver = args.first().map(|set| self.atom(set, ctx).ty);
+                    match (op, receiver) {
+                        (
+                            HashSetOp::Items,
+                            Some(Type::Base {
+                                base: Base::Named { module, name, args },
+                                ..
+                            }),
+                        ) if is_collection(&module, &name)
+                            && name == "HashSet"
+                            && args.len() == 1 =>
+                        {
+                            Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: "List".to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        (
+                            HashSetOp::With
+                            | HashSetOp::Without
+                            | HashSetOp::Union
+                            | HashSetOp::Intersection
+                            | HashSetOp::Difference,
+                            Some(Type::Base {
+                                base: base @ Base::Named { .. },
+                                ..
+                            }),
+                        ) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "HashSet" && args.len() == 1
                         ) =>
                         {
                             Type::Base {
@@ -4285,15 +4423,18 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
                 float_term(op, &args)?
             }
-            // A sequence's operations are known by their facts (`seq_facts`), not as terms. A
-            // set's methods are known by their facts, which ADR 0119 V2 to V4 give, not as
-            // terms: until then, each result is a fresh binder, which proves nothing about it.
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms. The
+            // methods of a set, a hash map and a hash set are known by their facts, which ADR
+            // 0119 V2 to V4 give, not as terms: until then, each result is a fresh binder, which
+            // proves nothing about it.
             Prim::Concat
             | Prim::ToText
             | Prim::Fixed(..)
             | Prim::Map(_)
             | Prim::Seq(_)
-            | Prim::Set(_) => {
+            | Prim::Set(_)
+            | Prim::HashMap(_)
+            | Prim::HashSet(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
