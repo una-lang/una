@@ -231,20 +231,47 @@ fn every_bound_holds() {
         r.add(&format!("p{i}"), "1.0.0", &[]);
     }
     let names: Vec<String> = (0..10).map(|i| format!("p{i}")).collect();
-    r.add("hub", "1.0.0", &names.iter().map(|n| (n.as_str(), "1.0")).collect::<Vec<_>>());
+    r.add(
+        "hub",
+        "1.0.0",
+        &names
+            .iter()
+            .map(|n| (n.as_str(), "1.0"))
+            .collect::<Vec<_>>(),
+    );
     let root = [need("hub", "1.0")];
     let tight = |bounds: Bounds| resolve(&root, &r, &policy(), bounds);
     let base = Bounds::default();
     assert!(tight(base).is_ok());
-    assert!(matches!(tight(Bounds { visited: 5, ..base }), Err(Problem::Bound(_))));
-    assert!(matches!(tight(Bounds { needs: 5, ..base }), Err(Problem::Bound(_))));
-    assert!(matches!(tight(Bounds { packages: 5, ..base }), Err(Problem::Bound(_))));
+    assert!(matches!(
+        tight(Bounds { visited: 5, ..base }),
+        Err(Problem::Bound(_))
+    ));
+    assert!(matches!(
+        tight(Bounds { needs: 5, ..base }),
+        Err(Problem::Bound(_))
+    ));
+    assert!(matches!(
+        tight(Bounds {
+            packages: 5,
+            ..base
+        }),
+        Err(Problem::Bound(_))
+    ));
     let mut many = Registry::default();
     for patch in 0..20 {
         many.add("json", &format!("2.0.{patch}"), &[]);
     }
     assert!(matches!(
-        resolve(&[need("json", "2.0")], &many, &policy(), Bounds { releases: 10, ..base }),
+        resolve(
+            &[need("json", "2.0")],
+            &many,
+            &policy(),
+            Bounds {
+                releases: 10,
+                ..base
+            }
+        ),
         Err(Problem::Bound(_))
     ));
 }

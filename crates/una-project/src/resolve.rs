@@ -151,11 +151,12 @@ pub enum Problem {
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Problem::NoRelease { identity, version } => write!(
-                f,
-                "no release of {identity} is {version} or later"
-            ),
-            Problem::SelfNeed(identity) => write!(f, "a release of {identity} needs its own identity"),
+            Problem::NoRelease { identity, version } => {
+                write!(f, "no release of {identity} is {version} or later")
+            }
+            Problem::SelfNeed(identity) => {
+                write!(f, "a release of {identity} needs its own identity")
+            }
             Problem::NoRaise {
                 identity,
                 from,
@@ -230,7 +231,9 @@ pub fn resolve(
                 None => true,
             };
             if raise {
-                resolver.sel.insert(identity.clone(), release.version.clone());
+                resolver
+                    .sel
+                    .insert(identity.clone(), release.version.clone());
                 dirty.insert(identity.clone());
             }
             let needs = resolver.needs_of(&identity, &release.version)?;
@@ -354,7 +357,11 @@ impl Resolver<'_> {
     /// release above it that is not bad, not a pre-release (unless one is named), and logged
     /// at least the cooldown before the resolution point, or a threshold fix. Returns the new
     /// selection, or `None` when `current` stands. O(log K + S) for K releases, S skipped.
-    fn raise(&mut self, identity: &Identity, current: &Version) -> Result<Option<Version>, Problem> {
+    fn raise(
+        &mut self,
+        identity: &Identity,
+        current: &Version,
+    ) -> Result<Option<Version>, Problem> {
         let policy = self.policy;
         let pre_allowed = self.pre_allowed.contains(identity);
         self.releases_of(identity)?;
