@@ -218,7 +218,6 @@ pub unsafe extern "C" fn una_rt_text_literal(bytes: *const u8, len: usize) -> i6
     values::text_literal(&text)
 }
 
-/// The operations of [`crate::values`] that return a word, by word.
 /// Writes the default floating-point environment of the calling thread (ADR 0114 rule 6.4):
 /// round to nearest, ties to even, every exception masked, no flush-to-zero and no
 /// denormals-are-zero, and on AArch64 no default-NaN mode. One instruction.
@@ -247,6 +246,7 @@ pub(crate) fn write_float_environment() {
     }
 }
 
+/// The operations of [`crate::values`] that return a word, by word.
 macro_rules! exported {
     ($($name:ident => $function:path, ($($arg:ident),*);)*) => {
         $(

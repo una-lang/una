@@ -86,13 +86,7 @@ impl Kind {
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text
-                | Kind::List
-                | Kind::Map
-                | Kind::Fn
-                | Kind::Hashed
-                | Kind::Tuple
-                | Kind::F64
+            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple | Kind::F64
         )
     }
 }
@@ -1948,7 +1942,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Atom::Text(text) => (self.literal("una_rt_text_literal", text)?, Kind::Text),
             // A literal is made once by the runtime and borrowed, as an integer literal is.
             Atom::F64(bits) => {
-                let bits = self.builder.ins().iconst(types::I64, i64::from_ne_bytes(bits.to_ne_bytes()));
+                let bits = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, i64::from_ne_bytes(bits.to_ne_bytes()));
                 (self.call("una_rt_f64_literal", &[bits])?, Kind::F64)
             }
             // A decimal literal is its coefficient's word (ADR 0120 rule 20).
@@ -2594,6 +2591,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let operand = |i: Option<(Value, Kind)>| {
             i.ok_or_else(|| internal(format!("`{}` lacks an operand", prim.as_str())))
         };
+        // An `F64` reaches only its own operations, equality and interpolation: integer
+        // arithmetic or a word comparison on its handle would compute on an address.
+        if !matches!(prim, Prim::Float(_) | Prim::Eq | Prim::Ne | Prim::ToText)
+            && args.iter().any(|(_, kind)| *kind == Kind::F64)
+        {
+            return Err(internal(format!("`{}` on an `F64`", prim.as_str())));
+        }
         match prim {
             // A conversion keeps the value: a narrowing one carries an `overflow` obligation that
             // proves it fits (`spec/18 §4`).
@@ -2769,7 +2773,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             .iter()
                             .position(|x| *x == una_core::FloatOp::ToText)
                             .and_then(|i| i64::try_from(i).ok())
-                            .unwrap_or(0);
+                            .ok_or_else(|| internal("an unknown operation of `F64`"))?;
                         let code = self.builder.ins().iconst(types::I64, code);
                         let zero = self.builder.ins().iconst(types::I64, 0);
                         self.call("una_rt_f64_op", &[code, a, zero, zero])

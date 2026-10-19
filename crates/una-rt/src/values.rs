@@ -1909,7 +1909,10 @@ pub fn f64_literal(bits: i64) -> i64 {
 pub fn f64_op(op: i64, a: i64, b: i64, c: i64) -> i64 {
     use una_core::FloatOp;
     use una_core::float as f;
-    let Some(op) = usize::try_from(op).ok().and_then(|i| FloatOp::ALL.get(i).copied()) else {
+    let Some(op) = usize::try_from(op)
+        .ok()
+        .and_then(|i| FloatOp::ALL.get(i).copied())
+    else {
         HEAP.with(|heap| heap.borrow_mut().faults += 1);
         return 0;
     };
@@ -3271,10 +3274,16 @@ mod tests {
         let text = f64_op(code(FloatOp::ToText), negative, 0, 0);
         assert_eq!(text_value(text), "-0.0");
         let fused = f64_op(code(FloatOp::Fma), one, one, negative);
-        assert_eq!(text_value(f64_op(code(FloatOp::ToText), fused, 0, 0)), "1.0");
+        assert_eq!(
+            text_value(f64_op(code(FloatOp::ToText), fused, 0, 0)),
+            "1.0"
+        );
         assert_eq!(parse_f64_failure(text_word("1.".to_owned())) & 1, 0);
         assert_eq!(parse_f64_failure(text_word(String::new())), 1);
-        assert_eq!(f64_value(parse_f64(text_word("-0".to_owned()))).to_bits(), 1 << 63);
+        assert_eq!(
+            f64_value(parse_f64(text_word("-0".to_owned()))).to_bits(),
+            1 << 63
+        );
         assert_eq!(f64_literal(0), zero, "a literal is made once");
         assert!(leaf_equal(nan, f64_op(code(FloatOp::Div), zero, zero, 0)));
     }

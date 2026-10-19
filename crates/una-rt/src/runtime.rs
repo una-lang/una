@@ -944,12 +944,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     let floats = meta.float_environment;
     if floats {
         crate::ffi::write_float_environment();
+        // A failed probe is U6006, exit code 1, with no position, written as the runtime's
+        // other stops before `main` are.
         if let Err(probe) = una_core::float::probe_environment() {
-            let _ = writeln!(
+            let written = writeln!(
                 stderr,
-                "error[U6006]: the floating-point environment of this platform is not the default one ({probe})"
+                "[{}] Error: the floating-point environment of this platform is not the default one ({probe})",
+                Code::U6006
             );
-            return 1;
+            return if written.is_ok() { 1 } else { USAGE };
         }
         FLOATS.store(true, Ordering::SeqCst);
     }
