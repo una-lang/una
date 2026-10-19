@@ -48,9 +48,27 @@ impl Drop for StackCount {
 /// 0061 amendment of 2026-10-18, ADR 0117 rule 2).
 static STACK_CHARGE: AtomicUsize = AtomicUsize::new(0);
 
-/// The step in which a task's stack is charged, so that the charge moves once per 16 KiB of
-/// growth rather than at every call.
+/// The least step in which a task's stack is charged, so that the charge moves once per 16 KiB
+/// of growth rather than at every call; [`stack_step`] raises it to the page size.
 const STACK_STEP: usize = 16 * 1024;
+
+thread_local! {
+    /// The stack charge of the task the thread runs whose state has ended, held until its
+    /// stack is cleared (`sched`, review of S1, N2); swapped with the task's slots.
+    static ENDED_CHARGE: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Ends `bytes` of stack charge: once the stack that held them is cleared or unmapped.
+pub(crate) fn release_stack_charge(bytes: usize) {
+    STACK_CHARGE.fetch_sub(bytes, Ordering::Relaxed);
+}
+
+/// The step of the stack charge: [`STACK_STEP`], or the page size when it is larger, since a
+/// page is resident whole.
+fn stack_step() -> usize {
+    static STEP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *STEP.get_or_init(|| STACK_STEP.max(una_sys::coroutine::page_size()))
+}
 
 /// What the run holds against its memory budget: the heap, and the stacks its tasks used.
 fn charged() -> usize {
@@ -66,7 +84,7 @@ fn charge_stack(hot: &Hot, used: usize) -> bool {
         return false;
     }
     let target = used
-        .checked_next_multiple_of(STACK_STEP)
+        .checked_next_multiple_of(stack_step())
         .unwrap_or(budget)
         .min(budget);
     let charged = hot.stack_charged.get();
@@ -1203,6 +1221,8 @@ pub(crate) struct Slots {
     hot: [usize; 8],
     guarded: bool,
     panicked: Option<String>,
+    /// [`ENDED_CHARGE`].
+    ended: usize,
     #[cfg(test)]
     counters: [usize; 3],
     #[cfg(test)]
@@ -1218,6 +1238,7 @@ impl Default for Slots {
             hot: [0, 0, 0, 0, 0, usize::MAX, 0, 0],
             guarded: false,
             panicked: None,
+            ended: 0,
             #[cfg(test)]
             counters: [0; 3],
             #[cfg(test)]
@@ -1226,13 +1247,21 @@ impl Default for Slots {
     }
 }
 
+impl Slots {
+    /// The stack charge a finished task still holds, taken out of its slots: what its state's
+    /// end set aside, and, after a panic that skipped that end, its live charge. The caller
+    /// releases it once the task's stack is cleared.
+    pub(crate) fn take_charge(&mut self) -> usize {
+        let live = self.hot.get_mut(4).map_or(0, std::mem::take);
+        std::mem::take(&mut self.ended).saturating_add(live)
+    }
+}
+
 impl Drop for Slots {
-    /// A task's slots dropped with a stack charge still held, after a panic of its runtime that
-    /// skipped its end, give the charge back, so later checks count no phantom stack.
+    /// Slots dropped with a charge still held give it back, so later checks count no phantom
+    /// stack; a worker takes it first with [`Slots::take_charge`], to release it in order.
     fn drop(&mut self) {
-        if let Some(&charged) = self.hot.get(4) {
-            STACK_CHARGE.fetch_sub(charged, Ordering::Relaxed);
-        }
+        release_stack_charge(self.take_charge());
     }
 }
 
@@ -1261,6 +1290,7 @@ pub(crate) fn swap_slots(slots: &mut Slots) {
         }
     });
     slots.guarded = GUARDED.with(|cell| cell.replace(slots.guarded));
+    slots.ended = ENDED_CHARGE.with(|cell| cell.replace(slots.ended));
     PANICKED.with(|cell| match cell.try_borrow_mut() {
         Ok(mut panicked) => std::mem::swap(&mut *panicked, &mut slots.panicked),
         Err(_) => std::process::abort(),
@@ -1320,7 +1350,14 @@ fn take_state(cell: &mut Option<State>) -> Option<State> {
         hot.max_depth.set(0);
         hot.stack_base.set(0);
         hot.stack_budget.set(0);
-        STACK_CHARGE.fetch_sub(hot.stack_charged.replace(0), Ordering::Relaxed);
+        let charged = hot.stack_charged.replace(0);
+        // A task's charge outlives its state until its stack is cleared (`sched`); `main`'s, and
+        // any outside a worker's coroutine, ends here.
+        if una_sys::coroutine::inside() {
+            ENDED_CHARGE.with(|ended| ended.set(ended.get().saturating_add(charged)));
+        } else {
+            release_stack_charge(charged);
+        }
         hot.mem_ceiling.set(usize::MAX);
         hot.shielded.set(0);
         hot.flags.set(0);

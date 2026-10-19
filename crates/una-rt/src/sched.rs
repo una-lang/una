@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-use una_sys::coroutine::{Coroutine, Resumed, Stack};
+use una_sys::coroutine::{Coroutine, Resumed, Scope, Stack};
 
 /// The most free stacks a scheduler keeps for reuse.
 const POOL_STACKS: usize = 64;
@@ -218,16 +218,22 @@ impl Worker {
 }
 
 /// A task a worker holds: its coroutine, and its slots while it is parked.
-struct Entry {
-    coroutine: Coroutine,
+struct Entry<'s> {
+    coroutine: Coroutine<'s>,
     slots: Slots,
     generation: u64,
     finish: Box<dyn FnOnce() + Send>,
 }
 
-/// The loop of a worker's thread.
+/// The loop of a worker's thread, inside one coroutine scope for its whole life: the scope
+/// cannot end, nor the thread exit, while a task of the worker is unfinished (`una_sys`).
 fn serve(worker: Arc<Worker>, shared: Arc<Shared>) {
-    let mut entries: Vec<Option<Entry>> = Vec::new();
+    una_sys::coroutine::scope(|scope| serve_in(scope, &worker, &shared));
+}
+
+/// The loop of [`serve`], whose coroutines `scope` owns.
+fn serve_in(scope: &Scope, worker: &Arc<Worker>, shared: &Arc<Shared>) {
+    let mut entries: Vec<Option<Entry<'_>>> = Vec::new();
     let mut free: Vec<usize> = Vec::new();
     let mut generation: u64 = 0;
     let mut held = 0usize;
@@ -236,7 +242,7 @@ fn serve(worker: Arc<Worker>, shared: Arc<Shared>) {
             Job::Start(stack, body, finish) => {
                 generation += 1;
                 let entry = Entry {
-                    coroutine: Coroutine::new(stack, body),
+                    coroutine: scope.spawn(stack, body),
                     slots: Slots::default(),
                     generation,
                     finish,
@@ -265,7 +271,7 @@ fn serve(worker: Arc<Worker>, shared: Arc<Shared>) {
             continue;
         }
         RUNNING.with(|running| {
-            *running.borrow_mut() = Some((Arc::clone(&worker), id, Arc::clone(&shared)));
+            *running.borrow_mut() = Some((Arc::clone(worker), id, Arc::clone(shared)));
         });
         swap(&mut entry.slots);
         let resumed = entry.coroutine.resume();
@@ -278,14 +284,18 @@ fn serve(worker: Arc<Worker>, shared: Arc<Shared>) {
             held -= 1;
             let Entry {
                 coroutine,
-                slots,
+                mut slots,
                 finish,
                 ..
             } = entry;
+            // The task's stack charge ends only once its stack holds no page: after the pool
+            // discarded it, or after it was unmapped (review of S1, N2).
+            let charge = slots.runtime.take_charge();
             drop(slots);
             if let Ok(stack) = coroutine.into_stack() {
                 shared.give(stack);
             }
+            crate::runtime::release_stack_charge(charge);
             finish();
         }
     }

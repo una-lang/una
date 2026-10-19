@@ -695,3 +695,9 @@ Rule 19 gives tests a virtual clock and `--virtual-time` the same clock, without
 - **`elapse` moves time forward only.** Its signature is `elapse(d: Int of Millisecond) -> Unit` with `requires d >= 0`, a `precondition` obligation of each call (U5001 when refuted), as `within d` requires `d >= 1`. A negative duration would move time back, which no wait can do.
 - **`stop after N`** is the last line of an example, `N` from 1 to 2^63 − 1, the range of `--stop-after-iterations`. Anything else is U0101. Under it only the `do` line may call a `diverges` function; an `expect` line never may (U3027).
 - **The flag.** `--virtual-time` is a switch of `una run` and executables, accepted for a package of any edition, since it changes the host's clock and no construct. `una test` has no such flag: its clock is always virtual.
+
+## Amendment (2026-10-19): the size of `una-sys` and its assembly
+
+Appendix A's amendment of ADR 0058 caps `una-sys` at 800 lines. That cap rises to **1,200 lines** of source, and the assembly of the context switch (ADR 0117 rule 2) is written **one instruction per line**.
+- **Why.** Readable `unsafe` code is a security property. The cap exists so that the whole crate can be reviewed line by line. The security review of ADR 0117's slice S1 (issue #966) needed a scope that owns coroutines, a release of stacks back to the system and a mapping without huge pages, and fitting them under 800 lines meant packing several instructions into one line of the switch. That defeats the review the cap is meant to serve.
+- **Unchanged.** Every change to `una-sys` still gets a security review before it merges; it depends on no crate of the repository and on no external crate but `libc`; every `unsafe` block carries a `// SAFETY:` comment.

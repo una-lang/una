@@ -13,7 +13,8 @@ libc.workspace = true
 # The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADRs 0116 and 0117) allows
 # `unsafe` in this crate, in the modules that call the operating system or switch stacks:
 # `signals.rs`, `coroutine.rs` (Rust `naked_asm!` only, no assembly files, no build script, no C)
-# and `io.rs`, each of which opts in. Every other module keeps compiler/conventions.md §1.
+# and `io.rs`, each of which opts in. Every other module keeps compiler/conventions.md §1. The
+# crate stays under 1,200 lines, one assembly instruction per line (ADR 0116 amendment).
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
