@@ -16,6 +16,14 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 ## Advisories
 
+### UNA-SA-016: parsing a long integer from text took time quadratic in its digits
+
+- **Severity:** Availability
+- **Affected:** every published release up to and including v0.3.15 and v0.1.11: `to_int` in every edition, and `parse_int` from edition 0.2.
+- **Fixed in:** v0.3.16.
+- **Summary:** `to_int` and `parse_int` converted a text of d digits to an `Int` in O(d²) time, so a program that parsed untrusted text could be made to spend quadratic time in one call. Both now refuse a text of more than 4300 digits, the sign excluded and leading zeros included, after one O(b) scan and before any conversion: `to_int` returns `None`, and `parse_int` fails with the new `ParseError` variant `TooLong`, the bound that JSON integers already had. A `when` over `ParseError` that names each variant without an `else` arm must now handle `TooLong`. The fix of the v0.1 line is added here when it is released.
+- **References:** #914, #922, `spec/22 §4`, `spec/14 §1`, `spec/23 §3`.
+
 ### UNA-SA-015: an interpolated text pattern let a secret choose a branch or a public Bool
 
 - **Severity:** High
