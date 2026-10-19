@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
@@ -945,17 +945,27 @@ struct Driver {
 
 /// The clock of the run in this process (ADR 0116 rule 19): set once when the executable
 /// starts, real, or virtual under `--virtual-time`, and shared by every thread of the run.
-static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
+///
+/// A `OnceLock`, never a lock: after it is set, reading it is a plain load, and a virtual
+/// clock's reading one more atomic load. It is read on hot paths, each iteration of a
+/// `for ever within`, each `Http` call and each `Clock.now`, so a mutex there would cost
+/// every task a contended lock, against the performance parity of native code. An executable
+/// runs one run, so one setting suffices.
+static CLOCK: OnceLock<Clock> = OnceLock::new();
 
-/// Makes `clock` the run's clock.
-fn set_clock(clock: Clock) {
-    *CLOCK.lock().unwrap_or_else(PoisonError::into_inner) = Some(clock);
+/// Makes the run's clock the virtual one when `virtual_time` holds, the real one otherwise.
+/// False when the process already has a clock of the other kind: a second run in one
+/// process, which only tests make.
+fn set_clock(virtual_time: bool) -> bool {
+    CLOCK
+        .get_or_init(|| Clock::for_run(virtual_time))
+        .is_virtual()
+        == virtual_time
 }
 
 /// The run's clock: the one the executable set, or the real clock before any run started.
-pub(crate) fn clock() -> Clock {
-    let mut cell = CLOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    cell.get_or_insert_with(Clock::real).clone()
+pub(crate) fn clock() -> &'static Clock {
+    CLOCK.get_or_init(Clock::real)
 }
 
 /// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
@@ -1264,7 +1274,13 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         origin: None,
         next: 0,
     });
-    set_clock(Clock::for_run(options.virtual_time));
+    if !set_clock(options.virtual_time) {
+        let _ = writeln!(
+            stderr,
+            "error: this process already ran a run on a clock of the other kind"
+        );
+        return 3;
+    }
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
