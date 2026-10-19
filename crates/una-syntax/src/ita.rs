@@ -1754,8 +1754,7 @@ fn solver(line: &Line, errors: &mut Vec<Error>) -> Option<LockSolver> {
         }
         let mut cursor = Cursor::new(child);
         cursor.next();
-        if index < 4 {
-            let slot = &mut texts[index];
+        if let Some(slot) = texts.get_mut(index) {
             if slot.is_some() {
                 errors.push(Error::new(child.head(), format!("`{key}` appears twice")));
                 continue;
@@ -1767,8 +1766,7 @@ fn solver(line: &Line, errors: &mut Vec<Error>) -> Option<LockSolver> {
                 Ok(value) => *slot = Some(value),
                 Err(error) => errors.push(error),
             }
-        } else {
-            let slot = &mut numbers[index - 4];
+        } else if let Some(slot) = numbers.get_mut(index - 4) {
             if slot.is_some() {
                 errors.push(Error::new(child.head(), format!("`{key}` appears twice")));
                 continue;
