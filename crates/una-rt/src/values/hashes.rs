@@ -51,6 +51,11 @@ static PROCESS_KEY: OnceLock<ProcessKey> = OnceLock::new();
 const TABLES_EXHAUSTED: &str =
     "this call makes a hash table after the run's table counter reached its limit";
 
+/// What stops a run that makes a hash table its build found it makes none of: a defect of the
+/// build's analysis, an internal fault in both engines (the interpreter's `UNFORESEEN_TABLE`).
+pub(crate) const UNFORESEEN_TABLE: &str =
+    "a hash table made in a run whose code the analysis found makes none";
+
 /// The message of U6009: the host gave no random bytes for the process key.
 const NO_RANDOM_BYTES: &str = "the host gave no random bytes for keyed hashing";
 
@@ -250,18 +255,18 @@ fn made_from(word: i64, owned: bool, made: i64) -> i64 {
 
 /// The key of a new table, from the process key's counter (ADR 0119 rule 9), or `None` once the
 /// run or the task stopped at the call `site`: U6003 when the counter is exhausted. The run read
-/// the process key before `main`; a table that the build did not see coming (outside a run, or
-/// past a defect of the build's analysis) reads it here, from the same source, and stops with
-/// U6009 when the host gives none: no fixed or guessable key ever replaces it.
+/// the process key before `main` when the build found that its code makes a table; a table the
+/// build did not see coming is a defect of that analysis, and stops the run with U8001 at the
+/// site, as the interpreter does, never reading a key late.
 fn new_table_key(site: i64) -> Option<SipKey> {
     let at = usize::try_from(site).unwrap_or(usize::MAX);
-    let process = match PROCESS_KEY.get() {
-        Some(process) => process,
-        None if read_process_key() => PROCESS_KEY.get()?,
-        None => {
-            crate::runtime::abort_at(at, Code::U6009, NO_RANDOM_BYTES.to_owned());
-            return None;
-        }
+    let Some(process) = PROCESS_KEY.get() else {
+        crate::runtime::abort_at(
+            at,
+            Code::U8001,
+            format!("evaluation stopped: {UNFORESEEN_TABLE}"),
+        );
+        return None;
     };
     match process.next_table_key() {
         Ok(key) => Some(key),

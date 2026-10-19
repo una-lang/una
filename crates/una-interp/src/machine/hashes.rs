@@ -704,14 +704,21 @@ fn difference<'p>(
     Ok(Rc::new(out))
 }
 
+/// What stops a run that makes a hash table its analysis found it makes none of: a defect of the
+/// analysis, so an internal fault, U8001, in both engines.
+pub(crate) const UNFORESEEN_TABLE: &str =
+    "a hash table made in a run whose code the analysis found makes none";
+
 /// The key of a new table, from the process key's counter (ADR 0119 rule 9): U6003 when the
 /// counter is exhausted, and an internal fault when the run read no process key, which the
 /// analysis of [`process_key`] rules out.
 pub(super) fn table_key<'p>(process: Option<&ProcessKey>, span: Span) -> Result<SipKey, Stop<'p>> {
     let Some(process) = process else {
-        return Err(fault(
-            "a hash table made in a run whose code the analysis found makes none",
-        ));
+        // Native code stops at the same site with the same message (ADR 0119 rule 9).
+        return Err(Stop::Abort(Abort::Fault {
+            message: UNFORESEEN_TABLE.to_owned(),
+            span: Some(span),
+        }));
     };
     process.next_table_key().map_err(|error| match error {
         KeyError::CounterExhausted => Stop::Abort(Abort::Tables { span }),
@@ -797,5 +804,23 @@ mod tests {
         let mut bytes = Vec::new();
         let table = Value::HashSet(Rc::new(HashTable::new(SipKey { k0: 1, k1: 2 })));
         assert!(!encode(&mut Encoder::new(&mut bytes), &table));
+    }
+
+    #[test]
+    fn a_table_the_analysis_missed_stops_the_run_at_the_table() {
+        // ADR 0119 rule 9: no key is read late. A table made in a run that read no process key
+        // is an internal fault at its site, with the message native code reports there too.
+        let mut sources = una_syntax::SourceDb::new();
+        let file = sources.add("table.una", b"");
+        let span = Span::new(file, 3, 9);
+        let stopped = table_key(None, span);
+        assert!(
+            matches!(
+                &stopped,
+                Err(Stop::Abort(Abort::Fault { message, span: Some(at) }))
+                    if message == UNFORESEEN_TABLE && *at == span
+            ),
+            "a table without a process key was not a fault at its site"
+        );
     }
 }
