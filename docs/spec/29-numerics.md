@@ -6,13 +6,13 @@ This chapter holds the numeric types beyond the integers of `spec/03` and `spec/
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`). In editions `0.1` and `0.2`, `F64` is an ordinary name, `1.0` keeps its error (U0101), `to_f64` resolves as any function name does, and the prelude has none of the functions of §3 rule 9.
 
-**What has landed.** The front end, the checker, the interpreter and native code implement this chapter; the verifier's encoding (§8) lands in its own step, and until then a float in a clause is U2014. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
+**What has landed.** The front end, the checker, the interpreter, the verifier and native code implement this chapter. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
 
 ## 1. The type
 
 1. **`F64`** is a built-in type: an IEEE 754 binary64 value. Its values are every binary64 value that is not a NaN, and one NaN, the **canonical NaN**, whose bits are `0x7FF8000000000000` (positive, quiet, payload zero). There is no other NaN in the language (§6).
 2. **Distinct.** `F64` is distinct from `Int` and from every fixed-width integer. An operator with an `F64` and an integer operand is U2001, with a repair that converts the integer by `to_f64()` (§4).
-3. **Refinements, type arguments and labels.** `F64` MAY be refined (`kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0`) once the verifier encodes it (§8); until then such a `where` is U2014. `F64` is a legal type argument (`List[F64]`, `Map[F64, Text]`) and carries labels as `Int` does (`spec/07`).
+3. **Refinements, type arguments and labels.** `F64` MAY be refined (`kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0`). `F64` is a legal type argument (`List[F64]`, `Map[F64, Text]`) and carries labels as `Int` does (`spec/07`).
 4. **Names.** A user kind, variant, capability or unit named `F64` is U1002.
 5. **Constraints** (`spec/20 §1`). `F64` satisfies `Eq` and `Ord` (§5), and never `Integer`. So `sort`, `min`, `max`, `contains` and `Map[F64, V]` accept it, and `sum` does not: a sum of floats depends on its order, so a program writes it with `fold`, in the order it chooses.
 
@@ -129,7 +129,29 @@ The result of every `F64` operation, and every output that depends on one, is bi
 
 ## 8. Verification
 
-The verifier's encoding of `F64` is the FloatingPoint theory of SMT-LIB, `(_ FloatingPoint 11 53)` with `RNE`, sliced and bounded as ADR 0114 rule 8 states. Until it lands, no `F64` term is in the refinement language (U2014 in a clause), and every query reads an `F64` value as a value of the uninterpreted sort `i!F64`, about which it states nothing; a query without an `F64` term is unchanged. Two consequences, both of which only refuse: a path behind a float condition is reachable for the verifier, so an obligation there may be reported refuted although only float facts make the path unreachable; and an `Ord` contract of a generic function called at `F64` is never proven.
+1. **The encoding is exact.** An `F64` is the SMT-LIB sort `(_ FloatingPoint 11 53)`, `Float64`, with the rounding mode `RNE`. The theory has one NaN and two zeros, as `F64` has, so the encoding is the run-time semantics, not an approximation of it:
+
+   | Una | SMT-LIB |
+   | --- | --- |
+   | a float literal, `nan()`, `infinity()` | `(fp #b<sign> #b<exponent> #b<significand>)`, the exact bits |
+   | `+`, `-`, `*`, `/`, unary `-` | `fp.add RNE`, `fp.sub RNE`, `fp.mul RNE`, `fp.div RNE`, `fp.neg` |
+   | `sqrt`, `abs` | `fp.sqrt RNE`, `fp.abs` |
+   | `==` | SMT `=`, identity |
+   | `<`, `<=` | the defined functions `i!lt!F64`, `i!le!F64`: totalOrder |
+   | `ieee_eq`, `ieee_lt`, `ieee_le`, `ieee_gt`, `ieee_ge`, `ieee_ne` | `fp.eq`, `fp.lt`, `fp.leq`, `fp.gt`, `fp.geq`, `(not (fp.eq a b))` |
+   | `is_nan`, `is_finite`, `is_infinite`, `is_sign_negative` | `fp.isNaN`; `(not (or (fp.isNaN x) (fp.isInfinite x)))`; `fp.isInfinite`; `(and (fp.isNegative x) (not (fp.isNaN x)))` |
+   | `is_zero`, `is_positive_zero`, `is_negative_zero` | `fp.isZero`; with `fp.isPositive`; with `fp.isNegative` |
+   | `n.to_f64()`, `n` of a fixed-width type of width `w` | `(ite (in range) ((_ to_fp 11 53) RNE ((_ int2bv w) n)) <the form of Int>)`, `to_fp_unsigned` for an unsigned type: the narrow form only where `n` lies in its type's range, since a term computed exactly (a `reflect` body, a clause) may lie beyond it; a conversion in ordinary code keeps the narrow form unguarded, since its operand is a value of its type by construction (a parameter, a field, a result with an `overflow` obligation) |
+   | `n.to_f64()`, `n` of `Int` | the same at width 64 for `-2^63 <= n < 2^63`, and the uninterpreted `i!to_f64!Int` beyond |
+
+2. **The refinement language** (`spec/03 §3`) gains, over `F64`: float literals other than in the forms of §5 rules 5 and 6, `nan()` and `infinity()`, `+`, `-`, `*`, `/` and unary `-` between any two `F64` terms, `==`, `!=`, `<`, `<=`, `>`, `>=`, the IEEE comparisons, `abs()`, `sqrt()`, the classifications, `is_zero()`, `is_positive_zero()`, `is_negative_zero()`, and `to_f64()` of an integer term. Every operation rounds as the code's does: `ensures result == a + b` states the rounded sum. The other methods are code only: U2014 in a clause.
+3. **Which queries change.** A query without an `F64` term is unchanged, byte for byte, in `QF_UFLIA`. A query with one declares the logic `ALL` and is sent with the step budget 5,000,000, a constant of the encoding `una-smt-1`, whatever `step_budget` the lock sets. `verification.lock` keeps `logic = "QF_UFLIA"`, the logic of every query without an `F64` term.
+4. **The cone.** The hypotheses of an obligation are split into their conjuncts. A conjunct without an `F64` term is kept. A conjunct with one is kept when it is connected to the goal's `F64` terms through shared `F64` binders, transitively (a union-find, O(|Π| α(|Π|))). Of the others, a selfified `let` with an `F64` term, a **definition**, is dropped, and every other one, a **constraint** (a branch condition, a refinement, an `ensures`, a field equation of a construction), is kept with each float atom, a maximal `Bool` subterm with an `F64` argument, replaced by a fresh `Bool`. Each step only weakens Π.
+5. **Order.** The pipeline of `spec/12 §5` runs on the cone query. `proven` and `unknown` are final. `refuted` is final when nothing was dropped, or when only definitions were dropped whose binders occur in no kept hypothesis and not in the goal, and no ground fact of a dropped term is left out. Otherwise the pipeline runs again on the full query, the obligation's query with every hypothesis of Π, whose status is the obligation's; when it is `unknown`, the reason says that the refutation holds unless floating-point facts make the path unreachable. The weighted bound below applies to every query sent, re-solves included.
+6. **The weighted bound.** The weight of a query is taken over its distinct terms: `fp.mul`, `fp.div`, `fp.sqrt` and a conversion of a value that is not a literal weigh 4 (the two forms of one integer's conversion together), `fp.add` and `fp.sub` weigh 1, everything else nothing; each distinct application of a `reflect` predicate weighs its body's weight, as if inlined. A query of weight more than 4 is not sent: it is U5002, with the reason "this obligation needs floating-point reasoning of weight N, more than the 4 the verifier decides" and its repairs (a checked boundary, a split contract, a weaker property). An `unknown` on a float query is U5002 with the float reason.
+7. **What is expected to verify:** a bound by constants on the result of one operation over inputs bounded by constants; finiteness and not-NaN of one operation; up to four additions; a conversion from an integer of modest range; comparison-only facts over a handful of binders. Not expected, and U5002: a result compared with an input of the same operation, two multiplications in a chain, dot products, norms, a fact about the result of a loop.
+8. **Counterexamples** (`spec/12 §7`). An `F64` binding shows its rendering of §7, as a JSON string (`"0.1"`, `"-0.0"`, `"nan"`). A refutation whose query uses `i!to_f64!Int`, in its hypotheses or in the facts of a loop's first iteration, is solved once more with every argument of the conversion in `-2^63 <= n < 2^63`, where the encoding is exact: a model of that query is an execution, and the obligation stays refuted with it; a conversion in a `reflect` predicate's definition is pinned at each application, its argument instantiated; otherwise it is `unknown` (U5002), with a reason that asks for a range refinement or a fixed-width type. So no counterexample ever rests on a value of the uninterpreted conversion.
+9. **Generic code.** A comparison of a type parameter instantiated with `F64` in a callee's contract is `i!lt!F64` and `i!le!F64`.
 
 ## 9. Representation
 
