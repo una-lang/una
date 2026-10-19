@@ -24,8 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use una_syntax::ast::{ClauseKind, DeclKind, UsesClause};
-use una_syntax::token::KeywordSet;
-use una_syntax::{FileId, Interner, SourceDb, lex_in, parse};
+use una_syntax::{FileId, Interner, KeywordSet, SourceDb, lex_in, parse};
 
 /// The stack the parser needs on unoptimized builds, with room to spare
 /// (`una_syntax::parse`).

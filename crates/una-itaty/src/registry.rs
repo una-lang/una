@@ -280,7 +280,7 @@ impl Registry {
                     .ok_or_else(|| format!("the entry bundle {n} is missing"))?,
                 None => return Err(format!("the entry bundle {n} is missing")),
             };
-            let entries = if width < WIDTH {
+            let entries: Vec<Vec<u8>> = if width < WIDTH {
                 // A full bundle read for a partial size: take its first entries only.
                 let all = read_bundle(&bytes, count_entries(&bytes)?, MAX_ENTRY)?;
                 all.into_iter()
@@ -289,6 +289,9 @@ impl Registry {
             } else {
                 read_bundle(&bytes, width, MAX_ENTRY)?
             };
+            if entries.len() as u64 != width {
+                return Err(format!("the entry bundle {n} holds fewer entries than the log"));
+            }
             for bytes in entries {
                 let entry = parse_entry(&bytes)
                     .map_err(|e| format!("the entry {index} does not read: {e}"))?;
