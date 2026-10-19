@@ -255,7 +255,7 @@ pub const MAX_TILE: usize = 32 + 256 * 48;
 pub fn prove_from_tiles(
     root: &Hash,
     name: &str,
-    fetch: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, String>,
+    fetch: &mut crate::Fetch<'_>,
 ) -> Result<(Option<Head>, Proof), String> {
     let key = key(name);
     // The sibling of the path at each depth 1 to 256, `None` when empty.

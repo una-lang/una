@@ -36,7 +36,7 @@ pub fn range_root(hashes: &mut dyn Hashes, lo: u64, hi: u64) -> Result<Hash, Str
         .checked_sub(lo)
         .filter(|n| *n > 0)
         .ok_or("an empty range has no root")?;
-    if n.is_power_of_two() && lo % n == 0 {
+    if n.is_power_of_two() && lo.is_multiple_of(n) {
         return hashes.stored(n.trailing_zeros(), lo / n);
     }
     let k = split(n);

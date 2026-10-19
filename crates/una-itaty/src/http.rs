@@ -503,8 +503,11 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// A request's head: its method, its target and its headers, in order.
+pub type RequestHead = (String, String, Vec<(String, String)>);
+
 /// Reads a request's head: its line and its headers, strictly.
-pub fn parse_head(head: &[u8]) -> Result<(String, String, Vec<(String, String)>), Response> {
+pub fn parse_head(head: &[u8]) -> Result<RequestHead, Response> {
     let head =
         std::str::from_utf8(head).map_err(|_| text(400, "the request's head is not text"))?;
     let mut lines = head.split("\r\n");

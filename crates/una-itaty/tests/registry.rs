@@ -114,7 +114,7 @@ fn key_events_follow_the_owners_threshold() {
     assert!(registry.submit(note(&text, &[&a, &c]).as_bytes()).is_ok());
     // Another owner cannot register a key that is acme's.
     let mut theirs =
-        format!("ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\n");
+        "ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\n".to_owned();
     theirs.push_str(&format!(
         "key zenith.a {}\n",
         encode_base64(&a.key().public)

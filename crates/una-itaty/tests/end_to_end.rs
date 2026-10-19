@@ -5,7 +5,12 @@
 //! the name's chain, and the promises.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};

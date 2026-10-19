@@ -129,16 +129,13 @@ pub fn push_entry(bundle: &mut Vec<u8>, entry: &[u8]) -> Result<(), String> {
 /// so a proof fetches each tile once.
 pub struct TileReader<'f> {
     size: u64,
-    fetch: &'f mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, String>,
+    fetch: &'f mut crate::Fetch<'f>,
     cache: HashMap<(u32, u64), Vec<Hash>>,
 }
 
 impl<'f> TileReader<'f> {
     /// A reader of the tree of `size` leaves.
-    pub fn new(
-        size: u64,
-        fetch: &'f mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, String>,
-    ) -> TileReader<'f> {
+    pub fn new(size: u64, fetch: &'f mut crate::Fetch<'f>) -> TileReader<'f> {
         TileReader {
             size,
             fetch,
@@ -172,13 +169,15 @@ impl<'f> TileReader<'f> {
             }
             let bytes = bytes.ok_or_else(|| format!("the tile {level}/{index} is missing"))?;
             let have = bytes.len() as u64 / 32;
-            if bytes.len() % 32 != 0 || have < width || have > WIDTH {
+            if !bytes.len().is_multiple_of(32) || have < width || have > WIDTH {
                 return Err(format!("the tile {level}/{index} has the wrong length"));
             }
             let hashes: Vec<Hash> = bytes
-                .chunks_exact(32)
+                .as_chunks::<32>()
+                .0
+                .iter()
                 .take(usize::try_from(width).unwrap_or(0))
-                .filter_map(|chunk| <[u8; 32]>::try_from(chunk).ok())
+                .copied()
                 .collect();
             self.cache.insert((level, index), hashes);
         }
@@ -209,11 +208,10 @@ impl Hashes for TileReader<'_> {
         }
         while row.len() > 1 {
             row = row
-                .chunks_exact(2)
-                .filter_map(|pair| match pair {
-                    [left, right] => Some(node_hash(left, right)),
-                    _ => None,
-                })
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[left, right]| node_hash(left, right))
                 .collect();
         }
         row.first()

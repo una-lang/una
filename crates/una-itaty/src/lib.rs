@@ -107,6 +107,9 @@ pub fn decimal(text: &str) -> Option<u64> {
     valid.then(|| text.parse().ok()).flatten()
 }
 
+/// Reads a file of a registry's tree by its path: its bytes, or `None` when it is missing.
+pub type Fetch<'f> = dyn FnMut(&str) -> Result<Option<Vec<u8>>, String> + 'f;
+
 #[cfg(test)]
 mod tests {
     use super::*;

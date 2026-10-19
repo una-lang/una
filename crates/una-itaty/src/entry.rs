@@ -111,8 +111,14 @@ impl Entry {
     }
 }
 
+/// A note's format line and its `key value` fields, in order.
+type Fields<'t> = (&'t str, Vec<(&'t str, &'t str)>);
+
+/// The previous entry of a name's chain, by index and leaf hash, or none.
+pub type Previous = Option<(u64, Hash)>;
+
 /// The fields of a note's text after its format line, each `key value`.
-fn fields(text: &str) -> Result<(&str, Vec<(&str, &str)>), String> {
+fn fields(text: &str) -> Result<Fields<'_>, String> {
     let body = text
         .strip_suffix('\n')
         .ok_or("an entry's text ends with a line feed")?;
@@ -187,9 +193,7 @@ fn threshold(value: &str) -> Result<usize, String> {
 }
 
 /// Reads an owner's registration from its text.
-pub fn parse_registration(
-    text: &str,
-) -> Result<(Registration, String, Option<(u64, Hash)>), String> {
+pub fn parse_registration(text: &str) -> Result<(Registration, String, Previous), String> {
     let (format, f) = fields(text)?;
     if format != "ita-owner/1" {
         return Err("expected `ita-owner/1`".to_owned());
@@ -242,7 +246,7 @@ pub fn parse_registration(
 }
 
 /// Reads an owner's key event from its text.
-pub fn parse_key_event(text: &str) -> Result<(KeyEvent, String, Option<(u64, Hash)>), String> {
+pub fn parse_key_event(text: &str) -> Result<(KeyEvent, String, Previous), String> {
     let (format, f) = fields(text)?;
     if format != "ita-key/1" {
         return Err("expected `ita-key/1`".to_owned());

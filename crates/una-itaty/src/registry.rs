@@ -890,7 +890,7 @@ impl Registry {
     fn grow(&mut self, entry: &Entry) -> Vec<(String, Vec<u8>)> {
         let index = self.tree.size();
         let leaf = entry.leaf();
-        if index % WIDTH == 0 {
+        if index.is_multiple_of(WIDTH) {
             self.bundle.clear();
         }
         // The entry was bounded by MAX_ENTRY, below 2^16.
@@ -986,7 +986,7 @@ impl Registry {
                 }
             }
             for (level, tile, width) in last_tiles(size) {
-                if level > 0 && size % (1u64 << (8 * level)) != 0 {
+                if level > 0 && !size.is_multiple_of(1u64 << (8 * level)) {
                     continue;
                 }
                 let hashes = self.tree.row(8 * level, tile * WIDTH, width);
@@ -1046,7 +1046,7 @@ fn count_entries(bytes: &[u8]) -> Result<u64, String> {
 }
 
 fn unhex(text: &str) -> Option<String> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     let bytes: Option<Vec<u8>> = text
