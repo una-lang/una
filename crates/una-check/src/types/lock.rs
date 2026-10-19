@@ -42,6 +42,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
     if locks.is_empty() {
         return;
     }
+    let code = env.project_code;
     // The package's modules by path, so that each key is found in O(log m).
     let modules: BTreeMap<String, usize> = (0..env.prelude)
         .filter_map(|m| env.modules.get(m).map(|module| (module.path.clone(), m)))
@@ -49,7 +50,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
     for lock in locks {
         let Some(id) = function(env, &modules, &lock.function) else {
             report.error(
-                Code::U7002,
+                code,
                 lock.key,
                 format!(
                     "[contracts] locks `{}`, which is not a public function of this package",
@@ -67,7 +68,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
                 Ok(parsed) => parsed,
                 Err(error) => {
                     report.error(
-                        Code::U7002,
+                        code,
                         clause.span,
                         format!(
                             "the lock of `{name}` has an entry that is not a `uses` clause: {}",
@@ -80,7 +81,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
             let binding = env.text(module, parsed.cap.name);
             if parsed.cap_type.ops.is_empty() {
                 report.error(
-                    Code::U7002,
+                    code,
                     clause.span,
                     format!(
                         "the lock of `{name}` writes `@{binding}` without its operations; list them in brackets"
@@ -90,7 +91,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
             }
             if entries.iter().any(|entry| entry.binding == binding) {
                 report.error(
-                    Code::U7002,
+                    code,
                     clause.span,
                     format!("the lock of `{name}` locks `@{binding}` twice"),
                 );
@@ -100,7 +101,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
             let Some(Entity::Capability(capability)) = env.upper(module, cap_name).first().copied()
             else {
                 report.error(
-                    Code::U7002,
+                    code,
                     clause.span,
                     format!(
                         "the lock of `{name}` names `{cap_name}`, which is not a capability in its module"
@@ -127,7 +128,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
                 .collect();
             if let Some(op) = ops.iter().find(|op| !declared.contains(op)) {
                 report.error(
-                    Code::U7002,
+                    code,
                     clause.span,
                     format!(
                         "the lock of `{name}` lists `{op}`, which capability `{}` does not declare",

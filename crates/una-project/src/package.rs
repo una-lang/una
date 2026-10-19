@@ -1,14 +1,16 @@
-//! Finding the files of a package (ADR 0021 rule 1).
+//! Finding the files of a package (ADR 0021 rule 1, ADR 0122 rule 2).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::manifest::Format;
 
 /// Why a path cannot be loaded; a usage error of the command (`spec/13 §5`, exit code 2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
     /// The path does not exist.
     Missing(PathBuf),
-    /// The path is a directory without `una.toml`.
+    /// The path is a directory without `ita.una` or `una.toml`.
     NotAPackage(PathBuf),
     /// The path is a package without a `src/` directory.
     NoSourceDirectory(PathBuf),
@@ -27,7 +29,7 @@ impl fmt::Display for LoadError {
             LoadError::Missing(path) => write!(f, "path `{}` does not exist", path.display()),
             LoadError::NotAPackage(path) => write!(
                 f,
-                "directory `{}` is not a package: it has no `una.toml`",
+                "directory `{}` is not a package: it has no `ita.una` or `una.toml`",
                 path.display()
             ),
             LoadError::NoSourceDirectory(path) => {
@@ -45,9 +47,9 @@ impl std::error::Error for LoadError {}
 /// What a file of a package is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
-    /// `una.toml`.
+    /// `una.toml`, or `ita.una` from edition `0.4`.
     Manifest,
-    /// `verification.lock`.
+    /// `verification.lock`, or `ita.lock` from edition `0.4`.
     Lock,
     /// A module.
     Module,
@@ -66,12 +68,18 @@ pub struct LoadedFile {
     pub role: Role,
 }
 
-/// The files of a package: its `una.toml` and `verification.lock` when it has them, then
-/// its modules in path order.
+/// The files of a package: its manifest and lock when it has them, then its modules in path
+/// order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Loaded {
     /// Whether the package is a single file checked on its own (ADR 0021 rule 1).
     pub single: bool,
+    /// Which manifest the package has: `ita.una` when the directory holds one, else
+    /// `una.toml` (ADR 0122 rule 2).
+    pub format: Format,
+    /// Whether the directory holds both `ita.una` and `una.toml`, which is U7008: a package
+    /// never has two manifests that could disagree (ADR 0122 rule 2).
+    pub both_manifests: bool,
     /// The files.
     pub files: Vec<LoadedFile>,
 }
@@ -86,6 +94,8 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
             .unwrap_or_default();
         return Ok(Loaded {
             single: true,
+            format: Format::Toml,
+            both_manifests: false,
             files: vec![LoadedFile {
                 name,
                 path: path.to_path_buf(),
@@ -97,25 +107,31 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     if !path.is_dir() {
         return Err(LoadError::Missing(path.to_path_buf()));
     }
-    // A directory is a package only with `una.toml` and `src/`.
-    let manifest = path.join("una.toml");
-    if !manifest.is_file() {
+    // A directory is a package only with a manifest, `ita.una` or `una.toml`, and `src/`.
+    let ita = path.join("ita.una");
+    let toml = path.join("una.toml");
+    let (format, manifest, lock_name) = if ita.is_file() {
+        (Format::Ita, ita, "ita.lock")
+    } else if toml.is_file() {
+        (Format::Toml, toml.clone(), "verification.lock")
+    } else {
         return Err(LoadError::NotAPackage(path.to_path_buf()));
-    }
+    };
+    let both_manifests = format == Format::Ita && toml.is_file();
     let src = path.join("src");
     if !src.is_dir() {
         return Err(LoadError::NoSourceDirectory(path.to_path_buf()));
     }
     let mut files = vec![LoadedFile {
-        name: "una.toml".to_owned(),
+        name: format.file().to_owned(),
         bytes: read(&manifest)?,
         path: manifest,
         role: Role::Manifest,
     }];
-    let lock = path.join("verification.lock");
+    let lock = path.join(lock_name);
     if lock.is_file() {
         files.push(LoadedFile {
-            name: "verification.lock".to_owned(),
+            name: lock_name.to_owned(),
             bytes: read(&lock)?,
             path: lock,
             role: Role::Lock,
@@ -134,6 +150,8 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     }
     Ok(Loaded {
         single: false,
+        format,
+        both_manifests,
         files,
     })
 }

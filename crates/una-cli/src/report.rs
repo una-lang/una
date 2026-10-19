@@ -341,7 +341,11 @@ fn build(
     };
     let program = &analysis.program;
     let (lock_text, lock) = lock_of(package);
-    let hash: String = Sha256::digest(lock_text.as_bytes())
+    // The digest of the lock file as written; the key text of the default lock otherwise.
+    let lock_bytes = package
+        .lock
+        .map_or(lock_text.as_str(), |id| package.sources.file(id).text());
+    let hash: String = Sha256::digest(lock_bytes.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

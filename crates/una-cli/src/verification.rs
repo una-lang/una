@@ -166,6 +166,20 @@ pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
 /// The text and the settings of the package's lock, or of the default lock.
 pub(crate) fn lock_of(package: &Package) -> (String, una_project::Lock) {
     match package.lock {
+        Some(id) if package.format == una_project::Format::Ita => {
+            let (lock, _) = una_project::ita::parse_ita_lock(package.sources.file(id).text());
+            // The proof cache's key covers the solver section only, in its canonical text,
+            // under its own domain (ADR 0122 rule 48), so it never equals a `verification.lock`
+            // and adding a dependency invalidates nothing.
+            (
+                format!(
+                    "{}\n{}",
+                    una_verify::KEY_DOMAIN,
+                    una_project::ita::solver_text(&lock.solver)
+                ),
+                lock.solver,
+            )
+        }
         Some(id) => {
             let text = package.sources.file(id).text().to_owned();
             let (lock, _) = parse_lock(&text);

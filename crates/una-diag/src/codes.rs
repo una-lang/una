@@ -259,13 +259,17 @@ pub enum Code {
     U7004,
     /// Trusted module not declared in both header and `una.toml`.
     U7005,
+    /// Invalid `ita.una` or `itaty.una`.
+    U7008,
+    /// Missing, invalid or inconsistent `ita.lock`.
+    U7009,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 98] = [
+    pub const ALL: [Code; 100] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -363,6 +367,8 @@ impl Code {
         Code::U7003,
         Code::U7004,
         Code::U7005,
+        Code::U7008,
+        Code::U7009,
         Code::U8001,
     ];
 
@@ -867,6 +873,16 @@ impl Code {
                 code: "U7005",
                 domain: Domain::Project,
                 meaning: "Trusted module not declared in both header and `una.toml`",
+            },
+            Code::U7008 => &Entry {
+                code: "U7008",
+                domain: Domain::Project,
+                meaning: "Invalid `ita.una` or `itaty.una`",
+            },
+            Code::U7009 => &Entry {
+                code: "U7009",
+                domain: Domain::Project,
+                meaning: "Missing, invalid or inconsistent `ita.lock`",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

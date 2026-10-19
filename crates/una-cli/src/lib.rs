@@ -11,6 +11,7 @@ mod build;
 mod contract;
 mod core_json;
 mod fix;
+mod ita;
 mod lsp;
 mod package;
 mod proof_key;
@@ -36,7 +37,7 @@ use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, Span, lex_in, parse};
 
-use crate::args::{Cli, ColorChoice, Command, TierArg};
+use crate::args::{Cli, ColorChoice, Command, ItaCommand, TierArg};
 pub use crate::package::{LoadError, Package, load};
 pub use crate::std_builtins::{
     Builtin, STD_BUILTINS_SCHEMA, builtin_docs, builtins, std_builtin_items, std_builtins,
@@ -332,9 +333,14 @@ fn locks(
                 .iter()
                 .map(|clause| {
                     let span = Span::new(file, clause.range.start, clause.range.end);
-                    let offsets = written
-                        .get(clause.range.clone())
-                        .and_then(|literal| una_project::literal::offsets(literal, &clause.value));
+                    let offsets = if manifest.format == una_project::Format::Ita {
+                        // In `ita.una` a clause is its own line: no quotes and no escapes.
+                        Some(una_project::literal::Offsets::identity(clause.value.len()))
+                    } else {
+                        written.get(clause.range.clone()).and_then(|literal| {
+                            una_project::literal::offsets(literal, &clause.value)
+                        })
+                    };
                     let parsed = match &offsets {
                         Some(offsets) => {
                             let base = clause.range.start;
@@ -638,7 +644,12 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let mut args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // The same binary invoked as `ita` is `una ita` (ADR 0122 rule 1): `ita lock` is
+    // `una ita lock`.
+    if invoked_as_ita(args.first()) {
+        args.insert(1, OsString::from("ita"));
+    }
     // `--json` is a global flag without a value, so its presence decides the shape of the
     // report even when parsing is what panicked.
     let json = args.iter().skip(1).any(|arg| arg == "--json");
@@ -664,6 +675,13 @@ where
     })
 }
 
+/// Whether the program name, `argv[0]`, has the basename `ita` (or `ita.exe`).
+fn invoked_as_ita(program: Option<&OsString>) -> bool {
+    program
+        .and_then(|program| Path::new(program).file_stem().map(|stem| stem == "ita"))
+        .unwrap_or(false)
+}
+
 /// Where U8001 for a panic goes (ADR 0022 rule 2): 1:1 of the `una.toml` of the package the
 /// command checks, or of the checked file for a package of one file, as the commands locate
 /// a diagnostic without a source position. A command without a package (`una explain`,
@@ -684,6 +702,9 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             | Command::Build { path, .. }
             | Command::Test { path, .. },
         ) => Some(path.clone()),
+        Some(Command::Ita {
+            command: ItaCommand::Lock { path, .. },
+        }) => Some(path.clone()),
         // `una trace` and `una contract` read the package in the current directory.
         Some(Command::Trace { .. } | Command::Contract { .. }) => Some(".".into()),
         _ => None,
@@ -692,6 +713,8 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
         if root.is_file() {
             root.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
+        } else if root.join("ita.una").is_file() {
+            Some("ita.una".to_owned())
         } else if root.join("una.toml").is_file() {
             Some("una.toml".to_owned())
         } else {
@@ -901,6 +924,26 @@ fn run_command(
                     solving: solving(solver_wallclock),
                 };
                 fix::fix_command(&path, options, stdout, stderr)
+            }
+            Command::Fmt { path, check } if ita::is_project_file(&path) => {
+                let output = ita::Output {
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                    stdout,
+                    stderr,
+                };
+                ita::fmt_command(&path, check, output)
+            }
+            Command::Ita { command } => {
+                let output = ita::Output {
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                    stdout,
+                    stderr,
+                };
+                match command {
+                    ItaCommand::Lock { path, check } => ita::lock_command(&path, check, output),
+                }
             }
             Command::Fmt { path, check } => {
                 let options = FmtOptions {
@@ -1294,6 +1337,21 @@ fn fmt_command(
         stdout,
         stderr,
     )
+}
+
+/// Writes `text` to `target` through a hidden temporary file and a rename, whether or not
+/// `target` exists yet, so a reader never sees a partial file (ADR 0122 rule 14).
+fn write_through_rename_or_create(target: &Path, text: &str) -> io::Result<()> {
+    if std::fs::symlink_metadata(target).is_ok() {
+        return write_through_rename(target, text);
+    }
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = target.with_file_name(format!(".{name}.tmp"));
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(&temporary, target)
 }
 
 /// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so

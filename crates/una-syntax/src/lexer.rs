@@ -70,6 +70,7 @@ pub fn lex_in(
         indents: vec![0],
         brackets: Vec::new(),
         line_has_tokens: false,
+        project: false,
     };
     lexer.run();
     let used = names(&lexer.out, lexer.interner);
@@ -78,6 +79,32 @@ pub fn lex_in(
     let out = &mut lexer.out;
     // The renames of names that start with `_` (ADR 0096 A).
     crate::rewrite::underscore_renames(&out.text, file, &mut out.errors);
+    lexer.out
+}
+
+/// Lexes a project file of edition 0.4, `ita.una`, `ita.lock` or `itaty.una`, by the
+/// lexical rules of `spec/01` with the two differences of ADR 0122 rule 4: a version token,
+/// matched before integers, and text without interpolation, where an unescaped `{` or `}` is
+/// an error. No word is a keyword or a reserved word here: every lower-case word is a
+/// [`TokenKind::LowerIdent`], and the grammar of the file gives it its meaning.
+pub fn lex_project(source: &SourceFile, file: FileId, interner: &mut Interner) -> Lexed {
+    let mut lexer = Lexer {
+        source,
+        text: source.text(),
+        file,
+        interner,
+        pos: 0,
+        out: Lexed {
+            keywords: KeywordSet::V0_1,
+            text: source.text().to_owned(),
+            ..Lexed::default()
+        },
+        indents: vec![0],
+        brackets: Vec::new(),
+        line_has_tokens: false,
+        project: true,
+    };
+    lexer.run();
     lexer.out
 }
 
@@ -337,6 +364,8 @@ struct Lexer<'a> {
     indents: Vec<usize>,
     brackets: Vec<OpenBracket>,
     line_has_tokens: bool,
+    /// Whether this is a project file of edition 0.4 ([`lex_project`]).
+    project: bool,
 }
 
 impl Lexer<'_> {
@@ -659,7 +688,9 @@ impl Lexer<'_> {
             '-' if next == Some('-') => self.comment(),
             '-' if next == Some('>') => self.punctuation(TokenKind::Arrow, 2),
             '-' => self.punctuation(TokenKind::Minus, 1),
+            '"' if self.project => self.text_literal_with(false),
             '"' => self.text_literal(),
+            '0'..='9' if self.project && self.version_follows() => self.version(),
             '0'..='9' => self.integer(),
             '_' if next.is_some_and(|n| n.is_ascii_digit()) => self.integer(),
             'a'..='z' => self.lower_word(),
@@ -966,10 +997,93 @@ impl Lexer<'_> {
         true
     }
 
+    /// Whether a version starts here: digits, then `.` and a digit (ADR 0122 rule 4).
+    fn version_follows(&self) -> bool {
+        let rest = self.text.get(self.pos..).unwrap_or("").as_bytes();
+        let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        rest.get(digits) == Some(&b'.') && rest.get(digits + 1).is_some_and(u8::is_ascii_digit)
+    }
+
+    /// A version token of a project file (ADR 0122 rule 4): `num "." num [ "." num ]
+    /// [ "-" pre { "." pre } ]`, where `num` has no leading zero and a numeric `pre` neither.
+    /// A malformed version is U0007 for the whole token, which the project file reports as its
+    /// own code.
+    fn version(&mut self) {
+        let start = self.pos;
+        let mut parts = 0;
+        let mut problem: Option<&str> = None;
+        loop {
+            let from = self.pos;
+            self.consume_while(|c| c.is_ascii_digit());
+            let digits = self.slice(from, self.pos);
+            if digits.len() > 1 && digits.starts_with('0') {
+                problem.get_or_insert("a part of a version has no leading zero");
+            }
+            parts += 1;
+            let more = self.peek() == Some('.')
+                && self.peek_at(self.pos + 1).is_some_and(|c| c.is_ascii_digit());
+            if !more {
+                break;
+            }
+            self.pos += 1;
+        }
+        if parts > 3 {
+            problem.get_or_insert("a version has at most three numeric parts");
+        }
+        let pre_follows = self.peek() == Some('-')
+            && self
+                .peek_at(self.pos + 1)
+                .is_some_and(|c| c.is_ascii_alphanumeric());
+        if pre_follows {
+            self.pos += 1;
+            loop {
+                let from = self.pos;
+                self.consume_while(|c| c.is_ascii_alphanumeric());
+                let part = self.slice(from, self.pos);
+                if part.is_empty() {
+                    problem.get_or_insert("a pre-release part is not empty");
+                } else if part.len() > 1
+                    && part.starts_with('0')
+                    && part.bytes().all(|b| b.is_ascii_digit())
+                {
+                    problem.get_or_insert("a numeric pre-release part has no leading zero");
+                }
+                if self.peek() != Some('.') {
+                    break;
+                }
+                self.pos += 1;
+            }
+        }
+        // A letter, `_`, `+` or `.` right after the version is part of no valid token here: a
+        // build suffix (`+...`) is not a version of ADR 0122 rule 20.
+        let tail_start = self.pos;
+        self.consume_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '.' | '-'));
+        if self.pos > tail_start {
+            problem.get_or_insert(
+                "a version is `MAJOR.MINOR.PATCH`, `MAJOR.MINOR`, with an optional `-pre.release`, and no build suffix",
+            );
+        }
+        let written = self.slice(start, self.pos).to_owned();
+        if let Some(problem) = problem {
+            self.error(
+                Code::U0007,
+                start,
+                self.pos,
+                format!("malformed version `{written}`: {problem}"),
+            );
+        }
+        self.push(TokenKind::Version(written), start, self.pos);
+    }
+
     fn lower_word(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         let word = self.slice(start, self.pos).to_owned();
+        if self.project {
+            let symbol = self.interner.intern(&word);
+            self.push(TokenKind::LowerIdent(symbol), start, self.pos);
+            return;
+        }
         // Edition 0.2: after `.`, `with` names the map method (`spec/21 §2`, ADR 0069 M2).
         let after_dot = self
             .out
@@ -1091,6 +1205,18 @@ impl Lexer<'_> {
                             .with_edit("write `\\}`", span, "\\}");
                     self.out.errors.push(error);
                     chunk.push('}');
+                    self.pos += 1;
+                }
+                Some(c @ ('{' | '}')) if self.project => {
+                    self.error(
+                        Code::U0007,
+                        here,
+                        here + 1,
+                        format!(
+                            "a text of a project file is not interpolated; write `\\{c}` for `{c}`"
+                        ),
+                    );
+                    chunk.push(c);
                     self.pos += 1;
                 }
                 Some(c) => {

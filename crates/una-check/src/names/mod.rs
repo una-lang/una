@@ -1044,6 +1044,23 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// `[run] entry` that is not a module of the package.
     fn trusted(&mut self, tables: &[Table<'a>], paths: &BTreeMap<String, usize>) {
         let settings = self.package.settings;
+        // How the messages name the list of trusted modules of each manifest.
+        let (listing, list_in, quoted_list) = match settings.format {
+            una_project::Format::Toml => (
+                "una.toml [trusted] modules",
+                "under `[trusted] modules` in `una.toml`",
+                "`[trusted] modules`",
+            ),
+            una_project::Format::Ita => (
+                "the `trusted` section of ita.una",
+                "under `trusted` in `ita.una`",
+                "`trusted` in `ita.una`",
+            ),
+        };
+        let list_name = match settings.format {
+            una_project::Format::Toml => "[trusted] modules",
+            una_project::Format::Ita => "the `trusted` section",
+        };
         for table in tables {
             let (Some(header), Some(path)) = (&table.module.tree.module, &table.path) else {
                 continue;
@@ -1062,7 +1079,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                     )
                 } else {
                     format!(
-                        "module `{path}` is `trusted` in its header but not listed in una.toml [trusted] modules"
+                        "module `{path}` is `trusted` in its header but not listed in {listing}"
                     )
                 };
                 // ADR 0095: removing `trusted` keeps the trusted base, since a policy outside
@@ -1075,7 +1092,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 if !self.package.single {
                     diagnostic.repairs.push(Self::escape(
                         Escape::Trusted,
-                        format!("list `{path}` under `[trusted] modules` in `una.toml`"),
+                        format!("list `{path}` {list_in}"),
                     ));
                 }
                 self.diagnostics.push(diagnostic);
@@ -1100,10 +1117,10 @@ impl<'p, 'a> Checker<'p, 'a> {
                         let mut diagnostic = self.make(
                             Code::U7005,
                             span,
-                            format!("[trusted] modules lists `{}`, whose header does not say `trusted module`", entry.value),
+                            format!("{list_name} lists `{}`, whose header does not say `trusted module`", entry.value),
                         );
                         diagnostic.repairs.push(Self::advice(format!(
-                            "remove `{}` from `[trusted] modules`{}",
+                            "remove `{}` from {quoted_list}{}",
                             entry.value,
                             then_u4004(table)
                         )));
@@ -1122,12 +1139,12 @@ impl<'p, 'a> Checker<'p, 'a> {
                         Code::U7005,
                         span,
                         format!(
-                            "[trusted] modules lists `{}`, which is not a module of this package",
+                            "{list_name} lists `{}`, which is not a module of this package",
                             entry.value
                         ),
                     );
                     diagnostic.repairs.push(Self::advice(format!(
-                        "remove `{}` from `[trusted] modules`",
+                        "remove `{}` from {quoted_list}",
                         entry.value
                     )));
                     self.diagnostics.push(diagnostic);
@@ -1148,10 +1165,11 @@ impl<'p, 'a> Checker<'p, 'a> {
             && !unparsed_entry(&entry.value)
         {
             self.error(
-                Code::U7002,
+                settings.format.code(),
                 Span::new(manifest, entry.range.start, entry.range.end),
                 format!(
-                    "[run] entry `{}` is not a module of this package",
+                    "{} `{}` is not a module of this package",
+                    settings.format.section("[run] entry"),
                     entry.value
                 ),
             );

@@ -38,12 +38,40 @@ struct Entry {
     tag: String,
 }
 
-/// The key of a query: the hex SHA-256 of the lock's contents and the script.
+/// The domain tag of the key of edition `0.4` (ADR 0122 rule 48). A [`crate::Lock`] whose
+/// `text` starts with this line and a line feed holds, after it, the canonical text of the
+/// `solver` section of `ita.lock`.
+pub const KEY_DOMAIN: &str = "una-proof-cache/2";
+
+/// The key of a query.
+///
+/// - Editions `0.1` to `0.3`: the hex SHA-256 of `verification.lock`'s contents, a NUL byte,
+///   and the script (`spec/12 §9`).
+/// - Edition `0.4` (ADR 0122 rule 48): the hex SHA-256 of [`KEY_DOMAIN`], then, for each of the
+///   canonical text of the lock's `solver` section and the script, its length in decimal, a NUL
+///   byte and the text. The tag and the length prefixes keep it apart from the key of the
+///   earlier editions, and it does not cover the packages of the lock, so adding a dependency
+///   invalidates nothing.
 pub(crate) fn key(lock: &str, script: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(lock.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(script.as_bytes());
+    match lock
+        .strip_prefix(KEY_DOMAIN)
+        .and_then(|rest| rest.strip_prefix('\n'))
+    {
+        Some(solver) => {
+            hasher.update(KEY_DOMAIN.as_bytes());
+            for part in [solver, script] {
+                hasher.update(part.len().to_string().as_bytes());
+                hasher.update(b"\0");
+                hasher.update(part.as_bytes());
+            }
+        }
+        None => {
+            hasher.update(lock.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(script.as_bytes());
+        }
+    }
     hex(&hasher.finalize())
 }
 
@@ -136,6 +164,25 @@ fn hex(bytes: &[u8]) -> String {
 
 fn entry(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{key}.json"))
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn the_tagged_key_is_length_prefixed_and_apart_from_the_old_one() {
+        let solver = "solver\n  encoding \"una-smt-1\"\n";
+        let tagged = format!("{KEY_DOMAIN}\n{solver}");
+        let mut expected = Sha256::new();
+        expected.update(KEY_DOMAIN.as_bytes());
+        expected.update(format!("{}\0{solver}", solver.len()).as_bytes());
+        expected.update(b"6\0(q 1)");
+        assert_eq!(key(&tagged, "(q 1)"), hex(&expected.finalize()));
+        assert_ne!(key(&tagged, "(q 1)"), key(solver, "(q 1)"));
+        // Moving bytes between the two parts changes the key.
+        assert_ne!(key(&tagged, "(q 1)"), key(&format!("{tagged}("), "q 1)"));
+    }
 }
 
 #[cfg(test)]

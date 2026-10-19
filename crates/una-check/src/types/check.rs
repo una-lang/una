@@ -1128,7 +1128,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     |diagnostic| diagnostic.message.clone(),
                 );
                 self.report.error(
-                    Code::U7002,
+                    self.env.project_code,
                     entry.span,
                     format!(
                         "the lock of `{}` conditions `{op_name}` by `{}`, which is not a `Bool` of the refinement language over its parameters: {reason}",

@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
-use una_project::{Manifest, ProjectError, Role, discover, parse_lock, parse_manifest};
+use una_project::ita::{check_lock_consistency, parse_ita_lock, parse_ita_manifest};
+use una_project::{
+    Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest,
+};
 use una_syntax::{FileId, SourceDb, Span};
 
 pub use una_project::LoadError;
@@ -17,9 +20,13 @@ pub struct Package {
     pub sources: SourceDb,
     /// Whether the package is a single file checked on its own (ADR 0021 rule 1).
     pub single: bool,
-    /// `una.toml`, for a package directory.
+    /// Which manifest the package has (ADR 0122 rule 2).
+    pub format: Format,
+    /// Whether the directory holds both `ita.una` and `una.toml` (U7008).
+    pub both_manifests: bool,
+    /// `una.toml` or `ita.una`, for a package directory.
     pub manifest: Option<FileId>,
-    /// `verification.lock`, when the package has one.
+    /// `verification.lock` or `ita.lock`, when the package has one.
     pub lock: Option<FileId>,
     /// The modules, in path order.
     pub modules: Vec<FileId>,
@@ -44,6 +51,8 @@ pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Pac
     let mut package = Package {
         sources: SourceDb::new(),
         single: loaded.single,
+        format: loaded.format,
+        both_manifests: loaded.both_manifests,
         manifest: None,
         lock: None,
         modules: Vec::new(),
@@ -76,6 +85,69 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             ));
         }
     };
+    if package.format == Format::Ita {
+        let manifest = match package.manifest {
+            Some(id) => {
+                let (manifest, errors) = parse_ita_manifest(package.sources.file(id).text());
+                located(id, errors);
+                if package.both_manifests {
+                    located(
+                        id,
+                        vec![ProjectError {
+                            code: Code::U7008,
+                            range: 0..0,
+                            message: "the package has both ita.una and una.toml; remove una.toml, whose settings ita.una replaces".to_owned(),
+                        }],
+                    );
+                }
+                manifest
+            }
+            None => Manifest::default(),
+        };
+        let read = manifest.ita.as_deref();
+        match (package.lock, package.manifest) {
+            (Some(id), _) => {
+                let (lock, errors) = parse_ita_lock(package.sources.file(id).text());
+                let invalid = !errors.is_empty();
+                located(id, errors);
+                if !invalid
+                    && let (Some(read), Some(manifest_id)) = (read, package.manifest)
+                {
+                    let consistency = check_lock_consistency(read, &lock);
+                    located(manifest_id, consistency.in_manifest);
+                    located(id, consistency.in_lock);
+                }
+            }
+            (None, Some(id)) => located(
+                id,
+                vec![ProjectError {
+                    code: Code::U7009,
+                    range: 0..0,
+                    message: "the package has no ita.lock; run `una ita lock`".to_owned(),
+                }],
+            ),
+            (None, None) => {}
+        }
+        // Dependencies are read and checked, but this release loads none: a need is refused
+        // rather than left unresolved, so no import can reach a package that is not checked.
+        if let (Some(read), Some(id)) = (read, package.manifest) {
+            located(
+                id,
+                read.needs
+                    .iter()
+                    .map(|need| ProjectError {
+                        code: Code::U7008,
+                        range: need.range.clone(),
+                        message: format!(
+                            "this release does not load dependencies yet, so `{}` cannot be needed",
+                            need.name.value
+                        ),
+                    })
+                    .collect(),
+            );
+        }
+        return (manifest, diagnostics);
+    }
     let manifest = match package.manifest {
         Some(id) => {
             let (manifest, errors) = parse_manifest(package.sources.file(id).text());

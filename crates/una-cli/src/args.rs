@@ -135,6 +135,11 @@ pub(crate) enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// The package manager of edition 0.4: dependencies, `ita.una` and `ita.lock`
+    Ita {
+        #[command(subcommand)]
+        command: ItaCommand,
+    },
     /// Run `main` of the `[run] entry` module
     Run {
         /// The package directory, or a single file
@@ -210,6 +215,22 @@ pub(crate) enum Command {
     },
     /// Serve the language server on stdin and stdout, for editors (ADR 0063)
     Lsp,
+}
+
+/// The commands of `una ita` implemented so far (ADR 0122 rule 57).
+#[derive(Debug, Subcommand)]
+pub(crate) enum ItaCommand {
+    /// Write `ita.lock` for the package, or check it with --check
+    Lock {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Report where the lock is missing or does not meet `ita.una` (U7009), and write
+        /// nothing
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// The values of `--tier` (`spec/12 §1`).

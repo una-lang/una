@@ -4,7 +4,8 @@
 //!
 //! An example is one `una` block, or a package whose files are fenced blocks
 //! each introduced by its path in backticks on its own line; the test completes a package with
-//! a default `una.toml` and the repository's `verification.lock` unless it gives its own.
+//! a default `una.toml` and the repository's `verification.lock` unless it gives its own, or
+//! gives an `ita.una` (edition 0.4).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -92,10 +93,12 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
         }
         Example::Package(files) => {
             let given = |path: &str| files.iter().any(|(file, _)| file == path);
-            if !given("una.toml") {
+            // A package of edition 0.4 gives its own `ita.una` and `ita.lock` (ADR 0122).
+            let ita = given("ita.una");
+            if !ita && !given("una.toml") {
                 std::fs::write(dir.join("una.toml"), MANIFEST).unwrap();
             }
-            if !given("verification.lock") {
+            if !ita && !given("verification.lock") {
                 let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock");
                 std::fs::copy(lock, dir.join("verification.lock")).unwrap();
             }
