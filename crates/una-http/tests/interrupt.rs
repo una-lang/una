@@ -68,7 +68,7 @@ fn a_stop_interrupts_a_waiting_request_and_one_that_starts_after_it() {
     });
     let started = Instant::now();
     assert_eq!(
-        send_interruptible(&request, &[grant.clone()], &settings, &HostStop),
+        send_interruptible(&request, std::slice::from_ref(&grant), &settings, &HostStop),
         Err(Error::Interrupted)
     );
     assert!(
