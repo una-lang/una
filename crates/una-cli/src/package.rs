@@ -674,7 +674,13 @@ fn trust_dependency(
     {
         extent.ceiling.clone_from(&ceiling);
     }
-    for module in &line.modules {
+    // Only the modules the dependency itself declares trusted: a trust line never makes
+    // trusted a module its own package does not (rule 53).
+    for module in line
+        .modules
+        .iter()
+        .filter(|m| settings.trusted.iter().any(|t| t.value == m.value))
+    {
         let path = format!("{local}.{}", module.value);
         manifest.trusted.push(una_project::Located {
             value: path.clone(),
