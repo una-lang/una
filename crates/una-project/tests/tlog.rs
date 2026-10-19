@@ -357,3 +357,52 @@ fn release_statements_parse_strictly() {
     .unwrap();
     assert!(none.authority.is_empty());
 }
+
+/// Root metadata of `version`, its root keys `roots` (seeds), signed by the seeds `signers`.
+fn root_document(version: u64, expires: u64, roots: &[u8], signers: &[u8]) -> String {
+    let key = |seed: u8, name: &str| {
+        let (_, key) = keypair(seed, name);
+        format!("key {} {}", key.name, encode_base64(&key.public))
+    };
+    let mut text = format!("ita-root/1\nsource test\nversion {version}\nexpires {expires}\nroot 2\n");
+    for seed in roots {
+        text.push_str(&key(*seed, &format!("root.{seed}")));
+        text.push('\n');
+    }
+    text.push_str(&format!("log test.log {}\n", encode_base64(&keypair(90, "test.log").1.public)));
+    text.push_str("witnesses 1\n");
+    text.push_str(&key(91, "witness.a"));
+    text.push_str("\nsecurity 1\n");
+    text.push_str(&key(92, "security.a"));
+    text.push_str("\nitauna 1\n");
+    text.push_str(&key(93, "itauna.a"));
+    text.push('\n');
+    let mut document = format!("{text}\n");
+    for seed in signers {
+        let (pair, key) = keypair(*seed, &format!("root.{seed}"));
+        document.push_str(&sign_line(&pair, &key, &text));
+    }
+    document
+}
+
+#[test]
+fn root_metadata_is_pinned_and_walked_by_thresholds() {
+    use una_project::tlog::root::{digest, trust_first, walk};
+    let first = root_document(1, 2_000, &[10, 11, 12], &[10, 11]);
+    let root = trust_first(&first, &digest(&first)).unwrap();
+    assert_eq!(root.root.threshold, 2);
+    assert_eq!(root.witnesses.keys.len(), 1);
+    assert!(trust_first(&first, "sha256:00").is_err(), "another pin");
+    let unsigned = root_document(1, 2_000, &[10, 11, 12], &[10]);
+    assert!(trust_first(&unsigned, &digest(&unsigned)).is_err(), "one signature of two");
+    // Version 2 rotates key 12 out for 13: signed by two keys of version 1 and two of its own.
+    let second = root_document(2, 3_000, &[10, 11, 13], &[10, 13]);
+    assert!(walk(&root, &[&second], 1_000).is_err(), "one of version 1's keys only");
+    let second = root_document(2, 3_000, &[10, 11, 13], &[10, 11]);
+    let walked = walk(&root, &[&second], 2_500).unwrap();
+    assert_eq!(walked.version, 2);
+    // A passed version may have expired; the last may not.
+    assert!(walk(&root, &[&second], 3_000).is_err());
+    let skipping = root_document(3, 3_000, &[10, 11, 13], &[10, 11]);
+    assert!(walk(&root, &[&skipping], 1_000).is_err(), "a version skipped");
+}
