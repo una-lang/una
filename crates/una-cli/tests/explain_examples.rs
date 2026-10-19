@@ -179,7 +179,8 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     // U6006, which the platform's floating-point environment causes (ADR 0114), and U6009, which
     // the host's random source causes (ADR 0119 rule 9).
     for code in Code::ALL {
-        if code == Code::U8001 || code == Code::U6005 || code == Code::U6006 || code == Code::U6009 {
+        if code == Code::U8001 || code == Code::U6005 || code == Code::U6006 || code == Code::U6009
+        {
             assert!(
                 !una_explain::text(code).contains("Stub explanation."),
                 "{code} has its text"
