@@ -178,7 +178,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2032 | types | A float literal other than zero, or a float range, as a pattern |
 | U2033 | types | A comparison of an `F64` with a float literal zero |
 | U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary |
-| U2035 | types | `first of` with fewer than two branches, or a line that is not an expression |
+| U2035 | types | `first of` with fewer than two branches, or a line that is not an expression; `start` outside the block of a `tasks`, inside a task within it, or with a `with` clause |
 | U2037 | types | A decimal scale out of place |
 | U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
 | U3001 | authority | Capability not in scope |
