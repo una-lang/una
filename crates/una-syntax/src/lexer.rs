@@ -37,6 +37,10 @@ pub struct Lexed {
     pub with_label: Option<Symbol>,
     /// See [`Lexed::with_label`].
     pub and_label: Option<Symbol>,
+    /// Edition 0.4: the symbol of `error`, interned when the keyword `error` is followed by
+    /// `:` or follows `.`, which the parser reads as the field `error` of `Timed.Failed`
+    /// (`spec/27 §5`, ADR 0117 rule 5).
+    pub error_label: Option<Symbol>,
 }
 
 /// A U0103 error of [`Lexed::errors`] that gets a rename edit (issue #75, #105, #125).
@@ -1113,6 +1117,15 @@ impl Lexer<'_> {
                 "and" => self.out.and_label = Some(self.interner.intern("and")),
                 _ => {}
             }
+        }
+        // Edition 0.4: `error` right before `:` or after `.` may be the field of `Failed(error:
+        // x)` (`spec/27 §5`). It stays the keyword; the parser accepts it as a field name, a
+        // pattern's field and an argument label only, so no binding can take the name.
+        if word == "error"
+            && self.out.keywords >= KeywordSet::V0_4
+            && (self.peek() == Some(':') || after_dot)
+        {
+            self.out.error_label = Some(self.interner.intern("error"));
         }
         // Edition 0.4: `diverges` alone on its line is the clause of a header (`spec/26 §5`);
         // anywhere else it stays reserved (U0103).

@@ -123,3 +123,47 @@ pub(crate) fn cancel(id: TimerId) {
         wheel.cancel(id);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+
+    /// Waits up to ten seconds for `flag` to be set.
+    fn set_soon(flag: &AtomicUsize) -> bool {
+        let start = Instant::now();
+        while flag.load(Ordering::SeqCst) != 0 {
+            if start.elapsed() > Duration::from_secs(10) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+
+    #[test]
+    fn a_timer_sets_its_entry_once_its_deadline_passes_and_a_cancelled_one_never_does() {
+        let clock = crate::runtime::clock();
+        // The process's clock is the real one in these tests; a virtual one never moves here.
+        if clock.is_virtual() {
+            return;
+        }
+        let fired = Arc::new(AtomicUsize::new(1));
+        let cancelled = Arc::new(AtomicUsize::new(1));
+        let kept = arm(clock.now() + 40, &cancelled).unwrap();
+        assert!(arm(clock.now() + 20, &fired).is_some());
+        cancel(kept);
+        assert!(
+            set_soon(&fired),
+            "the deadline passed, and its entry was not set"
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+        // A deadline already passed is set at the next turn of the thread.
+        let late = Arc::new(AtomicUsize::new(1));
+        assert!(arm(clock.now().saturating_sub(1), &late).is_some());
+        assert!(set_soon(&late));
+    }
+}

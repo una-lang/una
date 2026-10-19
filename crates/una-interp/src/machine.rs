@@ -1384,6 +1384,17 @@ impl<'p, 'w> Machine<'p, 'w> {
                             self.on_stop(env, &caps, on_stop, before.unwrap_or_default())?;
                             Err(Stop::Fail(failure))
                         }
+                        // A `within` around the loop passed its deadline: the loop ends as after
+                        // a failure, and its `on stop` runs, shielded from that deadline, before
+                        // the cut goes on (ADR 0116 rule 15, ADR 0117 rule 5).
+                        Err(Stop::Cut(id)) => {
+                            let shield =
+                                std::mem::replace(&mut self.within_shield, self.withins.len());
+                            let ran = self.on_stop(env, &caps, on_stop, before.unwrap_or_default());
+                            self.within_shield = shield;
+                            ran?;
+                            Err(Stop::Cut(id))
+                        }
                         Err(other) => Err(other),
                     };
                 }

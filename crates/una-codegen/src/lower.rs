@@ -827,6 +827,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.builder.append_block_param(exit, types::I64);
         }
         self.builder.ins().jump(head, &initial);
+        // A cancellation that stops the task inside the loop, as a `within` around it whose
+        // deadline passed, ends the loop as after a failure: `on stop` runs first, shielded
+        // (ADR 0116 rule 15, ADR 0117 rule 5).
+        let cancelled = self.builder.create_block();
+        let outer_stop = if on_stop.is_some() {
+            Some(std::mem::replace(&mut self.stop, cancelled))
+        } else {
+            None
+        };
 
         // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
         // budget, then the body, which owns the state, with its exits.
@@ -887,6 +896,36 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .map(|&v| v.into())
             .collect();
         self.builder.ins().jump(head, &next);
+
+        // The task stopped inside the loop. A cancellation runs `on stop` on the saved state,
+        // shielded as an operation in progress is, then the stop goes on; an abort goes on at
+        // once. The words the body held are not released, as on any stop.
+        self.builder.switch_to_block(cancelled);
+        if let (Some(outer), Some(on_stop)) = (outer_stop, on_stop) {
+            self.stop = outer;
+            let polled = self.call("una_rt_poll", &[])?;
+            let aborted = self.call("una_rt_stopped", &[])?;
+            let cancelling = self.builder.ins().icmp_imm_s(IntCC::NotEqual, polled, 0);
+            let healthy = self.builder.ins().icmp_imm_s(IntCC::Equal, aborted, 0);
+            let run = self.builder.ins().band(cancelling, healthy);
+            let run = self.flag(run);
+            let running = self.builder.create_block();
+            self.builder.ins().brif(run, running, &[], outer, &[]);
+            self.builder.switch_to_block(running);
+            self.runtime("una_rt_ever_end", &[]);
+            if within.is_some() {
+                self.runtime("una_rt_deadline_leave", &[]);
+            }
+            self.runtime("una_rt_operation_begin", &[]);
+            let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+            if let Some(result) = result {
+                self.release(result, Kind::Tuple);
+                self.runtime("una_rt_operation_end", &[]);
+                self.builder.ins().jump(outer, &[]);
+            }
+        } else {
+            self.builder.ins().jump(self.stop, &[]);
+        }
 
         // After a failure: out of the body, `on stop` on the saved state, then the failure goes
         // on.
