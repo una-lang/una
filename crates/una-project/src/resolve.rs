@@ -12,6 +12,9 @@
 //! packages. There is no backtracking and no search. Every bound of rule 23 is checked as the
 //! walk goes, so no input makes it do more than the bounds allow.
 
+// A `Problem` ends a resolution, once: its size costs nothing on the path that succeeds.
+#![allow(clippy::result_large_err)]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
