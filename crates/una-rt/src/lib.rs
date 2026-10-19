@@ -30,6 +30,7 @@ pub mod runtime;
 mod sched;
 pub mod tasks;
 pub mod values;
+pub mod wheel;
 
 /// The allocator of the executable, which counts the bytes it holds and fails past a ceiling,
 /// for the memory limit of runs (ADR 0061). The `cap` crate wraps the system allocator, so the
