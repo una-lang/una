@@ -664,5 +664,5 @@ Usage errors, exit code 2:
 
 Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`. They need `sigaction`, `pipe`, `fcntl`, `write`, `read` and `raise`, which the Rust standard library does not expose. `una-sys` reaches them through the `libc` crate, allowed for `una-sys` only (`docs/compiler/architecture.md` §7):
 - **Bindings only.** `libc` is Rust declarations of the operating system's interface, as the standard library itself uses. No C source is built, and nothing is compiled from anything but Rust.
-- **No new supply chain.** `libc` is already in the lockfile, through `sha2` and `getrandom`.
+- **No new supply chain.** `libc` is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`). Its build script only queries `rustc`.
 - **The other option,** writing the declarations in `una-sys`, would mean writing the layout of `struct sigaction` for each platform by hand, more `unsafe` code that a review would have to check against each system's headers.

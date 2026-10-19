@@ -7,5 +7,8 @@
 //! with a `// SAFETY:` comment; the coroutines of ADR 0117 rule 2 will join it in a module of
 //! their own.
 
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("una-sys supports macOS and Linux only (ADR 0116 rule 18)");
+
 pub mod attention;
 pub mod signals;
