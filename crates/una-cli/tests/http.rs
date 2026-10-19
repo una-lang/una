@@ -880,3 +880,102 @@ pub main() -> Unit
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_loser_waiting_on_a_server_that_never_answers_is_interrupted_at_once() {
+    // `spec/27 §6` rule 7, ADR 0117 rules 4 and 10: the first branch waits on a server that
+    // never answers, and the second wins after a short computation. The winner's cancellation
+    // wakes the loser parked on its request at once, long before `--http-timeout`: its event
+    // ends `interrupted`, then its `cancelled` event follows. The interpreter runs the branches
+    // in index order, so its request waits for `--http-timeout` and fails, which `attempt`
+    // holds, and the first branch wins there.
+    let port = silent_server();
+    let program = format!(
+        r#"module loser
+
+probe() -> Int
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+  1
+
+settle(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  2
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @http: Http[get]
+=
+  let got = first of
+    probe()
+    settle(2000000)
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-loser-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita loser\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry loser\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/loser.una"), program).unwrap();
+
+    let interpreted = una(&dir, &["run", ".", "--http-timeout", "2"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "done\n");
+
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    for workers in ["1", "2"] {
+        let trace_file = dir.join(format!("trace-{workers}.json"));
+        let started = std::time::Instant::now();
+        let native = Command::new(dir.join("target/una/loser"))
+            .args(["--http-timeout", "60", "--workers", workers, "--trace"])
+            .arg(&trace_file)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "--workers {workers}: the loser was not interrupted"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+        let trace: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+        let outcomes: Vec<(String, String)> = trace
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                (
+                    event["task"].as_str().unwrap_or("").to_owned(),
+                    event["outcome"]["kind"].as_str().unwrap_or("").to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("f1.1".to_owned(), "interrupted".to_owned()),
+                ("f1.1".to_owned(), "cancelled".to_owned()),
+                (String::new(), "ok".to_owned()),
+            ],
+            "--workers {workers}: {trace}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
