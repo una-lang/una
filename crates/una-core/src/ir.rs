@@ -340,6 +340,22 @@ pub enum Term {
         /// The arguments, in parameter order.
         args: Vec<Term>,
     },
+    /// A float literal, `nan()` or `infinity()`, as its bits (`spec/29 §8`).
+    F64(u64),
+    /// An operation of `F64` of the refinement language, its receiver first (`spec/29 §8`).
+    Float {
+        /// The operation.
+        op: FloatOp,
+        /// Its operands.
+        args: Vec<Term>,
+    },
+    /// `n.to_f64()` of an integer term, with the integer's type: `None` for `Int`.
+    ToF64 {
+        /// The integer.
+        value: Box<Term>,
+        /// Its fixed-width type, or `None` for `Int`.
+        from: Option<IntType>,
+    },
 }
 
 /// A binary operator of the refinement language.
@@ -974,6 +990,29 @@ impl FloatOp {
             | FloatOp::IeeeGe => &["other"],
             _ => &[],
         }
+    }
+
+    /// Whether the operation is in the refinement language (ADR 0114 rule 8.4): the
+    /// operators, the comparisons, `abs()`, `sqrt()`, the IEEE comparisons, the
+    /// classifications and `to_f64()`; the other methods are code only.
+    pub fn in_refinement_language(self) -> bool {
+        !matches!(
+            self,
+            FloatOp::Fma
+                | FloatOp::Rem
+                | FloatOp::Floor
+                | FloatOp::Ceil
+                | FloatOp::Trunc
+                | FloatOp::RoundHalfEven
+                | FloatOp::RoundHalfAway
+                | FloatOp::CopySign
+                | FloatOp::IeeeMin
+                | FloatOp::IeeeMax
+                | FloatOp::Clamp
+                | FloatOp::ToBits
+                | FloatOp::ToIntExact
+                | FloatOp::ToText
+        )
     }
 
     /// What the operation returns.

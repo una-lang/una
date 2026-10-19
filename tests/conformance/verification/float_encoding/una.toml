@@ -1,4 +1,4 @@
 [package]
-name = "float_clause"
+name = "float_encoding"
 version = "0.1.0"
 edition = "0.3"

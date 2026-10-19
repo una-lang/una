@@ -2,9 +2,10 @@
 //! methods and conversions resolved by the receiver, and the comparisons with a literal zero
 //! (U2033) and the float patterns (U2032).
 //!
-//! In this step, no `F64` term enters the refinement language: a float literal, an operator or
-//! a method of `F64` in a clause is U2014, so the verifier never reads a float, and every float
-//! value is a fresh binder of an uninterpreted sort to it (`spec/29 §8`).
+//! The refinement language holds float literals, `nan()`, `infinity()`, the operators, the
+//! comparisons, `abs()`, `sqrt()`, the IEEE comparisons, the classifications and `to_f64()` of
+//! an integer; every other method of `F64` is code only, U2014 in a clause (`spec/29 §8`,
+//! ADR 0114 rule 8.4).
 
 use una_core::float::{self, Literal as FloatLiteral};
 use una_core::{FloatOp, FloatResult, Prim};
@@ -41,7 +42,6 @@ impl Checker<'_, '_, '_> {
     /// The type of the float literal `text` at `span`: `F64`, after U2031 when it rounds to
     /// an infinity, or is not zero and rounds to zero (ADR 0114 rule 2.5).
     pub(crate) fn float_literal(&mut self, text: &str, span: Span) -> Ty {
-        self.outside_rl(span, || "a float literal".to_owned());
         match float::literal(text) {
             FloatLiteral::Value(_) => {}
             FloatLiteral::Overflows => {
@@ -233,7 +233,6 @@ impl Checker<'_, '_, '_> {
         match receiver.unlabeled() {
             // ADR 0114 rule 4.1: `n.to_f64()` on an integer, ahead of a function of that name.
             Ty::Int | Ty::Fixed(_) if method == "to_f64" && args.is_empty() => {
-                self.outside_rl(span, || format!("the method `{method}`"));
                 self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::FromInt)));
                 Some(Ty::F64.with_label(&label))
             }
@@ -241,7 +240,9 @@ impl Checker<'_, '_, '_> {
                 let Some(op) = FloatOp::from_method(method) else {
                     return self.no_float_method(method, args, span);
                 };
-                self.outside_rl(span, || format!("the method `{method}`"));
+                if !op.in_refinement_language() {
+                    self.outside_rl(span, || format!("the method `{method}`"));
+                }
                 let params = op.params();
                 let mut label = label;
                 if args.len() == params.len() {
