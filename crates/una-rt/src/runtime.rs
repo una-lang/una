@@ -955,8 +955,8 @@ impl State {
         if let Some(trace) = self.trace.as_mut()
             && !trace.is_empty()
         {
-            let events = std::mem::take(trace);
-            self.shared.write(events);
+            // Drained in place, so the buffer keeps its capacity for the next events.
+            self.shared.write(trace.drain(..));
         }
     }
 
@@ -1055,7 +1055,8 @@ impl State {
 
     /// [`State::adopt`] in a task that writes its events as they happen (ADR 0117 rule 10): the
     /// adopted events are numbered after the installations counted run-wide, under the lock of
-    /// those counts, then written once no event of an operation is open.
+    /// those counts. The join writes them after its checked step ([`State::flush`]), whose
+    /// allocations are its reservation's only.
     fn adopt_streaming(
         &mut self,
         task: &str,
@@ -1083,8 +1084,6 @@ impl State {
         for (name, &count) in installs {
             *counts.entry(name.clone()).or_insert(0) += count;
         }
-        drop(counts);
-        self.flush();
     }
 
     /// The growth of the trace, when the run records one, that `events` more events need, under
@@ -1142,7 +1141,6 @@ impl State {
                 outcome: EventOutcome::Cancelled,
             });
         }
-        self.flush();
     }
 }
 

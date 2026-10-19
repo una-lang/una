@@ -1035,6 +1035,9 @@ impl Block<'_> {
         {
             failed_check();
         }
+        // A task that writes its events as they happen writes the adopted ones now, once no
+        // event of an operation of it is open (ADR 0117 rule 10).
+        with_state(runtime::State::flush);
         if let Err(message) = adopted {
             exit_all(forked.into_iter());
             values::release(block);

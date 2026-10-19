@@ -78,7 +78,7 @@ impl RunShared {
     }
 
     /// Writes `events`, in order, numbering their `seq` (ADR 0117 rule 10). O(events).
-    pub(crate) fn write(&self, events: Vec<Event>) {
+    pub(crate) fn write(&self, events: impl IntoIterator<Item = Event>) {
         let mut sink = lock(&self.sink);
         for mut event in events {
             sink.written += 1;
