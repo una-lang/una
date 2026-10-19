@@ -315,6 +315,9 @@ pub struct Meta {
     /// The host-driven step, when the program is driven (ADR 0116 rule 3): its tick period and
     /// step budget, in milliseconds.
     pub drive: Option<DriveMeta>,
+    /// How U3012 names the grants of the manifest: `` `[run] grants` `` in `una.toml`, and
+    /// `` `run grants` `` in `ita.una`.
+    pub grants_section: String,
 }
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
@@ -326,9 +329,11 @@ pub struct DriveMeta {
     pub budget: Option<u64>,
 }
 
-/// One `uses` clause of `main`.
+/// One `uses` clause of `main`, or of a driven function.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Need {
+    /// The function whose header has it: `main`, or `init`, `step` or `on_stop`.
+    pub function: String,
     /// The reference, without `@`.
     pub name: String,
     /// The capability.
@@ -355,6 +360,10 @@ impl Meta {
             .iter()
             .map(|need| {
                 Some(Need {
+                    function: match need.get("function") {
+                        Some(function) => function.as_str()?.to_owned(),
+                        None => "main".to_owned(),
+                    },
                     name: need.get("name")?.as_str()?.to_owned(),
                     capability: need.get("capability")?.as_str()?.to_owned(),
                     ops: need
@@ -408,6 +417,10 @@ impl Meta {
             }),
             None => None,
         };
+        let grants_section = match value.get("grants_section") {
+            Some(section) => section.as_str()?.to_owned(),
+            None => "`[run] grants`".to_owned(),
+        };
         Some(Meta {
             grants,
             uses,
@@ -417,6 +430,7 @@ impl Meta {
             failure,
             float_environment,
             drive,
+            grants_section,
         })
     }
 }
@@ -842,8 +856,7 @@ pub fn drive_tick() -> i64 {
         driver.iterations += 1;
         let start = *driver.start.get_or_insert_with(std::time::Instant::now);
         let period = std::time::Duration::from_millis(driver.ticks);
-        let due =
-            start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
+        let due = start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
         let now = std::time::Instant::now();
         if now < due {
             std::thread::sleep(due - now);
@@ -1263,9 +1276,11 @@ pub fn check_grants(meta: &Meta, grants: &[Grant]) -> Vec<Diagnostic> {
                 Diagnostic::error(
                     Code::U3012,
                     format!(
-                        "`main` uses {} of `{}`, which neither `[run] grants` nor a `--grant` flag grants",
+                        "`{}` uses {} of `{}`, which neither {} nor a `--grant` flag grants",
+                        need.function,
                         missing.join(", "),
-                        need.capability
+                        need.capability,
+                        meta.grants_section
                     ),
                     need.location.clone(),
                 )

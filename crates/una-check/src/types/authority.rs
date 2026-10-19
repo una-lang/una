@@ -2014,10 +2014,11 @@ fn function_grants(
             .map(|op| format!("`{op}`"))
             .collect();
         if !missing.is_empty() {
+            let section = settings.format.section("[run] grants");
             let granter = if run.is_some() {
-                "neither `[run] grants` nor a `--grant` flag grants"
+                format!("neither {section} nor a `--grant` flag grants")
             } else {
-                "`[run] grants` does not grant"
+                format!("{section} does not grant")
             };
             let mut diagnostic = report.make(
                 Code::U3012,
@@ -2031,9 +2032,10 @@ fn function_grants(
             // ADR 0097 rule 7: granting is the route, and it widens what the program may do
             // when it runs.
             let mut grant = Report::advice(format!(
-                "grant {} of `{}` in `[run] grants` of `una.toml`, or with `--grant`",
+                "grant {} of `{}` in {section} of `{}`, or with `--grant`",
                 missing.join(", "),
-                capability.name
+                capability.name,
+                settings.format.file()
             ));
             grant.widens = Some(Widening::Grant);
             diagnostic.repairs.push(grant);

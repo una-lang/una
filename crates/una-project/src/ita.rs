@@ -11,8 +11,8 @@ use una_syntax::ita::{self, At, CapType, LockOrigin, Origin, PkgName};
 
 use crate::lock::Lock;
 use crate::manifest::{
-    Boundary, Ceiling, Contract, Edition, Format, Manifest, boundary_conflicts, is_grant,
-    is_module_path, is_upper_camel, upper_camel,
+    Boundary, Ceiling, Contract, Drive, Edition, Format, MAX_DRIVE_MILLISECONDS, Manifest,
+    boundary_conflicts, is_grant, is_module_path, is_upper_camel, upper_camel,
 };
 use crate::names::{is_name_word, reserved_like};
 use crate::version::{Line, Version};
@@ -251,14 +251,54 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             });
         }
     }
+    // The host-driven step (ADR 0116 rule 1, `spec/26 §2`): its keys, their ranges, and no
+    // `run entry` beside it, each U7008.
     if let Some(drive) = &read.drive {
-        // ADR 0116's driver is not implemented by this release, so the section is refused
-        // rather than ignored.
-        errors.push(error(
-            code,
-            drive.range.clone(),
-            "the `drive` section is not supported by this release",
-        ));
+        let mut within = |at: &At<u64>, key: &str| {
+            if (1..=MAX_DRIVE_MILLISECONDS).contains(&at.value) {
+                Some(at.value)
+            } else {
+                errors.push(error(
+                    code,
+                    at.range.clone(),
+                    format!(
+                        "`{key}` is a number of milliseconds from 1 to {MAX_DRIVE_MILLISECONDS}, not {}",
+                        at.value
+                    ),
+                ));
+                None
+            }
+        };
+        let ticks = drive.ticks.as_ref().and_then(|at| within(at, "ticks"));
+        let budget = drive.budget.as_ref().map(|at| within(at, "budget"));
+        for (key, present) in [
+            ("module", drive.module.is_some()),
+            ("ticks", drive.ticks.is_some()),
+        ] {
+            if !present {
+                errors.push(error(
+                    code,
+                    drive.range.clone(),
+                    format!("the `drive` section has no `{key}`"),
+                ));
+            }
+        }
+        if manifest.entry.is_some() {
+            errors.push(error(
+                code,
+                drive.range.clone(),
+                "a package has a `drive` section or a `run entry`, not both; the host drives the module of `drive` instead of running `main`",
+            ));
+        } else if let (Some(module), Some(ticks), None | Some(Some(_))) =
+            (&drive.module, ticks, budget)
+        {
+            manifest.drive = Some(Drive {
+                module: located(module),
+                ticks,
+                budget: budget.flatten(),
+                at: drive.range.clone(),
+            });
+        }
     }
     if !manifest.boundaries.is_empty() {
         boundary_conflicts(&manifest, &mut errors);

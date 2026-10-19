@@ -1,0 +1,12 @@
+-- test: a driven step whose `input` is labeled as high as its `secret` state is accepted, and so is a step that computes only on `public` data with an unlabeled `input` (spec/26 §2, ADR 0116 IF7)
+-- spec: spec/26 §2
+-- expect: ok
+module counter
+
+import std.drive (Tick)
+
+pub init() -> secret Int = 0
+
+pub step(edit count: secret Int, input: secret Tick) -> Unit
+=
+  count = count + 1

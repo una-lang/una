@@ -349,10 +349,14 @@ pub(crate) fn run_command(
         }
     };
     let root_location = root_location(&package);
-    let diagnostics: Vec<Diagnostic> =
-        completion_diagnostic(&run.completion, start.span, &package.sources, &root_location)
-            .into_iter()
-            .collect();
+    let diagnostics: Vec<Diagnostic> = completion_diagnostic(
+        &run.completion,
+        start.span,
+        &package.sources,
+        &root_location,
+    )
+    .into_iter()
+    .collect();
     // The program ran to its end after stdout failed. Its failure or abort is still reported,
     // then the failed write, with exit code 2, as the native executable does (#199).
     if let Some(error) = write_error {
@@ -518,14 +522,12 @@ pub(crate) fn driven_init<'a>(
     }
     let on_stop = match modules.function(&format!("{module}.on_stop")) {
         None => true,
-        Some(_) => {
-            header("on_stop").is_some_and(|function| {
-                matches!(function.params.as_slice(), [held] if held.convention.is_none())
-            }) && core("on_stop").is_some_and(|on_stop| {
-                matches!(on_stop.params.as_slice(), [(_, held)] if same_type(held, state))
-                    && is_unit(&on_stop.result)
-            })
-        }
+        Some(_) => header("on_stop").is_some_and(
+            |function| matches!(function.params.as_slice(), [held] if held.convention.is_none()),
+        ) && core("on_stop").is_some_and(|on_stop| {
+            matches!(on_stop.params.as_slice(), [(_, held)] if same_type(held, state))
+                && is_unit(&on_stop.result)
+        }),
     };
     if !on_stop {
         return Err(format!(

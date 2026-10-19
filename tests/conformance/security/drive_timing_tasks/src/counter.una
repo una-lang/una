@@ -1,0 +1,25 @@
+-- test: in the preview, a driven step that a part of a `together` block can reach has the top timing label, since a sibling task may slow it down (spec/26 §2, ADR 0116 IF7)
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:10:34
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+=
+  count = count + 1
+
+once(n: Int) -> Int
+=
+  let edit count = n
+  step(edit count, input: Tick(at: 0, missed: 0))
+  count
+
+pub both() -> Int
+=
+  together
+    let a = once(1)
+    let b = once(2)
+  a + b

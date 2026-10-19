@@ -798,7 +798,9 @@ impl<'p> Emitter<'p> {
             };
             let returned = builder.create_block();
             let failing = Self::failing(&mut builder);
-            builder.ins().brif(failed, failing, &[value.into()], returned, &[]);
+            builder
+                .ins()
+                .brif(failed, failing, &[value.into()], returned, &[]);
             builder.switch_to_block(returned);
             builder.seal_block(returned);
             let zero = builder.ins().iconst(types::I64, 0);
@@ -844,7 +846,9 @@ impl<'p> Emitter<'p> {
                 return Err(internal("`init` lost its result"));
             };
             let started = builder.create_block();
-            builder.ins().brif(failed, failing, &[state.into()], started, &[]);
+            builder
+                .ins()
+                .brif(failed, failing, &[state.into()], started, &[]);
             builder.switch_to_block(started);
             builder.seal_block(started);
             let step_instances = self.instances(&mut builder, step)?;
@@ -882,7 +886,9 @@ impl<'p> Emitter<'p> {
             // `step` declares no `fails` (U3029), so it never fails; if it did, the run would
             // end as a failure of `init` does.
             let next = builder.create_block();
-            builder.ins().brif(failed, failing, &[stepped.into()], next, &[]);
+            builder
+                .ins()
+                .brif(failed, failing, &[stepped.into()], next, &[]);
             builder.switch_to_block(next);
             builder.seal_block(next);
             // The new state, the first component of the result, borrowed from it: retained,
@@ -915,7 +921,9 @@ impl<'p> Emitter<'p> {
                     };
                     // `on_stop` declares no `fails` either (U3029).
                     let ended = builder.create_block();
-                    builder.ins().brif(failed, failing, &[value.into()], ended, &[]);
+                    builder
+                        .ins()
+                        .brif(failed, failing, &[value.into()], ended, &[]);
                     builder.switch_to_block(ended);
                     builder.seal_block(ended);
                 }

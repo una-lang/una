@@ -135,15 +135,15 @@ fn the_driver_steps_until_the_stop_then_runs_on_stop() {
         .collect();
     assert_eq!(outcomes, [false, false, false, true, false]);
     let json = una_interp::trace_json(&run.trace);
-    assert!(json.contains(r#"{"seq":4,"outcome":{"kind":"stop"}}"#), "{json}");
+    assert!(
+        json.contains(r#"{"seq":4,"outcome":{"kind":"stop"}}"#),
+        "{json}"
+    );
 }
 
 #[test]
 fn a_module_without_step_is_a_shape_error() {
-    let program = checked(
-        "no-step",
-        "module counter\n\npub init() -> Int = 0\n",
-    );
+    let program = checked("no-step", "module counter\n\npub init() -> Int = 0\n");
     let (run, lines) = drive(&program, 1);
     assert_eq!(run.unwrap_err(), DriveShape::NoStep);
     assert!(lines.is_empty());

@@ -169,6 +169,7 @@ pub(crate) fn build_command(
                 .find(|(name, _)| *name == need.cap)
                 .map_or(function.span, |(_, span)| *span);
             json!({
+                "function": name,
                 "name": need.cap,
                 "capability": need.capability,
                 "ops": need.ops,
@@ -192,6 +193,7 @@ pub(crate) fn build_command(
             .map(|span| package.sources.location(*span))
             .collect();
         let mut meta = json!({
+            "grants_section": manifest.format.section("[run] grants"),
             "grants": grants,
             "uses": uses,
             "sites": sites,

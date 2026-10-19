@@ -101,6 +101,7 @@ pub(crate) fn program(
     if let Some(kinds) = prelude_kinds(env, findings, dbs, &mut gaps.standard) {
         modules.push(kinds);
     }
+    modules.extend(standard_kinds(env, findings, dbs, &mut gaps.standard));
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     let library = (env.prelude..env.modules.len())
         .flat_map(|module| library(env, findings, dbs, module, &mut gaps.standard))
@@ -354,6 +355,49 @@ fn prelude_kinds(
         decls,
         ..CoreModule::default()
     })
+}
+
+/// The kinds of the standard modules after `std.testing`, such as `Tick` of `std.drive`
+/// (ADR 0116 rule 2), which programs build and read like their own: each such module with its
+/// kinds, by path. One that does not elaborate is recorded in `dropped` (#1050).
+fn standard_kinds(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    dropped: &mut Vec<(Span, &'static str)>,
+) -> Vec<CoreModule> {
+    let mut out = Vec::new();
+    for module in env.prelude + 1..env.modules.len() {
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        if !m.path.starts_with("std.") || m.path == "std.testing" {
+            continue;
+        }
+        let mut decls = Vec::new();
+        for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+            let DeclKind::Kind(_) = &decl.kind else {
+                continue;
+            };
+            let core = entity.and_then(|entity| {
+                let mut fx = Fx::new(env, findings, dbs, module);
+                fx.decl(&decl.kind, entity)
+            });
+            match core {
+                Some(core @ Decl::Data { .. }) => decls.push(core),
+                Some(_) => {}
+                None => dropped.push((decl.span, "standard kind")),
+            }
+        }
+        if !decls.is_empty() {
+            out.push(CoreModule {
+                path: m.path.clone(),
+                decls,
+                ..CoreModule::default()
+            });
+        }
+    }
+    out
 }
 
 /// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`). One that

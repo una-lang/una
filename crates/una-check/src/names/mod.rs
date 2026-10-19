@@ -1250,16 +1250,18 @@ impl<'p, 'a> Checker<'p, 'a> {
                 ),
             );
         }
-        // ADR 0116 rule 1: `[drive] module` names a module of the package, as `[run] entry`.
+        // ADR 0116 rule 1: the `drive` section's module is a module of the package, as `run
+        // entry` is.
         if let Some(drive) = &settings.drive
             && !paths.contains_key(&drive.module.value)
             && !unparsed_entry(&drive.module.value)
         {
             self.error(
-                Code::U7002,
+                settings.format.code(),
                 Span::new(manifest, drive.module.range.start, drive.module.range.end),
                 format!(
-                    "[drive] module `{}` is not a module of this package",
+                    "{} `{}` is not a module of this package",
+                    settings.format.section("[drive] module"),
                     drive.module.value
                 ),
             );
