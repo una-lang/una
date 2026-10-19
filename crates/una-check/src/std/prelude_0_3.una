@@ -1,22 +1,22 @@
 
---- The canonical NaN, `0x7FF8000000000000`: the one NaN of `F64` (`spec/29`).
+--- The canonical NaN, `0x7FF8000000000000`: the one NaN of `F64` (`spec/29 §3`).
 pub nan() -> F64 = 0.0
 
---- The positive infinity of `F64` (`spec/29`).
+--- The positive infinity of `F64`; `-infinity()` is the negative one (`spec/29 §3`).
 pub infinity() -> F64 = 0.0
 
---- The `F64` with the bits `bits`; any NaN gives the canonical NaN (`spec/29`).
+--- The `F64` with the bits `bits`; any NaN gives the canonical NaN (`spec/29 §3`).
 pub f64_from_bits(bits: U64) -> F64 = 0.0
 
---- The `F64` that `t` writes, a JSON number, `nan`, `inf` or `-inf`, correctly rounded
---- (`spec/29`).
+--- The `F64` that `t` writes, a JSON number, `nan`, `inf` or `-inf`, correctly rounded, or
+--- why it writes none (`spec/29 §7`).
 pub parse_f64(t: Text) -> F64
   fails ParseError
 =
   fail Empty
 
---- The `F64` nearest a JSON number, `None` for any other `Json` (`spec/29`).
+--- The `F64` nearest a JSON number, `None` for any other `Json` (`spec/29 §10`).
 pub as_f64(j: Json) -> Option[F64] = None
 
---- `x` as a JSON number, `None` for NaN and the infinities (`spec/29`).
+--- `x` as a JSON number, `None` for NaN and the infinities (`spec/29 §10`).
 pub json_number(x: F64) -> Option[Json] = None

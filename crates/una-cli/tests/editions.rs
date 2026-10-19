@@ -158,7 +158,7 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         edition_0_2: ("U0101", "src/m.una:8:23"),
         edition_0_3: &[],
         twin: "types/float_literal_edition_0_2_erased",
-        erased: ("src/m.una", "\npub half() -> F64 = 1.0\n"),
+        erased: ("src/m.una", "\n\npub half() -> F64 = 1.0"),
     },
     // ADR 0114 rule 15: a declaration named `F64`, built in from edition 0.3.
     Difference::Stricter {
