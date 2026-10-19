@@ -312,6 +312,9 @@ pub struct Meta {
     /// Whether the program is of edition 0.3, which writes and tests the floating-point
     /// environment before `main` (ADR 0114 rule 6.4).
     pub float_environment: bool,
+    /// Whether the code the program can reach makes a hash table, so the run reads the process
+    /// key of keyed hashing before `main` (ADR 0119 rule 9).
+    pub hashing: bool,
     /// The host-driven step, when the program is driven (ADR 0116 rule 3): its tick period and
     /// step budget, in milliseconds.
     pub drive: Option<DriveMeta>,
@@ -407,6 +410,10 @@ impl Meta {
             .get("float_environment")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let hashing = value
+            .get("hashing")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let drive = match value.get("drive") {
             Some(drive) => Some(DriveMeta {
                 ticks: drive.get("ticks")?.as_u64()?,
@@ -429,6 +436,7 @@ impl Meta {
             ops,
             failure,
             float_environment,
+            hashing,
             drive,
             grants_section,
         })
@@ -1092,6 +1100,18 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return if written.is_ok() { 1 } else { USAGE };
         }
         FLOATS.store(true, Ordering::SeqCst);
+    }
+    // ADR 0119 rule 9: a program whose code can make a hash table reads the process key from the
+    // host's random source before `main`, so before any effect, and a blocking read never stalls
+    // a running program. When the host gives no random bytes, the run ends with U6009, exit code
+    // 1, with no position, as the runtime's other stops before `main`.
+    if meta.hashing && !values::read_process_key() {
+        let written = writeln!(
+            stderr,
+            "[{}] Error: the host gave no random bytes for keyed hashing",
+            Code::U6009
+        );
+        return if written.is_ok() { 1 } else { USAGE };
     }
     let budget = options.max_memory.saturating_mul(1024 * 1024);
     let worker = std::thread::Builder::new()

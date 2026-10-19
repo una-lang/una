@@ -307,7 +307,7 @@ impl Bits {
 
 /// The object of `word`, for an update in place by its only holder. No retain or release may
 /// run inside `f`: the heap is borrowed.
-fn with_object_mut<R>(word: i64, f: impl FnOnce(&mut Object) -> R) -> Option<R> {
+pub(super) fn with_object_mut<R>(word: i64, f: impl FnOnce(&mut Object) -> R) -> Option<R> {
     let index = slot(word)?;
     HEAP.with(|heap| {
         heap.borrow_mut()
@@ -342,7 +342,7 @@ fn duplicate(word: i64) -> i64 {
 
 /// The collection `receiver` given back unchanged: as a new reference when the caller borrows
 /// it, or the caller's own when it gave it up (`owned`).
-fn unchanged(receiver: i64, owned: bool) -> i64 {
+pub(super) fn unchanged(receiver: i64, owned: bool) -> i64 {
     if !owned {
         retain(receiver);
     }
@@ -383,14 +383,15 @@ fn list_of(words: impl IntoIterator<Item = i64>) -> i64 {
     out
 }
 
-/// `c.len` of a stack, a queue, a set, a priority queue or a bit set: O(1). A word that is no
-/// collection is a fault, and its length 0.
+/// `c.len` of a stack, a queue, a set, a priority queue, a bit set or a hash table: O(1). A
+/// word that is no collection is a fault, and its length 0.
 pub fn collection_len(c: i64) -> i64 {
     let len = with(c, |object| match object {
         Object::Seq(items) => Some(items.len()),
         Object::Set(items) => Some(items.len()),
         Object::Priority(heap) => Some(heap.entries.len()),
         Object::Bits(bits) => Some(bits.count),
+        Object::HashMap(Some(table)) | Object::HashSet(Some(table)) => Some(table.entries.len()),
         _ => None,
     })
     .flatten();

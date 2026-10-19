@@ -31,6 +31,7 @@ use una_core::Text;
 use crate::ffi::Code;
 
 mod collections;
+mod hashes;
 
 pub use collections::{
     bit_set_empty, bit_set_op, bit_set_op_owned, collection_len, priority_empty, priority_op,
@@ -38,6 +39,10 @@ pub use collections::{
     set_op_owned,
 };
 pub(crate) use collections::{bit_set_members, collection_words};
+pub use hashes::{
+    hash_empty, hash_map_op, hash_map_op_owned, hash_of_list, hash_set_op, hash_set_op_owned,
+};
+pub(crate) use hashes::{hash_entries, read_process_key};
 
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
@@ -91,6 +96,13 @@ enum Object {
     /// A `BitSet` of `std.collections`, its own layout: internal words that no walk reads as
     /// values, its size and its count of members (`spec/28 §9`).
     Bits(collections::Bits),
+    /// A `HashMap` of `std.collections`, its own layout: the ordered hash table of `una_hash`
+    /// over words, with its table's key (`spec/28 §7`). `None` only while an operation holds
+    /// the table outside the heap, to compare keys (`hashes`).
+    HashMap(Option<hashes::Table>),
+    /// A `HashSet` of `std.collections`, its own layout: the same table, each item a key whose
+    /// value is `unit`.
+    HashSet(Option<hashes::Table>),
 }
 
 /// A map's key, copied out of the heap at insert: an integer, or a text. A variant
@@ -131,6 +143,8 @@ impl Object {
             Object::Seq(items) => items.iter().copied().collect(),
             Object::Set(items) => items.values().copied().collect(),
             Object::Priority(heap) => heap.words().collect(),
+            Object::HashMap(table) => table.iter().flat_map(|t| t.words(false)).collect(),
+            Object::HashSet(table) => table.iter().flat_map(|t| t.words(true)).collect(),
             other => other.cells().to_vec(),
         }
     }
@@ -140,7 +154,12 @@ impl Object {
     fn has_children_apart(&self) -> bool {
         matches!(
             self,
-            Object::Map(_) | Object::Seq(_) | Object::Set(_) | Object::Priority(_)
+            Object::Map(_)
+                | Object::Seq(_)
+                | Object::Set(_)
+                | Object::Priority(_)
+                | Object::HashMap(_)
+                | Object::HashSet(_)
         )
     }
 
@@ -155,7 +174,9 @@ impl Object {
             | Object::Seq(_)
             | Object::Set(_)
             | Object::Priority(_)
-            | Object::Bits(_) => &[],
+            | Object::Bits(_)
+            | Object::HashMap(_)
+            | Object::HashSet(_) => &[],
             Object::Data { fields, .. } => fields,
             Object::List(items) => items,
             Object::Closure { env, .. } => env,
@@ -173,7 +194,9 @@ impl Object {
             | Object::Seq(_)
             | Object::Set(_)
             | Object::Priority(_)
-            | Object::Bits(_) => None,
+            | Object::Bits(_)
+            | Object::HashMap(_)
+            | Object::HashSet(_) => None,
             Object::Data { fields, .. } => Some(fields),
             Object::List(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
@@ -1123,6 +1146,13 @@ enum Node {
         count: usize,
         words: Vec<u64>,
     },
+    /// A hash map or, when `set`, a hash set: its table's key, kept by the copy (ADR 0119 rule
+    /// 9), and its entries in insertion order, each its stored hash, its key and its value.
+    Hash {
+        set: bool,
+        key: (u64, u64),
+        entries: Vec<(u64, Cell, Cell)>,
+    },
 }
 
 /// The entries in each segment of a copy's pending stack (ADR 0113 rule 5).
@@ -1280,6 +1310,12 @@ impl Object {
                     f(word)?;
                 }
             }
+            Object::HashMap(table) | Object::HashSet(table) => {
+                let set = matches!(self, Object::HashSet(_));
+                for word in table.iter().flat_map(|t| t.words(set)) {
+                    f(word)?;
+                }
+            }
             other => {
                 for &child in other.cells() {
                     f(child)?;
@@ -1311,6 +1347,9 @@ impl Object {
             Object::Set(items) => cells(items.len()),
             Object::Priority(heap) => heap.entries.len() * size_of::<(u64, Cell, Cell)>(),
             Object::Bits(bits) => bits.words.len() * size_of::<u64>(),
+            Object::HashMap(table) | Object::HashSet(table) => {
+                table.as_ref().map_or(0, |t| t.entries.len()) * size_of::<(u64, Cell, Cell)>()
+            }
         }
     }
 
@@ -1362,6 +1401,16 @@ impl Object {
                 size: bits.size,
                 count: bits.count,
                 words: bits.words.clone(),
+            },
+            Object::HashMap(table) | Object::HashSet(table) => Node::Hash {
+                set: matches!(self, Object::HashSet(_)),
+                key: table.as_ref().map_or((0, 0), hashes::Table::key_words),
+                entries: table.as_ref().map_or_else(Vec::new, |t| {
+                    t.entries
+                        .iter_hashed()
+                        .map(|(hash, key, value)| (hash, cell(*key), cell(*value)))
+                        .collect()
+                }),
             },
         }
     }
@@ -1631,6 +1680,21 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
         (Object::Bits(bits), Node::Bits { size, count, words }) => {
             bits.size == *size && bits.count == *count && bits.words == *words
         }
+        (
+            Object::HashMap(Some(table)) | Object::HashSet(Some(table)),
+            Node::Hash { set, key, entries },
+        ) => {
+            matches!(object, Object::HashSet(_)) == *set
+                && table.key_words() == *key
+                && table.entries.len() == entries.len()
+                && table
+                    .entries
+                    .iter_hashed()
+                    .zip(entries)
+                    .all(|((hash, k, v), &(h, kc, vc))| {
+                        hash == h && cell_of(*k) == kc && cell_of(*v) == vc
+                    })
+        }
         _ => false,
     }
 }
@@ -1881,6 +1945,23 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
                 words: w,
             },
         ) => bits.size == *size && bits.count == *count && bits.words == *w,
+        (
+            Object::HashMap(Some(table)) | Object::HashSet(Some(table)),
+            Node::Hash { set, key, entries },
+        ) => {
+            matches!(object, Object::HashSet(_)) == *set
+                && table.key_words() == *key
+                && table.entries.len() == entries.len()
+                && table
+                    .entries
+                    .iter_hashed()
+                    .zip(entries)
+                    .all(|((hash, k, v), (h, kc, vc))| {
+                        hash == *h
+                            && made_word(kc, words) == Some(*k)
+                            && made_word(vc, words) == Some(*v)
+                    })
+        }
         _ => false,
     }
 }
@@ -2043,6 +2124,22 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
                 size: *size,
                 count: *count,
             }))
+        }
+        // The copy keeps its table's key and its order; each entry is placed by its stored
+        // hash, with no key hashed again, as one step.
+        Node::Hash { set, key, entries } => {
+            let _step = step(
+                entries
+                    .len()
+                    .saturating_mul(size_of::<(u64, i64, i64)>() + 2 * size_of::<u64>()),
+            )?;
+            alloc(hashes::Table::imported(
+                *set,
+                *key,
+                entries
+                    .iter()
+                    .map(|(hash, k, v)| (*hash, cell_word(k, words), cell_word(v, words))),
+            ))
         }
     };
     Ok(made)

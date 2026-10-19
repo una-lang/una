@@ -142,6 +142,7 @@ Every component is compiled by `rustc` at the version that `rust-toolchain.toml`
 - **Guards:**
   - the crate's source on each target, reviewed at 0.4.3: on Linux with glibc, the `getrandom` system call with no flags, which blocks until the kernel's pool is seeded, with the crate's fallback where the call is missing or refused (it polls `/dev/random`, then reads `/dev/urandom`); on macOS, `getentropy`; on Windows, `ProcessPrng`;
   - no fallback key: when the source gives nothing, the run aborts with U6009 before any effect;
+  - native executables link the same crate through `una-rt` (#981): an executable whose compiled code makes a hash table reads the key before `main`, as `una build` records in its embedded description; a table the build did not foresee, which only a defect of that record makes, reads the key from the same source at its first table, and stops with U6009 when the source gives nothing;
   - the crate's source can be switched at compile time with `--cfg getrandom_backend=...`; `scripts/release.sh` refuses build flags, in the environment or a cargo configuration file, that set it;
   - the process key hashes only table keys, two SipHash-2-4 results per table, so one table's key reveals nothing of another's;
   - the test-only feature of `una-hash` (a fixed key, a probe counter, a constant hash) is not in any shipped artifact: `scripts/check-release.sh` looks for its marker in `una` and `libuna_rt.a`.

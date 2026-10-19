@@ -210,6 +210,13 @@ pub(crate) fn build_command(
         {
             object.insert("float_environment".to_owned(), json!(true));
         }
+        // ADR 0119 rule 9: an executable whose code can make a hash table reads the process key
+        // of keyed hashing before `main`; one that makes none never reads it.
+        if described.hashing
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("hashing".to_owned(), json!(true));
+        }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(
                 "failure".to_owned(),

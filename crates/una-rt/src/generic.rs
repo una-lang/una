@@ -53,7 +53,7 @@ pub fn composite(ty: i64, params: i64) -> i64 {
 }
 
 /// The type description and parameter descriptors of a composite entry.
-fn entry(entry: usize) -> Option<(usize, Vec<i64>)> {
+pub(crate) fn entry(entry: usize) -> Option<(usize, Vec<i64>)> {
     COMPOSITES.lock().ok()?.entries.get(entry).cloned()
 }
 

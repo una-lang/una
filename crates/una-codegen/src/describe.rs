@@ -169,8 +169,8 @@ impl<'p> Types<'p> {
             }
             // The collections of `std.collections` (ADR 0119 rule 19), in their Una forms
             // (`spec/28 §4`): a stack or a queue front first, and a priority queue in the order
-            // of its pops, as lists of their items; a set in braces; a bit set's members. The
-            // hash tables wait for their native layout.
+            // of its pops, as lists of their items; a set in braces; a bit set's members; a hash
+            // map and a hash set in insertion order.
             Base::Named { module, name, args }
                 if module == una_core::COLLECTIONS_MODULE
                     && una_core::Coll::from_name(name).is_some() =>
@@ -186,6 +186,15 @@ impl<'p> Types<'p> {
                         json!({ "shape": "set", "item": item })
                     }
                     "BitSet" => json!({ "shape": "bits" }),
+                    "HashMap" => {
+                        let key = self.of(&arg(0));
+                        let value = self.of(&arg(1));
+                        json!({ "shape": "hashmap", "key": key, "value": value })
+                    }
+                    "HashSet" => {
+                        let item = self.of(&arg(0));
+                        json!({ "shape": "hashset", "item": item })
+                    }
                     _ => json!({ "shape": "other" }),
                 }
             }

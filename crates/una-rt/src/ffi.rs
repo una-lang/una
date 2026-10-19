@@ -369,6 +369,12 @@ exported! {
     una_rt_bit_set_empty => values::bit_set_empty, (site, size);
     una_rt_bit_set_op => values::bit_set_op, (site, op, b, x);
     una_rt_bit_set_op_owned => values::bit_set_op_owned, (site, op, b, x);
+    una_rt_hash_empty => values::hash_empty, (site, set);
+    una_rt_hash_of_list => values::hash_of_list, (site, set, desc, xs);
+    una_rt_hash_map_op => values::hash_map_op, (site, op, desc, m, a, b);
+    una_rt_hash_map_op_owned => values::hash_map_op_owned, (site, op, desc, m, a, b);
+    una_rt_hash_set_op => values::hash_set_op, (site, op, desc, s, a);
+    una_rt_hash_set_op_owned => values::hash_set_op_owned, (site, op, desc, s, a);
     una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
     una_rt_generic_compare => generic::compare, (desc, a, b);

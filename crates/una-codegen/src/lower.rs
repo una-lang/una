@@ -72,8 +72,8 @@ enum Kind {
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
-    /// A handle to a collection of `std.collections` with a native layout: a `Stack`, a
-    /// `Queue`, a `Set`, a `PriorityQueue` or a `BitSet` (ADR 0119 rule 19).
+    /// A handle to a collection of `std.collections`: a `Stack`, a `Queue`, a `Set`, a
+    /// `HashMap`, a `HashSet`, a `PriorityQueue` or a `BitSet` (ADR 0119 rule 19).
     Coll,
     /// A value of a type parameter: any of the above.
     Any,
@@ -126,6 +126,12 @@ fn collection_code(prim: Prim) -> Result<(i64, bool), CodegenError> {
         Prim::BitSet(op) => {
             position(&una_core::BitSetOp::ALL, &op).map(|code| (code, op.rebuilds()))
         }
+        Prim::HashMap(op) => {
+            position(&una_core::HashMapOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
+        Prim::HashSet(op) => {
+            position(&una_core::HashSetOp::ALL, &op).map(|code| (code, op.rebuilds()))
+        }
         _ => None,
     };
     found.ok_or_else(|| internal(format!("`{}` is no collection operation", prim.as_str())))
@@ -160,22 +166,11 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             {
                 Err(unsupported("dense values (spec/29)"))
             }
-            // The hash tables of `std.collections` wait for their native layout (`spec/28 §7`,
-            // ADR 0119 rule 19).
+            // The collections of `std.collections`: one object each, with a layout of its own in
+            // the runtime (`spec/28`, ADR 0119 rule 19).
             Base::Named { module, name, .. }
                 if module == una_core::COLLECTIONS_MODULE
-                    && (name == "HashMap" || name == "HashSet") =>
-            {
-                Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
-            }
-            // `Stack`, `Queue`, `Set`, `PriorityQueue` and `BitSet`: one object each, with a
-            // layout of its own in the runtime (`spec/28`, ADR 0119 rule 19).
-            Base::Named { module, name, .. }
-                if module == una_core::COLLECTIONS_MODULE
-                    && matches!(
-                        name.as_str(),
-                        "Stack" | "Queue" | "Set" | "PriorityQueue" | "BitSet"
-                    ) =>
+                    && una_core::Coll::from_name(name).is_some() =>
             {
                 Ok(Kind::Coll)
             }
@@ -1780,12 +1775,18 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 };
                 self.call(runtime, &values)
             }
-            // The methods of `Stack`, `Queue`, `Set`, `PriorityQueue` and `BitSet` (`spec/28`):
-            // an operation that gives a new collection takes its receiver over at its last use,
-            // and updates it in place when nothing else holds it (ADR 0119 rule 1), unless the
-            // receiver is also another argument, which the update would change.
+            // The methods of the collections of `std.collections` (`spec/28`): an operation that
+            // gives a new collection takes its receiver over at its last use, and updates it in
+            // place when nothing else holds it (ADR 0119 rule 1), unless the receiver is also
+            // another argument, which the update would change.
             Rhs::Prim {
-                prim: prim @ (Prim::Seq(_) | Prim::Set(_) | Prim::Priority(_) | Prim::BitSet(_)),
+                prim:
+                    prim @ (Prim::Seq(_)
+                    | Prim::Set(_)
+                    | Prim::HashMap(_)
+                    | Prim::HashSet(_)
+                    | Prim::Priority(_)
+                    | Prim::BitSet(_)),
                 args,
                 span,
                 ..
@@ -1805,6 +1806,30 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     scope.remove(position);
                 }
                 let owned = moved.is_some();
+                // A hash table hashes its keys by the descriptor of its key type, the first type
+                // argument of the receiver's type (`spec/28 §1` rule 2): a word does not say its
+                // type.
+                let desc = match prim {
+                    Prim::HashMap(_) | Prim::HashSet(_) => {
+                        let ty = match args.first() {
+                            Some(receiver) => self.atom_type(receiver, env),
+                            None => unknown(),
+                        };
+                        let key = match &ty {
+                            Type::Base {
+                                base:
+                                    Base::Named {
+                                        args: type_args, ..
+                                    },
+                                ..
+                            } => type_args.first().cloned(),
+                            _ => None,
+                        }
+                        .ok_or_else(|| internal("a hash table without its key type"))?;
+                        Some(self.descriptor(&key, Constraint::Eq, env)?)
+                    }
+                    _ => None,
+                };
                 let code = self.builder.ins().iconst(types::I64, code);
                 let zero = self.builder.ins().iconst(types::I64, 0);
                 let word = |i: usize| values.get(i).copied().unwrap_or(zero);
@@ -1833,6 +1858,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             "una_rt_priority_op"
                         };
                         self.call(function, &[code, receiver, a, b])
+                    }
+                    // A hash table compares keys within the memory budget, as `==` does, so it
+                    // takes the call's site and stops after it on U6003.
+                    Prim::HashMap(_) => {
+                        let function = if owned {
+                            "una_rt_hash_map_op_owned"
+                        } else {
+                            "una_rt_hash_map_op"
+                        };
+                        let desc = desc.unwrap_or(zero);
+                        self.set(function, &[code, desc, receiver, a, b], *span)
+                    }
+                    Prim::HashSet(_) => {
+                        let function = if owned {
+                            "una_rt_hash_set_op_owned"
+                        } else {
+                            "una_rt_hash_set_op"
+                        };
+                        let desc = desc.unwrap_or(zero);
+                        self.set(function, &[code, desc, receiver, a], *span)
                     }
                     // A bit set's precondition aborts at the call, with U8001 (ADR 0119 rule
                     // 14), so it takes the call's site and stops after it.
@@ -2028,7 +2073,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 // The functions of `std.collections` whose bodies are native (`spec/28`).
                 if function.module == una_core::COLLECTIONS_MODULE
-                    && let Some(made) = self.collections(&function.name, &values, *span)?
+                    && let Some(made) =
+                        self.collections(&function.name, &values, type_args, *span, env)?
                 {
                     return Ok(made);
                 }
@@ -2499,7 +2545,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         &mut self,
         name: &str,
         args: &[Value],
+        type_args: &[Type],
         span: Span,
+        env: &Env,
     ) -> Result<Option<Value>, CodegenError> {
         let arg = |i: usize| {
             args.get(i)
@@ -2524,8 +2572,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.call("una_rt_seq_of", &[arg(0)?, stack])?
             }
             "to_set" => self.call("una_rt_set_of", &[arg(0)?])?,
-            "empty_hash_map" | "empty_hash_set" | "to_hash_set" | "to_hash_map" => {
-                return Err(unsupported("`HashMap` and `HashSet` (spec/28)"));
+            // A new table under a key of its own (`spec/28 §1` rule 4), at the call: U6003 when
+            // the run's table counter is exhausted. The run reads the process key before `main`
+            // (ADR 0119 rule 9).
+            "empty_hash_map" | "empty_hash_set" => {
+                self.emitter.hashing = true;
+                let set = i64::from(name == "empty_hash_set");
+                let set = self.builder.ins().iconst(types::I64, set);
+                self.set("una_rt_hash_empty", &[set], span)?
+            }
+            // O(n · |k|) expected, the keys hashed by the descriptor of the key type, the first
+            // type argument, and compared within the memory budget.
+            "to_hash_set" | "to_hash_map" => {
+                self.emitter.hashing = true;
+                let key = type_args
+                    .first()
+                    .ok_or_else(|| internal(format!("`{name}` lacks its key type")))?;
+                let desc = self.descriptor(key, Constraint::Eq, env)?;
+                let set = i64::from(name == "to_hash_set");
+                let set = self.builder.ins().iconst(types::I64, set);
+                self.set("una_rt_hash_of_list", &[set, desc, arg(0)?], span)?
             }
             _ => return Ok(None),
         };
@@ -2914,12 +2980,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.call("una_rt_decimal", &words)
             }
             // Lowered with their receiver's ownership, in `rhs`.
-            Prim::Seq(_) | Prim::Set(_) | Prim::Priority(_) | Prim::BitSet(_) => Err(internal(
-                format!("collection `{}` out of place", prim.as_str()),
-            )),
-            Prim::HashMap(_) | Prim::HashSet(_) => {
-                Err(unsupported("`HashMap` and `HashSet` (spec/28)"))
-            }
+            Prim::Seq(_)
+            | Prim::Set(_)
+            | Prim::HashMap(_)
+            | Prim::HashSet(_)
+            | Prim::Priority(_)
+            | Prim::BitSet(_) => Err(internal(format!(
+                "collection `{}` out of place",
+                prim.as_str()
+            ))),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {
