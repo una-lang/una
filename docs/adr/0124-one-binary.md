@@ -11,7 +11,6 @@
   - ADR 0106 (the optimized release backend), whose rule RB-1 compiles emitted C with the system C compiler. Where that compiler comes from is decided by a dated amendment of ADR 0106 after a measured prototype, not by this record (Question 1);
   - ADR 0041 and ADR 0064 (the proof cache), whose key gains the solver's build (rule 10);
   - ADR 0058 (`unsafe` at the runtime's C ABI boundary) and its amendment for `una-sys`;
-  - ADR 0118 (foreign code, Proposed), whose static archives the internal linker links, and whose rule 10 checks it carries out (rule 34);
   - ADR 0122 (Itá, Proposed), whose rule 1 runs the package manager inside `una`, also as `ita`, whose rule 18 says that the solver pin names the solver built into `una`, and whose rule 48 shares proofs across programs;
   - `docs/security/tcb.md` §3.2, §3.5 and gaps 1, 6 and 7;
   - issue #769 (the report's `tcb` section is incomplete).
@@ -21,7 +20,6 @@
   - **Diagnostics and project files:** `spec/13 §4` (one code), `§5` (`una --version`, `--solver-memory`, `--license`, `una notices`, `una guide`, `una build --debuggable`), `§6` (report fields);
   - **Native backend:** `spec/16 §1` rules 1 and 2 (the internal linker, the executables' targets), `§2` rule 3 (a failure to link), `§3` (RELRO at start-up);
   - **Accepted records:** ADRs 0003, 0035, 0055, 0058 and 0059, by the dated amendments of Appendix A;
-  - **Proposed records:** ADR 0118, by the amendment of Appendix A, or folded into it if it is accepted after this record;
   - **Documents:** `docs/compiler/architecture.md §7` (the crates `una-link` and `una-z3`), `docs/security/tcb.md` §3.2, §3.5, §3.9, `docs/release-gates.md` §2, `install.sh`, `scripts/release.sh`, `scripts/check-release.sh`.
 
   The rules of the internal linker would live in a new section of `spec/16`, "Linking".
@@ -34,9 +32,12 @@
 
 ## Questions for acceptance
 
-Each question states what is being decided, its cost to the programmer, an example and the recommendation this draft follows. Question 1 is not decided here; it is kept so that the numbering stays stable.
+Each question states what is being decided, its cost to the programmer, an example and the recommendation this draft follows.
 
-1. **Where does the C compiler of `una build --release` come from? Not decided by this record.** ADR 0106 (accepted, not yet implemented) runs the system C compiler. The direction this record states is a pinned clang built into `una`, run as a confined child (rule 9). The decision is a dated amendment of ADR 0106, taken after a measured prototype: the size of `una` with LLVM and clang linked in, the start-up of `una --version` and of a solver child with LLVM's static initializers and relocations in the binary, and the build time of the release gates. Steps 1 to 5 of the plan do not wait for it.
+- **Questions 3 to 8 are decided as recommended.**
+- **Questions 1 and 2 are held for the project's decision on toolchain scope.** Una admits no foreign code, and the project is deciding whether that also excludes a C compiler inside `una` for `--release` (ADR 0106) and a C library (musl) inside the executables `una` writes. Until then this record stays Proposed. The rules that follow Question 2 (a) (rules 12, 16, 21, 22, 25 and 29, the musl inputs of rule 24's scan, and the Linux parts of rules 31 and 33 and of the Conformance) stand only if the project decides (a), and are rewritten otherwise.
+
+1. **Where does the C compiler of `una build --release` come from? Held for the project's decision.** Not decided by this record either way. ADR 0106 (accepted, not yet implemented) runs the system C compiler. The direction this record states is a pinned clang built into `una`, run as a confined child (rule 9). The decision is a dated amendment of ADR 0106, taken after a measured prototype: the size of `una` with LLVM and clang linked in, the start-up of `una --version` and of a solver child with LLVM's static initializers and relocations in the binary, and the build time of the release gates. Steps 1 to 5 of the plan do not wait for it.
    - **Cost to the programmer until then:** release builds, once implemented, need a C compiler; nothing else does.
    - *Example.*
 
@@ -46,8 +47,8 @@ Each question states what is being decided, its cost to the programmer, an examp
      $ una build --release    # until ADR 0106's amendment: needs cc
      ```
 
-2. **What do Linux executables link against?** Today they link the system's glibc dynamically (`crates/una-cli/src/build.rs`, `link`). Two options:
-   - **(a) Recommended: a static, position-independent executable with musl's C library inside it,** taken from the pinned Rust toolchain. It runs on any Linux of its architecture, with no shared library, and keeps address randomization. Recommended on four conditions, each a rule of this record: RELRO is really applied at run time (rule 25, probe P2); ADR 0118 is amended for the musl targets (Appendix A); the runtime's allocator is chosen by measurement, preferring one that adds no C code to the runtime's trusted base, and otherwise reviewed as a C dependency (rule 21); and the name-resolution limit is documented in the guide.
+2. **What do Linux executables link against? Held for the project's decision.** Today they link the system's glibc dynamically (`crates/una-cli/src/build.rs`, `link`). Two options:
+   - **(a) Recommended: a static, position-independent executable with musl's C library inside it,** taken from the pinned Rust toolchain. It runs on any Linux of its architecture, with no shared library, and keeps address randomization. Recommended on three conditions, each a rule of this record: RELRO is really applied at run time (rule 25, probe P2); the runtime's allocator is chosen by measurement, preferring one that adds no C code to the runtime's trusted base, and otherwise reviewed as a C dependency (rule 21); and the name-resolution limit is documented in the guide.
    - **(b)** A dynamic executable against glibc. The internal linker would then write symbol versions and dynamic sections, against a list of glibc's symbols embedded in `una`.
    - **Cost to the programmer under (a):** host names resolve through `/etc/hosts` and the DNS servers of `/etc/resolv.conf` only, without the system's name-service modules (LDAP, mDNS). And `una` itself stays a glibc executable (rule 1): it runs on glibc distributions from the gate image's glibc on, not on musl distributions such as Alpine, although the executables it writes do.
    - *Example.*
@@ -60,7 +61,8 @@ Each question states what is being decided, its cost to the programmer, an examp
      ```
 
 3. **The guides and the license that the archive holds today.** The archive holds `LICENSE`, `README.md` and four guides beside `una` (`scripts/release.sh`, #410). With one file, they move inside the binary.
-   - **Recommended:** `una --license` prints Una's license and the notices of everything built into `una`; `una notices` prints the notices of everything `una build` puts into an executable (the Rust standard library, the runtime's crates, and on Linux musl and LLVM's libunwind), for whoever distributes one; `una guide [name]` prints a guide, the list when no name is given. The archive holds only `una`.
+   - **Recommended:** `una --license` prints Una's license and the notices of everything built into `una`; `una notices` prints the notices of everything `una build` puts into an executable (the Rust standard library, the runtime's crates, and on Linux, under Question 2 (a), musl and LLVM's libunwind), for whoever distributes one; `una guide [name]` prints a guide, the list when no name is given. The archive holds only `una`.
+   - **Decided:** as recommended.
    - **Cost to the programmer:** a guide is read with a command instead of a file.
    - *Example.*
 
@@ -72,6 +74,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 
 4. **A memory limit for the solver.** Today a query may use all the memory of the machine.
    - **Recommended:** each solver child gets a fixed limit, 4 GiB by default, set with `--solver-memory <MiB>`; and the number of children running at once is bounded so that their limits together stay within half of the machine's physical memory (rule 6). The limit of one query never depends on the machine, so its result does not either; only how many run at once does. A query past its limit is `unknown` with the reason `memout`, an error like any `unknown`, never U8001 (rule 8).
+   - **Decided:** as recommended.
    - **Cost to the programmer:** a proof that needs more than 4 GiB fails until the flag raises the limit; on a small machine, fewer queries run in parallel. The `limits` gate records the largest query of the repository's obligations.
    - *Example.*
 
@@ -83,6 +86,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 
 5. **The oldest macOS for the executables.**
    - **Recommended: macOS 13,** tested: the list of libSystem's symbols is taken from the macOS 13 SDK, so a symbol added later cannot be bound, and each release runs its executables on a macOS 13 virtual machine (rule 31). The Z3 that the installer downloads today is already built for macOS 13.3 (`install.sh`), so no current installation runs `una check` on an older one. `una` itself also targets macOS 13.
+   - **Decided:** as recommended, macOS 13.
    - **Cost to the programmer:** an executable built by `una` does not start on macOS 11 or 12.
    - *Example.*
 
@@ -97,6 +101,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 6. **The solver under a sandbox that already confines `una` (macOS).** macOS does not let a sandboxed process apply a second sandbox profile of its own (`sandbox_init` fails). `una` run under `sandbox-exec`, as the project's `hunt` gate does and some agent and continuous-integration harnesses do, could then never confine its solver child.
    - **What this record decides:** when the child's own `sandbox_init` fails, the child asks the system whether it is already sandboxed (`sandbox_check` on itself). If it is not, the run fails with U5003, as any failure to confine does. If it is, the child checks each operation of a fixed list with `sandbox_check` (rule 7) and the report records which the outer profile denies (`tcb.solver_confinement: "outer"`, `tcb.solver_outer_denied`).
    - **The question: must the outer profile deny a minimum?** Recommended: **yes**. The outer sandbox counts as the confinement only if it denies at least outbound and inbound network access and writing files outside the temporary directory; otherwise the run fails with U5003, "the outer sandbox is too permissive for the solver". The alternative is to accept any outer sandbox and only record what it denies.
+   - **Decided:** as recommended: yes, the outer profile must deny that minimum.
    - **Cost to the programmer:** none under a strict harness. A harness whose profile allows network access or writes anywhere must tighten it, or not run `una` under it; without this rule, `una check` would fail under every outer sandbox, and with no minimum, a permissive harness would leave the solver unconfined.
    - *Example.*
 
@@ -109,6 +114,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 
 7. **The hardened runtime on macOS executables.** It makes macOS refuse injected libraries (`DYLD_INSERT_LIBRARIES`) in a Una executable, and it also stops debuggers and profilers (`lldb`, Instruments, `dtrace`) from attaching to it.
    - **Recommended:** keep it on every executable, and add `una build --debuggable`, which also writes the entitlement `com.apple.security.get-task-allow`, so that the developer of a program can debug and profile it. The report records the flag, and `--release` refuses it.
+   - **Decided:** as recommended.
    - **Cost to the programmer:** profiling a program means building it with `--debuggable`.
    - *Example.*
 
@@ -120,6 +126,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 
 8. **What the solver child's system-call filter does with a call it does not list (Linux).** `una` uses the system's glibc, which varies by distribution and version and may make calls the filter's tests never saw.
    - **Recommended:** an unlisted call fails with `ENOSYS`, as on a kernel that lacks it, so the call never runs and the C library takes its fallback; the dangerous families (opening files, sockets, starting programs, reading other processes' memory) kill the child at once, as tripwires; and a child killed by the filter is U5003, "the solver child broke its confinement", never a mere crash (rule 7).
+   - **Decided:** as recommended.
    - **Cost to the programmer:** none; killing on every unlisted call would turn a newer glibc into failed proofs.
    - *Example.*
 
@@ -163,7 +170,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 - **The versions they need.** The Z3 assets that `install.sh` pins are built for macOS 13.3, glibc 2.39 on x86-64 Linux and glibc 2.38 on arm64 Linux.
 - **The trusted base.** `docs/security/tcb.md` ranks the system `cc` and linker as unpinned and unrecorded (§3.5, gap 7), and the report's `tcb` section omits the runtime, the linker and their versions (gap 6, #769). The solver is ranked second, "soundness" (§3.2).
 - **The `sanitize` gate** links the native equivalence run against an AddressSanitizer runtime "through a `cc` placed on that one command's `PATH`" (`docs/release-gates.md` §2), and the `hunt` gate runs every compiler run under `sandbox-exec` on macOS.
-- **`unsafe`.** Only `crates/una-rt/src/ffi.rs` and, by the amendment of ADR 0058 made by ADRs 0116 and 0117, the crate `una-sys` may hold `unsafe` code. Every other crate forbids it. ADR 0118 (Proposed) raises `una-sys`'s limit from 800 to 1,400 lines, for code behind a Cargo feature `foreign` that only `una-rt` enables.
+- **`unsafe`.** Only `crates/una-rt/src/ffi.rs` and, by the amendment of ADR 0058 made by ADRs 0116 and 0117, the crate `una-sys` may hold `unsafe` code. Every other crate forbids it. `una-sys`'s limit is 800 lines.
 - **The runtime unwinds.** `una-rt` catches panics at its boundary (`crates/una-rt/src/runtime.rs`, `catch_unwind`), so an executable needs its unwind tables.
 - **The runtime's allocator** is `Cap<System>`, the system allocator under a counting cap (`crates/una-rt/src/lib.rs`).
 - **Name resolution.** `una-http` resolves host names through the standard library's `to_socket_addrs` (`crates/una-http/src/client.rs`), which calls the C library's `getaddrinfo`.
@@ -185,7 +192,7 @@ Each question states what is being decided, its cost to the programmer, an examp
 
 ## Decision
 
-In one paragraph: the release `una` contains Z3, built from a pinned commit by a committed recipe; the native runtime, built from the same commit; for Linux, the C library and start-up objects of the pinned Rust toolchain's musl target; and a linker written for Una. `una check` runs each query in a child process that is `una` re-executed in its solver mode, confined by the operating system or verified to be inside an outer sandbox, and bounded in time and memory, with the number of children bounded too. A proof requires the child's handshake, a normal exit and `unsat`. `verification.lock` keeps its keys: its `solver_version` names the Z3 built into the running `una`, another value is U5003, and the proof cache's key includes the solver's build. `una build` links in memory, with no external program, into a static-pie ELF executable on Linux whose RELRO the runtime protects at start-up, and a Mach-O executable with an ad-hoc signature and the hardened runtime, linking only libSystem, on macOS. The linker refuses relocations it cannot honor in a position-independent executable, keeps every relocation and symbol inside its own section, carries out ADR 0118's checks on foreign code, and writes the same bytes on every machine. The installer and the archives ship one file. Each step ships alone, and each adds a test on a machine with no `cc`, no Rust and no Z3.
+In one paragraph: the release `una` contains Z3, built from a pinned commit by a committed recipe; the native runtime, built from the same commit; for Linux, the C library and start-up objects of the pinned Rust toolchain's musl target; and a linker written for Una. `una check` runs each query in a child process that is `una` re-executed in its solver mode, confined by the operating system or verified to be inside an outer sandbox, and bounded in time and memory, with the number of children bounded too. A proof requires the child's handshake, a normal exit and `unsat`. `verification.lock` keeps its keys: its `solver_version` names the Z3 built into the running `una`, another value is U5003, and the proof cache's key includes the solver's build. `una build` links in memory, with no external program, into a static-pie ELF executable on Linux whose RELRO the runtime protects at start-up, and a Mach-O executable with an ad-hoc signature and the hardened runtime, linking only libSystem, on macOS. The linker refuses relocations it cannot honor in a position-independent executable, keeps every relocation and symbol inside its own section, links only inputs that `una` itself carries, and writes the same bytes on every machine. The installer and the archives ship one file. Each step ships alone, and each adds a test on a machine with no `cc`, no Rust and no Z3.
 
 ### A. The solver inside `una`
 
@@ -222,7 +229,7 @@ In one paragraph: the release `una` contains Z3, built from a pinned commit by a
      - **before the filter,** the child does once what the C library would otherwise open a file for during the query, such as reading the number of processors (`/sys/devices/system/cpu/online`) and the time zone (`/etc/localtime`), so that no later call needs a file. Probe P6 shows whether that is enough. If a C library still opens a file during a query, `open`, `openat` and `openat2` move from the tripwires to `SECCOMP_RET_ERRNO(EACCES)`: the call still never runs, and the C library takes its fallback;
      - **tripwires, which kill the process (`SECCOMP_RET_KILL_PROCESS`):** `open`, `openat`, `openat2`, `creat`, `socket`, `socketpair`, `connect`, `bind`, `accept`, `accept4`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `fork`, `vfork`, `clone` without `CLONE_THREAD`, `kill`, `tkill` and `tgkill` toward another process, and `mmap` or `mprotect` asking for execution;
      - **every other call fails with `ENOSYS`** (`SECCOMP_RET_ERRNO`), so it never runs, and a newer C library takes the fallback it has for older kernels. `clone3`, whose flags a filter cannot read, is in this class, so the C library falls back to `clone`.
-   - **macOS** (Question 6): `sandbox_init` with a profile that denies everything by default and allows only what the front end needs, with no file access, no network and no process creation: `(version 1)(deny default)`, plus the few allowances the front end needs. One is decided: the C++ library asks for the number of processors with `sysctlbyname("hw.ncpu")` when Z3 asks for it, so reading it once before confining would not serve later calls; the profile allows `sysctl-read` of that one name and no other. The rest comes from probe P7 on the real front end. The profile is a string of the sandbox profile language passed to `sandbox_init`, built into `una`; probe P7 checks that every supported macOS accepts it. If `sandbox_init` fails and `sandbox_check` on the child's own process reports that it is already sandboxed, the child checks with `sandbox_check`, one by one, the operations `network-outbound`, `network-inbound`, `file-write-data` at `/` and at a path outside the temporary directory that the parent passes, `file-read-data` at the same paths, `process-exec*` with a path filter naming `/bin/sh` (`sandbox_check` refuses the plain name `process-exec` with `EINVAL`), and `process-fork`, and writes the list of those denied after its handshake. Under Question 6's minimum, the outer sandbox counts as the confinement only if it denies both network operations and both writes; otherwise U5003. The interface is deprecated; ADR 0118 rule 33 uses it for the same reason: it is the one the system offers to a process confining itself.
+   - **macOS** (Question 6): `sandbox_init` with a profile that denies everything by default and allows only what the front end needs, with no file access, no network and no process creation: `(version 1)(deny default)`, plus the few allowances the front end needs. One is decided: the C++ library asks for the number of processors with `sysctlbyname("hw.ncpu")` when Z3 asks for it, so reading it once before confining would not serve later calls; the profile allows `sysctl-read` of that one name and no other. The rest comes from probe P7 on the real front end. The profile is a string of the sandbox profile language passed to `sandbox_init`, built into `una`; probe P7 checks that every supported macOS accepts it. If `sandbox_init` fails and `sandbox_check` on the child's own process reports that it is already sandboxed, the child checks with `sandbox_check`, one by one, the operations `network-outbound`, `network-inbound`, `file-write-data` at `/` and at a path outside the temporary directory that the parent passes, `file-read-data` at the same paths, `process-exec*` with a path filter naming `/bin/sh` (`sandbox_check` refuses the plain name `process-exec` with `EINVAL`), and `process-fork`, and writes the list of those denied after its handshake. Under Question 6's minimum, the outer sandbox counts as the confinement only if it denies both network operations and both writes; otherwise U5003. The interface is deprecated; it is used because it is the one the system offers to a process confining itself.
    - **What a failure is.** A child that cannot confine itself writes no handshake and exits; the run fails with U5003, "the solver could not be confined". There is no unconfined fallback. A child ended by `SIGSYS` broke the filter: U5003, "the solver child broke its confinement (SIGSYS)", never `crash`.
    - **Where the code lives.** The confinement, the limits, the spawn attributes and the footprint reading are in `una-sys`, behind a Cargo feature `solver` that only `una-cli` enables (rule 35).
    - **Recorded.** The report's `tcb.solver_confinement` is `"own"` or `"outer"`, and, for `"outer"`, `tcb.solver_outer_denied` lists the operations the outer profile denies, in the order above.
@@ -272,22 +279,22 @@ In one paragraph: the release `una` contains Z3, built from a pinned commit by a
 ### C. The internal linker
 
 22. **Scope.** A crate, `una-link`, in safe Rust (`unsafe_code = "forbid"`), links:
-    - **inputs:** the program's object from Cranelift; under ADR 0106, the release compiler's object; under ADR 0118, the audited private copies of foreign archives; the embedded runtime; on Linux, musl's `libc.a`, its start-up objects and `libunwind.a`;
+    - **inputs:** the program's object from Cranelift; under ADR 0106, the release compiler's object; the embedded runtime; on Linux, musl's `libc.a`, its start-up objects and `libunwind.a`;
     - **outputs:**
       - **Linux, x86-64 and arm64:** a static-pie ELF executable. No interpreter, no shared library, no symbol versions.
       - **macOS, arm64:** a Mach-O executable for macOS 13 and later (Question 5), that links one library dynamically, `/usr/lib/libSystem.B.dylib`, as Apple requires.
+    - **never an input:** an object, an archive or a library that a package or the user supplies. Una admits no foreign code, so every input is one of the above, generated by `una` or built by the project and carried inside `una`.
     - **out of scope:** shared libraries, linker scripts, any flag a package supplies, link-time optimization (under ADR 0106 it would happen inside the compiler, before the link), cross-compilation, and debug information (rule 26).
     - **Object reading** uses the `object` crate, already in `Cargo.lock` (0.40.0, through `cranelift-object`), for ELF, Mach-O and `ar`. The writer is `una-link`'s own.
 23. **Resolution.**
-    - **Order.** The inputs are read in this fixed order: the program's objects, the foreign archives, the runtime, then the C library and its start-up objects on Linux.
+    - **Order.** The inputs are read in this fixed order: the program's objects, the runtime, then the C library and its start-up objects on Linux.
     - **Archives.** A member is loaded when it defines a symbol that is undefined at that point; loading repeats until nothing changes, over all archives, so their order does not matter for what is found (as `ld.lld` does). Among members that define the same symbol, the first in input order wins.
     - **Duplicates.** Two strong definitions of one symbol in loaded inputs are an error. A weak definition yields to a strong one. COMDAT groups and Mach-O weak definitions keep the first.
-    - **Foreign archives** follow ADR 0118: their copies are audited before the link, and the checks of rule 34 apply to them.
     - **Linker-defined symbols.** The linker defines exactly these, and no input may define them: on ELF, `__start_<section>` and `__stop_<section>` for sections whose names are C identifiers, `__init_array_start`, `__init_array_end`, `__fini_array_start`, `__fini_array_end`, `__preinit_array_start`, `__preinit_array_end`, `_DYNAMIC`, `_GLOBAL_OFFSET_TABLE_`, `__ehdr_start` and `__dso_handle`; on Mach-O, `__mh_execute_header`.
     - **What stays undefined** at the end is an error, except, on macOS, a symbol that the embedded export list of libSystem holds, which is bound to libSystem (two-level namespace, ordinal 1). A symbol outside that list is an error, so the runtime cannot come to need another library, or a newer macOS, unnoticed.
     - **Dead code.** Sections, and on Mach-O the atoms that `.subsections_via_symbols` delimits, that are not reachable from the entry point, the initializers and the exported symbols through relocations, are dropped. An `.eh_frame` FDE is kept only if its function is live, and its LSDA and personality routine are kept alive only through a kept FDE. This keeps today's `--gc-sections` and `-dead_strip`: an executable that never uses `Http` carries no TLS stack (ADR 0074 H7).
 24. **Relocations.**
-    - **The lists are derived, not assumed.** `scripts/scan-relocations` lists every relocation type, by section kind and symbol kind, in the actual inputs: Cranelift 0.136's objects for the repository's programs, the Rust 1.98.1 standard library of each target, `ring` 0.17's assembly, the runtime, and ADR 0118's `foreign` corpus compiled by both GCC and clang. The section "Linking" of `spec/16` lists the result per target, and the scan runs again at every bump of the Rust toolchain, Cranelift or a crate with assembly, before the bump merges; a new type is added with its oracle test, or the bump waits. The expected sets are:
+    - **The lists are derived, not assumed.** `scripts/scan-relocations` lists every relocation type, by section kind and symbol kind, in the actual inputs: Cranelift 0.136's objects for the repository's programs, the Rust 1.98.1 standard library of each target, `ring` 0.17's assembly, and the runtime. The section "Linking" of `spec/16` lists the result per target, and the scan runs again at every bump of the Rust toolchain, Cranelift or a crate with assembly, before the bump merges; a new type is added with its oracle test, or the bump waits. The expected sets are:
       - **ELF x86-64:** `R_X86_64_64`, `PC32`, `PC64`, `PLT32` (resolved directly, with no PLT), `GOTPCREL`, `GOTPCRELX`, `REX_GOTPCRELX` (relaxed to an address computation when the target is local), `32` and `32S` under the restriction below, and the TLS types `TPOFF32`, `GOTTPOFF`, `TLSGD`, `TLSLD`, `DTPOFF32`, the general- and local-dynamic sequences relaxed to the local-exec model as the psABI describes, both in their form that calls `__tls_get_addr` through `PLT32` and in the form through `GOTPCRELX` that Rust's default of no PLT produces;
       - **ELF arm64:** `R_AARCH64_ABS64`, `PREL64`, `PREL32`, `CALL26`, `JUMP26`, `CONDBR19`, `TSTBR14`, `ADR_PREL_PG_HI21`, `ADR_PREL_LO21`, `ADD_ABS_LO12_NC`, `LDST8` to `LDST128_ABS_LO12_NC`, `ADR_GOT_PAGE`, `LD64_GOT_LO12_NC`, `ABS32` and `MOVW_UABS_G0` to `G3` under the restriction below, and the TLS types `TLSLE_*`, `TLSIE_*` and `TLSDESC_*`, the last two relaxed to the local-exec model;
       - **Mach-O arm64:** `ARM64_RELOC_UNSIGNED`, `SUBTRACTOR`, `BRANCH26`, `PAGE21`, `PAGEOFF12`, `GOT_LOAD_PAGE21`, `GOT_LOAD_PAGEOFF12`, `POINTER_TO_GOT`, `TLVP_LOAD_PAGE21`, `TLVP_LOAD_PAGEOFF12` and `ADDEND`.
@@ -350,22 +357,17 @@ In one paragraph: the release `una` contains Z3, built from a pinned commit by a
     - **Per program:** every runnable program of the repository, linked by both, runs with the same output, failure and trace, and the `native` gate's equivalence with the interpreter holds for the internal linker's output (`spec/16 §5`).
     - **Generated programs:** the programs of the hunt's generators, beyond the repository's own, linked by both and run, compared the same way.
     - **Structure:** every output is read back by `una-link`'s verifier (rule 34) and by `llvm-readobj`; on macOS `codesign --verify --strict` accepts it.
-    - **Fuzzing,** in the `sanitize` gate: the readers of `ar`, ELF and Mach-O, and the whole link, with mutated objects and archives as inputs and the verifier of rule 34 as the oracle: an input either fails with a diagnostic or yields an executable the verifier accepts. Foreign archives (ADR 0118) are inputs a package supplies.
-34. **The verifier.** After writing, `una-link` reads the executable back with what it knows of every input, and refuses it (U8001 for Una's own inputs, U7006 for an input from a foreign archive) unless:
+    - **Fuzzing,** in the `sanitize` gate: the readers of `ar`, ELF and Mach-O, and the whole link, with mutated objects and archives as inputs and the verifier of rule 34 as the oracle: an input either fails with a diagnostic or yields an executable the verifier accepts.
+34. **The verifier.** After writing, `una-link` reads the executable back with what it knows of every input, and refuses it (U8001) unless:
     - **hardening:** no segment is both writable and executable; the stack is not executable; RELRO covers the GOT and relocated constants on ELF, and `__DATA_CONST` is read-only after fixups on Mach-O; no text relocation exists; every relocation was applied, inside its own section (rule 24); every kept input section is placed once, with no overlap; on macOS the signature's hashes match the file;
-    - **the checks of ADR 0118 rule 10,** for the copy of each foreign archive, which the internal linker makes exact since it applies every relocation itself:
-      - each declared symbol is defined exactly once, inside sections from its copy;
-      - the only references into a copy's sections are the copy's own references to its own sections, and the generated code's references to declared symbols; none comes from the runtime, from `una-sys`'s code, from the C library or from another copy;
-      - every section from a copy lies in a segment that is read-only at run time, RELRO counting only once rule 25's protection is verified;
-      - no relocation of a copy has a place outside its own section, and no symbol of a copy lies outside its section.
 
-    Canaries, each of which must make the verifier or the gate fail: an object with a writable and executable section; an `R_X86_64_IRELATIVE` relocation; an undefined symbol outside libSystem's list; a signature with one wrong page hash; an executable whose `PT_GNU_STACK` is executable; a foreign relocation whose place lies 8 bytes past the end of its section, into the following runtime code; a foreign symbol whose value lies past its section's end; a runtime reference that resolves into a foreign section; a foreign section placed in a writable segment; and two input sections placed overlapping.
+    Canaries, each of which must make the verifier or the gate fail: an object with a writable and executable section; an `R_X86_64_IRELATIVE` relocation; an undefined symbol outside libSystem's list; a signature with one wrong page hash; an executable whose `PT_GNU_STACK` is executable; a relocation whose place lies 8 bytes past the end of its section, into the following code; a symbol whose value lies past its section's end; and two input sections placed overlapping.
 
 ### F. The trusted base
 
 35. **The `unsafe` code.** Three places, each under ADR 0058's rules:
     - `ffi.rs`, which gains the RELRO protection at start-up (rule 25, about 40 lines);
-    - `una-sys`, which gains, behind a Cargo feature `solver` that only `una-cli` enables, the solver child's confinement and limits: the seccomp filter and its installation (about 250 lines), `sandbox_init` and `sandbox_check` (about 80), the rlimits (about 60), the spawn attributes and descriptor closing (about 60), the footprint reading (about 40), about 500 lines in all. The crate's limit becomes 800 lines of base code, plus 600 behind `foreign` (ADR 0118) and 600 behind `solver`. A test runs `cargo tree -p una-rt -e features` and `cargo tree -p una-interp -e features`, failing if `solver` is active, as ADR 0118's test does for `foreign`;
+    - `una-sys`, which gains, behind a Cargo feature `solver` that only `una-cli` enables, the solver child's confinement and limits: the seccomp filter and its installation (about 250 lines), `sandbox_init` and `sandbox_check` (about 80), the rlimits (about 60), the spawn attributes and descriptor closing (about 60), the footprint reading (about 40), about 500 lines in all. The crate's limit becomes 800 lines of base code, plus 600 behind `solver`. A test runs `cargo tree -p una-rt -e features` and `cargo tree -p una-interp -e features`, failing if `solver` is active;
     - `una-z3` (rule 2).
 
     `una-link` and the rest of `una-cli` stay free of `unsafe`.
@@ -393,10 +395,10 @@ In one paragraph: the release `una` contains Z3, built from a pinned commit by a
 - **The linker as a new part of the trusted base.** A bug in `una-link` can produce a wrong executable: a wrong address is a wrong result or a crash, and a wrong segment permission weakens hardening. It replaces a component that was unpinned and unrecorded (`tcb.md` gap 7). Mitigations:
   - safe Rust only;
   - relocation types derived from a scan of the real inputs, with position independence and bounds enforced on each (rule 24);
-  - the verifier that reads every output back, including ADR 0118's checks on foreign code (rule 34);
+  - the verifier that reads every output back (rule 34);
   - the oracle tests per relocation type, per program and on generated programs, and fuzzing of the whole link (rule 33);
   - the equivalence of every runnable program with the interpreter, which already catches a wrong result (`spec/16 §5`).
-- **Link-time injection by foreign code.** With the linker inside `una`, a foreign object's relocations and symbols are applied by Una's code, so a relocation aimed past its own section could patch the runtime's code, and a symbol aimed past its section could alias it. Rule 24 refuses both, and rule 34 checks the result.
+- **No foreign code at the link.** Una admits no foreign code: every input of the link is generated by `una` or built by the project and carried inside `una` (rule 22), and no package or user can supply an object, an archive, a library or a flag. A bug in an input, such as a relocation aimed past its own section, which could patch the following code, or a symbol aimed past its section, which could alias it, is still refused by rule 24 and checked by rule 34.
 - **Hardening of the executables,** at least that of today's default `cc`: position-independent with address randomization on both targets; RELRO protected by the runtime at start-up and tested at run time (rule 25); every import bound at load; non-executable stacks; no segment both writable and executable; on macOS, the hardened runtime (Question 7).
 - **Code signing.** An ad-hoc signature proves integrity, not identity. An executable built on a machine runs there, since a locally written file carries no quarantine attribute. One sent to another Mac and downloaded there is subject to Gatekeeper, as an executable linked by Apple's `ld` with an ad-hoc signature is today; its author signs it with their own identity. `--debuggable` adds an entitlement that lets any debugger of the same user attach; the report records it, and `--release` refuses it. Signing `una` itself with a developer identity and notarizing it is a separate decision of the release process.
 - **Licenses.** An executable now contains musl (MIT) and LLVM's libunwind (Apache-2.0 with LLVM exception) on Linux, as well as the Rust standard library (MIT or Apache-2.0) and the runtime's crates as today. `una notices` prints their notices, and `spec/16` lists what an executable contains. musl's and libunwind's advisories are followed through the Rust toolchain's bumps, in the supply-chain record.
@@ -430,7 +432,7 @@ No label, rule or theorem of `spec/07` changes: this record moves where tools ru
 | Applying relocations, with their bounds and position checks | O(relocations) | O(1) each |
 | `.eh_frame_hdr` and `__unwind_info` | O(F log F), sorting F functions | O(F) |
 | The signature | O(size of the executable), SHA-256 of each 4 KiB page, in parallel over pages, each written at its fixed offset | O(pages × 32 bytes) |
-| The verifier, ADR 0118's checks included | O(size of the executable + relocations) | O(sections) |
+| The verifier | O(size of the executable + relocations) | O(sections) |
 | RELRO at start-up | O(number of program headers), one `mprotect` | O(1) |
 
 The whole link is O(N + S log S) for N bytes of loaded input, the bound of the fastest production linkers (`mold`, `ld.lld`), and needs no external process. Today's link spends a process start and the reading of the whole `libuna_rt.a` from disk.
@@ -441,7 +443,7 @@ The whole link is O(N + S log S) for N bytes of loaded input, the bound of the f
 
 ## Diagnostics
 
-One new code, which joins `spec/13 §4` with its implementation. U7006 is taken by ADR 0118, U7007 to U7014 by ADRs 0121, 0122 and 0123 (Proposed); U7015 is free on `main`, in every open pull request and in every local draft.
+One new code, which joins `spec/13 §4` with its implementation. U7007 to U7014 are taken by ADRs 0121, 0122 and 0123 (Proposed); U7015 is free on `main`, in every open pull request and in every local draft.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -450,7 +452,7 @@ One new code, which joins `spec/13 §4` with its implementation. U7006 is taken 
 Existing codes cover the rest:
 - **U5003:** a lock that pins another solver or version (rule 10); a child whose handshake differs, is too long or late, or is missing (rule 4); no `/proc` on Linux (rule 5); a child that cannot be confined, whose outer sandbox is too permissive, or that broke its confinement (rule 7); a development build with no solver (rule 19).
 - **U5002:** `unknown` with reason `memout`, `cpu` or `crash` (rules 6, 8).
-- **U8001:** a link that fails on Una's own inputs: an unsupported or position-dependent relocation, a relocation or symbol outside its section, a duplicate or undefined symbol, a symbol outside libSystem's list, a refusal of the verifier (rules 23, 24, 34); a failure to protect RELRO at start-up (rule 25). Any of these on an input from a foreign archive is U7006 (ADR 0118).
+- **U8001:** a link that fails on Una's own inputs: an unsupported or position-dependent relocation, a relocation or symbol outside its section, a duplicate or undefined symbol, a symbol outside libSystem's list, a refusal of the verifier (rules 23, 24, 34); a failure to protect RELRO at start-up (rule 25).
 
 Usage errors, exit code 2: `--solver-memory` takes an integer from 256 to 1,048,576; `una guide` with a name that is not a guide; `--debuggable` with `--release`; `--external-linker` in any build without `dev-external-link`. A failure to write the executable's file stays a usage error, as today (`spec/16 §2` rule 3).
 
@@ -472,7 +474,7 @@ Usage errors, exit code 2: `--solver-memory` takes an integer from 256 to 1,048,
 - **A. Keep Z3, `cc` and the runtime separate.** Not chosen: it is the state that #891 replaces, with the two hijacks of the Security section.
 - **B. Z3 in the `una` process, through its C API.** Not chosen: a crash of Z3 ends `una`, including the language server; Z3's global state and memory stay in the process across queries; memory and processor limits cannot be applied to one query; and confinement would confine `una` itself.
 - **C. One long-lived solver child, reset between queries.** Not chosen: state that `(reset)` does not clear could make one query's answer depend on an earlier one, against `spec/12 §10`. A fork server (rule 30) keeps one process per query if start-up ever needs it.
-- **D. Embed `ld.lld` or `mold`.** Not chosen: each is a large C++ program that would parse untrusted foreign archives (ADR 0118) with no memory safety, and neither is built as a library.
+- **D. Embed `ld.lld` or `mold`.** Not chosen: each is a large C++ program that would parse every input with no memory safety, inside the trusted base, and neither is built as a library.
 - **E. A Rust linker crate.** Not chosen for now: at the time of writing, none covers both ELF and Mach-O with a code signature. If one comes to, it goes through the supply-chain record and the `deps` gate, and rules 33 and 34 test it the same way.
 - **F. Write the runtime to a cache directory and keep `cc`.** ADR 0059's alternative. Not chosen: it keeps `cc`.
 - **G. Dynamic glibc executables** (Question 2 (b)). Not chosen: the linker would need symbol versions, dynamic sections and an embedded list of glibc's symbols, and executables would depend on the glibc of the machine that runs them.
@@ -489,8 +491,8 @@ Each step ships in a release, keeps every existing gate (archive scan, validatio
 
 1. **Z3 inside `una`.** `supply-chain/z3.lock` and `supply-chain/z3/`, the mirrored tarball, `scripts/build-z3.sh`, the library stored by digest, the crate `una-z3`, the solver mode with its handshake, limits, admission control and confinement in `una-sys` behind `solver`, `--solver-memory`, the proof condition and the reasons `memout`, `cpu` and `crash`, the cache key with the solver's build, the build record, the report's `tcb.solver_build` and `tcb.solver_confinement`, and the gates `solver-identity` and `limits`. The installer stops downloading Z3. `toolchain-free` runs `una check` with no `z3` on `PATH`.
 2. **The runtime inside `una`.** The build order of rule 18, the embedded runtime and its index, `UNA_RT_LIB` for development builds only. Until step 3, `una build` writes the embedded runtime into a private directory of mode 0700, created for the build, with `O_EXCL`, for `cc`, and removes it after the link. The archive drops `lib/`.
-3. **The internal linker, macOS arm64.** `una-link` with Mach-O output, chained fixups, unwind information, the signature with the hardened runtime and `--debuggable`, the relocation scan, the verifier with ADR 0118's checks, the oracle and fuzzing, the external link for the `sanitize` gate, the `macos-oldest` gate, and U7015. `toolchain-free` runs `una build` on macOS.
-4. **The internal linker, Linux x86-64 and arm64.** Static-pie ELF with 64 KiB alignment on arm64, the musl inputs, the runtime and Cranelift retargeted to musl, RELRO at start-up with its run-time test, and the allocator of rule 21 with its measurement on the release performance benchmarks. `toolchain-free` runs `una build` on Linux. ADR 0118's amendment of Appendix A applies from this step.
+3. **The internal linker, macOS arm64.** `una-link` with Mach-O output, chained fixups, unwind information, the signature with the hardened runtime and `--debuggable`, the relocation scan, the verifier, the oracle and fuzzing, the external link for the `sanitize` gate, the `macos-oldest` gate, and U7015. `toolchain-free` runs `una build` on macOS.
+4. **The internal linker, Linux x86-64 and arm64.** Static-pie ELF with 64 KiB alignment on arm64, the musl inputs, the runtime and Cranelift retargeted to musl, RELRO at start-up with its run-time test, and the allocator of rule 21 with its measurement on the release performance benchmarks. `toolchain-free` runs `una build` on Linux. This step follows the project's decision on Question 2.
 5. **One file.** The archive's single entry, `una --license`, `una notices`, `una guide`, the installer with its tightened path checks and its migration, and the `size-startup` gate.
 
 The release compiler (Question 1) follows ADR 0106's amendment, on its own plan.
@@ -549,13 +551,6 @@ To be appended, dated, when this record is accepted:
 
 **ADR 0055, Amendment.** NB-1: `una build` links with the internal linker of ADR 0124, not the system `cc`. On Linux the executables are static-pie and their target is the musl triple.
 
-**ADR 0058, Amendment.** The amendment of ADRs 0116 and 0117 says that `una-sys` holds only the signal handlers and the coroutine stacks. It now holds: that base code (at most 800 lines); behind the feature `foreign`, which only `una-rt` enables, the code of ADR 0118 (at most 600 lines); and behind the feature `solver`, which only `una-cli` enables, the solver child's confinement, limits, spawn attributes and footprint reading of ADR 0124 rules 5 to 7 (at most 600 lines). A third place may hold `unsafe` code: the crate `una-z3`, holding only the declaration of Z3's front-end entry, the construction of its arguments and the call, at most 150 lines, depending only on `una-sys`. `ffi.rs` also holds the RELRO protection at start-up (ADR 0124 rule 25). Each is under rule 1's comments and lint settings, and every change gets a security review.
+**ADR 0058, Amendment.** The amendment of ADRs 0116 and 0117 says that `una-sys` holds only the signal handlers and the coroutine stacks. It now holds: that base code (at most 800 lines); and behind the feature `solver`, which only `una-cli` enables, the solver child's confinement, limits, spawn attributes and footprint reading of ADR 0124 rules 5 to 7 (at most 600 lines). A third place may hold `unsafe` code: the crate `una-z3`, holding only the declaration of Z3's front-end entry, the construction of its arguments and the call, at most 150 lines, depending only on `una-sys`. `ffi.rs` also holds the RELRO protection at start-up (ADR 0124 rule 25). Each is under rule 1's comments and lint settings, and every change gets a security review.
 
 **ADR 0059, Amendment.** Release archives no longer ship the runtime: it is built into `una` (ADR 0124 rules 12 to 19). Rule 2's search order holds for development builds only.
-
-**ADR 0118, Amendment** (or folded into it, if it is accepted after this record), under Question 2 (a):
-- **Targets:** the Linux targets of its tables and allowlists are `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
-- **The recipe** (its rule 8) builds archives for the musl targets.
-- **The import allowlist** (its rule 9) is pinned again against musl's `libc.a`, from the same corpus.
-- **Linking** (its rule 10): the flags `-z noexecstack -z relro -z now` and `-ignore_auto_link` are replaced by `una-link`'s fixed layout, which has no executable stack, protects RELRO at start-up, binds every import at load and never honors autolinking; the checks of the linker's map become the checks of ADR 0124 rule 34, which also refuse a foreign relocation or symbol outside its own section.
-- **Self-references.** Its rule 10 says that the only references into a copy's sections are the generated code's references to declared symbols, which would refuse an archive's references to its own code and data. The wording becomes "the copy's own references to its own sections, and the generated code's references to declared symbols", as in ADR 0124 rule 34; when ADR 0118 is accepted, this is appended to it as a dated note.
