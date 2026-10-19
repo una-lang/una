@@ -1,8 +1,8 @@
 # 0119. Collections: `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, with stated costs
 
-- Status: Proposed
-- Date: 2026-10-18
-- Deciders:
+- Status: Accepted
+- Date: 2026-10-19
+- Deciders: Una project (accepted on 2026-10-19)
 - Resolves: issue #895
 - Related:
   - ADR 0069 and `spec/21` (the map type), whose method style, labels and encoding this record follows;
@@ -13,7 +13,7 @@
   - ADR 0114 (`F64`), whose equality by bits and totalOrder make `F64` a key of every keyed type here;
   - ADR 0116 rule 0, which opens edition `0.4`, and its timing label `τ`;
   - issue #894 (the numeric foundation), which defines the dense `Array[T]` (rule 15).
-- Target: edition `0.4` (ADR 0116 rule 0), under the terms of edition `0.4` that ADR 0121 (issue #912, drafted separately) sets for ADRs 0116 to 0120 together. This record lists the only errors it can add to an existing edition `0.4` program, and the edition test that pins them (rule 0). Editions `0.1` to `0.3` do not change.
+- Target: edition `0.4` (ADR 0116 rule 0), under the terms of edition `0.4` that ADR 0121 (issue #912) sets for ADRs 0116 to 0120 together. This record lists the only errors it can add to an existing edition `0.4` program, and the edition test that pins them (rule 0). Editions `0.1` to `0.3` do not change.
 - Amends:
   - **Names:** `spec/10 §11` rule 10 (the importable module `std.collections`), `§12` rule 14 (interpolation of the new types);
   - **Constraints:** `spec/20 §1` rule 3 (which new types satisfy `Eq`);
@@ -25,11 +25,11 @@
   - **Trusted base:** `docs/security/tcb.md` and charter §3 (the `getrandom` crate, rule 9);
   - **Accepted records:** ADR 0069, by the dated amendment of Appendix A.
 
-  These rules would live in the chapter that ADR 0121 assigns, `spec/29-collections.md` in its draft.
+  These rules live in a new chapter, `spec/28-collections.md`.
 
 ## Questions for acceptance
 
-Each question has a recommendation. The rest of the record is written as if each recommendation were taken. The terms under which edition `0.4` may grow are not asked here: ADR 0121 (issue #912) sets them for ADRs 0116 to 0120 together, and this record lists what it can break (rule 0).
+Each question had a recommendation, and the project accepted every one on 2026-10-19 (question 6 was decided first). The rest of the record is written to those decisions. The terms under which edition `0.4` may grow are not asked here: ADR 0121 (issue #912) sets them for ADRs 0116 to 0120 together, and this record lists what it can break (rule 0).
 
 1. **Where the new names live.** In a standard module that a program imports, `std.collections`, or in the prelude next to `List` and `Map`.
    - Cost to the programmer: one `import` line per module that uses them. In return, `Queue`, `Stack` and `Set`, common names for user kinds, stay free in every module that does not import them. One kind of declaration does become an error: a function of the package named like one of the new built-in methods, such as `pop`, whose first parameter could receive the new type. Otherwise a method call such as `q.pop()` would silently go to the built-in method and never to that function (rule 0).
@@ -41,6 +41,7 @@ Each question has a recommendation. The rest of the record is written as if each
      edit line.push(item: "Ana")
      ```
    - **Recommendation:** `std.collections` (rule 0).
+   - **Decided:** `std.collections`, as recommended (rule 0).
 2. **`==` on `HashMap` and `HashSet`.** Two hash maps with the same entries, added in a different order, list them in a different order (question 3). The verifier treats `==` as equality of values, so anything computed from equal values is equal (`spec/20 §5` rule 1): an `==` that ignores order would let it prove that both lists start with the same key, which is false.
    - Options:
      - (a) no `==` on them, and a method `same_entries(as:)` that ignores order;
@@ -53,6 +54,7 @@ Each question has a recommendation. The rest of the record is written as if each
        @console.print("unchanged")
      ```
    - **Recommendation:** (a), the option that is sound and cannot be misread (rule 11).
+   - **Decided:** (a), as recommended: no `==` on `HashMap` and `HashSet`, and `same_entries(as:)` (and `same_items(as:)` for a hash set) compare whatever the order (rule 11).
 3. **The listing order of `HashMap` and `HashSet`.** It must be the same in the interpreter and in native code, run after run, and must not depend on the secret hash key.
    - Options:
      - (a) insertion order, kept by a dense array of entries beside the hash index;
@@ -66,10 +68,12 @@ Each question has a recommendation. The rest of the record is written as if each
      seen.items()                       -- (a): ["b", "a"]
      ```
    - **Recommendation:** (a): an O(n) listing, any `Eq` key, an order a reader can predict, and none of it depends on the key (rule 10).
+   - **Decided:** (a), insertion order, as recommended (rule 10).
 4. **The keyed hash function, and one key per table.** SipHash-1-3 and SipHash-2-4 are both keyed with 128 bits and are the standard defense against collision attacks. SipHash-1-3 is what Rust's standard `HashMap` uses today. SipHash-2-4 is the original, with a larger security margin. On the hash alone, it costs about 60% more for a key of 8 bytes (8 rounds against 5) and about twice as much per byte of a long key. Separately, each table gets its own key, derived from a key of the process, as Rust's `RandomState` gives each map its own.
    - Cost to the programmer: none in code. A lookup also probes the table and compares keys, so a program dominated by lookups slows by less than the hash does; the implementation measures by how much (Costs). A key per table costs 16 bytes per table, and the operations between two tables hash the other table's keys again, which their stated costs already include.
    - Example: `counts.get(key: word)` hashes `word` once, under the key of `counts`.
    - **Recommendation:** SipHash-2-4 and a key per table, by the rule that security comes first (rule 9). Against an attacker who times a long-running server's answers, a key per table limits what can be learned to one table, which helps more than the extra rounds do. The parity cost is stated (Costs).
+   - **Decided:** SipHash-2-4 with one key per table, as recommended (rule 9).
 5. **`Queue` and `Stack`.** One type, `Queue`, that pushes and pops at both ends, beside `Stack`; or a third type, `Deque`, beside a `Queue` that pushes only at the back and pops only at the front.
    - Cost to the programmer: with one double-ended type, a first-in, first-out queue offers `push_front` and `pop_back`, which it may never use. A double-ended `Queue` is already a stack too, through `push_front` and `pop`; `Stack` is kept because `push`, `pop` and `peek` on a stack read as what the program means.
    - Example:
@@ -78,6 +82,7 @@ Each question has a recommendation. The rest of the record is written as if each
      let next = edit work.pop()           -- serves from the front
      ```
    - **Recommendation:** one double-ended `Queue`, and `Stack` for readability (rules 5 and 6).
+   - **Decided:** one double-ended `Queue`, plus `Stack`, as recommended (rules 5 and 6).
 6. **`Map` gains `update`, and the checker learns that changing one key leaves the others alone.** `HashMap` has `update(key:, initial:, change:)`, which changes a value with one lookup instead of two (rule 12). The question is whether `Map` gains it too in edition `0.4`. With it, the checker would also know, after setting one key, that every other key keeps its value, so a program can prove things it cannot prove today.
    - Cost to the programmer: a function of the package named `update`, whose first parameter is a `Map` or a type parameter, becomes an error in edition `0.4` (rule 18), since `m.update(...)` would otherwise go silently to the new built-in method. Some obligations that the checker could not decide become proven.
    - Example:
@@ -86,6 +91,7 @@ Each question has a recommendation. The rest of the record is written as if each
        edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
      ```
    - **Recommendation:** yes (rule 18).
+   - **Decided:** yes, as recommended: `Map` gains `update(key:, initial:, change:)` in edition `0.4`, and the checker learns that changing one key leaves the others unchanged (rule 18, V3).
 
 ## Glossary
 
@@ -665,7 +671,7 @@ n is the size of the receiver, m of the other collection, |k| the size of a key'
 
 ## Diagnostics
 
-One new code joins `spec/13 §4`. U6006 and U6007 are taken by ADRs 0114 and 0116, and U6008 by the draft of ADR 0118; U6009 is free on `main`, in the open pull requests and in the drafts in progress.
+One new code joins `spec/13 §4`. U6006 and U6007 are taken by ADRs 0114 and 0116; U6009 is free on `main` and in the open pull requests.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -718,7 +724,7 @@ Existing codes cover the rest:
 - **Names in the prelude.** Not chosen: `Queue`, `Stack` and `Set` would become U1002 for user kinds in every module of edition `0.4` (question 1).
 - **A separate `Deque`.** Not chosen: a third type for the structure that `Queue` already is (question 5).
 - **A binary heap.** Not chosen: the 4-ary heap has half the levels and fewer cache misses for the same comparisons. Unobservable either way, since stability fixes the order (rule 13).
-- **SipHash-1-3.** Not chosen by the recommendation of question 4, which the project may reverse; nothing else in this record depends on it.
+- **SipHash-1-3.** Not chosen, by the decision on question 4; nothing else in this record depends on it.
 - **An `Array` in this record.** Not chosen: #894 defines the dense `Array`, and two array types would ask every reader to choose (rule 15).
 
 ## Implementation plan
@@ -729,7 +735,7 @@ Existing codes cover the rest:
 4. **The native layout:** a layout id per type (ADR 0107 rule 2), and the packed ring buffer for raw element types (ADR 0107 rule 5).
 5. **The verifier:** the sorts and functions of V1, the facts of V2 to V4, the refinement language of V5, the facts on `Map` in edition `0.4`, and the scaling tests of V8.
 6. **Information flow:** IF1 to IF8, and the result labels in the native declarations (`spec/14 §1`).
-7. **Spec text:** the chapter that ADR 0121 assigns (`spec/29-collections.md` in its draft), the cost column of `spec/14 §1`, and the amendments listed in the header.
+7. **Spec text:** the new chapter `spec/28-collections.md`, the cost column of `spec/14 §1`, and the amendments listed in the header.
 8. **The formal model** (`formal/UnaFormal/F1`): the new types are values whose operations are calls with the labels of IF1 to IF8, which F1's rules for `edit` places and prelude calls already cover. The importer of the re-check MUST model the shape labels of IF2 and IF4 before it accepts a declaration that uses them; until then, such a declaration is "not re-checked", never accepted, as for arenas (ADR 0111 rule 8).
 
 ## Conformance
@@ -780,8 +786,8 @@ Existing codes cover the rest:
   - **redaction in traces** (rule 3): a record passed to a host operation, with a field `queue: PriorityQueue[Text, secret Int]` and a field `patients: HashSet[Patient]` where `Patient` has a `secret` field, renders each field as `<redacted:secret>` in both engines; a `Map[secret Text, Int]` field, as today, is redacted too.
 - **The scaling tests of Costs.**
 
-## Appendix A. Amendment to ADR 0069, appended on acceptance
+## Appendix A. Amendment to ADR 0069, appended with the implementation of this record
 
-> ## Amendment (date of acceptance): the map in edition `0.4` (ADR 0119)
+> ## Amendment (2026-10-19): the map in edition `0.4` (ADR 0119)
 >
 > In edition `0.4`, `Map[K, V]` gains the method `edit m.update(key: k, initial: i, change: f)`, with the contract, labels and failure rule of `HashMap`'s (ADR 0119 rule 12, IF7) and a cost of O(log n). A package function named `update` whose first parameter is a `Map`, refined or not, or a type parameter, is U1002 at its declaration in edition `0.4`, and so is an import of one; the edition test of ADR 0119 rule 0 lists the packages that declare one. The verifier gains, in edition `0.4` only, the frame facts of ADR 0119 V3 for `set`, `remove`, `with`, `without` and `update`: each keeps `has` and `get` at every other key term of the query, guarded by disequality. Editions `0.2` and `0.3` keep M3 and M8 as written. `Set[T]`, which the Alternatives of this record name as a thin layer, is ADR 0119 rule 7.
