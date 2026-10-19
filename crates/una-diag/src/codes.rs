@@ -282,13 +282,15 @@ pub enum Code {
     U7011,
     /// A dependency the root may not use as written.
     U7012,
+    /// No resolution: no release meets a need, or a bound of resolution is exceeded.
+    U7013,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 109] = [
+    pub const ALL: [Code; 110] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -397,6 +399,7 @@ impl Code {
         Code::U7010,
         Code::U7011,
         Code::U7012,
+        Code::U7013,
         Code::U8001,
     ];
 
@@ -956,6 +959,11 @@ impl Code {
                 code: "U7012",
                 domain: Domain::Project,
                 meaning: "A dependency the root may not use as written",
+            },
+            Code::U7013 => &Entry {
+                code: "U7013",
+                domain: Domain::Project,
+                meaning: "No resolution: no release meets a need, or a bound of resolution is exceeded",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

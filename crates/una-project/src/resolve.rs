@@ -210,6 +210,12 @@ pub fn resolve(
         pre_allowed: HashSet::new(),
         work: 0,
     };
+    if root.len() > bounds.needs {
+        return Err(Problem::Bound(format!(
+            "the root has more than {} needs",
+            bounds.needs
+        )));
+    }
     let mut work: Vec<(Identity, Version)> = Vec::new();
     for need in root {
         resolver.note_pre(need);
@@ -265,6 +271,61 @@ pub fn resolve(
         }
     }
     resolver.list(root)
+}
+
+/// The releases a command holds offline (ADR 0122 rules 23 and 25): each local package as its
+/// directory holds it, one release of its identity with the needs its `ita.una` writes; and,
+/// for each source whose per-name state is not held, why resolution there is refused. A source
+/// is refused as a whole, so nothing is ever resolved against a partial view of a registry:
+/// a release missing from the view could be a lower one that minimal version selection takes,
+/// and a yank or an advisory missing from it could leave a release that must be raised.
+#[derive(Clone, Debug, Default)]
+pub struct Offline {
+    releases: HashMap<Identity, Vec<(Release, Vec<Need>)>>,
+    refused: BTreeMap<String, String>,
+}
+
+impl Offline {
+    /// Adds the release `release` of `identity`, with its needs. A second release of the same
+    /// version replaces nothing: the first one added stays.
+    pub fn add(&mut self, identity: Identity, release: Release, needs: Vec<Need>) {
+        let releases = self.releases.entry(identity).or_default();
+        if !releases.iter().any(|(r, _)| r.version == release.version) {
+            releases.push((release, needs));
+        }
+    }
+
+    /// Refuses resolution at `source`, for `reason`, one sentence.
+    pub fn refuse(&mut self, source: &str, reason: String) {
+        self.refused.entry(source.to_owned()).or_insert(reason);
+    }
+
+    fn refusal(&self, identity: &Identity) -> Result<(), String> {
+        match self.refused.get(&identity.source) {
+            Some(reason) => Err(reason.clone()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Index for Offline {
+    fn releases(&self, identity: &Identity) -> Result<Vec<Release>, String> {
+        self.refusal(identity)?;
+        Ok(self
+            .releases
+            .get(identity)
+            .map(|list| list.iter().map(|(release, _)| release.clone()).collect())
+            .unwrap_or_default())
+    }
+
+    fn needs(&self, identity: &Identity, version: &Version) -> Result<Vec<Need>, String> {
+        self.refusal(identity)?;
+        self.releases
+            .get(identity)
+            .and_then(|list| list.iter().find(|(release, _)| release.version == *version))
+            .map(|(_, needs)| needs.clone())
+            .ok_or_else(|| format!("no release {version} of {identity} is held"))
+    }
 }
 
 /// Whether a release may not stand as a selection (rule 24): yanked, under an advisory not

@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use pretty_assertions::assert_eq;
 use una_project::resolve::{
-    Bounds, COOLDOWN, Identity, Index, Need, Policy, Problem, Release, resolve,
+    Bounds, COOLDOWN, Identity, Index, Need, Offline, Policy, Problem, Release, resolve,
 };
 use una_project::version::Version;
 
@@ -263,6 +263,12 @@ fn every_bound_holds() {
         }),
         Err(Problem::Bound(_))
     ));
+    // The root's needs are bounded as a release's are.
+    let wide: Vec<Need> = names.iter().map(|n| need(n, "1.0")).collect();
+    assert!(matches!(
+        resolve(&wide, &r, &policy(), Bounds { needs: 5, ..base }),
+        Err(Problem::Bound(_))
+    ));
     let mut many = Registry::default();
     for patch in 0..20 {
         many.add("json", &format!("2.0.{patch}"), &[]);
@@ -316,6 +322,7 @@ fn resolution_is_linear_in_the_graph() {
         let unbounded = Bounds {
             visited: usize::MAX,
             packages: usize::MAX,
+            needs: usize::MAX,
             ..Bounds::default()
         };
         let resolution = resolve(&root, &r, &policy(), unbounded).unwrap();
@@ -334,5 +341,58 @@ fn resolution_is_linear_in_the_graph() {
     assert!(
         per_edge[2] < per_edge[0] * 10.0,
         "time per edge grew: {per_edge:?}"
+    );
+}
+
+fn release(version: &str) -> Release {
+    Release {
+        version: v(version),
+        yanked: false,
+        advised: false,
+        threshold_fix: false,
+        logged_at: 0,
+    }
+}
+
+/// The offline index: local packages resolve as their directories hold them, an avoided local
+/// version is raised and, with no later release, refused; a refused source refuses every
+/// identity of it, so nothing resolves against a partial view of a registry.
+#[test]
+fn the_offline_index_resolves_local_packages_and_refuses_unheld_sources() {
+    let local = |name: &str, version: &str| Need {
+        source: format!("path deps/{name}"),
+        name: name.to_owned(),
+        version: v(version),
+    };
+    let mut offline = Offline::default();
+    offline.add(local("util", "0.2.0").identity(), release("0.2.0"), vec![]);
+    offline.add(local("text", "1.4.0").identity(), release("1.4.0"), vec![]);
+    offline.refuse(
+        "itaty",
+        "the per-name state of `itaty` is not held".to_owned(),
+    );
+    let root = [local("util", "0.2.0"), local("text", "1.4.0")];
+    let resolution = resolve(&root, &offline, &policy(), Bounds::default()).unwrap();
+    let listed: Vec<String> = resolution
+        .list
+        .iter()
+        .map(|(identity, version)| format!("{} {version}", identity.name))
+        .collect();
+    assert_eq!(listed, ["text 1.4.0", "util 0.2.0"]);
+    let mut avoiding = policy();
+    avoiding.avoid.insert(
+        local("util", "0.2.0").identity(),
+        [v("0.2.0")].into_iter().collect(),
+    );
+    assert!(matches!(
+        resolve(&root, &offline, &avoiding, Bounds::default()),
+        Err(Problem::NoRaise { held: None, .. })
+    ));
+    let registry = [need("json", "2.1")];
+    assert_eq!(
+        resolve(&registry, &offline, &policy(), Bounds::default()),
+        Err(Problem::Index(
+            "the per-name state of `itaty` is not held".to_owned()
+        ))
     );
 }
