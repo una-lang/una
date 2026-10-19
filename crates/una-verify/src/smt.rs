@@ -166,6 +166,13 @@ impl F {
             F::Op { op, args } => match *op {
                 "+" | "-" | "*" | "div" | "mod" => "Int".to_owned(),
                 op if FLOAT_OPS.contains(&op) => FLOAT64.to_owned(),
+                // The rounding mode and the bit-vectors of a conversion have sorts of their
+                // own, so nothing reads them as Booleans (the abstraction of `spec/29 §8`).
+                "RNE" => "RoundingMode".to_owned(),
+                op if op.starts_with("(_ int2bv ") => {
+                    let width = op.trim_start_matches("(_ int2bv ").trim_end_matches(')');
+                    format!("(_ BitVec {width})")
+                }
                 "ite" => args.get(1).map_or_else(|| "Bool".to_owned(), F::sort),
                 _ => "Bool".to_owned(),
             },

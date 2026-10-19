@@ -1,6 +1,7 @@
 //! Running the obligations: the cache, the solver in parallel, and the counterexamples of
 //! `spec/12 §5 to §7, §9`.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -348,10 +349,7 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
         let decided = verify_once(&wholes, settings)?;
         for ((index, whole), mut outcome) in fulls.into_iter().zip(decided) {
             if outcome.status == ObligationStatus::Unknown
-                && !outcome
-                    .reason
-                    .as_deref()
-                    .is_some_and(|r| r.starts_with(FLOAT_WEIGHT_PREFIX))
+                && outcome.reason.as_deref().is_none_or(budget_reason)
             {
                 outcome.reason = Some(FLOAT_REFUTATION.to_owned());
             }
@@ -375,13 +373,15 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
         .enumerate()
         .filter_map(|(index, ((obligation, decided), outcome))| {
             let sent = decided.as_ref().unwrap_or(obligation);
-            let arguments = to_f64_arguments(&sent.query);
+            // The facts of a loop's first iteration (ADR 0071) count too: the retry that adds
+            // them may be where the refutation came from.
+            let arguments = to_f64_arguments(&sent.query, &sent.entry);
             (outcome.status == ObligationStatus::Refuted && !arguments.is_empty()).then(|| {
                 let mut within = sent.clone();
                 within.full = None;
-                // A conversion inside a predicate's definition has no argument to pin: the
-                // query that cannot be refuted, `false`, makes the obligation unknown.
-                if in_definitions(&sent.query) {
+                // A conversion too deep in the definitions to instantiate has no argument to
+                // pin: the query that cannot be refuted, `false`, makes the obligation unknown.
+                if arguments.contains(&F::Bool(true)) {
                     within.query.assertions = vec![F::Bool(false)];
                     return (index, within);
                 }
@@ -413,19 +413,28 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             }
         }
     }
-    // A float query the solver did not decide says so (ADR 0114 rule 8.3, "The float reason").
+    // A float query the solver did not decide within its step budget says so (ADR 0114
+    // rule 8.3, "The float reason"); every other reason, the wall-clock guard's, an
+    // unencodable condition's or a values error's, is kept.
     for (obligation, outcome) in obligations.iter().zip(outcomes.iter_mut()) {
         if outcome.status == ObligationStatus::Unknown
             && obligation.forgotten.is_empty()
             && obligation.query.mentions_float()
-            && !outcome.reason.as_deref().is_some_and(|r| {
-                r.starts_with(FLOAT_WEIGHT_PREFIX) || r == FLOAT_REFUTATION || r == TO_F64_UNCHECKED
-            })
+            && outcome.reason.as_deref().is_none_or(budget_reason)
         {
             outcome.reason = Some(FLOAT_UNDECIDED.to_owned());
         }
     }
     Ok(outcomes)
+}
+
+/// Whether `reason` is the solver's own when it stops at the step budget, or no reason: the
+/// only ones the float reasons replace.
+fn budget_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "unknown" | "canceled" | "max. resource limit exceeded" | "(resource limits reached)"
+    )
 }
 
 /// `-2^63` and `2^63`, the bounds of the interpreted conversion of an `Int` (ADR 0114 rule 8.1).
@@ -435,36 +444,77 @@ const I64_END: &str = "9223372036854775808";
 /// The reason of a refutation through the conversion of an `Int` beyond 64 bits to `F64`.
 pub(crate) const TO_F64_UNCHECKED: &str = "the refutation depends on the conversion of an `Int` outside -2^63..2^63 to `F64`, which the encoding leaves uninterpreted; give the integer a range refinement or a fixed-width type";
 
-/// Whether a definition of `query` applies the uninterpreted conversion `i!to_f64!Int`.
-fn in_definitions(query: &crate::smt::Query) -> bool {
-    query.definitions.values().any(|definition| {
-        let mut terms = Vec::new();
-        definition.body.visit(&mut terms);
-        terms
-            .iter()
-            .any(|term| matches!(term, F::App { fun, .. } if fun.name == "i!to_f64!Int"))
-    })
+/// The arguments of the uninterpreted conversion `i!to_f64!Int` in `query` and in `entry`,
+/// each once. A defined function is a macro the solver expands at each application, so a
+/// conversion in a definition is instantiated with the arguments of each application, through
+/// the definitions it calls, and its instantiated argument is pinned like any other. A
+/// placeholder `true` stands for an expansion deeper than the definitions allow, which a
+/// predicate that never calls itself (U2015) cannot reach.
+fn to_f64_arguments(query: &crate::smt::Query, entry: &[F]) -> Vec<F> {
+    let mut out: Vec<F> = Vec::new();
+    let mut terms: Vec<F> = query.applications().into_iter().collect();
+    for fact in entry {
+        let mut found = Vec::new();
+        fact.visit(&mut found);
+        terms.extend(found.into_iter().cloned());
+    }
+    collect_conversions(&terms, query, 0, &mut out);
+    out
 }
 
-/// The arguments of the uninterpreted conversion `i!to_f64!Int` in `query`, each once; a
-/// placeholder `true` when only a definition applies it, so the caller sees a use.
-fn to_f64_arguments(query: &crate::smt::Query) -> Vec<F> {
-    let mut out: Vec<F> = Vec::new();
-    if in_definitions(query) {
-        out.push(F::Bool(true));
-    }
-    for term in query.applications() {
-        if let F::App { fun, args } = &term
-            && fun.name == "i!to_f64!Int"
-        {
+/// The arguments of `i!to_f64!Int` in `terms`, instantiating the definitions they apply.
+fn collect_conversions(terms: &[F], query: &crate::smt::Query, depth: usize, out: &mut Vec<F>) {
+    for term in terms {
+        let F::App { fun, args } = term else {
+            continue;
+        };
+        if fun.name == "i!to_f64!Int" {
             for argument in args {
                 if !out.contains(argument) {
                     out.push(argument.clone());
                 }
             }
+            continue;
         }
+        let Some(definition) = query.definitions.get(&fun.name) else {
+            continue;
+        };
+        if depth > query.definitions.len() {
+            if !out.contains(&F::Bool(true)) {
+                out.push(F::Bool(true));
+            }
+            continue;
+        }
+        let bound: BTreeMap<&str, &F> = definition
+            .params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .zip(args)
+            .collect();
+        let body = substitute(&definition.body, &bound);
+        let mut inner = Vec::new();
+        body.visit(&mut inner);
+        let inner: Vec<F> = inner.into_iter().cloned().collect();
+        collect_conversions(&inner, query, depth + 1, out);
     }
-    out
+}
+
+/// `f` with each parameter `Local` replaced by its argument in `bound`.
+fn substitute(f: &F, bound: &BTreeMap<&str, &F>) -> F {
+    match f {
+        F::Local { name, .. } => bound
+            .get(name.as_str())
+            .map_or_else(|| f.clone(), |a| (*a).clone()),
+        F::Op { op, args } => F::Op {
+            op,
+            args: args.iter().map(|a| substitute(a, bound)).collect(),
+        },
+        F::App { fun, args } => F::App {
+            fun: fun.clone(),
+            args: args.iter().map(|a| substitute(a, bound)).collect(),
+        },
+        other => other.clone(),
+    }
 }
 
 /// The start of the reason of an obligation whose float query weighs more than the bound.
@@ -484,33 +534,83 @@ pub(crate) const FLOAT_WEIGHT_BOUND: usize = 4;
 /// The weight of a query's float arithmetic, over its distinct terms: `fp.mul`, `fp.div`,
 /// `fp.sqrt` and a conversion of a value that is not a literal weigh 4, `fp.add` and `fp.sub`
 /// weigh 1, and everything else nothing (ADR 0114 rule 8.3).
+///
+/// - The conversions of one integer term, its guarded narrow form and its 64-bit form, count
+///   as one conversion.
+/// - A defined function (a `reflect` predicate, an order of `F64`) is a macro that the solver
+///   expands at each application, and each expansion over distinct arguments bit-blasts its
+///   own arithmetic: so each distinct application weighs its body's weight, the applications
+///   in that body included, as if it were inlined.
 pub(crate) fn float_weight(query: &crate::smt::Query) -> usize {
+    let mut memo: BTreeMap<&str, usize> = BTreeMap::new();
     let mut terms = Vec::new();
     for assertion in &query.assertions {
         assertion.visit(&mut terms);
     }
-    for definition in query.definitions.values() {
-        definition.body.visit(&mut terms);
-    }
+    weight_of_terms(terms, query, &mut memo, 0)
+}
+
+/// The weight of the distinct terms `terms`, each distinct application of a definition of
+/// `query` weighing its body's (see [`float_weight`]). `depth` bounds the expansion: a
+/// predicate never calls itself (U2015), so the depth stays below the number of definitions.
+fn weight_of_terms<'q>(
+    terms: Vec<&'q F>,
+    query: &'q crate::smt::Query,
+    memo: &mut BTreeMap<&'q str, usize>,
+    depth: usize,
+) -> usize {
     let distinct: std::collections::BTreeSet<&F> = terms.into_iter().collect();
-    distinct
-        .into_iter()
-        .map(|term| match term {
+    let mut converted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut weight = 0;
+    for term in distinct {
+        weight += match term {
             F::Op { op, args } => match *op {
                 "fp.mul" | "fp.div" | "fp.sqrt" => 4,
                 "fp.add" | "fp.sub" => 1,
-                op if op.contains("to_fp")
-                    && args
-                        .iter()
-                        .any(|a| a.text().contains("int2bv") && !is_literal_conversion(a)) =>
-                {
-                    4
+                op if op.contains("to_fp") => {
+                    // The integer of a conversion through `int2bv`, once per integer.
+                    let integer = args.iter().find_map(|a| match a {
+                        F::Op { op, args }
+                            if op.contains("int2bv") && !is_literal_conversion(a) =>
+                        {
+                            args.first().map(F::text)
+                        }
+                        _ => None,
+                    });
+                    match integer {
+                        Some(text) => {
+                            if converted.insert(text) {
+                                4
+                            } else {
+                                0
+                            }
+                        }
+                        None => 0,
+                    }
                 }
                 _ => 0,
             },
+            F::App { fun, .. } => match query.definitions.get(&fun.name) {
+                Some(definition) if depth <= query.definitions.len() => {
+                    match memo.get(fun.name.as_str()) {
+                        Some(known) => *known,
+                        None => {
+                            let mut inner = Vec::new();
+                            definition.body.visit(&mut inner);
+                            let body = weight_of_terms(inner, query, memo, depth + 1);
+                            memo.insert(fun.name.as_str(), body);
+                            body
+                        }
+                    }
+                }
+                // Beyond any possible depth: weigh it past the bound, so it is never sent.
+                Some(_) => FLOAT_WEIGHT_BOUND + 1,
+                None => 0,
+            },
             _ => 0,
-        })
-        .sum()
+        };
+    }
+    weight
 }
 
 /// Whether `f`, the argument of a conversion, is `((_ int2bv w) n)` of an integer literal.
@@ -1106,6 +1206,56 @@ mod float_tests {
         );
         assert_eq!(float_weight(&query(vec![F::eq(sum.clone(), product)])), 5);
         assert_eq!(float_weight(&query(vec![F::Bool(true)])), 0);
+    }
+
+    #[test]
+    fn a_definition_weighs_its_body_at_each_distinct_application() {
+        // A `reflect` predicate is expanded by the solver at each application: two distinct
+        // applications of a body with one product weigh 8, one application or the same one
+        // twice weigh 4.
+        let constant = |name: &str| {
+            F::Const(Const {
+                name: name.to_owned(),
+                sort: FLOAT64.to_owned(),
+                role: ConstRole::Plain,
+            })
+        };
+        let local = F::Local {
+            name: "x".to_owned(),
+            sort: FLOAT64.to_owned(),
+        };
+        let body = F::op(
+            "fp.isZero",
+            vec![F::op(
+                "fp.mul",
+                vec![F::op("RNE", Vec::new()), local.clone(), local],
+            )],
+        );
+        let mut definitions = BTreeMap::new();
+        definitions.insert(
+            "u!p!sq".to_owned(),
+            crate::smt::Definition {
+                params: vec![("x".to_owned(), FLOAT64.to_owned())],
+                body,
+            },
+        );
+        let apply = |arg: F| F::App {
+            fun: crate::smt::Fun {
+                name: "u!p!sq".to_owned(),
+                args: vec![FLOAT64.to_owned()],
+                result: "Bool".to_owned(),
+                role: crate::smt::FunRole::Predicate,
+            },
+            args: vec![arg],
+        };
+        let query = |assertions: Vec<F>| Query {
+            assertions,
+            definitions: definitions.clone(),
+        };
+        let (a, b) = (apply(constant("a")), apply(constant("b")));
+        assert_eq!(float_weight(&query(vec![a.clone()])), 4);
+        assert_eq!(float_weight(&query(vec![a.clone(), a.clone()])), 4);
+        assert_eq!(float_weight(&query(vec![a, b])), 8);
     }
 }
 

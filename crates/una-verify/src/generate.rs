@@ -225,6 +225,8 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
                     for op in ops {
                         walker.declaration = format!("{}.{name}.{}", module.path, op.name);
                         walker.lambdas.clear();
+                        // Each operation's definitions are its own (ADR 0114 rule 8.3).
+                        walker.let_defs.clear();
                         walker.handler_op(params, uses, capability_path, op);
                     }
                 }
@@ -913,7 +915,19 @@ fn integer_type(ty: &Type) -> Option<IntType> {
 /// `n.to_f64()` (ADR 0114 rule 8.1): through a bit-vector of the integer type's own width,
 /// signed or unsigned, exact for every value of the type; for an `Int`, interpreted for
 /// `-2^63 <= n < 2^63` and the uninterpreted `i!to_f64!Int` beyond.
-fn to_f64(n: F, from: Option<IntType>) -> Option<F> {
+///
+/// The narrow form applies only where `n` lies in its type's range: `int2bv w` takes
+/// `n mod 2^w`, and a term the language computes exactly (the body of a `reflect` predicate, a
+/// clause, an argument of `Int` given to a fixed-width parameter, `spec/18 §2` rule 4) may lie
+/// outside it although its static type is fixed-width. So the term is
+/// `(ite (in range) <narrow> <the Int form>)`: exact for every integer, and the narrow form, the
+/// one the solver decides fast, wherever the range holds.
+///
+/// `guarded` is false only for a conversion in code (`Prim::Float(FloatOp::FromInt)`), whose
+/// operand is a value of its type: a parameter, a field, or the result of an operation with an
+/// `overflow` obligation (`spec/18 §3`), so it lies in the range by construction, and the
+/// narrow form is exact unguarded (a program whose obligation fails is rejected).
+fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
     let through = |width: u32, signed: bool, n: F| -> F {
         let int2bv: &'static str = match width {
             8 => "(_ int2bv 8)",
@@ -928,32 +942,47 @@ fn to_f64(n: F, from: Option<IntType>) -> Option<F> {
         };
         F::op(convert, vec![rne(), F::op(int2bv, vec![n])])
     };
+    let range = |low: i128, high: i128, n: &F| {
+        F::and(vec![
+            F::op("<=", vec![F::Int(low.to_string()), n.clone()]),
+            F::op("<", vec![n.clone(), F::Int(high.to_string())]),
+        ])
+    };
+    let int_form = |n: F| -> F {
+        let beyond = F::App {
+            fun: SmtFun {
+                name: "i!to_f64!Int".to_owned(),
+                args: vec!["Int".to_owned()],
+                result: FLOAT64.to_owned(),
+                role: FunRole::Other,
+            },
+            args: vec![n.clone()],
+        };
+        let (low, high) = (-(1_i128 << 63), 1_i128 << 63);
+        F::op(
+            "ite",
+            vec![range(low, high, &n), through(64, true, n.clone()), beyond],
+        )
+    };
     Some(match from {
-        Some(int) => through(int.bits(), int.signed(), n),
-        None => {
-            let low = F::Int("-9223372036854775808".to_owned());
-            let high = F::Int("9223372036854775808".to_owned());
-            let beyond = F::App {
-                fun: SmtFun {
-                    name: "i!to_f64!Int".to_owned(),
-                    args: vec!["Int".to_owned()],
-                    result: FLOAT64.to_owned(),
-                    role: FunRole::Other,
-                },
-                args: vec![n.clone()],
+        Some(int) if !guarded => through(int.bits(), int.signed(), n),
+        Some(int) => {
+            let width = int.bits();
+            let (low, high) = if int.signed() {
+                (-(1_i128 << (width - 1)), 1_i128 << (width - 1))
+            } else {
+                (0, 1_i128 << width)
             };
             F::op(
                 "ite",
                 vec![
-                    F::and(vec![
-                        F::op("<=", vec![low, n.clone()]),
-                        F::op("<", vec![n.clone(), high]),
-                    ]),
-                    through(64, true, n),
-                    beyond,
+                    range(low, high, &n),
+                    through(width, int.signed(), n.clone()),
+                    int_form(n),
                 ],
             )
         }
+        None => int_form(n),
     })
 }
 
@@ -1239,6 +1268,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     fn function(&mut self, fun: &'p Fun) {
         self.declaration = format!("{}.{}", self.module, fun.name);
         self.lambdas.clear();
+        self.let_defs.clear();
         self.within = Within::Function { public: fun.public };
         self.parameters = fun.params.iter().map(|(name, _)| name.clone()).collect();
         let mut ctx = Ctx::default();
@@ -3991,7 +4021,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             // `n.to_f64()` of an integer, by the integer's type (ADR 0114 rule 8.1).
             Prim::Float(FloatOp::FromInt) => {
                 let value = arg(0)?;
-                to_f64(value.f, integer_type(&value.ty))?
+                to_f64(value.f, integer_type(&value.ty), false)?
             }
             // The other operations of the refinement language; a code-only method's result is
             // a fresh binder (ADR 0114 rule 8.1).
@@ -4278,7 +4308,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             Term::ToF64 { value, from } => {
                 let value = self.term(value, env)?;
                 Tv {
-                    f: to_f64(value.f, *from)?,
+                    f: to_f64(value.f, *from, true)?,
                     ty: base_type(Base::F64),
                 }
             }
@@ -4820,15 +4850,16 @@ impl<'p, 'i> Walker<'p, 'i> {
                     definitions: BTreeMap::new(),
                 };
                 let (facts, _) = self.ground_facts(&full);
-                let cone_facts = self
-                    .ground_facts(&Query {
-                        assertions: assertions.clone(),
-                        definitions: BTreeMap::new(),
-                    })
-                    .0
-                    .len();
-                // A ground fact of a dropped term counts as a dropped constraint (rule 8.5).
-                let refutation_final = refutation_final && facts.len() == cone_facts;
+                let (cone_facts, _) = self.ground_facts(&Query {
+                    assertions: assertions.clone(),
+                    definitions: BTreeMap::new(),
+                });
+                // A ground fact of a dropped term counts as a dropped constraint (rule 8.5): the
+                // refutation is final only when every fact of the full query is one of the
+                // cone query's.
+                let cone_facts: BTreeSet<&F> = cone_facts.iter().collect();
+                let refutation_final =
+                    refutation_final && facts.iter().all(|fact| cone_facts.contains(fact));
                 let mut all = facts;
                 all.append(&mut full.assertions);
                 full.assertions = all;
@@ -6070,8 +6101,8 @@ fn abstract_atoms(f: &F, atoms: &mut BTreeMap<F, F>) -> F {
         return f.clone();
     }
     if let F::Op { op, args } = f
-        && (matches!(*op, "and" | "or" | "not" | "=>")
-            || (matches!(*op, "=" | "ite") && args.iter().all(|a| a.sort() == "Bool")))
+        && matches!(*op, "and" | "or" | "not" | "=>" | "=" | "ite")
+        && args.iter().all(|a| a.sort() == "Bool")
     {
         return F::Op {
             op,
