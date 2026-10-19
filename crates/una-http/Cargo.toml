@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 una-core.workspace = true
+una-sys.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 
