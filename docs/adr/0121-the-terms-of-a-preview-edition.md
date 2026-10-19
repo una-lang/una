@@ -1,14 +1,14 @@
 # 0121. The terms of a preview edition: edition `0.4` adds constructs behind its own opt-in
 
-- Status: Proposed
-- Date: 2026-10-18
-- Deciders:
+- Status: Accepted
+- Date: 2026-10-19
+- Deciders: Una project (accepted on 2026-10-19)
 - Resolves: issue #912
 - Related:
   - ADR 0056 and its amendments of 2026-10-13 (edition `0.3`, cumulative editions, what "stricter" means) and of 2026-10-16 (ADR 0114's carve-out), which hold the preview rule of `spec/13 §7`;
   - ADR 0114 (`F64`, edition `0.3`), whose rule 15 made the one exception to that rule;
   - ADRs 0116 and 0117 (accepted), whose rule 0 and target line open edition `0.4` "under the terms of `0.3`";
-  - the draft records on foreign code (ADR 0118, issue #23), collections (ADR 0119, issue #895) and the numeric foundation (ADR 0120, issue #894), each of which asks this question of the project (their Question 5, 7 and 6).
+  - the records on collections (ADR 0119, issue #895) and the numeric foundation (ADR 0120, issue #894), each of which asked this question of the project (their Questions 7 and 6).
 - Target: the edition rules themselves. Edition `0.4`'s terms change; editions `0.1` and `0.2` keep their stability promise; edition `0.3` keeps its own terms (rule 13). The benchmark baseline, pinned to edition `0.1`, does not move.
 - Amends:
   - **Diagnostics and project files:** `spec/13 §4` (one code), `§5` (`una --version`), `§6` (the report's `edition` section), `§7` (the terms of edition `0.4`);
@@ -16,17 +16,18 @@
   - **Release gates:** `docs/release-gates.md` (the summary's edition line; the preview gate of rule 12, before `0.4` leaves preview);
   - **Accepted records:** ADRs 0056, 0116 and 0117 by dated amendments, and ADR 0114 by a dated note (Appendix A).
 
-  These rules live in `spec/13 §7`, which already holds the editions. This record also keeps the table of the specification's new chapters for the records that target edition `0.4` (rule 20).
+  These rules live in `spec/13 §7`, which already holds the editions; this record adds no chapter of its own. It also keeps the table of the specification's new chapters (rule 20).
 
 ## Questions for acceptance
 
-Each question changes what a programmer can rely on. The text below follows each recommendation.
+Each question changes what a programmer can rely on. The project accepted every recommendation on 2026-10-19; each question states its decision, and the text below follows it.
 
 1. **May a preview edition add constructs that let a program do more, not only less?**
-   - **Today:** a preview may only add constructs that narrow: delete the construct and you get a program the previous edition accepts (`spec/13 §7`). `for ever`, `within`, `tasks`, foreign code, `std.collections` and `Matrix` all let a program do things it could not do before, so none of them could land while `0.4` is a preview, and `0.4` could not become stable without them having been tried.
+   - **Today:** a preview may only add constructs that narrow: delete the construct and you get a program the previous edition accepts (`spec/13 §7`). `for ever`, `within`, `tasks`, `std.collections` and `Matrix` all let a program do things it could not do before, so none of them could land while `0.4` is a preview, and `0.4` could not become stable without them having been tried.
    - **This record:** yes. A package that writes `edition = "0.4"` gets every construct of edition `0.4` that has landed, including those that widen what a program can do. In exchange, edition `0.4` makes no stability promise until it is declared stable (rule 3).
    - **Cost to the programmer:** a package on `0.4` may need edits after an upgrade of `una`, and should rerun `una check` and `una test` after each one. A package that stays on `0.3` or earlier sees none of it.
    - **Recommendation:** accept.
+   - **Decided:** accepted.
 
    ```toml
    [package]
@@ -37,12 +38,13 @@ Each question changes what a programmer can rely on. The text below follows each
 
 2. **When a preview release changes a construct, must it fail loudly?**
    - **This record:** yes. A form that a release accepted never silently means something else in a later release. A construct whose meaning changes gets a new form, and the old form becomes **U7007**, "this form of edition `0.4` changed in release X", with the new form as its repair (rules 4 and 5). Every change is listed under a fixed heading of the changelog, `una --version` names the editions that are previews, and the build report lists the preview constructs a package uses (rules 6 to 8).
-   - **The one exception you should know about:** an **unsettled point**, a detail of a construct that its record marks, when the construct first lands, as still open, with its reason, such as the order in which the numeric kernels of ADR 0120 (draft) add their numbers. Such a detail may change without a new spelling. It cannot be added to a construct later, the changelog lists each change, and the report shows which of a package's constructs have one (rule 5).
+   - **The one exception you should know about:** an **unsettled point**, a detail of a construct that its record marks, when the construct first lands, as still open, with its reason, such as the order in which the numeric kernels of ADR 0120 add their numbers. Such a detail may change without a new spelling. It cannot be added to a construct later, the changelog lists each change, and the report shows which of a package's constructs have one (rule 5).
    - **How it is checked:** a release gate compares the results of every `0.4` test case with the previous release, and fails on any change that is not one of the allowed kinds, and on a test case deleted or renamed without a reason (rule 12). Until the gate exists, review checks the same rule. When to build it:
      - **(a) Recommended:** at the first release that changes a construct of `0.4`. That is when the promise is first used, and a promise that no machine checks is only as good as the reviewer who reads that release.
      - **(b)** Only before `0.4` leaves preview, as the project's direction to build new gates late would suggest. Until then, each change rests on review.
    - **Cost to the programmer:** none beyond the edit. The cost falls on the project: a change of meaning must also change the spelling, and keep recognizing the old one.
    - **Recommendation:** accept, and build the gate by option (a).
+   - **Decided:** accepted, by option (a): the gate is built at the first release that changes a construct of `0.4`.
 
    ```una
    -- release N accepted:            release N+1 says:
@@ -64,6 +66,7 @@ Each question changes what a programmer can rely on. The text below follows each
      Edition `0.3` becomes stable no later than `0.4`. From then on `0.4` has the promise of `0.1` and `0.2`.
    - **Cost to the programmer:** none. A package on `0.4` keeps its `edition` line; its promise grows.
    - **Recommendation:** accept.
+   - **Decided:** accepted.
 
    ```text
    $ una --version          (a release while 0.4 is a preview)
@@ -77,6 +80,7 @@ Each question changes what a programmer can rely on. The text below follows each
    - **This record:** no. Packages chose `0.3` under a narrower promise: it only gets stricter for programs that edition `0.2` can express, with the exceptions that ADRs 0103, 0104 and 0114 state. Widening that promise afterwards would break it. New constructs that cannot be erased go to edition `0.4`.
    - **Cost to the programmer:** a team that wants `for ever` or `Matrix` moves its package to `0.4`, one line.
    - **Recommendation:** accept.
+   - **Decided:** accepted.
 
    ```toml
    edition = "0.3"     # stricter, with the stated exceptions of ADRs 0103, 0104 and 0114
@@ -86,18 +90,19 @@ Each question changes what a programmer can rely on. The text below follows each
 5. **When a construct asks you to trust more code, who must agree to it?**
    - **The words.** The *trusted computing base* is the code that the safety guarantees depend on but that the checker does not check: the compiler, the runtime, the solver, and any code a package marks as trusted.
    - **This record:**
-     - **Trust a package adds itself** (a foreign library, a trusted module, a new kind of grant that the report lists per package) needs a second, explicit opt-in in that package, beyond `edition = "0.4"`, which the construct's record names.
+     - **Trust a package adds itself** (a trusted module, or a new kind of grant that the report lists per package) needs a second, explicit opt-in in that package, beyond `edition = "0.4"`, which the construct's record names.
      - **Trust the toolchain adds for everyone** (a new part of the runtime, such as the coroutine switch of ADR 0117) and a new entry of the report's `out_of_model` that comes with a construct (such as "uncatchable termination" for `for ever`) need no opt-in, since no package can choose them. They need the record, a security review, and a listing in the record's Security part and in the edition ledger.
-     - No general list of feature switches, such as `preview = ["foreign"]`, is added.
+     - No general list of feature switches, such as `preview = ["tasks"]`, is added.
+     - **No foreign code.** Una admits no foreign code in any form, in any edition: no construct may let a package link or call code written in another language, so no opt-in can admit it (rule 17).
    - **Cost to the programmer:** one more line, only for constructs that let the package trust code of its own choosing.
    - **Recommendation:** accept.
+   - **Decided:** accepted, for trusted modules and for grants a package chooses: each needs the second opt-in that its record names.
 
    ```toml
    [package]
-   edition = "0.4"
-   profile = "systems"
-   [foreign]                    # the opt-in that ADR 0118 names; without it,
-   libraries = ["libsodium"]    # foreign code is rejected, as ADR 0118 states
+   edition = "0.4"     # every construct of 0.4; the package's trusted base does not grow
+   # A construct through which this package trusts code of its own choosing, such as a
+   # trusted module, also needs the second opt-in that the construct's record names.
    ```
 
 ## Glossary
@@ -135,7 +140,7 @@ These rules come from ADR 0056's amendments of 2026-10-13 (both). The edition te
 - ADR 0116 rule 0 adds `"0.4"`, "cumulative over `"0.3"` … and a preview until the rules that target it have landed, under the terms of `"0.3"`". ADR 0117 targets the same edition through that rule.
 - Their constructs widen: `for until`, `for ever`, `diverges`, `stop`, `skip`, `on stop`, the `[drive]` table, `std.drive` and `HttpError.Interrupted` (ADR 0116); coroutine tasks, `within`, `first of`, `tasks` and `start`, limits on grants, `limiter`, `std.limit` and `HttpError.RateLimited` (ADR 0117). None of them erases to a program of edition `0.3`.
 - They also grow what is trusted for everyone: ADR 0116 adds "uncatchable termination" to the report's `out_of_model`, and ADR 0117 adds the crate `una-sys` to the trusted base and rebuilds the native runtime around coroutines, for every edition (ADR 0117, Security and Consequences).
-- The drafts on foreign code, collections and numeric types are in the same position, and each asks the project the same question.
+- The records on collections (ADR 0119) and numeric types (ADR 0120) are in the same position, and each asked the project the same question.
 
 So the terms that ADR 0116 cites cannot admit the constructs it adds. Either every such record needs a carve-out of its own, as ADR 0114 had, or edition `0.4` needs terms that fit what it is for.
 
@@ -150,7 +155,7 @@ So the terms that ADR 0116 cites cannot admit the constructs it adds. Either eve
 
 **Name resolution of variants.** A variant whose kind the context gives (a `when` pattern, `is`, `fail`, a handling clause) resolves by that kind; elsewhere, the variants of an imported kind are in a scope before the prelude, and a name that stays ambiguous within one scope is U1001 (`spec/10 §11` rules 2 and 3). `HttpError` is declared in the prelude (`spec/24 §1`).
 
-**The specification's chapters.** ADR 0114 and ADR 0116 both name `spec/26` for their rules, ADR 0117 names `spec/27`, and the drafts on collections and numeric types name `spec/28` and say "numbered when it lands" (ADR 0119 header; ADR 0120 header). `docs/spec` ends at `spec/25` on main.
+**The specification's chapters.** ADR 0114 and ADR 0116 both name `spec/26` for their rules, and ADR 0117 names `spec/27`. The records on collections, numeric types, Itá and HTTP servers each add a chapter. `docs/spec` ends at `spec/25` on main.
 
 ## Decision
 
@@ -162,8 +167,8 @@ In one paragraph: edition `0.4`, while it is a preview, may gain constructs that
 
 2. **The opt-in.**
    - **The edition is the switch.** A construct of edition `0.4` exists only in a package whose `una.toml` says `edition = "0.4"`. In every earlier edition, its form keeps the diagnostic it has today: U0101 for a syntax error, U0103 for a word that `spec/01 §5` already reserves (as `simd`, ADR 0120), U7002 for an unknown table, U1001 for an unknown module; and a new built-in name stays an ordinary name there. A single file keeps edition `0.1`.
-   - **(a) Trust a package adds itself: a second opt-in.** A construct through which a package adds to its own trusted computing base, such as a foreign library, a trusted module or a new kind of grant that the report's `tcb` names per package, MUST also need an explicit opt-in that its record names, in `una.toml` or in a grant. Foreign code's `[foreign]` table and `foreign:<library>` grant are such opt-ins (ADR 0118, draft).
-   - **(b) Trust the toolchain adds for everyone: a record and a review, no opt-in.** Growth of the runtime or the toolchain that every package runs on, such as `una-sys` (ADR 0117) or a dispatch routine in `ffi.rs` (ADR 0120, draft), and a new `out_of_model` entry that comes with a construct, such as "uncatchable termination" (ADR 0116), need no opt-in, since no package can choose them. Each MUST have:
+   - **(a) Trust a package adds itself: a second opt-in.** A construct through which a package adds to its own trusted computing base, such as a trusted module or a new kind of grant that the report's `tcb` names per package, MUST also need an explicit opt-in that its record names, in `una.toml` or in a grant. Code written in another language is never such a construct: Una admits no foreign code (rule 17).
+   - **(b) Trust the toolchain adds for everyone: a record and a review, no opt-in.** Growth of the runtime or the toolchain that every package runs on, such as `una-sys` (ADR 0117) or the numeric kernels of ADR 0120 and their dispatch by processor, and a new `out_of_model` entry that comes with a construct, such as "uncatchable termination" (ADR 0116), need no opt-in, since no package can choose them. Each MUST have:
      - the record that introduces it;
      - a security review before it merges;
      - a listing in the record's Security part and in the ledger's `trust` field (rule 9);
@@ -182,7 +187,7 @@ In one paragraph: edition `0.4`, while it is a preview, may gain constructs that
 
 5. **Changes of meaning.**
    - **A new form.** A construct whose meaning changes gets a new form. The old form is then **U7007** (rule 19), with the new form as its first repair, for as long as edition `0.4` is served. A construct that is removed is U7007 too, with a repair that says what replaces it.
-   - **Unsettled points.** The record that lands a construct MAY declare, in its ledger entry, a part of the construct whose meaning may still change while the edition is a preview, with its reason: for example the accumulation order of ADR 0120's kernels (its lane width L and block KB), which that draft declares unsettled during the preview. A point can be declared unsettled only there, before any release accepts the construct; a later record cannot make a released, settled point unsettled. A change at an unsettled point needs no new form; the changelog lists it (rule 6), and the record that makes it states the old and new meaning. Security properties are never unsettled points (rule 17).
+   - **Unsettled points.** The record that lands a construct MAY declare, in its ledger entry, a part of the construct whose meaning may still change while the edition is a preview, with its reason: for example the accumulation order of ADR 0120's kernels (its lane width L and block KB), which that record declares unsettled during the preview. A point can be declared unsettled only there, before any release accepts the construct; a later record cannot make a released, settled point unsettled. A change at an unsettled point needs no new form; the changelog lists it (rule 6), and the record that makes it states the old and new meaning. Security properties are never unsettled points (rule 17).
    - **Stricter is always allowed.** A change that only adds errors or obligations needs no new form: the program is rejected or gains an obligation, which is loud.
 
 6. **The changelog.** Each release that changes edition `0.4` has, in its `CHANGELOG.md` section, an entry under the heading "**Edition `0.4` preview: changes that may need edits**", listing for each change: the construct, the record, what a package accepted before and what it is now, the diagnostic it gives (U7007 or another), its kind (U7007, unsettled point, soundness or security fix, stricter, or a key of the report or the Core export), and the migration. The release's summary paragraph says "changes the edition `0.4` preview" when such an entry exists. A release that only adds to `0.4` lists its additions as usual.
@@ -269,7 +274,8 @@ In one paragraph: edition `0.4`, while it is a preview, may gain constructs that
     - weaken noninterference (T6, `spec/10 §10`), authority checking (`spec/05`) or memory safety for a program that uses no construct of edition `0.4`;
     - give a construct of `0.4` an exception to them that its record does not state;
     - add to the trusted base or to `out_of_model` except as rule 2 states;
-    - make any part of these properties an unsettled point.
+    - make any part of these properties an unsettled point;
+    - admit foreign code in any form: no foreign function interface, no library or archive of code written in another language, and no trusted foreign code. The toolchain's and the runtime's own Rust is not foreign code.
 
     Growth of the runtime's trusted base under rule 2 (b), such as `una-sys`, is not a weakening when it has passed its security review and the memory-safety gates (`docs/release-gates.md`, `sanitize`). A fix of a soundness or security error MAY change any edition, as today, and is announced as one.
 
@@ -279,20 +285,20 @@ In one paragraph: edition `0.4`, while it is a preview, may gain constructs that
 
 ### F. The chapters of the specification
 
-20. **Numbered in order of acceptance.** Each record that adds a chapter to `docs/spec` takes the next free number at its acceptance, and records it in this table, which later records extend by a dated note on this record. Rows for records that are not accepted yet are provisional, and are rewritten by such a note when the record is accepted:
+20. **The numbers of the new chapters.** Each record that adds a chapter to `docs/spec` takes its number from this table, which later records extend by a dated note on this record. This record adds no chapter: it amends `spec/13 §7`.
 
-    | Chapter | Record | Status of the row | Edition | Contents |
-    | --- | --- | --- | --- | --- |
-    | `spec/26` | ADR 0114 | fixed | `0.3` (`F64`); `0.4` (`F32`, `Complex`) | Floating point: `F64`, and the rules of `F32` and `Complex` of ADR 0120 once accepted |
-    | `spec/27` | ADR 0116 | fixed | `0.4` | Long-running programs |
-    | `spec/28` | ADR 0117 | fixed | `0.4` | Tasks and time |
-    | `spec/29` | ADR 0119 | provisional | `0.4` | Collections |
-    | `spec/30` | ADR 0120 | provisional | `0.4` | The numeric foundation, except `F32` and `Complex` |
-    | next free | ADR 0118 | provisional | `0.4` | Foreign code |
+    | Chapter | Record | Edition | Contents |
+    | --- | --- | --- | --- |
+    | `spec/26` | ADR 0116 | `0.4` | Long-running programs |
+    | `spec/27` | ADR 0117 | `0.4` | Tasks and time |
+    | `spec/28` | ADR 0119 | `0.4` | Collections |
+    | `spec/29` | ADR 0120 | `0.3` (`F64`); `0.4` (the rest) | The numeric foundation, with the rules of `F64` of ADR 0114 |
+    | `spec/30` | ADR 0122 | as its record states | Itá, packages and the registry |
+    | `spec/31` | ADR 0123 | as its record states | HTTP servers |
 
-    - ADR 0116's header names `spec/26`, and ADR 0117's `spec/27`; dated notes correct them (Appendix A).
-    - A draft accepted out of this order takes the next free number, and the table is corrected by a dated note.
-    - The rules of `F32` and `Complex` join `spec/26` beside `F64`, since they share its NaN, comparison and environment rules (ADR 0120 header, "Builds on").
+    - ADR 0116's header names `spec/26` and ADR 0117's `spec/27`, as the table does.
+    - ADR 0114's header also names `spec/26`, which ADR 0116 holds. The rules of `F64` live in `spec/29`, beside `F32` and `Complex` of ADR 0120, since those share its NaN, comparison and environment rules; a dated note on ADR 0114 records it (Appendix A). If `F64` lands before ADR 0120, it opens `spec/29` with its own rules.
+    - A later record that adds a chapter takes the next free number, `spec/32` and on, and extends the table by a dated note.
 
 ### Examples
 
@@ -355,7 +361,7 @@ These terms add no flow rule. They bound how a preview may change the rules of o
 
 ## Diagnostics
 
-One new code, which joins `spec/13 §4` with its implementation. U7006 is taken by the draft on foreign code (ADR 0118); U7007 is free on main, in the open pull requests and in the local worktrees, at this writing.
+One new code, which joins `spec/13 §4` with its implementation. U7007 is free on main at this writing, and the other records in review cite it as this record's.
 
 | Code | Domain | Meaning | Repairs, ranked |
 | --- | --- | --- | --- |
@@ -365,20 +371,20 @@ Existing codes cover the rest: U0101 (a construct of `0.4`, or a new reserved ke
 
 ## Consequences
 
-- **Edition `0.4` can hold what ADRs 0116 to 0120 propose**, without one carve-out per record.
+- **Edition `0.4` can hold what ADRs 0116, 0117, 0119 and 0120 add**, without one carve-out per record.
 - **A package on `0.4` may need edits after an upgrade**, always with a diagnostic and a changelog entry, and the report says which of its parts are exposed.
 - **The project carries a cost for each change:** a new form, a U7007 entry kept for the life of the edition, a changelog entry, and conformance cases; and, before `0.4` leaves preview, the preview gate and the generated clash checks.
 - **Edition `0.3` stays narrow.** New widening work goes to `0.4`.
 - **The guide and Learn** describe two kinds of preview: `0.3`, which only gets stricter, and `0.4`, which may change.
 - **One numbering** for the new chapters of the specification, with no two records claiming one number.
-- **Future work.** Una has no dependencies between packages today. If it gains them, a rule is needed for a package of one edition that depends on a package of a preview edition; "a tool cannot opt a package in" (Security) then extends to dependencies.
+- **Future work.** Una has no dependencies between packages today. When it gains them (ADR 0122), a rule is needed for a package of one edition that depends on a package of a preview edition; "a tool cannot opt a package in" (Security) then extends to dependencies.
 
 ## Alternatives considered
 
 - **A. A carve-out per record, as ADR 0114 did.** Not chosen: the carve-out of ADR 0114 is a paragraph of exceptions, and `0.4` would need one for every record, each restating the same thing. It also keeps a promise ("only narrows") that is no longer true of the edition as a whole, which misleads readers.
 - **B. No stability promise and no further rule (the Rust nightly model).** Not chosen: a preview release could then change what an accepted program does without a diagnostic. Rule 4 costs the project a new spelling per change of meaning, and buys the guarantee that a program never silently changes.
 - **C. Land widening constructs only when `0.4` becomes stable.** Not chosen: a construct would be frozen before anyone used it. The point of a preview is to try constructs on real programs while they can still change.
-- **D. Per-feature switches in `una.toml`, such as `preview = ["foreign", "tasks"]`** (the form ADR 0118's Question 5 gives as an example). Not chosen as a general mechanism: n switches make 2^n dialects for the checker, the edition test and the security hunt, and agents must learn which switch each construct needs. Kept only for trust a package adds itself (rule 2 (a)), where consent per construct is worth it.
+- **D. Per-feature switches in `una.toml`, such as `preview = ["tasks", "collections"]`.** Not chosen as a general mechanism: n switches make 2^n dialects for the checker, the edition test and the security hunt, and agents must learn which switch each construct needs. Kept only for trust a package adds itself (rule 2 (a)), where consent per construct is worth it.
 - **E. A different spelling while a preview, `edition = "0.4-preview"`.** It makes the status visible in `una.toml`, but every package must change it again at stabilization, a release must accept both spellings, and edition `0.3` set the precedent of one name. The status is shown by `una --version` and the report instead (rules 7 and 8).
 - **F. Give edition `0.3` the same terms.** Not chosen (rule 13, Question 4): packages chose `0.3` under a narrower promise.
 - **G. A warning on every check of a preview package.** Not chosen: a warning on every run is ignored. The report and `una --version` say it once, where review looks.
@@ -400,7 +406,7 @@ Existing codes cover the rest: U0101 (a construct of `0.4`, or a new reserved ke
    - The Learn chapter on editions (una-by-example, `14-editions`): the table of "Stable editions and previews" gains `0.4`, "Preview; constructs may change between releases, never silently"; section 14.3 explains the two kinds of preview; "When to choose" gains a row for `0.4`.
    - `scripts/site-bundle.sh` keeps reading only the `editions:` line, so the new `preview:` line changes nothing there.
    - **For the website's own change:** its badge reads "0.3 preview" and would read "0.4 preview" in the same words, though the two promises differ; the badge strings, and whether to read `preview` from the version document, are a change of the website, outside this record.
-7. **Records.** The amendments and notes of Appendix A, appended on acceptance; the drafts 0118, 0119 and 0120 cite this record in place of their edition question, add their edition sections (rule 10), and take their chapter numbers from rule 20.
+7. **Records.** The amendments and notes of Appendix A, appended on acceptance; ADRs 0119 and 0120 cite this record in place of their edition question and add their edition sections (rule 10), and the records of rule 20's table take their chapter numbers from it.
 
 ## Conformance
 
@@ -419,22 +425,22 @@ Existing codes cover the rest: U0101 (a construct of `0.4`, or a new reserved ke
 
 ## Appendix A. Amendments and notes to accepted records, appended on acceptance
 
-**ADR 0056, Amendment (date of acceptance): the terms of edition `0.4` (ADR 0121).**
+**ADR 0056, Amendment of 2026-10-19: the terms of edition `0.4` (ADR 0121).**
 - Edition `0.4` is a preview from the release that first accepts it until a release declares it stable by a record of its own (ADR 0121 rules 14 and 15). While a preview, it MAY gain constructs that widen what a program may do, behind `edition = "0.4"`, with no stability promise; the erasure clause of the second amendment of 2026-10-13 does not apply to it.
 - A program that a release accepts in edition `0.4` keeps its result in a later release or is rejected with a diagnostic, except for a fix of a soundness or security error and a change at an unsettled point declared when its construct landed (ADR 0121 rules 4 and 5).
 - No release may weaken noninterference, authority checking or memory safety for a program that uses no construct of `0.4` (ADR 0121 rule 17).
 - Edition `0.3` keeps the terms of the amendments of 2026-10-13 and 2026-10-16, and becomes stable no later than `0.4`. Editions `0.1` and `0.2` keep their promise, and the benchmark baseline pinned to edition `0.1` does not move.
 
-**ADR 0116, Amendment (date of acceptance): the terms of edition `0.4`.** Rule 0's "under the terms of `"0.3"`" reads "under the terms of ADR 0121". The constructs of this record widen what a program may do, which those terms allow. Its edition section, as ADR 0121 rule 10 asks:
+**ADR 0116, Amendment of 2026-10-19: the terms of edition `0.4`.** Rule 0's "under the terms of `"0.3"`" reads "under the terms of ADR 0121". The constructs of this record widen what a program may do, which those terms allow. Its edition section, as ADR 0121 rule 10 asks:
 - **Words.** Reserved keywords `diverges` and `within`, each U0101 as a name in edition `0.4`, with the repair of renaming it. Contextual keywords `until`, `ever`, `decreases`, `stop`, `skip` and `on`, in the positions rule 0 states; `for ever in xs` stays a loop over `xs` with a variable `ever`. The `stop` and `skip` cases are pinned by ADR 0121's conformance.
 - **Variants.** `HttpError` gains `Interrupted` in edition `0.4` (rule 12 of this record). A `when` over `HttpError` that lists each of the eight variants of `spec/24 §1` with no other arm is U2007 in edition `0.4`, resolved by adding the arm. A `when` with an `else` arm absorbs the new variant with no diagnostic, and this is not a silent change: `Interrupted` arises only from a host stop of an interruptible operation in the body of a `for ever` (rule 14.1 of this record), a construct that no `0.3` program contains, so a raised `0.3` program never sees it.
 - **Modules.** `std.time` and `std.drive` clash with no package module, since module paths under `std` are reserved (`spec/13 §7`).
 - **Messages only.** The message of `while` and `loop` changes (rule 0); this is a change of message, which every release may make.
 - **Unsettled points:** none.
 - **Trust,** under ADR 0121 rule 2 (b): the entry "uncatchable termination" of `out_of_model` (rule 17 of this record), shown in the report of packages of the edition that has `for ever`, edition `0.4` and every later edition, since only those editions promise the cleanup that the entry qualifies. In the ordered list of `out_of_model` (`spec/13 §6`), it follows "termination and divergence", the entry it qualifies; the signal handlers, in the trusted crate `una-sys` (ADR 0058 amendment of 2026-10-18), shared with ADR 0117. No second opt-in.
-- **Chapter.** Its rules live in `spec/27` (ADR 0121 rule 20), not `spec/26`.
+- **Chapter.** Its rules live in `spec/26`, as its header states (ADR 0121 rule 20).
 
-**ADR 0117, Amendment (date of acceptance): the terms of edition `0.4`.** The target "edition `0.4` (ADR 0116 rule 0)" is under the terms of ADR 0121. Its edition section, as ADR 0121 rule 10 asks:
+**ADR 0117, Amendment of 2026-10-19: the terms of edition `0.4`.** The target "edition `0.4` (ADR 0116 rule 0)" is under the terms of ADR 0121. Its edition section, as ADR 0121 rule 10 asks:
 - **Words.** The contextual keywords `first`, `tasks` and `start`, in the positions rules 6 and 7 state; elsewhere they are identifiers, and the prelude's `first` stays a method.
 - **Variants.** `HttpError` gains `RateLimited` in edition `0.4` (rule 8), with the U2007 clash and repair that ADR 0116's amendment states for `Interrupted`. A `when` with an `else` arm absorbs it with no diagnostic, and this is not a silent change: `RateLimited` arises only from a grant that carries limits, which only a package of edition `0.4` can write.
 - **A second `RateLimited`.** `std.limit` declares `pub kind Limited = RateLimited` (rule 9), beside `HttpError.RateLimited`. In a `when` pattern, an `is` test, after `fail` or in a handling clause, the name resolves by the kind the context gives (`spec/10 §11` rule 3). Elsewhere, in a module that imports `Limited`, a bare `RateLimited` is `Limited.RateLimited`, since imported variants are in a scope before the prelude, where `HttpError` is declared (`spec/10 §11` rule 2). ADR 0121's conformance pins both.
@@ -442,6 +448,6 @@ Existing codes cover the rest: U0101 (a construct of `0.4`, or a new reserved ke
 - **Messages only.** The message of `async` and `await` changes in edition `0.4`; a change of message.
 - **Unsettled points:** none.
 - **Trust,** under ADR 0121 rule 2 (b): the trusted crate `una-sys` with the stack switch of coroutines, and the native runtime rebuilt around coroutines, for packages of every edition; each change to `una-sys` gets a security review (ADR 0058 amendment of 2026-10-18). No second opt-in.
-- **Chapter.** Its rules live in `spec/28` (ADR 0121 rule 20), not `spec/27`.
+- **Chapter.** Its rules live in `spec/27`, as its header states (ADR 0121 rule 20).
 
-**ADR 0114, Note (date of acceptance).** The carve-out of rule 15 stays the only exception to the erasure clause in edition `0.3`, besides the allowances of ADRs 0103 and 0104, and is not a precedent there: a construct that does not erase targets edition `0.4`, under the terms of ADR 0121. In edition `0.4`, `F64` is inherited by cumulativity and needs no carve-out. `spec/26` keeps this record's rules, and takes the rules of `F32` and `Complex` of ADR 0120 once that record is accepted (ADR 0121 rule 20).
+**ADR 0114, Note of 2026-10-19.** The carve-out of rule 15 stays the only exception to the erasure clause in edition `0.3`, besides the allowances of ADRs 0103 and 0104, and is not a precedent there: a construct that does not erase targets edition `0.4`, under the terms of ADR 0121. In edition `0.4`, `F64` is inherited by cumulativity and needs no carve-out. **Chapter:** `spec/26`, which this record's header names, is the chapter of ADR 0116; this record's rules live in `spec/29`, the numeric foundation, beside `F32` and `Complex` of ADR 0120 (ADR 0121 rule 20).
