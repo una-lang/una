@@ -396,3 +396,19 @@ fn a_dependency_reached_through_a_link_is_refused() {
         );
     }
 }
+
+#[test]
+fn a_ceiling_message_names_the_manifest_of_the_package() {
+    // #1084: in edition 0.4 a dependency's ceiling is written in `ita.una`, so the message of a
+    // grant beyond it names `ita.una`, never `una.toml`.
+    let case = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/project/ita_path_dep_beyond_ceiling");
+    let (code, _, stderr) = una(&["check", path(&case)]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("[U3021]"), "{stderr}");
+    assert!(
+        stderr.contains("whose ceiling in `ita.una` allows"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("una.toml"), "{stderr}");
+}
