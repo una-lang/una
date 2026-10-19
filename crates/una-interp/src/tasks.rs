@@ -302,3 +302,107 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
     let left = std::mem::take(&mut run.sched.borrow_mut().pending);
     drop(left);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A span for the `start`s of the tests.
+    fn span() -> Span {
+        let mut sources = una_syntax::SourceDb::new();
+        Span::at(sources.add("t.una", b"t"), 0)
+    }
+
+    /// Runs `root` as the root task of a run whose queue `drive` serves, as `Machine::rooted`
+    /// does.
+    fn rooted<'w>(run: &Run<'_, 'w>, root: impl FnOnce() + 'w) {
+        let Ok(stack) = Stack::new(1024 * 1024) else {
+            return;
+        };
+        una_sys::coroutine::scope(|scope| {
+            let root = scope.spawn(stack, root);
+            drive(scope, run, root);
+        });
+    }
+
+    #[test]
+    fn tasks_run_first_in_first_out_and_a_turn_ends_after_its_check_points() {
+        // ADR 0117 rules 11 and 12: a started task joins the back of the queue and the task
+        // that started it goes on; after `TURN` check points, while another task waits, the
+        // task goes to the back and the next one runs.
+        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
+        let mut world = crate::host::NoWorld;
+        let run = Run::new(&mut world, Clock::virtual_time(), true);
+        rooted(&run, || {
+            log.borrow_mut().push("root starts");
+            for label in ["a", "b"] {
+                let (log, span) = (&log, span());
+                run.sched
+                    .borrow_mut()
+                    .start(Box::new(move || log.borrow_mut().push(label)), 64 * 1024, span);
+            }
+            log.borrow_mut().push("root goes on");
+            for _ in 0..TURN {
+                run.tick();
+            }
+            log.borrow_mut().push("root again");
+        });
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["root starts", "root goes on", "a", "b", "root again"]
+        );
+    }
+
+    #[test]
+    fn a_task_that_ends_wakes_the_task_waiting_on_its_statement() {
+        // ADR 0117 rule 3: the end of a started task, which `Ending` marks whether its body ran
+        // or was dropped, counts it out of its statement and puts the waiting task at the back
+        // of the queue.
+        let log: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let mut world = crate::host::NoWorld;
+        let run = Rc::new(Run::new(&mut world, Clock::virtual_time(), true));
+        let scope = Rc::new(TasksScope::new(vec!["s1".to_owned()], 1));
+        rooted(&run, || {
+            for k in 1..=3 {
+                while scope.running.get() >= scope.bound {
+                    scope.waiter.set(Some(run.current()));
+                    assert!(run.park());
+                }
+                scope.running.set(scope.running.get() + 1);
+                run.live.set(run.live.get() + 1);
+                let ending = Ending {
+                    scope: Rc::clone(&scope),
+                    run: Rc::clone(&run),
+                };
+                let log = &log;
+                run.sched.borrow_mut().start(
+                    Box::new(move || {
+                        let _ending = ending;
+                        log.borrow_mut().push(format!("task {k}"));
+                    }),
+                    64 * 1024,
+                    span(),
+                );
+                log.borrow_mut().push(format!("started {k}"));
+            }
+            while scope.running.get() > 0 {
+                scope.waiter.set(Some(run.current()));
+                assert!(run.park());
+            }
+            log.borrow_mut().push("all ended".to_owned());
+        });
+        assert_eq!(
+            log.borrow().as_slice(),
+            [
+                "started 1",
+                "task 1",
+                "started 2",
+                "task 2",
+                "started 3",
+                "task 3",
+                "all ended"
+            ]
+        );
+        assert_eq!(run.live.get(), 0);
+    }
+}

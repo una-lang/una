@@ -142,3 +142,28 @@ pub fn reserved_for_later(word: &str) -> Option<&'static str> {
 pub fn is_contextual(word: &str) -> bool {
     CONTEXTUAL.contains(&word)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn async_and_await_name_tasks_and_start_in_edition_0_4() {
+        // ADR 0117 Diagnostics, `spec/19 §9`: the message of each edition.
+        let message = "not supported; use `tasks` and `start`, or `together`";
+        for word in ["async", "await"] {
+            assert_eq!(reserved_in(word, KeywordSet::V0_4), Some(message));
+            assert_eq!(
+                reserved_in(word, KeywordSet::V0_3),
+                Some("not supported; use `together`")
+            );
+            assert_eq!(
+                reserved_in(word, KeywordSet::V0_1),
+                Some("not supported; see structured concurrency in v0.2")
+            );
+        }
+        // `tasks` and `start` are no reserved words: they are names outside their statements.
+        assert_eq!(reserved_in("tasks", KeywordSet::V0_4), None);
+        assert_eq!(reserved_in("start", KeywordSet::V0_4), None);
+    }
+}

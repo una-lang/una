@@ -54,7 +54,7 @@ The interpreter's schedule is the reference, and native code follows it under `-
 4. **`together`, `together for` and `first of`** run inside the turn of the streaming task that runs them, in index order, each to its end; their check points count toward that turn. Natively, under virtual time, their tasks are pushed to the front of the queue, and their joins wake their parent at the front, so they run as if inline.
 5. **Check points** are counted at the same places in both engines: each call, each operation, each loop iteration and each element of a prelude function over a list. The interpreter counts them in its check (`within_budget`) and at each operation; native code at `una_rt_enter`, `una_rt_budget` and `una_rt_poll`.
 6. **Host operations** never park under virtual time: natively they run on the worker, as the interpreter runs them, so a helper's timing does not reorder tasks (decision S4-D4).
-7. Under the real clock the interpreter keeps this schedule; native code runs streaming tasks on `--workers` workers, and a turn ends at a check point after 10 ms, through the attention word, while another task is ready on the worker (rule 2, Fairness).
+7. Under the real clock the interpreter keeps this schedule; native code runs streaming tasks on `--workers` workers, and a turn ends at a check point after 10 ms while another task is ready on the worker (rule 2, Fairness): one slicer thread per run, started with the first started task, raises the attention word of such a worker every 10 ms, so the fast path of a check point is unchanged. Under virtual time a worker's check points all take the attention path, where they are counted.
 
 ## 6. The interpreter
 
@@ -77,13 +77,13 @@ Decision S4-D4: the interpreter's host operations stay on its thread, as before.
 
 - **The root (decision S4-D5).** An executable whose program has a `tasks` statement (the embedded `tasks` flag) runs `main` as a coroutine on worker 0, with the stack `--max-depth` needs, so it takes turns with its started tasks on the workers (S1 decision D3 ends here). One without keeps its `una-main` thread, as today.
 - **`una_rt_tasks_begin(bound, site)`** opens a statement in the task's state: its counts, its bound (the default of rule 7 when the bound is 0), its path prefix `p.s<c>`, and a cancellation entry for its started tasks. **`una_rt_start(closure, site)`** exports the closure as a `together` task's is exported (ADR 0113), parks while as many started tasks run as the bound allows, and starts the task on the next worker. **`una_rt_tasks_end(failed)`** cancels the started tasks when the block failed or was cancelled, parks until every one has ended, and closes the statement. Each way out of the block, its value, its failure, an exit of an enclosing loop and a stop, passes through `una_rt_tasks_end`.
-- **A started task** keeps its own heap and its own state; its events are written as they happen. It ends alone after U6003 for depth or stack, with its `aborted` event and one line on stderr, `[U6003] Error: <message>` with its path and position; an abort of the run's memory budget or a hard stop ends the run as before.
+- **A started task** keeps its own heap and its own state; its events are written as they happen. It ends alone after U6003 for depth or stack, in itself or in a task of a block it runs (the abort's message says so), with its `aborted` event and one line on stderr, `[U6003] Error: the started task <path> ended alone: <message> at <file>:<line>:<column>`; an abort of the run's memory budget, a header value, host text, the hard stop or a defect ends the run as before. Its cancellation entry carries the mark that lets a cancellation interrupt a waiting `Http` request (rule 4).
 - **The Linux cap.** On Linux the runtime reads `vm.max_map_count` once, and a run holds at most a quarter of it in started tasks at once. The default bound is `max(64, M)` capped by it; a `start` that would pass the cap with an explicit bound above it aborts the run with U6003 at the `start`, with a message that names the cap (decision S4-D6), never a failed mapping.
 - **Releasing.** A cancelled started task leaves its frames by the failure path of S2 (`STOPPED`), and its heap is torn down when its coroutine ends, so cancelled tasks hold no memory after the statement.
 
 ## 8. Traces (rule 10)
 
-- **The sink.** A run keeps one sink: the trace file of `--trace`, written as a JSON array whose `[` comes first, each event as it is written, and `]` at the end, so a finished run's file is the document of before; or, for `una run --json`, the document's list in memory. `seq` is the sink's count.
+- **The sink.** A run keeps one sink: the trace file of `--trace`, made before `main` starts (decision S4-D9: a file that cannot be made is a usage error then), written as a JSON array whose `[` comes with the first event, each event as it is written, and `]` at the end, so a finished run's file is the document of before; or, for `una run --json`, the document's list in memory. `seq` is the sink's count.
 - **Writing.** A streaming task keeps its events in its buffer until the event is complete and no operation of the task is in progress, then moves them to the sink, numbering `seq` there: an operation's event is written when it ends, after the events of the handler code that served it. Events of `together` and `first of` tasks are adopted at their join, as before, into the task that runs the block, which writes them when it is streaming.
 - **Installations.** A streaming task numbers its handler installations with run-wide counts, `with:<handler>#<n>`, in the order they happen; the tasks of `together` and `first of` keep their local ids until their join renumbers them, as before. The interpreter does the same, so its ids match native code's under the reference schedule.
 - **Started tasks' events** carry their paths `p.s<c>.<k>`; a cancelled one ends with `cancelled`, and one that ran too deep with `aborted`.
@@ -92,7 +92,13 @@ Decision S4-D4: the interpreter's host operations stay on its thread, as before.
 
 The embedded description gains `elision`, true for an executable built with check elision (ADR 0112). No backend of this repository elides checks yet, so every executable embeds `false`; one that embeds `true` refuses `--virtual-time` with a usage error, exit code 2, before `main` starts (decision S4-D7).
 
-## 10. Costs
+## 10. Further decisions
+
+- **S4-D8: the interpreter's stack is not charged** to `--max-memory` (decision D5 of slice S1 stands): its frames per call are far larger than native code's.
+- **S4-D10: the out-of-model entry** "waits at limits and at `start`" lands before "which branch of `first of` wins, beyond its label", in the order of rule 13.
+- **S4-D11: the per-worker timing wheels** of the amendment on S2 stay future work: the slicer needs none, and the one timer thread of S2 keeps serving the deadlines.
+
+## 11. Costs
 
 | Operation | Time | Space |
 | --- | --- | --- |
@@ -104,7 +110,7 @@ The embedded description gains `elision`, true for an executable built with chec
 
 A program without `tasks` keeps its cost: no coroutine, no scope, no queue, and a trace written at the end as before when it has no streaming sink.
 
-## 11. Tests
+## 12. Tests
 
 - Conformance (`tests/conformance`): `syntax/tasks_forms`, `syntax/tasks_before_0_4`, `syntax/tasks_names`, `syntax/async_0_4`, `types/start_place`, `types/start_with`, `types/start_fails`, `types/start_unit`, `types/start_capture`, `verification/tasks_bound`, `runtime/tasks_runs` (both engines), `runtime/tasks_virtual` (`una test`: waiting, the bound, a failing block, `stop`, the depth).
 - Unit: `una-sys` (a scope over a borrowed body), the interpreter's scheduler (first-in, first-out order, a switch every 1024 check points, a parked `start`), `una-rt` (the bound, the cap, the end of a statement).

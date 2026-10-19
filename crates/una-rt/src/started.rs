@@ -383,3 +383,76 @@ fn started(
     with_state(runtime::State::flush);
     crate::tasks::exit_task();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(task: &str) -> Event {
+        Event {
+            seq: 0,
+            task: task.to_owned(),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Cancelled,
+        }
+    }
+
+    #[test]
+    fn the_trace_is_written_as_it_goes_and_ends_as_one_array() {
+        // ADR 0117 rule 10: events are numbered in the order they are written, and the file is
+        // one JSON array once the run ends, also with no event.
+        let dir = std::env::temp_dir().join(format!("una-rt-sink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trace.json");
+        let shared = RunShared::tracing(&path).unwrap();
+        shared.write(vec![event("s1.1"), event("")]);
+        shared.write(vec![event("s1.2")]);
+        shared.finish().unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let seqs: Vec<(u64, &str)> = written
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["seq"].as_u64().unwrap(), e["task"].as_str().unwrap_or("")))
+            .collect();
+        assert_eq!(seqs, [(1, "s1.1"), (2, ""), (3, "s1.2")]);
+        let empty = dir.join("empty.json");
+        RunShared::tracing(&empty).unwrap().finish().unwrap();
+        assert_eq!(std::fs::read_to_string(&empty).unwrap(), "[]");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_trace_file_that_cannot_be_made_is_known_before_the_run() {
+        let missing = std::env::temp_dir()
+            .join(format!("una-rt-no-such-dir-{}", std::process::id()))
+            .join("trace.json");
+        assert!(RunShared::tracing(&missing).is_err());
+    }
+
+    #[test]
+    fn a_statement_bounds_its_tasks_and_waits_for_them() {
+        // ADR 0117 rules 3 and 7: `acquire` parks at the bound until a task ends, and
+        // `wait_zero` until every one has; outside a coroutine the waiting thread parks.
+        let scope = Arc::new(StartScope::new("s1".to_owned(), 2));
+        scope.running.acquire(scope.bound);
+        scope.running.acquire(scope.bound);
+        let ending = Arc::clone(&scope);
+        let ended = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            ending.running.release();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            ending.running.release();
+            ending.running.release();
+        });
+        // The third waits for a release.
+        scope.running.acquire(scope.bound);
+        scope.running.wait_zero();
+        ended.join().unwrap();
+        assert_eq!(scope.path, "s1");
+    }
+}
