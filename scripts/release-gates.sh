@@ -127,7 +127,7 @@ unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCA
     UNA_LOCAL_CI_DOC_LINKS_ON_HOST
 # Nor does the site gate build or compare anything but what the locks pin: the website and Una by
 # Example from their repositories, and the Learn release as published (#831).
-unset UNA_SITE_WEBSITE_SOURCE UNA_SITE_LEARN_SOURCE UNA_SITE_LEARN_RELEASE_DIR
+unset UNA_SITE_WEBSITE_SOURCE UNA_SITE_LEARN_SOURCE UNA_SITE_LEARN_RELEASE_DIR UNA_SITE_LEARN_UNA_DIR
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -309,9 +309,10 @@ gate_site() {
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
             && scripts/site-learn-release.sh --self-test \
+            && scripts/site-learn-una.sh --self-test \
             && scripts/doc-links.py \
             && UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
 
