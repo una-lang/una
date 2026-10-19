@@ -777,8 +777,13 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
                 ItaCommand::Lock { path, .. }
                 | ItaCommand::Tree { path }
                 | ItaCommand::Vendor { path }
+                | ItaCommand::Verify { path }
                 | ItaCommand::Remove { path, .. },
         }) => Some(path.clone()),
+        // `una ita add` and `update` work on the package in the current directory.
+        Some(Command::Ita {
+            command: ItaCommand::Add { .. } | ItaCommand::Update { .. },
+        }) => Some(".".into()),
         // `una trace` and `una contract` read the package in the current directory.
         Some(Command::Trace { .. } | Command::Contract { .. }) => Some(".".into()),
         _ => None,
@@ -1037,9 +1042,70 @@ fn run_command(
                         check,
                         accept_authority,
                         accept_trust,
-                    } => ita::lock_command(&path, check, accept_authority, &accept_trust, output),
+                        dry_run,
+                    } => ita::lock_command(
+                        &path,
+                        ita::LockOptions::lock(check, dry_run, accept_authority, &accept_trust),
+                        output,
+                    ),
+                    ItaCommand::Update {
+                        names,
+                        cooldown,
+                        now,
+                        accept_authority,
+                        accept_trust,
+                        dry_run,
+                    } => {
+                        let options = ita::LockOptions {
+                            command: "update",
+                            cooldown: if now {
+                                0
+                            } else {
+                                cooldown.map_or(una_project::resolve::COOLDOWN, |hours| {
+                                    hours.saturating_mul(3600)
+                                })
+                            },
+                            ..ita::LockOptions::lock(
+                                false,
+                                dry_run,
+                                accept_authority,
+                                &accept_trust,
+                            )
+                        };
+                        ita::update_command(&names, Path::new("."), options, output)
+                    }
+                    ItaCommand::Add {
+                        name,
+                        version,
+                        local,
+                        from,
+                        now,
+                        dry_run,
+                    } => {
+                        let options = ita::LockOptions {
+                            command: "add",
+                            cooldown: if now {
+                                0
+                            } else {
+                                una_project::resolve::COOLDOWN
+                            },
+                            ..ita::LockOptions::lock(false, dry_run, false, &[])
+                        };
+                        ita::add_command(
+                            &name,
+                            version.as_deref(),
+                            local.as_deref(),
+                            from.as_deref(),
+                            Path::new("."),
+                            options,
+                            output,
+                        )
+                    }
                     ItaCommand::Vendor { path } => {
                         ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                    }
+                    ItaCommand::Verify { path } => {
+                        ita::verify_command(&path, itaoca(environment).as_ref(), output)
                     }
                 }
             }

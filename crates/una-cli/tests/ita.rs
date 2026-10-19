@@ -101,7 +101,7 @@ fn lock_refuses_an_invalid_lock_and_writes_nothing() {
 }
 
 #[test]
-fn lock_refuses_needs_until_dependencies_load() {
+fn lock_refuses_a_registry_need_it_cannot_resolve_offline() {
     let dir = package("needs", &format!("{MANIFEST}\nneeds\n  json 2.0\n"));
     let (code, out, _) = una(&["una", "--json", "ita", "lock", path(&dir)]);
     assert_eq!(code, 1);
@@ -109,7 +109,15 @@ fn lock_refuses_needs_until_dependencies_load() {
     assert_eq!(document["schema"], "una.ita/1");
     assert_eq!(document["command"], "lock");
     assert_eq!(document["written"], serde_json::json!([]));
-    assert_eq!(document["diagnostics"][0]["code"], "U7008");
+    assert_eq!(document["changes"], serde_json::json!([]));
+    assert_eq!(document["diagnostics"][0]["code"], "U7013");
+    assert!(
+        document["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("per-name state of `itaty`"),
+        "{out}"
+    );
     assert!(!dir.join("ita.lock").exists());
     // The schema comes first.
     assert!(out.starts_with("{\"schema\":\"una.ita/1\""), "{out}");
@@ -313,7 +321,13 @@ fn lock_records_a_path_dependency_and_its_consented_ceiling() {
     );
     assert!(!dir.join("ita.lock").exists());
     let (code, out, err) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
-    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(code, 0, "{err}");
+    // The review comes first: the package, its digest, its ceiling and what its code uses.
+    assert!(
+        out.starts_with("add util 0.2.0 (path deps/util): digest sha256:")
+            && out.ends_with("; may Console[print]; uses Console[print]\nwrote ita.lock\n"),
+        "{out}"
+    );
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
     assert!(
         lock.contains("\npackage util 0.2.0\n  from path \"deps/util\"\n  digest \"sha256:"),
@@ -432,7 +446,11 @@ fn remove_takes_the_need_out_and_relocks() {
     )
     .unwrap();
     let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
-    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "drop util 0.2.0 (path deps/util)\nwrote ita.lock\n"),
+        "{err}"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.join("ita.una")).unwrap(),
         "ita demo\n  version 0.1.0\n  edition 0.4\n"
@@ -494,7 +512,8 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
         "util",
         path(&dir),
     ]);
-    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.ends_with("\nwrote ita.lock\n"), "{out}");
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
     assert!(
         lock.contains("  consented \"sha256:") && lock.contains("  trusted modules keys\n"),
@@ -898,4 +917,216 @@ fn no_command_but_una_ita_opens_a_connection() {
         .collect();
     naming.sort();
     assert_eq!(naming, ["args.rs", "lib.rs", "runtime.rs"]);
+}
+
+/// Runs the `una` binary in `dir`, as `una ita add` and `update` work on the package in the
+/// current directory: the exit code, stdout and stderr.
+fn una_at(dir: &Path, args: &[&str]) -> (u8, String, String) {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+        .current_dir(dir)
+        .args(args)
+        .env_remove("UNA_ITAOCA")
+        .output()
+        .unwrap();
+    (
+        u8::try_from(output.status.code().unwrap()).unwrap(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn a_changed_dependency_is_reviewed_and_dry_run_writes_nothing() {
+    let dir = with_dependency("review", "    may Console[print]\n");
+    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    assert_eq!(code, 0);
+    std::fs::write(
+        dir.join("deps/util/ita.una"),
+        "ita util\n  version 0.3.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let (code, out, err) = una(&["una", "ita", "lock", "--dry-run", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:")
+            && out.contains(" -> sha256:")
+            && out.ends_with(
+                "; may Console[print]; uses Console[print]\n--dry-run: nothing written\n"
+            ),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.lock")).unwrap(),
+        before
+    );
+    let (code, out, _) = una(&["una", "--json", "ita", "lock", "--dry-run", path(&dir)]);
+    assert_eq!(code, 0);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(out.starts_with("{\"schema\":\"una.ita/1\""), "{out}");
+    assert_eq!(document["written"], serde_json::json!([]));
+    let change = &document["changes"][0];
+    assert_eq!(change["change"], "change");
+    assert_eq!(change["package"], "util");
+    assert_eq!(change["origin"], "path deps/util");
+    assert_eq!(change["version_from"], "0.2.0");
+    assert_eq!(change["version_to"], "0.3.0");
+    assert_eq!(change["authority"], serde_json::json!(["Console[print]"]));
+    let (code, out, _) = una(&["una", "--json", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["written"], serde_json::json!(["ita.lock"]));
+    assert!(
+        std::fs::read_to_string(dir.join("ita.lock"))
+            .unwrap()
+            .contains("\npackage util 0.3.0\n")
+    );
+}
+
+#[test]
+fn an_avoided_version_with_no_later_release_has_no_resolution() {
+    let dir = with_dependency("avoid", "    avoid 0.2.0\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("U7013") && err.contains("no later release qualifies"),
+        "{err}"
+    );
+    assert!(!dir.join("ita.lock").exists());
+}
+
+#[test]
+fn update_locks_path_packages_again_and_refuses_registry_needs() {
+    let dir = with_dependency("update", "");
+    let (code, out, err) = una_at(&dir, &["ita", "update"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.ends_with("wrote ita.lock\n"), "{out}");
+    assert!(
+        std::fs::read_to_string(dir.join("ita.lock"))
+            .unwrap()
+            .contains("\npackage util 0.2.0\n")
+    );
+    let (code, out, _) = una_at(&dir, &["ita", "update", "util"]);
+    assert_eq!((code, out.as_str()), (0, "ita.lock is up to date\n"));
+    let (code, _, err) = una_at(&dir, &["ita", "update", "nothing"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("does not need `nothing`"), "{err}");
+    // `--cooldown` and `--now` are one choice.
+    let (code, _, _) = una_at(&dir, &["ita", "update", "--now", "--cooldown", "1"]);
+    assert_eq!(code, 2);
+    let registry = package(
+        "update-registry",
+        &format!("{MANIFEST}\nneeds\n  json 2.0\n"),
+    );
+    let (code, out, _) = una_at(&registry, &["--json", "ita", "update", "json"]);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["command"], "update");
+    assert_eq!(document["diagnostics"][0]["code"], "U7013");
+    assert!(!registry.join("ita.lock").exists());
+}
+
+/// The line of the first U7013 of a `una.ita/1` document.
+fn u7013_line(out: &str) -> u64 {
+    let document: serde_json::Value = serde_json::from_str(out).unwrap();
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "U7013")
+        .map(|d| d["primary"]["start"]["line"].as_u64().unwrap())
+        .unwrap()
+}
+
+#[test]
+fn add_writes_nothing_when_the_need_has_no_resolution() {
+    let dir = package("add", MANIFEST);
+    // A registry need: no resolution offline, so neither file is written. The need is read
+    // where `add` puts it: a new `needs` section after the head.
+    let (code, out, _) = una_at(&dir, &["--json", "ita", "add", "json", "2.1"]);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["command"], "add");
+    assert_eq!(document["written"], serde_json::json!([]));
+    assert_eq!(u7013_line(&out), 6);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        MANIFEST
+    );
+    assert!(!dir.join("ita.lock").exists());
+    // At the end of an existing `needs` section, and before a section that follows `needs`.
+    let needs = with_dependency("add-needs", "");
+    let (_, out, _) = una_at(
+        &needs,
+        &["--json", "ita", "add", "acme/json", "2.1", "--as", "js"],
+    );
+    assert_eq!(u7013_line(&out), 8);
+    let before = package(
+        "add-before",
+        &format!("{MANIFEST}\ntrust\n  util modules keys\n"),
+    );
+    let (_, out, _) = una_at(&before, &["--json", "ita", "add", "json", "2.1"]);
+    assert_eq!(u7013_line(&out), 6);
+    // With no version, the newest release cannot be found offline.
+    let (code, _, err) = una_at(&dir, &["ita", "add", "json"]);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("U7013") && err.contains("newest release"),
+        "{err}"
+    );
+    // Every word is checked before it is written.
+    for args in [
+        ["ita", "add", "Json", "2.1"],
+        ["ita", "add", "json", "2.1\ntrust"],
+        ["ita", "add", "json", "two"],
+        ["ita", "add", "json/", "2.1"],
+    ] {
+        let (code, _, _) = una_at(&dir, &args);
+        assert_eq!(code, 2, "{args:?}");
+    }
+    let (code, _, _) = una_at(&dir, &["ita", "add", "json", "2.1", "--from", "x y"]);
+    assert_eq!(code, 2);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        MANIFEST
+    );
+}
+
+#[test]
+fn verify_checks_each_registry_package_wherever_it_is() {
+    let (dir, itaoca) = with_registry("verify", true);
+    let (code, out, err) = una_in(&["una", "ita", "verify", path(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (0, "verified acme/ledger 0.3.1 in Itaoca\n", "")
+    );
+    let (code, _, _) = una_in(&["una", "ita", "vendor", path(&dir)], &itaoca);
+    assert_eq!(code, 0);
+    let (code, out, _) = una_in(&["una", "ita", "verify", path(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "verified acme/ledger 0.3.1 in vendor/ita and Itaoca\n")
+    );
+    // A vendored file changed: U7010, though Itaoca's copy verifies.
+    std::fs::write(
+        dir.join("vendor/ita/acme/acme+ledger-0.3.1/src/ledger.una"),
+        "module ledger\n\npub total() -> Int = 4\n",
+    )
+    .unwrap();
+    let (code, out, _) = una_in(&["una", "--json", "ita", "verify", path(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["command"], "verify");
+    assert_eq!(document["diagnostics"][0]["code"], "U7010");
+    // In neither place: U7011.
+    let (dir, itaoca) = with_registry("verify-absent", false);
+    let (code, _, err) = una_in(&["una", "ita", "verify", path(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7011"), "{err}");
+    // With no registry package, there is nothing to verify.
+    let plain = package("verify-plain", MANIFEST);
+    let (code, _, _) = una(&["una", "ita", "lock", path(&plain)]);
+    assert_eq!(code, 0);
+    let (code, out, _) = una(&["una", "ita", "verify", path(&plain)]);
+    assert_eq!((code, out.as_str()), (0, "no registry package is locked\n"));
 }

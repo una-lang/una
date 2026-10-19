@@ -97,25 +97,173 @@ fn finish(
     Ok(status)
 }
 
-/// `una ita lock [--check] [--accept-authority] [path]` (ADR 0122 rules 14 to 17 and 25).
-///
-/// Writes `ita.lock` for the package at `path` through a temporary file and a rename: its
-/// solver section is the existing lock's, or the release's default when there is none yet; then
-/// each path dependency, with the version its `ita.una` gives, its directory, its content
-/// digest, and the ceiling the root grants it. A ceiling wider than the one the lock records is
-/// refused unless `--accept-authority` accepts it, so every widening is explicit and shows in
-/// the lock's diff. An invalid `ita.una` or `ita.lock`, or a dependency the root may not use,
-/// is reported and nothing is written. `--check` writes nothing and reports where the lock is
-/// not the one this command writes (U7009). O(bytes of the dependencies), for their digests.
+/// What `una ita lock`, `update` and `add` ask of a resolution (ADR 0122 rule 25).
+pub(crate) struct LockOptions<'a> {
+    /// The command, as `una.ita/1` names it.
+    pub(crate) command: &'static str,
+    /// `--check`: write nothing, and report where the lock is not the one written (U7009).
+    pub(crate) check: bool,
+    /// `--dry-run`: print the review, and write nothing.
+    pub(crate) dry_run: bool,
+    /// `--accept-authority`: record a ceiling wider than the one the lock records.
+    pub(crate) accept_authority: bool,
+    /// `--accept-trust <package>`: record consent to the trust of these packages.
+    pub(crate) accept_trust: &'a [String],
+    /// The cooldown of rule 25, in seconds: 72 hours by default, 0 with `--now`.
+    pub(crate) cooldown: u64,
+    /// `ita.una` as `una ita add` edits it: read in place of the file, and written, with the
+    /// lock, only when the resolution succeeds.
+    pub(crate) edited: Option<String>,
+}
+
+impl<'a> LockOptions<'a> {
+    /// The options of `una ita lock`.
+    pub(crate) fn lock(
+        check: bool,
+        dry_run: bool,
+        accept_authority: bool,
+        accept_trust: &'a [String],
+    ) -> LockOptions<'a> {
+        LockOptions {
+            command: "lock",
+            check,
+            dry_run,
+            accept_authority,
+            accept_trust,
+            cooldown: una_project::resolve::COOLDOWN,
+            edited: None,
+        }
+    }
+}
+
+/// One change of the lock, for the review that every change prints before it is written
+/// (ADR 0122 rule 25).
+#[derive(Clone, Debug, Serialize)]
+struct ChangeDoc {
+    /// `add`, `change` or `drop`.
+    change: &'static str,
+    package: String,
+    /// The origin, as the lock writes it: `path deps/util`.
+    origin: String,
+    version_from: Option<String>,
+    version_to: Option<String>,
+    digest_from: Option<String>,
+    digest_to: Option<String>,
+    /// The ceiling the root grants it, before and after.
+    ceiling_from: String,
+    ceiling_to: String,
+    /// What its code uses in the new graph, checked at tier 0: the union of the `uses` of its
+    /// functions and handlers.
+    authority: Vec<String>,
+}
+
+impl ChangeDoc {
+    /// The review line: `add util 0.2.0 (path deps/util): digest sha256:...; may Console[print];
+    /// uses Console[print]`.
+    fn line(&self) -> String {
+        let version = match (&self.version_from, &self.version_to) {
+            (Some(from), Some(to)) if from != to => format!("{from} -> {to}"),
+            (_, Some(to)) => to.clone(),
+            (Some(from), None) => from.clone(),
+            (None, None) => String::new(),
+        };
+        let mut line = format!(
+            "{} {} {version} ({})",
+            self.change, self.package, self.origin
+        );
+        if self.change == "drop" {
+            return line;
+        }
+        let digest = match (&self.digest_from, &self.digest_to) {
+            (Some(from), Some(to)) if from != to => format!("{from} -> {to}"),
+            (_, Some(to)) => to.clone(),
+            _ => String::new(),
+        };
+        let none = |text: &str| {
+            if text.is_empty() {
+                "nothing".to_owned()
+            } else {
+                text.to_owned()
+            }
+        };
+        let ceiling = if self.change == "change" && self.ceiling_from != self.ceiling_to {
+            format!("{} -> {}", none(&self.ceiling_from), none(&self.ceiling_to))
+        } else {
+            none(&self.ceiling_to)
+        };
+        let uses = if self.authority.is_empty() {
+            "nothing".to_owned()
+        } else {
+            self.authority.join(", ")
+        };
+        line.push_str(&format!(": digest {digest}; may {ceiling}; uses {uses}"));
+        line
+    }
+}
+
+/// `una.ita/1` of a command that resolves: [`ItaDocument`] with the review's changes.
+#[derive(Serialize)]
+struct ResolveDocument<'a> {
+    schema: &'static str,
+    command: &'a str,
+    written: &'a [&'a str],
+    changes: &'a [ChangeDoc],
+    diagnostics: &'a [Diagnostic],
+}
+
+/// A path dependency as the resolution locks it.
+struct Locked {
+    name: String,
+    version: Version,
+    dir: String,
+    digest: String,
+    ceiling: String,
+    block: String,
+}
+
+/// `una ita lock [--check] [--dry-run] [--accept-authority] [--accept-trust <p>] [path]`
+/// (ADR 0122 rules 14 to 17, 23 and 25).
 pub(crate) fn lock_command(
     path: &Path,
-    check: bool,
-    accept_authority: bool,
-    accept_trust: &[String],
+    options: LockOptions<'_>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
+    resolve_and_lock(path, options, out)
+}
+
+/// Resolves the package at `path` and writes `ita.lock` through a temporary file and a rename.
+///
+/// Resolution is minimal version selection (rules 23 and 24) over the releases held offline:
+/// each path dependency as its directory holds it, one release of its identity. A need of a
+/// registry cannot be resolved offline in this release, since the per-name state of a
+/// resolution point is not held (U7013): no registry is resolved against a partial view. A
+/// workspace member is not loaded (U7008). An avoided version that no later release replaces,
+/// and a bound of rule 23 exceeded, are U7013.
+///
+/// The lock's solver section is the existing lock's, or the release's default; then each path
+/// dependency, with its version, directory, content digest, and the ceiling the root grants
+/// it. Consent (rule 25): a ceiling wider than the one the lock records needs
+/// `--accept-authority`, and a trust that no consent covers for the package's content as it is
+/// now needs `--accept-trust <package>`; each refusal writes nothing. Every change is printed
+/// as a review before it is written: per package, its origin, old and new version and digest,
+/// its ceiling, and what its code uses in the new graph, checked at tier 0. `--dry-run` prints
+/// the review and writes nothing; `--check` writes nothing and reports where the lock is not
+/// the one this command writes (U7009). Costs: O(bytes of the dependencies) for their digests,
+/// and O((n + p) log p) for n needs and p packages to resolve and sort.
+fn resolve_and_lock(
+    path: &Path,
+    options: LockOptions<'_>,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    use una_project::resolve::{self, Bounds, Identity, Need, Offline, Policy, Problem, Release};
+
+    let command = options.command;
+    // The command whose `--accept-…` flags repair a refusal: `update` takes them, and `lock`
+    // repairs one of `add` or `remove`, which do not.
+    let repair = if command == "update" { command } else { "lock" };
     let lock_path = path.join("ita.lock");
-    if !path.join("ita.una").is_file() {
+    let manifest_path = path.join("ita.una");
+    if !manifest_path.is_file() {
         writeln!(
             out.stderr,
             "error: `{}` has no ita.una; `una ita` works on a package of edition 0.4, and `una migrate` moves a package to it",
@@ -123,7 +271,11 @@ pub(crate) fn lock_command(
         )?;
         return Ok(ExitStatus::Usage);
     }
-    let package = match crate::package::load(path) {
+    let mut overlay: BTreeMap<PathBuf, String> = BTreeMap::new();
+    if let Some(edited) = &options.edited {
+        overlay.insert(manifest_path.clone(), edited.clone());
+    }
+    let package = match crate::package::load_with(path, &overlay) {
         Ok(package) => package,
         Err(error) => {
             writeln!(out.stderr, "error: {error}")?;
@@ -148,46 +300,81 @@ pub(crate) fn lock_command(
         None => Lock::default(),
     };
     let Some(read) = manifest.ita.as_deref() else {
-        return finish("lock", &[], &[], &diagnostics, sources, out);
+        return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     };
     let root = read
         .name
         .as_ref()
         .map(|name| name.value.to_string())
         .unwrap_or_default();
-    let mut entries: Vec<(String, Version, String)> = Vec::new();
-    for (index, need) in read.needs.iter().enumerate() {
-        let refuse = |message: String| ProjectError {
-            code: Code::U7008,
+    // The releases held offline, the root's needs on them, and the avoided versions.
+    let mut index = Offline::default();
+    let mut root_needs: Vec<Need> = Vec::new();
+    let mut need_ranges: Vec<(Identity, std::ops::Range<usize>)> = Vec::new();
+    let mut policy = Policy {
+        now: 0,
+        cooldown: options.cooldown,
+        avoid: BTreeMap::new(),
+    };
+    let mut entries: Vec<Locked> = Vec::new();
+    for (index_of_need, need) in read.needs.iter().enumerate() {
+        let refuse = |code: Code, message: String| ProjectError {
+            code,
             range: need.range.clone(),
             message,
         };
-        let Some(ita::At {
-            value: ita::Origin::Path(_),
-            ..
-        }) = &need.origin
-        else {
+        let source = match need.origin.as_ref().map(|origin| &origin.value) {
+            Some(ita::Origin::Path(_)) => None,
+            Some(ita::Origin::Workspace) => {
+                diagnostics.extend(located(
+                    sources,
+                    manifest_id,
+                    vec![refuse(
+                        Code::U7008,
+                        format!(
+                            "this release does not load workspace members, so `{}` cannot be locked",
+                            need.name.value
+                        ),
+                    )],
+                ));
+                continue;
+            }
+            Some(ita::Origin::Source(source)) => Some(source.clone()),
+            None => Some(una_project::ita::ITATY.to_owned()),
+        };
+        if let Some(source) = source {
+            // Rule 23 reads a registry's releases from its per-name state at a resolution
+            // point, which this release does not hold: refused, never resolved from a part.
+            let reason = format!(
+                "`{}` cannot be resolved offline, since the per-name state of `{source}` at a resolution point is not held; this release resolves path dependencies only",
+                need.name.value
+            );
+            index.refuse(&source, reason.clone());
             diagnostics.extend(located(
                 sources,
                 manifest_id,
-                vec![refuse(format!(
-                    "this release resolves only path dependencies, so `{}` cannot be locked",
-                    need.name.value
-                ))],
+                vec![refuse(Code::U7013, reason)],
             ));
             continue;
-        };
-        let Some(dependency) = package.dependencies.iter().find(|d| d.need == index) else {
+        }
+        let Some(dependency) = package
+            .dependencies
+            .iter()
+            .find(|d| d.need == index_of_need)
+        else {
             continue;
         };
         if let Some(reason) = &dependency.error {
             diagnostics.extend(located(
                 sources,
                 manifest_id,
-                vec![refuse(format!(
-                    "the path dependency `{}` cannot be loaded: {reason}",
-                    dependency.dir
-                ))],
+                vec![refuse(
+                    Code::U7008,
+                    format!(
+                        "the path dependency `{}` cannot be loaded: {reason}",
+                        dependency.dir
+                    ),
+                )],
             ));
             continue;
         }
@@ -216,10 +403,13 @@ pub(crate) fn lock_command(
                 diagnostics.extend(located(
                     sources,
                     manifest_id,
-                    vec![refuse(format!(
-                        "the path dependency `{}` holds what a package may not: {reason}",
-                        dependency.dir
-                    ))],
+                    vec![refuse(
+                        Code::U7008,
+                        format!(
+                            "the path dependency `{}` holds what a package may not: {reason}",
+                            dependency.dir
+                        ),
+                    )],
                 ));
                 continue;
             }
@@ -234,7 +424,9 @@ pub(crate) fn lock_command(
             block.push_str(&format!("  granted by {root} may {ceiling}\n"));
         }
         // Consent (rule 25): a ceiling wider than the recorded one needs the flag.
-        if !accept_authority && let Some((_, lock, _)) = &existing {
+        if !options.accept_authority
+            && let Some((_, lock, _)) = &existing
+        {
             let recorded = recorded_ceiling(lock, &need.name.value, &root);
             for cap in &need.may {
                 let wider: Vec<&str> = cap
@@ -255,7 +447,7 @@ pub(crate) fn lock_command(
                             code: Code::U7009,
                             range: cap.range.clone(),
                             message: format!(
-                                "the ceiling of `{}` widens to `{}[{}]`; review what it grants and run `una ita lock --accept-authority`",
+                                "the ceiling of `{}` widens to `{}[{}]`; review what it grants and run `una ita {repair} --accept-authority`",
                                 need.name.value,
                                 cap.capability,
                                 wider.join(", ")
@@ -264,7 +456,7 @@ pub(crate) fn lock_command(
                     ));
                 }
             }
-        } else if !accept_authority && !need.may.is_empty() {
+        } else if !options.accept_authority && !need.may.is_empty() {
             diagnostics.extend(located(
                 sources,
                 manifest_id,
@@ -272,7 +464,7 @@ pub(crate) fn lock_command(
                     code: Code::U7009,
                     range: need.range.clone(),
                     message: format!(
-                        "the ceiling of `{}` is not recorded yet; review what it grants and run `una ita lock --accept-authority`",
+                        "the ceiling of `{}` is not recorded yet; review what it grants and run `una ita {repair} --accept-authority`",
                         need.name.value
                     ),
                 }],
@@ -319,7 +511,7 @@ pub(crate) fn lock_command(
                 ));
                 continue;
             }
-            if !consented && !accept_trust.contains(&name) {
+            if !consented && !options.accept_trust.contains(&name) {
                 diagnostics.extend(located(
                     sources,
                     manifest_id,
@@ -327,7 +519,7 @@ pub(crate) fn lock_command(
                         code: Code::U7012,
                         range: need.range.clone(),
                         message: format!(
-                            "the trust of `{name}` is not consented for its content as it is now; review its trusted modules and the code they run, then run `una ita lock --accept-trust {name}`"
+                            "the trust of `{name}` is not consented for its content as it is now; review its trusted modules and the code they run, then run `una ita {repair} --accept-trust {name}`"
                         ),
                     }],
                 ));
@@ -338,17 +530,99 @@ pub(crate) fn lock_command(
                 trusted.join(", ")
             ));
         }
-        entries.push((need.name.value.to_string(), version, block));
+        // One release of the identity, as the directory holds it; its own needs are refused
+        // by `dependency_problems` in this release, so it has none.
+        let identity = Identity {
+            source: format!("path {}", dependency.dir),
+            name: need.name.value.to_string(),
+            line: version.line(),
+        };
+        index.add(
+            identity.clone(),
+            Release {
+                version: version.clone(),
+                yanked: false,
+                advised: false,
+                threshold_fix: false,
+                logged_at: 0,
+            },
+            Vec::new(),
+        );
+        for avoid in &need.avoid {
+            if let Ok(avoided) = Version::parse_full(&avoid.value) {
+                policy
+                    .avoid
+                    .entry(identity.clone())
+                    .or_default()
+                    .insert(avoided);
+            }
+        }
+        root_needs.push(Need {
+            source: identity.source.clone(),
+            name: identity.name.clone(),
+            version: version.clone(),
+        });
+        need_ranges.push((identity, need.range.clone()));
+        entries.push(Locked {
+            name: need.name.value.to_string(),
+            version,
+            dir: dependency.dir.clone(),
+            digest,
+            ceiling,
+            block,
+        });
     }
     if !diagnostics.is_empty() {
-        return finish("lock", &[], &[], &diagnostics, sources, out);
+        return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     }
-    entries.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    // Minimal version selection over what is held (rules 23 and 24), within its bounds.
+    let resolution = match resolve::resolve(&root_needs, &index, &policy, Bounds::default()) {
+        Ok(resolution) => resolution,
+        Err(problem) => {
+            let at = match &problem {
+                Problem::NoRelease { identity, .. }
+                | Problem::NoRaise { identity, .. }
+                | Problem::SelfNeed(identity) => need_ranges
+                    .iter()
+                    .find(|(id, _)| id == identity)
+                    .map(|(_, range)| range.clone()),
+                Problem::Bound(_) | Problem::Index(_) => None,
+            };
+            let error = ProjectError {
+                code: Code::U7013,
+                range: at.unwrap_or(0..0),
+                message: problem.to_string(),
+            };
+            diagnostics.extend(located(sources, manifest_id, vec![error]));
+            return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
+        }
+    };
+    // Every root need is in the build list, at the version its directory holds: a path
+    // package has one release.
+    let selected: BTreeSet<(String, String, String)> = resolution
+        .list
+        .iter()
+        .map(|(identity, version)| {
+            (
+                identity.name.clone(),
+                identity.source.clone(),
+                version.to_string(),
+            )
+        })
+        .collect();
+    entries.retain(|entry| {
+        selected.contains(&(
+            entry.name.clone(),
+            format!("path {}", entry.dir),
+            entry.version.to_string(),
+        ))
+    });
+    entries.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
     let mut text = write_lock(&solver);
-    for (_, _, block) in &entries {
-        text.push_str(block);
+    for entry in &entries {
+        text.push_str(&entry.block);
     }
-    if check {
+    if options.check {
         let same = existing
             .as_ref()
             .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
@@ -364,14 +638,16 @@ pub(crate) fn lock_command(
             let at = existing.as_ref().map_or(manifest_id, |(id, _, _)| *id);
             diagnostics.extend(located(sources, at, vec![error]));
         }
-        return finish("lock", &[], &[], &diagnostics, sources, out);
+        return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     }
-    let unchanged = existing
-        .as_ref()
-        .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
+    let unchanged = options.edited.is_none()
+        && existing
+            .as_ref()
+            .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
     if unchanged {
-        return finish(
-            "lock",
+        return finish_resolved(
+            command,
+            &[],
             &[],
             &["ita.lock is up to date".to_owned()],
             &diagnostics,
@@ -379,22 +655,214 @@ pub(crate) fn lock_command(
             out,
         );
     }
-    if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
-        writeln!(
-            out.stderr,
-            "error: cannot write `{}`: {error}",
-            lock_path.display()
-        )?;
-        return Ok(ExitStatus::Usage);
+    let changes = review(
+        &package,
+        existing.as_ref().map(|(_, lock, _)| lock),
+        &entries,
+    );
+    let mut lines: Vec<String> = changes.iter().map(ChangeDoc::line).collect();
+    if options.dry_run {
+        lines.push("--dry-run: nothing written".to_owned());
+        return finish_resolved(command, &[], &changes, &lines, &diagnostics, sources, out);
     }
-    finish(
-        "lock",
-        &["ita.lock"],
-        &["wrote ita.lock".to_owned()],
+    let mut written: Vec<&str> = Vec::new();
+    if let Some(edited) = &options.edited {
+        if let Err(error) = crate::write_through_rename(&manifest_path, edited) {
+            writeln!(
+                out.stderr,
+                "error: cannot write `{}`: {error}",
+                manifest_path.display()
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+        written.push("ita.una");
+        lines.push("wrote ita.una".to_owned());
+    }
+    let lock_unchanged = existing
+        .as_ref()
+        .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
+    if !lock_unchanged {
+        if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
+            writeln!(
+                out.stderr,
+                "error: cannot write `{}`: {error}",
+                lock_path.display()
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+        written.push("ita.lock");
+        lines.push("wrote ita.lock".to_owned());
+    }
+    finish_resolved(
+        command,
+        &written,
+        &changes,
+        &lines,
         &diagnostics,
         sources,
         out,
     )
+}
+
+/// The review of rule 25: each package the new lock adds, changes or drops against the lock it
+/// replaces, compared by name and origin. What each one's code uses comes from the new graph,
+/// checked at tier 0, only when something changed. O(p log p) for p packages, plus the check.
+fn review(
+    package: &crate::package::Package,
+    existing: Option<&una_project::ita::ItaLock>,
+    entries: &[Locked],
+) -> Vec<ChangeDoc> {
+    struct Old {
+        version: String,
+        digest: Option<String>,
+        ceiling: String,
+    }
+    // The packages of the lock it replaces, by name and origin.
+    let mut old: BTreeMap<(String, String), Old> = BTreeMap::new();
+    for locked in existing.map_or(&[][..], |lock| lock.read.packages.as_slice()) {
+        let origin = match locked.from.as_ref().map(|from| &from.value) {
+            Some(ita::LockOrigin::Path(dir)) => format!("path {}", dir.trim_end_matches('/')),
+            Some(ita::LockOrigin::Workspace(dir)) => format!("workspace {dir}"),
+            Some(ita::LockOrigin::Source(source)) => source.clone(),
+            None => String::new(),
+        };
+        let ceiling = locked
+            .granted
+            .iter()
+            .find(|g| g.identity.is_none())
+            .map(|g| canonical_ceiling(&g.may))
+            .unwrap_or_default();
+        old.insert(
+            (locked.name.value.to_string(), origin),
+            Old {
+                version: locked.version.value.clone(),
+                digest: locked.digest.as_ref().map(|d| d.value.clone()),
+                ceiling,
+            },
+        );
+    }
+    let mut changes: Vec<ChangeDoc> = Vec::new();
+    for entry in entries {
+        let origin = format!("path {}", entry.dir);
+        let key = (entry.name.clone(), origin.clone());
+        let version = entry.version.to_string();
+        let change = match old.remove(&key) {
+            None => ChangeDoc {
+                change: "add",
+                package: entry.name.clone(),
+                origin,
+                version_from: None,
+                version_to: Some(version),
+                digest_from: None,
+                digest_to: Some(entry.digest.clone()),
+                ceiling_from: String::new(),
+                ceiling_to: entry.ceiling.clone(),
+                authority: Vec::new(),
+            },
+            Some(before) => {
+                let same = before.version == version
+                    && before.digest.as_deref() == Some(entry.digest.as_str())
+                    && before.ceiling == entry.ceiling;
+                if same {
+                    continue;
+                }
+                ChangeDoc {
+                    change: "change",
+                    package: entry.name.clone(),
+                    origin,
+                    version_from: Some(before.version),
+                    version_to: Some(version),
+                    digest_from: before.digest,
+                    digest_to: Some(entry.digest.clone()),
+                    ceiling_from: before.ceiling,
+                    ceiling_to: entry.ceiling.clone(),
+                    authority: Vec::new(),
+                }
+            }
+        };
+        changes.push(change);
+    }
+    for ((name, origin), before) in old {
+        changes.push(ChangeDoc {
+            change: "drop",
+            package: name,
+            origin,
+            version_from: Some(before.version),
+            version_to: None,
+            digest_from: before.digest,
+            digest_to: None,
+            ceiling_from: before.ceiling,
+            ceiling_to: String::new(),
+            authority: Vec::new(),
+        });
+    }
+    if changes.iter().any(|c| c.change != "drop") {
+        let analysis = crate::on_large_stack(|| crate::analyze(package, None));
+        let (manifest, _) = crate::package::project(package);
+        let dependencies = crate::report::dependencies(package, &manifest, &analysis);
+        let uses: BTreeMap<(String, String), Vec<String>> = dependencies
+            .iter()
+            .filter_map(|d| {
+                let (name, dir, authority) = d.uses();
+                Some((
+                    (name.to_owned(), format!("path {}", dir?)),
+                    authority.to_vec(),
+                ))
+            })
+            .collect();
+        for change in changes.iter_mut().filter(|c| c.change != "drop") {
+            let key = (change.package.clone(), change.origin.clone());
+            if let Some(authority) = uses.get(&key) {
+                change.authority = authority.clone();
+            }
+        }
+    }
+    changes.sort_by(|a, b| (&a.package, &a.origin).cmp(&(&b.package, &b.origin)));
+    changes
+}
+
+/// [`finish`] for a command that resolves: its `una.ita/1` document has `changes` too.
+fn finish_resolved(
+    command: &str,
+    written: &[&str],
+    changes: &[ChangeDoc],
+    lines: &[String],
+    diagnostics: &[Diagnostic],
+    sources: &SourceDb,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    let status = if diagnostics.is_empty() {
+        ExitStatus::Success
+    } else {
+        ExitStatus::Errors
+    };
+    if out.json {
+        let document = ResolveDocument {
+            schema: "una.ita/1",
+            command,
+            written,
+            changes,
+            diagnostics,
+        };
+        match serde_json::to_string(&document) {
+            Ok(text) => writeln!(out.stdout, "{text}")?,
+            Err(error) => {
+                writeln!(out.stderr, "internal compiler error (U8001): {error}")?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+        out.stdout.flush()?;
+    } else {
+        write!(
+            out.stderr,
+            "{}",
+            render_human(diagnostics, &sources.texts(), out.color)
+        )?;
+        for line in lines {
+            writeln!(out.stdout, "{line}")?;
+        }
+    }
+    Ok(status)
 }
 
 /// A ceiling in its canonical text: capabilities by name, each with its operations sorted,
@@ -671,7 +1139,14 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         )?;
         return Ok(ExitStatus::Usage);
     }
-    lock_command(path, false, false, &[], out)
+    lock_command(
+        path,
+        LockOptions {
+            command: "remove",
+            ..LockOptions::lock(false, false, false, &[])
+        },
+        out,
+    )
 }
 
 /// `una ita vendor [path]` (ADR 0122 rule 32): copies each registry package of `ita.lock` from
@@ -772,4 +1247,346 @@ pub(crate) fn vendor_command(
     }
     let written: Vec<&str> = written.iter().map(String::as_str).collect();
     finish("vendor", &written, &lines, &diagnostics, sources, out)
+}
+
+/// `una ita update [<name>…] [--cooldown <hours>] [--now] [--dry-run] [--accept-…] [path]`
+/// (ADR 0122 rules 25 and 57): raises the named needs, or all, and writes the lock. A name the
+/// root does not need, or an `ita.una` that does not parse, is a usage error. In this release
+/// a path package is always locked as its directory holds it, so `update` locks it again with
+/// the review of rule 25; a registry need cannot be raised offline, since the per-name state of
+/// a resolution point is not held (U7013), and nothing is written. No network.
+pub(crate) fn update_command(
+    names: &[String],
+    path: &Path,
+    options: LockOptions<'_>,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    let manifest_path = path.join("ita.una");
+    if !names.is_empty() {
+        let text = match std::fs::read_to_string(&manifest_path) {
+            Ok(text) => text,
+            Err(error) => return unreadable(&manifest_path, &error, out),
+        };
+        let (read, errors) = ita::parse_manifest(&text);
+        if !errors.is_empty() {
+            writeln!(
+                out.stderr,
+                "error: ita.una does not parse; run `una check` to see why, then update"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+        for name in names {
+            if !read
+                .needs
+                .iter()
+                .any(|need| need.name.value.to_string() == *name)
+            {
+                writeln!(out.stderr, "error: the package does not need `{name}`")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    }
+    resolve_and_lock(path, options, out)
+}
+
+/// Whether `word` is a lower-case identifier of a project file: `[a-z][a-z0-9_]*`, at most 64
+/// bytes.
+fn is_lower_word(word: &str) -> bool {
+    word.len() <= 64
+        && word.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// The sections of `ita.una` that come after `needs`, in the canonical order (ADR 0122 rule 5).
+const AFTER_NEEDS: [&str; 9] = [
+    "replace",
+    "trust",
+    "labels",
+    "trusted",
+    "escapes",
+    "boundaries",
+    "contracts",
+    "run",
+    "drive",
+];
+
+/// `text` with `line` added as the last need: at the end of the `needs` section, or in a new
+/// one before the first section that follows it in the canonical order, or at the end.
+fn with_need(text: &str, line: &str) -> String {
+    let read = ita::lines(text);
+    let text = read.text.as_str();
+    let line_start = |offset: usize| {
+        text.get(..offset)
+            .and_then(|head| head.rfind('\n'))
+            .map_or(0, |at| at + 1)
+    };
+    let line_end = |offset: usize| {
+        text.get(offset..)
+            .and_then(|tail| tail.find('\n'))
+            .map_or(text.len(), |at| offset + at + 1)
+    };
+    fn first_word(top: &ita::Line) -> Option<&str> {
+        match top.tokens.first().map(|t| &t.item) {
+            Some(ita::Item::Word(word)) => Some(word.as_str()),
+            _ => None,
+        }
+    }
+    let (at, insert) = if let Some(section) = read
+        .lines
+        .iter()
+        .find(|top| first_word(top) == Some("needs"))
+    {
+        let mut last = section.range.end;
+        let mut stack: Vec<&ita::Line> = section.children.iter().collect();
+        while let Some(child) = stack.pop() {
+            last = last.max(child.range.end);
+            stack.extend(child.children.iter());
+        }
+        (line_end(last), format!("{line}\n"))
+    } else if let Some(next) = read
+        .lines
+        .iter()
+        .find(|top| first_word(top).is_some_and(|word| AFTER_NEEDS.contains(&word)))
+    {
+        let start = next
+            .comments_before
+            .iter()
+            .map(|comment| comment.start)
+            .chain([next.range.start])
+            .min()
+            .unwrap_or(next.range.start);
+        (line_start(start), format!("needs\n{line}\n\n"))
+    } else {
+        let gap = if text.ends_with('\n') { "\n" } else { "\n\n" };
+        (text.len(), format!("{gap}needs\n{line}\n"))
+    };
+    let mut edited = String::with_capacity(text.len() + insert.len());
+    edited.push_str(text.get(..at).unwrap_or(text));
+    // A need added at the end of a file without a final line feed starts on its own line.
+    if at == text.len() && !text.ends_with('\n') && insert.starts_with("  ") {
+        edited.push('\n');
+    }
+    edited.push_str(&insert);
+    edited.push_str(text.get(at..).unwrap_or(""));
+    edited
+}
+
+/// `una ita add <name> [<version>] [--as <local>] [--from <source>] [--now] [--dry-run]
+/// [--accept-…] [path]` (ADR 0122 rules 25 and 57): adds a need to `ita.una` and locks, both
+/// written only when the resolution succeeds. It writes no `may` and no `trust` line. Each word
+/// is checked before it is written (a usage error otherwise), and the edited `ita.una` is read
+/// by the grammar like any other (U7008). The need is a registry's, which this release cannot
+/// resolve offline (U7013): nothing is written. No network.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_command(
+    name: &str,
+    version: Option<&str>,
+    local: Option<&str>,
+    from: Option<&str>,
+    path: &Path,
+    options: LockOptions<'_>,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    let manifest_path = path.join("ita.una");
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(error) => return unreadable(&manifest_path, &error, out),
+    };
+    let name_ok = match name.split_once('/') {
+        Some((owner, short)) => is_lower_word(owner) && is_lower_word(short),
+        None => is_lower_word(name),
+    };
+    if !name_ok {
+        writeln!(
+            out.stderr,
+            "error: `{name}` is not a package's name: write `name` or `owner/name` in lower case"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
+    for (flag, word) in [("--as", local), ("--from", from)] {
+        if let Some(word) = word
+            && !is_lower_word(word)
+        {
+            writeln!(
+                out.stderr,
+                "error: `{word}` after {flag} is not a lower-case name"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
+    if let Some(version) = version {
+        let written = version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+        if !written || Version::parse(version).is_err() {
+            writeln!(
+                out.stderr,
+                "error: `{version}` is not a version: write `2.1` or `2.1.0`"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
+    let (before, errors) = ita::parse_manifest(&text);
+    if !errors.is_empty() {
+        writeln!(
+            out.stderr,
+            "error: ita.una does not parse; run `una check` to see why, then add the need"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
+    let Some(version) = version else {
+        // Rule 25 takes the newest release of the newest major past the cooldown, which only
+        // the per-name state of a resolution point tells.
+        let source = from.unwrap_or(una_project::ita::ITATY);
+        let mut sources = SourceDb::new();
+        let id = sources.add("ita.una".to_owned(), text.as_bytes());
+        let diagnostics = located(
+            &sources,
+            id,
+            vec![ProjectError {
+                code: Code::U7013,
+                range: 0..0,
+                message: format!(
+                    "the newest release of `{name}` cannot be found offline, since the per-name state of `{source}` at a resolution point is not held"
+                ),
+            }],
+        );
+        return finish_resolved("add", &[], &[], &[], &diagnostics, &sources, out);
+    };
+    let mut line = format!("  {name} {version}");
+    if let Some(local) = local {
+        line.push_str(&format!(" as {local}"));
+    }
+    if let Some(from) = from {
+        line.push_str(&format!(" from {from}"));
+    }
+    let edited = with_need(&text, &line);
+    // The edit adds exactly one need, and nothing else.
+    let (after, _) = ita::parse_manifest(&edited);
+    if after.needs.len() != before.needs.len() + 1 {
+        writeln!(
+            out.stderr,
+            "error: the need cannot be added to this ita.una; write it under `needs` by hand"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
+    resolve_and_lock(
+        path,
+        LockOptions {
+            command: "add",
+            edited: Some(edited),
+            ..options
+        },
+        out,
+    )
+}
+
+/// `una ita verify [path]` (ADR 0122 rule 57): re-verifies each registry package of `ita.lock`
+/// in the vendor directory and in Itaoca, wherever it is, against the lock and the provenance
+/// stored beside it (rule 17): its files read again with no link followed, their digest, and
+/// the stored statement, checkpoint and root. A copy that does not verify is U7010, a package
+/// in neither place U7011; nothing is written or repaired. Path packages are the root author's
+/// working tree, which `una ita lock --check` compares. No network. O(bytes of the packages).
+pub(crate) fn verify_command(
+    path: &Path,
+    itaoca: Option<&una_project::itaoca::Itaoca>,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    use una_project::vendor::{self, Problem};
+
+    if !path.join("ita.una").is_file() {
+        writeln!(
+            out.stderr,
+            "error: `{}` has no ita.una; `una ita` works on a package of edition 0.4, and `una migrate` moves a package to it",
+            path.display()
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
+    let package = match crate::package::load(path) {
+        Ok(package) => package,
+        Err(error) => {
+            writeln!(out.stderr, "error: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let sources = &package.sources;
+    let Some(manifest_id) = package.manifest else {
+        return Ok(ExitStatus::Usage);
+    };
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let mut diagnostics = located(sources, manifest_id, errors);
+    let Some(lock_id) = package.lock else {
+        diagnostics.extend(located(sources, manifest_id, vec![missing_lock()]));
+        return finish("verify", &[], &[], &diagnostics, sources, out);
+    };
+    let (lock, errors) = parse_ita_lock(sources.file(lock_id).text());
+    diagnostics.extend(located(sources, lock_id, errors));
+    if !diagnostics.is_empty() {
+        return finish("verify", &[], &[], &diagnostics, sources, out);
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut problems: Vec<ProjectError> = Vec::new();
+    for locked in &lock.read.packages {
+        if !matches!(
+            &locked.from,
+            Some(ita::At {
+                value: ita::LockOrigin::Source(_),
+                ..
+            })
+        ) {
+            continue;
+        }
+        let what = format!("{} {}", locked.name.value, locked.version.value);
+        let mut refuse = |code: Code, message: String| {
+            problems.push(ProjectError {
+                code,
+                range: locked.range.clone(),
+                message,
+            });
+        };
+        let expected = match vendor::expected(&lock.read, manifest.ita.as_deref(), locked) {
+            Ok(expected) => expected,
+            Err(message) => {
+                refuse(Code::U7010, message);
+                continue;
+            }
+        };
+        let mut places: Vec<&str> = Vec::new();
+        let mut failed = false;
+        match vendor::vendored(path, &expected) {
+            Ok(Some(_)) => places.push("vendor/ita"),
+            Ok(None) => {}
+            Err(Problem::Refused(message) | Problem::Absent(message)) => {
+                refuse(Code::U7010, message);
+                failed = true;
+            }
+        }
+        if let Some(itaoca) = itaoca {
+            match vendor::stored(itaoca, &expected) {
+                Ok(Some(_)) => places.push("Itaoca"),
+                Ok(None) => {}
+                Err(Problem::Refused(message) | Problem::Absent(message)) => {
+                    refuse(Code::U7010, message);
+                    failed = true;
+                }
+            }
+        }
+        if places.is_empty() && !failed {
+            refuse(
+                Code::U7011,
+                format!(
+                    "the locked package `{what}` is in neither the vendor directory nor Itaoca"
+                ),
+            );
+        } else if !places.is_empty() {
+            lines.push(format!("verified {what} in {}", places.join(" and ")));
+        }
+    }
+    diagnostics.extend(located(sources, lock_id, problems));
+    if lines.is_empty() && diagnostics.is_empty() {
+        lines.push("no registry package is locked".to_owned());
+    }
+    finish("verify", &[], &lines, &diagnostics, sources, out)
 }

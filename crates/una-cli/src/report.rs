@@ -153,6 +153,14 @@ pub(crate) struct DependencyDoc {
     trust: DependencyTrustDoc,
 }
 
+impl DependencyDoc {
+    /// Its name, its directory when it is a path package, and what its code uses: the union of
+    /// the `uses` of its functions and handlers, as `Cap[op, op]` entries.
+    pub(crate) fn uses(&self) -> (&str, Option<&str>, &[String]) {
+        (&self.package, self.path.as_deref(), &self.authority)
+    }
+}
+
 /// The ceiling one dependent writes for a dependency; `source` is `null` for the root.
 #[derive(Serialize)]
 struct GrantedByDoc {
