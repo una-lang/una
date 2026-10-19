@@ -90,13 +90,14 @@ Ranked by the worst class, then by what guards it today:
 
 ### 3.4 Host capabilities and the prelude
 
-The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implementations, one in the interpreter (`crates/una-interp/src/host.rs`) and one in the runtime (`crates/una-rt/src/host.rs`). `Http` uses `una-http` (about 1,100 lines) over `rustls` with the `ring` provider and `webpki-roots`, which are trusted (`docs/compiler/architecture.md`).
+The host operations (`Clock`, `Env`, `Files`, `Keys`, `Http`) have two implementations, one in the interpreter (`crates/una-interp/src/host.rs`) and one in the runtime (`crates/una-rt/src/host.rs`). `Http` uses the client of `una-http-core` and the TLS client of `una-http` (about 1,100 lines together) over `rustls` with the `ring` provider and `webpki-roots`, which are trusted (`docs/compiler/architecture.md`). Only an executable whose code calls an `Http` operation links them: `una build` links it with `libuna_rt_http.a`, and every other executable with `libuna_rt.a`, which holds no TLS code (#1102).
 
 - **A bug can cause:** soundness through labels: a failure or an outcome that depends on internal data but is labeled public. Four advisories were of this kind (UNA-SA-003, 008, 009 and 010). Also a wrong result where the two implementations differ.
 - **Guards:**
   - the host table, which states each operation's labels and failures, and the conformance cases on it;
   - the differential native gate, which compares the two implementations on the runnable programs;
-  - the release-mode TLS test, which shows that a release build never trusts the test authority (ADR 0074).
+  - the release-mode TLS test, which shows that a release build never trusts the test authority (ADR 0074);
+  - the symbol tests of `crates/una-cli/tests/http.rs`, which read a built executable with the toolchain's `llvm-nm`: one that never uses `Http` holds no symbol of `ring`, `rustls` or `webpki`, and one that uses it links them; and the release check, which refuses an archive whose `libuna_rt.a` holds one (#1102).
 - **Formal coverage:** the files and HTTP host are modeled as shared state (milestone M5), under stated premises about the host (H1 to H4 in the status document). The premises are assumptions, not checked properties of the implementation.
 - **Open gaps:** each operation exists twice, and only the runnable programs compare them; the host premises are not tested against the implementation.
 
