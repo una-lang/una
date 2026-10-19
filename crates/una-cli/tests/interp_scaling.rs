@@ -73,19 +73,36 @@ fn run_source_seconds(dir: &Path, source: &str) -> f64 {
     run_edition_seconds(dir, source, "0.2")
 }
 
-/// The seconds `run_main` takes on `source`, a package of `edition`, its best of three.
+/// The seconds `run_main` takes on `source`, a package of `edition`, its best of three. A
+/// package of edition 0.4 is described by `ita.una` and `ita.lock`, the others by `una.toml`
+/// and `verification.lock`.
 fn run_edition_seconds(dir: &Path, source: &str, edition: &str) -> f64 {
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("una.toml"),
-        format!("[package]\nname = \"scaling\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
-    )
-    .unwrap();
-    std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
-        dir.join("verification.lock"),
-    )
-    .unwrap();
+    if edition == "0.4" {
+        std::fs::write(
+            dir.join("ita.una"),
+            "ita scaling\n  version 0.1.0\n  edition 0.4\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("ita.lock"),
+            "-- Written by `una ita`; do not edit.\nlock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+        )
+        .unwrap();
+    } else {
+        std::fs::write(
+            dir.join("una.toml"),
+            format!(
+                "[package]\nname = \"scaling\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+            dir.join("verification.lock"),
+        )
+        .unwrap();
+    }
     std::fs::write(dir.join("src/main.una"), source).unwrap();
     let checked = una_cli::check(dir, una_cli::Tier::Zero).unwrap();
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
