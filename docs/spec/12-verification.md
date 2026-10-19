@@ -13,7 +13,7 @@ Tiers 2 (quantified laws) and 3 (property tests, benchmarks) are deferred (`plan
 
 ## 2. The decidable fragment
 
-Every v0.1 query is in **QF_UFLIA**: quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4). A literal here is an integer literal or `-` applied to one: `x * -2` is linear multiplication, and `a div -k` and `a mod -k` divide by a literal, with no nonzero obligation (#10).
+Every v0.1 query is in **QF_UFLIA** (a query with an `F64` term, from edition `0.3`, is in `ALL`, `spec/29 §8`): quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4). A literal here is an integer literal or `-` applied to one: `x * -2` is linear multiplication, and `a div -k` and `a mod -k` divide by a literal, with no nonzero obligation (#10).
 
 No query ever contains a quantifier. Axioms that would need quantifiers are instantiated as ground facts for the terms that occur in the query (§4).
 
@@ -180,6 +180,8 @@ logic            = "QF_UFLIA"
 step_budget      = 5000000
 random_seed      = 0
 ```
+
+`logic` is the logic of every query without an `F64` term. A query with one (edition `0.3`) declares the logic `ALL` and is sent with the step budget 5,000,000, a constant of the encoding `una-smt-1`, whatever `step_budget` sets (`spec/29 §8`).
 
 The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-256 over the lock file contents and the exact query text; the value is the status, reason and model. Changing the lock invalidates the cache. Each entry is one JSON file named by the key in hex, written through a temporary file and a rename; an unreadable entry is solved again, and `unknown` with reason `wallclock` is never cached (ADR 0033). (v0.2, ADR 0064.) Each entry carries an HMAC-SHA-256 tag, under the user's secret key, over its key and its answer:
 - An entry whose tag is missing or does not match is not an answer. The query is solved again, and the entry is rewritten.

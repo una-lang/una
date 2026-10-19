@@ -307,6 +307,22 @@ impl Writer<'_> {
                 "predicate" => self.path(predicate),
                 "args" => list(args, |a| self.term(a)),
             ),
+            // ADR 0114 rule 17: a float literal by its bits, an operation by its `FloatOp`.
+            Term::F64(bits) => J::Obj(vec![
+                ("kind", s("f64")),
+                ("bits", J::Str(format!("{bits:016x}"))),
+            ]),
+            Term::Float { op, args } => node!(Float,
+                "op" => J::Obj(vec![(
+                    "kind",
+                    s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+                )]),
+                "args" => list(args, |a| self.term(a)),
+            ),
+            Term::ToF64 { value, from } => node!(ToF64,
+                "value" => self.term(value),
+                "from" => opt(from.as_ref(), |i| self.int_type(*i)),
+            ),
         }
     }
 

@@ -6,8 +6,8 @@
 use std::fmt::Write as _;
 
 use crate::ir::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, Fun, HandlerOp, LoopSource,
-    Module, Prim, Rhs, Source, Term, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, FloatOp, Fun, HandlerOp,
+    LoopSource, Module, Prim, Rhs, Source, Term, Type, Use,
 };
 
 /// The text of a module's Core IR, newline-terminated.
@@ -84,6 +84,14 @@ fn precedence(term: &Term) -> u8 {
         Term::Neg(_) => 8,
         Term::Int(digits) if digits.starts_with('-') => 8,
         Term::Field { .. } | Term::Len(_) | Term::Proj { .. } | Term::Call { .. } => 9,
+        Term::Float { op, .. } => match op {
+            FloatOp::Eq | FloatOp::Ne | FloatOp::Lt | FloatOp::Le | FloatOp::Gt | FloatOp::Ge => 5,
+            FloatOp::Add | FloatOp::Sub => 6,
+            FloatOp::Mul | FloatOp::Div => 7,
+            FloatOp::Neg => 8,
+            _ => 9,
+        },
+        Term::ToF64 { .. } => 9,
         _ => 10,
     }
 }
@@ -183,6 +191,51 @@ fn write_term(
                 write_term(out, arg, 1, replace);
             }
             out.push(')');
+        }
+        Term::F64(bits) => out.push_str(&crate::float::render(f64::from_bits(*bits))),
+        Term::Float { op, args } => {
+            let symbol = match op {
+                FloatOp::Add => Some("+"),
+                FloatOp::Sub => Some("-"),
+                FloatOp::Mul => Some("*"),
+                FloatOp::Div => Some("/"),
+                FloatOp::Eq => Some("=="),
+                FloatOp::Ne => Some("!="),
+                FloatOp::Lt => Some("<"),
+                FloatOp::Le => Some("<="),
+                FloatOp::Gt => Some(">"),
+                FloatOp::Ge => Some(">="),
+                _ => None,
+            };
+            match (symbol, args.as_slice(), op) {
+                (Some(symbol), [left, right], _) => {
+                    let level = precedence(term);
+                    write_term(out, left, level, replace);
+                    let _ = write!(out, " {symbol} ");
+                    write_term(out, right, level + 1, replace);
+                }
+                (_, [value], FloatOp::Neg) => {
+                    out.push('-');
+                    write_term(out, value, 9, replace);
+                }
+                (_, [receiver, rest @ ..], op) => {
+                    write_term(out, receiver, 9, replace);
+                    let _ = write!(out, ".{}(", op.method().unwrap_or("?"));
+                    for (index, (arg, param)) in rest.iter().zip(op.params()).enumerate() {
+                        if index > 0 {
+                            out.push_str(", ");
+                        }
+                        let _ = write!(out, "{param}: ");
+                        write_term(out, arg, 1, replace);
+                    }
+                    out.push(')');
+                }
+                _ => out.push('?'),
+            }
+        }
+        Term::ToF64 { value, .. } => {
+            write_term(out, value, 9, replace);
+            out.push_str(".to_f64()");
         }
     }
     if parens {

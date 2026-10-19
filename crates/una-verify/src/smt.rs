@@ -14,8 +14,24 @@ pub(crate) type Sort = String;
 
 /// The sorts that SMT-LIB defines, which queries never declare.
 fn builtin(sort: &str) -> bool {
-    matches!(sort, "Int" | "Bool")
+    matches!(sort, "Int" | "Bool" | FLOAT64)
 }
+
+/// The sort of `F64`: `(_ FloatingPoint 11 53)` of the FloatingPoint theory (`spec/29 §8`).
+pub(crate) const FLOAT64: &str = "Float64";
+
+/// The operators of the FloatingPoint theory whose result is a `Float64`.
+const FLOAT_OPS: [&str; 9] = [
+    "fp.add",
+    "fp.sub",
+    "fp.mul",
+    "fp.div",
+    "fp.neg",
+    "fp.abs",
+    "fp.sqrt",
+    "(_ to_fp 11 53)",
+    "(_ to_fp_unsigned 11 53)",
+];
 
 /// The sort of `Text`.
 pub(crate) const TEXT: &str = "i!Text";
@@ -36,6 +52,8 @@ pub(crate) const MAP: &str = "i!Map_";
 pub(crate) enum F {
     /// An integer literal, in decimal, with an optional `-`.
     Int(String),
+    /// An `F64` literal, as its bits: `(fp #b<sign> #b<exponent> #b<significand>)`.
+    Float(u64),
     /// `true` or `false`.
     Bool(bool),
     /// A declared constant.
@@ -140,12 +158,21 @@ impl F {
     pub(crate) fn sort(&self) -> Sort {
         match self {
             F::Int(_) => "Int".to_owned(),
+            F::Float(_) => FLOAT64.to_owned(),
             F::Bool(_) => "Bool".to_owned(),
             F::Const(c) => c.sort.clone(),
             F::Local { sort, .. } => sort.clone(),
             F::App { fun, .. } => fun.result.clone(),
             F::Op { op, args } => match *op {
                 "+" | "-" | "*" | "div" | "mod" => "Int".to_owned(),
+                op if FLOAT_OPS.contains(&op) => FLOAT64.to_owned(),
+                // The rounding mode and the bit-vectors of a conversion have sorts of their
+                // own, so nothing reads them as Booleans (the abstraction of `spec/29 §8`).
+                "RNE" => "RoundingMode".to_owned(),
+                op if op.starts_with("(_ int2bv ") => {
+                    let width = op.trim_start_matches("(_ int2bv ").trim_end_matches(')');
+                    format!("(_ BitVec {width})")
+                }
                 "ite" => args.get(1).map_or_else(|| "Bool".to_owned(), F::sort),
                 _ => "Bool".to_owned(),
             },
@@ -199,7 +226,7 @@ impl F {
                 out.push(self);
             }
             F::Const(_) => out.push(self),
-            F::Int(_) | F::Bool(_) | F::Local { .. } => {}
+            F::Int(_) | F::Float(_) | F::Bool(_) | F::Local { .. } => {}
         }
     }
 
@@ -212,6 +239,15 @@ impl F {
                 }
                 None => out.push_str(digits),
             },
+            F::Float(bits) => {
+                let _ = write!(
+                    out,
+                    "(fp #b{:01b} #b{:011b} #b{:052b})",
+                    bits >> 63,
+                    (bits >> 52) & 0x7FF,
+                    bits & ((1 << 52) - 1)
+                );
+            }
             F::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
             F::Const(c) => out.push_str(&c.symbol()),
             F::Local { name, .. } => out.push_str(&user_binder(name)),
@@ -238,6 +274,25 @@ impl F {
                     arg.render(out);
                 }
                 out.push(')');
+            }
+        }
+    }
+
+    /// Whether the term has an `F64` term (`spec/29 §8`): a float literal, a constant or an
+    /// application of the sort `Float64`, or an operator of the FloatingPoint theory.
+    pub(crate) fn mentions_float(&self) -> bool {
+        match self {
+            F::Float(_) => true,
+            F::Int(_) | F::Bool(_) => false,
+            F::Const(c) => c.sort == FLOAT64,
+            F::Local { sort, .. } => sort == FLOAT64,
+            F::App { fun, args } => {
+                fun.result == FLOAT64
+                    || fun.args.iter().any(|sort| sort == FLOAT64)
+                    || args.iter().any(F::mentions_float)
+            }
+            F::Op { op, args } => {
+                op.starts_with("fp.") || op.contains("to_fp") || args.iter().any(F::mentions_float)
             }
         }
     }
@@ -280,6 +335,16 @@ pub(crate) struct Query {
 }
 
 impl Query {
+    /// Whether the query has an `F64` term: it is then sent in the logic `ALL`, with the fixed
+    /// step budget of the encoding (`spec/29 §8`, ADR 0114 rule 8.2).
+    pub(crate) fn mentions_float(&self) -> bool {
+        self.assertions.iter().any(F::mentions_float)
+            || self
+                .definitions
+                .values()
+                .any(|d| d.body.mentions_float() || d.params.iter().any(|(_, s)| s == FLOAT64))
+    }
+
     /// The declarations and assertions as SMT-LIB text: sorts, constants and functions sorted
     /// by name, then definitions in dependency order, then the assertions, with the
     /// distinctness of text literals first among them (`spec/12 §4`).

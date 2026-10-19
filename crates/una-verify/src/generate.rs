@@ -8,16 +8,16 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term,
-    Type, Use, print_term_with,
+    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source,
+    Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
 
 use crate::run::Problem;
 use crate::smt::{
-    Const, ConstRole, Definition, F, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query, Sort, TEXT,
-    UNIT, kind_sort, path_selector,
+    Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query,
+    Sort, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// A proof obligation of `spec/12 §3`, with its query.
@@ -65,6 +65,10 @@ pub struct Obligation {
     /// corpus cross-check fail on any obligation that sets it: it means the checker admitted
     /// a condition that the encoding does not cover.
     pub unencodable: Option<String>,
+    /// The full query of an obligation whose query is the cone of `spec/29 §8` with an `F64`
+    /// hypothesis dropped, when a refutation of the cone query is not final: the refutation is
+    /// then decided by this one (ADR 0114 rule 8.3, "Order").
+    pub(crate) full: Option<Query>,
 }
 
 /// What a binding that a loop updates holds, for the reason of an obligation the loop leaves
@@ -221,6 +225,8 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
                     for op in ops {
                         walker.declaration = format!("{}.{name}.{}", module.path, op.name);
                         walker.lambdas.clear();
+                        // Each operation's definitions are its own (ADR 0114 rule 8.3).
+                        walker.let_defs.clear();
                         walker.handler_op(params, uses, capability_path, op);
                     }
                 }
@@ -740,9 +746,6 @@ fn base_type(base: Base) -> Type {
     }
 }
 
-/// The sort of `F64` while it is uninterpreted (`spec/29 §8`).
-const F64_SORT: &str = "i!F64";
-
 /// The sort of a Una type (`spec/12 §4`), in the namespaces of ADR 0038 D8:
 /// `Int` and `Bool` are SMT-LIB's, the other built-in types and the kinds of the prelude are
 /// the encoder's (`i!Text`, `i!List_<T>`, `i!Option_<T>`, `i!FileError`), and the kinds and
@@ -757,10 +760,8 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Text => TEXT.to_owned(),
             Base::Unit => UNIT.to_owned(),
             Base::Hashed => HASHED.to_owned(),
-            // An uninterpreted sort until the FloatingPoint encoding lands: no float term is in
-            // the refinement language yet, so no query states a fact about a float
-            // (`spec/29 §8`).
-            Base::F64 => F64_SORT.to_owned(),
+            // `(_ FloatingPoint 11 53)`: the encoding is the run-time semantics (`spec/29 §8`).
+            Base::F64 => FLOAT64.to_owned(),
             // A decimal is its coefficient, an `Int` (ADR 0120 V2): its queries stay linear.
             Base::Decimal(_) => "Int".to_owned(),
             Base::Named { module, name, args } => {
@@ -783,6 +784,206 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Unknown => "i!Unknown".to_owned(),
         },
     }
+}
+
+/// `RNE`, the rounding mode of every operation of `F64` (ADR 0114 rule 3).
+fn rne() -> F {
+    F::op("RNE", Vec::new())
+}
+
+/// The defined functions `i!lt!F64` and `i!le!F64`: IEEE totalOrder on the canonical values of
+/// `F64`, which the FloatingPoint theory's one NaN and two zeros are (ADR 0114 rule 8.1).
+fn float_order_definitions() -> BTreeMap<String, Definition> {
+    let local = |name: &str| F::Local {
+        name: name.to_owned(),
+        sort: FLOAT64.to_owned(),
+    };
+    let (a, b) = (local("a"), local("b"));
+    let lt = F::and(vec![
+        F::not(F::op("fp.isNaN", vec![a.clone()])),
+        F::or(vec![
+            F::op("fp.isNaN", vec![b.clone()]),
+            F::op("fp.lt", vec![a.clone(), b.clone()]),
+            F::and(vec![
+                F::op("fp.isZero", vec![a.clone()]),
+                F::op("fp.isZero", vec![b.clone()]),
+                F::op("fp.isNegative", vec![a.clone()]),
+                F::op("fp.isPositive", vec![b.clone()]),
+            ]),
+        ]),
+    ]);
+    let params = vec![
+        ("a".to_owned(), FLOAT64.to_owned()),
+        ("b".to_owned(), FLOAT64.to_owned()),
+    ];
+    let le = F::or(vec![
+        float_order("i!lt!F64", a.clone(), b.clone()),
+        F::eq(a, b),
+    ]);
+    let mut definitions = BTreeMap::new();
+    definitions.insert(
+        "i!lt!F64".to_owned(),
+        Definition {
+            params: params.clone(),
+            body: lt,
+        },
+    );
+    definitions.insert("i!le!F64".to_owned(), Definition { params, body: le });
+    definitions
+}
+
+/// An application of `i!lt!F64` or `i!le!F64`.
+fn float_order(name: &str, a: F, b: F) -> F {
+    F::App {
+        fun: SmtFun {
+            name: name.to_owned(),
+            args: vec![FLOAT64.to_owned(), FLOAT64.to_owned()],
+            result: "Bool".to_owned(),
+            role: FunRole::Predicate,
+        },
+        args: vec![a, b],
+    }
+}
+
+/// The term of an operation of `F64` of the refinement language on `args`, the receiver first
+/// (ADR 0114 rule 8.1); `None` for a code-only method, whose result is a fresh binder.
+fn float_term(op: FloatOp, args: &[F]) -> Option<F> {
+    let arg = |i: usize| args.get(i).cloned();
+    let rounded =
+        |name: &'static str| -> Option<F> { Some(F::op(name, vec![rne(), arg(0)?, arg(1)?])) };
+    let unary = |name: &'static str| -> Option<F> { Some(F::op(name, vec![arg(0)?])) };
+    let binary = |name: &'static str| -> Option<F> { Some(F::op(name, vec![arg(0)?, arg(1)?])) };
+    Some(match op {
+        FloatOp::Add => rounded("fp.add")?,
+        FloatOp::Sub => rounded("fp.sub")?,
+        FloatOp::Mul => rounded("fp.mul")?,
+        FloatOp::Div => rounded("fp.div")?,
+        FloatOp::Neg => unary("fp.neg")?,
+        FloatOp::Abs => unary("fp.abs")?,
+        FloatOp::Sqrt => F::op("fp.sqrt", vec![rne(), arg(0)?]),
+        // SMT `=` on `Float64` is identity, exactly `==` (ADR 0114 rule 5.1).
+        FloatOp::Eq => F::eq(arg(0)?, arg(1)?),
+        FloatOp::Ne => F::not(F::eq(arg(0)?, arg(1)?)),
+        FloatOp::Lt => float_order("i!lt!F64", arg(0)?, arg(1)?),
+        FloatOp::Le => float_order("i!le!F64", arg(0)?, arg(1)?),
+        FloatOp::Gt => float_order("i!lt!F64", arg(1)?, arg(0)?),
+        FloatOp::Ge => float_order("i!le!F64", arg(1)?, arg(0)?),
+        FloatOp::IeeeEq => binary("fp.eq")?,
+        FloatOp::IeeeNe => F::not(binary("fp.eq")?),
+        FloatOp::IeeeLt => binary("fp.lt")?,
+        FloatOp::IeeeLe => binary("fp.leq")?,
+        FloatOp::IeeeGt => binary("fp.gt")?,
+        FloatOp::IeeeGe => binary("fp.geq")?,
+        FloatOp::IsNan => unary("fp.isNaN")?,
+        FloatOp::IsFinite => F::not(F::or(vec![unary("fp.isNaN")?, unary("fp.isInfinite")?])),
+        FloatOp::IsInfinite => unary("fp.isInfinite")?,
+        FloatOp::IsSignNegative => {
+            F::and(vec![unary("fp.isNegative")?, F::not(unary("fp.isNaN")?)])
+        }
+        FloatOp::IsZero => unary("fp.isZero")?,
+        FloatOp::IsPositiveZero => F::and(vec![unary("fp.isZero")?, unary("fp.isPositive")?]),
+        FloatOp::IsNegativeZero => F::and(vec![unary("fp.isZero")?, unary("fp.isNegative")?]),
+        FloatOp::Fma
+        | FloatOp::Rem
+        | FloatOp::Floor
+        | FloatOp::Ceil
+        | FloatOp::Trunc
+        | FloatOp::RoundHalfEven
+        | FloatOp::RoundHalfAway
+        | FloatOp::CopySign
+        | FloatOp::IeeeMin
+        | FloatOp::IeeeMax
+        | FloatOp::Clamp
+        | FloatOp::ToBits
+        | FloatOp::ToIntExact
+        | FloatOp::FromInt
+        | FloatOp::ToText => return None,
+    })
+}
+
+/// The fixed-width type of an integer value, `None` for `Int`.
+fn integer_type(ty: &Type) -> Option<IntType> {
+    match ty {
+        Type::Base {
+            base: Base::Fixed(int),
+            ..
+        } => Some(*int),
+        _ => None,
+    }
+}
+
+/// `n.to_f64()` (ADR 0114 rule 8.1): through a bit-vector of the integer type's own width,
+/// signed or unsigned, exact for every value of the type; for an `Int`, interpreted for
+/// `-2^63 <= n < 2^63` and the uninterpreted `i!to_f64!Int` beyond.
+///
+/// The narrow form applies only where `n` lies in its type's range: `int2bv w` takes
+/// `n mod 2^w`, and a term the language computes exactly (the body of a `reflect` predicate, a
+/// clause, an argument of `Int` given to a fixed-width parameter, `spec/18 §2` rule 4) may lie
+/// outside it although its static type is fixed-width. So the term is
+/// `(ite (in range) <narrow> <the Int form>)`: exact for every integer, and the narrow form, the
+/// one the solver decides fast, wherever the range holds.
+///
+/// `guarded` is false only for a conversion in code (`Prim::Float(FloatOp::FromInt)`), whose
+/// operand is a value of its type: a parameter, a field, or the result of an operation with an
+/// `overflow` obligation (`spec/18 §3`), so it lies in the range by construction, and the
+/// narrow form is exact unguarded (a program whose obligation fails is rejected).
+fn to_f64(n: F, from: Option<IntType>, guarded: bool) -> Option<F> {
+    let through = |width: u32, signed: bool, n: F| -> F {
+        let int2bv: &'static str = match width {
+            8 => "(_ int2bv 8)",
+            16 => "(_ int2bv 16)",
+            32 => "(_ int2bv 32)",
+            _ => "(_ int2bv 64)",
+        };
+        let convert = if signed {
+            "(_ to_fp 11 53)"
+        } else {
+            "(_ to_fp_unsigned 11 53)"
+        };
+        F::op(convert, vec![rne(), F::op(int2bv, vec![n])])
+    };
+    let range = |low: i128, high: i128, n: &F| {
+        F::and(vec![
+            F::op("<=", vec![F::Int(low.to_string()), n.clone()]),
+            F::op("<", vec![n.clone(), F::Int(high.to_string())]),
+        ])
+    };
+    let int_form = |n: F| -> F {
+        let beyond = F::App {
+            fun: SmtFun {
+                name: "i!to_f64!Int".to_owned(),
+                args: vec!["Int".to_owned()],
+                result: FLOAT64.to_owned(),
+                role: FunRole::Other,
+            },
+            args: vec![n.clone()],
+        };
+        let (low, high) = (-(1_i128 << 63), 1_i128 << 63);
+        F::op(
+            "ite",
+            vec![range(low, high, &n), through(64, true, n.clone()), beyond],
+        )
+    };
+    Some(match from {
+        Some(int) if !guarded => through(int.bits(), int.signed(), n),
+        Some(int) => {
+            let width = int.bits();
+            let (low, high) = if int.signed() {
+                (-(1_i128 << (width - 1)), 1_i128 << (width - 1))
+            } else {
+                (0, 1_i128 << width)
+            };
+            F::op(
+                "ite",
+                vec![
+                    range(low, high, &n),
+                    through(width, int.signed(), n.clone()),
+                    int_form(n),
+                ],
+            )
+        }
+        None => int_form(n),
+    })
 }
 
 /// The sort of a tuple of `types`, `i!Tuple<n>!<id>`: `<id>` is the first 32 hex digits of
@@ -1043,6 +1244,9 @@ struct Walker<'p, 'i> {
     uses_of: BTreeSet<Name>,
     /// The binders bound to a lambda, which is charged where it is defined (ADR 0092 rule 3).
     lambda_binders: BTreeSet<Name>,
+    /// The selfified `let`s whose value has an `F64` term, each `y = t`: the definitions of
+    /// ADR 0114 rule 8.3, which the cone may drop and a refutation survives.
+    let_defs: BTreeSet<F>,
 }
 
 /// How the obligations of a function value flowing into a function type name the value and
@@ -1064,7 +1268,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             module,
             declaration: String::new(),
             obligations: Vec::new(),
-            definitions: BTreeMap::new(),
+            definitions: float_order_definitions(),
             temps: BTreeMap::new(),
             defs: BTreeMap::new(),
             within: Within::Other,
@@ -1086,6 +1290,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             lambda_binders: BTreeSet::new(),
             unpinned: BTreeSet::new(),
             returned_unpinned: false,
+            let_defs: BTreeSet::new(),
         }
     }
 
@@ -1103,6 +1308,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     fn function(&mut self, fun: &'p Fun) {
         self.declaration = format!("{}.{}", self.module, fun.name);
         self.lambdas.clear();
+        self.let_defs.clear();
         self.within = Within::Function { public: fun.public };
         self.parameters = fun.params.iter().map(|(name, _)| name.clone()).collect();
         let mut ctx = Ctx::default();
@@ -2179,7 +2385,11 @@ impl<'p, 'i> Walker<'p, 'i> {
             Rhs::Atom(atom) => {
                 let value = self.atom(atom, ctx);
                 if value.f.sort() == x.f.sort() {
-                    ctx.define(F::eq(x.f.clone(), value.f.clone()));
+                    let definition = F::eq(x.f.clone(), value.f.clone());
+                    if definition.mentions_float() {
+                        self.let_defs.insert(definition.clone());
+                    }
+                    ctx.define(definition);
                     if name.starts_with('%') {
                         self.defs.insert(name.to_owned(), value.f);
                     }
@@ -2244,7 +2454,11 @@ impl<'p, 'i> Walker<'p, 'i> {
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
-                    ctx.define(F::eq(x.f.clone(), value.clone()));
+                    let definition = F::eq(x.f.clone(), value.clone());
+                    if definition.mentions_float() {
+                        self.let_defs.insert(definition.clone());
+                    }
+                    ctx.define(definition);
                     if name.starts_with('%') {
                         self.defs.insert(name.to_owned(), value);
                     }
@@ -3388,14 +3602,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 f: F::Int(coefficient.clone()),
                 ty: base_type(Base::Decimal(*scale)),
             },
-            // A float literal is a constant of the uninterpreted sort, one per bit pattern: a
-            // query may assume two literals equal, which weakens it and never proves more.
+            // A float literal is its exact bits (ADR 0114 rule 8.1).
             Atom::F64(bits) => Tv {
-                f: F::Const(Const {
-                    name: format!("i!f64!{bits:016x}"),
-                    sort: F64_SORT.to_owned(),
-                    role: ConstRole::Internal,
-                }),
+                f: F::Float(*bits),
                 ty: base_type(Base::F64),
             },
             Atom::Unit => Tv {
@@ -3966,8 +4175,18 @@ impl<'p, 'i> Walker<'p, 'i> {
             // (`spec/18 §4`).
             Prim::Convert(_) => arg(0)?.f,
             // The methods of `spec/18 §5` are known by their contracts, not as terms.
-            // No operation of `F64` is a term yet (`spec/29 §8`): its result is a fresh binder.
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) | Prim::Float(_) => {
+            // `n.to_f64()` of an integer, by the integer's type (ADR 0114 rule 8.1).
+            Prim::Float(FloatOp::FromInt) => {
+                let value = arg(0)?;
+                to_f64(value.f, integer_type(&value.ty), false)?
+            }
+            // The other operations of the refinement language; a code-only method's result is
+            // a fresh binder (ADR 0114 rule 8.1).
+            Prim::Float(op) => {
+                let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
+                float_term(op, &args)?
+            }
+            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
@@ -4107,6 +4326,17 @@ impl<'p, 'i> Walker<'p, 'i> {
         if sort == "Int" {
             return Some(F::op(symbol, vec![a.f.clone(), b.f.clone()]));
         }
+        // `F64` by IEEE totalOrder, also for a type parameter instantiated with it (ADR 0114
+        // rules 8.1 and 8.7).
+        if sort == FLOAT64 {
+            let float_op = match op {
+                BinOp::Lt => FloatOp::Lt,
+                BinOp::Le => FloatOp::Le,
+                BinOp::Gt => FloatOp::Gt,
+                _ => FloatOp::Ge,
+            };
+            return float_term(float_op, &[a.f.clone(), b.f.clone()]);
+        }
         if sort == TEXT || is_param_sort(&sort) {
             let relation = match op {
                 BinOp::Lt => "lt",
@@ -4215,6 +4445,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ty: boolean(),
             },
             Term::Text(text) => text_literal(text),
+            Term::F64(bits) => Tv {
+                f: F::Float(*bits),
+                ty: base_type(Base::F64),
+            },
+            Term::Float { op, args } => {
+                let values: Vec<F> = args
+                    .iter()
+                    .map(|a| self.term(a, env).map(|v| v.f))
+                    .collect::<Option<_>>()?;
+                let f = float_term(*op, &values)?;
+                let ty = if f.sort() == FLOAT64 {
+                    base_type(Base::F64)
+                } else {
+                    boolean()
+                };
+                Tv { f, ty }
+            }
+            Term::ToF64 { value, from } => {
+                let value = self.term(value, env)?;
+                Tv {
+                    f: to_f64(value.f, *from, true)?,
+                    ty: base_type(Base::F64),
+                }
+            }
             Term::Unit => return None,
             Term::Ctor(_) => return None,
             Term::Field { value, index, .. } => {
@@ -4712,12 +4966,25 @@ impl<'p, 'i> Walker<'p, 'i> {
         let base = entry.hyps.len();
         let mut assertions: Vec<F> = entry.hyps.iter().map(|h| h.f.clone()).collect();
         let mut selectors = Vec::new();
+        let mut paths_f = Vec::new();
         for (number, leaf) in leaves.iter().enumerate() {
             let selector = path_selector(number + 1);
-            assertions.push(F::eq(selector.clone(), self.path(leaf, base, result)));
+            let path = self.path(leaf, base, result);
+            assertions.push(F::eq(selector.clone(), path.clone()));
             selectors.push(selector);
+            paths_f.push(path);
         }
         assertions.push(F::or(selectors));
+        // A single path with an `F64` term is also asserted on its own: its selector is true,
+        // so this adds nothing a model does not already satisfy, and the solver bit-blasts
+        // the float facts of the path once instead of under the selector's equivalence,
+        // which the pinned Z3 does not simplify first (a product's NaN fact costs 2.3M steps
+        // so, and 67M under the equivalence). Queries without floats are unchanged.
+        if let [path] = paths_f.as_slice()
+            && path.mentions_float()
+        {
+            assertions.push(path.clone());
+        }
         let place = self.place(kind, goal.as_ref().map(|g| &g.f));
         assertions.push(F::not(goal.map_or(F::Bool(false), |g| g.f)));
         let hypotheses = self.shown_hypotheses(&entry.hyps);
@@ -4755,6 +5022,34 @@ impl<'p, 'i> Walker<'p, 'i> {
         site: Site,
         divisions: Vec<Vec<(F, Span)>>,
     ) {
+        // ADR 0114 rule 8.3: an obligation's query keeps the `F64` hypotheses of its cone; the
+        // full query decides a refutation that is not final.
+        let (assertions, sliced) = slice_floats(assertions, &self.let_defs);
+        let mut full = match sliced {
+            Some((full, refutation_final)) => {
+                let mut full = Query {
+                    assertions: full,
+                    definitions: BTreeMap::new(),
+                };
+                let (facts, _) = self.ground_facts(&full);
+                let (cone_facts, _) = self.ground_facts(&Query {
+                    assertions: assertions.clone(),
+                    definitions: BTreeMap::new(),
+                });
+                // A ground fact of a dropped term counts as a dropped constraint (rule 8.5): the
+                // refutation is final only when every fact of the full query is one of the
+                // cone query's.
+                let cone_facts: BTreeSet<&F> = cone_facts.iter().collect();
+                let refutation_final =
+                    refutation_final && facts.iter().all(|fact| cone_facts.contains(fact));
+                let mut all = facts;
+                all.append(&mut full.assertions);
+                full.assertions = all;
+                self.add_definitions(&mut full);
+                (!refutation_final).then_some(full)
+            }
+            None => None,
+        };
         let mut query = Query {
             assertions,
             definitions: BTreeMap::new(),
@@ -4784,9 +5079,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         // query would not declare it, and the model could not be read (#902): it is declared
         // here with its range, a fact every model of the query already satisfies.
         let used = query.applications();
+        let used_full = full.as_ref().map(Query::applications);
         for item in &shown {
             if let Show::Variant { tag, .. } = &item.show
-                && !used.contains(tag)
                 && let F::App {
                     fun:
                         SmtFun {
@@ -4799,10 +5094,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // is never empty and the fact never makes a satisfiable query unsatisfiable.
                 && *variants >= 1
             {
-                query.assertions.push(F::and(vec![
+                let range = F::and(vec![
                     F::op("<=", vec![F::Int("0".to_owned()), tag.clone()]),
                     F::op("<", vec![tag.clone(), F::Int(variants.to_string())]),
-                ]));
+                ]);
+                // The full query of `spec/29 §8` reads the same values, so it declares the
+                // tag too.
+                if let (Some(full), Some(used_full)) = (full.as_mut(), used_full.as_ref())
+                    && !used_full.contains(tag)
+                {
+                    full.assertions.push(range.clone());
+                }
+                if !used.contains(tag) {
+                    query.assertions.push(range);
+                }
             }
         }
         let mut forgotten = std::mem::take(&mut self.returned_forgotten);
@@ -4839,6 +5144,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             entry,
             divisions,
             unencodable: None,
+            full,
         });
     }
 
@@ -5348,6 +5654,12 @@ impl<'p, 'i> Walker<'p, 'i> {
         match f {
             F::Int(digits) => (digits.clone(), if digits.starts_with('-') { 2 } else { 1 }),
             F::Bool(value) => (value.to_string(), 1),
+            // A float literal shows its rendering (`spec/29 §7`).
+            F::Float(bits) => {
+                let text = una_core::float::render(f64::from_bits(*bits));
+                let level = if text.starts_with('-') { 2 } else { 1 };
+                (text, level)
+            }
             F::Const(Const { name, role, .. }) => match role {
                 ConstRole::Text(text) => (una_core::quote(text), 1),
                 _ => self.show_binder(name),
@@ -5838,6 +6150,158 @@ fn arithmetic(op: BinOp, left: F, right: F) -> F {
             args: vec![left, right],
         }
     }
+}
+
+/// The cone of `spec/29 §8` (ADR 0114 rule 8.3) over `assertions`, `Π` and the negated goal
+/// last: every hypothesis is split into its conjuncts; an `F64` conjunct is kept when it is
+/// connected to the goal's `F64` terms through shared `F64` binders, transitively; a dropped
+/// constraint is kept with each float atom replaced by a fresh `Bool`, and a dropped definition
+/// (a selfified `let` of `let_defs`) is left out. `None` when nothing is dropped, so the query
+/// is unchanged; otherwise the full assertions, and whether a refutation of the cone query is
+/// final: no constraint was abstracted, and no dropped definition's binder occurs in a kept
+/// hypothesis or the goal. The union-find makes it O(|Π| α(|Π|)) in the terms of `Π`.
+fn slice_floats(assertions: Vec<F>, let_defs: &BTreeSet<F>) -> (Vec<F>, Option<(Vec<F>, bool)>) {
+    if !assertions.iter().any(F::mentions_float) {
+        return (assertions, None);
+    }
+    let Some((goal, hyps)) = assertions.split_last() else {
+        return (assertions, None);
+    };
+    let parts: Vec<&F> = hyps.iter().flat_map(conjuncts).collect();
+    // The `F64`-sorted binders of a term: constants and applications, by their text.
+    fn float_binders(f: &F, out: &mut Vec<String>) {
+        let mut terms = Vec::new();
+        f.visit(&mut terms);
+        for term in terms {
+            if matches!(term, F::Const(_) | F::App { .. }) && term.sort() == FLOAT64 {
+                out.push(term.text());
+            }
+        }
+    }
+    let mut ids: BTreeMap<String, usize> = BTreeMap::new();
+    let mut parent: Vec<usize> = Vec::new();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while let Some(&p) = parent.get(x) {
+            if p == x {
+                break;
+            }
+            let grand = parent.get(p).copied().unwrap_or(p);
+            if let Some(slot) = parent.get_mut(x) {
+                *slot = grand;
+            }
+            x = p;
+        }
+        x
+    }
+    let id = |name: String, ids: &mut BTreeMap<String, usize>, parent: &mut Vec<usize>| {
+        *ids.entry(name).or_insert_with(|| {
+            parent.push(parent.len());
+            parent.len() - 1
+        })
+    };
+    let mut part_ids: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
+    for part in &parts {
+        let mut names = Vec::new();
+        if part.mentions_float() {
+            float_binders(part, &mut names);
+        }
+        let mine: Vec<usize> = names
+            .into_iter()
+            .map(|name| id(name, &mut ids, &mut parent))
+            .collect();
+        if let Some((&first, rest)) = mine.split_first() {
+            for &other in rest {
+                let (a, b) = (find(&mut parent, first), find(&mut parent, other));
+                if let Some(slot) = parent.get_mut(a) {
+                    *slot = b;
+                }
+            }
+        }
+        part_ids.push(mine);
+    }
+    let mut goal_names = Vec::new();
+    float_binders(goal, &mut goal_names);
+    let roots: BTreeSet<usize> = goal_names
+        .into_iter()
+        .filter_map(|name| ids.get(&name).copied())
+        .map(|i| find(&mut parent, i))
+        .collect();
+    let mut kept: Vec<F> = Vec::new();
+    let mut dropped_definitions: Vec<&F> = Vec::new();
+    let mut abstracted = false;
+    let mut dropped = false;
+    let mut atoms: BTreeMap<F, F> = BTreeMap::new();
+    for (part, mine) in parts.iter().zip(&part_ids) {
+        if !part.mentions_float() {
+            kept.push((*part).clone());
+            continue;
+        }
+        let in_cone = mine.iter().any(|&i| roots.contains(&find(&mut parent, i)));
+        if in_cone {
+            kept.push((*part).clone());
+            continue;
+        }
+        dropped = true;
+        if let_defs.contains(*part) {
+            dropped_definitions.push(*part);
+        } else {
+            abstracted = true;
+            kept.push(abstract_atoms(part, &mut atoms));
+        }
+    }
+    if !dropped {
+        return (assertions, None);
+    }
+    let mut used: Vec<&F> = Vec::new();
+    for f in kept.iter().chain(std::iter::once(goal)) {
+        f.visit(&mut used);
+    }
+    let used: BTreeSet<String> = used
+        .into_iter()
+        .filter(|t| matches!(t, F::Const(_)))
+        .map(F::text)
+        .collect();
+    let definitions_unused = dropped_definitions
+        .iter()
+        .all(|definition| match definition {
+            F::Op { op: "=", args } => args
+                .first()
+                .is_some_and(|binder| !used.contains(&binder.text())),
+            _ => false,
+        });
+    let refutation_final = !abstracted && definitions_unused;
+    kept.push(goal.clone());
+    (kept, Some((assertions, refutation_final)))
+}
+
+/// `f` with each float atom, a maximal `Bool` subterm with an `F64` term, replaced by a fresh
+/// `Bool` binder `i!v!fa!<n>`, one per distinct atom, numbered in order of first occurrence
+/// across a query (ADR 0114 rule 8.3). The Boolean structure stays: `and`, `or`, `not`,
+/// `=>`, and `=` and `ite` over `Bool`.
+fn abstract_atoms(f: &F, atoms: &mut BTreeMap<F, F>) -> F {
+    if !f.mentions_float() {
+        return f.clone();
+    }
+    if let F::Op { op, args } = f
+        && matches!(*op, "and" | "or" | "not" | "=>" | "=" | "ite")
+        && args.iter().all(|a| a.sort() == "Bool")
+    {
+        return F::Op {
+            op,
+            args: args.iter().map(|a| abstract_atoms(a, atoms)).collect(),
+        };
+    }
+    let next = atoms.len();
+    atoms
+        .entry(f.clone())
+        .or_insert_with(|| {
+            F::Const(Const {
+                name: format!("fa!{next}"),
+                sort: "Bool".to_owned(),
+                role: ConstRole::Internal,
+            })
+        })
+        .clone()
 }
 
 /// The conjuncts of a formula, for listing.

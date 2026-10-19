@@ -1,0 +1,21 @@
+-- test: a fixed-width conversion of a term the language computes exactly never wraps: `(x + 1).to_f64()` in a reflect predicate at `x == 4294967295` is 4294967296.0, not zero, and `(x * 2).to_f64()` at `x == 2147483648` is 4294967296.0, not below 1.0, so the postconditions that the wrapped values would prove are refuted, never proven
+-- spec: spec/29 §8
+-- expect: error U5001 at src/m.una:13:3
+-- expect: error U5001 at src/m.una:21:3
+module m
+
+pub predicate reflect wraps(x: U32) -> Bool = (x + 1).to_f64().is_zero()
+
+pub f(x: U32) -> Bool
+  requires x == 4294967295
+  ensures result
+=
+  wraps(x)
+
+pub predicate reflect doubled_small(x: U32) -> Bool = (x * 2).to_f64().ieee_lt(other: 1.0)
+
+pub g(x: U32) -> Bool
+  requires x == 2147483648
+  ensures result
+=
+  doubled_small(x)
