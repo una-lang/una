@@ -223,6 +223,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U6004 | runtime | A header value contains a control character |
 | U6005 | runtime | A host value is not valid UTF-8 |
 | U6006 | runtime | The floating-point environment of the platform is not the default one |
+| U6007 | runtime | The host stopped the run before it finished |
 | U7001 | project | Non-canonical formatting |
 | U7002 | project | Invalid `una.toml` |
 | U7003 | project | Escape budget exceeded |

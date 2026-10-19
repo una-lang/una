@@ -13,7 +13,7 @@ use una_diag::{Diagnostic, render_human};
 use una_syntax::ast::ClauseKind;
 
 use crate::contract::Modules;
-use crate::runtime::{driven_init, entry_main, rejected_status};
+use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
 use crate::{ExitStatus, analyze, load, on_large_stack};
 
@@ -186,6 +186,12 @@ pub(crate) fn build_command(
     // that exceeds the maximum depth, the types the runtime renders, the operations a trace
     // records, and where `main`, or `init`, is named, for U6001.
     let main_location = package.sources.location(main.span);
+    let stops = takes_stops(
+        &analysis,
+        &package.sources,
+        &entry,
+        manifest.drive.is_some(),
+    );
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -197,7 +203,7 @@ pub(crate) fn build_command(
                 section if section.starts_with('`') => section,
                 section => format!("`{section}`"),
             },
-            "stops": una_core::runs_ever(&analysis.program),
+            "stops": stops,
             "grants": grants,
             "uses": uses,
             "sites": sites,

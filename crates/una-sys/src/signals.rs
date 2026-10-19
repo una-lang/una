@@ -22,6 +22,10 @@ use std::time::{Duration, Instant};
 /// The signals that request a host stop.
 const SIGNALS: [libc::c_int; 2] = [libc::SIGINT, libc::SIGTERM];
 
+/// SIGTERM, the signal that the end of a second grace period after the hard stop raises
+/// (rule 17), for callers that do not depend on `libc`.
+pub const SIGTERM: libc::c_int = libc::SIGTERM;
+
 /// The lowest descriptor the wake pipe's ends move to, above those that other code opens and
 /// closes, so that no reused descriptor ever receives the handler's byte.
 const HIGH_FD: libc::c_int = 512;

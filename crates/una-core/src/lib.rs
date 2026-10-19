@@ -31,6 +31,6 @@ pub use ir::{
     Refinement, Rhs, Signature, Source, Term, Type, Use, prelude_variants,
 };
 pub use label::{Accepts, Label, Level, Names, counters as label_counters};
-pub use names::{binders, rhs_vars, runs_ever, vars};
+pub use names::{binders, rhs_vars, vars};
 pub use print::{print_atom, print_module, print_term, print_term_with, print_type, quote};
 pub use text::Text;

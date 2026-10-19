@@ -386,6 +386,8 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
         Error::TooLarge => 5,
         Error::Tls => 6,
         Error::Protocol => 7,
+        // Edition 0.4 only, after the eight variants of `spec/24 §1` (ADR 0116 rule 12).
+        Error::Interrupted => 8,
         // Not a failure: `http` aborts before.
         Error::HeaderValue => 2,
     }
