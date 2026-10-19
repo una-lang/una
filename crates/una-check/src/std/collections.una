@@ -1,0 +1,8 @@
+-- `std.collections` (ADR 0119), edition 0.4. Its types are built in: the checker exports them
+-- to an import beside the declarations of this file.
+module std.collections
+
+--- An item of a priority queue with its priority, as `pop_ranked` gives it (ADR 0119 rule 13).
+pub kind Ranked[T, P]
+  item: T
+  priority: P

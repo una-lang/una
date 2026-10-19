@@ -167,6 +167,14 @@ impl<'p> Types<'p> {
                     },
                 }
             }
+            // The collections of `std.collections` (ADR 0119) are the runtime's own values, which
+            // no description reads until their types land.
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE
+                    && una_core::Coll::from_name(name).is_some() =>
+            {
+                json!({ "shape": "other" })
+            }
             Base::Named { module, name, args } => match self.declared_shape(module, name, args) {
                 Some(shape) => shape,
                 None => {

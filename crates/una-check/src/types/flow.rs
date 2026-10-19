@@ -54,6 +54,11 @@ fn violation(
         }
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => violation(xk, yk, covariant, top, kinds)
             .or_else(|| violation(xv, yv, covariant, top, kinds)),
+        // A collection is a value, as a map is: its arguments are compared as data.
+        (Ty::Coll(i, xs), Ty::Coll(j, ys)) if i == j => xs
+            .iter()
+            .zip(ys.iter())
+            .find_map(|(x, y)| violation(x, y, covariant, top, kinds)),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => {
             xs.iter().zip(ys).enumerate().find_map(|(index, (x, y))| {
                 violation(x, y, covariant, top, kinds).or_else(|| {

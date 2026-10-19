@@ -213,6 +213,19 @@ impl<'a> Checker<'_, 'a, '_> {
         ) {
             return ty;
         }
+        // Edition 0.4: `edit m.update(key:, initial:, change:)` on a map is a built-in method
+        // (ADR 0119 rule 18), declared where no name reaches it, so it resolves ahead of any
+        // function `update` in scope, as every built-in method does.
+        if method == "update"
+            && let Some(id) = self.env.map_update
+            && matches!(resolved, Ty::Map(..))
+        {
+            self.outside_rl(span, || format!("the method `{method}`"));
+            self.receiver_marker = Some((marker, target.clone()));
+            let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
+            self.receiver_marker = None;
+            return ty;
+        }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
                 self.receiver_marker = Some((marker, target.clone()));
@@ -782,7 +795,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 uses_of: def.uses_of.clone(),
                 fails_of: def.fails_of,
                 own_fails: def.fails.clone(),
-                prelude: (def.module == self.env.prelude).then(|| def.name.to_owned()),
+                // The map's `update` runs its argument as `spec/07 §7` rule 9 describes for
+                // the prelude's functions (ADR 0119 IF7).
+                prelude: (def.module == self.env.prelude || Some(id) == self.env.map_update)
+                    .then(|| def.name.to_owned()),
                 raises: self
                     .env
                     .of_raises
@@ -1160,6 +1176,11 @@ impl<'a> Checker<'_, 'a, '_> {
             Ty::Fn(function) => out.push(((**function).clone(), field)),
             Ty::List(element) | Ty::Dense(_, element) => {
                 self.function_types_in(element, field, out, seen);
+            }
+            Ty::Coll(_, args) => {
+                for arg in args.iter() {
+                    self.function_types_in(&self.labeled(arg), field, out, seen);
+                }
             }
             Ty::Kind(id, args) => {
                 for arg in args {
@@ -2065,6 +2086,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     .map(|arg| self.refined_vars_at_base(arg))
                     .collect(),
             ),
+            Ty::Coll(coll, args) => Ty::Coll(
+                *coll,
+                args.iter()
+                    .map(|arg| self.refined_vars_at_base(arg))
+                    .collect(),
+            ),
             Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function
                     .params
@@ -2569,6 +2596,7 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
             covariant_in(inner, kinds)
         }
         Ty::Map(key, value) => covariant_in(key, kinds) && covariant_in(value, kinds),
+        Ty::Coll(_, args) => args.iter().all(|arg| covariant_in(arg, kinds)),
         Ty::Kind(id, args) => args.iter().enumerate().all(|(index, arg)| {
             if kinds.is_invariant(*id, index) {
                 no_params(arg)
@@ -2589,7 +2617,7 @@ fn holds_var(ty: &Ty) -> bool {
             holds_var(inner)
         }
         Ty::Map(key, value) => holds_var(key) || holds_var(value),
-        Ty::Kind(_, args) => args.iter().any(holds_var),
+        Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(holds_var),
         Ty::Fn(function) => {
             function.params.iter().any(holds_var)
                 || holds_var(&function.result)
@@ -2662,6 +2690,10 @@ fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bo
             .iter()
             .zip(fs)
             .find_map(|(e, f)| fn_problem(e, f, flipped)),
+        (Ty::Coll(i, es), Ty::Coll(j, fs)) if i == j => es
+            .iter()
+            .zip(fs.iter())
+            .find_map(|(e, f)| fn_problem(e, f, flipped)),
         _ => None,
     }
 }
@@ -2691,6 +2723,9 @@ pub(crate) fn refinement_flow(expected: &Ty, found: &Ty) -> bool {
         (Ty::Map(ek, ev), Ty::Map(fk, fv)) => refinement_flow(ek, fk) || refinement_flow(ev, fv),
         (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j && es.len() == fs.len() => {
             es.iter().zip(fs).any(|(e, f)| refinement_flow(e, f))
+        }
+        (Ty::Coll(i, es), Ty::Coll(j, fs)) if i == j && es.len() == fs.len() => {
+            es.iter().zip(fs.iter()).any(|(e, f)| refinement_flow(e, f))
         }
         _ => false,
     }

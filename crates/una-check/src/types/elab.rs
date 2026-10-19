@@ -103,7 +103,10 @@ pub(crate) fn program(
     }
     modules.extend(standard_kinds(env, findings, dbs, &mut gaps.standard));
     modules.sort_by(|a, b| a.path.cmp(&b.path));
+    // The map's `update` is elaborated at each call (ADR 0119 rule 18), so Core declares no
+    // signature for it.
     let library = (env.prelude..env.modules.len())
+        .filter(|module| Some(*module) != env.map_module)
         .flat_map(|module| library(env, findings, dbs, module, &mut gaps.standard))
         .collect();
     let host = host(env, findings, dbs, &mut gaps.standard);
@@ -694,6 +697,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 fails: function.fails.as_ref().map(|f| self.kind_name(f)),
                 label: Label::public(),
             },
+            // ADR 0119 rule 3: the top label of a collection covers its shape, every label of
+            // its items, keys or priorities, the labels their kinds' fields declare included,
+            // so that a trace redacts it as a whole.
+            Ty::Coll(..) => Type::Base {
+                base: self.base(ty),
+                refinements: Vec::new(),
+                label: implied_label(ty, &self.env.kind_labels),
+            },
             other => Type::Base {
                 base: self.base(other),
                 refinements: Vec::new(),
@@ -729,6 +740,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                 module: "prelude".to_owned(),
                 name: "Map".to_owned(),
                 args: vec![self.convert(key), self.convert(value)],
+            },
+            // ADR 0119: a collection is named in its module, as a map is in the prelude.
+            Ty::Coll(coll, args) => Base::Named {
+                module: una_core::COLLECTIONS_MODULE.to_owned(),
+                name: coll.as_str().to_owned(),
+                args: args.iter().map(|a| self.convert(a)).collect(),
             },
             Ty::Kind(id, args) => Base::Named {
                 module: self
@@ -4245,6 +4262,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             );
         }
+        if Some(id) == self.env.map_update {
+            return self.map_update(lets, span, type_args, values, arg_spans);
+        }
         if def.kind == FnKind::Policy {
             let FnAst::Policy(policy) = def.ast else {
                 self.broken.set(true);
@@ -4320,6 +4340,126 @@ impl<'e, 'a> Fx<'e, 'a> {
                     self.broken.set(true);
                 }
                 self.push(lets, span, call)
+            }
+        }
+    }
+
+    /// `edit m.update(key: k, initial: i, change: f)` on a map, edition 0.4 (ADR 0119 rule
+    /// 18): `v = when m.get(k) is Some(x) -> x, None -> i`, then `m.with(k, f(v))`, as the
+    /// tuple `(m', unit)` of a call with an `edit` argument (`spec/17 §4`). `f` is called
+    /// exactly once, and a failure of it leaves `m` as it was, since the place takes its new
+    /// value only when the call returns (`spec/17 §7` rule 1). A lookup and an insertion,
+    /// O(log n) each (`spec/21 §5`). `values` and `arg_spans` are in parameter order.
+    fn map_update(
+        &mut self,
+        lets: &mut Vec<Let>,
+        span: Span,
+        type_args: &[Ty],
+        values: Vec<Atom>,
+        arg_spans: Vec<Span>,
+    ) -> Atom {
+        let ([map, key, initial, change], [map_span, key_span, initial_span, change_span]) =
+            (values.as_slice(), arg_spans.as_slice())
+        else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        // The receiver's type as the checker recorded it, else `Map[K, V]` at the call's type
+        // arguments.
+        let map_ty = match self.records.types.get(map_span) {
+            Some(ty) => self.ty(ty),
+            None => {
+                let arg = |index: usize| {
+                    super::ty::Shared::new(type_args.get(index).cloned().unwrap_or_else(Ty::error))
+                };
+                self.ty(&Ty::Map(arg(0), arg(1)))
+            }
+        };
+        let value_ty = match &map_ty {
+            Type::Base {
+                base: Base::Named { args, .. },
+                ..
+            } => args.get(1).cloned().unwrap_or_else(unknown),
+            _ => unknown(),
+        };
+        let option_ty = Type::Base {
+            base: Base::Named {
+                module: una_core::PRELUDE_MODULE.to_owned(),
+                name: "Option".to_owned(),
+                args: vec![value_ty.clone()],
+            },
+            refinements: Vec::new(),
+            label: Label::public(),
+        };
+        let found = self.temp();
+        lets.push(Let::inferred(
+            found.clone(),
+            option_ty.clone(),
+            Bound::Rhs(Rhs::Prim {
+                prim: Prim::Map(MapOp::Get),
+                args: vec![map.clone(), key.clone()],
+                arg_spans: vec![*map_span, *key_span],
+                span,
+            }),
+            span,
+        ));
+        let current = self.unwrap_option(
+            CoreExpr::Atom {
+                atom: Atom::Var(found),
+                span,
+            },
+            option_ty,
+            CoreExpr::Atom {
+                atom: initial.clone(),
+                span: *initial_span,
+            },
+            span,
+        );
+        let before = self.temp();
+        bind_expr(lets, before.clone(), value_ty.clone(), current, span, false);
+        let after = self.temp();
+        lets.push(Let::inferred(
+            after.clone(),
+            value_ty,
+            Bound::Rhs(Rhs::Apply {
+                callee: change.clone(),
+                args: vec![Atom::Var(before)],
+                arg_spans: vec![*initial_span],
+                span: *change_span,
+            }),
+            span,
+        ));
+        let updated = self.temp();
+        lets.push(Let::inferred(
+            updated.clone(),
+            map_ty,
+            Bound::Rhs(Rhs::Prim {
+                prim: Prim::Map(MapOp::With),
+                args: vec![map.clone(), key.clone(), Atom::Var(after)],
+                arg_spans: vec![*map_span, *key_span, *change_span],
+                span,
+            }),
+            span,
+        ));
+        match self.call_tuple.take() {
+            Some((at, ty)) if at == span => {
+                let t = self.temp();
+                lets.push(Let::inferred(
+                    t.clone(),
+                    ty,
+                    Bound::Rhs(Rhs::Tuple(vec![Atom::Var(updated), Atom::Unit])),
+                    span,
+                ));
+                Atom::Var(t)
+            }
+            other => {
+                self.call_tuple = other;
+                self.lost.borrow_mut().push(
+                    "the tuple of a call with `edit` arguments outside a statement or `let`"
+                        .to_owned(),
+                );
+                self.broken.set(true);
+                Atom::Unit
             }
         }
     }
@@ -4616,7 +4756,13 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
     if matches!(ty.unlabeled(), Ty::Var(_) | Ty::Never | Ty::Error(_)) {
         return None;
     }
-    if *label != ty.top_label() {
+    // A collection's Core label also holds the label its shape implies (ADR 0119 rule 3),
+    // which only raises it.
+    let kept = match ty.unlabeled() {
+        Ty::Coll(..) => ty.top_label().flows_to(label),
+        _ => *label == ty.top_label(),
+    };
+    if !kept {
         return Some(format!("the label `{}` became `{label}`", ty.top_label()));
     }
     // ADR 0103: every refinement of a nested position is in Core IR.
@@ -4702,7 +4848,7 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
             .zip(args)
             .find_map(|(ty, core)| lost(ty, core)),
         (
-            Ty::Kind(_, args),
+            Ty::Kind(_, args) | Ty::Coll(_, args),
             Type::Base {
                 base: Base::Named { args: core, .. },
                 ..
@@ -4714,6 +4860,22 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
             args.iter().zip(core).find_map(|(ty, core)| lost(ty, core))
         }
         _ => None,
+    }
+}
+
+/// The label that the shape of the collection type `ty` implies on its top (ADR 0119 rule 3,
+/// IF2 to IF4): every label of the arguments that are part of its shape, the labels that
+/// their kinds' fields declare included; `public` for any other type.
+fn implied_label(ty: &Ty, kinds: &super::ty::KindLabels) -> Label {
+    match ty.unlabeled() {
+        Ty::Coll(coll, args) => args
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| coll.is_shape(*index))
+            .fold(Label::public(), |label, (_, arg)| {
+                label.join(&arg.every_label(kinds))
+            }),
+        _ => Label::public(),
     }
 }
 

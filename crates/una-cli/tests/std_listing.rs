@@ -367,6 +367,7 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
         ("Text", false) => "\"k\"",
         ("Text", true) => "1",
         ("Bool", false) => "true",
+        ("fn(Int) -> Int", false) => "fn(n) -> n",
         (_, false) => "1",
         (_, true) => "\"k\"",
     }

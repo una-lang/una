@@ -129,14 +129,31 @@ pub(crate) const STD_DRIVE: &str = "std.drive";
 /// What `std.drive` exports: the kind of a tick (ADR 0116 rule 2).
 pub(crate) const STD_DRIVE_NAMES: [&str; 1] = ["Tick"];
 
-/// The standard modules a package of `edition` may import (`spec/10 §11` rule 10).
+/// The standard modules a package of `edition` may import (`spec/10 §11` rule 10, ADR 0119
+/// rule 0).
 pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
     if edition >= Edition::V0_4 {
-        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE]
+        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE, STD_COLLECTIONS]
     } else {
         &[STD_HOST, STD_TESTING]
     }
 }
+
+/// The path of the standard module of the collections, edition 0.4 (ADR 0119 rule 0).
+pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
+
+/// What `std.collections` exports to an import in edition 0.4: its types and its kind
+/// `Ranked` (ADR 0119 rule 0). Its functions join the list with the types they make.
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 8] = [
+    "Stack",
+    "Queue",
+    "Set",
+    "HashMap",
+    "HashSet",
+    "PriorityQueue",
+    "Ranked",
+    "BitSet",
+];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
 pub(crate) const TEXT_0_2: [&str; 14] = [

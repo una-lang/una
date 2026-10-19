@@ -235,6 +235,27 @@
       ]
     },
     {
+      "name": "update",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit m.update(key: K, initial: V, change: fn(V) -> V) -> Unit\n  where m: Map[K, V]",
+          "docs": [
+            "Updates `m` in place, written `edit m.update(...)`: sets `key` to `change(v)`, where",
+            "`v` is its value, or `initial` when `m` has no `key`. `change` is called exactly once,",
+            "and when it fails, `m` keeps its value from before the call (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "to_i8",
       "module": "builtin",
       "kind": "method",

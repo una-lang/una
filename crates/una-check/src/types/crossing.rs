@@ -406,6 +406,7 @@ impl Checker<'_, '_, '_> {
             | Ty::Labeled(_, inner)
             | Ty::Refined(_, inner) => self.holds_function(&inner),
             Ty::Map(key, value) => self.holds_function(&key) || self.holds_function(&value),
+            Ty::Coll(_, args) => args.iter().any(|arg| self.holds_function(arg)),
             Ty::Kind(id, args) => {
                 self.env
                     .boundaries
@@ -1270,6 +1271,13 @@ pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
             Ty::Map(key, value) => {
                 let key = walk(key, kinds);
                 walk(value, kinds) || key
+            }
+            Ty::Coll(_, args) => {
+                let mut found = false;
+                for arg in args.iter() {
+                    found |= walk(arg, kinds);
+                }
+                found
             }
             Ty::Kind(id, args) => {
                 kinds.push(*id);

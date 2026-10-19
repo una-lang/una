@@ -1,0 +1,5 @@
+module d
+
+import a (Counter)
+
+pub update(c: Counter) -> Counter = Counter(count: c.count + 1)

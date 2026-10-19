@@ -1975,6 +1975,107 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
     }
 }
 
+/// The module path of the collections of edition `0.4` (ADR 0119 rule 0): their types are
+/// `Named` in it, and its kind `Ranked` is a [`Decl::Data`] of it.
+pub const COLLECTIONS_MODULE: &str = "std.collections";
+
+/// A collection type of `std.collections`, edition `0.4` (ADR 0119). Each engine knows its
+/// values itself, as it knows a list's and a map's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Coll {
+    /// `Stack[T]`, last in, first out (rule 5).
+    Stack,
+    /// `Queue[T]`, first in, first out, with both ends open (rule 6).
+    Queue,
+    /// `Set[T]`, an ordered set over an `Ord` item (rule 7).
+    Set,
+    /// `HashMap[K, V]`, keyed by any `Eq` type, in insertion order (rules 8 to 12).
+    HashMap,
+    /// `HashSet[T]`, of any `Eq` item, in insertion order (rules 8 to 12).
+    HashSet,
+    /// `PriorityQueue[T, P]`, a stable heap over an `Ord` priority (rule 13).
+    PriorityQueue,
+    /// `BitSet`, the integers of a fixed range (rule 14).
+    BitSet,
+}
+
+impl Coll {
+    /// Every collection type, in the order of ADR 0119's export list.
+    pub const ALL: [Coll; 7] = [
+        Coll::Stack,
+        Coll::Queue,
+        Coll::Set,
+        Coll::HashMap,
+        Coll::HashSet,
+        Coll::PriorityQueue,
+        Coll::BitSet,
+    ];
+
+    /// The name of the type, as `std.collections` exports it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Coll::Stack => "Stack",
+            Coll::Queue => "Queue",
+            Coll::Set => "Set",
+            Coll::HashMap => "HashMap",
+            Coll::HashSet => "HashSet",
+            Coll::PriorityQueue => "PriorityQueue",
+            Coll::BitSet => "BitSet",
+        }
+    }
+
+    /// The collection type named `name`, if any.
+    pub fn from_name(name: &str) -> Option<Coll> {
+        Coll::ALL.into_iter().find(|coll| coll.as_str() == name)
+    }
+
+    /// The number of its type arguments.
+    pub fn arity(self) -> usize {
+        match self {
+            Coll::BitSet => 0,
+            Coll::HashMap | Coll::PriorityQueue => 2,
+            Coll::Stack | Coll::Queue | Coll::Set | Coll::HashSet => 1,
+        }
+    }
+
+    /// Whether its values can satisfy `Eq` (ADR 0119 rule 2): a hash map, a hash set and a
+    /// priority queue never do.
+    pub fn has_eq(self) -> bool {
+        !matches!(self, Coll::HashMap | Coll::HashSet | Coll::PriorityQueue)
+    }
+
+    /// The constraint that its type argument `index` must satisfy: `Ord` for a set's item and
+    /// a priority, `Eq` for a hash key or item (ADR 0119 rules 7, 8 and 13).
+    pub fn needs(self, index: usize) -> Constraint {
+        match (self, index) {
+            (Coll::Set, 0) | (Coll::PriorityQueue, 1) => Constraint::Ord,
+            (Coll::HashMap | Coll::HashSet, 0) => Constraint::Eq,
+            _ => Constraint::None,
+        }
+    }
+
+    /// Whether its type argument `index` is part of its shape: the items of a set, the keys of
+    /// a hash map and the priorities of a queue decide its size or its order, so their labels
+    /// are below its top label (ADR 0119 rule 3, IF2 to IF4).
+    pub fn is_shape(self, index: usize) -> bool {
+        matches!(
+            (self, index),
+            (Coll::Set | Coll::HashMap | Coll::HashSet, 0) | (Coll::PriorityQueue, 1)
+        )
+    }
+
+    /// What its type argument `index` is called in messages: `item`, `key`, `value` or
+    /// `priority`.
+    pub fn arg_role(self, index: usize) -> &'static str {
+        match (self, index) {
+            (Coll::HashMap, 0) => "key",
+            (Coll::HashMap, _) => "value",
+            (Coll::PriorityQueue, 1) => "priority",
+            _ => "item",
+        }
+    }
+}
+
 #[cfg(test)]
 mod float_op_tests {
     use super::FloatOp;
