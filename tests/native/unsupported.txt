@@ -2,3 +2,4 @@
 # The differential test (crates/una-cli/tests/native.rs) requires this list to be exact.
 tests/conformance/runtime/float_run
 tests/conformance/runtime/float_parse_run
+tests/conformance/runtime/float_min_max_run

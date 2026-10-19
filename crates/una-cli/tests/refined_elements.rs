@@ -88,7 +88,8 @@ fn rhs_case(rhs: &una_core::Rhs) -> &'static str {
             | Prim::Concat
             | Prim::ToText
             | Prim::Convert(_)
-            | Prim::Fixed(..) => SCALAR,
+            | Prim::Fixed(..)
+            | Prim::Float(_) => SCALAR,
         },
         Rhs::Call { .. } => "call_result",
         Rhs::Apply { .. } => "apply_result",

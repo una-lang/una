@@ -1,0 +1,29 @@
+-- test: ieee_min and ieee_max order -0.0 below 0.0 in either order of their operands, and give NaN when either operand is NaN; clamp keeps NaN
+-- spec: spec/29 §3
+-- grant: console
+-- expect: run-output "max 0.0 0.0 min -0.0 -0.0"
+-- expect: run-output "nan nan nan nan nan"
+-- expect: run-output "equal 2.0 2.0 order 1.0 3.0"
+module floats
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = 0.0
+  let n = -0.0
+  let a = n.ieee_max(other: p)
+  let b = p.ieee_max(other: n)
+  let c = n.ieee_min(other: p)
+  let d = p.ieee_min(other: n)
+  @console.print("max {a} {b} min {c} {d}")
+  let x = nan().ieee_max(other: 1.0)
+  let y = 1.0.ieee_max(other: nan())
+  let z = nan().ieee_min(other: 1.0)
+  let w = 1.0.ieee_min(other: nan())
+  let v = nan().clamp(lo: 0.0, hi: 1.0)
+  @console.print("{x} {y} {z} {w} {v}")
+  let e = 2.0.ieee_max(other: 2.0)
+  let f = 2.0.ieee_min(other: 2.0)
+  let g = 1.0.ieee_min(other: 3.0)
+  let h = 1.0.ieee_max(other: 3.0)
+  @console.print("equal {e} {f} order {g} {h}")

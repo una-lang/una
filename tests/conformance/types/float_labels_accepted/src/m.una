@@ -1,8 +1,6 @@
--- test: a secret argument of `parse_f64` gives a secret result and a secret failure, which a secret result type accepts
--- spec: spec/29 §7, §11
+-- test: a secret argument of `as_f64` gives a result labeled at every position, which a type labeled there accepts
+-- spec: spec/29 §10, §11
 -- expect: ok
 module m
 
-pub read(t: secret Text) -> secret Result[F64, ParseError] = attempt parse_f64(t)
-
-pub decode(j: secret Json) -> secret Option[F64] = as_f64(j)
+pub decode(j: secret Json) -> secret Option[secret F64] = as_f64(j)

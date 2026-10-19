@@ -406,11 +406,11 @@ pub fn ieee_max(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return f64::from_bits(CANONICAL_NAN);
     }
+    // `y` when it is greater, or when the two are equal and `x` is `-0.0`, so that `0.0` is
+    // above `-0.0` in either order; otherwise `x`.
     if x > y {
         x
-    } else if y > x {
-        y
-    } else if x.to_bits() & SIGN != 0 {
+    } else if y > x || x.to_bits() & SIGN != 0 {
         y
     } else {
         x

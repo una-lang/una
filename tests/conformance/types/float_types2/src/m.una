@@ -1,8 +1,9 @@
 -- test: an integer operand before an F64 operand is U2001 with a repair that converts it; a zero integer where an F64 is expected is U2001; a range arm over an F64 is U2032; `5.e2()` stays a method call in edition 0.3
 -- spec: spec/29 §1, §2, §5
--- expect: error U2001 at src/m.una:8:42
--- expect: error U2001 at src/m.una:10:21
--- expect: error U2032 at src/m.una:15:5
+-- expect: error U2001 at src/m.una:9:38
+-- expect: error U2001 at src/m.una:9:42
+-- expect: error U2001 at src/m.una:11:21
+-- expect: error U2032 at src/m.una:16:5
 module m
 
 pub sum(n: Int, value: F64) -> F64 = n + value
