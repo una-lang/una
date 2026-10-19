@@ -145,6 +145,8 @@ struct Analysis {
     of_lambdas: Vec<(una_syntax::Span, bool, bool)>,
     /// The package's file-state label (ADR 0085), which `una core` exports (#467).
     file_state: una_core::Label,
+    /// The mounted dependencies of the program (ADR 0122 rule 47).
+    mounts: Vec<una_project::Mount>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -175,7 +177,26 @@ fn analyze_and(
     // declarations.
     let mut poison = std::collections::BTreeMap::new();
     let mut broken_files = std::collections::BTreeMap::new();
-    for checked in check_files(&package.sources, &package.modules, &mut interner, keywords) {
+    // The program's modules: the root's, then those of each mounted dependency (ADR 0122
+    // rule 48). A dependency that is not mounted is never checked as part of the program.
+    let modules: Vec<FileId> = package
+        .modules
+        .iter()
+        .copied()
+        .chain(
+            package
+                .dependencies
+                .iter()
+                .filter(|dependency| {
+                    manifest
+                        .mounts
+                        .iter()
+                        .any(|mount| mount.src == format!("{}/src/", dependency.dir))
+                })
+                .flat_map(|dependency| dependency.modules.iter().copied()),
+        )
+        .collect();
+    for checked in check_files(&package.sources, &modules, &mut interner, keywords) {
         // A module is broken as a whole only when its header is (ADR 0096 rule 7).
         let whole = checked.broken.as_ref().is_some_and(|broken| broken.whole);
         diagnostics.extend(checked.syntax);
@@ -255,12 +276,14 @@ fn analyze_and(
     if !broken_files.is_empty() {
         withhold_dependents(
             &package.sources,
-            &package.modules,
+            &modules,
+            &manifest,
             &broken_files,
             &mut diagnostics,
         );
     }
     let analysis = Analysis {
+        mounts: manifest.mounts.clone(),
         diagnostics,
         trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
         interner,
@@ -303,6 +326,7 @@ fn environment_failure(probe: &str) -> Analysis {
         index: una_check::Index::default(),
         of_lambdas: Vec::new(),
         file_state: una_core::Label::public(),
+        mounts: Vec::new(),
     }
 }
 
@@ -389,6 +413,7 @@ fn locks(
 fn withhold_dependents(
     sources: &SourceDb,
     modules: &[FileId],
+    manifest: &una_project::Manifest,
     broken_files: &std::collections::BTreeMap<FileId, recovery::BrokenFile>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -397,6 +422,36 @@ fn withhold_dependents(
         .iter()
         .filter(|id| !broken_files.contains_key(id))
         .map(|&id| (id, una_syntax::declarations(sources.file(id).text())))
+        .collect();
+    // A dependency's module `m` is `<local>.m` in the program, and so are the modules it
+    // imports, but the standard ones (ADR 0122 rule 47).
+    let mounted: std::collections::BTreeMap<FileId, Vec<una_syntax::Declaration>> = modules
+        .iter()
+        .filter_map(|&id| {
+            let local = &manifest.mount_of(sources.file(id).path())?.local;
+            let declarations = match broken_files.get(&id) {
+                Some(file) => file.declarations.clone(),
+                None => clean.iter().find(|(c, _)| *c == id)?.1.clone(),
+            };
+            let renamed = declarations
+                .into_iter()
+                .map(|mut declaration| {
+                    let rename = match declaration.what {
+                        una_syntax::DeclarationKind::Header => true,
+                        una_syntax::DeclarationKind::Import => declaration
+                            .module
+                            .as_deref()
+                            .is_some_and(|module| !module.starts_with("std.")),
+                        _ => false,
+                    };
+                    if rename && let Some(module) = &declaration.module {
+                        declaration.module = Some(format!("{local}.{module}"));
+                    }
+                    declaration
+                })
+                .collect();
+            Some((id, renamed))
+        })
         .collect();
     let mut texts = Vec::new();
     for &id in modules {
@@ -407,6 +462,7 @@ fn withhold_dependents(
                 None => continue,
             },
         };
+        let declarations = mounted.get(&id).map_or(declarations, Vec::as_slice);
         let module = declarations
             .iter()
             .find(|d| d.what == una_syntax::DeclarationKind::Header)
@@ -957,7 +1013,11 @@ fn run_command(
                     stderr,
                 };
                 match command {
-                    ItaCommand::Lock { path, check } => ita::lock_command(&path, check, output),
+                    ItaCommand::Lock {
+                        path,
+                        check,
+                        accept_authority,
+                    } => ita::lock_command(&path, check, accept_authority, output),
                 }
             }
             Command::Fmt { path, check } => {
@@ -1159,6 +1219,15 @@ fn core_command(
         }
     };
     let (manifest, _) = package::project(&package);
+    // A program of several packages is a `una.core/2` document (ADR 0122 rule 59), which this
+    // release does not write yet: the export is refused rather than written as one package.
+    if !manifest.mounts.is_empty() {
+        writeln!(
+            stderr,
+            "error: the package has dependencies, whose Core export (`una.core/2`) this release does not write yet"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
     let (diagnostics, program, headers, of_lambdas, file_state, rejected) = on_large_stack(|| {
         let (analysis, rejected) = analyze_and(&package, None, with_rejected);
         (
@@ -1428,6 +1497,7 @@ fn contract_command(
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let Some((module, decl, function)) = modules.function(name) else {
         writeln!(

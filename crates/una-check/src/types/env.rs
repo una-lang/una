@@ -31,8 +31,10 @@ pub(crate) struct Module<'a> {
     /// Whether problems in it are reported: a package module without syntax errors (ADR 0023
     /// rule 7). The standard modules are never reported.
     pub(crate) reports: bool,
-    /// Its path, from its header.
+    /// Its path, from its header; a dependency's module `m` is `<local>.m` (ADR 0122 rule 47).
     pub(crate) path: String,
+    /// The local name of the dependency it is a module of, if any.
+    pub(crate) mount: Option<&'a str>,
     pub(crate) upper: BTreeMap<&'a str, Entity>,
     pub(crate) lower: BTreeMap<&'a str, Entity>,
     /// Names imported explicitly.
@@ -311,6 +313,8 @@ pub(crate) struct Source<'a> {
     pub(crate) tree: &'a File,
     pub(crate) interner: &'a Interner,
     pub(crate) reports: bool,
+    /// The local name of the dependency it is a module of, if any (ADR 0122 rule 47).
+    pub(crate) mount: Option<&'a str>,
 }
 
 /// How far the base of an alias has been lowered, to find aliases defined through themselves.
@@ -617,13 +621,17 @@ impl<'a> Env<'a> {
             .as_ref()
             .map_or_else(String::new, |header| {
                 let segments: Vec<&str> = header.path.segments.iter().map(name).collect();
-                segments.join(".")
+                match source.mount {
+                    Some(local) => format!("{local}.{}", segments.join(".")),
+                    None => segments.join("."),
+                }
             });
         let mut module = Module {
             tree: source.tree,
             interner,
             reports: source.reports,
             path,
+            mount: source.mount,
             upper: BTreeMap::new(),
             lower: BTreeMap::new(),
             imports: BTreeMap::new(),
@@ -801,13 +809,18 @@ impl<'a> Env<'a> {
                     .iter()
                     .map(|segment| module.interner.resolve(segment.name))
                     .collect();
-                let Some(target) = paths
-                    .get(&path.join("."))
-                    .and_then(|&t| self.modules.get(t))
-                else {
+                let joined = path.join(".");
+                let host = joined == prelude::STD_HOST;
+                let standard = host || joined == "std.testing";
+                // A dependency's module imports its own modules and the standard ones, never
+                // the root's (ADR 0122 rule 47).
+                let key = match module.mount {
+                    Some(local) if !standard => format!("{local}.{joined}"),
+                    _ => joined,
+                };
+                let Some(target) = paths.get(&key).and_then(|&t| self.modules.get(t)) else {
                     continue;
                 };
-                let host = path.join(".") == prelude::STD_HOST;
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
                     if host && !prelude::std_host_names(self.edition).contains(&name) {

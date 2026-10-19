@@ -127,6 +127,7 @@ fn index(
         sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let mut contracts: BTreeMap<String, Option<String>> = BTreeMap::new();
     for (span, module, name) in &analysis.index.functions {

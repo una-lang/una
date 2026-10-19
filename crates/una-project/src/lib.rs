@@ -27,10 +27,10 @@ use una_diag::Code;
 
 pub use lock::{DEFAULT_SOLVER_VERSION, Lock, parse_lock};
 pub use manifest::{
-    Boundary, Ceiling, Contract, Edition, Extents, Format, Manifest, is_grant, is_module_path,
-    parse_manifest,
+    Boundary, Ceiling, Contract, Edition, Extents, Format, Manifest, Mount, is_grant,
+    is_module_path, parse_manifest,
 };
-pub use package::{LoadError, Loaded, LoadedFile, Role, discover};
+pub use package::{LoadError, Loaded, LoadedFile, Role, discover, discover_dependency};
 
 /// A problem in a project file, located by byte offsets into its text.
 #[derive(Clone, Debug, PartialEq, Eq)]

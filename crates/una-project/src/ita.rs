@@ -213,6 +213,7 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         manifest.boundaries.push(Boundary {
             module: located(&entry.module),
             ceiling,
+            package: false,
         });
     }
     for entry in &read.contracts {
@@ -421,7 +422,7 @@ fn check_origin(
 }
 
 /// Whether `dir` is a relative directory: not empty, no leading `/`, no `\`, no drive.
-fn is_relative_dir(dir: &str) -> bool {
+pub fn is_relative_dir(dir: &str) -> bool {
     !dir.is_empty()
         && !dir.starts_with('/')
         && !dir.contains('\\')
@@ -896,7 +897,13 @@ pub fn solver_text(solver: &Lock) -> String {
 /// each package is locked once on its major line; and every locked package is reachable from
 /// the root. Each problem is U7009, at the need or at the package. O((n + p + r) log p) for n
 /// needs, p packages and r `needs` lines, by a breadth-first walk from the root.
-pub fn check_lock_consistency(manifest: &ita::Manifest, lock: &ItaLock) -> Consistency {
+/// A path need is met by the locked package of its name whose origin is its directory, at the
+/// version the dependency's own `ita.una` gives, `paths` by directory, when it was read.
+pub fn check_lock_consistency(
+    manifest: &ita::Manifest,
+    lock: &ItaLock,
+    paths: &BTreeMap<String, String>,
+) -> Consistency {
     let code = Code::U7009;
     let mut errors = Vec::new();
     let mut at_needs = Vec::new();
@@ -922,6 +929,51 @@ pub fn check_lock_consistency(manifest: &ita::Manifest, lock: &ItaLock) -> Consi
     let mut work: Vec<usize> = Vec::new();
     // The root's needs, each met by a locked package.
     for need in &manifest.needs {
+        if let Some(At {
+            value: Origin::Path(dir),
+            ..
+        }) = &need.origin
+        {
+            let dir = dir.trim_end_matches('/');
+            let found = lock.read.packages.iter().position(|package| {
+                package.name.value == need.name.value
+                    && matches!(
+                        package.from.as_ref().map(|from| &from.value),
+                        Some(LockOrigin::Path(locked)) if locked.trim_end_matches('/') == dir
+                    )
+            });
+            match found.and_then(|index| lock.read.packages.get(index).map(|p| (index, p))) {
+                Some((index, package)) => {
+                    if let Some(seen) = reached.get_mut(index)
+                        && !*seen
+                    {
+                        *seen = true;
+                        work.push(index);
+                    }
+                    if let Some(version) = paths.get(dir)
+                        && *version != package.version.value
+                    {
+                        at_needs.push(error(
+                            code,
+                            need.range.clone(),
+                            format!(
+                                "ita.lock holds `{} {}` from `{dir}`, whose ita.una is now {version}; run `una ita lock`",
+                                need.name.value, package.version.value
+                            ),
+                        ));
+                    }
+                }
+                None => at_needs.push(error(
+                    code,
+                    need.range.clone(),
+                    format!(
+                        "ita.lock holds no package `{}` from `{dir}`; run `una ita lock`",
+                        need.name.value
+                    ),
+                )),
+            }
+            continue;
+        }
         let Some(version) = &need.version else {
             continue;
         };
@@ -1002,6 +1054,68 @@ pub fn check_lock_consistency(manifest: &ita::Manifest, lock: &ItaLock) -> Consi
         in_manifest: at_needs,
         in_lock: errors,
     }
+}
+
+/// The consent check of `ita.lock` (ADR 0122 rule 17): every `may` line of the root is within
+/// the ceiling the lock records as granted by the root (`granted by <root> may ...`). A wider
+/// one is U7009 at the `may` line, an authority change that only `una ita lock
+/// --accept-authority` records, never `una fix`. The lock is a control of visibility: a
+/// widening shows in its diff. O(c log c) for the c capabilities written.
+pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Vec<ProjectError> {
+    let mut errors = Vec::new();
+    for need in &manifest.needs {
+        let recorded = recorded_ceiling(lock, &need.name.value, root);
+        for cap in &need.may {
+            let wider: Vec<&str> = cap
+                .ops
+                .iter()
+                .map(|op| op.value.as_str())
+                .filter(|op| {
+                    !recorded
+                        .get(cap.capability.as_str())
+                        .is_some_and(|ops| ops.contains(op))
+                })
+                .collect();
+            if !wider.is_empty() {
+                errors.push(error(
+                    Code::U7009,
+                    cap.range.clone(),
+                    format!(
+                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority`",
+                        need.name.value,
+                        cap.capability,
+                        wider.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// The ceiling the lock records as granted by `root` to the package `name`: each capability
+/// with its operations.
+pub fn recorded_ceiling<'l>(
+    lock: &'l ItaLock,
+    name: &PkgName,
+    root: &str,
+) -> BTreeMap<&'l str, BTreeSet<&'l str>> {
+    let mut recorded: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for package in lock.read.packages.iter().filter(|p| p.name.value == *name) {
+        for grant in package
+            .granted
+            .iter()
+            .filter(|g| g.identity.is_none() && g.by.value.to_string() == root)
+        {
+            for cap in &grant.may {
+                recorded
+                    .entry(cap.capability.as_str())
+                    .or_default()
+                    .extend(cap.ops.iter().map(|op| op.value.as_str()));
+            }
+        }
+    }
+    recorded
 }
 
 /// The problems of [`check_lock_consistency`], by the file they are located in.

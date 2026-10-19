@@ -28,6 +28,7 @@ pub fn text(code: Code) -> &'static str {
         Code::U1007 => include_str!("../explain/U1007.md"),
         Code::U1008 => include_str!("../explain/U1008.md"),
         Code::U1009 => include_str!("../explain/U1009.md"),
+        Code::U1010 => include_str!("../explain/U1010.md"),
         Code::U2001 => include_str!("../explain/U2001.md"),
         Code::U2002 => include_str!("../explain/U2002.md"),
         Code::U2003 => include_str!("../explain/U2003.md"),
@@ -109,6 +110,7 @@ pub fn text(code: Code) -> &'static str {
         Code::U7005 => include_str!("../explain/U7005.md"),
         Code::U7008 => include_str!("../explain/U7008.md"),
         Code::U7009 => include_str!("../explain/U7009.md"),
+        Code::U7012 => include_str!("../explain/U7012.md"),
         Code::U8001 => include_str!("../explain/U8001.md"),
     }
 }

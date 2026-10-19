@@ -324,6 +324,10 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             tree: module.tree,
             interner: package.interner,
             reports: !module.broken,
+            mount: package
+                .settings
+                .mount_of(package.sources.file(module.id).path())
+                .map(|mount| mount.local.as_str()),
         })
         .collect();
     let categories = package
@@ -868,6 +872,7 @@ impl Standard {
             tree,
             interner: &self.interner,
             reports: false,
+            mount: None,
         }
     }
 }
@@ -1520,6 +1525,7 @@ mod tests {
             tree,
             interner: &standard.interner,
             reports: true,
+            mount: None,
         };
         let mut env = Env::build(
             Vec::new(),

@@ -424,6 +424,7 @@ pub(crate) fn entry_main<'a>(
         sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let (_, _, function) = modules.function(&format!("{entry}.main"))?;
     if !function.public || !function.params.is_empty() || !function.type_params.is_empty() {
@@ -594,7 +595,22 @@ pub(crate) fn test_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    let program = &analysis.program;
+    // `una test` runs the examples of the root's modules only: a dependency's examples are
+    // checked as its own, and never run with the root's authority (ADR 0122 rule 52).
+    let mounts = crate::package::project(&package).0.mounts;
+    let mut tested = analysis.program.clone();
+    for module in &mut tested.modules {
+        let dependency = mounts.iter().any(|mount| {
+            module
+                .path
+                .strip_prefix(mount.local.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+        });
+        if dependency {
+            module.examples.clear();
+        }
+    }
+    let program = &tested;
     let max_depth = options.max_depth;
     let limits = limits(&options);
     let ceiling = Ceiling::raise(&options);
@@ -716,7 +732,17 @@ fn module_files(analysis: &Analysis, sources: &SourceDb) -> BTreeMap<String, Str
                 .iter()
                 .map(|segment| analysis.interner.resolve(segment.name))
                 .collect();
-            Some((path.join("."), sources.file(*id).path().to_owned()))
+            let file = sources.file(*id).path();
+            // A dependency's module `m` is `<local>.m` in the program (ADR 0122 rule 47).
+            let path = match analysis
+                .mounts
+                .iter()
+                .find(|mount| file.starts_with(&mount.src))
+            {
+                Some(mount) => format!("{}.{}", mount.local, path.join(".")),
+                None => path.join("."),
+            };
+            Some((path, file.to_owned()))
         })
         .collect()
 }

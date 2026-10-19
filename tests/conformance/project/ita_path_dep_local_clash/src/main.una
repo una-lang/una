@@ -1,0 +1,8 @@
+-- test: a module whose first segment is a dependency's local name is U1010
+-- spec: spec/30 §3
+-- expect: error U1010 at src/util.una:1:8
+module main
+
+import util.text (shout)
+
+pub greet() -> Text = shout("hello")

@@ -1,0 +1,8 @@
+-- test: a path need with no locked package is U7009
+-- spec: spec/30 §3
+-- expect: error U7009 at ita.una:6:3
+module main
+
+import util.text (shout)
+
+pub greet() -> Text = shout("hello")
