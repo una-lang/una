@@ -222,7 +222,9 @@ fn collect_no_links(
             continue;
         }
         let path = entry.path();
-        let kind = entry.file_type().map_err(|error| unreadable(&path, &error))?;
+        let kind = entry
+            .file_type()
+            .map_err(|error| unreadable(&path, &error))?;
         if kind.is_symlink() {
             return Err(LoadError::Unreadable {
                 path,

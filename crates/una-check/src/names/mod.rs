@@ -929,7 +929,9 @@ impl<'p, 'a> Checker<'p, 'a> {
             let path = names.join(".");
             // A dependency's module imports its own modules by their own paths, and the
             // standard modules; never a module of the root (ADR 0122 rule 47).
-            let mount = tables.get(index).and_then(|table| self.mount(table.module.id));
+            let mount = tables
+                .get(index)
+                .and_then(|table| self.mount(table.module.id));
             let is_standard = path == prelude::STD_TESTING || path == prelude::STD_HOST;
             let target = match mount {
                 Some(local) if !is_standard => paths.get(&format!("{local}.{path}")).copied(),

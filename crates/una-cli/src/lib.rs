@@ -326,6 +326,7 @@ fn environment_failure(probe: &str) -> Analysis {
         index: una_check::Index::default(),
         of_lambdas: Vec::new(),
         file_state: una_core::Label::public(),
+        mounts: Vec::new(),
     }
 }
 

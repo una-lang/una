@@ -250,9 +250,7 @@ pub(crate) fn lock_command(
             block.push_str(&format!("  granted by {root} may {ceiling}\n"));
         }
         // Consent (rule 25): a ceiling wider than the recorded one needs the flag.
-        if !accept_authority
-            && let Some((_, lock, _)) = &existing
-        {
+        if !accept_authority && let Some((_, lock, _)) = &existing {
             let recorded = recorded_ceiling(lock, &need.name.value, &root);
             for cap in &need.may {
                 let wider: Vec<&str> = cap

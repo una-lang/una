@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
 use una_project::ita::{check_consent, check_lock_consistency, parse_ita_lock, parse_ita_manifest};
-use una_project::{
-    Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest,
-};
+use una_project::{Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest};
 use una_syntax::ita;
 use una_syntax::{FileId, SourceDb, Span};
 
@@ -129,14 +127,18 @@ fn load_dependencies(
         };
         let refusal = (|| {
             if !una_project::ita::is_relative_dir(&written) || written == "." {
-                return Some("its directory is not a relative path to another directory".to_owned());
+                return Some(
+                    "its directory is not a relative path to another directory".to_owned(),
+                );
             }
             let place = root.join(&written);
             let canonical = std::fs::canonicalize(&place).ok()?;
             if let Some(root) = &canonical_root
                 && (canonical == *root || canonical.starts_with(root.join("src")))
             {
-                return Some("its directory is the package itself, or inside its `src/`".to_owned());
+                return Some(
+                    "its directory is the package itself, or inside its `src/`".to_owned(),
+                );
             }
             if seen.contains(&canonical) {
                 return Some("another need names the same directory".to_owned());
@@ -279,7 +281,10 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             // package's (rule 7). `ita.una` reports each as U7008 already.
             let unusable = !una_project::names::is_name_word(&local.value, 1, 64)
                 || una_project::names::reserved_like(&local.value).is_some()
-                || manifest.mounts.iter().any(|mount| mount.local == local.value);
+                || manifest
+                    .mounts
+                    .iter()
+                    .any(|mount| mount.local == local.value);
             if unusable {
                 located(
                     manifest_id,
@@ -307,7 +312,10 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                         capability: cap.capability.clone(),
                         ops: cap.ops.iter().map(|op| op.value.clone()).collect(),
                         at: una_project::Located {
-                            value: manifest_text.get(cap.range.clone()).unwrap_or("").to_owned(),
+                            value: manifest_text
+                                .get(cap.range.clone())
+                                .unwrap_or("")
+                                .to_owned(),
                             range: cap.range.clone(),
                         },
                     })

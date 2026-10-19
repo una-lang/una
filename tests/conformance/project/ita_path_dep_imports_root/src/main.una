@@ -1,6 +1,7 @@
 -- test: a dependency's module never imports a module of the root: U1001
 -- spec: spec/30 §3
 -- expect: error U1001 at deps/util/src/say.una:3:8
+-- expect: error U1001 at deps/util/src/say.una:5:31
 module main
 
 import util.text (shout)

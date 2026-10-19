@@ -58,7 +58,9 @@ impl Manifest {
     /// The mount whose module files include the file at `path`, if any: the file is a module
     /// of that dependency. O(mounts).
     pub fn mount_of(&self, path: &str) -> Option<&Mount> {
-        self.mounts.iter().find(|mount| path.starts_with(&mount.src))
+        self.mounts
+            .iter()
+            .find(|mount| path.starts_with(&mount.src))
     }
 }
 
