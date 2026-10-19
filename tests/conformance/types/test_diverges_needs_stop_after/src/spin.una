@@ -1,0 +1,38 @@
+-- test: a test's `do` line may call a function that says `diverges` only under a `stop after` line, and its `expect` lines never may (U3027, spec/26 §6, ADR 0116 rule 8)
+-- spec: spec/26 §6
+-- expect: error U3027 at src/spin.una:27:6
+-- expect: error U3027 at src/spin.una:33:10
+module spin
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub handler memory_log() for Log
+  op write(line) = unit
+
+pub spin() -> Int
+  uses @log: Log[write]
+  diverges
+=
+  let edit n = 0
+  for ever
+    @log.write("tick")
+    n = n + 1
+  n
+
+example "no stop schedule"
+  given @log = memory_log()
+  do spin()
+  expect result == 0
+
+example "an expectation may not diverge"
+  given @log = memory_log()
+  do spin()
+  expect result == spin()
+  stop after 1
+
+example "under a stop schedule"
+  given @log = memory_log()
+  do spin()
+  expect result == 3
+  stop after 3

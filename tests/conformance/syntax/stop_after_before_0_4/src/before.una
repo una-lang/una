@@ -1,0 +1,11 @@
+-- test: before edition 0.4, an example has no `stop after` line (U0101, spec/26 §6)
+-- spec: spec/26 §6
+-- expect: error U0101 at src/before.una:10:3
+module before
+
+pub one() -> Int = 1
+
+example "a stop schedule"
+  do one()
+  expect result == 1
+  stop after 1
