@@ -2,11 +2,12 @@
 //! encodings; a canonical `S`, below the group order; public keys and `R` that are canonical
 //! encodings of points not of small order; and the cofactorless equation.
 //!
-//! The equation and the check of `S` are `ring`'s, already a dependency of `una` through
-//! `rustls`. The checks on the encodings of `A` and `R` are this module's, before `ring` is
-//! asked, so the rule does not depend on what a library version accepts. O(1) per signature.
+//! The equation is `ed25519-dalek`'s `verify_strict`, pure Rust with no C: it also refuses a
+//! non-canonical `S`, weak keys and a small-order `R`. The checks on the encodings of `A` and
+//! `R` and on `S` are this module's too, before the library is asked, so the rule does not
+//! depend on what one library version accepts. O(1) per signature.
 
-use ring::signature::{ED25519, UnparsedPublicKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 
 /// The order of the group, little-endian: L = 2^252 + 27742317777372353535851937790883648493.
 const ORDER: [u8; 32] = [
@@ -102,8 +103,10 @@ pub fn verify(key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Refusa
     if !below(s, &ORDER) {
         return Err(Refusal::S);
     }
-    UnparsedPublicKey::new(&ED25519, key)
-        .verify(message, signature)
+    let signature: &[u8; 64] = signature.try_into().map_err(|_| Refusal::Length)?;
+    let verifying = VerifyingKey::from_bytes(key32).map_err(|_| Refusal::Key)?;
+    verifying
+        .verify_strict(message, &Signature::from_bytes(signature))
         .map_err(|_| Refusal::Equation)
 }
 

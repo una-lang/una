@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use pretty_assertions::assert_eq;
-use ring::signature::{Ed25519KeyPair, KeyPair};
+use ed25519_dalek::{Signer, SigningKey};
 use una_project::tlog::ed25519::{Refusal, verify};
 use una_project::tlog::merkle::{
     Hash, consistency_proof, inclusion_proof, leaf_hash, node_hash, root, verify_consistency,
@@ -135,6 +135,75 @@ fn inclusion_proofs_grow_by_one_hash_per_doubling() {
     assert_eq!(lengths[0], 10);
 }
 
+/// RFC 8032 §7.1, tests 1 to 3: secret key, public key, message, signature.
+const RFC_8032: [(&str, &str, &str, &str); 3] = [
+    (
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "",
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+    ),
+    (
+        "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+        "72",
+        "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+    ),
+    (
+        "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+        "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+        "af82",
+        "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
+    ),
+];
+
+#[test]
+fn rfc_8032_vectors_verify_and_sign_alike() {
+    for (secret, public, message, signature) in RFC_8032 {
+        let (public, message, signature) = (hex(public), hex(message), hex(signature));
+        assert_eq!(verify(&public, &message, &signature), Ok(()));
+        let key = SigningKey::from_bytes(&hex(secret).try_into().unwrap());
+        assert_eq!(key.verifying_key().to_bytes().to_vec(), public);
+        assert_eq!(key.sign(&message).to_bytes().to_vec(), signature);
+        // Any changed bit of the message, `R` or `S` fails.
+        let mut other = message.clone();
+        other.push(0);
+        assert!(verify(&public, &other, &signature).is_err());
+        for byte in [0, 31, 32, 63] {
+            let mut flipped = signature.clone();
+            flipped[byte] ^= 1;
+            assert!(verify(&public, &message, &flipped).is_err(), "byte {byte}");
+        }
+    }
+}
+
+#[test]
+fn every_small_order_encoding_is_refused_as_key_and_as_r() {
+    let (_, public, message, signature) = RFC_8032[0];
+    let (public, message, signature) = (hex(public), hex(message), hex(signature));
+    // The y of each point of small order, both signs: 0, 1, the two of order 8, p - 1.
+    let small = [
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ];
+    for y in small {
+        for sign in [0u8, 0x80] {
+            let mut point = hex(y);
+            point[31] |= sign;
+            assert_eq!(verify(&point, &message, &signature), Err(Refusal::Key), "{y}");
+            let mut forged = signature.clone();
+            forged[..32].copy_from_slice(&point);
+            assert_eq!(verify(&public, &message, &forged), Err(Refusal::R), "{y}");
+        }
+    }
+    // A non-canonical encoding, y = p, of the identity.
+    let p = hex("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f");
+    assert_eq!(verify(&p, &message, &signature), Err(Refusal::Key));
+}
+
 #[test]
 fn ed25519_follows_rfc_8032_strictly() {
     let key = hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
@@ -162,9 +231,9 @@ fn ed25519_follows_rfc_8032_strictly() {
     assert_eq!(verify(&key, b"", &signature[..63]), Err(Refusal::Length));
 }
 
-fn keypair(seed: u8, name: &str) -> (Ed25519KeyPair, Key) {
-    let pair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
-    let public: [u8; 32] = pair.public_key().as_ref().try_into().unwrap();
+fn keypair(seed: u8, name: &str) -> (SigningKey, Key) {
+    let pair = SigningKey::from_bytes(&[seed; 32]);
+    let public: [u8; 32] = pair.verifying_key().to_bytes();
     (
         pair,
         Key {
@@ -174,17 +243,17 @@ fn keypair(seed: u8, name: &str) -> (Ed25519KeyPair, Key) {
     )
 }
 
-fn sign_line(pair: &Ed25519KeyPair, key: &Key, text: &str) -> String {
+fn sign_line(pair: &SigningKey, key: &Key, text: &str) -> String {
     let mut bytes = key.id().to_vec();
-    bytes.extend_from_slice(pair.sign(text.as_bytes()).as_ref());
+    bytes.extend_from_slice(&pair.sign(text.as_bytes()).to_bytes());
     format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
 }
 
-fn cosign_line(pair: &Ed25519KeyPair, key: &Key, text: &str, time: u64) -> String {
+fn cosign_line(pair: &SigningKey, key: &Key, text: &str, time: u64) -> String {
     let message = format!("cosignature/v1\ntime {time}\n{text}");
     let mut bytes = key.cosignature_id().to_vec();
     bytes.extend_from_slice(&time.to_be_bytes());
-    bytes.extend_from_slice(pair.sign(message.as_bytes()).as_ref());
+    bytes.extend_from_slice(&pair.sign(message.as_bytes()).to_bytes());
     format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
 }
 
