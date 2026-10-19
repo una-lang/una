@@ -63,13 +63,14 @@ fn checked(name: &str, source: &str) -> una_core::Program {
     let dir = std::env::temp_dir().join(format!("una-drive-{name}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("una.toml"),
-        "[package]\nname = \"counter\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n",
+        dir.join("ita.una"),
+        "ita counter\n  version 0.1.0\n  edition 0.4\n",
     )
     .unwrap();
     std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
-        dir.join("verification.lock"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/conformance/types/float_edition_0_4/ita.lock"),
+        dir.join("ita.lock"),
     )
     .unwrap();
     std::fs::write(dir.join("src/counter.una"), source).unwrap();
