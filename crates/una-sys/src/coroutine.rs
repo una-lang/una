@@ -30,8 +30,10 @@
 //! let outside = vec![1, 2];
 //! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
 //! let mut seen = 0;
-//! una_sys::coroutine::scope(|s| {
-//!     let mut coroutine = s.spawn(stack, || seen = outside.len()); // borrows what outlives it
+//! let (seen_at, outside_at) = (&mut seen, &outside);
+//! una_sys::coroutine::scope(move |s| {
+//!     // Borrows what outlives the scope.
+//!     let mut coroutine = s.spawn(stack, move || *seen_at = outside_at.len());
 //!     coroutine.resume();
 //! });
 //! assert_eq!(seen, 2);

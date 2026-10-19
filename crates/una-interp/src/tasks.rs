@@ -315,7 +315,7 @@ mod tests {
 
     /// Runs `root` as the root task of a run whose queue `drive` serves, as `Machine::rooted`
     /// does.
-    fn rooted<'w>(run: &Run<'_, 'w>, root: impl FnOnce() + 'w) {
+    fn rooted<'r, 'w: 'r>(run: &'r Run<'_, 'w>, root: impl FnOnce() + 'r) {
         let Ok(stack) = Stack::new(1024 * 1024) else {
             return;
         };
