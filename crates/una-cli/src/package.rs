@@ -298,6 +298,65 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                 package: true,
             });
         }
+        // The root's own settings never reach into a dependency: a dependency's module is
+        // trusted only by a trust line (ADR 0122 rule 53, not loaded yet), and its boundaries,
+        // contracts and entry are its own.
+        let inside = |path: &str| {
+            manifest.mounts.iter().any(|mount| {
+                path.strip_prefix(mount.local.as_str())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+            })
+        };
+        let mut reaching: Vec<ProjectError> = Vec::new();
+        for entry in &manifest.trusted {
+            if inside(&entry.value) {
+                reaching.push(ProjectError {
+                    code: Code::U7008,
+                    range: entry.range.clone(),
+                    message: format!(
+                        "`{}` is a dependency's module, which only a trust line of the root can trust",
+                        entry.value
+                    ),
+                });
+            }
+        }
+        for boundary in manifest.boundaries.iter().filter(|b| !b.package) {
+            if inside(&boundary.module.value) {
+                reaching.push(ProjectError {
+                    code: Code::U7008,
+                    range: boundary.module.range.clone(),
+                    message: format!(
+                        "`{}` is inside a dependency, whose package extent already bounds it",
+                        boundary.module.value
+                    ),
+                });
+            }
+        }
+        for contract in &manifest.contracts {
+            if inside(&contract.function.value) {
+                reaching.push(ProjectError {
+                    code: Code::U7008,
+                    range: contract.function.range.clone(),
+                    message: format!(
+                        "`{}` is a dependency's function, which the root's contracts cannot lock",
+                        contract.function.value
+                    ),
+                });
+            }
+        }
+        if let Some(entry) = &manifest.entry
+            && inside(&entry.value)
+        {
+            reaching.push(ProjectError {
+                code: Code::U7008,
+                range: entry.range.clone(),
+                message: format!(
+                    "the run entry `{}` is a dependency's module; only the root is run",
+                    entry.value
+                ),
+            });
+        }
+        located(manifest_id, reaching);
         match package.lock {
             Some(id) => {
                 let (lock, errors) = parse_ita_lock(package.sources.file(id).text());
