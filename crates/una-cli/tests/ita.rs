@@ -417,3 +417,21 @@ fn tree_prints_each_dependency_with_its_ceiling_and_authority() {
     assert_eq!(util["granted_by"][0]["package"], "demo");
     assert!(util["digest"].as_str().unwrap().starts_with("sha256:"));
 }
+
+#[test]
+fn remove_takes_the_need_out_and_relocks() {
+    let dir = with_dependency("remove", "");
+    let (code, _, _) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0);
+    std::fs::write(dir.join("src/demo.una"), "module demo\n\npub one() -> Int = 1\n").unwrap();
+    let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo\n  version 0.1.0\n  edition 0.4\n"
+    );
+    assert!(!std::fs::read_to_string(dir.join("ita.lock")).unwrap().contains("package util"));
+    let (code, _, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("does not need `util`"), "{err}");
+}

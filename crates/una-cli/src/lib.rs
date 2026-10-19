@@ -761,7 +761,10 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             | Command::Test { path, .. },
         ) => Some(path.clone()),
         Some(Command::Ita {
-            command: ItaCommand::Lock { path, .. } | ItaCommand::Tree { path },
+            command:
+                ItaCommand::Lock { path, .. }
+                | ItaCommand::Tree { path }
+                | ItaCommand::Remove { path, .. },
         }) => Some(path.clone()),
         // `una trace` and `una contract` read the package in the current directory.
         Some(Command::Trace { .. } | Command::Contract { .. }) => Some(".".into()),
@@ -1014,6 +1017,7 @@ fn run_command(
                 };
                 match command {
                     ItaCommand::Tree { path } => ita::tree_command(&path, output),
+                    ItaCommand::Remove { name, path } => ita::remove_command(&name, &path, output),
                     ItaCommand::Lock {
                         path,
                         check,

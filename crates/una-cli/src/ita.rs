@@ -517,3 +517,69 @@ pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatu
     }
     Ok(status)
 }
+
+/// `una ita remove <name> [path]` (ADR 0122 rule 57): removes the need of `name` from
+/// `ita.una`, its indented lines with it, and the `needs` section when it empties, through a
+/// temporary file and a rename; then writes the lock as `una ita lock` does. A name the root
+/// does not need is a usage error. No network.
+pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Result<ExitStatus> {
+    let manifest_path = path.join("ita.una");
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(error) => return unreadable(&manifest_path, &error, out),
+    };
+    let (read, errors) = ita::parse_manifest(&text);
+    if !errors.is_empty() {
+        writeln!(
+            out.stderr,
+            "error: ita.una does not parse; run `una check` to see why, then remove the need"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
+    let Some(need) = read.needs.iter().find(|need| need.name.value.to_string() == name) else {
+        writeln!(out.stderr, "error: the package does not need `{name}`")?;
+        return Ok(ExitStatus::Usage);
+    };
+    let lines = ita::lines(&text);
+    let Some(section) = lines
+        .lines
+        .iter()
+        .find(|line| line.tokens.first().is_some_and(|t| t.item == ita::Item::Word("needs".to_owned())))
+    else {
+        return Ok(ExitStatus::Usage);
+    };
+    // The byte range of whole lines to remove: the need's line and its children, or the whole
+    // section when the need is its only one.
+    let line_start = |offset: usize| text.get(..offset).and_then(|head| head.rfind('\n')).map_or(0, |at| at + 1);
+    let line_end = |offset: usize| text.get(offset..).and_then(|tail| tail.find('\n')).map_or(text.len(), |at| offset + at + 1);
+    let last_of = |line: &ita::Line| {
+        let mut last = line.range.end;
+        let mut stack: Vec<&ita::Line> = line.children.iter().collect();
+        while let Some(child) = stack.pop() {
+            last = last.max(child.range.end);
+            stack.extend(child.children.iter());
+        }
+        last
+    };
+    let (from, to) = if section.children.len() == 1 {
+        let mut from = line_start(section.range.start);
+        // Take the blank line before the section with it.
+        if text.get(..from).is_some_and(|head| head.ends_with("\n\n")) {
+            from -= 1;
+        }
+        (from, line_end(last_of(section)))
+    } else {
+        let Some(child) = section.children.iter().find(|c| c.range.start == need.range.start) else {
+            return Ok(ExitStatus::Usage);
+        };
+        (line_start(child.range.start), line_end(last_of(child)))
+    };
+    let mut edited = String::with_capacity(text.len());
+    edited.push_str(text.get(..from).unwrap_or(""));
+    edited.push_str(text.get(to..).unwrap_or(""));
+    if let Err(error) = crate::write_through_rename(&manifest_path, &edited) {
+        writeln!(out.stderr, "error: cannot write `{}`: {error}", manifest_path.display())?;
+        return Ok(ExitStatus::Usage);
+    }
+    lock_command(path, false, false, out)
+}

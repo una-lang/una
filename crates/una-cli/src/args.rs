@@ -238,6 +238,15 @@ pub(crate) enum Command {
 /// The commands of `una ita` implemented so far (ADR 0122 rule 57).
 #[derive(Debug, Subcommand)]
 pub(crate) enum ItaCommand {
+    /// Remove a need from ita.una, then write the lock
+    Remove {
+        /// The package's name, as the need writes it
+        name: String,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Print the program's packages, with their ceilings, authority and trust
     Tree {
         /// The package directory
