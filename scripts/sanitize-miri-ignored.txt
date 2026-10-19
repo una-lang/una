@@ -55,6 +55,8 @@ ffi::tests::i8_first_batch_failure_scenario
 ffi::tests::words_in_a_run_scenario
 runtime::tests::a_cancellation_from_another_thread_scenario
 runtime::tests::a_cancellation_from_another_thread_stops_the_next_check
+runtime::tests::a_table_the_build_did_not_foresee_faults_at_its_site
+runtime::tests::a_table_the_build_did_not_foresee_scenario
 runtime::tests::the_checks_scaling_scenario
 runtime::tests::the_checks_take_the_fast_path_at_every_size_and_depth
 runtime::tests::the_depth_limit_fires_at_its_exact_call

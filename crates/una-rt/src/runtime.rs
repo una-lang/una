@@ -2000,6 +2000,37 @@ mod tests {
         assert!(stderr.contains("src/t.una"), "{stderr}");
     }
 
+    #[test]
+    #[ignore = "run by `a_table_the_build_did_not_foresee_faults_at_its_site`, in a process of its own"]
+    fn a_table_the_build_did_not_foresee_scenario() {
+        // The description says nothing of `hashing`, so the run reads no process key.
+        start(&[], SITE_META, || {
+            eprintln!("{STEP}");
+            crate::values::hash_empty(0, 0);
+            eprintln!("{STEP}: past the table");
+            0
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_table_the_build_did_not_foresee_faults_at_its_site() {
+        // ADR 0119 rule 9: no key is read late. A table made in a run whose build found that it
+        // makes none is an internal fault, U8001 with exit code 3, at the table's site, with the
+        // interpreter's message.
+        let (code, stderr) = scenario("a_table_the_build_did_not_foresee_scenario");
+        assert_eq!(code, Some(3), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
+        assert!(stderr.contains("U8001"), "{stderr}");
+        assert!(
+            stderr.contains(
+                "evaluation stopped: a hash table made in a run whose code the analysis found makes none"
+            ),
+            "{stderr}"
+        );
+        assert!(stderr.contains("src/t.una"), "{stderr}");
+    }
+
     /// Holds exactly up to the memory ceiling of the run, then checks with `check`, which must
     /// let the run proceed; then one byte more, where `check` must abort it.
     fn memory_scenario(check: fn() -> i64) {
