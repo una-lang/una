@@ -234,7 +234,7 @@ fn check_requires_a_package() {
     assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "error: directory `docs` is not a package: it has no `una.toml`\n"
+        "error: directory `docs` is not a package: it has no `ita.una` or `una.toml`\n"
     );
     let root = scratch("package-without-src");
     std::fs::write(root.join("una.toml"), MANIFEST).unwrap();

@@ -1,16 +1,21 @@
-//! Project files (`una.toml`, `verification.lock`) and package discovery (`spec/13 §7`,
-//! `spec/12 §9`, ADR 0021).
+//! Project files (`una.toml` and `verification.lock` to edition `0.3`; `ita.una`, `ita.lock`
+//! and `itaty.una` from edition `0.4`) and package discovery (`spec/13 §7`, `spec/12 §9`,
+//! `spec/30`, ADR 0021, ADR 0122).
 //!
-//! Errors are located by byte offsets into the file's text, so this crate does not depend on
-//! the syntax crate; the caller turns them into diagnostics.
+//! Errors are located by byte offsets into the file's text; the caller turns them into
+//! diagnostics. The grammar of the files of edition `0.4` is the syntax crate's.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod document;
+pub mod ita;
 pub mod literal;
 mod lock;
 mod manifest;
+pub mod migrate;
+pub mod names;
 mod package;
+pub mod version;
 
 use std::ops::Range;
 
@@ -18,7 +23,7 @@ use una_diag::Code;
 
 pub use lock::{DEFAULT_SOLVER_VERSION, Lock, parse_lock};
 pub use manifest::{
-    Boundary, Ceiling, Contract, Edition, Extents, Manifest, is_grant, is_module_path,
+    Boundary, Ceiling, Contract, Edition, Extents, Format, Manifest, is_grant, is_module_path,
     parse_manifest,
 };
 pub use package::{LoadError, Loaded, LoadedFile, Role, discover};

@@ -1,0 +1,277 @@
+//! `una ita lock` and `una fmt` of the project files of edition 0.4 (ADR 0122, `spec/30`).
+
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
+use std::path::{Path, PathBuf};
+
+use pretty_assertions::assert_eq;
+
+const MANIFEST: &str = "ita demo\n  version 0.1.0\n  edition 0.4\n";
+const MODULE: &str = "module demo\n\npub one() -> Int = 1\n";
+
+/// A fresh package directory named `name`, with `ita.una` and one module.
+fn package(name: &str, manifest: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("ita")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    std::fs::write(dir.join("src/demo.una"), MODULE).unwrap();
+    dir
+}
+
+/// Runs `una` with `args`: the exit code, stdout and stderr.
+fn una(args: &[&str]) -> (u8, String, String) {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = una_cli::run(
+        args.iter().copied(),
+        &mut stdout,
+        &mut stderr,
+        false,
+        &|_| Ok(None),
+        una_cli::Heap::unmeasured(),
+    );
+    (
+        status.code(),
+        String::from_utf8(stdout).unwrap(),
+        String::from_utf8(stderr).unwrap(),
+    )
+}
+
+fn path(dir: &Path) -> &str {
+    dir.to_str().unwrap()
+}
+
+#[test]
+fn lock_writes_the_default_solver_then_is_up_to_date() {
+    let dir = package("writes", MANIFEST);
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (0, "wrote ita.lock\n", "")
+    );
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert_eq!(
+        lock,
+        format!(
+            "-- Written by `una ita`; do not edit.\nlock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"{}\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+            una_project::DEFAULT_SOLVER_VERSION
+        )
+    );
+    let (code, out, _) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "ita.lock is up to date\n"));
+    let (code, out, _) = una(&["una", "ita", "lock", "--check", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, ""));
+    // No temporary file is left beside it.
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(names.iter().all(|name| !name.starts_with('.')), "{names:?}");
+    // The package then checks at tier 0 with no diagnostic.
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(checked.diagnostics, []);
+}
+
+#[test]
+fn lock_keeps_the_solver_section_it_replaces() {
+    let dir = package("keeps", MANIFEST);
+    let pinned = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 7\n  seed 3\n";
+    std::fs::write(dir.join("ita.lock"), pinned).unwrap();
+    let (code, out, _) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"));
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(lock.contains("  steps 7\n  seed 3\n"), "{lock}");
+}
+
+#[test]
+fn lock_refuses_an_invalid_lock_and_writes_nothing() {
+    let dir = package("invalid", MANIFEST);
+    std::fs::write(dir.join("ita.lock"), "lock 1\n").unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7009"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.lock")).unwrap(),
+        "lock 1\n"
+    );
+}
+
+#[test]
+fn lock_refuses_needs_until_dependencies_load() {
+    let dir = package("needs", &format!("{MANIFEST}\nneeds\n  json 2.0\n"));
+    let (code, out, _) = una(&["una", "--json", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["schema"], "una.ita/1");
+    assert_eq!(document["command"], "lock");
+    assert_eq!(document["written"], serde_json::json!([]));
+    assert_eq!(document["diagnostics"][0]["code"], "U7008");
+    assert!(!dir.join("ita.lock").exists());
+    // The schema comes first.
+    assert!(out.starts_with("{\"schema\":\"una.ita/1\""), "{out}");
+}
+
+#[test]
+fn lock_check_reports_a_missing_lock() {
+    let dir = package("check-missing", MANIFEST);
+    let (code, _, err) = una(&["una", "ita", "lock", "--check", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7009"), "{err}");
+    assert!(!dir.join("ita.lock").exists());
+}
+
+#[test]
+fn lock_needs_an_ita_una() {
+    let dir = package("no-manifest", MANIFEST);
+    std::fs::remove_file(dir.join("ita.una")).unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("has no ita.una"), "{err}");
+}
+
+#[test]
+fn the_binary_invoked_as_ita_is_una_ita() {
+    let dir = package("argv0", MANIFEST);
+    for program in ["ita", "/usr/local/bin/ita", "ita.exe"] {
+        let _ = std::fs::remove_file(dir.join("ita.lock"));
+        let (code, out, err) = una(&[program, "lock", path(&dir)]);
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (0, "wrote ita.lock\n", ""),
+            "{program}"
+        );
+    }
+    // Another name stays `una`.
+    let (code, _, _) = una(&["una-dev", "lock", path(&dir)]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn fmt_formats_ita_una_only_when_named() {
+    let messy = "ita  demo\n  edition 0.4\n  version   0.1.0\n\n\n\nlabels\n  PII\n";
+    let canonical = "ita demo\n  version 0.1.0\n  edition 0.4\n\nlabels\n  PII\n";
+    let dir = package("fmt", messy);
+    // `una fmt` of the package leaves ita.una alone.
+    let (code, _, _) = una(&["una", "fmt", path(&dir)]);
+    assert_eq!(code, 0);
+    assert_eq!(std::fs::read_to_string(dir.join("ita.una")).unwrap(), messy);
+    let manifest = dir.join("ita.una");
+    let (code, _, err) = una(&["una", "fmt", "--check", path(&manifest)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7001"), "{err}");
+    assert_eq!(std::fs::read_to_string(&manifest).unwrap(), messy);
+    let (code, _, err) = una(&["una", "fmt", path(&manifest)]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(std::fs::read_to_string(&manifest).unwrap(), canonical);
+    let (code, _, _) = una(&["una", "fmt", "--check", path(&manifest)]);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn fmt_leaves_an_ita_una_with_grammar_errors() {
+    let broken = "ita demo\n  version 0.1.0\n  edition 0.4\n\nforeign\n";
+    let dir = package("fmt-broken", broken);
+    let manifest = dir.join("ita.una");
+    let (code, _, err) = una(&["una", "fmt", path(&manifest)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7008"), "{err}");
+    assert_eq!(std::fs::read_to_string(&manifest).unwrap(), broken);
+}
+
+const TOML_LOCK: &str = "encoding_version = \"una-smt-1\"\nsolver = \"z3\"\nsolver_version = \"5.1.0\"\nlogic = \"QF_UFLIA\"\nstep_budget = 5000000\nrandom_seed = 0\n";
+
+/// A fresh package of `una.toml` and `verification.lock`, with one module of `source`.
+fn toml_package(name: &str, edition: &str, source: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("ita")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        format!("[package]\nname = \"demo-pkg\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("verification.lock"), TOML_LOCK).unwrap();
+    std::fs::write(dir.join("src/demo.una"), source).unwrap();
+    dir
+}
+
+#[test]
+fn migrate_moves_the_project_files_and_the_package_checks() {
+    let dir = toml_package("migrate", "0.2", MODULE);
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "wrote ita.una, ita.lock; removed una.toml, verification.lock\nname: demo-pkg -> demo_pkg\nedition 0.2 -> 0.4: 0 diagnostics\n"
+    );
+    assert!(!dir.join("una.toml").exists());
+    assert!(!dir.join("verification.lock").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo_pkg\n  version 0.1.0\n  edition 0.4\n"
+    );
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(checked.diagnostics, []);
+    // Edition-gated: a package with ita.una is not migrated again.
+    let (code, _, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("already has ita.una"), "{err}");
+}
+
+#[test]
+fn migrate_dry_run_writes_nothing() {
+    let dir = toml_package("migrate-dry", "0.1", MODULE);
+    let (code, out, _) = una(&["una", "--json", "migrate", "--dry-run", path(&dir)]);
+    assert_eq!(code, 0);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(out.starts_with("{\"schema\":\"una.migrate/1\""), "{out}");
+    assert_eq!(document["written"], serde_json::json!([]));
+    assert_eq!(document["edition"]["from"], "0.1");
+    assert!(
+        document["ita_una"]
+            .as_str()
+            .unwrap()
+            .starts_with("ita demo_pkg\n")
+    );
+    assert!(dir.join("una.toml").exists());
+    assert!(!dir.join("ita.una").exists());
+}
+
+#[test]
+fn migrate_prints_the_clashes_of_edition_0_4() {
+    let source = "module demo\n\npub within() -> Int = 1\n";
+    let dir = toml_package("migrate-clash", "0.3", source);
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0);
+    assert!(out.ends_with("edition 0.3 -> 0.4: 1 diagnostic\n"), "{out}");
+    assert!(err.contains("U0103"), "{err}");
+    // It applies no repair: the module is unchanged.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn una_toml_naming_edition_0_4_is_refused_with_migrate() {
+    let dir = toml_package("toml-0-4", "0.4", MODULE);
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    let codes: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .map(|d| format!("{} {}", d.code, d.message))
+        .collect();
+    assert_eq!(
+        codes,
+        ["U7002 edition 0.4 is described by ita.una, not una.toml; run `una migrate`"]
+    );
+    let (code, _, _) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0);
+    assert!(dir.join("ita.una").exists());
+}

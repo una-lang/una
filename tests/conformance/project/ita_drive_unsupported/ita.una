@@ -1,0 +1,7 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+drive
+  module main
+  ticks 10

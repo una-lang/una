@@ -31,6 +31,59 @@ pub struct Manifest {
     pub contracts: Vec<Contract>,
     /// `[boundaries]`: the boundary modules and their ceilings, in edition `0.3` (ADR 0093).
     pub boundaries: Vec<Boundary>,
+    /// The file the settings were read from: `una.toml`, or `ita.una` from edition `0.4`.
+    pub format: Format,
+    /// For `ita.una`, the file as read, with what only it writes: the head's `about`,
+    /// `license`, `home` and `publish to`, and the sections `sources`, `needs`, `replace` and
+    /// `trust` (ADR 0122).
+    pub ita: Option<Box<una_syntax::ita::Manifest>>,
+}
+
+/// The file a package's settings are read from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Format {
+    /// `una.toml`, editions `0.1` to `0.3` (ADR 0021).
+    #[default]
+    Toml,
+    /// `ita.una`, from edition `0.4` (ADR 0122).
+    Ita,
+}
+
+impl Format {
+    /// The code of an invalid setting: U7002 in `una.toml`, U7008 in `ita.una` (ADR 0122
+    /// rule 13).
+    pub fn code(self) -> Code {
+        match self {
+            Format::Toml => Code::U7002,
+            Format::Ita => Code::U7008,
+        }
+    }
+
+    /// How a message names a table of `una.toml` or its section of `ita.una`:
+    /// `[boundaries]` or `` `boundaries` ``; `[run] entry` or `` `run entry` ``.
+    pub fn section(self, toml: &str) -> String {
+        match self {
+            Format::Toml => toml.to_owned(),
+            Format::Ita => {
+                let plain: String = toml.chars().filter(|c| !matches!(c, '[' | ']')).collect();
+                let plain = match plain.as_str() {
+                    "escape_budget checked_per_module" => "escapes checked per module".to_owned(),
+                    "labels categories" => "labels".to_owned(),
+                    "trusted modules" => "trusted".to_owned(),
+                    _ => plain,
+                };
+                format!("`{plain}`")
+            }
+        }
+    }
+
+    /// The file's name.
+    pub fn file(self) -> &'static str {
+        match self {
+            Format::Toml => "una.toml",
+            Format::Ita => "ita.una",
+        }
+    }
 }
 
 /// A locked function of `[contracts]` (ADR 0092 rule 8, as amended): its qualified name and
@@ -149,7 +202,7 @@ impl Edition {
     }
 
     /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2", "0.3" and "0.4"`.
-    fn listed() -> String {
+    pub(crate) fn listed() -> String {
         let names: Vec<String> = Edition::ALL
             .iter()
             .map(|edition| format!("\"{}\"", edition.name()))
@@ -162,7 +215,7 @@ impl Edition {
     }
 
     /// The edition named `text` in `una.toml`, if it is one.
-    fn parse(text: &str) -> Option<Edition> {
+    pub(crate) fn parse(text: &str) -> Option<Edition> {
         match text {
             "0.1" => Some(Edition::V0_1),
             "0.2" => Some(Edition::V0_2),
@@ -271,6 +324,16 @@ fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
                     ));
                 } else if name == "edition" {
                     match Edition::parse(&located.value) {
+                        // Edition 0.4 is described by `ita.una` (ADR 0122 Question 8.1): the
+                        // package is still checked in edition 0.4, and `una migrate` moves it.
+                        Some(Edition::V0_4) => {
+                            manifest.edition = Edition::V0_4;
+                            errors.push(ProjectError::new(
+                                Code::U7002,
+                                located.range,
+                                "edition 0.4 is described by ita.una, not una.toml; run `una migrate`",
+                            ));
+                        }
                         Some(edition) => manifest.edition = edition,
                         None => errors.push(ProjectError::new(
                             Code::U7002,
@@ -482,7 +545,11 @@ fn parse_ceiling(text: &str) -> Option<(String, Vec<String>)> {
 /// U7002 for keys whose extents overlap, a boundary that is also trusted, and a `[run]` entry
 /// inside a boundary (ADR 0093 rules 8 to 10). The keys are sorted, so a key and a key below it
 /// are found in one pass: O(k log k).
-fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
+pub(crate) fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
+    let code = manifest.format.code();
+    let boundaries = manifest.format.section("[boundaries]");
+    let trusted_section = manifest.format.section("[trusted] modules");
+    let entry_section = manifest.format.section("[run] entry");
     let mut keys: Vec<&Boundary> = manifest.boundaries.iter().collect();
     keys.sort_by(|a, b| a.module.value.cmp(&b.module.value));
     let mut open: Vec<&Boundary> = Vec::new();
@@ -495,10 +562,10 @@ fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
         }
         if let Some(outer) = open.last() {
             errors.push(ProjectError::new(
-                Code::U7002,
+                code,
                 boundary.module.range.clone(),
                 format!(
-                    "[boundaries] lists `{}` inside `{}`, which already covers it; a module has one ceiling",
+                    "{boundaries} lists `{}` inside `{}`, which already covers it; a module has one ceiling",
                     boundary.module.value, outer.module.value
                 ),
             ));
@@ -514,10 +581,10 @@ fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
     for trusted in &manifest.trusted {
         if let Some(boundary) = boundary_of(&trusted.value) {
             errors.push(ProjectError::new(
-                Code::U7002,
+                code,
                 trusted.range.clone(),
                 format!(
-                    "`{}` is in [trusted] modules and inside the boundary `{}`; a boundary module never releases",
+                    "`{}` is in {trusted_section} and inside the boundary `{}`; a boundary module never releases",
                     trusted.value, boundary.module.value
                 ),
             ));
@@ -527,10 +594,10 @@ fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
         && let Some(boundary) = boundary_of(&entry.value)
     {
         errors.push(ProjectError::new(
-            Code::U7002,
+            code,
             entry.range.clone(),
             format!(
-                "the [run] entry `{}` is inside the boundary `{}`, whose grants would bypass its ceiling",
+                "the {entry_section} `{}` is inside the boundary `{}`, whose grants would bypass its ceiling",
                 entry.value, boundary.module.value
             ),
         ));
@@ -573,14 +640,14 @@ pub fn is_grant(text: &str) -> bool {
 }
 
 /// Whether `name` is UpperCamelCase (`spec/01 §4`).
-fn is_upper_camel(name: &str) -> bool {
+pub(crate) fn is_upper_camel(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|first| first.is_ascii_uppercase())
         && chars.all(|c| c.is_ascii_alphanumeric())
 }
 
 /// A suggestion in UpperCamelCase for `name`.
-fn upper_camel(name: &str) -> String {
+pub(crate) fn upper_camel(name: &str) -> String {
     let mut out = String::new();
     let mut upper = true;
     for c in name.chars() {

@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 
-use una_diag::Code;
 use una_project::Manifest;
 use una_syntax::{FileId, Span};
 
@@ -87,7 +86,7 @@ pub(crate) fn resolve(
         let Some(&home) = by_path.get(key.value.as_str()) else {
             if let Some(span) = at(&key.range) {
                 report.error(
-                    Code::U7002,
+                    settings.format.code(),
                     span,
                     format!(
                         "[boundaries] lists `{}`, which is not a module of this package",
@@ -112,7 +111,7 @@ pub(crate) fn resolve(
             let Some(id) = capability else {
                 if let Some(span) = at(&entry.at.range) {
                     report.error(
-                        Code::U7002,
+                        settings.format.code(),
                         span,
                         format!(
                             "the ceiling of `{}` names `{}`, which is not a capability that module `{}` sees",
@@ -127,7 +126,7 @@ pub(crate) fn resolve(
             if let Some(first) = written.get(&id) {
                 if let Some(span) = at(&entry.at.range) {
                     report.error(
-                        Code::U7002,
+                        settings.format.code(),
                         span,
                         format!(
                             "the ceiling of `{}` names one capability twice, as `{first}` and `{}`",
@@ -144,7 +143,7 @@ pub(crate) fn resolve(
                 if declared.is_some_and(|c| !c.ops.iter().any(|o| o.name == op.as_str())) {
                     if let Some(span) = at(&entry.at.range) {
                         report.error(
-                            Code::U7002,
+                            settings.format.code(),
                             span,
                             format!(
                                 "the ceiling of `{}` allows `{}.{op}`, which `{}` does not declare",

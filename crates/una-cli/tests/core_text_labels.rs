@@ -13,6 +13,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+const ITA_LOCK: &str = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
+
 const LOCK: &str = "encoding_version = \"una-smt-1\"\nsolver           = \"z3\"\nsolver_version   = \"5.1.0\"\nlogic            = \"QF_UFLIA\"\nstep_budget      = 5000000\nrandom_seed      = 0\n";
 
 /// A package of one module, `app.main`, in `edition`, written fresh under the test's directory.
@@ -22,14 +24,27 @@ fn package(name: &str, edition: &str, source: &str) -> PathBuf {
         .join(format!("{name}-{}", edition.replace('.', "_")));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src/app")).unwrap();
-    std::fs::write(
-        dir.join("una.toml"),
-        format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n\n[labels]\ncategories = [\"PII\"]\n"
-        ),
-    )
-    .unwrap();
-    std::fs::write(dir.join("verification.lock"), LOCK).unwrap();
+    // From edition 0.4 a package is described by `ita.una` (ADR 0122).
+    if edition == "0.4" {
+        std::fs::write(
+            dir.join("ita.una"),
+            format!(
+                "ita {}\n  version 0.1.0\n  edition 0.4\n\nlabels\n  PII\n",
+                name.replace('-', "_")
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("ita.lock"), ITA_LOCK).unwrap();
+    } else {
+        std::fs::write(
+            dir.join("una.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n\n[labels]\ncategories = [\"PII\"]\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("verification.lock"), LOCK).unwrap();
+    }
     std::fs::write(dir.join("src/app/main.una"), source).unwrap();
     dir
 }

@@ -32,6 +32,7 @@ Ranked by the worst class, then by what guards it today:
 | 8 | The Rust toolchain and the crate dependencies | Supply chain, and any class of the crate's own bug | Pinned toolchain; `Cargo.lock` with `--locked`; reproducible gate; the `deps` gate (advisories, licenses, sources, the review record) | The review record's baseline was not reviewed crate by crate |
 | 9 | Release scripts and archives | Supply chain, leak of the build | Reproducible gate; SHA-256 digests | No signature or provenance statement |
 | 10 | Proof cache | Soundness | HMAC-SHA-256 tags under the user's key | The key file is trusted |
+| 11 | Package integrity and the registry client (Itá, edition `0.4`, ADR 0122) | Supply chain; soundness through a trusted module of a dependency | Closed grammars of `ita.una`, `ita.lock` and `itaty.una`; content digests re-hashed on every load; the root re-checks and re-proves every package | Dependencies are not loaded yet; the archive reader, the resolver and the registry client are to come, each with its own review |
 
 ## 3. The components
 
@@ -151,6 +152,42 @@ The cache answers a query that was solved before. Since ADR 0064, each entry car
 - **Guards:** the tag, with a test against RFC 4231; no key means no cache.
 - **Open gap:** the key file is in the Trusted zone; anyone who can write it can forge entries.
 
+### 3.11 Package integrity and the registry client
+
+From edition `0.4`, a package may need other packages (ADR 0122, `spec/30`). Itá, the package manager inside `una`, reads `ita.una`, `ita.lock` and `itaty.una` by closed grammars, and, as it lands, fetches archives, checks their digests, resolves versions and verifies the registry's signatures, log proofs and witnesses. No code of a package runs when it is fetched, resolved, checked or built, and Itá starts no other program.
+
+- **A bug can cause:** a program built from bytes other than those its lock pins (supply chain); a dependency that receives authority or trust that the root did not write (soundness); a store or vendor directory written outside its place (path traversal through an archive).
+- **What is in the base:** the parsers of the three files (this release); then the archive reader, the content digest, the resolver, the verification of Ed25519 signatures, roots, checkpoints, name maps and log proofs, the registry's built-in root metadata, and the HTTPS client of `una-http` as `una ita` uses it. Each joins with the security review of ADR 0121 rule 2 (b).
+- **Guards:** the grammars are closed and bounded (1 MiB for a manifest, 16 MiB for a lock), with no expressions, interpolation, includes or environment; a deterministic robustness test of the readers on mutated files; `una.toml` and `ita.una` never both; the lock is written only by `una ita` and `una migrate`, through a temporary file and a rename. To come: digests re-hashed on every load, descriptors opened with `O_NOFOLLOW`, provenance verified offline from what is stored beside a package, and a fuzz target for each parser of a fetched or signed document.
+- **Open gaps:** the readers have no libFuzzer target in the `sanitize` gate yet; dependencies are refused until they are loaded and checked as one program with the root.
+
+**What a dependency can do, and what stops it** (ADR 0122, Security):
+
+| Threat | Control |
+| --- | --- |
+| Code that runs at install or build | None exists: no scripts, hooks, build programs or macros. |
+| A dependency that reaches the network, files or keys | It holds no capability unless a call grants it with `with`, within the ceiling the calling package writes (U3020, U3021); only the root is granted host capabilities. |
+| An agent that widens a ceiling to make a check pass | The lock records the consented ceilings; a wider `may` line is U7009 until `--accept-authority` records it, visible in the lock's diff. |
+| A dependency that declassifies the program's data | Its policies are in trusted modules, which need a trust line naming its identity and module (U7012); only that module is exempt from U3024. |
+| A dependency that brings foreign code | None is admitted: a package holds only Una sources, and `ita.una` has no foreign section or grant (U7008). |
+| Trust consented for one package used by another | Trust lines bind source, name and major, and the lock pins the content digest of each package whose trust was consented. |
+| Proofs the publisher fakes | None is read: the root proves everything. |
+| Typosquatting | Unscoped names are Itaúna's; owner names are unique by skeleton and reviewed near popular owners; reserved names are refused as local names too. |
+| Dependency confusion | One source per need, no fallback; owners bound to the source that serves them; a local package with a registered name only with `accept name`; workspace members only by `from workspace`. |
+| A dependency that adds a source or a local path | Only the root and `itaty.una` name sources and paths. |
+| A compromised account | Publishing needs the owner's keys; a recovery is pending seven days of witness time, and any current key cancels it. |
+| A stolen publisher key | Every release is public in the log and in the name's chain; minimal version selection never takes a release no need asks for; every selection waits the cooldown; authority growth in a minor release is refused. |
+| A malicious update of an honest package | `una ita update` prints the source, authority and trust change and refuses a ceiling, trust or key change without an explicit flag. |
+| A stolen security key | One key can hold a release back, never hurry one in. |
+| A compromised registry or mirror | It cannot forge a signature, fork the log or hide an entry of a name without the witnesses; it cannot change a locked package. |
+| A freeze or rollback attack | Witness co-signatures less than 24 hours old for resolution and audit; checkpoints never move backwards. |
+| Censorship of a yank or key event | A signed promise to log within an hour. |
+| A root key compromise | Three of five offline keys are needed. |
+| Denial of service through the graph | Bounds on releases visited, needs, documents, bytes and time; no self-need. |
+| A malformed archive | The closed layout and reader: no links, no modes, no compression, sorted listing, exact lengths, read once; descriptors with `O_NOFOLLOW`. |
+| A store or vendor directory tampered with | Every load re-hashes, and registry packages are re-verified against their stored statements and proofs (U7010). |
+| A poisoned proof cache | Entries are authenticated with the user's own key, under a domain-tagged key (`una-proof-cache/2`, in this release). |
+
 ## 4. History by component
 
 The 14 advisories of `docs/security/advisories.md`, by component:
@@ -190,7 +227,7 @@ The largest addition to come is foreign code: `trusted` foreign functions and th
 6. **The build report's `tcb` section is incomplete**, #769. It omits the runtime, the codegen, the linker or C compiler and its version, and the TLS stack.
 7. **The system `cc` and linker are unpinned and unrecorded** (§3.5). ADR 0106's matrix would address it.
 8. **Host premises and the two host implementations** (§3.4). Testing the premises of the model against the implementations, and comparing the two implementations beyond the runnable programs.
-9. **No provenance for archives** (§3.9). A signature, or a provenance statement that ties each archive to its commit and its gate record.
+9. **No provenance for archives** (§3.9). A signature, or a provenance statement that ties each archive to its commit and its gate record. The release statements of ADR 0122 (rule 37: a signed note, logged in a witnessed transparency log, naming the archive's digest) are the pattern a later record can reuse for `una`'s own releases.
 10. **Elaboration and the interpreter are not related to the model** (§3.6, §3.7).
 
 This document is revised when a component enters or leaves the base, when a gap closes, and before any decision that adds foreign code.
