@@ -101,6 +101,7 @@ A trusted module that no trust line names, or whose consent the lock does not re
 
 ```text
 $ una ita lock --accept-trust privacy
+change privacy 1.0.0 (path deps/privacy): digest sha256:… -> sha256:…; may …; uses …
 wrote ita.lock
 ```
 

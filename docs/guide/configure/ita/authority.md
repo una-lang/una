@@ -292,6 +292,7 @@ pub main() -> Unit
 
 ```text
 $ una ita lock --accept-authority
+add util 0.2.0 (path deps/util): digest sha256:…; may Console[print]; uses Console[print]
 wrote ita.lock
 ```
 
