@@ -65,6 +65,8 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         v0_4: lexed.keywords >= KeywordSet::V0_4,
         in_body: false,
         from_label: lexed.from_label,
+        with_label: lexed.with_label,
+        and_label: lexed.and_label,
     };
     let tree = parser.file();
     Parsed {
@@ -124,6 +126,8 @@ pub fn parse_uses_clause(
         v0_4: true,
         in_body: false,
         from_label: None,
+        with_label: None,
+        and_label: None,
     };
     match parser.lone_uses_clause() {
         Ok(clause) if parser.errors.is_empty() => Ok(clause),
@@ -225,6 +229,11 @@ struct Parser<'a> {
     /// Edition 0.3: the symbol of the argument label `from` (`spec/29 §3`), when the file has
     /// one.
     from_label: Option<Symbol>,
+    /// Edition 0.4: the symbols of the argument labels `with` and `and` (`spec/29 §17`), when
+    /// the file has them.
+    with_label: Option<Symbol>,
+    /// See [`Parser::with_label`].
+    and_label: Option<Symbol>,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -3293,6 +3302,13 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
+        // Edition 0.4: `with:` and `and:` label the arguments of the dense methods
+        // (`spec/29 §17`, ADR 0120); the lexer interns them only in that edition.
+        let from = from.or_else(|| match (self.peek(), self.peek_at(1)) {
+            (TokenKind::Keyword(Keyword::With), TokenKind::Colon) => self.with_label,
+            (TokenKind::Keyword(Keyword::And), TokenKind::Colon) => self.and_label,
+            _ => None,
+        });
         let labeled = matches!(
             self.peek(),
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_)

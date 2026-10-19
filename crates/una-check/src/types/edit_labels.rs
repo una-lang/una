@@ -47,7 +47,10 @@ impl Checker<'_, '_, '_> {
         match ty {
             Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.outer_example(inner),
             Ty::List(_) => "List[...]".to_owned(),
+            Ty::Dense(dense, _) => format!("{}[...]", dense.as_str()),
             Ty::Map(..) => "Map[...]".to_owned(),
+            Ty::Coll(coll, args) if args.is_empty() => coll.as_str().to_owned(),
+            Ty::Coll(coll, _) => format!("{}[...]", coll.as_str()),
             Ty::Kind(kind, args) => {
                 let name = self.env.kinds.get(*kind).map_or("...", |def| def.name);
                 if args.is_empty() {
@@ -109,6 +112,10 @@ impl Checker<'_, '_, '_> {
             // refinement of its initial value, at every position.
             Ty::Refined(_, inner) => self.open((*inner).clone(), span, index),
             Ty::List(element) => Ty::List(Shared::new(self.open((*element).clone(), span, index))),
+            Ty::Dense(dense, element) => Ty::Dense(
+                dense,
+                Shared::new(self.open((*element).clone(), span, index)),
+            ),
             Ty::Map(key, value) => {
                 let key = self.open((*key).clone(), span, index);
                 Ty::Map(
@@ -118,6 +125,12 @@ impl Checker<'_, '_, '_> {
             }
             Ty::Kind(kind, args) => Ty::Kind(
                 kind,
+                args.iter()
+                    .map(|arg| self.open(arg.clone(), span, index))
+                    .collect(),
+            ),
+            Ty::Coll(coll, args) => Ty::Coll(
+                coll,
                 args.iter()
                     .map(|arg| self.open(arg.clone(), span, index))
                     .collect(),
@@ -152,12 +165,23 @@ impl Checker<'_, '_, '_> {
         let label = self.variable_label(name);
         let inner = match shape {
             Ty::List(element) => Ty::List(Shared::new(self.shaped(element, &derived(name, "e")))),
+            Ty::Dense(dense, element) => Ty::Dense(
+                *dense,
+                Shared::new(self.shaped(element, &derived(name, "e"))),
+            ),
             Ty::Map(key, value) => Ty::Map(
                 Shared::new(self.shaped(key, &derived(name, "k"))),
                 Shared::new(self.shaped(value, &derived(name, "v"))),
             ),
             Ty::Kind(kind, args) => Ty::Kind(
                 *kind,
+                args.iter()
+                    .enumerate()
+                    .map(|(i, arg)| self.shaped(arg, &derived(name, &i.to_string())))
+                    .collect(),
+            ),
+            Ty::Coll(coll, args) => Ty::Coll(
+                *coll,
                 args.iter()
                     .enumerate()
                     .map(|(i, arg)| self.shaped(arg, &derived(name, &i.to_string())))
@@ -267,13 +291,20 @@ fn pair_labels(found: &Ty, expected: &Ty, outer: Option<&str>, out: &mut Vec<(St
     }
     let child = |slot: &str| here.map(|name| derived(name, slot));
     match (found, expected) {
-        (Ty::List(a), Ty::List(b)) => pair_labels(a, b, child("e").as_deref(), out),
+        (Ty::List(a), Ty::List(b)) | (Ty::Dense(_, a), Ty::Dense(_, b)) => {
+            pair_labels(a, b, child("e").as_deref(), out);
+        }
         (Ty::Map(ka, va), Ty::Map(kb, vb)) => {
             pair_labels(ka, kb, child("k").as_deref(), out);
             pair_labels(va, vb, child("v").as_deref(), out);
         }
         (Ty::Kind(k1, a1), Ty::Kind(k2, a2)) if k1 == k2 => {
             for (i, (a, b)) in a1.iter().zip(a2).enumerate() {
+                pair_labels(a, b, child(&i.to_string()).as_deref(), out);
+            }
+        }
+        (Ty::Coll(c1, a1), Ty::Coll(c2, a2)) if c1 == c2 => {
+            for (i, (a, b)) in a1.iter().zip(a2.iter()).enumerate() {
                 pair_labels(a, b, child(&i.to_string()).as_deref(), out);
             }
         }
@@ -290,9 +321,11 @@ fn derived(name: &str, slot: &str) -> String {
 fn holds_function(ty: &Ty) -> bool {
     match ty {
         Ty::Fn(_) => true,
-        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => holds_function(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
+            holds_function(inner)
+        }
         Ty::Map(key, value) => holds_function(key) || holds_function(value),
-        Ty::Kind(_, args) => args.iter().any(holds_function),
+        Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(holds_function),
         _ => false,
     }
 }
@@ -301,9 +334,11 @@ fn holds_function(ty: &Ty) -> bool {
 fn closed(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) | Ty::Fn(_) | Ty::Error(_) | Ty::Never => false,
-        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => closed(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
+            closed(inner)
+        }
         Ty::Map(key, value) => closed(key) && closed(value),
-        Ty::Kind(_, args) => args.iter().all(closed),
+        Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().all(closed),
         _ => true,
     }
 }

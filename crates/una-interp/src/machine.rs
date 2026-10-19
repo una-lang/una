@@ -14,6 +14,8 @@ use una_core::{
 };
 use una_syntax::Span;
 
+mod dense;
+
 use crate::host::{self, FileFault, Grant, World};
 use crate::stopping::{HardStop, RunStop};
 use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
@@ -163,6 +165,10 @@ pub(crate) enum Stop<'p> {
 
 /// The result of evaluating an expression.
 pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
+
+mod seqs;
+
+mod sets;
 
 /// The fault of a `slice` outside the text (#693).
 const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
@@ -349,6 +355,39 @@ impl<'p> Index<'p> {
                     }
                     parts.push(Task::Text(close.to_owned()));
                 }
+                // The construction call that rebuilds a dense value, its elements in
+                // row-major order (ADR 0120 rule 41), each a task like a list's, so a deep
+                // value never recurses on the native stack.
+                Value::Dense(dense) => {
+                    let open = match (dense.kind, dense.shape.as_slice()) {
+                        (crate::value::DenseKind::Matrix, [rows, columns]) => {
+                            format!("matrix(rows: {rows}, columns: {columns}, elements: [")
+                        }
+                        _ => "array([".to_owned(),
+                    };
+                    parts.push(Task::Text(open));
+                    for k in 0..dense.count() {
+                        if k > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        let Some(position) = dense.position_at(k) else {
+                            continue;
+                        };
+                        match dense.buffer.as_ref() {
+                            crate::value::Elements::F64(items) => {
+                                if let Some(x) = items.get(position) {
+                                    parts.push(Task::Text(una_core::float::render(*x)));
+                                }
+                            }
+                            crate::value::Elements::Values(items) => {
+                                if let Some(item) = items.get(position) {
+                                    parts.push(Task::Value(item));
+                                }
+                            }
+                        }
+                    }
+                    parts.push(Task::Text("])".to_owned()));
+                }
                 // `{k: v, ...}` in key order, `{}` when empty (`spec/21 §2` rule 4).
                 Value::Map(entries) => {
                     parts.push(Task::Text("{".to_owned()));
@@ -359,6 +398,29 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(key));
                         parts.push(Task::Text(": ".to_owned()));
                         parts.push(Task::Value(value));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
+                }
+                // A `Stack` or a `Queue` as a list, front first (`spec/28 §4`, ADR 0119 rule 3).
+                Value::Seq(items) => {
+                    parts.push(Task::Text("[".to_owned()));
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
+                    }
+                    parts.push(Task::Text("]".to_owned()));
+                }
+                // `{1, 2, 3}` in ascending order, `{}` when empty (`spec/28 §4`, ADR 0119
+                // rule 3).
+                Value::Set(items) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, item) in items.values().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
                     }
                     parts.push(Task::Text("}".to_owned()));
                 }
@@ -988,6 +1050,19 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } => args.get(..1)?,
+            // A `Stack` or a `Queue` given up to a push or a removal (`spec/28 §5`).
+            Rhs::Prim {
+                prim: Prim::Seq(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
+            // A set given up to `add`, `remove`, `with`, `without` or a set operation that
+            // builds on its receiver (`spec/28 §6`).
+            Rhs::Prim {
+                prim: Prim::Set(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -1066,6 +1141,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         prim: Prim::Map(op),
                                         ..
                                     } => map_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Seq(op),
+                                        ..
+                                    } => seqs::seq_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Set(op),
+                                        ..
+                                    } => sets::set_apply(*op, args)?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -1749,6 +1832,11 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Flow<'p> {
         match function.module.as_str() {
             "prelude" => return self.prelude(&function.name, args, span),
+            una_core::COLLECTIONS_MODULE => {
+                if let Some(made) = self.collections(&function.name) {
+                    return made;
+                }
+            }
             "std.testing" if function.name == "fake_hash" => {
                 return match args.first() {
                     Some(Value::Int(seed)) => {
@@ -1781,6 +1869,18 @@ impl<'p, 'w> Machine<'p, 'w> {
             self.frames.pop();
         }
         self.leave(result)
+    }
+
+    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), or `None`
+    /// for one the module declares in Una.
+    fn collections(&mut self, name: &str) -> Option<Flow<'p>> {
+        Some(Ok(match name {
+            // O(1): an empty ring buffer allocates nothing.
+            "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
+            // O(1).
+            "empty_set" => Value::Set(Rc::default()),
+            _ => return None,
+        }))
     }
 
     /// A call of a function value.
@@ -2075,6 +2175,10 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn prelude(&mut self, name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
         if matches!(name, "append" | "set") {
             return update(name, args, span);
+        }
+        // Dense values (`spec/29 §17`, ADR 0120).
+        if dense::is_dense(name) {
+            return self.dense_call(name, args, span);
         }
         let bad = || fault(format!("`{name}` applied to values of the wrong types"));
         let int = |i: usize| match args.get(i) {
@@ -2587,7 +2691,17 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Text(t) => Value::Int(BigInt::from(t.scalars())),
             Value::List(items) => Value::Int(BigInt::from(items.len())),
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
-            _ => return Err(fault("`len` of a value that is not a text, list or map")),
+            Value::Seq(items) => Value::Int(BigInt::from(items.len())),
+            Value::Set(items) => Value::Int(BigInt::from(items.len())),
+            // An array's length (`spec/29 §17`).
+            Value::Dense(dense) => {
+                Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
+            }
+            _ => {
+                return Err(fault(
+                    "`len` of a value that is not a text, list, map, sequence, set or array",
+                ));
+            }
         },
         Prim::Concat => {
             let mut out = String::new();
@@ -2616,8 +2730,22 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         // A copy of the map when another name holds it; a binding at its last use gives it up
         // first, in `Machine::eval`.
         Prim::Map(op) => return map_apply(op, args.to_vec()),
+        Prim::Seq(op) => return seqs::seq_apply(op, args.to_vec()),
+        Prim::Set(op) => return sets::set_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
+        // The shape of a matrix (`spec/29 §17`).
+        Prim::Shape(fun) => match arg(0)? {
+            Value::Dense(dense) => {
+                let axis = match fun {
+                    una_core::ShapeFun::Rows => 0,
+                    una_core::ShapeFun::Columns => 1,
+                };
+                // Exact, as `len` is: a dimension is the one the program gave.
+                Value::Int(BigInt::from(dense.shape.get(axis).copied().unwrap_or(0)))
+            }
+            _ => return Err(fault("a shape of a value that is not a matrix")),
+        },
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),

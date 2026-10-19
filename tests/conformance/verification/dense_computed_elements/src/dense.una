@@ -1,0 +1,18 @@
+-- test: a function that computes new elements keeps no refinement of the element type: the `+0` that `matrix_diagonal` places off the diagonal is an `I32`, not an `I32 in 1..10`, so a division by it is refuted
+-- spec: spec/29 §17
+-- expect: error U5001 at src/dense.una:12:3
+-- expect: error U5002 at src/dense.una:18:3
+module dense
+
+pub f(a: Array[I32 in 1..10]) -> I32
+  requires a.len >= 2
+=
+  let d = matrix_diagonal(values: a)
+  let x = d.get(row: 0, column: 1)
+  100 / x
+
+pub kept(a: Array[I32 in 1..10]) -> I32
+  requires a.len >= 2
+=
+  let b = a.slice(from: 0, until: 2)
+  100 / b.get(index: 1)

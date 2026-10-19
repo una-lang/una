@@ -1,0 +1,12 @@
+-- test: the numeric methods exist on numeric elements only, and the float kernels on `F64` elements only: on another element type the name resolves as a function of the package, which has none
+-- spec: spec/29 §17
+-- expect: error U1001 at src/dense.una:8:39
+-- expect: error U1001 at src/dense.una:10:36
+-- expect: error U1001 at src/dense.una:12:39
+module dense
+
+pub total(a: Array[Text]) -> Text = a.dot(with: a)
+
+pub ints(a: Array[I32]) -> I32 = a.norm2()
+
+pub floats(m: Matrix[F64]) -> Int = m.sum_exact()
