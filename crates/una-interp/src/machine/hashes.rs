@@ -731,9 +731,12 @@ mod tests {
         let outcome = std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(|| {
-                let mut value = Value::List(Rc::new(vec![Value::int(1)]));
+                // A recursive kind is how a program builds a deep value: a loop nests it
+                // without calls, so its depth has no bound but the heap's (ADR 0032).
+                let node = crate::machine::prelude_ctor("Chain", "Node", 0);
+                let mut value = Value::data(node.clone(), vec![Value::int(1)]);
                 for _ in 0..100_000 {
-                    value = Value::List(Rc::new(vec![value]));
+                    value = Value::data(node.clone(), vec![value]);
                 }
                 let n = encoded(&value).len();
                 drop(value);
