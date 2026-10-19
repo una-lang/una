@@ -503,6 +503,16 @@ fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectE
             }
             "grants" => {
                 for grant in strings("grants", value, Code::U7002, errors) {
+                    // A server exists from edition 0.4, whose grants `ita.una` holds (ADR 0123
+                    // rule 0, ADR 0122 Question 8.1): in `una.toml` it is never read.
+                    if grant.value.starts_with(una_core::http::serve::PREFIX) {
+                        errors.push(ProjectError::new(
+                            Code::U7002,
+                            grant.range,
+                            "a `serve:` grant needs edition 0.4, whose grants are written in ita.una; una.toml cannot hold one",
+                        ));
+                        continue;
+                    }
                     if is_grant(&grant.value) {
                         manifest.grants.push(grant);
                     } else {
