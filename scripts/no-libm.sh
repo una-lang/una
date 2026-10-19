@@ -2,30 +2,34 @@
 # No part of Una may reach the platform's C math library (#1092, docs/spec/29-numerics.md §6
 # rule 5). Clippy's disallowed methods see method calls in the project's own source only, not an
 # operator that lowers to a call (float `%` is `fmod`) nor the code of a dependency, so this
-# check reads the built artifacts: it lists their undefined symbols with `nm -u` and fails on
+# check reads the release artifacts: it lists their undefined symbols with `nm -u` and fails on
 # every name of scripts/no-libm.txt, after it drops the platform's prefix (the leading `_` of
-# Mach-O) and a symbol version (`@GLIBC_2.2.5`).
+# Mach-O) and a symbol version (`@GLIBC_2.2.5`). Every artifact is strict, with no exception:
 #
-# - UNA, the `una` binary: strict.
-# - LIBUNA_RT, `libuna_rt.a`: listed with `nm -A -u`, so each hit names its object; a hit passes
-#   only when an entry of scripts/no-libm-allow.txt names its object and symbol, and an entry
-#   that no hit uses fails, so the file stays exact.
-# - EXECUTABLES, a directory of linked executables, such as the native differential keeps under
-#   UNA_NATIVE_KEEP (crates/una-cli/tests/native.rs): every file there, strict. On Linux both
-#   the static and the dynamic symbol tables are read (`nm -u` and `nm -D -u`).
+# - UNA, the release `una` binary;
+# - LIBUNA_RT, the release `libuna_rt.a`, listed with `nm -A -u`, so each hit names its object;
+# - EXECUTABLES, a directory of executables that release `una` linked
+#   (scripts/no-libm-build.sh): every file there. On Linux both the static and the dynamic
+#   symbol tables of `una` and of the executables are read (`nm -u` and `nm -D -u`).
+#
+# First it asserts the release dependency graph (`cargo tree --locked -e normal,features -p
+# una-cli -p una-rt`): none of num-bigint, num-integer and num-traits has its `std` or `default`
+# feature, since num-bigint's `std` code calls the C math library (`log2` while parsing, `ln`,
+# `exp` and `cbrt` in its roots), and its other code is integer-only. The graph holds normal
+# dependencies only: a test build unifies dev-dependencies' features in and is not what ships.
 #
 # The tool is, on macOS, the `llvm-nm` of the pinned Rust toolchain (the `llvm-tools` component),
 # whose LLVM reads the bitcode that Rust's objects carry, else `llvm-nm`, else `nm`; on Linux,
-# `nm` (binutils), else `llvm-nm`, else the toolchain's. It fails closed: a missing artifact or
-# list, an empty executable directory, no tool, or a tool that exits non-zero or reports
-# anything but an object without symbols is a failure, never a skip.
+# `nm` (binutils), else `llvm-nm`, else the toolchain's. It fails closed: a `cargo tree` that
+# fails or prints nothing, a missing artifact or list, an empty executable directory, no tool,
+# or a tool that exits non-zero or reports anything but an object without symbols is a failure,
+# never a skip.
 #
 # Usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 deny=$root/scripts/no-libm.txt
-allow=$root/scripts/no-libm-allow.txt
 
 if [ "$#" -ne 3 ]; then
     echo "usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES" >&2
@@ -41,7 +45,6 @@ fail() {
 }
 
 [ -f "$deny" ] && [ -r "$deny" ] || fail "no denylist at $deny"
-[ -f "$allow" ] && [ -r "$allow" ] || fail "no allow file at $allow"
 [ -f "$una" ] && [ -r "$una" ] || fail "no una binary at $una"
 [ -f "$archive" ] && [ -r "$archive" ] || fail "no runtime library at $archive"
 [ -d "$executables" ] || fail "no executable directory at $executables"
@@ -93,26 +96,15 @@ list() {
     fi
 }
 
-# Checks the listing in $tmp/out of the artifact $1: strict, or, with $2 = archive, against the
-# allow file. Prints each finding and each allowed hit; exits non-zero on a finding.
+# Checks the listing in $tmp/out of the artifact $1, strictly; with $2 = archive, each line
+# names its object (`nm -A`). Prints each finding; exits non-zero on one.
 check() {
-    awk -v artifact="$1" -v mode="${2:-strict}" -v os="$os" -v denyfile="$deny" -v allowfile="$allow" '
+    awk -v artifact="$1" -v mode="${2:-binary}" -v os="$os" -v denyfile="$deny" '
         function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
         function name(s) {
             sub(/@.*/, "", s)
             if (os == "macos") sub(/^_/, "", s)
             return s
-        }
-        function glob(p,    r, i, c) {
-            r = "^"
-            for (i = 1; i <= length(p); i++) {
-                c = substr(p, i, 1)
-                if (c == "*") r = r ".*"
-                else if (c == "?") r = r "."
-                else if (c ~ /[A-Za-z0-9_-]/) r = r c
-                else r = r "[" c "]"
-            }
-            return r "$"
         }
         BEGIN {
             while ((getline line < denyfile) > 0) {
@@ -120,21 +112,6 @@ check() {
                 if (line != "") denied[line] = 1
             }
             close(denyfile)
-            entries = 0
-            if (mode == "archive") {
-                while ((getline line < allowfile) > 0) {
-                    if (trim(line) == "") continue
-                    sub(/^[ \t]+/, "", line)
-                    n = split(line, f, /[ \t]+/)
-                    if (n < 3) { print "no-libm: " allowfile ": an entry needs an object, a symbol and a reason: " line; bad = 1; continue }
-                    if (!(f[2] in denied)) { print "no-libm: " allowfile ": " f[2] " is not a name of the denylist"; bad = 1; continue }
-                    entries++
-                    pattern[entries] = glob(f[1]); symbol[entries] = f[2]
-                    reason[entries] = line; sub(/^[^ \t]+[ \t]+[^ \t]+[ \t]+/, "", reason[entries])
-                    shown[entries] = f[1] " " f[2]
-                }
-                close(allowfile)
-            }
             prefix = artifact ":"
         }
         /^[ \t]*$/ { next }
@@ -146,34 +123,43 @@ check() {
                 rest = substr(rest, length(prefix) + 1)
                 colon = index(rest, ":")
                 if (colon == 0) { print "no-libm: " artifact ": a line nm wrote that names no object: " $0; bad = 1; next }
-                object = substr(rest, 1, colon - 1)
+                where = artifact "(" substr(rest, 1, colon - 1) ")"
                 rest = substr(rest, colon + 1)
-                where = artifact "(" object ")"
             }
             k = split(rest, w, /[ \t]+/)
             s = name(w[k])
             if (!(s in denied)) next
-            if (mode == "archive") {
-                for (e = 1; e <= entries; e++) {
-                    if (symbol[e] == s && object ~ pattern[e]) {
-                        used[e] = 1
-                        print "no-libm: allowed " where ": " s " (" reason[e] ")"
-                        next
-                    }
-                }
-            }
             print "no-libm: " where ": " s
             bad = 1
         }
-        END {
-            for (e = 1; e <= entries; e++)
-                if (!(e in used)) { print "no-libm: " allowfile ": the entry \"" shown[e] "\" matches no symbol of " artifact; bad = 1 }
-            exit bad ? 1 : 0
-        }
+        END { exit bad ? 1 : 0 }
     ' "$tmp/out"
 }
 
 findings=0
+
+# The release dependency graph: no `std` (nor `default`, which means `std`) feature of the
+# crates whose `std` code calls the C math library. `cargo tree -i` of a crate the graph does
+# not hold fails too, so a renamed or replaced dependency is a failure to look at, not a pass.
+for crate in num-bigint num-integer num-traits; do
+    if ! (cd "$root" && cargo tree --locked -e normal,features -p una-cli -p una-rt -i "$crate") \
+        > "$tmp/tree" 2> "$tmp/err"; then
+        cat "$tmp/err" >&2
+        echo "no-libm: cargo tree of $crate failed"
+        findings=1
+    elif ! grep -q "^$crate v" "$tmp/tree"; then
+        cat "$tmp/tree" "$tmp/err" >&2
+        echo "no-libm: cargo tree printed no $crate"
+        findings=1
+    elif grep -E "$crate feature \"(std|default)\"" "$tmp/tree"; then
+        echo "no-libm: the release graph enables the std feature of $crate"
+        findings=1
+    else
+        features=$(grep -E -o "$crate feature \"[^\"]*\"" "$tmp/tree" | sed 's/.* feature //' \
+            | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')
+        echo "no-libm: $crate in the release graph, features: ${features:-none}"
+    fi
+done
 
 : > "$tmp/out"
 if list -u "$una"; then
@@ -209,6 +195,6 @@ for exe in "$executables"/* "$executables"/.[!.]*; do
 done
 
 if [ "$findings" -ne 0 ]; then
-    fail "a C math library symbol or an nm error above, in $una, $archive or $count executables of $executables"
+    fail "a std feature, a C math library symbol, or a cargo tree or nm error above, in $una, $archive or $count executables of $executables"
 fi
 echo "no-libm: PASS ($una, $archive and $count executables of $executables)"
