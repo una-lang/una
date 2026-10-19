@@ -1430,7 +1430,8 @@
       "variants": [
         {
           "editions": [
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub nan() -> F64",
           "docs": [
@@ -1449,7 +1450,8 @@
       "variants": [
         {
           "editions": [
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub infinity() -> F64",
           "docs": [
@@ -1468,7 +1470,8 @@
       "variants": [
         {
           "editions": [
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub f64_from_bits(bits: U64) -> F64",
           "docs": [
@@ -1487,7 +1490,8 @@
       "variants": [
         {
           "editions": [
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub parse_f64(t: Text) -> F64\n  fails ParseError",
           "docs": [
@@ -1507,7 +1511,8 @@
       "variants": [
         {
           "editions": [
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub as_f64(j: Json) -> Option[F64]",
           "docs": [
@@ -1526,7 +1531,8 @@
       "variants": [
         {
           "editions": [
-            "0.3"
+            "0.3",
+            "0.4"
           ],
           "declaration": "pub json_number(x: F64) -> Option[Json]",
           "docs": [
