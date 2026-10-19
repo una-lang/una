@@ -100,8 +100,12 @@ fn candidates() -> Vec<Program> {
             .filter_map(|d| d.strip_prefix("-- grant: "))
             .map(str::to_owned)
             .collect();
-        // A case of several modules is the directory above its `src`.
-        let path = match case.ancestors().find(|a| a.join("una.toml").is_file()) {
+        // A case of several modules is the directory above its `src`, described by `una.toml`
+        // or, from edition 0.4, by `ita.una` (ADR 0122).
+        let path = match case
+            .ancestors()
+            .find(|a| a.join("una.toml").is_file() || a.join("ita.una").is_file())
+        {
             Some(package) if package.starts_with(root.join("tests/conformance")) => {
                 package.to_path_buf()
             }
