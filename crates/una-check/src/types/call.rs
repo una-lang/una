@@ -180,6 +180,9 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             if let Some((kind, index)) = self.field_index(&resolved, method) {
                 self.resolved(span, Res::FieldFn { kind, index });
+                if let Some(current) = self.current {
+                    self.findings.value_callers.insert(current);
+                }
             }
             return ty;
         }
@@ -375,6 +378,9 @@ impl<'a> Checker<'_, 'a, '_> {
             return function.result;
         }
         self.resolved(span, Res::Value);
+        if let Some(current) = self.current {
+            self.findings.value_callers.insert(current);
+        }
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
         let mut decided = Label::public();

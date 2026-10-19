@@ -333,6 +333,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// cannot change a binding declared before it (U2023). The branches' bindings are in scope
     /// after the block, in branch order.
     fn together(&mut self, stmt: &TogetherStmt) {
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
         let branches = stmt
             .body
             .iter()
@@ -390,6 +393,9 @@ impl<'a> Checker<'_, 'a, '_> {
         tail: bool,
     ) -> Ty {
         self.outside_rl(together.span, || "`together for`".to_owned());
+        if let Some(current) = self.current {
+            self.findings.task_functions.insert(current);
+        }
         let (var_ty, label, from) = self.loop_source(&together.source);
         let var_ty = var_ty.with_label(&label);
         self.typed(together.var.span, &var_ty);

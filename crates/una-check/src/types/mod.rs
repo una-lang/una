@@ -573,6 +573,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
+    authority::drive_timing(&env, &findings, package.settings, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -788,6 +789,15 @@ pub(crate) struct Findings {
     pub(crate) condition_edits: Vec<(conditions::EditTarget, una_core::ConditionEdit)>,
     /// The functions named as values anywhere in the package (ADR 0092 rule 1).
     pub(crate) function_values: std::collections::BTreeSet<usize>,
+    /// The functions whose bodies, their lambdas' included, call a function value: a parameter,
+    /// a local or a field of function type. Their running time depends on code the timing label
+    /// cannot see (ADR 0116 IF5 item 4).
+    pub(crate) value_callers: std::collections::BTreeSet<usize>,
+    /// The handlers each function installs with `with` or `given` (ADR 0116 IF5 item 3).
+    pub(crate) installs: std::collections::BTreeSet<(usize, usize)>,
+    /// The functions whose bodies hold a task construct, `together` or `together for` (ADR 0116
+    /// IF6).
+    pub(crate) task_functions: std::collections::BTreeSet<usize>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// Calls of, and references to, functions and predicates, from the body of a function or

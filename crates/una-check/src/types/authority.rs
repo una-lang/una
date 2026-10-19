@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use una_core::Label;
 use una_diag::{Code, Escape, Repair, Widening};
 use una_project::Manifest;
 use una_syntax::Span;
@@ -2086,6 +2087,205 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
             }
         }
     }
+}
+
+/// U4001 at the `input` parameter of `step` of a `[drive]` module whose label is not at least
+/// the timing label of the step (ADR 0116 IF7): the tick's `at` and `missed` depend on how long
+/// earlier steps took, so `input` carries what that running time can depend on, `τ⁰` of the
+/// step joined with `τ_conc` at the driver (IF5, IF6). This is a preview over-approximation that
+/// may only get less strict (`spec/26 §2`):
+/// - every operation of the step and of every function it reaches counts, by `ℓ*` of its result,
+///   its `accepts` label and `ℓ*` of its failure kind;
+/// - every handler such a function installs, and every handler of a capability the step needs
+///   that is not the host's, counts by `ℓ*` of its parameters, the top label for one of function
+///   type, and by the operations it needs;
+/// - a call of a function value anywhere the step reaches makes it the top label (#1023);
+/// - concurrent tasks: the top label when a function holding a task construct reaches the step.
+/// O(functions + call edges + operations).
+pub(crate) fn drive_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    report: &mut Report<'_>,
+) {
+    let Some(drive) = &settings.drive else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    let Some(Entity::Function(step)) = env
+        .modules
+        .get(module)
+        .and_then(|m| m.lower.get("step").copied())
+    else {
+        return;
+    };
+    let Some(def) = env.functions.get(step) else {
+        return;
+    };
+    let (Some(state), Some(input)) = (def.params.first(), def.params.get(1)) else {
+        return;
+    };
+    let kinds = env.kind_labels.as_ref();
+    let top = Label::top(&env.categories);
+    // Each source with its label, in the order a message names them.
+    let mut sources: Vec<(Label, String)> = vec![(
+        state.ty.base.deep_label(kinds),
+        format!("the parameter `{}`", state.name),
+    )];
+    // The functions the step reaches, itself included.
+    let mut callees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(caller, callee, _) in &findings.edges {
+        callees.entry(caller).or_default().push(callee);
+    }
+    let mut reached: BTreeSet<usize> = BTreeSet::new();
+    let mut pending = vec![step];
+    while let Some(f) = pending.pop() {
+        if reached.insert(f) {
+            pending.extend(callees.get(&f).into_iter().flatten().copied());
+        }
+    }
+    let mut handlers: BTreeSet<usize> = findings
+        .installs
+        .iter()
+        .filter(|(f, _)| reached.contains(f))
+        .map(|&(_, h)| h)
+        .collect();
+    let mut needs: Vec<(CapId, String)> = Vec::new();
+    for &f in &reached {
+        let Some(function) = env.functions.get(f) else {
+            continue;
+        };
+        if findings.value_callers.contains(&f) {
+            sources.push((
+                top.clone(),
+                format!("a call of a function value in `{}`", function.name),
+            ));
+        }
+        // A prelude function that applies a function argument, such as `map`.
+        if function.module >= env.prelude
+            && function
+                .params
+                .iter()
+                .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
+        {
+            sources.push((
+                top.clone(),
+                format!("the function argument of `{}`", function.name),
+            ));
+        }
+        for need in &function.uses {
+            if let Some(cap) = need.usage.capability {
+                needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
+            }
+        }
+    }
+    // The operations, and the handlers that can serve those of a capability that is not the
+    // host's, with the operations those handlers need, to a fixpoint over capabilities.
+    let mut seen: BTreeSet<(CapId, String)> = BTreeSet::new();
+    let mut handled: BTreeSet<usize> = BTreeSet::new();
+    while !needs.is_empty() || handlers.iter().any(|h| !handled.contains(h)) {
+        while let Some((cap, op)) = needs.pop() {
+            if !seen.insert((cap, op.clone())) {
+                continue;
+            }
+            let Some(capability) = env.capabilities.get(cap) else {
+                continue;
+            };
+            if let Some(def) = capability.ops.iter().find(|d| d.name == op) {
+                let mut rho = def.result.base.deep_label(kinds);
+                if let Some(accepts) = &def.accepts {
+                    rho = rho.join(accepts);
+                }
+                if let Some(fails) = &def.fails {
+                    rho = rho.join(&fails.deep_label(kinds));
+                }
+                sources.push((rho, format!("the operation `{}.{op}`", capability.name)));
+            }
+            if capability.module != env.prelude {
+                handlers.extend(
+                    env.handlers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, h)| h.capability == Some(cap))
+                        .map(|(id, _)| id),
+                );
+            }
+        }
+        let next: Vec<usize> = handlers.difference(&handled).copied().collect();
+        for id in next {
+            handled.insert(id);
+            let Some(handler) = env.handlers.get(id) else {
+                continue;
+            };
+            for param in &handler.params {
+                let label = if matches!(param.ty.base.unlabeled(), Ty::Fn(_)) {
+                    top.clone()
+                } else {
+                    param.ty.base.deep_label(kinds)
+                };
+                sources.push((
+                    label,
+                    format!("the parameter `{}` of a handler", param.name),
+                ));
+            }
+            for need in &handler.uses {
+                if let Some(cap) = need.usage.capability {
+                    needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
+                }
+            }
+        }
+    }
+    // Concurrent tasks (IF6): the top label when a function holding a task construct reaches
+    // the step, the exact join of its siblings coming with `for ever within`.
+    let concurrent = findings.task_functions.iter().any(|&f| {
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        let mut pending = vec![f];
+        while let Some(g) = pending.pop() {
+            if g == step {
+                return true;
+            }
+            if seen.insert(g) {
+                pending.extend(callees.get(&g).into_iter().flatten().copied());
+            }
+        }
+        false
+    });
+    if concurrent {
+        sources.push((top.clone(), "tasks that can run beside the step".to_owned()));
+    }
+    let declared = input.ty.base.deep_label(kinds);
+    let tau = sources
+        .iter()
+        .fold(Label::public(), |tau, (label, _)| tau.join(label));
+    if tau.flows_to(&declared) {
+        return;
+    }
+    let culprit = sources
+        .iter()
+        .find(|(label, _)| !label.flows_to(&declared))
+        .map_or_else(String::new, |(_, source)| source.clone());
+    let mut diagnostic = report.make(
+        Code::U4001,
+        input.span,
+        format!(
+            "the tick `{}` of `step` is labeled `{declared}`, but its time depends on {culprit}, labeled above it; the step's timing label is `{tau}`",
+            input.name
+        ),
+    );
+    diagnostic.repairs.push(Report::advice(format!(
+        "label `{}` at least `{tau}`, as `{}: {tau} Tick`",
+        input.name, input.name
+    )));
+    report.push(diagnostic);
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the
