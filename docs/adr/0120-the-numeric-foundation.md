@@ -1,8 +1,8 @@
 # 0120. The numeric foundation: `F32`, `Decimal`, `Complex`, dense `Array`, `Matrix` and `Tensor`, and SIMD defined by the scalar loop
 
-- Status: Proposed
-- Date: 2026-10-18
-- Deciders:
+- Status: Accepted
+- Date: 2026-10-19
+- Deciders: Una project (accepted on 2026-10-19)
 - Resolves: issue #894 (the numeric foundation); issue #27 (target-aware SIMD requirements)
 - Builds on, and does not repeat:
   - ADR 0114 (`F64`, issue #819). Every rule of ADR 0114 holds for each binary floating-point type of this record unless a rule here says otherwise: the canonical NaN, `==` by identity, `<` by totalOrder, no contraction, the environment's self-test, the project's own routines, the verifier's cone and weighted bound.
@@ -13,10 +13,9 @@
   - ADR 0119 (collections, Proposed, issue #895), whose rule 15 asks this record for the one array type, `Array[T]`; rule 30 below answers it;
   - ADR 0116 rule 0, which opens edition `0.4`, and ADR 0121 (the terms of a preview edition, Proposed), under whose terms the constructs of this record enter edition `0.4`, and whose rule 10 shapes the section "Edition `0.4`" below;
   - issue #914, which sets the shared digit cap `MAX_INT_DIGITS` = 4,300 and the `ParseError` variant `TooLong` that `parse_decimal` uses (rule 16);
-  - the draft record on foreign code (issue #23), on which a GPU backend would rest (rule 67);
   - issue #66 (proof certificates checked by a small kernel), which governs any later elision of bounds checks.
 - Target: edition `0.4`. Editions `0.1` to `0.3` do not change.
-- Amends, once accepted:
+- Amends:
   - **Lexical and grammar:** `spec/01 §5` (`simd` stops being reserved in edition `0.4`); `spec/02 §2` (types, range sugar with decimal bounds), `§3` (the `simd` clause);
   - **Types:** `spec/03 §1` (built-in types), `§3` (the refinement language); `spec/20 §1` (constraints of the new types);
   - **Verification:** `spec/12 §2`, `§3` (facts, the shape frame, definitions of element terms), `§4` (sorts and functions);
@@ -29,17 +28,18 @@
   - **Accepted records:** ADRs 0106, 0107, 0109, 0113 and 0114, by the dated amendments and notes of Appendix A;
   - **ADR 0119 rule 9** (Proposed), the one definition of the hash encoding, by the entry of Appendix A.
 
-  By ADR 0121 rule 20's table: the rules of `F32` and `Complex` join `spec/26` beside `F64`, since they are ADR 0114's rules with substitutions; the rest is `spec/30`, the numeric foundation (a provisional row until this record is accepted).
+  These rules live in a new chapter, `spec/29-numerics.md`. It also holds the rules of `F32` and `Complex`, which are ADR 0114's rules with substitutions.
 
 ## Questions for acceptance
 
-Each question changes what a programmer writes or what a program costs. The text below follows each recommendation.
+Each question changes what a programmer writes or what a program costs. All five were decided on 2026-10-19, each as recommended, and the text below follows the decisions.
 
 1. **No `*` between two arrays or matrices.**
    - **This record:** the matrix product is `a.multiply(by: b)`, the product element by element is `a.multiply_elements(by: b)`, and `a * b` with two dense operands is an error with both repairs. `+`, `-` and a scalar `*` stay operators.
    - **Why:** NumPy's `*` multiplies elements, and Julia's and MATLAB's multiply matrices. Generated code mixes the two, and for square matrices the shapes allow both, so the verifier cannot catch the wrong one.
    - **Cost to the programmer:** longer formulas.
    - **Recommendation:** accept.
+   - **Decided:** accepted as recommended. `*` between two dense values is U2001 with both repairs (rule 34).
 
    ```una
    let c = a.multiply(by: b)            -- requires a.columns == b.rows
@@ -58,6 +58,7 @@ Each question changes what a programmer writes or what a program costs. The text
      - On x86-64 processors without the FMA extension (low-end Pentium and Celeron parts sold until about 2020, Atom cores before Gracemont, and many virtual machines and emulators that hide the extension), each `fma` is emulated exactly: matrix kernels there run about 30 to 60 times slower than on a current processor. `una run` and `una test` on x86-64 always take this path (rule 53).
      - Strassen-type matrix products, asymptotically faster (O(n^2.81)), are not used: they change the chains, weaken the error bound, and pay off only for very large n. The project's rule on complexity asks for acceptance of this cubic choice.
    - **Recommendation:** accept.
+   - **Decided:** accepted as recommended, the cubic, fixed-order kernels and the stated costs included. Strassen-type products are not used.
 
    ```una
    let d = u.dot(with: v)                                      -- blocks of 64, fused
@@ -68,6 +69,7 @@ Each question changes what a programmer writes or what a program costs. The text
    - **This record:** `Decimal[2]` holds an exact number with two digits after the point. Every operation that can drop digits takes `rounding:` with no default, and every result scale is written as a literal `scale:`. A float literal such as `19.99` becomes a `Decimal[2]` where one is expected, exactly, including as the other operand of an arithmetic operator, where it must fit that operand's scale (rule 12); in a comparison it keeps its own digits. An integer literal does not (`19` is an error, with an edit to `19.0`). Text and JSON numbers longer than 4,300 digits, the language's shared digit cap, are refused (rules 16, 17).
    - **Cost to the programmer:** every division and rescaling names its scale and its rounding mode; `price + 0.005` on a `Decimal[2]` is an error until the literal is given its own type.
    - **Recommendation:** accept.
+   - **Decided:** accepted as recommended. The scale is part of the type, every rounding and result scale is written, and the digit cap is the shared `MAX_INT_DIGITS`.
 
    ```una
    let price: Decimal[2] = 19.99
@@ -84,6 +86,7 @@ Each question changes what a programmer writes or what a program costs. The text
      - The kernels are safe Rust; the only `unsafe` code is the call of the selected variant, generated by one macro in `ffi.rs` (ADR 0058).
    - **Cost to the programmer:** none in code. If benchmarks show that safe Rust cannot reach the bar for matrix products (Benchmark plan), the fallback is a small module of `unsafe` micro-kernels under ADR 0058's discipline, which needs its own record and its own acceptance: a security trade-off named now, not taken now.
    - **Recommendation:** accept.
+   - **Decided:** accepted as recommended. The kernels are safe Rust. Any future `unsafe` micro-kernel needs its own record and its own acceptance. No foreign code enters in any form: no outside linear algebra library, linked or vendored.
 
    ```una
    pub scale_add(a: Array[F32], b: Array[F32], k: F32) -> Array[F32]
@@ -96,6 +99,7 @@ Each question changes what a programmer writes or what a program costs. The text
    - **This record:** `m.transpose()`, `m.row(index:)`, `m.block(...)` and `a.slice(from:, until:)` are views: O(1), sharing the storage of the value they come from. A `together` block shares a numeric dense value's storage with its tasks, and its results with the block, in O(1) instead of copying it, amending ADR 0113 for that storage only, which holds numbers and never references.
    - **Cost to the programmer:** a small view keeps its parent's whole storage alive, in every task that holds it. `v.compact()` copies the view out, O(size of the view).
    - **Recommendation:** accept.
+   - **Decided:** accepted as recommended. Views share storage, and a `together` block shares numeric dense storage in O(1) (Appendix A, ADR 0113).
 
    ```una
    let first = big.block(row_from: 0, row_until: 10, column_from: 0, column_until: 10)
@@ -115,7 +119,6 @@ Each question changes what a programmer writes or what a program costs. The text
 - **Row-major.** The elements of a row are adjacent in memory; the last axis varies fastest.
 - **View.** A dense value that shares another's storage, with its own offset, shape and strides.
 - **Kernel.** A runtime routine that computes a whole dense operation: a product, a factorization, a reduction.
-- **BLAS, LAPACK.** The standard interfaces of dense linear algebra: level 1 (vector), 2 (matrix-vector) and 3 (matrix-matrix) operations, and factorizations and solvers.
 - **SIMD.** Single instruction, multiple data: one instruction on a vector register of several elements.
 - **Target level.** A set of instructions a processor guarantees: x86-64 baseline (SSE2), x86-64-v3 (AVX2 and FMA), x86-64-v4 (AVX-512), AArch64 baseline (Advanced SIMD, called NEON, with fused multiply-add).
 - **Dispatch.** Choosing, once per process, which compiled variant of a kernel runs, from the processor's features.
@@ -377,7 +380,7 @@ In one paragraph: edition `0.4` gains `F32` under ADR 0114's rules, the refined 
     | `x.to_finite()` | `Option` of the same value with the element type `Finite64` or `Finite32`: O(n) scan, no copy |
 
     On integer elements: `a.sum_exact()` and `a.dot_exact(with: b)` give an exact `Int`, whatever the order.
-37. **BLAS-class kernels.** Each contract is the kernel's `requires` and `ensures`:
+37. **Product kernels.** Each contract is the kernel's `requires` and `ensures`:
 
     | Method | Contract | Definition |
     | --- | --- | --- |
@@ -388,7 +391,7 @@ In one paragraph: edition `0.4` gains `F32` under ADR 0114's rules, the refined 
     | `edit x.scale(by: k)` | shape kept | `x_i * k` |
 
     So `u.dot(with: v)`, element (i, j) of `a.multiply(by: b)` when row i of a is u and column j of b is v, and element i of `m.multiply_array(by: v)` when row i of m is u, are the same chain and the same bits.
-38. **LAPACK-class kernels** (F64, F32 and complex elements):
+38. **Factorization and solve kernels** (F64, F32 and complex elements):
 
     | Method | Contract | Definition |
     | --- | --- | --- |
@@ -424,14 +427,14 @@ In one paragraph: edition `0.4` gains `F32` under ADR 0114's rules, the refined 
     3. the lanes combine in a fixed tree: for w = L/2, L/4, ..., 1, lane l becomes `lane_l + lane_(l+w)` for each l below w; the result is lane 0.
 
     **Why 256 bytes**, decided now (L is an unsettled point while edition `0.4` is a preview, section "Edition `0.4`", and fixed when it leaves preview): a sum needs about latency × ports independent vector accumulators to run at peak, which is 8 on current x86-64 cores and about 12 on current AArch64 cores. 256 bytes is 8 AVX2 registers (peak), 16 NEON registers (peak), and 4 AVX-512 registers (half of the in-cache peak; sums of data beyond the caches are bound by memory, not by lanes). 512 bytes would fill the whole AVX2 and NEON register files and spill. The combining tree costs L - 1 additions per call, O(1).
-    **The sign of zero:** lanes start at `+0`, so a sum whose terms are all `-0.0` is `+0.0`, as BLAS gives; NumPy gives `-0.0` for `sum([-0.0])`. An empty sum is `+0.0`.
+    **The sign of zero:** lanes start at `+0`, so a sum whose terms are all `-0.0` is `+0.0`; NumPy gives `-0.0` for `sum([-0.0])`. An empty sum is `+0.0`.
 46. **Inner products: a two-level chain in blocks of KB = 64.** For an inner product of K terms, with x_k and y_k its factors (`dot`; element (i, j) of `multiply` and `add_product` with x_k = a_ik and y_k = b_kj; element i of `multiply_array`; `contract`):
     1. the terms are cut into consecutive blocks of KB = 64, the last one shorter;
     2. each block is one chain from `+0`: `p = +0`, then `p = fma(x_k, y_k, p)` for each k of the block, in increasing k;
     3. the accumulator starts at `+0` (or at `c_ij` for `add_product`), and each block's p is added to it in block order: `s = s + p`.
 
     For complex elements, one step of a block is, in this order, `re = fma(a, c, re)`, `re = fma(-b, d, re)`, `im = fma(a, d, im)`, `im = fma(b, c, im)` for x_k = a + bi and y_k = c + di (`dot_conjugate` negates `b`), and the block's result is added componentwise. With K = 0, the result is the accumulator's start.
-    - **This is the micro-kernel order of fast libraries** (BLIS and GotoBLAS): accumulate a block of k in registers from zero, then add it into C. A blocked product keeps a tile of C, adds each block's tile into it, and vectorizes across i and j, so large products lose nothing; the addition per block is one per 64 `fma`s, about 2% of the floating-point work, and memory traffic for it is overlapped.
+    - **This is the micro-kernel order of fast matrix products:** accumulate a block of k in registers from zero, then add it into C. A blocked product keeps a tile of C, adds each block's tile into it, and vectorizes across i and j, so large products lose nothing; the addition per block is one per 64 `fma`s, about 2% of the floating-point work, and memory traffic for it is overlapped.
     - **Blocks are independent,** so a product with few outputs and a long k (Xᵀ X for a tall X, a dot product, a matrix-vector product with few rows) runs its K/64 block chains side by side, in vector lanes now and across threads later, still with the same bits. A dot product of at most 64 terms is one chain, latency-bound (question 2).
     - **One definition for the same mathematics:** a dot product, an element of a matrix product and an element of a matrix-vector product with the same terms give the same bits (rule 37).
     - **Error bound:** about (KB + K/KB) × u for unit roundoff u, against K × u for one long chain.
@@ -529,7 +532,7 @@ In one paragraph: edition `0.4` gains `F32` under ADR 0114's rules, the refined 
 67. **The hooks this record fixes now**, so that the later record has no choice that would break this one:
     1. **Same chains or another name.** A device kernel may implement an operation of this record only if it computes rule 44's chains, bit for bit; the blocks of rule 46 are independent, so a device may run them in parallel and still match. Device practices that change the chains, such as atomic accumulation in a nondeterministic order or reduced-precision tensor-core inputs (TF32, BF16), give different bits; such a kernel is a different operation, with a name that says it is approximate, never `multiply`.
     2. **Authority.** Offloading is an effect: a `Gpu` capability, visible in `uses` and granted by `[run] grants`, so no pure function can use a device.
-    3. **Foreign code.** A device driver and its compiler are foreign code, under the record on foreign code (#23): `systems` profile, trusted modules, and the build report's trusted base.
+    3. **No foreign code.** Una admits no foreign code in any form: no foreign function interface, no library in C or another language, no foreign archive, no trusted foreign module. A later GPU record may reach a device only through the toolchain's and the runtime's own code, under the same review and trusted-base rules as the rest of the runtime, and never by admitting foreign code; if a device cannot be reached that way, there is no GPU backend.
     4. **Layout.** Row-major buffers, 64-byte aligned, holding only raw numbers (rule 28), move to a device and back without conversion.
     5. **Waiting.** A transfer or a kernel launch is a suspension point (ADR 0117), with a deadline and a timing label.
     6. **Labels.** Data sent to a device is a sink with the capability's `accepts` (`spec/07 §4`).
@@ -648,7 +651,7 @@ IF8. **What stays out of model** (`spec/07 §1`, reported in `out_of_model`): ti
 - **Determinism as a security property.** A result that differs between machines is a source of disputes in accounting and of irreproducible failures elsewhere. Rules 44 to 54 make every result a function of the inputs alone; dispatch cannot be steered by data or environment (rule 56).
 - **Money.** No binary float reaches a `Decimal` silently: mixing is U2001, every rounding is named, a literal never widens a scale, and `divide` carries its `division` obligation.
 - **Side channels.** Timing and memory access patterns remain out of model (IF8). A program that must hide which element it reads does not use a `secret` index.
-- **Supply chain.** No new dependency: no BLAS, no LAPACK, no decimal library. The kernels are the project's own code.
+- **Supply chain.** No new dependency and no foreign code: no outside linear algebra or decimal library, linked or vendored. The kernels are the project's own safe Rust (rule 53).
 
 ## Costs
 
@@ -693,22 +696,22 @@ Benchmarks are deferred until before v1.0. This plan is registered then in the b
 
 - **Machines:** the machine of the project's performance suite (AArch64); an x86-64 machine with AVX2 and FMA (x86-64-v3); an x86-64 machine with AVX-512 (x86-64-v4); and one run on the x86-64-v3 machine with dispatch forced to the baseline, to measure the emulated `fma` (question 2).
 - **References:**
-  - **Rust**, stable, `--release`, without fast-math: plain loops in the chains of rules 45 to 50, for a bit-for-bit comparison; and the best crates (`faer`; `ndarray` with `matrixmultiply`), and `rust_decimal` for decimals.
-  - **C**, with `-O2 -ffp-contract=off`: the same plain loops; OpenBLAS and BLIS for the BLAS and LAPACK kernels; `libmpdec` for decimals.
-  - **NumPy**, with OpenBLAS at a pinned version, one thread (`OPENBLAS_NUM_THREADS=1`), and Python's `decimal`.
+  - **Rust**, stable, `--release`, without fast-math, and **C**, with `-O2 -ffp-contract=off`: plain loops in the chains of rules 45 to 50, for a bit-for-bit comparison.
+  - **Optimized implementations** of each operation's class (matrix products, factorizations and solves, decimals) in Rust, C and Python, at pinned versions, on one thread. The registration names them.
 - **Programs:** B1 `dot`, `add_scaled`, `sum`, `norm2` (n = 10^3 to 10^7, and short dots of 3 to 64 terms); B2 element-wise `map` with `sqrt` and `fma`; B3 `multiply_array`; B4 `multiply`, square n = 64 to 4096, and tall-skinny Xᵀ X; B5 `solve` by LU, n = 128 to 4096; B6 `cholesky`; B7 triangular solves; B8 `contract` over a batch of small tensors; B9 decimals: a sum of 10^6 amounts, invoice lines with tax rounded `HalfEven`, compound interest with `divide`, parsing and rendering 10^6 values; B10 complex `multiply` and `dot`; B11 n-body and spectral-norm, the float programs of the project's performance suite; B12 a 2-D heat equation, a 5-point stencil, 1024 × 1024; B13 RK4 on an ODE system; B14 conjugate gradients on a dense symmetric positive definite system; B15 a `together` block over large shared buffers.
+- **The references are measured from outside.** They run only in the benchmark repository, as points of comparison; none is linked into, vendored by or shipped with Una, which admits no foreign code, and no result of the plan can bring one in.
 - **Measures:** median wall time of interleaved runs, peak memory, and bits: the same-chain references must match bit for bit; library references are compared by relative error.
 - **Bars, provisional, and fixed only at registration:**
   - against same-algorithm Rust and C: the project's performance targets (geometric mean at most 1.1x, none above 1.5x, memory at most 1.2x);
-  - against OpenBLAS and BLIS, and against NumPy, whose matrix operations are OpenBLAS, on B4 to B7 at n ≥ 512, one thread: at most 1.25x on x86-64-v3, x86-64-v4 and AArch64;
-  - against NumPy on every other program: at most 1.0x;
-  - on B9: at most 1.25x of `rust_decimal`;
+  - against the optimized implementations on B4 to B7 at n ≥ 512, one thread: at most 1.25x on x86-64-v3, x86-64-v4 and AArch64;
+  - against the optimized Python implementations on every other program: at most 1.0x;
+  - on B9: at most 1.25x of the fastest optimized decimal implementation in Rust;
   - short dots (B1, at most 64 terms) and the forced-baseline run are reported, with no bar: their cost is stated by question 2.
-- **If safe Rust misses the matrix bar.** The kernels are written in safe Rust (rule 53), and competitive micro-kernels in other libraries use pointer loads and explicit register tiles. If B4 to B7 miss the bar, the remedy is a separate record proposing a small module of `unsafe` micro-kernels under ADR 0058's discipline (a `// SAFETY:` argument per block, a size limit, a security review of every change), tested bit for bit against the reference. That is a security trade-off, named here so that it is visible now (question 4), and not taken by this record.
+- **If safe Rust misses the matrix bar.** The kernels are written in safe Rust (rule 53), and competitive micro-kernels elsewhere use pointer loads and explicit register tiles. If B4 to B7 miss the bar, the remedy is a separate record proposing a small module of `unsafe` micro-kernels under ADR 0058's discipline (a `// SAFETY:` argument per block, a size limit, a security review of every change), tested bit for bit against the reference. That is a security trade-off, named here so that it is visible now (question 4), and not taken by this record.
 
 ## Diagnostics
 
-New codes, which join `spec/13 §4` with their implementation. They were checked free against every record on `main`, the open pull requests and the drafts in progress: U2031 to U2033 and U6006 are ADR 0114's, U2034 is ADR 0116's and U2035 ADR 0117's, U2036, U3030, U3031 and U6008 are the draft on foreign code's, and U6009 is ADR 0119's.
+New codes, which join `spec/13 §4` with their implementation. They were checked free against every record on `main` and the open pull requests: U2031 to U2033 and U6006 are ADR 0114's, U2034 is ADR 0116's and U2035 ADR 0117's, and U6009 is ADR 0119's.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -737,23 +740,22 @@ Existing codes cover the rest:
 - `systems` code gets a vectorization requirement it can rely on; `app` code gets vectorized built-in kernels, and its inline lambdas are never boxed.
 - The runtime grows by a kernel library of its own, with a reference, blocked implementations and target variants, and a test corpus that pins them to each other.
 - Per-access bounds checks remain in user loops; fast code uses the bulk operations.
-- **Single thread.** The kernels of this record run on one thread. A default NumPy, whose OpenBLAS uses every core, beats Una by about the number of cores on large products until a later record adds kernels split across threads, which rule 46's independent blocks allow without changing a bit.
+- **Single thread.** The kernels of this record run on one thread. A default NumPy, which uses every core for matrix products, beats Una by about the number of cores on large products until a later record adds kernels split across threads, which rule 46's independent blocks allow without changing a bit.
 - Old or low-end x86-64 processors, many virtual machines, and the interpreter on x86-64 run the kernels correctly and much more slowly (question 2).
 - Edition `0.4` gains types that do not erase to an earlier edition, under the terms of the edition `0.4` record (rule 1).
 
 ## Alternatives considered
 
-- **Linking a system BLAS and LAPACK (OpenBLAS, MKL, Accelerate), or vendoring one.** Fast. Not chosen: a large body of C or assembly enters the trusted base, and their results differ between implementations, versions, processors and thread counts, so native would not equal the interpreter and two machines would disagree.
 - **Kernels free to reorder, as optimized libraries are.** Not chosen: no fixed bits, so no equivalence suite and no reproducible accounting or scientific result.
 - **One long chain per inner product, in increasing k.** The first version of this record. Not chosen: products with few outputs and a long k ran at one `fma` per latency, 16 to 64 times slower than a library, and a dot product and the matching element of a matrix product gave different bits. The two-level chain of rule 46 is the micro-kernel order, so it costs large products almost nothing.
-- **Lane-blocked dot products** (16 or more lanes, as a level-1 library splits them). Not chosen: a matrix product's register tile cannot hold that many lanes per output, so dot products and matrix products would disagree.
+- **Lane-blocked dot products** (16 or more lanes per dot product). Not chosen: a matrix product's register tile cannot hold that many lanes per output, so dot products and matrix products would disagree.
 - **L = 128 or 512 bytes for sums.** Not chosen (rule 45).
 - **Strassen-type products.** Not chosen (question 2).
 - **Dimensions in types** (`Matrix[F64, 3, 4]`). Not chosen: most dimensions are run-time values, and type-level arithmetic would need a second language for sizes. Contracts state both literal and symbolic shapes, in the verifier's existing linear fragment.
 - **Range values as arguments** (`a.slice(range: i..<j)`). Not chosen: ranges are not expressions in Una (`spec/01 §6`), and making them values is a grammar change of its own.
 - **NumPy-style implicit broadcasting.** Not chosen: a common source of silent shape bugs (rule 42).
 - **A `Decimal` with a value-carried scale** (Python's `decimal`, Java's `BigDecimal`). Not chosen: the scale of a result would be a run-time value, the verifier could not encode values in linear integer arithmetic, and `1.0` and `1.00` would be two values that compare equal with different texts.
-- **A 128-bit fixed decimal** (`rust_decimal`). Not chosen as the definition: it overflows, which would need an obligation on every operation; an `Int` coefficient is exact, as fast in its one-word range, and bounded by refinements where a bound is wanted.
+- **A 128-bit fixed decimal.** Not chosen as the definition: it overflows, which would need an obligation on every operation; an `Int` coefficient is exact, as fast in its one-word range, and bounded by refinements where a bound is wanted.
 - **A literal in an operator taking the scale of its own digits** (`price + 0.005` as a `Decimal[3]`). Not chosen: a literal would widen an amount's scale silently.
 - **A default rounding mode for `Decimal`.** Not chosen: generated code would rely on a default it did not state, and the rules for rounding money differ by jurisdiction.
 - **A cap of its own for `Decimal`** (4,096 digits in the first revision), failing with `NotADigit`. Not chosen: one cap, `MAX_INT_DIGITS`, and one failure, `TooLong`, for every number the language reads (#914), so a limit is learned once and `NotADigit` keeps meaning a character that is not a digit.
@@ -808,9 +810,9 @@ Existing codes cover the rest:
 - **SIMD:** the clause in an `app` package (U3032); a lambda calling a function (U2039); `round_half_away` with `avx2` (U2039) and with `neon` (accepted); integer `/` with any target (U2039); the report's `simd` section; equal outputs with and without the clause; the feature-equality test of rule 56 for every Rust variant and every C variant.
 - **The gate (Appendix A):** a release executable with the dispatched variants passes; a planted FMA instruction in a symbol outside the allowlist fails it; the x86-64 contraction canary still fails on its contraction-sensitive case.
 
-## Appendix A. Amendments and notes to accepted records, appended on acceptance
+## Appendix A. Amendments and notes to accepted records, appended on acceptance (2026-10-19)
 
-**ADR 0106, Amendment (date of acceptance): dense values, vector forms and FMA in listed variants.**
+**ADR 0106, Amendment (2026-10-19): dense values, vector forms and FMA in listed variants.**
 1. RB-2's form 3 extends to the headers of dense values: an element access reads the header through the checked sequence of ADR 0107 rule 2, then checks each index against the shape, unsigned, then loads at `offset + Σ index × stride`, all in 64-bit unsigned arithmetic, with no pointer arithmetic beyond the buffer's checked extent.
 2. For a `simd required` function, the emitted C MAY use GCC and Clang vector types, loaded and stored with `memcpy` (RB-2's form), `__attribute__((target("...")))` on the variants with exactly the features that its `__builtin_cpu_supports` test checks (ADR 0120 rule 56), and that test for the choice. `restrict`, `__builtin_assume` and `__builtin_unreachable` stay excluded.
 3. **The floating-point amendment of 2026-10-16 (ADR 0114 Appendix C), rules 7 and 8, are amended:**
@@ -821,7 +823,7 @@ Existing codes cover the rest:
    - Each allowlisted variant gives the reference's bits (ADR 0120 rule 53).
 4. The other flags of the floating-point amendment apply to every variant: no contraction outside a written `fma`, no fast-math.
 
-**ADR 0119 rule 9, amended (date of acceptance): the hash encodings of `Decimal`, `Complex`, the dense types and `Lu`.** Rule 9 stays the one definition of the hash encoding, read from the canonical uniform word and an object's layout descriptor as it states; this record states no other. Its `F32` case already stands. It gains:
+**ADR 0119 rule 9, amended (2026-10-19): the hash encodings of `Decimal`, `Complex`, the dense types and `Lu`.** Rule 9 stays the one definition of the hash encoding, read from the canonical uniform word and an object's layout descriptor as it states; this record states no other. Its `F32` case already stands. It gains:
 - **`Decimal[s]`:** its coefficient, an integer by rule 9's first case. The scale is part of the type, and the keys of one table share one type, so they share the scale. *Equal keys encode equally:* two `Decimal[s]` values are equal exactly when their coefficients are (ADR 0120 rule 13, at one scale). *Distinct keys hash independently:* distinct values of one scale have distinct coefficients, and the integer encoding is self-delimiting. At a uniform position a `Decimal[s]` is its coefficient's word (ADR 0120 rule 20), so the native and interpreted encodings agree.
 - **`Complex[F64]`, `Complex[F32]`:** by rule 9's case for an object with a layout. It is a flat record of two raw cells (ADR 0120 rule 25), boxed at a uniform position with its layout (ADR 0108 rule 3); its descriptor records each cell as `F64` or `F32`, so the encoding is the declaration index 0, then `re` and `im` by their float cases. *Equal keys:* `==` compares both components by identity, and both cells are canonical, so equal values have equal bits. *Distinct keys:* distinct values differ in a component's canonical bits, and each part has a fixed length.
 - **`Array`, `Matrix`, `Tensor`:** the shape as integers (the length; the rows, then the columns; the rank, then each length), then each element by its own case, in row-major order, whatever the view's offset and strides, and whether the elements are in a numeric buffer, packed or words. *Equal keys:* `==` is the shape, then each element by its `==` (ADR 0120 rule 27), and each element's case is consistent with that `==`. *Distinct keys:* two values of one type with distinct shapes differ in the self-delimiting shape integers; with equal shapes, the element count is determined by the shape and each element's encoding is self-delimiting, so a difference in any element is a difference in the encoding.
@@ -829,19 +831,19 @@ Existing codes cover the rest:
 
 The conformance cases of rule 9 gain, for each case: two equal values with different representations (a view and its compacted copy; a boxed and an unboxed `Complex`; a `Decimal` in a packed record cell and at a uniform position) hashing equally, in both engines; and distinct values of one type at a shared prefix (`[1.0]` against `[1.0, 0.0]`, a 2 × 3 against a 3 × 2 matrix of the same elements) encoding distinctly.
 
-**ADR 0107, Note (date of acceptance).** Dense values (ADR 0120 rule 28) are heap objects of rule 3 with their own layout ids per element type and rank class. The elements of a numeric dense value live in a separate buffer: atomically counted, holding raw numbers only, never a handle, immutable while shared. Rule 4's list of heap objects that hold raw values gains these buffers.
+**ADR 0107, Note (2026-10-19).** Dense values (ADR 0120 rule 28) are heap objects of rule 3 with their own layout ids per element type and rank class. The elements of a numeric dense value live in a separate buffer: atomically counted, holding raw numbers only, never a handle, immutable while shared. Rule 4's list of heap objects that hold raw values gains these buffers.
 
-**ADR 0109, Amendment (date of acceptance): what rule 5 gates for SIMD.** Rule 5's gate for SIMD applies to the `simd required` clause of ADR 0120 rule 58, a user-visible construct, which keeps rule 5's three requirements: it is reported in the build report, rejected in an `app` package (U3032), and adds nothing to the trusted base. The vectorized implementation, by the runtime and the backends, of operations whose meaning is a scalar chain (ADR 0120 rules 44 to 57) is not a gated construct, and runs in every profile.
+**ADR 0109, Amendment (2026-10-19): what rule 5 gates for SIMD.** Rule 5's gate for SIMD applies to the `simd required` clause of ADR 0120 rule 58, a user-visible construct, which keeps rule 5's three requirements: it is reported in the build report, rejected in an `app` package (U3032), and adds nothing to the trusted base. The vectorized implementation, by the runtime and the backends, of operations whose meaning is a scalar chain (ADR 0120 rules 44 to 57) is not a gated construct, and runs in every profile.
 
-**ADR 0113, Amendment (date of acceptance): numeric dense buffers are shared.** The copies of a `together` block do not copy the buffer of a numeric dense value (ADR 0120 rule 28), in either direction: the copy of its header, given to a task or returned from one, refers to the same buffer, whose atomic count rises by one, O(1). `held()` is counted for the process, so a buffer is counted once, when it is allocated, whichever task ends first. An `edit` of a shared buffer in any task copies it first (ADR 0120 rule 31), after the budget check of ADR 0120's Security section. A small view can keep a large buffer alive across tasks: retention, not allocation. The interpreter shares values already and does not change.
+**ADR 0113, Amendment (2026-10-19): numeric dense buffers are shared.** The copies of a `together` block do not copy the buffer of a numeric dense value (ADR 0120 rule 28), in either direction: the copy of its header, given to a task or returned from one, refers to the same buffer, whose atomic count rises by one, O(1). `held()` is counted for the process, so a buffer is counted once, when it is allocated, whichever task ends first. An `edit` of a shared buffer in any task copies it first (ADR 0120 rule 31), after the budget check of ADR 0120's Security section. A small view can keep a large buffer alive across tasks: retention, not allocation. The interpreter shares values already and does not change.
 
-**ADR 0114, Amendment (date of acceptance): the element equation of `set` as a definition (rule 8.3).** In rule 8.3, a callee's `ensures` that contains an `F64` term is a constraint, with one exception: the element equation `get(m', i, j) = x` that `set` of ADR 0120 ensures is a definition of that term when its two conditions of ADR 0120 V4 hold (m' is used only through the shape functions in every kept hypothesis and in the goal, transitively; x is a term that only dropped hypotheses mention; no kept hypothesis is an equality of m''s sort, and no other dropped definition applies `i!get!` to a term of that sort). A refutation whose dropped hypotheses are all definitions in this sense or in rule 8.3's is final, with its counterexample: the model extends by moving m' to a fresh element of its uninterpreted sort, as ADR 0120 V4 argues. Every other rule of 8.3, field equations of constructions included, is unchanged. Its tests join rule 16.7:
+**ADR 0114, Amendment (2026-10-19): the element equation of `set` as a definition (rule 8.3).** In rule 8.3, a callee's `ensures` that contains an `F64` term is a constraint, with one exception: the element equation `get(m', i, j) = x` that `set` of ADR 0120 ensures is a definition of that term when its two conditions of ADR 0120 V4 hold (m' is used only through the shape functions in every kept hypothesis and in the goal, transitively; x is a term that only dropped hypotheses mention; no kept hypothesis is an equality of m''s sort, and no other dropped definition applies `i!get!` to a term of that sort). A refutation whose dropped hypotheses are all definitions in this sense or in rule 8.3's is final, with its counterexample: the model extends by moving m' to a fresh element of its uninterpreted sort, as ADR 0120 V4 argues. Every other rule of 8.3, field equations of constructions included, is unchanged. Its tests join rule 16.7:
 - a function that sets a float element and then has an off-by-one index on an integer list is U5001 with its counterexample, from the cone solve;
 - `fn set_then_read(m: Matrix[F64], i: Int, j: Int) -> Bool requires 0 <= i and i < m.rows and 0 <= j and j < m.columns ensures result`, whose body is `let edit n = m`, `edit n.set(row: i, column: j, item: 5.0)`, then `n.get(row: i, column: j) == 5.0`, MUST NOT be reported refuted: the goal reads `get(n', i, j)`, so the equation is a constraint, the cone solve is `sat`, and the full query proves it;
 - the same with `n == m` as the result, under `requires m.get(row: i, column: j) == 5.0`: n' occurs in an equality, so the equation is a constraint, and the full query proves it;
 - a function with `requires a == b` over two matrices, which sets an element of each from float values and then has an integer goal that the equality makes true: it MUST NOT be reported refuted, since the kept equality of the matrices' sort makes both equations constraints.
 
-**ADR 0114, Notes (date of acceptance).**
+**ADR 0114, Notes (2026-10-19).**
 - In edition `0.4`, rule 2.6 reads: a float literal is `F64`, except where its context, an operator's other operand included, expects `F32` or `Decimal[s]` (ADR 0120 rules 6 and 12).
 - Rule 6.5: the dispatched kernel variants of ADR 0120 rule 53 use the FMA instruction of the processor they are dispatched to, chosen at run time, while no CPU feature is enabled at build time for any other code; the gate's allowlist is ADR 0106's amendment above.
 - `F32` (ADR 0120 rule 5), a decimal type and SIMD, deferred by rule 19, are decided by ADR 0120.
