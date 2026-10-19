@@ -551,3 +551,127 @@ fn ring_bytes(executable: &Path) -> u64 {
         .map(|pair| pair[1].0 - pair[0].0)
         .sum()
 }
+
+/// A server on `127.0.0.1` that accepts connections and never answers.
+fn silent_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            held.extend(stream.ok());
+        }
+    });
+    port
+}
+
+#[test]
+fn a_for_ever_within_deadline_cuts_http_waits_in_both_engines() {
+    // `spec/26 §6`, ADR 0116 rule 11: each iteration has the deadline `d` after its start.
+    // The first request waits on a server that never answers, and fails with `TimedOut` at the
+    // deadline, long before the run's own `--http-timeout`; the second starts after the
+    // deadline and fails at once. One `timeout` event follows the first failure of each
+    // iteration, the iteration runs to its end, and both engines write the same trace.
+    let port = silent_server();
+    let program = format!(
+        r#"module poll
+
+import std.time (millisecond)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @http: Http[get]
+  diverges
+=
+  let edit n = 0
+  for ever within 50 * millisecond
+    stop when n == 2
+    let first = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+    let second = attempt @http.get("http://127.0.0.1:{port}/b", headers: [], key_name: None)
+    @console.print("iteration {{n}}")
+    n = n + 1
+  @console.print("done {{n}}")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-within-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita within\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry poll\n  grants\n    console\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/poll.una"), program).unwrap();
+    let flags = ["--http-timeout", "30"];
+
+    let started = std::time::Instant::now();
+    let mut args = vec!["--json", "run", "."];
+    args.extend(flags);
+    let interpreted = una(&dir, &args);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    assert!(started.elapsed() < Duration::from_secs(20), "the deadline cut nothing");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["iteration 0", "iteration 1", "done 2"]),
+        "{document}"
+    );
+    let trace = document["trace"].clone();
+    let outcomes: Vec<String> = trace
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            let outcome = &event["outcome"];
+            match outcome["variant"].as_str() {
+                Some(variant) => format!("{}:{variant}", event["op"].as_str().unwrap_or("")),
+                None => outcome["kind"].as_str().unwrap_or("").to_owned(),
+            }
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            "get:TimedOut",
+            "timeout",
+            "get:TimedOut",
+            "ok",
+            "get:TimedOut",
+            "timeout",
+            "get:TimedOut",
+            "ok",
+            "ok",
+        ],
+        "{trace}"
+    );
+    assert_eq!(trace[1], serde_json::json!({"seq": 2, "outcome": {"kind": "timeout"}}));
+
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let trace_file = dir.join("trace.json");
+    let started = std::time::Instant::now();
+    let native = Command::new(dir.join("target/una/within"))
+        .args(flags)
+        .arg("--trace")
+        .arg(&trace_file)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(started.elapsed() < Duration::from_secs(20), "the deadline cut nothing");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "iteration 0\niteration 1\ndone 2\n"
+    );
+    let native: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+    assert_eq!(trace, native);
+    let _ = std::fs::remove_dir_all(&dir);
+}
