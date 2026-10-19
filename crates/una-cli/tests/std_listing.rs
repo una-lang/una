@@ -1220,12 +1220,14 @@ const STATED_COSTS: [Stated; 4] = [
 
 /// The receiver that a cost table's row or sentence is about where it names only the method,
 /// for a method with several receivers: ADR 0070 is about texts, so its `.len` row is the cost
-/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `has`, `remove`, `with` and
-/// `without` are those on a `Map`.
-const COST_ON: [(&str, &str, &str); 5] = [
+/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `get`, `has`, `remove`, `set`,
+/// `with` and `without` are those on a `Map`.
+const COST_ON: [(&str, &str, &str); 7] = [
     ("ADR 0070", "len", "Text"),
+    ("spec/21 §5", "get", "Map[K, V]"),
     ("spec/21 §5", "has", "Map[K, V]"),
     ("spec/21 §5", "remove", "Map[K, V]"),
+    ("spec/21 §5", "set", "Map[K, V]"),
     ("spec/21 §5", "with", "Map[K, V]"),
     ("spec/21 §5", "without", "Map[K, V]"),
 ];
