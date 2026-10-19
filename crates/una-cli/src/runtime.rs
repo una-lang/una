@@ -486,6 +486,7 @@ pub(crate) fn driven_init<'a>(
         sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let header = |name: &str| {
         modules
