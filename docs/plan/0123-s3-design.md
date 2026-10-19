@@ -20,12 +20,12 @@ Issue #1005, part of #897. Implementation plan step 3 of ADR 0123: the `serve:` 
 
 ## Layout
 
-- `crates/una-core/src/http/serve.rs`: `ServeGrant::parse(spec) -> Result<ServeGrant, ServeError>`, the `Limits` with their defaults, `Hosts` and `Hosts::allows(name, ip)`, `overlap(&[ServeGrant])`, and `TlsPolicy::pinned(tls12)`. Pure and shared by the manifest, the checker and both engines, as the `http:` grant is. `http.rs` becomes `http/mod.rs` (`una_core::http::serve`).
+- `crates/una-core/src/http/serve.rs` (`una_core::http::serve`, a submodule of `http.rs`): `ServeGrant::parse(spec) -> Result<ServeGrant, Vec<ServeError>>`, every problem with the index of its item, the `Limits` with their defaults, `Hosts` and `Hosts::allows(name, ip)`, `overlapping(listeners)`, and `TlsPolicy::pinned(tls12)`. Pure and shared by the manifest, the checker and both engines, as the `http:` grant is.
 - `crates/una-syntax/src/ita.rs`: `serve "<origin>"` grant lines and their item lines, written as the text spec of `spec/13 §5`, with the range of each item line.
 - `crates/una-project`: `is_grant` knows `serve:`; `una.toml` refuses it (U7002); `ita.una` checks it item by item, and checks overlaps (U7008).
-- `crates/una-interp/src/host.rs`: `Grant::Serve`, whose `certificate` and `key` resolve against the grant's base as other paths do.
-- `crates/una-http/src/serve.rs`: `prepare(&[ServeGrantOf]) -> Result<Prepared, String>`, the work before `main`: overlap, the descriptor limit, TLS files, binding. Both engines call it after U3012 and before `main`, where `keys:` files are read.
-- `crates/una-sys/src/listen.rs` and `identity.rs`: the system calls (socket options, effective user and groups, the descriptor limit), each `unsafe` block with a `// SAFETY:` comment.
+- `crates/una-interp/src/host.rs`: `Grant::Serve`, whose `certificate` and `key` resolve against the grant's base as other paths do, and `invalid_grant(spec)`, the message of a usage error, shared by `una run` and executables.
+- `crates/una-http/src/serve.rs`: `prepare(&[ServeInput]) -> Result<Prepared, String>`, the work before `main`: overlap, the descriptor limit, TLS files, binding. Both engines call it after U3012 and the `keys:` files, before `main`, and hold `Prepared` until the run ends. Executables of edition 0.4 carry `"serve": true` in their embedded description, so an executable of an earlier edition refuses a `serve:` flag.
+- `crates/una-sys/src/server.rs`: the system calls (effective user and groups, the descriptor limit, the listening socket), each `unsafe` block with a `// SAFETY:` comment. ADR 0058's amendment of 2026-10-18 lists what `una-sys` holds, so this slice appends a dated amendment (2026-10-19) for these calls, and `una-http` depends on `una-sys` (Decision 9).
 - `crates/una-check`: `granted` maps a `serve:` grant to `HttpServer[next, reply, close]` (rule 6, "a grant allows all three operations"), which has no effect until the capability lands (step 5).
 
 ## The text spec
@@ -148,6 +148,11 @@ The project's use of `ring`, the provider that `rustls` uses for the client, is 
 6. **The certificate file is a regular file of at most 1 MiB,** and so is the key: a FIFO or a device cannot stall or flood the start of a run.
 7. **Values have no leading zeros or signs**, in the text spec and in `ita.una`, so one value has one spelling.
 8. **`SO_REUSEADDR` is set** on the listening socket, as the standard library does, so a server restarts while old connections are in `TIME_WAIT`; it never lets another process share an active listener on Linux, and `SO_REUSEPORT` is never set (rule 19).
+
+9. **The system calls live in `una-sys`,** by a dated amendment of ADR 0058 (2026-10-19), since the amendment of 2026-10-18 lists only the signal handlers and the coroutines, and ADR 0123 rule 19 puts the server's system calls where the reactor puts its own. The other options were a new dependency (`rustix`, `socket2`), which needs its own record, or leaving `IPV6_V6ONLY` and the owner check out, which the ADR does not allow. `una-sys` grows to about 600 lines of its 800.
+10. **The key file is opened and checked before the certificate,** so a key with a wrong owner or mode is reported even when the certificate is also wrong.
+11. **The key is cleared** from the buffer it was read into after parsing (`fill(0)` and `black_box`), and `rustls-pki-types` zeroizes its own copy on drop; `TlsMaterial`'s `Debug` prints neither the key nor the chain.
+12. **The listeners are bound and held, and nothing accepts on them,** until the serve threads land; a peer's connection waits in the backlog. This only happens for edition 0.4 packages that write a `serve:` grant, which no program can use yet.
 
 ## Tests
 
