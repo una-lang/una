@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.13
+
+v0.1.12 with the #1071 fix: records and function values release what they hold by a worklist.
+
+### Security
+
+- **A deep value is released without recursion** (#1071, advisory UNA-SA-017). `fold` builds a value deeper than the call depth without deep calls, through records or function values, and the interpreter released such a value by recursion on the native stack, one level per level of the value, so a deep enough value overflowed the stack of `una run` and aborted the process, in every release up to v0.1.12. Records and function values now release what only they hold by one worklist. Reaching the overflow at the default `--max-depth` takes a value of about 650,000 levels, which costs quadratic time to build in this line; a lower `--max-depth` reaches it sooner.
+
 ## v0.1.12
 
 v0.1.11 with the #914 fix: `to_int` is `None` for a text of more than 4300 digits.
