@@ -640,6 +640,10 @@ impl Block<'_> {
                 .name(format!("una-task-{}", index + 1))
                 .stack_size(template.stack)
                 .spawn_scoped(scope, move || {
+                    // ADR 0114 rule 6.4: each task's thread writes the environment first.
+                    if runtime::FLOATS.load(std::sync::atomic::Ordering::SeqCst) {
+                        crate::ffi::write_float_environment();
+                    }
                     let _stack = runtime::StackCount::new(template.stack);
                     task(
                         index,

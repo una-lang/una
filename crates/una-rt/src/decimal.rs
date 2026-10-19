@@ -12,8 +12,8 @@ use una_core::DecimalOp;
 use una_core::decimal::{self, MAX_SCALE, ParseFailure, Rounding};
 
 use crate::values::{
-    NONE, data, field, int_value, int_word, is_data, push, release, some_owned, tag, text_value,
-    text_word,
+    NONE, data, f64_value, f64_word, field, int_value, int_word, is_data, push, release,
+    some_owned, tag, text_value, text_word,
 };
 
 /// The variants of `Json` that a decimal is written as (`spec/23 §1`).
@@ -48,6 +48,18 @@ pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
     };
     if op.scales().iter().any(|s| *s > MAX_SCALE) {
         return zero();
+    }
+    // The conversions with `F64` (`spec/29 §16`): `a` is a boxed `F64`, or the result is one.
+    match op {
+        DecimalOp::FromF64(s) => {
+            let bits = una_core::float::to_bits(f64_value(a));
+            return match decimal::from_f64_bits(bits, s, rounding(b)) {
+                Some(c) => some_owned(int_word(&c)),
+                None => NONE,
+            };
+        }
+        DecimalOp::ToF64(s) => return f64_word(decimal::to_f64(&int_value(a), s)),
+        _ => {}
     }
     let (x, y) = (int_value(a), int_value(b));
     let flag = |b: bool| i64::from(b);
@@ -90,7 +102,7 @@ pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
         DecimalOp::ToText(s) => text_word(decimal::render(&x, s)),
         DecimalOp::ToJson(0) => json(NUMBER, int_word(&x)),
         DecimalOp::ToJson(s) => json(DECIMAL, text_word(decimal::render(&x, s))),
-        // `F64` has no native code yet, and the prelude's calls have their own entry points.
+        // Above, and the prelude's calls have their own entry points.
         DecimalOp::FromF64(_)
         | DecimalOp::ToF64(_)
         | DecimalOp::Parse(_)
@@ -188,5 +200,26 @@ mod tests {
         assert_eq!(text_value(written), "-0.05");
         release(written);
         assert_eq!(int_value(decimal(99, 0, 1, 1, 1)), BigInt::default());
+    }
+
+    #[test]
+    fn conversions_with_f64_match_the_shared_definitions() {
+        use crate::values::{f64_value, f64_word, is_data};
+        // `19.99.to_f64()`, correctly rounded, and `0.1.to_decimal(scale: 2)` in HalfEven.
+        let (to, packed) = DecimalOp::ToF64(2).code();
+        let x = decimal(to, packed, word(1999), 1, 1);
+        assert_eq!(f64_value(x).to_bits(), 19.99_f64.to_bits());
+        release(x);
+        let (from, packed) = DecimalOp::FromF64(2).code();
+        let tenth = f64_word(0.1);
+        let found = decimal(from, packed, tenth, 1, 1);
+        assert!(is_data(found));
+        assert_eq!(int_value(field(found, 0)), BigInt::from(10));
+        release(found);
+        // NaN has no decimal.
+        let nan = f64_word(f64::NAN);
+        assert_eq!(decimal(from, packed, nan, 1, 1), NONE);
+        release(nan);
+        release(tenth);
     }
 }

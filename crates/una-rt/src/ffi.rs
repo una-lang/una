@@ -218,6 +218,34 @@ pub unsafe extern "C" fn una_rt_text_literal(bytes: *const u8, len: usize) -> i6
     values::text_literal(&text)
 }
 
+/// Writes the default floating-point environment of the calling thread (ADR 0114 rule 6.4):
+/// round to nearest, ties to even, every exception masked, no flush-to-zero and no
+/// denormals-are-zero, and on AArch64 no default-NaN mode. One instruction.
+pub(crate) fn write_float_environment() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mxcsr: u32 = 0x1F80;
+        // SAFETY: `ldmxcsr` reads 4 bytes from the address of `mxcsr`, a live local of that
+        // size; it writes no memory and touches no stack, and 0x1F80 is the default MXCSR, so
+        // no reserved bit is set and no exception can be raised by the load.
+        unsafe {
+            core::arch::asm!(
+                "ldmxcsr [{}]",
+                in(reg) &mxcsr,
+                options(nostack, readonly, preserves_flags)
+            );
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: `msr fpcr` writes the floating-point control register with 0: RMode round to
+        // nearest, FZ, DN and AHP off, every trap enable off. It touches no memory.
+        unsafe {
+            core::arch::asm!("msr fpcr, {}", in(reg) 0_u64, options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
 /// The operations of [`crate::values`] that return a word, by word.
 macro_rules! exported {
     ($($name:ident => $function:path, ($($arg:ident),*);)*) => {
@@ -302,6 +330,13 @@ exported! {
     una_rt_bytes => values::bytes_of, (t);
     una_rt_parse_failure => values::parse_failure, (t);
     una_rt_parse_int => values::parse_int, (t);
+    una_rt_f64_literal => values::f64_literal, (bits);
+    una_rt_f64_op => values::f64_op, (op, a, b, c);
+    una_rt_f64_from_bits => values::f64_from_bits, (bits);
+    una_rt_parse_f64_failure => values::parse_f64_failure, (t);
+    una_rt_parse_f64 => values::parse_f64, (t);
+    una_rt_as_f64 => values::as_f64, (j);
+    una_rt_json_number => values::json_number, (x);
     una_rt_to_int => values::to_int, (t);
     una_rt_is_empty => values::is_empty, (xs);
     una_rt_first => values::first, (xs);

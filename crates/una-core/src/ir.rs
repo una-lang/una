@@ -789,6 +789,52 @@ pub enum FloatResult {
 }
 
 impl FloatOp {
+    /// Every operation, in declaration order: the code the native backend passes to the
+    /// runtime is the position here.
+    pub const ALL: [FloatOp; 41] = [
+        FloatOp::Add,
+        FloatOp::Sub,
+        FloatOp::Mul,
+        FloatOp::Div,
+        FloatOp::Neg,
+        FloatOp::Eq,
+        FloatOp::Ne,
+        FloatOp::Lt,
+        FloatOp::Le,
+        FloatOp::Gt,
+        FloatOp::Ge,
+        FloatOp::Abs,
+        FloatOp::Sqrt,
+        FloatOp::Fma,
+        FloatOp::Rem,
+        FloatOp::Floor,
+        FloatOp::Ceil,
+        FloatOp::Trunc,
+        FloatOp::RoundHalfEven,
+        FloatOp::RoundHalfAway,
+        FloatOp::CopySign,
+        FloatOp::IeeeMin,
+        FloatOp::IeeeMax,
+        FloatOp::Clamp,
+        FloatOp::IeeeEq,
+        FloatOp::IeeeNe,
+        FloatOp::IeeeLt,
+        FloatOp::IeeeLe,
+        FloatOp::IeeeGt,
+        FloatOp::IeeeGe,
+        FloatOp::IsNan,
+        FloatOp::IsFinite,
+        FloatOp::IsInfinite,
+        FloatOp::IsSignNegative,
+        FloatOp::IsZero,
+        FloatOp::IsPositiveZero,
+        FloatOp::IsNegativeZero,
+        FloatOp::ToBits,
+        FloatOp::ToIntExact,
+        FloatOp::FromInt,
+        FloatOp::ToText,
+    ];
+
     /// The methods of `F64`, in the order of ADR 0114's table.
     pub const METHODS: [FloatOp; 28] = [
         FloatOp::Abs,
@@ -1813,5 +1859,68 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
             ("TooLong", &[]),
         ]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod float_op_tests {
+    use super::FloatOp;
+
+    /// The position of each operation in declaration order. The match is exhaustive, so a new
+    /// operation does not compile until it has a position here, and the test below then
+    /// requires it in `FloatOp::ALL` at that position.
+    fn position(op: FloatOp) -> usize {
+        match op {
+            FloatOp::Add => 0,
+            FloatOp::Sub => 1,
+            FloatOp::Mul => 2,
+            FloatOp::Div => 3,
+            FloatOp::Neg => 4,
+            FloatOp::Eq => 5,
+            FloatOp::Ne => 6,
+            FloatOp::Lt => 7,
+            FloatOp::Le => 8,
+            FloatOp::Gt => 9,
+            FloatOp::Ge => 10,
+            FloatOp::Abs => 11,
+            FloatOp::Sqrt => 12,
+            FloatOp::Fma => 13,
+            FloatOp::Rem => 14,
+            FloatOp::Floor => 15,
+            FloatOp::Ceil => 16,
+            FloatOp::Trunc => 17,
+            FloatOp::RoundHalfEven => 18,
+            FloatOp::RoundHalfAway => 19,
+            FloatOp::CopySign => 20,
+            FloatOp::IeeeMin => 21,
+            FloatOp::IeeeMax => 22,
+            FloatOp::Clamp => 23,
+            FloatOp::IeeeEq => 24,
+            FloatOp::IeeeNe => 25,
+            FloatOp::IeeeLt => 26,
+            FloatOp::IeeeLe => 27,
+            FloatOp::IeeeGt => 28,
+            FloatOp::IeeeGe => 29,
+            FloatOp::IsNan => 30,
+            FloatOp::IsFinite => 31,
+            FloatOp::IsInfinite => 32,
+            FloatOp::IsSignNegative => 33,
+            FloatOp::IsZero => 34,
+            FloatOp::IsPositiveZero => 35,
+            FloatOp::IsNegativeZero => 36,
+            FloatOp::ToBits => 37,
+            FloatOp::ToIntExact => 38,
+            FloatOp::FromInt => 39,
+            FloatOp::ToText => 40,
+        }
+    }
+
+    #[test]
+    fn every_operation_has_one_code_the_backend_and_the_runtime_share() {
+        // The native backend passes an operation to the runtime by its position in
+        // `FloatOp::ALL` (ADR 0114 rule 9.6): each operation is there exactly once.
+        for (index, op) in FloatOp::ALL.iter().enumerate() {
+            assert_eq!(position(*op), index, "{op:?}");
+        }
     }
 }

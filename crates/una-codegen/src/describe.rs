@@ -67,8 +67,7 @@ impl<'p> Types<'p> {
             Base::Text => json!({ "shape": "text" }),
             Base::Unit => json!({ "shape": "unit" }),
             Base::Hashed => json!({ "shape": "hashed" }),
-            // No `F64` value reaches native code yet (`spec/29`): an empty list of them may.
-            Base::F64 => json!({ "shape": "other" }),
+            Base::F64 => json!({ "shape": "f64" }),
             // A decimal is its coefficient, written with its scale (`spec/29 §16`).
             Base::Decimal(scale) => json!({ "shape": "decimal", "scale": scale }),
             // Internal to the memory model: a tuple is never a value a trace or U6001 shows.
