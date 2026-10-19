@@ -180,12 +180,24 @@ pub(crate) fn failed(word: i64) -> i64 {
     word
 }
 
-/// Whether the last host operation failed, its value being then the failure; clears it.
+/// Whether the last host operation failed, its value being then the failure, and clears it: 1
+/// when it failed, 2 when it was interrupted while it waited, its task cancelled, which the
+/// caller passes on as the stop of the task (ADR 0117 rule 4), and 0 otherwise.
 pub fn host_failed() -> i64 {
-    with_state(|state| std::mem::take(&mut state.host_failed))
-        .map(i64::from)
-        .unwrap_or(0)
+    with_state(|state| {
+        let failed = std::mem::take(&mut state.host_failed);
+        if state.interrupted {
+            2
+        } else {
+            i64::from(failed)
+        }
+    })
+    .unwrap_or(0)
 }
+
+/// The word an interrupted operation returns: the stop of a task in the generated code
+/// (`una_codegen::lower::STOPPED`), which its caller passes on by the failure path.
+const INTERRUPTED: i64 = -1;
 
 /// The variants of `FileError` and `KeyError` (`spec/14 §3`), as words.
 const NOT_FOUND: i64 = 1;
@@ -395,11 +407,22 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
 
 /// Ends the event at `slot`, of operation `site`, with its value, or its failure when `failed`
 /// is 1. A task that stopped at or in the operation (`failed` 2) leaves the event as it was,
-/// `aborted`.
+/// `aborted`, unless the operation was interrupted while it waited, which ends it
+/// `interrupted` (ADR 0117 rules 4 and 10).
 pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
+    let interrupted =
+        failed == 2 && with_state(|state| std::mem::take(&mut state.interrupted)).unwrap_or(false);
     let (Ok(site), Ok(slot)) = (usize::try_from(site), usize::try_from(slot)) else {
         return;
     };
+    if interrupted {
+        with_state(|state| {
+            if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
+                event.outcome = EventOutcome::Interrupted;
+            }
+        });
+        return;
+    }
     if failed == 2 {
         return;
     }
@@ -513,7 +536,7 @@ fn http(
     } else {
         // In a task, the request runs on a helper of the I/O pool while the task parks (ADR 0117
         // rule 3); only owned data, and the run's static stop state, cross.
-        sched::blocking(Pool::Io, move || {
+        let job = move || {
             let request = Request {
                 method,
                 url: &url,
@@ -530,7 +553,18 @@ fn http(
                 ),
                 None => send(&request, &grants, &settings),
             }
-        })
+        };
+        // A request is interruptible (ADR 0117 rule 4): a cancellation that comes while it
+        // waits ends it `interrupted`, and the task stops. The helper may still complete it, an
+        // effect in doubt.
+        let entries = crate::runtime::interruptible_entries();
+        match sched::blocking_interruptible(Pool::Io, &entries, job) {
+            Some(sent) => sent,
+            None => {
+                with_state(|state| state.interrupted = true);
+                return INTERRUPTED;
+            }
+        }
     };
     // A `for ever within` iteration observes its deadline at the operation; a `within` at its
     // next check point, or when its expression returns (`spec/27 §5`).

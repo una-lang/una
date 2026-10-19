@@ -180,6 +180,11 @@ fn limits<'a>(
         held: options.heap.held,
         http: options.http,
         stop_after: options.stop_after,
+        // Checked before the run starts, as a usage error.
+        task_depth: options
+            .tasks
+            .check(options.max_depth)
+            .map_or(options.max_depth, |settings| settings.task_depth),
         stop,
     }
 }

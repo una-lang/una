@@ -504,7 +504,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     expr = body;
                 }
                 Expr::Loop { .. } => return self.lower_loop(expr, env, scope, catch),
-                Expr::Together { .. } | Expr::TogetherFor { .. } => {
+                Expr::Together { .. } | Expr::TogetherFor { .. } | Expr::FirstOf { .. } => {
                     return self.together(expr, env, scope, catch);
                 }
                 Expr::Atom { atom, .. } => {
@@ -1539,10 +1539,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(closure)
     }
 
-    /// `together` and `together for` (`spec/19`), as the value of the expression whose scope is
-    /// `scope`: each task is a closure of the bindings before the block, which the runtime runs
-    /// on its own thread (`tasks`). The block fails with the failure of the lowest-indexed task
-    /// that failed, and stops when its task must.
+    /// `together`, `together for` (`spec/19`) and `first of` (`spec/27 §6`), as the value of
+    /// the expression whose scope is `scope`: each task is a closure of the bindings before the
+    /// block, which the runtime runs on a coroutine of its own (`tasks`). The block fails with
+    /// the failure of the lowest-indexed task that failed, which for `first of` is only when
+    /// every branch failed, and stops when its task must.
     fn together(
         &mut self,
         expr: &'p Expr,
@@ -1560,6 +1561,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     self.release(closure, Kind::Fn);
                 }
                 let value = self.call("una_rt_together", &[closures, site])?;
+                self.release(closures, Kind::List);
+                value
+            }
+            // `first of` (`spec/27 §6`): each branch a closure, as a `together` task; the
+            // runtime races them and gives the winner's value, or the lowest-indexed failure
+            // when every branch fails.
+            Expr::FirstOf { tasks, span } => {
+                let site = self.site(*span);
+                let closures = self.call("una_rt_list", &[])?;
+                for task in tasks {
+                    let closure = self.closure(&[], task, env)?;
+                    self.runtime("una_rt_push", &[closures, closure]);
+                    self.release(closure, Kind::Fn);
+                }
+                let value = self.call("una_rt_first_of", &[closures, site])?;
                 self.release(closures, Kind::List);
                 value
             }
@@ -3680,7 +3696,7 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
         Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
             borrowed_from(body, out);
         }
-        Expr::Together { .. } | Expr::TogetherFor { .. } => {
+        Expr::Together { .. } | Expr::TogetherFor { .. } | Expr::FirstOf { .. } => {
             // A task's captures are never moved: every name the block reads stays pinned
             // (#162).
             vars(expr, out);

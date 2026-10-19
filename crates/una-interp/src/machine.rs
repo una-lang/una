@@ -106,6 +106,11 @@ pub enum EventOutcome {
     /// names no operation. Also the event of a `within` that timed out, after the outcomes of
     /// the operations it interrupted (ADR 0117 rule 5).
     Timeout,
+    /// An interruptible operation, one of `Http`, was waiting when its task was cancelled: the
+    /// loser of a `first of` (ADR 0117 rules 4 and 10). It may have reached its server, an
+    /// effect in doubt. The interpreter, which runs branches one after another, never
+    /// interrupts one; a native run can.
+    Interrupted,
 }
 
 /// The deadline of the iteration of a `for ever within` in progress (ADR 0116 rule 11), on the
@@ -117,7 +122,7 @@ pub(crate) struct Deadline {
     pub(crate) at: Option<u64>,
     /// The path of the task that runs the loop, whose control flow observes the deadline's
     /// failures (`spec/26 §7`).
-    pub(crate) owner: Vec<usize>,
+    pub(crate) owner: Vec<String>,
     /// Whether a task the iteration started met the deadline, for the join of its block.
     pub(crate) hit: bool,
     /// Whether the iteration's `timeout` event is in the trace already.
@@ -127,7 +132,7 @@ pub(crate) struct Deadline {
 impl Deadline {
     /// The deadline `ms` milliseconds from now on `clock`, of a loop run by the task at
     /// `owner`.
-    pub(crate) fn after(ms: u64, owner: Vec<usize>, clock: &Clock) -> Deadline {
+    pub(crate) fn after(ms: u64, owner: Vec<String>, clock: &Clock) -> Deadline {
         Deadline {
             at: clock.now().checked_add(ms),
             owner,
@@ -625,6 +630,9 @@ pub struct Limits<'a> {
     /// `--stop-after-iterations`: the run's own host stop request, once this many iterations
     /// of `for ever` loops, the driver's included, have started (ADR 0116 rule 19).
     pub stop_after: Option<u64>,
+    /// `--task-depth`: the calls a branch of `first of` may make below its block, within
+    /// `max_depth` (`spec/27 §3`, ADR 0117 rule 2).
+    pub task_depth: usize,
     /// The run's host stop state, which its watcher shares (ADR 0116 rules 14 and 16); a run
     /// without one makes its own, which only its own stop reaches.
     pub stop: Option<&'a Arc<RunStop>>,
@@ -640,6 +648,7 @@ impl Limits<'_> {
             held: &unmeasured,
             http: una_http::client::Settings::default(),
             stop_after: None,
+            task_depth: max_depth,
             stop: None,
         }
     }
@@ -696,9 +705,16 @@ pub(crate) struct Machine<'p, 'w> {
     installs: BTreeMap<String, usize>,
     /// The name spans of the functions in progress, innermost last, to locate faults.
     frames: Vec<Span>,
-    /// The path of the `together` task in progress, one 1-based index per enclosing block
-    /// (`spec/19 §6`).
-    task: Vec<usize>,
+    /// The path of the task in progress, one part per enclosing block (`spec/19 §6`): the
+    /// 1-based index of a `together` task, or, for a branch of the `c`-th `first of` its task
+    /// runs, `f<c>` and the branch's 1-based index (`spec/27 §6`).
+    task: Vec<String>,
+    /// How many `first of` blocks each task in progress has run, the root's first, for the
+    /// paths of their branches (`spec/27 §6`).
+    races: Vec<usize>,
+    /// `--task-depth`: the calls a branch of `first of` may make below its block (`spec/27
+    /// §3`).
+    task_depth: usize,
     /// The deadline of the iteration of the `for ever within` in progress (ADR 0116 rule 11).
     deadline: Option<Deadline>,
     /// The `within`s in progress, outermost first: each one's id and when its deadline passes
@@ -776,6 +792,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             within_shield: 0,
             frames: Vec::new(),
             task: Vec::new(),
+            races: vec![0],
+            task_depth: limits.task_depth,
             later: Vec::new(),
             callers: Vec::new(),
             reads: HashMap::new(),
@@ -1424,6 +1442,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.joined();
                     return Ok(Value::Tuple(Rc::new(results)));
                 }
+                // `first of` (`spec/27 §6`): the branches in index order, up to the first that
+                // returns. As for `together`, a branch's captures are never given up.
+                Expr::FirstOf { tasks, .. } => {
+                    let rebound = self.binders(expr).iter().copied().collect();
+                    self.later.push((expr, rebound));
+                    let result = self.first_of(env, &caps, tasks);
+                    self.later.pop();
+                    if matches!(result, Ok(_) | Err(Stop::Fail(_))) {
+                        self.joined();
+                    }
+                    return result;
+                }
                 // `together for` (`spec/19 §6`): one task per element, in element order.
                 Expr::TogetherFor {
                     source,
@@ -1866,7 +1896,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         index: usize,
         task: &'p Expr,
     ) -> Flow<'p> {
-        self.task.push(index + 1);
+        self.task.push((index + 1).to_string());
+        self.races.push(0);
         // A started task is a task of its own: a host stop reaches it only through its own
         // `for ever` loops (ADR 0116 rule 14).
         let in_ever = std::mem::replace(&mut self.in_ever, false);
@@ -1874,8 +1905,135 @@ impl<'p, 'w> Machine<'p, 'w> {
         let result = self.eval(env, caps, task);
         env.truncate(mark);
         self.in_ever = in_ever;
+        self.races.pop();
         self.task.pop();
         result
+    }
+
+    /// Branch `index` of the `race`-th `first of` of the task in progress, `task`, with its path
+    /// `p.f<race>.<index + 1>` (`spec/27 §6`), and the depth limit of `--task-depth` below its
+    /// block, within the run's.
+    fn branch(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        (race, index): (usize, usize),
+        task: &'p Expr,
+    ) -> Flow<'p> {
+        self.task.push(format!("f{race}"));
+        let max_depth = self.max_depth;
+        self.max_depth = max_depth.min(self.depth.saturating_add(self.task_depth));
+        let result = self.task(env, caps, index, task);
+        self.max_depth = max_depth;
+        self.task.pop();
+        result
+    }
+
+    /// `first of` (`spec/27 §6`, ADR 0117 rule 6): its branches run one after another, in index
+    /// order, and the first that returns wins, one legal schedule; no branch after it starts.
+    /// When every branch fails, the race fails with the failure of the first. The events of
+    /// the winner come first, then those of the branches before it, in index order, each
+    /// renumbered as native code numbers them at the join, the ids of the handlers they
+    /// installed included.
+    fn first_of(&mut self, env: &mut Env<'p>, caps: &Caps<'p>, tasks: &'p [Expr]) -> Flow<'p> {
+        let race = match self.races.last_mut() {
+            Some(count) => {
+                *count += 1;
+                *count
+            }
+            None => return Err(fault("a `first of` outside any task")),
+        };
+        let start = self.trace.len();
+        // Each branch's events, from where they start, and the installations before it.
+        let mut parts: Vec<(usize, BTreeMap<String, usize>)> = Vec::with_capacity(tasks.len());
+        let mut failure = None;
+        for (index, task) in tasks.iter().enumerate() {
+            parts.push((self.trace.len(), self.installs.clone()));
+            match self.branch(env, caps, (race, index), task) {
+                Ok(value) => {
+                    self.winner_first(start, &parts);
+                    return Ok(value);
+                }
+                Err(Stop::Fail(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(stop) => return Err(stop),
+            }
+        }
+        match failure {
+            Some(error) => Err(Stop::Fail(error)),
+            None => Err(fault("a `first of` without branches")),
+        }
+    }
+
+    /// Moves the events of the last branch of `parts`, the winner, before those of the
+    /// branches before it, from `start` on, and renumbers their `seq` and the ids of the handlers
+    /// each branch installed, as the join of native code adopts them, the winner first (`spec/27
+    /// §6`). O(events + installations of the block).
+    fn winner_first(&mut self, start: usize, parts: &[(usize, BTreeMap<String, usize>)]) {
+        if parts.len() < 2 {
+            return;
+        }
+        let end = self.trace.len();
+        // Each branch's range of events and, per handler name, the ids it installed: the
+        // installations before it and how many it made.
+        let mut ranges: Vec<(usize, usize, BTreeMap<String, (usize, usize)>)> = Vec::new();
+        for (position, (from, before)) in parts.iter().enumerate() {
+            let (to, after) = match parts.get(position + 1) {
+                Some((to, after)) => (*to, after),
+                None => (end, &self.installs),
+            };
+            let made = after
+                .iter()
+                .filter_map(|(name, &count)| {
+                    let base = before.get(name).copied().unwrap_or(0);
+                    (count > base).then(|| (name.clone(), (base, count - base)))
+                })
+                .collect();
+            ranges.push((*from, to, made));
+        }
+        if let Some(winner) = ranges.pop() {
+            ranges.insert(0, winner);
+        }
+        let mut events: Vec<Option<Event>> = self
+            .trace
+            .split_off(start)
+            .into_iter()
+            .map(Some)
+            .collect();
+        // The ids each name gets, in the new order, from the installations before the block.
+        let mut next: BTreeMap<String, usize> = parts
+            .first()
+            .map(|(_, before)| before.clone())
+            .unwrap_or_default();
+        for (from, to, made) in &ranges {
+            let mut renamed: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
+            for (name, &(base, count)) in made {
+                let new_base = next.get(name).copied().unwrap_or(0);
+                renamed.insert(name.as_str(), (base, count, new_base));
+                next.insert(name.clone(), new_base + count);
+            }
+            let slots = events
+                .get_mut(from.saturating_sub(start)..to.saturating_sub(start))
+                .into_iter()
+                .flatten();
+            for slot in slots {
+                let Some(mut event) = slot.take() else {
+                    continue;
+                };
+                if let Some(rest) = event.instance.strip_prefix("with:")
+                    && let Some((name, count)) = rest.rsplit_once('#')
+                    && let Ok(count) = count.parse::<usize>()
+                    && let Some(&(base, made, new_base)) = renamed.get(name)
+                    && count > base
+                    && count <= base + made
+                {
+                    event.instance = format!("with:{name}#{}", count - base + new_base);
+                }
+                event.seq = self.trace.len() + 1;
+                self.trace.push(event);
+            }
+        }
     }
 
     /// The elements a `together for` visits, in order.
@@ -3622,6 +3780,7 @@ mod tests {
             max_memory: 2,
             held: &probe,
             stop_after: None,
+            task_depth: 10,
             stop: None,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits);

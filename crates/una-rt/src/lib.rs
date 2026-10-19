@@ -24,6 +24,7 @@ pub mod decimal;
 pub mod ffi;
 pub mod generic;
 pub mod host;
+mod interrupt;
 mod json;
 pub mod render;
 pub mod runtime;
