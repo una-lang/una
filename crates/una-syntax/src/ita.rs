@@ -404,6 +404,40 @@ impl<'l> Cursor<'l> {
         }
     }
 
+    /// An integer's digits as written, for the items of a `serve` grant, whose ranges and
+    /// spelling `una_core::http::serve` checks.
+    fn digits(&mut self) -> Result<String, String> {
+        match self.peek() {
+            Some(Tok {
+                item: Item::Int(digits),
+                ..
+            }) => {
+                self.at += 1;
+                Ok(digits.clone())
+            }
+            other => Err(expected("a number", other, self.here()).message),
+        }
+    }
+
+    /// `at most <n>`, as its digits.
+    fn at_most(&mut self) -> Result<String, String> {
+        if !(self.eat_word("at") && self.eat_word("most")) {
+            return Err("expected `at most` and a number".to_owned());
+        }
+        self.digits()
+    }
+
+    /// The unit of an item, which must be the one the item counts in.
+    fn unit(&mut self, unit: &str, item: &str) -> Result<(), String> {
+        match self.next() {
+            Some(Tok {
+                item: Item::Upper(written),
+                ..
+            }) if written == unit => Ok(()),
+            _ => Err(format!("`{item}` is a number of {unit}, written `{item} at most <n> {unit}`")),
+        }
+    }
+
     /// The end of the line: anything left is an error.
     fn end(&self) -> Result<(), Error> {
         match self.peek() {
@@ -683,8 +717,11 @@ pub struct Grant {
     pub spec: String,
     /// The grant's line.
     pub range: Range<usize>,
-    /// The limit lines below it (ADR 0117 rule 8), each the range of its line.
+    /// The limit lines below an `http` grant (ADR 0117 rule 8), each the range of its line.
     pub limits: Vec<Range<usize>>,
+    /// The item lines below a `serve` grant (`spec/31 §2` rule 3), each the range of its line,
+    /// in the order of the `;` items of `spec`.
+    pub items: Vec<Range<usize>>,
 }
 
 /// The `run` section (ADR 0122 rules 11 and 12).
@@ -1384,7 +1421,7 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
             for grant_line in &child.children {
                 match grant(grant_line) {
                     Ok(grant) => run.grants.push(grant),
-                    Err(error) => errors.push(error),
+                    Err(found) => errors.extend(found),
                 }
             }
         } else {
@@ -1397,9 +1434,20 @@ fn run(line: &Line, errors: &mut Vec<Error>) -> Run {
     run
 }
 
-fn grant(line: &Line) -> Result<Grant, Error> {
+/// A grant line. Every problem of a `serve` grant's item lines is reported, and the grant is
+/// then dropped, so no grant is ever read with fewer limits than written.
+fn grant(line: &Line) -> Result<Grant, Vec<Error>> {
     let mut cursor = Cursor::new(line);
-    let kind = cursor.word("a grant: `console`, `clock`, `env`, `keys`, `files` or `http`")?;
+    if cursor.eat_word("serve") {
+        return serve_grant(line, &mut cursor);
+    }
+    grant_line(line, &mut cursor).map_err(|error| vec![error])
+}
+
+fn grant_line(line: &Line, cursor: &mut Cursor<'_>) -> Result<Grant, Error> {
+    let kind = cursor.word(
+        "a grant: `console`, `clock`, `env`, `keys`, `files`, `http` or `serve`",
+    )?;
     let spec = match kind.value.as_str() {
         "console" | "clock" | "env" => kind.value.clone(),
         "keys" => {
@@ -1473,7 +1521,7 @@ fn grant(line: &Line) -> Result<Grant, Error> {
             return Err(Error::new(
                 kind.range,
                 format!(
-                    "unknown grant `{other}`; the grants are `console`, `clock`, `env`, `keys`, `files` and `http`"
+                    "unknown grant `{other}`; the grants are `console`, `clock`, `env`, `keys`, `files`, `http` and `serve`"
                 ),
             ));
         }
@@ -1488,7 +1536,144 @@ fn grant(line: &Line) -> Result<Grant, Error> {
         spec,
         range: line.range.clone(),
         limits,
+        items: Vec::new(),
     })
+}
+
+/// `serve "<origin>"` and its item lines (`spec/31 §2` rule 3), written as the text spec
+/// `serve:<origin>;<item>;...`. Whether the origin and the values are valid is
+/// `una_core::http::serve`'s to say; this reads the form of each line. An error of an item
+/// line is reported at the line.
+fn serve_grant(line: &Line, cursor: &mut Cursor<'_>) -> Result<Grant, Vec<Error>> {
+    let origin = cursor
+        .text("the address the grant listens on, as \"http://127.0.0.1:8080\"")
+        .and_then(|origin| cursor.end().map(|()| origin))
+        .map_err(|error| vec![error])?;
+    let mut spec = format!("serve:{}", origin.value);
+    let mut items = Vec::new();
+    let mut errors = Vec::new();
+    for child in &line.children {
+        match serve_item(child) {
+            Ok(item) => {
+                spec.push(';');
+                spec.push_str(&item);
+                items.push(child.range.clone());
+            }
+            Err(message) => errors.push(Error::new(child.range.clone(), message)),
+        }
+        if !child.children.is_empty() {
+            errors.push(Error::new(
+                child.range.clone(),
+                "an item of a serve grant has no lines below it",
+            ));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(Grant {
+        spec,
+        range: line.range.clone(),
+        limits: Vec::new(),
+        items,
+    })
+}
+
+/// One item line of a `serve` grant, as its text item: `certificate "F"` is `certificate=F`,
+/// `at most 6 at once` is `6/once`, `body at most 64 KiB` is `body=64`, and so on.
+fn serve_item(line: &Line) -> Result<String, String> {
+    let mut cursor = Cursor::new(line);
+    let message = |error: Error| error.message;
+    let name = cursor
+        .word("an item of a serve grant (spec/31 §2)")
+        .map_err(message)?;
+    let item = match name.value.as_str() {
+        "tls12" => "tls12".to_owned(),
+        "certificate" | "key" => {
+            let path = cursor.text("the file's path").map_err(message)?;
+            if path.value.contains(';') {
+                return Err(format!(
+                    "the path of `{}` holds `;`, which ends an item of a grant",
+                    name.value
+                ));
+            }
+            format!("{}={}", name.value, path.value)
+        }
+        "hosts" => {
+            let mut names = Vec::new();
+            loop {
+                let host = cursor.text("a host name").map_err(message)?;
+                if host.value.contains(',') || host.value.contains(';') {
+                    return Err(format!("`{}` is not a host name", host.value));
+                }
+                names.push(host.value);
+                if !cursor.eat_punct(",") {
+                    break;
+                }
+            }
+            format!("hosts={}", names.join(","))
+        }
+        "at" => {
+            if !cursor.eat_word("most") {
+                return Err("expected `at most`".to_owned());
+            }
+            let count = cursor.digits()?;
+            if cursor.eat_word("at") && cursor.eat_word("once") {
+                format!("{count}/once")
+            } else if cursor.eat_word("per") {
+                let period = cursor.word("`second`, `minute` or `hour`").map_err(message)?;
+                if !matches!(period.value.as_str(), "second" | "minute" | "hour") {
+                    return Err("a rate is per `second`, `minute` or `hour`".to_owned());
+                }
+                format!("{count}/{}", period.value)
+            } else {
+                return Err("expected `at once`, or `per` and a period".to_owned());
+            }
+        }
+        "peer" | "peer_buffers" | "peer_replies" if cursor.eat_word("none") => {
+            format!("{}=none", name.value)
+        }
+        "waiting" | "connections" | "requests" | "headers" | "peer" => {
+            format!("{}={}", name.value, cursor.at_most()?)
+        }
+        "handshakes" => {
+            let count = cursor.at_most()?;
+            if !(cursor.eat_word("per") && cursor.eat_word("second")) {
+                return Err("`handshakes` is a number per second: `handshakes at most 512 per second`".to_owned());
+            }
+            format!("handshakes={count}")
+        }
+        "line" | "header" | "body" => {
+            let count = cursor.at_most()?;
+            cursor.unit("KiB", &name.value)?;
+            format!("{}={count}", name.value)
+        }
+        "buffers" | "replies" | "delivered" | "peer_buffers" | "peer_replies" => {
+            let count = cursor.at_most()?;
+            cursor.unit("MiB", &name.value)?;
+            format!("{}={count}", name.value)
+        }
+        "idle" | "read" | "write" | "answer" => {
+            if !cursor.eat_word("within") {
+                return Err(format!(
+                    "expected `{} within <n> seconds`",
+                    name.value
+                ));
+            }
+            let count = cursor.digits()?;
+            if !(cursor.eat_word("seconds") || cursor.eat_word("second")) {
+                return Err(format!("`{}` is a number of seconds", name.value));
+            }
+            format!("{}={count}", name.value)
+        }
+        other => {
+            return Err(format!(
+                "`{other}` is not an item of a serve grant (spec/31 §2)"
+            ));
+        }
+    };
+    cursor.end().map_err(message)?;
+    Ok(item)
 }
 
 fn drive(line: &Line, errors: &mut Vec<Error>) -> Drive {
