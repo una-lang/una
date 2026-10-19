@@ -1673,8 +1673,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let value = self.atom(deadline, &ctx);
                         let goal = (value.f.sort() == "Int")
                             .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
-                        let text =
-                            format!("{} >= 1", self.text(*deadline_span));
+                        let text = format!("{} >= 1", self.text(*deadline_span));
                         self.site(
                             ObligationKind::Refinement,
                             &ctx,

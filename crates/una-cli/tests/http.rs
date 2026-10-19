@@ -616,7 +616,10 @@ pub main() -> Unit
     args.extend(flags);
     let interpreted = una(&dir, &args);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert!(started.elapsed() < Duration::from_secs(20), "the deadline cut nothing");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the deadline cut nothing"
+    );
     let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
     assert_eq!(
         document["output"],
@@ -651,7 +654,10 @@ pub main() -> Unit
         ],
         "{trace}"
     );
-    assert_eq!(trace[1], serde_json::json!({"seq": 2, "outcome": {"kind": "timeout"}}));
+    assert_eq!(
+        trace[1],
+        serde_json::json!({"seq": 2, "outcome": {"kind": "timeout"}})
+    );
 
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -665,7 +671,10 @@ pub main() -> Unit
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "{native:?}");
-    assert!(started.elapsed() < Duration::from_secs(20), "the deadline cut nothing");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the deadline cut nothing"
+    );
     assert_eq!(
         String::from_utf8_lossy(&native.stdout),
         "iteration 0\niteration 1\ndone 2\n"
