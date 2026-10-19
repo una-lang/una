@@ -50,6 +50,14 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(ty) = self.dense_field(&target_ty, field, span) {
             return ty;
         }
+        // The length of a `Stack` or a `Queue` takes its top label, as a list's does (ADR 0119
+        // IF1).
+        if field == "len"
+            && let Ty::Coll(una_core::Coll::Stack | una_core::Coll::Queue, _) = labeled.unlabeled()
+        {
+            self.resolved(span, Res::Len);
+            return Ty::Int.with_label(&top);
+        }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
                 self.resolved(span, Res::Field { kind, index });
@@ -203,6 +211,17 @@ impl<'a> Checker<'_, 'a, '_> {
             return ty;
         }
         if let Some(ty) = self.map_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.seq_method(
             target,
             &target_ty,
             place.as_ref(),

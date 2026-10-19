@@ -315,6 +315,8 @@ fn the_builtins_are_exactly_the_methods_the_checker_resolves() {
     let group = |b: &Builtin| match (b.name, b.receiver) {
         ("len", _) => "len",
         (_, "Map[K, V]") => "Map",
+        (_, "Stack[T]") => "Stack",
+        (_, "Queue[T]") => "Queue",
         (name, _) if name.starts_with("to_") => "conversion",
         _ => "fixed",
     };
@@ -375,8 +377,17 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
 
 /// The module of a probe of `b`: a call with arguments of its written parameter types whose
 /// result is bound to its written result type, or, when `negative`, the same call with one
-/// argument of another type, or its result bound to another type when it takes none.
+/// argument of another type, or its result bound to another type when it takes none. A
+/// receiver of `std.collections` is imported, which editions before 0.4 refuse with U1001.
 fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
+    let import = if ["Stack[", "Queue["]
+        .iter()
+        .any(|collection| b.receiver.starts_with(collection))
+    {
+        "import std.collections (Queue, Stack)\n\n"
+    } else {
+        ""
+    };
     let receiver = instantiate(b.receiver, fixed);
     let result = instantiate(&b.result, fixed);
     let args: Vec<String> = b
@@ -393,21 +404,24 @@ fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
     } else {
         format!("x.{}({})", b.name, args.join(", "))
     };
-    let body = if b.edit {
+    let bound = if negative && b.params.is_empty() {
+        if result == "Bool" {
+            "Int".to_owned()
+        } else {
+            "Bool".to_owned()
+        }
+    } else {
+        result.clone()
+    };
+    // An update whose result is not `Unit`, as `pop`, is the whole expression of a `let`.
+    let body = if b.edit && result != "Unit" {
+        format!("  let edit x: {receiver} = r\n  let out: {bound} = edit {call}\n")
+    } else if b.edit {
         format!("  let edit x: {receiver} = r\n  edit {call}\n")
     } else {
-        let bound = if negative && b.params.is_empty() {
-            if result == "Bool" {
-                "Int".to_owned()
-            } else {
-                "Bool".to_owned()
-            }
-        } else {
-            result
-        };
         format!("  let x: {receiver} = r\n  let out: {bound} = {call}\n")
     };
-    format!("module probe\n\npub probe(r: {receiver}) -> Unit\n=\n{body}  unit\n")
+    format!("module probe\n\n{import}pub probe(r: {receiver}) -> Unit\n=\n{body}  unit\n")
 }
 
 #[test]

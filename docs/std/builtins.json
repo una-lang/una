@@ -256,6 +256,149 @@
       ]
     },
     {
+      "name": "push",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit s.push(item: T) -> Unit\n  where s: Stack[T]\nedit q.push(item: T) -> Unit\n  where q: Queue[T]",
+          "docs": [
+            "Updates the receiver in place, written `edit s.push(item: x)`: a `Stack` takes",
+            "`item` on top and a `Queue` at its back, and its length grows by one, in O(1)",
+            "amortized time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pop",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit s.pop() -> Option[T]\n  where s: Stack[T]\nedit q.pop() -> Option[T]\n  where q: Queue[T]",
+          "docs": [
+            "Updates the receiver in place, written `let x = edit s.pop()`: it removes the top of",
+            "a `Stack` or the front of a `Queue` and gives it as `Some`, or gives `None` and",
+            "leaves an empty one as it is, in O(1) amortized time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "peek",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.peek() -> Option[T]\n  where s: Stack[T]\nq.peek() -> Option[T]\n  where q: Queue[T]",
+          "docs": [
+            "The top of a `Stack` or the front of a `Queue`, the item `pop` would remove, as",
+            "`Some`, and `None` exactly when it is empty, in O(1) time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "items",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]",
+          "docs": [
+            "The items as a list, a `Stack` top first and a `Queue` front first, as many as its",
+            "`len`, in O(n) time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "push_front",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit q.push_front(item: T) -> Unit\n  where q: Queue[T]",
+          "docs": [
+            "Updates a `Queue` in place, written `edit q.push_front(item: x)`: `item` goes to the",
+            "front, so `peek` gives it, in O(1) amortized time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pop_back",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit q.pop_back() -> Option[T]\n  where q: Queue[T]",
+          "docs": [
+            "Updates a `Queue` in place, written `let x = edit q.pop_back()`: it removes the back",
+            "and gives it as `Some`, or gives `None` when the queue is empty, in O(1) amortized",
+            "time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "peek_back",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "q.peek_back() -> Option[T]\n  where q: Queue[T]",
+          "docs": [
+            "The back of a `Queue`, the item `pop_back` would remove, as `Some`, and `None`",
+            "exactly when it is empty, in O(1) time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "to_i8",
       "module": "builtin",
       "kind": "method",

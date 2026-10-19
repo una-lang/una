@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, ShapeFun,
-    Source, Term, Type, Use, print_term_with,
+    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
+    ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -390,6 +390,29 @@ pub(crate) struct Index<'p> {
 /// package declares is never taken for a prelude kind ([`Index::prelude_kind`]).
 fn is_prelude(module: &str) -> bool {
     module == una_core::PRELUDE_MODULE
+}
+
+/// The prefix of the sorts of `Stack[T]`, `i!Stack_<T>` (ADR 0119 V1).
+const STACK: &str = "i!Stack_";
+
+/// The prefix of the sorts of `Queue[T]`, `i!Queue_<T>` (ADR 0119 V1).
+const QUEUE: &str = "i!Queue_";
+
+/// The element type of a `Stack[T]` or a `Queue[T]` of `std.collections`, refinements
+/// included; `None` for any other type.
+fn seq_element(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Base {
+            base: Base::Named { module, name, args },
+            ..
+        } if module == una_core::COLLECTIONS_MODULE
+            && (name == "Stack" || name == "Queue")
+            && args.len() == 1 =>
+        {
+            args.first()
+        }
+        _ => None,
+    }
 }
 
 /// Whether (`module`, `name`) is a collection type of `std.collections` (ADR 0119), which Core
@@ -2312,6 +2335,24 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     self.map_facts(*op, &values, &x, ctx);
                 }
+                if let Prim::Seq(op) = prim {
+                    // ADR 0119 rule 1 and ADR 0103 rule 3: a push stores its item at the
+                    // element type, a flow site with its `refinement` obligations; the other
+                    // operations store nothing.
+                    if matches!(op, SeqOp::PushFront | SeqOp::PushBack)
+                        && let Some(Type::Base {
+                            base: Base::Named { args: element, .. },
+                            ..
+                        }) = values.first().map(|seq| &seq.ty)
+                        && let (Some(target), Some(value)) =
+                            (element.first().cloned(), values.get(1))
+                        && has_refinements(&target)
+                    {
+                        let at = arg_spans.get(1).copied().unwrap_or(*span);
+                        self.refined_flow(&target, value, at, ctx);
+                    }
+                    self.seq_facts(*op, &values, &x, ctx);
+                }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -2963,6 +3004,35 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Shape(_)
                 // A decimal's `Option` results have no fact behind their nested positions.
                 | Prim::Decimal(_) => unknown(),
+                // ADR 0119 V6: what a `Stack` or a `Queue` gives back carries its element
+                // position's refinements, as an element of a list does (ADR 0103 rule 6), and an
+                // update gives a sequence of the receiver's type.
+                Prim::Seq(op) => {
+                    let receiver = args.first().map(|seq| self.atom(seq, ctx).ty);
+                    let element = receiver.as_ref().and_then(seq_element).cloned();
+                    match (receiver, element) {
+                        (Some(sequence), Some(element)) => {
+                            let wrapped = |name: &str| Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: name.to_owned(),
+                                    args: vec![element.clone()],
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            match op {
+                                SeqOp::PeekFront | SeqOp::PeekBack => wrapped("Option"),
+                                SeqOp::Items => wrapped("List"),
+                                SeqOp::PushFront
+                                | SeqOp::PushBack
+                                | SeqOp::PopFront
+                                | SeqOp::PopBack => sequence,
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
             }),
             Rhs::Call {
                 function,
@@ -3603,10 +3673,14 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// `.len` of a text, list or map, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
+        // A `Stack` and a `Queue` have a length too (ADR 0119 V1), with its ground fact
+        // `len >= 0`.
         let has_len = sort == TEXT
             || sort.starts_with(LIST)
             || sort.starts_with(MAP)
-            || sort.starts_with(ARRAY);
+            || sort.starts_with(ARRAY)
+            || sort.starts_with(STACK)
+            || sort.starts_with(QUEUE);
         has_len.then(|| len_of(&value.f))
     }
 
@@ -3703,6 +3777,48 @@ impl<'p, 'i> Walker<'p, 'i> {
             MapOp::Keys | MapOp::Values | MapOp::Entries => {
                 if let Some(new_len) = self.len(x) {
                     ctx.assume(F::eq(new_len, old_len));
+                }
+            }
+        }
+    }
+
+    /// Facts of a `Stack`'s or a `Queue`'s operation on its result `x` (ADR 0119 rules 5 and 6),
+    /// each true of every sequence: a push adds one to the length, a removal takes one off a
+    /// nonempty sequence and keeps an empty one, `items()` has the sequence's length, and a
+    /// read is `None` exactly when the sequence is empty. The facts of ADR 0119 V2 about which
+    /// element a read gives back need the uninterpreted `peek` of V1, which this encoding does
+    /// not have yet, so a read's payload is unknown here. O(1) facts per call.
+    fn seq_facts(&mut self, op: SeqOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let Some(old_len) = values.first().and_then(|seq| self.len(seq)) else {
+            return;
+        };
+        let zero = || F::Int("0".to_owned());
+        let one = || F::Int("1".to_owned());
+        match op {
+            SeqOp::PushFront | SeqOp::PushBack => {
+                if let Some(new_len) = self.len(x) {
+                    ctx.assume(F::eq(new_len, F::op("+", vec![old_len, one()])));
+                }
+            }
+            SeqOp::PopFront | SeqOp::PopBack => {
+                if let Some(new_len) = self.len(x) {
+                    let nonempty = F::op(">", vec![old_len.clone(), zero()]);
+                    let shorter = F::op("-", vec![old_len, one()]);
+                    ctx.assume(F::eq(
+                        new_len,
+                        F::op("ite", vec![nonempty, shorter, zero()]),
+                    ));
+                }
+            }
+            SeqOp::Items => {
+                if let Some(new_len) = self.len(x) {
+                    ctx.assume(F::eq(new_len, old_len));
+                }
+            }
+            // `None` is variant 1 of `Option`.
+            SeqOp::PeekFront | SeqOp::PeekBack => {
+                if let Some(tag) = self.tag(x) {
+                    ctx.assume(F::eq(F::eq(tag, one()), F::eq(old_len, zero())));
                 }
             }
         }
@@ -4080,7 +4196,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
                 float_term(op, &args)?
             }
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) => {
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms.
+            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) | Prim::Seq(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),

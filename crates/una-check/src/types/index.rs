@@ -110,6 +110,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             | Res::UnitMethod { .. }
             | Res::MapMethod(_)
             | Res::MapUpdate(_)
+            | Res::SeqMethod(_)
+            | Res::SeqUpdate(_)
             | Res::Constant(_)
             | Res::Shape(_)
             | Res::DenseElement(_)

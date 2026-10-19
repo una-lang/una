@@ -1852,6 +1852,70 @@ fn map_updates_and_lookups_scale_as_n_log_n() {
     );
 }
 
+const SEQUENCE_SCALE: &str = "module scale
+
+import std.collections (Queue, Stack, empty_queue, empty_stack)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit q: Queue[Int] = empty_queue()
+  let edit s: Stack[Int] = empty_stack()
+  for i in 0..<COUNT
+    edit q.push(item: i)
+    edit s.push(item: i)
+  for i in 0..<COUNT
+    let front = edit q.pop()
+    let top = edit s.pop()
+    unit
+  @console.print(\"{q.len} {s.len}\")
+";
+
+#[test]
+fn queue_and_stack_pushes_and_pops_scale_linearly() {
+    // ADR 0119 rules 5 and 6: `push` and `pop` are O(1) amortized, and an update of a sequence
+    // nothing else holds is in place. Ten times the items take under 30 times as long: linear
+    // time gives about 10, a copy per update about 100. A miss is measured twice more before it
+    // fails (#341).
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("sequence_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita sequence_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/runtime/stack_queue_run/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` items (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            SEQUENCE_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), "0 0\n");
+        seconds
+    };
+    timing::assert_growth(
+        "items",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        30.0,
+        measure,
+    );
+}
+
 /// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
 /// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
 fn appends_through_calls(shape: &str, steps: usize) -> String {

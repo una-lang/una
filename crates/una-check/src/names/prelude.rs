@@ -142,9 +142,10 @@ pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
 /// The path of the standard module of the collections, edition 0.4 (ADR 0119 rule 0).
 pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
 
-/// What `std.collections` exports to an import in edition 0.4: its types and its kind
-/// `Ranked` (ADR 0119 rule 0). Its functions join the list with the types they make.
-pub(crate) const STD_COLLECTIONS_NAMES: [&str; 8] = [
+/// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`
+/// and the functions that make the types implemented so far (ADR 0119 rule 0). The other
+/// functions join the list with the types they make.
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 10] = [
     "Stack",
     "Queue",
     "Set",
@@ -153,6 +154,8 @@ pub(crate) const STD_COLLECTIONS_NAMES: [&str; 8] = [
     "PriorityQueue",
     "Ranked",
     "BitSet",
+    "empty_stack",
+    "empty_queue",
 ];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
