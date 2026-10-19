@@ -24,7 +24,7 @@ pub struct Manifest {
     pub entry: Option<Located>,
     /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
     pub grants: Vec<Located>,
-    /// `[drive]`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
+    /// The `drive` section of `ita.una`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
     pub drive: Option<Drive>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
     pub edition: Edition,
@@ -117,8 +117,10 @@ impl Format {
 /// 1).
 pub const MAX_DRIVE_MILLISECONDS: u64 = 86_400_000;
 
-/// `[drive]`, edition `0.4` (ADR 0116 rule 1, `spec/26 §2`): the module whose `init`, `step` and
-/// `on_stop` the host drives, the tick period and the step budget, in milliseconds.
+/// The `drive` section of `ita.una`, edition `0.4` (ADR 0116 rule 1, ADR 0122 rule 11,
+/// `spec/26 §2`): the module whose `init`, `step` and `on_stop` the host drives, the tick period
+/// and the step budget, in milliseconds. `una.toml` has no such table: edition 0.4 reads only
+/// `ita.una`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Drive {
     /// `module`, a module of the package.
@@ -289,8 +291,6 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     // amended, and ADR 0093): earlier editions report them as the unknown tables they always
     // were, so their output does not change.
     let edition_0_3 = declared_edition(document.get_ref()) >= Edition::V0_3;
-    // `[drive]` is a table of edition 0.4 only (ADR 0116 rule 1).
-    let edition_0_4 = declared_edition(document.get_ref()) >= Edition::V0_4;
     for (key, value) in document.get_ref().iter() {
         let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
             continue;
@@ -306,7 +306,6 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             "run" => run(&table, &mut manifest, &mut errors),
             "contracts" if edition_0_3 => contracts(&table, &mut manifest, &mut errors),
             "boundaries" if edition_0_3 => boundaries(&table, &mut manifest, &mut errors),
-            "drive" if edition_0_4 => drive(&table, &mut manifest, &mut errors),
             other => errors.push(ProjectError::new(
                 Code::U7002,
                 key.span(),
@@ -323,17 +322,6 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     }
     if !manifest.boundaries.is_empty() {
         boundary_conflicts(&manifest, &mut errors);
-    }
-    // The host drives the package's step, or runs its `main`, never both (ADR 0116 rule 1).
-    if let (Some(drive), Some(entry)) = (&manifest.drive, &manifest.entry) {
-        errors.push(ProjectError::new(
-            Code::U7002,
-            drive.at.clone(),
-            format!(
-                "[drive] and [run] entry `{}` both name what the host runs; keep one",
-                entry.value
-            ),
-        ));
     }
     (manifest, errors)
 }
@@ -530,78 +518,6 @@ fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectE
                 }
             }
             _ => errors.push(table.unknown(key, Code::U7002)),
-        }
-    }
-}
-
-/// `[drive]`: `module`, `ticks` and an optional `budget` (ADR 0116 rule 1). A missing key, a
-/// value out of range and an unknown key are U7002; the table is kept only when it is whole.
-fn drive(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
-    let mut module = None;
-    let mut ticks = None;
-    let mut budget = None;
-    let mut whole = true;
-    let mut seen = Vec::new();
-    for (key, value) in table.entries.iter() {
-        let name = key.get_ref().as_ref();
-        match name {
-            "module" => {
-                seen.push("module");
-                match string("module", value, Code::U7002, errors) {
-                    Some(path) if is_module_path(&path.value) => module = Some(path),
-                    Some(path) => errors.push(ProjectError::new(
-                        Code::U7002,
-                        path.range,
-                        format!("`{}` is not a module path", path.value),
-                    )),
-                    None => {}
-                }
-            }
-            "ticks" => {
-                seen.push("ticks");
-                ticks = drive_milliseconds("ticks", value, errors);
-            }
-            "budget" => {
-                budget = drive_milliseconds("budget", value, errors);
-                whole &= budget.is_some();
-            }
-            _ => {
-                whole = false;
-                errors.push(table.unknown(key, Code::U7002));
-            }
-        }
-    }
-    for required in ["module", "ticks"] {
-        if !seen.contains(&required) {
-            errors.push(table.missing(required, Code::U7002));
-        }
-    }
-    if let (Some(module), Some(ticks), true) = (module, ticks, whole) {
-        manifest.drive = Some(Drive {
-            module,
-            ticks,
-            budget,
-            at: table.at.clone(),
-        });
-    }
-}
-
-/// A `[drive]` duration in milliseconds, from 1 to [`MAX_DRIVE_MILLISECONDS`], or U7002.
-fn drive_milliseconds(
-    key: &str,
-    value: &toml::Spanned<toml::de::DeValue<'_>>,
-    errors: &mut Vec<ProjectError>,
-) -> Option<u64> {
-    let number = integer(key, value, Code::U7002, errors)?;
-    match u64::try_from(number) {
-        Ok(number) if (1..=MAX_DRIVE_MILLISECONDS).contains(&number) => Some(number),
-        _ => {
-            errors.push(ProjectError::new(
-                Code::U7002,
-                value.span(),
-                format!("`{key}` must be from 1 to {MAX_DRIVE_MILLISECONDS} milliseconds"),
-            ));
-            None
         }
     }
 }

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use pretty_assertions::assert_eq;
 use una_project::{
-    DEFAULT_SOLVER_VERSION, LoadError, Lock, MAX_DRIVE_MILLISECONDS, Role, discover, is_grant,
+    DEFAULT_SOLVER_VERSION, LoadError, Lock, Role, discover, is_grant,
     is_module_path, parse_lock, parse_manifest,
 };
 
@@ -307,63 +307,4 @@ fn boundaries_are_a_table_of_edition_0_3() {
     assert_eq!(key("a"), None);
     assert_eq!(key("c.d"), Some("c"));
     assert_eq!(key("c"), Some("c"));
-}
-
-#[test]
-fn a_package_of_edition_0_4_may_hand_its_step_to_the_host() {
-    // ADR 0116 rule 1: `[drive]` names the module, the tick period and an optional budget, in
-    // milliseconds from 1 to a day; it exists in edition 0.4 only and excludes `[run] entry`.
-    let edition = |edition: &str, rest: &str| {
-        format!("[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n{rest}")
-    };
-    let (manifest, errors) = parse_manifest(&edition(
-        "0.4",
-        "[drive]\nmodule = \"game\"\nticks = 16\nbudget = 8\n\n[run]\ngrants = [\"console\"]\n",
-    ));
-    assert_eq!(errors, vec![]);
-    let drive = manifest.drive.unwrap();
-    assert_eq!(drive.module.value, "game");
-    assert_eq!((drive.ticks, drive.budget), (16, Some(8)));
-    let (manifest, errors) = parse_manifest(&edition(
-        "0.4",
-        "[drive]\nmodule = \"game\"\nticks = 1000\n",
-    ));
-    assert_eq!(errors, vec![]);
-    assert_eq!(manifest.drive.unwrap().budget, None);
-    assert_eq!(
-        manifest_errors(&edition("0.3", "[drive]\nmodule = \"game\"\nticks = 16\n")),
-        ["U7002 5:2 unknown table [drive] in una.toml"]
-    );
-    assert_eq!(
-        manifest_errors(&edition("0.4", "[drive]\nmodule = \"game\"\nticks = 0\n")),
-        ["U7002 7:9 `ticks` must be from 1 to 86400000 milliseconds"]
-    );
-    assert_eq!(
-        manifest_errors(&edition(
-            "0.4",
-            "[drive]\nmodule = \"game\"\nticks = 16\nbudget = 86400001\n"
-        )),
-        ["U7002 8:10 `budget` must be from 1 to 86400000 milliseconds"]
-    );
-    assert_eq!(
-        manifest_errors(&edition("0.4", "[drive]\nmodule = \"game\"\n")).len(),
-        1
-    );
-    assert_eq!(
-        manifest_errors(&edition(
-            "0.4",
-            "[drive]\nmodule = \"game\"\nticks = 16\nrate = 2\n"
-        )),
-        ["U7002 8:1 unknown key `rate` in [drive]"]
-    );
-    let conflict = manifest_errors(&edition(
-        "0.4",
-        "[drive]\nmodule = \"game\"\nticks = 16\n\n[run]\nentry = \"game\"\n",
-    ));
-    assert_eq!(conflict.len(), 1);
-    assert!(
-        conflict[0].starts_with("U7002 5:2 [drive] and [run] entry `game`"),
-        "{conflict:?}"
-    );
-    assert_eq!(MAX_DRIVE_MILLISECONDS, 86_400_000);
 }
