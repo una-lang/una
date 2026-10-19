@@ -11,7 +11,7 @@ codes: [U7002]
 
 A package is one program or library: a directory that holds the source files under `src/` and a file `una.toml`, its manifest, which says what the package is called, which version it is and which edition of Una it uses. `name` is the package's name. It is required, in the `[package]` table, and is a non-blank string.
 
-Learn more: [The manifest and the lock](/learn/packages/the-manifest-and-the-lock/).
+Learn more: [The manifest and the lock](/learn/packages/#s11-3).
 
 `una.toml`
 

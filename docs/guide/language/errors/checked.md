@@ -16,7 +16,7 @@ codes: [U2013, U2014, U2016, U3009, U4002, U7003]
 
 This is how a value obtains an opaque fact, one the solver (the program that `una check` asks to prove each fact) cannot prove. `checked` replaces a proof made before the program runs with a test while it runs, so it is an escape hatch. Each module may use it only as many times as its package's escape budget (a count set in `una.toml`) allows, and every use is listed in the build report (what `una report` prints about a build).
 
-Learn more: [When no proof can decide: checked](/learn/failure/when-no-proof-can-decide-checked/).
+Learn more: [When no proof can decide: checked and opaque predicates](/learn/failure/#s7-5).
 
 `una.toml`
 
@@ -181,7 +181,7 @@ pub stock_level(units: Int) -> Int
   checked(units, it >= 0) else fail Declined
 ```
 
-**No test that depends on labeled data** (data marked with a label above `public`, such as `internal` or `secret`). A failure of `checked` reveals whether the predicate holds. So `checked` is U4002 on a labeled value, on a predicate that reads a labeled value, or under a raised [program counter](/learn/information-flow/branches-and-failures-implicit-flows/) (the label of the conditions that decided whether this line runs):
+**No test that depends on labeled data** (data marked with a label above `public`, such as `internal` or `secret`). A failure of `checked` reveals whether the predicate holds. So `checked` is U4002 on a labeled value, on a predicate that reads a labeled value, or under a raised [Branches and failures: implicit flows](/learn/information-flow/#s17-3) (the label of the conditions that decided whether this line runs):
 
 `una.toml`
 

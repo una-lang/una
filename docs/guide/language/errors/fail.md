@@ -11,7 +11,7 @@ codes: [U3009, U4002, U6001, U6003]
 
 `fail V` ends the current function with a failure: the value `V`, a variant (one of the named alternatives of a kind) of the function's error kind (the kind that lists the ways the function may fail). There is no implicit propagation: the caller receives the failure at the line of the call, and must handle it there.
 
-Learn more: [Declaring a failure: fails and fail](/learn/failure/declaring-a-failure-fails-and-fail/).
+Learn more: [Declaring a failure: fails and fail](/learn/failure/#s7-2).
 
 ```una
 module shop
@@ -129,7 +129,7 @@ pub add_units(units: Int) -> Int
   if units > 100 then fail Declined else units
 ```
 
-**No failure that depends on labeled data.** `fail` is allowed only when the [program counter](/learn/information-flow/branches-and-failures-implicit-flows/) (the label of the conditions that decided whether this line runs) is `public`, since whether a function fails is observable. Code that must decide on labeled data returns a labeled value instead:
+**No failure that depends on labeled data.** `fail` is allowed only when the [Branches and failures: implicit flows](/learn/information-flow/#s17-3) (the label of the conditions that decided whether this line runs) is `public`, since whether a function fails is observable. Code that must decide on labeled data returns a labeled value instead:
 
 ```una
 -- fails with U4002

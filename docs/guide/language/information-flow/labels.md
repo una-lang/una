@@ -11,7 +11,7 @@ codes: [U4001, U4002, U4003, U4007]
 
 A label classifies data by how sensitive it is: a level, and optional categories (named kinds of data, such as personal data). The checker follows labels through every computation and every branch, and rejects any flow of data to a place that its label does not allow. The guarantee is termination-insensitive noninterference (data can influence what a reader sees only through a declared release, leaving aside whether the program finishes at all): an observer at a label sees the same values and effects in two runs that differ only in data labeled above it, unless a [policy](policy.md) released it.
 
-Learn more: [Labels and how they follow data](/learn/information-flow/labels-and-how-they-follow-data/), and [Sinks: where labeled data may go](/learn/information-flow/sinks-where-labeled-data-may-go/).
+Learn more: [Labels and how they follow data](/learn/information-flow/#s17-1), and [Sinks: where labeled data may go](/learn/information-flow/#s17-2).
 
 ```una
 module shop
@@ -47,7 +47,7 @@ module shop
 pub show_balance(balance: secret Int) -> Int = balance
 ```
 
-Branching raises the program counter (the label of the conditions that decided whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). A value chosen by a `secret` condition is `secret`, even when the branches are constants:
+Branching raises the program counter (the label of the conditions that decided whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/#s17-3)). A value chosen by a `secret` condition is `secret`, even when the branches are constants:
 
 ```una
 -- fails with U4001

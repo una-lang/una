@@ -11,7 +11,7 @@ codes: [U1002, U3001, U3002, U3003, U3004]
 
 `uses @x: C[ops]` is the header clause that gives a function authority (the right to act outside the program): inside its body, `@x` names a [capability](capability.md) `C`, and the body may perform the operations `ops` on it. There is no ambient authority (no power that code has just by existing, such as a global file system), so a function's capability context is exactly its `uses` clauses. A line acts outside the program only through an `@` operation, or through a call of a function that has `uses`.
 
-Learn more: [Declaring what a function may do: uses](/learn/capabilities/declaring-what-a-function-may-do-uses/).
+Learn more: [Declaring what a function may do: uses in full](/learn/capabilities/#s12-1).
 
 ```una
 module shop
@@ -160,7 +160,7 @@ Further rules:
 
 ## Edition
 
-`uses` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `uses of p`. Edition `0.3`, a preview, adds conditions on operations, as `Catalog[price, set_price where not dry_run]`, which the checker proves wherever the operation may run, and lets `una.toml` lock the `uses` of public functions under `[contracts]`, so that a header granting more than its lock is an error. See [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
+`uses` is the same in editions `0.1` and `0.2`. Edition `0.2` adds `uses of p`. Edition `0.3`, a preview, adds conditions on operations, as `Catalog[price, set_price where not dry_run]`, which the checker proves wherever the operation may run, and lets `una.toml` lock the `uses` of public functions under `[contracts]`, so that a header granting more than its lock is an error. See [Conditions on operations](/learn/authority/#s13-1).
 
 ## Normative source
 

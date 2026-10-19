@@ -11,7 +11,7 @@ codes: [U0103, U2018, U2019, U2020, U2021, U3013, U4001]
 
 From edition `0.2`, values stay values: there are no references (names that share one value, so that a change through one shows through the other) and no lifetimes (rules for how long such a sharing name stays valid), and an editable binding can be rebound, which means the name is given a new value.
 
-Learn more: [Passing a value in and out: edit](/learn/memory-and-concurrency/passing-a-value-in-and-out-edit/).
+Learn more: [Passing a value in and out: edit](/learn/memory/#s16-2).
 
 - **`let edit x = e`** declares a binding that assignments may rebind: `x = e`.
 - **A place**, an editable binding or a path of fields inside one, as `t.last`, can be assigned too: `t.last = value` rebuilds `t` with that field changed.
@@ -149,7 +149,7 @@ Further rules:
 - **No compound assignment**, and no assignment to a list element: elements change through `set`.
 - **Lambdas capture values.** A lambda captures an editable binding's value when it is created, and cannot edit it (U2019).
 - **Transactional.** A call that fails leaves its `edit` arguments unchanged for the caller. Effects already performed stay performed.
-- **Labels are fixed.** A rebind under a program counter (the label of the conditions that decide whether the line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)) above the binding's label is U4001, never a silent raise.
+- **Labels are fixed.** A rebind under a program counter (the label of the conditions that decide whether the line runs; see [Branches and failures: implicit flows](/learn/information-flow/#s17-3)) above the binding's label is U4001, never a silent raise.
 - **Not on operations.** Capability operations and handlers cannot declare `edit` or `take` parameters (U2020).
 - **One effect per line.** A call with an `edit` argument is the whole expression of a statement or `let` (U3013).
 

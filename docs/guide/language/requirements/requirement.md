@@ -11,7 +11,7 @@ codes: [U1002, U1005, U1006, U1007]
 
 A `requirement` records a human or business statement, with its source and its owner, so contracts (the conditions a function states with `requires` and `ensures`) can be traced to intent. A function names the requirements it implements with `derived from`. `una trace` then lists, for one requirement, every function derived from it, with its contract and the status of each proof.
 
-Learn more: [What the verifier proves and what examples show](/learn/testing/what-the-verifier-proves-and-what-examples-show/).
+Learn more: [What the verifier proves, and what examples show](/learn/testing/#s14-4).
 
 ```una
 module shop

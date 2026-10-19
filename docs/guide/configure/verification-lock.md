@@ -11,7 +11,7 @@ codes: [U5003, U7004]
 
 Una proves a program's obligations, the facts each line needs to be safe, such as a value staying in its range, with a solver: a separate program, Z3, that decides whether such a fact always holds. `verification.lock` pins which Z3 and which settings, so that a proof means the same on every machine. It sits at the package root, beside `una.toml`, and is committed. Proofs already found are kept in the proof cache, a folder of saved answers keyed by the lock's contents, so changing the lock verifies every obligation again.
 
-Learn more: [The manifest and the lock](/learn/packages/the-manifest-and-the-lock/) and [What the verifier proves](/learn/contracts/what-the-verifier-proves/).
+Learn more: [The manifest and the lock](/learn/packages/#s11-3) and [What the verifier proves](/learn/contracts/#s5-4).
 
 `una.toml`
 

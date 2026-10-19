@@ -11,7 +11,7 @@ codes: [U0101, U0103, U2023, U2024, U4002]
 
 From edition `0.2`, `together` runs independent work as concurrent tasks, pieces of work that may run at the same time, and every task ends before its block does. The result is that of running the tasks one after another, in order, stopping at the first failure, and the reported trace (the record of what the program did outside itself) lists each task's events in index order, whatever the interleaving, the order in which the tasks' steps happened to mix.
 
-Learn more: [Running work at the same time: together](/learn/memory-and-concurrency/running-work-at-the-same-time-together/).
+Learn more: [Running work at the same time: together](/learn/concurrency/#s15-1).
 
 - **`together`** with two or more `let` branches runs each branch as a task. The branches' bindings are in scope after the block.
 - **`together for x in xs`** runs one task per element, and gives the list of their results in element order.
@@ -128,7 +128,7 @@ Further rules:
 - **Failure and cancellation.** When a task fails, every task after it is cancelled, and the block fails with the failure of the lowest-indexed task that failed. Cancellation is cooperative, which means a task is never stopped in the middle of a step: a cancelled task stops at its next call, operation or loop iteration, and effects already performed stay.
 - **The trace** of a block is the traces of its tasks in index order, whatever the interleaving.
 - **Verification.** Each branch is verified with the facts known before the block and none of its siblings'.
-- **Labels.** Each branch runs under the block's program counter (the label of the conditions that decide whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). A `together for` over a labeled list, or a range with labeled bounds, runs its body under that label, so `fail` and calls that can fail are U4002 there.
+- **Labels.** Each branch runs under the block's program counter (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/#s17-3)). A `together for` over a labeled list, or a range with labeled bounds, runs its body under that label, so `fail` and calls that can fail are U4002 there.
 - **Timing is out of the model.** The relative order of the effects of different tasks, and how far a cancelled task got, depend on timing.
 - **No task values.** There are no detached tasks, no `race` or `select`, no timeouts and no channels.
 - **A statement, not an expression.** `let x = together` with branches is U0101: write `together for` to build a list.

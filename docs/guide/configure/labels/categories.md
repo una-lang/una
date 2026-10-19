@@ -11,7 +11,7 @@ codes: [U1002, U1005, U4007, U7002]
 
 A label marks how sensitive a value is, so the checker can keep it from reaching a place that must not see it, such as the console. A label is a level, one of `public`, `internal`, `confidential`, `secret` and `restricted` from least to most sensitive, and a set of categories, names that say what kind of data it is, such as `PII` for personal data. `categories` declares the categories the package's code may use, as in `secret[PII]`. A value flows only to labels at least as high in both.
 
-Learn more: [Categories](/learn/information-flow/categories/) and [Labels and how they follow data](/learn/information-flow/labels-and-how-they-follow-data/).
+Learn more: [Categories](/learn/information-flow/#s17-4) and [Labels and how they follow data](/learn/information-flow/#s17-1).
 
 `una.toml`
 

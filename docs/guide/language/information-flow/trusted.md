@@ -11,7 +11,7 @@ codes: [U4004, U7005]
 
 A trusted module may hold declassification [policies](policy.md): declared releases of data to a lower [label](labels.md), the only code that lowers a label (marks data as less sensitive). A module is trusted only when two places agree: its header says `trusted module`, and the package lists it under [`[trusted] modules`](../../configure/trusted/modules.md) in `una.toml`. The rest of its code is checked as usual. `una report` lists trusted modules and their line counts under `tcb` (the trusted computing base: the parts the guarantees rely on, which people review), so reviewers know exactly what to read.
 
-Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/releasing-data-policies-and-trusted-modules/).
+Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/#s17-5).
 
 `una.toml`
 
@@ -139,7 +139,7 @@ Further rules:
 
 ## Edition
 
-Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [Edition 0.3 preview: conditions and boundaries](/learn/capabilities/edition-0-3-preview-conditions-and-boundaries/).
+Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [A ceiling for a module: boundaries](/learn/authority/#s13-2).
 
 ## Normative source
 

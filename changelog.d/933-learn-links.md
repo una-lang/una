@@ -1,0 +1,1 @@
+- **Docs: the guide links to the 19-chapter Learn book** (#933). The language and configuration pages link to each chapter page and its section, such as `/learn/information-flow/#s17-3`, instead of the retired section routes.
