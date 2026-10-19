@@ -125,11 +125,16 @@ impl RunStop {
     }
 
     /// The run's own stop request, by `--stop-after-iterations` (rule 19): one request, however
-    /// many threads make it.
+    /// many threads make it. It wakes the waits on the pipe, as the deadline's request does, so
+    /// a request parked on the native reactor in another `for ever` sees it at once.
     pub fn request_local(&self) {
-        let _ = self
+        if self
             .own
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            una_sys::signals::wake();
+        }
     }
 
     /// The request of `--deadline`, local to the run: one request, which also wakes the waits

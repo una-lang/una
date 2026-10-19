@@ -2,9 +2,9 @@
 //! within one deadline for the whole request, its redirects included.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream};
 use std::os::fd::{AsFd, BorrowedFd};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::grant::{Grant, Method, Url, allowed};
@@ -288,7 +288,7 @@ fn check_headers(headers: &[(String, String)], bearer: Option<&[u8]>) -> Result<
 }
 
 /// The time left before `deadline`, or `TimedOut`.
-fn left(deadline: Instant) -> Result<Duration, Error> {
+pub(crate) fn left(deadline: Instant) -> Result<Duration, Error> {
     let now = Instant::now();
     if now >= deadline {
         return Err(Error::TimedOut);
@@ -296,112 +296,23 @@ fn left(deadline: Instant) -> Result<Duration, Error> {
     Ok(deadline - now)
 }
 
-/// The resolver threads of the process: how many run, their bound, and the tickets of the
-/// callers waiting for one, served first come, first served.
-struct Resolvers {
-    running: usize,
-    most: usize,
-    next: u64,
-    waiting: std::collections::BTreeSet<u64>,
-}
-
-static RESOLVERS: std::sync::Mutex<Resolvers> = std::sync::Mutex::new(Resolvers {
-    running: 0,
-    most: 64,
-    next: 0,
-    waiting: std::collections::BTreeSet::new(),
-});
-
-/// Signaled when a resolver thread ends or a waiter leaves.
-static RESOLVER_FREED: std::sync::Condvar = std::sync::Condvar::new();
-
-fn resolvers() -> std::sync::MutexGuard<'static, Resolvers> {
-    RESOLVERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// Bounds the resolver threads of the process at `most`, at least 1 (64 until it is called):
-/// the native runtime sets it to `--io-threads` (ADR 0117 slice S7). A resolver whose caller
-/// gave up still holds its place until the system answers it, so the bound caps the threads
-/// that a host whose names never resolve can hold, whatever the rate of requests.
+/// the native runtime sets it to `--io-threads` (ADR 0117 slice S7, `crate::resolve`).
 pub fn limit_resolvers(most: usize) {
-    resolvers().most = most.max(1);
-    RESOLVER_FREED.notify_all();
+    crate::resolve::limit(most);
 }
 
-/// A place among the resolver threads, given back when dropped.
-struct ResolverPlace;
-
-impl Drop for ResolverPlace {
-    fn drop(&mut self) {
-        let mut state = resolvers();
-        state.running = state.running.saturating_sub(1);
-        drop(state);
-        RESOLVER_FREED.notify_all();
-    }
-}
-
-/// Waits, first come, first served, for a place among the resolver threads, until `deadline`.
-/// The waiters are the threads that resolve: helpers of the I/O pool, at most `--io-threads`,
-/// or the interpreter's one thread, so the wake of all of them at each release stays small.
-fn resolver_place(deadline: Instant) -> Result<ResolverPlace, Error> {
-    let mut state = resolvers();
-    let ticket = state.next;
-    state.next = state.next.wrapping_add(1);
-    state.waiting.insert(ticket);
-    loop {
-        if state.running < state.most && state.waiting.first() == Some(&ticket) {
-            state.waiting.remove(&ticket);
-            state.running += 1;
-            drop(state);
-            RESOLVER_FREED.notify_all();
-            return Ok(ResolverPlace);
-        }
-        let Ok(time) = left(deadline) else {
-            state.waiting.remove(&ticket);
-            drop(state);
-            RESOLVER_FREED.notify_all();
-            return Err(Error::TimedOut);
-        };
-        state = RESOLVER_FREED
-            .wait_timeout(state, time)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
-    }
-}
-
-/// The addresses of a host, resolved by the system within the deadline. The resolver has no
-/// timeout of its own, so it runs on a thread of its own, which may outlive a late answer; the
-/// threads are bounded ([`limit_resolvers`]), and none starts past the deadline.
+/// The addresses of a host, resolved by the system within the deadline (`crate::resolve`):
+/// one lookup per name at a time, shared by its callers, on a bounded number of threads, none
+/// started past the deadline, and a name whose lookup failed answers `Unreachable` for a few
+/// seconds without a new lookup.
 fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, Error> {
-    let name = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_owned();
+    let name = host.trim_start_matches('[').trim_end_matches(']');
     // A literal address needs no resolver, and no thread starts for it.
     if let Ok(ip) = name.parse::<std::net::IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
-    let place = resolver_place(deadline)?;
-    left(deadline)?;
-    let (sender, receiver) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("una-http-resolve".to_owned())
-        .spawn(move || {
-            let found = (name.as_str(), port)
-                .to_socket_addrs()
-                .map(Iterator::collect::<Vec<_>>);
-            drop(place);
-            let _ = sender.send(found);
-        })
-        .map_err(|_| Error::Unreachable)?;
-    match receiver.recv_timeout(left(deadline)?) {
-        Ok(Ok(addrs)) if !addrs.is_empty() => Ok(addrs),
-        Ok(_) => Err(Error::Unreachable),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::TimedOut),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Unreachable),
-    }
+    crate::resolve::global().resolve(name, port, deadline)
 }
 
 /// A connection, over TCP or TLS.

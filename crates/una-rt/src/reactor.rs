@@ -16,8 +16,9 @@
 //! - **Registrations are one-shot,** added when a wait begins and deleted when it ends.
 //! - **Host stops.** The pipe of host stops is registered once; its event wakes the listed
 //!   waits whose run has stopped. It stays readable for good after it, so its registration is
-//!   then deleted, and the reactor itself looks at the listed waits' runs every 100 ms, without
-//!   waking the others.
+//!   then deleted, and the reactor itself looks at the listed waits' runs every 100 ms, keeping
+//!   the time of its last look, without waking the others. A run's own stop (its deadline, or
+//!   `--stop-after-iterations`) writes the pipe too (`RunStop::request_local`).
 //! - **Costs.** Register, wake and deregister are O(1): a slab slot, a wheel timer, a list link
 //!   and one system call each. A timer that fires is O(1) amortized ([`Wheel`]). A look at the
 //!   listed waits is O(k) for their k, on the reactor's thread only.
@@ -378,6 +379,8 @@ impl Reactor {
         // Whether a nudge still wakes the thread: its registration is one-shot, and one that
         // cannot be renewed leaves the thread to look at its timers every 10 ms.
         let mut nudgeable = true;
+        // When the reactor last looked at the listed waits' runs (review R7-12).
+        let mut looked = millis();
         loop {
             let timeout = {
                 let mut table = self.lock();
@@ -386,7 +389,7 @@ impl Reactor {
                     until = until.min(millis().saturating_add(10));
                 }
                 if table.pipe != Pipe::Watched && table.head != NIL {
-                    until = until.min(millis().saturating_add(LOOK));
+                    until = until.min(looked.saturating_add(LOOK));
                 }
                 table.until = until;
                 (until != u64::MAX).then(|| Duration::from_millis(until.saturating_sub(millis())))
@@ -413,6 +416,7 @@ impl Reactor {
                                 let _ = self.poller.delete(pipe, Interest::Read);
                             }
                             table.stopped(&mut wakes);
+                            looked = millis();
                         }
                         _ => {
                             let (slot, generation) = (token as u32, (token >> 32) as u32);
@@ -422,8 +426,10 @@ impl Reactor {
                         }
                     }
                 }
-                if table.pipe != Pipe::Watched {
+                // Every [`LOOK`] milliseconds, not at every pass of the loop.
+                if table.pipe != Pipe::Watched && millis() >= looked.saturating_add(LOOK) {
                     table.stopped(&mut wakes);
+                    looked = millis();
                 }
                 table.expire(millis(), &mut wakes);
             }
@@ -946,6 +952,35 @@ mod tests {
         stop.request_local();
         let woken = waited.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(woken, Woken::Stopped);
+    }
+
+    #[test]
+    fn a_run_s_own_stop_wakes_its_parked_waits_with_the_handlers_installed() {
+        // Review R7-11: with the handlers installed the pipe is watched, and the reactor does
+        // not look at the runs of listed waits; the run's own stop, as at
+        // `--stop-after-iterations`, writes the pipe, so the wait wakes at once, long before
+        // its 30 s.
+        una_sys::signals::install().unwrap();
+        let reactor = get().unwrap();
+        let sched = sched::Scheduler::new(settings(1));
+        let (_a, b) = UnixStream::pair().unwrap();
+        let stop = run_stop();
+        let waited = in_task(&sched, move || {
+            let started = Instant::now();
+            let woken = reactor.wait(
+                b.as_fd(),
+                Interest::Read,
+                Duration::from_secs(30),
+                Some(stop),
+                &[],
+            );
+            (woken, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        stop.request_local();
+        let (woken, took) = waited.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(woken, Woken::Stopped);
+        assert!(took < Duration::from_secs(5), "{took:?}");
     }
 
     #[test]

@@ -51,6 +51,10 @@ struct Line {
 /// A gate of `cap` places.
 pub(crate) struct Gate {
     line: Mutex<Line>,
+    /// In tests, run by the next `settle` once it holds the lock: the gap the review's
+    /// interleaving needs.
+    #[cfg(test)]
+    hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// The places for request sockets out of a soft limit of `soft` descriptors: all but a reserve
@@ -87,6 +91,8 @@ impl Gate {
                 left: 0,
                 line: VecDeque::new(),
             }),
+            #[cfg(test)]
+            hook: Mutex::new(None),
         })
     }
 
@@ -118,15 +124,27 @@ impl Gate {
     }
 
     /// After `waiter` woke: its place when it was given one, or `None` when it leaves the line
-    /// without one. O(1) amortized.
+    /// without one. O(1) amortized. The mark that the waiter left and its leaving the count of
+    /// waiters happen under the lock, as a place is handed over, so a place given back meanwhile
+    /// goes to the next waiter or to the free places, never to a line that no longer counts
+    /// it: free places and waiters never coexist (review R7-9).
     pub(crate) fn settle(self: &Arc<Self>, waiter: &Waiter) -> Option<Permit> {
+        let mut line = self.lock();
+        #[cfg(test)]
+        if let Some(hook) = self
+            .hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            hook();
+        }
         if waiter
             .compare_exchange(WAITING, GONE, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
             return Some(Permit(Arc::clone(self)));
         }
-        let mut line = self.lock();
         line.waiting = line.waiting.saturating_sub(1);
         line.left += 1;
         if line.left > 64 && line.left * 2 > line.line.len() {
@@ -210,6 +228,47 @@ mod tests {
         drop(second_place);
         // The third wakes for another reason after it was given the place: it still has it.
         assert!(gate.settle(&third).is_some());
+    }
+
+    #[test]
+    fn a_place_given_back_while_a_waiter_leaves_is_never_stranded() {
+        // Review R7-9: the waiter's deadline passes and it leaves while the only place held
+        // is given back on another thread. The give-back waits for the waiter's lock, so the
+        // place goes to the free places once nobody waits, and a newcomer takes it at once.
+        let gate = Gate::new(1);
+        let wake = counting(&Arc::new(AtomicUsize::new(0)));
+        let held = gate.take_or_wait(&waiter(), &wake).unwrap();
+        let leaving = waiter();
+        assert!(gate.take_or_wait(&leaving, &wake).is_none());
+        let (inside, entered) = std::sync::mpsc::channel();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let giving = std::thread::spawn(move || {
+            entered.recv().unwrap();
+            // `settle` holds the lock: this give-back waits for it.
+            go.send(()).unwrap();
+            drop(held);
+        });
+        *gate.hook.lock().unwrap() = Some(Box::new(move || {
+            inside.send(()).unwrap();
+            gone.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }));
+        assert!(gate.settle(&leaving).is_none());
+        giving.join().unwrap();
+        {
+            let line = gate.lock();
+            assert_eq!((line.free, line.waiting), (1, 0));
+        }
+        assert!(gate.try_take().is_some());
+        // The other order: the place is handed to the waiter before it leaves, and it keeps it.
+        let gate = Gate::new(1);
+        let held = gate.take_or_wait(&waiter(), &wake).unwrap();
+        let granted = waiter();
+        assert!(gate.take_or_wait(&granted, &wake).is_none());
+        drop(held);
+        let place = gate.settle(&granted).unwrap();
+        drop(place);
+        assert!(gate.try_take().is_some());
     }
 
     #[test]
