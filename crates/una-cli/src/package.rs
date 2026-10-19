@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
 use una_project::ita::{check_consent, check_lock_consistency, parse_ita_lock, parse_ita_manifest};
+use una_project::itaoca::Itaoca;
+use una_project::vendor::Problem;
 use una_project::{Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest};
 use una_syntax::ita;
 use una_syntax::{FileId, SourceDb, Span};
@@ -34,6 +36,20 @@ pub struct Package {
     /// The path dependencies of `ita.una`, loaded or not (ADR 0122 rule 7). Their modules are
     /// checked with the root's only once [`project`] mounts them.
     pub dependencies: Vec<Dependency>,
+    /// The registry packages of `ita.lock`, each loaded and verified, or why not (ADR 0122
+    /// rule 17), which [`project`] reports at its line of the lock.
+    pub registry: Vec<RegistryPackage>,
+}
+
+/// A registry package of the lock, by its index among the lock's packages, and the problem of
+/// its verified load, if any: U7011 when it is in neither the vendor directory nor Itaoca,
+/// U7010 when it does not verify.
+#[derive(Debug)]
+pub struct RegistryPackage {
+    /// Its index among the lock's packages.
+    pub index: usize,
+    /// The problem, with its code, or `None` when it loads verified.
+    pub problem: Option<(Code, String)>,
 }
 
 /// A path dependency of the root: the need that names it, and its files, or why they could not
@@ -53,14 +69,26 @@ pub struct Dependency {
     pub error: Option<String>,
 }
 
-/// Loads the package at `path` (ADR 0021 rule 1).
+/// Loads the package at `path` (ADR 0021 rule 1). Its registry packages are looked for in its
+/// vendor directory only: a command that knows Itaoca loads with [`load_in`].
 pub fn load(path: &Path) -> Result<Package, LoadError> {
-    load_with(path, &BTreeMap::new())
+    load_in(path, &BTreeMap::new(), None)
 }
 
 /// Loads the package at `path`, with the text of `overlay` in place of the files it names:
 /// the unsaved buffers of an editor (ADR 0063 rule 4).
 pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Package, LoadError> {
+    load_in(path, overlay, None)
+}
+
+/// [`load_with`], with the registry packages of the lock looked for in the vendor directory,
+/// then in `itaoca`, and each verified as it is read (ADR 0122 rules 17, 30 and 32). No
+/// connection is opened. O(bytes of the packages read).
+pub fn load_in(
+    path: &Path,
+    overlay: &BTreeMap<PathBuf, String>,
+    itaoca: Option<&Itaoca>,
+) -> Result<Package, LoadError> {
     let mut loaded = discover(path)?;
     for file in &mut loaded.files {
         if let Some(text) = overlay.get(&file.path) {
@@ -77,6 +105,7 @@ pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Pac
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
         dependencies: Vec::new(),
+        registry: Vec::new(),
     };
     for file in loaded.files {
         let id = package.sources.add(file.name, &file.bytes);
@@ -92,8 +121,56 @@ pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Pac
     {
         let text = package.sources.file(id).text().to_owned();
         load_dependencies(path, &text, overlay, &mut package);
+        if let Some(lock) = package.lock {
+            let lock = package.sources.file(lock).text().to_owned();
+            package.registry = load_registry(path, &text, &lock, itaoca);
+        }
     }
     Ok(package)
+}
+
+/// Loads and verifies each registry package of the lock (ADR 0122 rule 17), when the lock reads
+/// without an error: a lock that does not read is U7009 already, and names nothing to trust.
+fn load_registry(
+    root: &Path,
+    manifest: &str,
+    lock: &str,
+    itaoca: Option<&Itaoca>,
+) -> Vec<RegistryPackage> {
+    let (read, errors) = parse_ita_lock(lock);
+    if !errors.is_empty() {
+        return Vec::new();
+    }
+    let (manifest, _) = una_syntax::ita::parse_manifest(manifest);
+    let mut registry = Vec::new();
+    for (index, locked) in read.read.packages.iter().enumerate() {
+        let Some(ita::At {
+            value: ita::LockOrigin::Source(source),
+            ..
+        }) = &locked.from
+        else {
+            continue;
+        };
+        // Until the root of `itaty` is built into `una` (ADR 0122 rule 35), a package of it can
+        // be neither verified nor needed: its need is refused already (U7008, `spec/30 §3`
+        // rule 4), so it never loads. Every other source is checked.
+        if source == una_project::ita::ITATY {
+            continue;
+        }
+        let problem = match una_project::vendor::load_locked(
+            root,
+            itaoca,
+            &read.read,
+            Some(&manifest),
+            locked,
+        ) {
+            Ok(_) => None,
+            Err(Problem::Absent(message)) => Some((Code::U7011, message)),
+            Err(Problem::Refused(message)) => Some((Code::U7010, message)),
+        };
+        registry.push(RegistryPackage { index, problem });
+    }
+    registry
 }
 
 /// Loads the path dependencies that the root's `ita.una` names (ADR 0122 rule 7). A directory
@@ -413,6 +490,21 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                     located(id, consistency.in_lock);
                     located(manifest_id, check_consent(read, &lock, &root_name));
                 }
+                // Each registry package: present, and verified as it was read (rule 17).
+                let registry: Vec<ProjectError> = package
+                    .registry
+                    .iter()
+                    .filter_map(|registered| {
+                        let (code, message) = registered.problem.clone()?;
+                        let range = lock.read.packages.get(registered.index)?.range.clone();
+                        Some(ProjectError {
+                            code,
+                            range,
+                            message,
+                        })
+                    })
+                    .collect();
+                located(id, registry);
             }
             None => located(
                 manifest_id,

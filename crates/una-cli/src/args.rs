@@ -272,6 +272,12 @@ pub(crate) enum ItaCommand {
         #[arg(long, value_name = "PACKAGE")]
         accept_trust: Vec<String>,
     },
+    /// Copy each locked registry package from Itaoca into vendor/ita/, with its provenance
+    Vendor {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// The values of `--tier` (`spec/12 §1`).

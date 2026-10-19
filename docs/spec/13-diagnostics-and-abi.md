@@ -229,6 +229,8 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U7005 | project | Trusted module not declared in both header and `una.toml` |
 | U7008 | project | Invalid `ita.una` or `itaty.una` |
 | U7009 | project | Missing, invalid or inconsistent `ita.lock` |
+| U7010 | project | A package, archive, statement, root, checkpoint or log proof that fails verification |
+| U7011 | project | A locked package that is neither in the vendor directory nor in Itaoca |
 | U7012 | project | A dependency the root may not use as written |
 | U8001 | internal | Internal compiler error (always a bug) |
 

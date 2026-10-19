@@ -276,6 +276,10 @@ pub enum Code {
     U7008,
     /// Missing, invalid or inconsistent `ita.lock`.
     U7009,
+    /// A package, archive, statement, root, checkpoint or log proof that fails verification.
+    U7010,
+    /// A locked package that is neither in the vendor directory nor in Itaoca.
+    U7011,
     /// A dependency the root may not use as written.
     U7012,
     /// Internal compiler error (always a bug).
@@ -284,7 +288,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 107] = [
+    pub const ALL: [Code; 109] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -390,6 +394,8 @@ impl Code {
         Code::U7005,
         Code::U7008,
         Code::U7009,
+        Code::U7010,
+        Code::U7011,
         Code::U7012,
         Code::U8001,
     ];
@@ -935,6 +941,16 @@ impl Code {
                 code: "U7009",
                 domain: Domain::Project,
                 meaning: "Missing, invalid or inconsistent `ita.lock`",
+            },
+            Code::U7010 => &Entry {
+                code: "U7010",
+                domain: Domain::Project,
+                meaning: "A package, archive, statement, root, checkpoint or log proof that fails verification",
+            },
+            Code::U7011 => &Entry {
+                code: "U7011",
+                domain: Domain::Project,
+                meaning: "A locked package that is neither in the vendor directory nor in Itaoca",
             },
             Code::U7012 => &Entry {
                 code: "U7012",

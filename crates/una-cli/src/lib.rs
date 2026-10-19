@@ -106,7 +106,11 @@ pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
 /// reports nothing, every proof obligation.
 pub fn check_with(path: &Path, tier: Tier, solving: &Solving) -> Result<Checked, LoadError> {
-    let package = load(path)?;
+    let package = package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        solving.itaoca.as_ref(),
+    )?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program, analysis.pending)
@@ -661,6 +665,14 @@ pub(crate) fn variable(environment: Environment<'_>, name: &str) -> Option<Strin
     environment(name).ok().flatten()
 }
 
+/// Itaoca, the store of fetched packages (ADR 0122 rule 30): the directory `UNA_ITAOCA` names
+/// when it is set and not empty, else `.una/itaoca` in `HOME`.
+pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca::Itaoca> {
+    let dir = variable(environment, "UNA_ITAOCA");
+    let home = variable(environment, "HOME");
+    una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
+}
+
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.
 #[derive(Clone, Copy)]
@@ -764,6 +776,7 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             command:
                 ItaCommand::Lock { path, .. }
                 | ItaCommand::Tree { path }
+                | ItaCommand::Vendor { path }
                 | ItaCommand::Remove { path, .. },
         }) => Some(path.clone()),
         // `una trace` and `una contract` read the package in the current directory.
@@ -889,6 +902,7 @@ fn run_command(
     let solving = |seconds: u64| Solving {
         wallclock: Duration::from_secs(seconds),
         proof_key: proof_key::resolve(environment),
+        itaoca: itaoca(environment),
     };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) if cli.version => version_command(cli.json, stdout),
@@ -1024,6 +1038,9 @@ fn run_command(
                         accept_authority,
                         accept_trust,
                     } => ita::lock_command(&path, check, accept_authority, &accept_trust, output),
+                    ItaCommand::Vendor { path } => {
+                        ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                    }
                 }
             }
             Command::Fmt { path, check } => {

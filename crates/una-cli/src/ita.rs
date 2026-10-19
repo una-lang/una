@@ -673,3 +673,103 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
     }
     lock_command(path, false, false, &[], out)
 }
+
+/// `una ita vendor [path]` (ADR 0122 rule 32): copies each registry package of `ita.lock` from
+/// Itaoca into `vendor/ita/<source>/<release>/` of the package, with its provenance beside it in
+/// `<release>.provenance`, and loads the copy verified as every command does (rule 17). A copy
+/// already there that verifies is kept; one whose files do not verify is U7010 and is left as
+/// it is; a package that Itaoca does not hold is U7011. Path dependencies are not copied: they
+/// are loaded from their directory. An invalid `ita.una` or `ita.lock` is reported and nothing
+/// is written. No connection is opened. O(bytes of the packages).
+pub(crate) fn vendor_command(
+    path: &Path,
+    itaoca: Option<&una_project::itaoca::Itaoca>,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    if !path.join("ita.una").is_file() {
+        writeln!(
+            out.stderr,
+            "error: `{}` has no ita.una; `una ita` works on a package of edition 0.4, and `una migrate` moves a package to it",
+            path.display()
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
+    let package = match crate::package::load(path) {
+        Ok(package) => package,
+        Err(error) => {
+            writeln!(out.stderr, "error: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let sources = &package.sources;
+    let Some(manifest_id) = package.manifest else {
+        return Ok(ExitStatus::Usage);
+    };
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let mut diagnostics = located(sources, manifest_id, errors);
+    let Some(lock_id) = package.lock else {
+        diagnostics.extend(located(
+            sources,
+            manifest_id,
+            vec![ProjectError {
+                code: Code::U7009,
+                range: 0..0,
+                message: "the package has no ita.lock; run `una ita lock`".to_owned(),
+            }],
+        ));
+        return finish("vendor", &[], &[], &diagnostics, sources, out);
+    };
+    let (lock, errors) = parse_ita_lock(sources.file(lock_id).text());
+    diagnostics.extend(located(sources, lock_id, errors));
+    if !diagnostics.is_empty() {
+        return finish("vendor", &[], &[], &diagnostics, sources, out);
+    }
+    let mut written: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut problems: Vec<ProjectError> = Vec::new();
+    for locked in &lock.read.packages {
+        if !matches!(
+            &locked.from,
+            Some(ita::At {
+                value: ita::LockOrigin::Source(_),
+                ..
+            })
+        ) {
+            continue;
+        }
+        match una_project::vendor::vendor_locked(
+            path,
+            itaoca,
+            &lock.read,
+            manifest.ita.as_deref(),
+            locked,
+        ) {
+            Ok(paths) => {
+                if !paths.is_empty() {
+                    lines.push(format!(
+                        "vendored {} {}",
+                        locked.name.value, locked.version.value
+                    ));
+                }
+                written.extend(paths);
+            }
+            Err(problem) => {
+                let (code, message) = match problem {
+                    una_project::vendor::Problem::Absent(message) => (Code::U7011, message),
+                    una_project::vendor::Problem::Refused(message) => (Code::U7010, message),
+                };
+                problems.push(ProjectError {
+                    code,
+                    range: locked.range.clone(),
+                    message,
+                });
+            }
+        }
+    }
+    diagnostics.extend(located(sources, lock_id, problems));
+    if lines.is_empty() && diagnostics.is_empty() {
+        lines.push("vendor/ita is up to date".to_owned());
+    }
+    let written: Vec<&str> = written.iter().map(String::as_str).collect();
+    finish("vendor", &written, &lines, &diagnostics, sources, out)
+}

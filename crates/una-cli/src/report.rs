@@ -16,7 +16,7 @@ use una_syntax::ast::{ClauseKind, DeclKind, TextPart};
 
 use crate::contract::Modules;
 use crate::verification::{lock_of, problem_diagnostic, report_unverified, settings, tier_one};
-use crate::{Analysis, ExitStatus, Package, analyze, load, on_large_stack, report};
+use crate::{Analysis, ExitStatus, Package, analyze, on_large_stack, report};
 
 /// The JSON schema of `una report --json` (`spec/13 §6`).
 const REPORT_SCHEMA: &str = "una.report/2";
@@ -284,7 +284,11 @@ pub(crate) fn report_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;

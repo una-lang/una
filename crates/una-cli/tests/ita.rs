@@ -522,3 +522,380 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
     assert_eq!(code, 1);
     assert!(err.contains("--accept-trust util"), "{err}");
 }
+
+/// Runs `una` with `args` and Itaoca at `itaoca`: the exit code, stdout and stderr.
+fn una_in(args: &[&str], itaoca: &Path) -> (u8, String, String) {
+    let store = itaoca.to_str().unwrap().to_owned();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = una_cli::run(
+        args.iter().copied(),
+        &mut stdout,
+        &mut stderr,
+        false,
+        &|name| Ok((name == "UNA_ITAOCA").then(|| store.clone())),
+        una_cli::Heap::unmeasured(),
+    );
+    (
+        status.code(),
+        String::from_utf8(stdout).unwrap(),
+        String::from_utf8(stderr).unwrap(),
+    )
+}
+
+/// A test registry `acme` with one release, `acme/ledger 0.3.1`, signed by its own root,
+/// log, witnesses and publisher (ADR 0122 rules 35 to 38).
+mod registry {
+    use ed25519_dalek::{Signer, SigningKey};
+    use una_project::content::{File, archive, digest_of};
+    use una_project::provenance::{Provenance, sha256_digest, signed_name};
+    use una_project::tlog::merkle::{inclusion_proof, leaf_hash, root as tree_root};
+    use una_project::tlog::note::{Key, encode_base64};
+
+    const LOG: &str = "acme.example/log";
+
+    fn keypair(seed: u8, name: &str) -> (SigningKey, Key) {
+        let pair = SigningKey::from_bytes(&[seed; 32]);
+        let public: [u8; 32] = pair.verifying_key().to_bytes();
+        (
+            pair,
+            Key {
+                name: name.to_owned(),
+                public,
+            },
+        )
+    }
+
+    fn sign_line(pair: &SigningKey, key: &Key, text: &str) -> String {
+        let mut bytes = key.id().to_vec();
+        bytes.extend_from_slice(&pair.sign(text.as_bytes()).to_bytes());
+        format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
+    }
+
+    fn cosign_line(pair: &SigningKey, key: &Key, text: &str, time: u64) -> String {
+        let message = format!("cosignature/v1\ntime {time}\n{text}");
+        let mut bytes = key.cosignature_id().to_vec();
+        bytes.extend_from_slice(&time.to_be_bytes());
+        bytes.extend_from_slice(&pair.sign(message.as_bytes()).to_bytes());
+        format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
+    }
+
+    fn key_line(key: &Key) -> String {
+        format!("key {} {}\n", key.name, encode_base64(&key.public))
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The release: its archive, provenance, root digest, and the lines a lock writes for it.
+    pub struct Release {
+        pub archive: Vec<u8>,
+        pub provenance: Vec<u8>,
+        pub root: String,
+        pub lock: String,
+    }
+
+    pub fn release() -> Release {
+        let mut files = vec![
+            File {
+                path: "ita.una".to_owned(),
+                bytes: b"ita acme/ledger\n  version 0.3.1\n  edition 0.4\n".to_vec(),
+            },
+            File {
+                path: "src/ledger.una".to_owned(),
+                bytes: b"module ledger\n\npub total() -> Int = 3\n".to_vec(),
+            },
+        ];
+        let archive = archive(&mut files).unwrap();
+        let digest = digest_of(&mut files).unwrap();
+        let (r1, k1) = keypair(10, "root.a");
+        let (log_pair, log) = keypair(20, LOG);
+        let (w1, wa) = keypair(30, "witness.a");
+        let (_, security) = keypair(40, "security.a");
+        let (_, itauna) = keypair(41, "itauna.a");
+        let mut text =
+            "ita-root/1\nsource acme\nversion 1\nexpires 4000000000\nroot 1\n".to_owned();
+        text.push_str(&key_line(&k1));
+        text.push_str(&format!(
+            "log {} {}\n",
+            log.name,
+            encode_base64(&log.public)
+        ));
+        text.push_str("witnesses 1\n");
+        text.push_str(&key_line(&wa));
+        text.push_str("security 1\n");
+        text.push_str(&key_line(&security));
+        text.push_str("itauna 1\n");
+        text.push_str(&key_line(&itauna));
+        let root_document = format!("{text}\n{}", sign_line(&r1, &k1, &text));
+        let manifest = sha256_digest(&files.iter().find(|f| f.path == "ita.una").unwrap().bytes);
+        let statement_text = format!(
+            "ita-release/1\nsource acme\nname acme/ledger\nversion 0.3.1\nprevious none\ndigest {digest}\nmanifest {manifest}\nedition 0.4\nauthority none\ntrust none\n"
+        );
+        let (publisher_pair, publisher) = keypair(50, "acme.publisher");
+        let statement = format!(
+            "{statement_text}\n{}",
+            sign_line(&publisher_pair, &publisher, &statement_text)
+        );
+        let leaves = [
+            leaf_hash(b"an earlier entry"),
+            leaf_hash(statement.as_bytes()),
+        ];
+        let top = tree_root(&leaves);
+        let checkpoint_text = format!("{LOG}\n2\n{}\n", encode_base64(&top));
+        let checkpoint = format!(
+            "{checkpoint_text}\n{}{}",
+            sign_line(&log_pair, &log, &checkpoint_text),
+            cosign_line(&w1, &wa, &checkpoint_text, 1_900_000_000)
+        );
+        let root = una_project::tlog::root::digest(&root_document);
+        let provenance = Provenance {
+            roots: vec![root_document],
+            checkpoint,
+            statement,
+            index: 1,
+            proof: inclusion_proof(1, &leaves),
+            key: publisher.clone(),
+        };
+        let lock = format!(
+            "registry acme\n  root \"{root}\"\n  checkpoint 2 \"sha256:{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{}\"\n  logged 1\n",
+            hex(&top),
+            signed_name("acme/ledger", &publisher.public)
+        );
+        Release {
+            archive,
+            provenance: provenance.encode(),
+            root,
+            lock,
+        }
+    }
+}
+
+const SOLVER: &str = "solver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
+
+/// A package whose lock holds the registry release, with Itaoca beside it holding the release
+/// when `stored`.
+fn with_registry(name: &str, stored: bool) -> (PathBuf, PathBuf) {
+    let release = registry::release();
+    let manifest = format!(
+        "{MANIFEST}\nsources\n  acme \"https://ita.acme.example\"\n    root \"{}\"\n    owners acme\n",
+        release.root
+    );
+    let dir = package(name, &manifest);
+    std::fs::write(
+        dir.join("ita.lock"),
+        format!("lock 1\n\n{SOLVER}\n{}", release.lock),
+    )
+    .unwrap();
+    let itaoca = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("ita-store")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&itaoca);
+    std::fs::create_dir_all(&itaoca).unwrap();
+    if stored {
+        let store = una_project::itaoca::Itaoca {
+            root: itaoca.clone(),
+        };
+        store.store(&release.archive).unwrap();
+        store
+            .store_provenance("acme", "acme/ledger", "0.3.1", 2, &release.provenance)
+            .unwrap();
+    }
+    (dir, itaoca)
+}
+
+/// The codes of `una --json check` with Itaoca at `itaoca`.
+fn codes_in(dir: &Path, itaoca: &Path) -> Vec<String> {
+    let (_, out, _) = una_in(&["una", "--json", "check", path(dir)], itaoca);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The codes of `una check` with no Itaoca: the vendor directory only.
+fn codes(dir: &Path) -> Vec<String> {
+    let checked = una_cli::check(dir, una_cli::Tier::Zero).unwrap();
+    checked
+        .diagnostics
+        .iter()
+        .map(|d| d.code.to_string())
+        .collect()
+}
+
+#[test]
+fn vendor_copies_each_registry_package_with_its_provenance() {
+    let (dir, itaoca) = with_registry("vendor-copies", true);
+    // Before: in Itaoca, so present, and verified there; absent with no Itaoca.
+    assert!(
+        !codes_in(&dir, &itaoca)
+            .iter()
+            .any(|c| c == "U7010" || c == "U7011")
+    );
+    assert!(
+        codes(&dir).iter().any(|c| c == "U7011"),
+        "{:?}",
+        codes(&dir)
+    );
+    let (code, out, err) = una_in(&["una", "ita", "vendor", path(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (0, "vendored acme/ledger 0.3.1\n", "")
+    );
+    let vendored = dir.join("vendor/ita/acme/acme+ledger-0.3.1");
+    assert_eq!(
+        std::fs::read_to_string(vendored.join("src/ledger.una")).unwrap(),
+        "module ledger\n\npub total() -> Int = 3\n"
+    );
+    assert!(
+        dir.join("vendor/ita/acme/acme+ledger-0.3.1.provenance")
+            .is_file()
+    );
+    // Now it builds from the vendor directory alone: no U7010 or U7011, with no Itaoca.
+    let found = codes(&dir);
+    assert!(
+        !found.iter().any(|c| c == "U7010" || c == "U7011"),
+        "{found:?}"
+    );
+    // Again: up to date, with `written` empty.
+    let (code, out, _) = una_in(&["una", "--json", "ita", "vendor", path(&dir)], &itaoca);
+    assert_eq!(code, 0);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["command"], "vendor");
+    assert_eq!(document["written"], serde_json::json!([]));
+    // A vendored file changed: U7010 on every load, even with Itaoca holding the release.
+    std::fs::write(
+        vendored.join("src/ledger.una"),
+        "module ledger\n\npub total() -> Int = 4\n",
+    )
+    .unwrap();
+    assert!(codes(&dir).iter().any(|c| c == "U7010"));
+    assert!(codes_in(&dir, &itaoca).iter().any(|c| c == "U7010"));
+    let (code, _, err) = una_in(&["una", "ita", "vendor", path(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7010"), "{err}");
+    // The digest and the lock edited together: the stored statement still names the old
+    // digest, so it does not load.
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let mut files = vec![
+        una_project::content::File {
+            path: "ita.una".to_owned(),
+            bytes: b"ita acme/ledger\n  version 0.3.1\n  edition 0.4\n".to_vec(),
+        },
+        una_project::content::File {
+            path: "src/ledger.una".to_owned(),
+            bytes: b"module ledger\n\npub total() -> Int = 4\n".to_vec(),
+        },
+    ];
+    let edited = una_project::content::digest_of(&mut files).unwrap();
+    let old = lock
+        .lines()
+        .find(|line| line.starts_with("  digest"))
+        .unwrap()
+        .to_owned();
+    std::fs::write(
+        dir.join("ita.lock"),
+        lock.replacen(&old, &format!("  digest \"{edited}\""), 1),
+    )
+    .unwrap();
+    assert!(codes(&dir).iter().any(|c| c == "U7010"));
+}
+
+#[test]
+fn vendor_reports_a_package_that_itaoca_does_not_hold() {
+    let (dir, itaoca) = with_registry("vendor-absent", false);
+    let (code, out, _) = una_in(&["una", "--json", "ita", "vendor", path(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["diagnostics"][0]["code"], "U7011");
+    assert_eq!(document["written"], serde_json::json!([]));
+    assert!(!dir.join("vendor").exists());
+    assert!(codes_in(&dir, &itaoca).iter().any(|c| c == "U7011"));
+    // A vendor directory reached through a link is refused, and nothing is written there.
+    #[cfg(unix)]
+    {
+        let (dir, itaoca) = with_registry("vendor-through-link", true);
+        let away = dir.join("away");
+        std::fs::create_dir_all(&away).unwrap();
+        std::os::unix::fs::symlink(&away, dir.join("vendor")).unwrap();
+        let (code, _, err) = una_in(&["una", "ita", "vendor", path(&dir)], &itaoca);
+        assert_eq!(code, 1);
+        assert!(err.contains("U7010"), "{err}");
+        assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0);
+    }
+}
+
+/// Rule 31, structurally: the crate that loads packages, and the code of `una` that loads them
+/// and runs `una ita`, name no networking API and start no program, and the only files of the
+/// command-line crate that name the HTTP client are those that configure the `Http`
+/// capability of a program run with an `http` grant. A change that lets another command open
+/// a connection fails here.
+#[test]
+fn no_command_but_una_ita_opens_a_connection() {
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let network = [
+        "std::net",
+        "TcpStream",
+        "TcpListener",
+        "UdpSocket",
+        "ToSocketAddrs",
+        "una_http",
+        "rustls",
+        "process::Command",
+        "Command::new",
+    ];
+    fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut project = Vec::new();
+    sources(&crates.join("una-project/src"), &mut project);
+    assert!(project.len() > 10);
+    for file in &project {
+        let text = std::fs::read_to_string(file).unwrap();
+        for word in network {
+            assert!(!text.contains(word), "{} names {word}", file.display());
+        }
+    }
+    let manifest = std::fs::read_to_string(crates.join("una-project/Cargo.toml")).unwrap();
+    for word in ["una-http", "rustls", "webpki"] {
+        assert!(!manifest.contains(word), "una-project depends on {word}");
+    }
+    for file in [
+        "package.rs",
+        "ita.rs",
+        "migrate.rs",
+        "lsp.rs",
+        "verification.rs",
+    ] {
+        let text = std::fs::read_to_string(crates.join("una-cli/src").join(file)).unwrap();
+        for word in network {
+            assert!(!text.contains(word), "una-cli/src/{file} names {word}");
+        }
+    }
+    let mut cli = Vec::new();
+    sources(&crates.join("una-cli/src"), &mut cli);
+    let mut naming: Vec<String> = cli
+        .iter()
+        .filter(|file| {
+            let text = std::fs::read_to_string(file).unwrap();
+            text.contains("una_http") || text.contains("std::net") || text.contains("TcpStream")
+        })
+        .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    naming.sort();
+    assert_eq!(naming, ["args.rs", "lib.rs", "runtime.rs"]);
+}

@@ -14,25 +14,28 @@ use una_project::parse_lock;
 use una_syntax::{SourceDb, Span};
 use una_verify::{Obligation, Outcome, Problem, Settings};
 
-use crate::{ExitStatus, Package, analyze, load, on_large_stack, report};
+use crate::{ExitStatus, Package, analyze, on_large_stack, report};
 
 /// The wall-clock guard of the solver, `--solver-wallclock` (`spec/12 §5`).
 pub const DEFAULT_WALLCLOCK: Duration = Duration::from_secs(60);
 
 /// How tier 1 runs the solver: its wall-clock guard, and the user's key of the proof cache,
-/// without which the cache is off (ADR 0064).
+/// without which the cache is off (ADR 0064). It also carries Itaoca, where loading the package
+/// looks for its registry packages after the vendor directory (ADR 0122 rule 30).
 #[derive(Clone, Debug)]
 pub struct Solving {
     pub(crate) wallclock: Duration,
     pub(crate) proof_key: Option<crate::proof_key::ProofKey>,
+    pub(crate) itaoca: Option<una_project::itaoca::Itaoca>,
 }
 
 impl Solving {
-    /// The guard `wallclock`, with no proof cache.
+    /// The guard `wallclock`, with no proof cache and no Itaoca.
     pub fn new(wallclock: Duration) -> Solving {
         Solving {
             wallclock,
             proof_key: None,
+            itaoca: None,
         }
     }
 }
@@ -286,7 +289,11 @@ pub(crate) fn obligations_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;

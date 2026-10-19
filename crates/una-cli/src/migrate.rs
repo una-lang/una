@@ -263,5 +263,6 @@ fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
         modules,
         disk_paths,
         dependencies: Vec::new(),
+        registry: Vec::new(),
     }
 }
