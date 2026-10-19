@@ -3,4 +3,7 @@
 -- expect: ok
 module main
 
-pub one() -> Int = 1
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")
