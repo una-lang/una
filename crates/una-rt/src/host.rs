@@ -559,9 +559,30 @@ fn http(
     let stop = crate::runtime::op_interrupt();
     let sent = if cut.is_some() && settings.timeout.is_zero() {
         Err(Error::TimedOut)
+    } else if let Some(reactor) = crate::reactor::parks() {
+        // In a task, the request runs on the task's coroutine, and each wait of its socket
+        // parks the task on the reactor, so no thread waits for the server (ADR 0117 rule 3,
+        // slice S7); resolution and connection go to a helper of the I/O pool. A cancellation
+        // that comes while it waits ends it `interrupted`, its connection closed, and the task
+        // stops (rule 4).
+        let entries = crate::runtime::interruptible_entries();
+        let parked = crate::reactor::Parked::new(reactor, stop, &entries);
+        let request = Request {
+            method,
+            url: &url,
+            headers: &headers,
+            body: body.as_bytes(),
+            bearer: bearer.as_deref(),
+        };
+        let sent = una_http::client::send_interruptible(&request, &grants, &settings, &parked);
+        if parked.cancelled() {
+            with_state(|state| state.interrupted = true);
+            return INTERRUPTED;
+        }
+        sent
     } else {
-        // In a task, the request runs on a helper of the I/O pool while the task parks (ADR 0117
-        // rule 3); only owned data, and the run's static stop state, cross.
+        // Without the reactor, in a task, the request runs on a helper of the I/O pool while the
+        // task parks (ADR 0117 rule 3); only owned data, and the run's static stop state, cross.
         let job = move || {
             let request = Request {
                 method,

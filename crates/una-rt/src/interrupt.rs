@@ -1,13 +1,14 @@
 //! Interruptible waits that a cancellation wakes (ADR 0117 rule 4, first bullet, and rule 10).
 //!
-//! A task that waits on an interruptible operation, a request of `Http` on a helper of the I/O
-//! pool, registers how to wake it on each of its cancellation entries that the operations
-//! around it do not shield ([`crate::runtime::interruptible_entries`]). When a race decides,
-//! the first branch to return lowers its block's count to 0, which cancels every other branch
-//! and the tasks they started, and [`lowered`] wakes each wait registered on that count whose
-//! entry the count now cancels: the operation ends `interrupted`, and its task stops, as at a
-//! check point. The request may still complete on its helper, an effect in doubt (ADR 0117
-//! Security).
+//! A task that waits on an interruptible operation, a request of `Http` parked on the reactor
+//! (`crate::reactor`) or on a helper of the I/O pool, registers how to wake it on each of its
+//! cancellation entries that the operations around it do not shield
+//! ([`crate::runtime::interruptible_entries`]). When a race decides, the first branch to return
+//! lowers its block's count to 0, which cancels every other branch and the tasks they started,
+//! and [`lowered`] wakes each wait registered on that count whose entry the count now cancels:
+//! the operation ends `interrupted`, and its task stops, as at a check point. On the reactor,
+//! the request's connection is closed as its task resumes; on a helper (resolution and
+//! connection), the step may still complete there, an effect in doubt (ADR 0117 Security).
 //!
 //! Only the cancellations of `first of` wake waits in this slice: a task of `together` cancelled
 //! by a failed sibling keeps its operation in progress until it completes, as before (`spec/19
@@ -101,6 +102,14 @@ impl Drop for Registration {
             }
         }
     }
+}
+
+/// Whether one of `entries` is cancelled already: its count is below the task's entry. The
+/// check that follows a registration, so a cancellation that came before it is never missed.
+pub(crate) fn cancelled(entries: &[Cancel]) -> bool {
+    entries
+        .iter()
+        .any(|(count, entry)| count.load(Ordering::SeqCst) < *entry)
 }
 
 /// Wakes every wait registered on `count` whose entry it now cancels, after the count was

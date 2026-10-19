@@ -27,6 +27,7 @@ pub mod host;
 mod interrupt;
 mod json;
 pub mod render;
+mod reactor;
 pub mod runtime;
 mod sched;
 mod started;

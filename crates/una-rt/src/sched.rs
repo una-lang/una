@@ -10,8 +10,9 @@
 //!   its coroutine suspends, so its worker runs other tasks, or, outside a coroutine, its thread
 //!   waits. A sender wakes it. So a join never blocks a worker its children need.
 //! - **Helpers.** [`blocking`] runs a host operation that may block on a helper thread of its
-//!   pool while the task parks: `Files` and a blocked `Console.print` on one pool, `Http` on the
-//!   other, so that stalled requests never delay files or prints.
+//!   pool while the task parks: `Files` and a blocked `Console.print` on one pool, the name
+//!   resolution and connection of `Http` on the other, so that requests never delay files or
+//!   prints. A request's waits on its server park on the reactor (`crate::reactor`, slice S7).
 //! - **One scheduler per run,** made at its first block: a run without tasks has no worker, no
 //!   helper and no switch.
 //!
@@ -775,7 +776,8 @@ impl Helpers {
 pub(crate) enum Pool {
     /// `Files`, and a `Console.print` whose output would block: `--file-threads`.
     Files,
-    /// `Http`: `--io-threads`.
+    /// `Http`'s name resolution and connection, and its whole request when the reactor
+    /// cannot start: `--io-threads`.
     Io,
 }
 

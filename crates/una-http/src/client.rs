@@ -3,7 +3,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -104,13 +104,21 @@ pub trait Interrupt {
     /// Waits until `socket` is ready to read, or to write when `write`, until a host stop
     /// request comes, or until `timeout` passes. It must really wait: the socket is then
     /// non-blocking, and each `WouldBlock` comes back here.
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited;
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited;
 
     /// Whether [`Interrupt::wait`] waits. When it does, the request's socket is non-blocking,
     /// so no read, write or step of the TLS handshake blocks past one wait, and a stop is seen
     /// at the next one. It has no default: an implementor whose `wait` returns at once must
     /// say `false`, or the non-blocking loop would spin until the deadline.
     fn waits(&self) -> bool;
+
+    /// Resolves `host` and connects to `port` there within `deadline`: by default [`open`] on
+    /// the calling thread, with [`Interrupt::stopped`] checked between the addresses. The
+    /// native runtime's reactor runs it on a helper thread instead, so the task that sends the
+    /// request never blocks its worker on them (ADR 0117 slice S7).
+    fn open(&self, host: &str, port: u16, deadline: Instant) -> Result<TcpStream, Error> {
+        open(host, port, deadline, &|| self.stopped())
+    }
 }
 
 /// No interruption: every wait is left to the socket's own timeouts.
@@ -121,7 +129,7 @@ impl Interrupt for Uninterrupted {
         false
     }
 
-    fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
+    fn wait(&self, _socket: BorrowedFd<'_>, _write: bool, _timeout: Duration) -> Waited {
         Waited::Ready
     }
 
@@ -295,6 +303,10 @@ fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, 
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_owned();
+    // A literal address needs no resolver, and no thread starts for it.
+    if let Ok(ip) = name.parse::<std::net::IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
         .name("una-http-resolve".to_owned())
@@ -345,7 +357,7 @@ impl Connection {
         deadline: Instant,
         interrupt: &dyn Interrupt,
     ) -> Result<(), Error> {
-        match interrupt.wait(self.socket().as_raw_fd(), write, left(deadline)?) {
+        match interrupt.wait(self.socket().as_fd(), write, left(deadline)?) {
             Waited::Ready => Ok(()),
             Waited::Stopped => Err(Error::Interrupted),
             Waited::TimedOut => Err(Error::TimedOut),
@@ -525,26 +537,34 @@ fn test_roots(roots: &mut rustls::RootCertStore) {
     }
 }
 
-/// Connects to the URL's origin within the deadline, with TLS for `https`.
-fn connect(url: &Url, deadline: Instant, interrupt: &dyn Interrupt) -> Result<Connection, Error> {
-    let addrs = resolve(&url.host, url.port, deadline)?;
-    let mut stream = None;
-    for addr in addrs {
-        if interrupt.stopped() {
+/// Resolves `host` and connects to `port` at the first of its addresses that answers, within
+/// `deadline`; `stopped` is checked before each address, and a stop then fails with
+/// `Interrupted`. Both steps block the calling thread, bounded by the deadline: the resolver
+/// runs on a thread of its own, unless `host` is a literal address.
+pub fn open(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    stopped: &dyn Fn() -> bool,
+) -> Result<TcpStream, Error> {
+    for addr in resolve(host, port, deadline)? {
+        if stopped() {
             return Err(Error::Interrupted);
         }
         match TcpStream::connect_timeout(&addr, left(deadline)?) {
-            Ok(connected) => {
-                stream = Some(connected);
-                break;
-            }
+            Ok(connected) => return Ok(connected),
             Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
                 left(deadline)?;
             }
             Err(_) => {}
         }
     }
-    let stream = stream.ok_or(Error::Unreachable)?;
+    Err(Error::Unreachable)
+}
+
+/// Connects to the URL's origin within the deadline, with TLS for `https`.
+fn connect(url: &Url, deadline: Instant, interrupt: &dyn Interrupt) -> Result<Connection, Error> {
+    let stream = interrupt.open(&url.host, url.port, deadline)?;
     if interrupt.stopped() {
         return Err(Error::Interrupted);
     }

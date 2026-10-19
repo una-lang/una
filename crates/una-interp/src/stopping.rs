@@ -15,7 +15,7 @@
 //! request of another run left it readable.
 
 use std::cell::Cell;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -291,7 +291,7 @@ impl Interrupt for OpInterrupt<'_> {
         self.stop.stopped()
     }
 
-    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited {
+    fn wait(&self, socket: BorrowedFd<'_>, write: bool, timeout: Duration) -> Waited {
         let end = Instant::now().checked_add(timeout);
         loop {
             if self.stop.stopped() {
@@ -302,7 +302,8 @@ impl Interrupt for OpInterrupt<'_> {
                 return Waited::TimedOut;
             }
             let slice = left.min(SLICE);
-            match una_sys::signals::wait(Some(socket), write, !self.stale.get(), slice) {
+            match una_sys::signals::wait(Some(socket.as_raw_fd()), write, !self.stale.get(), slice)
+            {
                 Readiness::Ready => return Waited::Ready,
                 Readiness::Failed => return Waited::Failed,
                 Readiness::TimedOut => {}
