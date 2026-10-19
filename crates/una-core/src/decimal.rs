@@ -425,6 +425,8 @@ pub fn to_f64(c: &BigInt, s: u8) -> f64 {
     if fast && let Ok(n) = i64::try_from(c) {
         // Both are exact: n below 2^53, and 10^s for s ≤ 22.
         #[allow(clippy::cast_precision_loss)]
+        // FINDING: awaiting the fix of the reported determinism issue
+        #[allow(clippy::disallowed_methods)]
         let (n, d) = (n as f64, 10f64.powi(i32::from(s)));
         return n / d;
     }

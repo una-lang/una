@@ -748,6 +748,23 @@ pub fn probe_environment() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `2^k` exactly, assembled from its IEEE bits, for the tests: `powi` may call the platform
+/// C library, which no part of Una uses. Normal powers (`-1022 <= k <= 1023`) carry the
+/// biased exponent `k + 1023` and a zero fraction; subnormal powers (`-1074 <= k <= -1023`)
+/// are the single fraction bit `k + 1074`. Panics outside `-1074..=1023`. O(1).
+#[cfg(test)]
+pub(crate) fn two_pow(k: i32) -> f64 {
+    assert!(
+        (-1074..=1023).contains(&k),
+        "2^{k} is not a finite nonzero binary64"
+    );
+    if k >= -1022 {
+        f64::from_bits(u64::from((k + 1023).unsigned_abs()) << 52)
+    } else {
+        f64::from_bits(1 << (k + 1074).unsigned_abs())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -756,6 +773,106 @@ mod tests {
 
     fn b(x: f64) -> u64 {
         x.to_bits()
+    }
+
+    #[test]
+    fn two_pow_is_exact_on_the_boundary_exponents() {
+        assert_eq!(b(two_pow(0)), b(1.0));
+        assert_eq!(b(two_pow(1)), b(2.0));
+        assert_eq!(b(two_pow(-1)), b(0.5));
+        assert_eq!(b(two_pow(52)), b(4_503_599_627_370_496.0));
+        assert_eq!(b(two_pow(-52)), b(f64::EPSILON));
+        assert_eq!(b(two_pow(1023)), 0x7FE0_0000_0000_0000);
+        assert_eq!(b(two_pow(1023)), b(f64::MAX) & !((1 << 52) - 1));
+        assert_eq!(b(two_pow(-1022)), b(f64::MIN_POSITIVE));
+        assert_eq!(b(two_pow(-1023)), 0x0008_0000_0000_0000);
+        assert_eq!(b(two_pow(-1073)), 2);
+        assert_eq!(b(two_pow(-1074)), 1);
+        // Each power is twice the one below, across the subnormal to normal boundary.
+        for k in -1074..1023 {
+            assert_eq!(b(two_pow(k) * 2.0), b(two_pow(k + 1)), "{k}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not a finite nonzero binary64")]
+    fn two_pow_rejects_an_overflow() {
+        let _ = two_pow(1024);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a finite nonzero binary64")]
+    fn two_pow_rejects_an_underflow() {
+        let _ = two_pow(-1075);
+    }
+
+    /// `[trunc, floor, ceil, half away, half even]` of a finite `x`, computed on the integer
+    /// significand with shifts only, as the oracle of the roundings. The result keeps the sign
+    /// of `x`, as IEEE's roundToIntegral does. O(1).
+    fn integer_roundings(x: f64) -> [f64; 5] {
+        let bits = x.to_bits();
+        let negative = bits >> 63 == 1;
+        let exponent = (bits >> 52) & 0x7FF;
+        // Biased exponent 1075 and above: |x| >= 2^52, already an integer.
+        if exponent >= 1075 {
+            return [x; 5];
+        }
+        let fraction = bits & ((1 << 52) - 1);
+        let significand = if exponent == 0 {
+            fraction
+        } else {
+            fraction | (1 << 52)
+        };
+        // |x| = significand * 2^-shift, with shift from 1 to 1074.
+        let shift = 1075 - exponent.max(1);
+        let (q, above_half, half, nonzero) = if shift > 60 {
+            // significand < 2^53 <= 2^(shift - 8): |x| < 1/2.
+            (0u64, false, false, significand != 0)
+        } else {
+            let rem = significand & ((1 << shift) - 1);
+            let mid = 1 << (shift - 1);
+            (significand >> shift, rem > mid, rem == mid, rem != 0)
+        };
+        let up = q + u64::from(nonzero);
+        let away = q + u64::from(above_half || half);
+        let even = q + u64::from(above_half || (half && q % 2 == 1));
+        let (floor_mag, ceil_mag) = if negative { (up, q) } else { (q, up) };
+        // Every magnitude is at most 2^52, so the conversion is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let signed = |m: u64| if negative { -(m as f64) } else { m as f64 };
+        [
+            signed(q),
+            signed(floor_mag),
+            signed(ceil_mag),
+            signed(away),
+            signed(even),
+        ]
+    }
+
+    #[test]
+    fn the_integer_oracle_of_the_roundings_is_right_on_known_values() {
+        let cases: [(f64, [f64; 5]); 8] = [
+            (2.5, [2.0, 2.0, 3.0, 3.0, 2.0]),
+            (-2.5, [-2.0, -3.0, -2.0, -3.0, -2.0]),
+            (3.5, [3.0, 3.0, 4.0, 4.0, 4.0]),
+            (-0.25, [-0.0, -1.0, -0.0, -0.0, -0.0]),
+            (0.75, [0.0, 0.0, 1.0, 1.0, 1.0]),
+            (5.0e-324, [0.0, 0.0, 1.0, 0.0, 0.0]),
+            (-7.0, [-7.0, -7.0, -7.0, -7.0, -7.0]),
+            (
+                4_503_599_627_370_495.5,
+                [
+                    4_503_599_627_370_495.0,
+                    4_503_599_627_370_495.0,
+                    4_503_599_627_370_496.0,
+                    4_503_599_627_370_496.0,
+                    4_503_599_627_370_496.0,
+                ],
+            ),
+        ];
+        for (x, want) in cases {
+            assert_eq!(integer_roundings(x).map(b), want.map(b), "{x}");
+        }
     }
 
     #[test]
@@ -800,13 +917,26 @@ mod tests {
             // n <= x < n + 1.
             if let Some(n) = to_int_exact(floor(x)) {
                 let low = from_int(&n);
-                assert!(low <= x && x < low + 1.0 || x.abs() >= 2f64.powi(52), "{x}");
+                assert!(low <= x && x < low + 1.0 || x.abs() >= two_pow(52), "{x}");
             }
-            assert_eq!(b(trunc(x)), b(x.trunc()), "{x}");
-            assert_eq!(b(floor(x)), b(x.floor()), "{x}");
-            assert_eq!(b(ceil(x)), b(x.ceil()), "{x}");
-            assert_eq!(b(round_half_away(x)), b(x.round()), "{x}");
-            assert_eq!(b(round_half_even(x)), b(x.round_ties_even()), "{x}");
+            let [t, f, c, away, even] = integer_roundings(x);
+            assert_eq!(b(trunc(x)), b(t), "{x}");
+            assert_eq!(b(floor(x)), b(f), "{x}");
+            assert_eq!(b(ceil(x)), b(c), "{x}");
+            assert_eq!(b(round_half_away(x)), b(away), "{x}");
+            assert_eq!(b(round_half_even(x)), b(even), "{x}");
+            // Rust's roundings agree too, where they are single instructions (AArch64's
+            // `frintz`, `frintm`, `frintp`, `frinta` and `frintn`). Elsewhere they may call the
+            // platform's C library, which no part of Una uses (clippy's `disallowed_methods`).
+            #[cfg(target_arch = "aarch64")]
+            #[allow(clippy::disallowed_methods)]
+            {
+                assert_eq!(b(trunc(x)), b(x.trunc()), "{x}");
+                assert_eq!(b(floor(x)), b(x.floor()), "{x}");
+                assert_eq!(b(ceil(x)), b(x.ceil()), "{x}");
+                assert_eq!(b(round_half_away(x)), b(x.round()), "{x}");
+                assert_eq!(b(round_half_even(x)), b(x.round_ties_even()), "{x}");
+            }
         }
     }
 
@@ -835,9 +965,9 @@ mod tests {
 
     #[test]
     fn fma_rounds_once() {
-        let a = 1.0 + 2f64.powi(-52);
-        let c = 1.0 - 2f64.powi(-52);
-        assert_eq!(fma(a, c, -1.0), -(2f64.powi(-104)));
+        let a = 1.0 + two_pow(-52);
+        let c = 1.0 - two_pow(-52);
+        assert_eq!(fma(a, c, -1.0), -(two_pow(-104)));
         assert_eq!(b(fma(f64::INFINITY, 0.0, 1.0)), CANONICAL_NAN);
         assert_eq!(b(fma(-0.0, 1.0, -0.0)), b(-0.0));
         assert_eq!(b(fma(0.0, -1.0, 0.0)), b(0.0));
@@ -870,24 +1000,24 @@ mod tests {
     fn conversions_round_on_every_bit() {
         let two = BigInt::from(2);
         let p = |e: u32| -> BigInt { two.pow(e) };
-        assert_eq!(from_int(&(p(53) + BigInt::from(1))), 2f64.powi(53));
-        assert_eq!(from_int(&(p(100) + p(47))), 2f64.powi(100));
+        assert_eq!(from_int(&(p(53) + BigInt::from(1))), two_pow(53));
+        assert_eq!(from_int(&(p(100) + p(47))), two_pow(100));
         assert_eq!(
             from_int(&(p(100) + p(47) + BigInt::from(1))),
-            2f64.powi(100) + 2f64.powi(48)
+            two_pow(100) + two_pow(48)
         );
         assert_eq!(
             from_int(&-(p(100) + p(47) + BigInt::from(1))),
-            -(2f64.powi(100) + 2f64.powi(48))
+            -(two_pow(100) + two_pow(48))
         );
         let limit = p(1024) - p(970);
         assert_eq!(from_int(&limit), f64::INFINITY);
         assert_eq!(from_int(&(limit - BigInt::from(1))), f64::MAX);
         assert_eq!(to_int_exact(-0.0), Some(BigInt::default()));
         assert_eq!(to_int_exact(0.5), None);
-        assert_eq!(to_int_exact(2f64.powi(63)), Some(p(63)));
-        assert_eq!(to_int_exact(-(2f64.powi(63))), Some(-p(63)));
-        assert_eq!(to_int_exact(2f64.powi(1023)), Some(p(1023)));
+        assert_eq!(to_int_exact(two_pow(63)), Some(p(63)));
+        assert_eq!(to_int_exact(-(two_pow(63))), Some(-p(63)));
+        assert_eq!(to_int_exact(two_pow(1023)), Some(p(1023)));
         assert_eq!(to_int_exact(f64::NAN), None);
         assert_eq!(to_int_exact(f64::INFINITY), None);
     }

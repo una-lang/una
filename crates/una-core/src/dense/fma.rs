@@ -244,18 +244,18 @@ mod tests {
     #[test]
     fn the_emulation_is_the_reference_at_the_ends_of_its_range() {
         let edges = [
-            2f64.powi(995),
-            2f64.powi(994) * 1.999,
-            2f64.powi(1020),
-            2f64.powi(-480),
-            2f64.powi(-481) * 1.25,
+            float::two_pow(995),
+            float::two_pow(994) * 1.999,
+            float::two_pow(1020),
+            float::two_pow(-480),
+            float::two_pow(-481) * 1.25,
             f64::MIN_POSITIVE,
-            2f64.powi(-968),
-            2f64.powi(-969) * 1.75,
+            float::two_pow(-968),
+            float::two_pow(-969) * 1.75,
             f64::MAX,
             5.0e-324,
             1.0e-310,
-            2f64.powi(510),
+            float::two_pow(510),
             1.0 + f64::EPSILON,
             1.0 - f64::EPSILON / 2.0,
             0.1,
@@ -269,8 +269,8 @@ mod tests {
                     1.0,
                     -(x * y),
                     5.0e-324,
-                    -(2f64.powi(1022)),
-                    2f64.powi(-1000),
+                    -(float::two_pow(1022)),
+                    float::two_pow(-1000),
                     f64::MAX,
                     f64::INFINITY,
                 ] {
@@ -294,7 +294,7 @@ mod tests {
             b(float::fma(1.0e308, 10.0, -1.0e308))
         );
         let e = f64::EPSILON;
-        assert_eq!(emulated(1.0 + e, 1.0 - e, -1.0), -(2f64.powi(-104)));
+        assert_eq!(emulated(1.0 + e, 1.0 - e, -1.0), -(float::two_pow(-104)));
         assert_eq!(
             b(emulated(f64::from_bits(0x7FF0_0000_0000_0001), 1.0, 1.0)),
             float::CANONICAL_NAN

@@ -40,7 +40,8 @@ impl Draws {
 }
 
 fn uniform(r: u64) -> f64 {
-    (r >> 11) as f64 * 2f64.powi(-52) - 1.0
+    // `f64::EPSILON` is exactly 2^-52 (`powi` may call the platform C library).
+    (r >> 11) as f64 * f64::EPSILON - 1.0
 }
 
 /// The special values of the generator `s`, in its order.
