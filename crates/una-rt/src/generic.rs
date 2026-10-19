@@ -179,9 +179,7 @@ pub fn write(desc: i64, x: i64) -> i64 {
             retain(x);
             x
         }
-        Some(Descriptor::F64) => {
-            values::text_word(una_core::float::render(values::f64_value(x)))
-        }
+        Some(Descriptor::F64) => values::text_word(una_core::float::render(values::f64_value(x))),
         Some(Descriptor::Sum(ty) | Descriptor::Structural(ty) | Descriptor::Decimal(ty)) => {
             runtime::written(ty, x, &[])
         }

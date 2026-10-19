@@ -2591,10 +2591,17 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let operand = |i: Option<(Value, Kind)>| {
             i.ok_or_else(|| internal(format!("`{}` lacks an operand", prim.as_str())))
         };
-        // An `F64` reaches only its own operations, equality and interpolation: integer
+        // An `F64` reaches only its own operations, equality, interpolation and `to_decimal`:
+        // integer
         // arithmetic or a word comparison on its handle would compute on an address.
-        if !matches!(prim, Prim::Float(_) | Prim::Eq | Prim::Ne | Prim::ToText)
-            && args.iter().any(|(_, kind)| *kind == Kind::F64)
+        if !matches!(
+            prim,
+            Prim::Float(_)
+                | Prim::Eq
+                | Prim::Ne
+                | Prim::ToText
+                | Prim::Decimal(una_core::DecimalOp::FromF64(_))
+        ) && args.iter().any(|(_, kind)| *kind == Kind::F64)
         {
             return Err(internal(format!("`{}` on an `F64`", prim.as_str())));
         }
@@ -2625,12 +2632,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let word = |i: usize| args.get(i).map_or(zero, |(value, _)| *value);
                 let (a, b, c) = (word(0), word(1), word(2));
                 self.call("una_rt_f64_op", &[code, a, b, c])
-            // The conversions with `F64` wait for its native step (`spec/29`).
-            Prim::Decimal(una_core::DecimalOp::FromF64(_) | una_core::DecimalOp::ToF64(_)) => {
-                Err(unsupported("`F64` (spec/29)"))
             }
-            // Every other operation of `Decimal` is the runtime's, on coefficients, with the
-            // operation's static scales (`spec/29 §16`).
+            // Every operation of `Decimal` is the runtime's, on coefficients, with the
+            // operation's static scales, and its conversions with `F64` on boxed values
+            // (`spec/29 §16`).
             Prim::Decimal(op) => {
                 let (index, packed) = op.code();
                 let mut words = vec![
