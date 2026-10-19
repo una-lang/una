@@ -800,6 +800,9 @@ pub(crate) struct Findings {
     pub(crate) task_functions: std::collections::BTreeSet<usize>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
+    /// The conditions of `for until` loops that are in the refinement language, which the
+    /// verifier assumes false in the body and true after the loop (ADR 0116 V1, V3).
+    pub(crate) refinable_conditions: Vec<Span>,
     /// Calls of, and references to, functions and predicates, from the body of a function or
     /// predicate: caller, callee, and where.
     pub(crate) edges: Vec<(usize, usize, Span)>,

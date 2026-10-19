@@ -642,6 +642,17 @@ impl Writer<'_> {
                 "high" => self.atom(high),
                 "inclusive" => J::Bool(*inclusive),
             ),
+            LoopSource::Until {
+                cond,
+                holds,
+                measure,
+                decreases,
+            } => node!(Until,
+                "cond" => self.expr(cond),
+                "holds" => opt(holds.as_ref(), |c| self.clause(c)),
+                "measure" => self.clause(measure),
+                "decreases" => self.span(*decreases),
+            ),
         }
     }
 

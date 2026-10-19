@@ -331,6 +331,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
             (match source.as_ref() {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+                LoopSource::Until { cond, .. } => mentions(cond, name),
             }) || mentions(task, name)
         }
         Expr::Loop {
@@ -339,6 +340,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
             (match source.as_ref() {
                 LoopSource::List(list) => atom(list),
                 LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+                LoopSource::Until { cond, .. } => mentions(cond, name),
             }) || init.iter().any(atom)
                 || mentions(body, name)
         }

@@ -1037,10 +1037,16 @@ impl<'p, 'w> Machine<'p, 'w> {
                     // The next iterations read the bindings the body reads, but for the item,
                     // the state and the binders of the body, which each iteration binds anew
                     // before reading them: Core binders are unique (#261).
+                    let until = match source.as_ref() {
+                        LoopSource::Until { cond, .. } => Some(cond.as_ref()),
+                        _ => None,
+                    };
+                    let in_cond = until.map(|cond| self.binders(cond));
                     let rebound = std::iter::once(var.as_ref())
                         .chain(state.iter())
                         .map(|(name, _)| name.as_str())
                         .chain(self.binders(body).iter().copied())
+                        .chain(in_cond.iter().flat_map(|names| names.iter().copied()))
                         .collect();
                     self.later.push((body, rebound));
                     let result = self.iterations(
@@ -1282,6 +1288,27 @@ impl<'p, 'w> Machine<'p, 'w> {
         mut current: Vec<Value<'p>>,
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
+            // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
+            LoopSource::Until { cond, .. } => loop {
+                self.within_budget(span)?;
+                let mark = env.len();
+                for ((name, _), value) in state.iter().zip(&current) {
+                    env.push((name.as_str(), value.clone()));
+                }
+                let holds = self.eval(env, caps, cond);
+                env.truncate(mark);
+                match holds? {
+                    Value::Bool(true) => break,
+                    Value::Bool(false) => {}
+                    _ => return Err(fault("an `until` condition that is not a `Bool`")),
+                }
+                let stopped;
+                (current, stopped) =
+                    self.iteration(env, caps, var, state, current, &Value::Unit, body)?;
+                if stopped {
+                    break;
+                }
+            },
             LoopSource::List(list) => {
                 let Value::List(items) = self.atom(env, list)? else {
                     return Err(fault("a loop over a value that is not a list"));
@@ -1396,6 +1423,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::List(items) => Ok(items.as_ref().clone()),
                 _ => Err(fault("a `together for` over a value that is not a list")),
             },
+            LoopSource::Until { .. } => Err(fault("a `together for` with an `until` source")),
             LoopSource::Range {
                 low,
                 high,

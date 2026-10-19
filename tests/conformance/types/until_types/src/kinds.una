@@ -1,0 +1,29 @@
+-- test: the condition of `for until` is a `Bool`, and its measure an integer in the refinement language (spec/26 §4, ADR 0116 rule 7)
+-- spec: spec/26 §4
+-- expect: error U2001 at src/kinds.una:11:13
+-- expect: error U2001 at src/kinds.una:18:30
+-- expect: error U2014 at src/kinds.una:25:30
+module kinds
+
+pub not_bool(n: Int) -> Int
+=
+  let edit i = 0
+  for until n decreases n - i
+    i = i + 1
+  i
+
+pub not_integer(n: Int) -> Int
+=
+  let edit i = 0
+  for until i >= n decreases "far"
+    i = i + 1
+  i
+
+pub not_refinement(n: Int) -> Int
+=
+  let edit i = 0
+  for until i >= n decreases distance(i, n)
+    i = i + 1
+  i
+
+distance(a: Int, b: Int) -> Int = b - a

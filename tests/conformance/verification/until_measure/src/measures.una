@@ -1,0 +1,39 @@
+-- test: a measure that may be negative where the loop continues, or that an iteration may not decrease, fails its obligation at `decreases`; after a loop without `stop`, its condition holds, and with a `stop` it does not (spec/26 §4, ADR 0116 V1, V3)
+-- spec: spec/26 §4
+-- expect: error U5001 at src/measures.una:11:20
+-- expect: error U5001 at src/measures.una:18:20
+-- expect: error U5002 at src/measures.una:33:11
+module measures
+
+pub negative(n: Int) -> Int
+=
+  let edit i = 0
+  for until i >= n decreases i - n
+    i = i + 1
+  i
+
+pub stuck(n: Int) -> Int
+=
+  let edit i = 0
+  for until i >= n decreases n - i
+    i = i + 0
+  i
+
+pub reached(n: Int) -> Int
+  requires n >= 0
+  ensures result >= n
+=
+  let edit i = 0
+  for until i >= n decreases n - i
+    i = i + 1
+  i
+
+pub stopped(n: Int) -> Int
+  requires n >= 0
+  ensures result >= n
+=
+  let edit i = 0
+  for until i >= n decreases n - i
+    stop when i == 5
+    i = i + 1
+  i

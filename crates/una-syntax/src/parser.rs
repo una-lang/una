@@ -13,7 +13,8 @@ use crate::ast::{
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
     OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
     RequirementDecl, RequirementSource, SignedInt, Stmt, StopStmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, Variant, VariantExpr, WhenExpr,
+    TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause, Variant, VariantExpr,
+    WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::{Interner, Symbol};
@@ -2191,6 +2192,11 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::When) => {
                 Ok(Stmt::BlockExpr(BlockExpr::When(self.when_expr()?)))
             }
+            // Edition 0.4: `for until c decreases m` (`spec/26 §4`); `for until in xs` is a loop
+            // over `xs` with the variable `until`.
+            TokenKind::Keyword(Keyword::For) if self.v0_4 && self.for_word("until") => {
+                self.until_stmt()
+            }
             // Edition 0.2: `for x in source` (`spec/17 §1`).
             TokenKind::Keyword(Keyword::For) if self.v0_2 => {
                 Ok(Stmt::For(Box::new(self.for_stmt()?)))
@@ -2231,6 +2237,40 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Handled(self.handled_rest(expr)?))
             }
         }
+    }
+
+    /// Whether the `for` at the cursor is followed by `word` used as a keyword: not followed
+    /// by `in`, which makes it the loop variable (ADR 0116 rule 5).
+    fn for_word(&self, word: &str) -> bool {
+        matches!(self.peek_at(1), TokenKind::LowerIdent(next) if self.interner.resolve(*next) == word)
+            && !matches!(self.peek_at(2), TokenKind::Keyword(Keyword::In))
+    }
+
+    /// `"for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT` (`spec/26
+    /// §4`, ADR 0116 rule 7). Without `decreases` it is U0101.
+    fn until_stmt(&mut self) -> Parse<Stmt> {
+        let start = self.advance();
+        self.advance();
+        let condition = self.line_expr()?;
+        let decreases = match self.peek() {
+            TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "decreases" => {
+                self.advance()
+            }
+            _ => {
+                let span = self.span();
+                return self.fail(span, "`for until` needs a `decreases` measure");
+            }
+        };
+        let measure = self.add_expr()?;
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        Ok(Stmt::Until(Box::new(UntilStmt {
+            condition,
+            decreases,
+            measure,
+            block,
+            span: self.since(start),
+        })))
     }
 
     /// Whether `word`, the first word of a statement, starts `stop` (`Some(true)`) or `skip`

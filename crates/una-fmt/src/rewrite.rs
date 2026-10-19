@@ -563,6 +563,11 @@ impl Collector<'_> {
                 }
             }
             Stmt::Skip(_) => {}
+            Stmt::Until(stmt) => {
+                self.expr(&stmt.condition);
+                self.expr(&stmt.measure);
+                self.block(&stmt.block);
+            }
         }
     }
 

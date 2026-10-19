@@ -15,7 +15,7 @@ use una_syntax::ast::{
     DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource, ForStmt,
     FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
     OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, UnaryOp, UsesClause, VariantExpr, WhenExpr,
+    TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr, WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -1813,6 +1813,16 @@ impl<'e, 'a> Fx<'e, 'a> {
                     wrapped = true;
                     break;
                 }
+                Stmt::Until(stmt) => {
+                    self.until_loop(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 // `stop when c` is `if c` around `stop`.
                 Stmt::Stop(stmt) => {
                     let cond = match &stmt.condition {
@@ -2620,6 +2630,86 @@ impl<'e, 'a> Fx<'e, 'a> {
         lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
     }
 
+    /// `for until c decreases m` (`spec/26 §4`): a Core loop from `until(c)` over the bindings
+    /// its body updates, `c` evaluated before each iteration with the state bound, and `m` a
+    /// clause over the state for the verifier only (ADR 0116 rules 7 and 20).
+    fn until_loop(&mut self, lets: &mut Vec<Let>, stmt: &UntilStmt) {
+        let mut names = Vec::new();
+        self.scan_block(&stmt.block, &[], &mut names);
+        names.retain(|name| self.local(name).is_some());
+        let mut init = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let binder = self.local(name).unwrap_or_default();
+            types.push(self.binding_type(&binder, stmt.span));
+            init.push(Atom::Var(binder));
+        }
+        let mark = self.scope.len();
+        let var = (self.temp(), unit());
+        let mut state = Vec::new();
+        for (name, ty) in names.iter().zip(&types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            state.push((binder, ty.clone()));
+        }
+        // The condition and the measure read the state of the iteration about to start.
+        let mut cond_lets = Vec::new();
+        let cond_atom = self.atom(&mut cond_lets, &stmt.condition);
+        let cond = close(
+            cond_lets,
+            CoreExpr::Atom {
+                atom: cond_atom,
+                span: stmt.condition.span,
+            },
+        );
+        let holds = self
+            .findings
+            .refinable_conditions
+            .contains(&stmt.condition.span)
+            .then(|| Box::new(self.clause(&stmt.condition)));
+        let measure = Box::new(self.clause(&stmt.measure));
+        let source = LoopSource::Until {
+            cond: Box::new(cond),
+            holds,
+            measure,
+            decreases: stmt.decreases,
+        };
+        self.tail_wrap = Some(Wrap::State {
+            names: names.clone(),
+        });
+        let outer = self.loop_names.replace(names.clone());
+        let body = self.block(&stmt.block);
+        self.loop_names = outer;
+        self.scope.truncate(mark);
+        let looped = CoreExpr::Loop {
+            source: Box::new(source),
+            var: Box::new(var),
+            state,
+            init,
+            body: Box::new(body),
+            span: stmt.span,
+        };
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            looped,
+            stmt.span,
+            false,
+        );
+        if names.is_empty() {
+            return;
+        }
+        let mut after = Vec::new();
+        for (name, ty) in names.iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
+    }
+
     /// `together` with branches: `let (x₁, ..., xₙ) = together(e₁ ∥ ... ∥ eₙ)`, where each task
     /// `eᵢ` binds its branch's value as its `let` would, the refinement of a written type an
     /// obligation there, and returns it (`spec/19 §5`).
@@ -2968,6 +3058,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 Stmt::BlockExpr(expr) => self.scan_block_expr(expr, &local, found),
                 Stmt::Stop(_) | Stmt::Skip(_) => {}
+                Stmt::Until(stmt) => self.scan_block(&stmt.block, &local, found),
             }
         }
     }
