@@ -1,8 +1,6 @@
-//! The `kqueue` (macOS) or `epoll` (Linux) instance of the reactor (ADR 0117 rule 3, slice S7,
-//! `docs/plan/0117-s7-design.md` §2). Only the system calls are here: the table of waits,
-//! timers and wakes are safe code in `una-rt`. A registration is one-shot, so a descriptor that
-//! stays ready never makes a waiter spin; a token is a plain integer, never read as an address;
-//! the instance is close-on-exec; nothing here runs in a signal handler.
+//! The `kqueue` (macOS) or `epoll` (Linux) instance of the reactor (ADR 0117 slice S7): system
+//! calls only. Registrations are one-shot, tokens are integers never read as addresses, the
+//! instance is close-on-exec, and nothing here runs in a signal handler.
 #![allow(unsafe_code)]
 
 use std::io;
@@ -51,9 +49,7 @@ impl Events {
 
 /// A `kqueue` or `epoll` instance, closed when dropped.
 #[derive(Debug)]
-pub struct Poller {
-    fd: OwnedFd,
-}
+pub struct Poller(OwnedFd);
 
 /// The result of a system call that returns -1 on failure.
 fn check(result: libc::c_int) -> io::Result<usize> {
@@ -69,15 +65,13 @@ impl Poller {
         // SAFETY: `kqueue` takes no argument and touches no memory of the process.
         #[cfg(target_os = "macos")]
         let raw = check(unsafe { libc::kqueue() })?;
-        let raw = libc::c_int::try_from(raw).map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-        // SAFETY: `raw` is a descriptor just opened, owned by nothing else.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        // A kqueue is not inherited by `fork` (kqueue(2)); it is made close-on-exec too, and one
-        // whose flag cannot be set is closed and not used.
+        // SAFETY: `raw`, a `c_int` that `check` found non-negative, is a descriptor just opened.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw as libc::c_int) };
+        // Not inherited by `fork` (kqueue(2)), and closed when its flag cannot be set.
         // SAFETY: `fcntl` with `F_SETFD` sets a flag of an open descriptor; no memory is touched.
         #[cfg(target_os = "macos")]
         check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
-        Ok(Poller { fd })
+        Ok(Poller(fd))
     }
 
     /// Registers `fd` for one event of `interest`, which [`Poller::wait`] reports with `token`.
@@ -119,7 +113,7 @@ impl Poller {
         });
         let at = spec.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
         let (n, m) = (ins.len().min(4096) as i32, out.len().min(4096) as i32);
-        let fd = self.fd.as_raw_fd();
+        let fd = self.0.as_raw_fd();
         // SAFETY: `ins` and `out` are valid slices of `kevent` of at least the lengths
         // given, `out` writable; `at` is null or points to a `timespec` that outlives the call.
         // With no room in `out`, a failed change is reported by the return value and `errno`.
@@ -141,7 +135,7 @@ impl Poller {
         let op = token.map_or(libc::EPOLL_CTL_DEL, |_| libc::EPOLL_CTL_ADD);
         // SAFETY: `event` is one valid `epoll_event` that the call reads (old kernels need it
         // non-null for `EPOLL_CTL_DEL` too); `fd` is open for the length of the call.
-        check(unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), op, fd.as_raw_fd(), &raw mut event) })
+        check(unsafe { libc::epoll_ctl(self.0.as_raw_fd(), op, fd.as_raw_fd(), &raw mut event) })
             .map(drop)
     }
 
@@ -160,7 +154,7 @@ impl Poller {
             let room = events.list.len().min(4096) as libc::c_int;
             // SAFETY: the event list is at least `room` valid, writable `epoll_event`s.
             check(unsafe {
-                libc::epoll_wait(self.fd.as_raw_fd(), events.list.as_mut_ptr(), room, millis)
+                libc::epoll_wait(self.0.as_raw_fd(), events.list.as_mut_ptr(), room, millis)
             })
         };
         match found {
@@ -175,6 +169,6 @@ impl Poller {
 impl AsFd for Poller {
     /// The instance's descriptor, which may be registered in another poller.
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.0.as_fd()
     }
 }

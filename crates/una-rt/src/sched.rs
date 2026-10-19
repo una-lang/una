@@ -413,6 +413,8 @@ pub(crate) struct NotStarted;
 impl Scheduler {
     /// A scheduler with the settings of the run; its threads start on demand.
     pub(crate) fn new(settings: una_interp::Concurrency) -> Arc<Scheduler> {
+        // The resolver threads of `Http` are bounded as its helpers are (ADR 0117 slice S7).
+        una_http::client::limit_resolvers(settings.io_threads);
         let workers = (0..settings.workers.max(1))
             .map(|_| {
                 Arc::new(Worker {
@@ -831,6 +833,34 @@ pub(crate) fn blocking<T: Send + 'static>(
         // panic outside the job, which `catch_unwind` excludes.
         None => std::panic::resume_unwind(Box::new("a helper thread ended without its result")),
     }
+}
+
+/// Queues `job` on a helper of `pool` for a task on a worker that waits for it by its own
+/// means, as the reactor does (ADR 0117 slice S7); the job back when the calling code is not
+/// such a task, or when the pool has no thread and none could start, so the caller runs it.
+pub(crate) fn submit(
+    pool: Pool,
+    job: Box<dyn FnOnce() + Send>,
+) -> Result<(), Box<dyn FnOnce() + Send>> {
+    let shared = if una_sys::coroutine::inside() {
+        RUNNING.with(|running| {
+            running
+                .borrow()
+                .as_ref()
+                .map(|(_, _, shared)| Arc::clone(shared))
+        })
+    } else {
+        None
+    };
+    let Some(shared) = shared else {
+        return Err(job);
+    };
+    let helpers = match pool {
+        Pool::Files => Arc::clone(&shared.files),
+        Pool::Io => Arc::clone(&shared.io),
+    };
+    drop(shared);
+    helpers.submit(job)
 }
 
 /// What an interruptible wait gave: the job's result, or the interruption of its task.

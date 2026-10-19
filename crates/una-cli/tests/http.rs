@@ -1277,7 +1277,9 @@ fn run_parked(port: u16, count: usize) -> Duration {
     let native = run_with_descriptors(
         &dir.join(format!("target/una/{name}")),
         &dir,
-        count + 512,
+        // The cap on request sockets keeps a quarter of the limit for the rest: every task
+        // holds its socket at once under this limit.
+        count * 4 / 3 + 1_024,
         &["--max-memory", &budget, "--http-timeout", "5"],
     );
     let took = started.elapsed();
@@ -1293,7 +1295,7 @@ fn a_thousand_and_four_thousand_started_tasks_park_on_requests_at_once() {
     // request at the same time, on the reactor, so the run lasts about one `--http-timeout`
     // whatever the number of tasks, far from the 4,000 / 64 rounds of the I/O pool; memory
     // stays within a budget linear in the tasks.
-    let (mut server, port) = silent_server_process(4_000 + 1_024);
+    let (mut server, port) = silent_server_process(4_000 * 4 / 3 + 1_024);
     let one = run_parked(port, 1_000);
     let four = run_parked(port, 4_000);
     let _ = server.kill();
@@ -1311,7 +1313,7 @@ fn a_thousand_and_four_thousand_started_tasks_park_on_requests_at_once() {
 #[test]
 #[ignore = "10,000 and 15,000 sockets at once: run by the release gates (ADR 0117 Conformance, scale)"]
 fn ten_and_fifteen_thousand_started_tasks_park_on_requests_at_once() {
-    let (mut server, port) = silent_server_process(15_000 + 1_024);
+    let (mut server, port) = silent_server_process(15_000 * 4 / 3 + 1_024);
     let one = run_parked(port, 1_000);
     let ten = run_parked(port, 10_000);
     let fifteen = run_parked(port, 15_000);
@@ -1321,4 +1323,79 @@ fn ten_and_fifteen_thousand_started_tasks_park_on_requests_at_once() {
         ten < one * 30 + Duration::from_secs(10) && fifteen < one * 45 + Duration::from_secs(10),
         "1,000 parked tasks took {one:?}, 10,000 took {ten:?} and 15,000 took {fifteen:?}"
     );
+}
+
+#[test]
+fn parked_requests_under_a_small_descriptor_limit_never_make_files_fail() {
+    // `docs/plan/0117-s7-design.md` §7, decision S7-D4: under `ulimit -n 256`, 1,000 started
+    // tasks wait on a server that never answers; the requests hold at most the sockets the cap
+    // allows, so a task beside them still writes, reads and writes again a file, which it could
+    // not if the requests had taken every descriptor of the process. The requests beyond the
+    // cap wait for a socket, and their deadline covers that wait.
+    let (mut server, port) = silent_server_process(4_096);
+    let program = format!(
+        r#"module crowded
+
+probe() -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+  unit
+
+note() -> Unit
+  uses @files: Files[read, write]
+=
+  let written = attempt @files.write("data/note.txt", content: "noted")
+  let read = attempt @files.read("data/note.txt")
+  let copied = when read
+    is Ok(text) -> attempt @files.write("data/copy.txt", content: text)
+    is Err(failure) -> attempt @files.write("data/copy.txt", content: "unread")
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+  uses @http: Http[get]
+=
+  tasks at most 2000 at once
+    for i in 1..1000
+      start probe()
+    start note()
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-crowded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita crowded\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry crowded\n  grants\n    console\n    files \"data/\" read, write\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/crowded.una"), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = run_with_descriptors(
+        &dir.join("target/una/crowded"),
+        &dir,
+        256,
+        &["--http-timeout", "3"],
+    );
+    let _ = server.kill();
+    let _ = server.wait();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("data/copy.txt")).unwrap(),
+        "noted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -296,8 +296,84 @@ fn left(deadline: Instant) -> Result<Duration, Error> {
     Ok(deadline - now)
 }
 
+/// The resolver threads of the process: how many run, their bound, and the tickets of the
+/// callers waiting for one, served first come, first served.
+struct Resolvers {
+    running: usize,
+    most: usize,
+    next: u64,
+    waiting: std::collections::BTreeSet<u64>,
+}
+
+static RESOLVERS: std::sync::Mutex<Resolvers> = std::sync::Mutex::new(Resolvers {
+    running: 0,
+    most: 64,
+    next: 0,
+    waiting: std::collections::BTreeSet::new(),
+});
+
+/// Signaled when a resolver thread ends or a waiter leaves.
+static RESOLVER_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn resolvers() -> std::sync::MutexGuard<'static, Resolvers> {
+    RESOLVERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Bounds the resolver threads of the process at `most`, at least 1 (64 until it is called):
+/// the native runtime sets it to `--io-threads` (ADR 0117 slice S7). A resolver whose caller
+/// gave up still holds its place until the system answers it, so the bound caps the threads
+/// that a host whose names never resolve can hold, whatever the rate of requests.
+pub fn limit_resolvers(most: usize) {
+    resolvers().most = most.max(1);
+    RESOLVER_FREED.notify_all();
+}
+
+/// A place among the resolver threads, given back when dropped.
+struct ResolverPlace;
+
+impl Drop for ResolverPlace {
+    fn drop(&mut self) {
+        let mut state = resolvers();
+        state.running = state.running.saturating_sub(1);
+        drop(state);
+        RESOLVER_FREED.notify_all();
+    }
+}
+
+/// Waits, first come, first served, for a place among the resolver threads, until `deadline`.
+/// The waiters are the threads that resolve: helpers of the I/O pool, at most `--io-threads`,
+/// or the interpreter's one thread, so the wake of all of them at each release stays small.
+fn resolver_place(deadline: Instant) -> Result<ResolverPlace, Error> {
+    let mut state = resolvers();
+    let ticket = state.next;
+    state.next = state.next.wrapping_add(1);
+    state.waiting.insert(ticket);
+    loop {
+        if state.running < state.most && state.waiting.first() == Some(&ticket) {
+            state.waiting.remove(&ticket);
+            state.running += 1;
+            drop(state);
+            RESOLVER_FREED.notify_all();
+            return Ok(ResolverPlace);
+        }
+        let Ok(time) = left(deadline) else {
+            state.waiting.remove(&ticket);
+            drop(state);
+            RESOLVER_FREED.notify_all();
+            return Err(Error::TimedOut);
+        };
+        state = RESOLVER_FREED
+            .wait_timeout(state, time)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
+    }
+}
+
 /// The addresses of a host, resolved by the system within the deadline. The resolver has no
-/// timeout of its own, so it runs on a thread of its own, which may outlive a late answer.
+/// timeout of its own, so it runs on a thread of its own, which may outlive a late answer; the
+/// threads are bounded ([`limit_resolvers`]), and none starts past the deadline.
 fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, Error> {
     let name = host
         .trim_start_matches('[')
@@ -307,6 +383,8 @@ fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, 
     if let Ok(ip) = name.parse::<std::net::IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
+    let place = resolver_place(deadline)?;
+    left(deadline)?;
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
         .name("una-http-resolve".to_owned())
@@ -314,6 +392,7 @@ fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, 
             let found = (name.as_str(), port)
                 .to_socket_addrs()
                 .map(Iterator::collect::<Vec<_>>);
+            drop(place);
             let _ = sender.send(found);
         })
         .map_err(|_| Error::Unreachable)?;
@@ -538,15 +617,23 @@ fn test_roots(roots: &mut rustls::RootCertStore) {
 }
 
 /// Resolves `host` and connects to `port` at the first of its addresses that answers, within
-/// `deadline`; `stopped` is checked before each address, and a stop then fails with
-/// `Interrupted`. Both steps block the calling thread, bounded by the deadline: the resolver
-/// runs on a thread of its own, unless `host` is a literal address.
+/// `deadline`; `stopped` is checked before anything starts and before each address, and a
+/// stop then fails with `Interrupted`, as a deadline already passed fails with `TimedOut`.
+/// Both steps block the calling thread, bounded by the deadline: the resolver runs on a thread
+/// of its own, unless `host` is a literal address.
+///
+/// It checks no grant: a caller MUST have checked that the grants allow this origin, as
+/// [`send_interruptible`] does before it calls [`Interrupt::open`].
 pub fn open(
     host: &str,
     port: u16,
     deadline: Instant,
     stopped: &dyn Fn() -> bool,
 ) -> Result<TcpStream, Error> {
+    if stopped() {
+        return Err(Error::Interrupted);
+    }
+    left(deadline)?;
     for addr in resolve(host, port, deadline)? {
         if stopped() {
             return Err(Error::Interrupted);

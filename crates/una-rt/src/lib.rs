@@ -30,6 +30,7 @@ pub mod render;
 mod reactor;
 pub mod runtime;
 mod sched;
+mod sockets;
 mod started;
 pub mod tasks;
 mod timer;

@@ -52,7 +52,7 @@ pub fn install() -> Result<(), InstallError> {
 }
 
 fn install_once() -> Result<(), InstallError> {
-    let [read, write] = wake_pipe()?;
+    let [read, write] = open_pipe()?;
     WAKE_READ.store(read, Ordering::Release);
     WAKE_WRITE.store(write, Ordering::Release);
     // SAFETY: zero is a valid `sigaction` (no handler, no flags, an empty mask), and every
@@ -93,7 +93,7 @@ fn handler_action(handler: libc::sighandler_t) -> libc::sigaction {
 
 /// The two ends of a new pipe, non-blocking and close-on-exec, at descriptors of [`HIGH_FD`] or
 /// above; on failure, nothing stays open.
-fn wake_pipe() -> Result<[libc::c_int; 2], InstallError> {
+fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     let mut fds: [libc::c_int; 2] = [-1, -1];
     // SAFETY: `fds` is a valid array of two `c_int`s that the call writes the two ends into.
     #[cfg(target_os = "linux")]
