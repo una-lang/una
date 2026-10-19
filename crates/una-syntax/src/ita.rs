@@ -2277,14 +2277,14 @@ fn canonical_tokens(text: &str, tokens: &[Tok]) -> String {
     let mut previous: Option<&Item> = None;
     for token in tokens {
         let written = text.get(token.range.clone()).unwrap_or("");
-        let space = match (previous, &token.item) {
-            (None, _) => false,
-            (_, Item::Punct("," | "." | "]" | ":" | "/" | ")")) => false,
-            (Some(Item::Punct("[" | "." | "/" | "(")), _) => false,
-            (Some(Item::Upper(_)), Item::Punct("[")) => false,
-            (Some(Item::Word(_)), Item::Punct("(")) => false,
-            _ => true,
-        };
+        let space = !matches!(
+            (previous, &token.item),
+            (None, _)
+                | (_, Item::Punct("," | "." | "]" | ":" | "/" | ")"))
+                | (Some(Item::Punct("[" | "." | "/" | "(")), _)
+                | (Some(Item::Upper(_)), Item::Punct("["))
+                | (Some(Item::Word(_)), Item::Punct("("))
+        );
         if space {
             out.push(' ');
         }
