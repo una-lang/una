@@ -1,0 +1,1 @@
+- **Docs: edition `0.4` in the roadmap** (#937). The roadmap lists the language and toolchain work of edition `0.4`, each area with its record and its decision, and states that Una admits no foreign code.
