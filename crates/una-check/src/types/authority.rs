@@ -1928,7 +1928,8 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 /// U3012: the capabilities that `main` of the `[run] entry` module uses must be granted
 /// (`spec/04 §8`, `spec/05 §7`). A capability that is not a host capability
 /// can never be granted; host capabilities are compared with `[run] grants` when `una.toml`
-/// lists grants, and with the final grants of `una run` when it checks the package to run it.
+/// lists grants, even none, and with the final grants of `una run` when it checks the package
+/// to run it.
 pub(crate) fn grants(
     env: &Env<'_>,
     settings: &Manifest,
@@ -1984,7 +1985,9 @@ pub(crate) fn grants(
             report.push(diagnostic);
             continue;
         }
-        if run.is_none() && settings.grants.is_empty() {
+        // Without `una run`'s final grants, a listed `[run] grants` is the final set, an empty
+        // one included (#925); only a package that lists none is not checked against it.
+        if run.is_none() && !settings.grants_listed {
             continue;
         }
         let allowed = granted.get(capability.name);

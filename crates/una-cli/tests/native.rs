@@ -439,6 +439,26 @@ fn package(name: &str, manifest_extra: &str, files: &[(&str, &str)]) -> PathBuf 
 const HELLO: &str = "module hello\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"Hello, Una\")\n";
 
 #[test]
+fn an_empty_grants_list_grants_nothing_to_build() {
+    // #925: `grants = []` is the final set, so `una build`, as `una check`, reports U3012 at
+    // each host use of `main`, where it once built an executable that could never run.
+    let dir = package(
+        "empty-grants",
+        "\n[run]\nentry = \"hello\"\ngrants = []\n",
+        &[("src/hello.una", HELLO)],
+    );
+    for command in ["check", "build"] {
+        let output = una(&dir, &[command]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(stderr.contains("U3012"), "{command}: {stderr}");
+        assert!(stderr.contains("src/hello.una:4:3"), "{command}: {stderr}");
+    }
+    assert!(!dir.join("target/una/hello").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn una_build_writes_the_executable_and_prints_una_build_1() {
     runtime();
     let dir = package(

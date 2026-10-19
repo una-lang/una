@@ -24,6 +24,9 @@ pub struct Manifest {
     pub entry: Option<Located>,
     /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
     pub grants: Vec<Located>,
+    /// Whether `una.toml` lists `[run] grants`, empty or not: a listed array is the final set
+    /// of `una check` and `una build`, so `grants = []` grants no host capability (#925).
+    pub grants_listed: bool,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
     pub edition: Edition,
     /// `[contracts]`, edition `0.3`: the locked `uses` clauses of public functions (ADR 0092
@@ -383,6 +386,7 @@ fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectE
                 }
             }
             "grants" => {
+                manifest.grants_listed = true;
                 for grant in strings("grants", value, Code::U7002, errors) {
                     if is_grant(&grant.value) {
                         manifest.grants.push(grant);
