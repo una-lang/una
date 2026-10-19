@@ -78,7 +78,7 @@ pub(crate) fn first_table() -> u64 {
 
 /// The process key the hooks give, if they give one: `None` lets the host's source give it.
 pub(crate) fn process_key() -> Option<Result<ProcessKey, KeyError>> {
-    core::hint::black_box(&UNA_HASH_TEST_HOOKS_MARKER);
+    let _ = core::hint::black_box(&UNA_HASH_TEST_HOOKS_MARKER);
     match SOURCE.load(Ordering::SeqCst) {
         FIXED => Some(Ok(ProcessKey::from_key(SipKey {
             k0: FIXED_K0.load(Ordering::SeqCst),
