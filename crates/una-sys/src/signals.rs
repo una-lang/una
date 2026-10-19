@@ -10,7 +10,7 @@
 //! The stop is sticky, so the pipe is never drained: once a request has come, its read end
 //! stays readable, and every thread that waits on it afterwards wakes at once.
 //!
-//! The only `unsafe` code of the crate is here: the calls of the operating system through the
+//! The `unsafe` code here, as in `dir`, is the calls of the operating system through the
 //! `libc` crate, which is Rust declarations of the system interface only, with no C source
 //! built (ADR 0116 Appendix A, amendment of 2026-10-19).
 #![allow(unsafe_code)]

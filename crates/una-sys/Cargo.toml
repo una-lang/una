@@ -5,13 +5,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The unsafe code that the Una runtime and interpreter share: signal handlers and attention words (ADR 0116 rule 18, ADR 0058 Appendix A)"
+description = "The unsafe code that the Una runtime and interpreter share: signal handlers, attention words and descriptor-relative file creation (ADR 0116 rule 18, ADR 0058 Appendix A, #1094)"
 
 [dependencies]
 libc.workspace = true
 
 # The workspace lints, except `unsafe_code`: ADR 0058 (Appendix A of ADR 0116) allows `unsafe`
-# in this crate, in the one module that calls the operating system, `signals.rs`, which opts in.
+# in this crate, in the modules that call the operating system, `signals.rs` and `dir.rs`, which
+# opt in.
 # Every other module keeps the rule of compiler/conventions.md §1.
 [lints.rust]
 unsafe_code = "deny"

@@ -92,7 +92,7 @@ Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` on
 
 Allowed by ADR 0074, for `una-http` only (v0.2): `rustls` with its `ring` provider, and `webpki-roots`, the TLS stack of the `Http` capability, with their dependencies (`rustls-webpki`, `rustls-pki-types`, `untrusted`, `subtle`, `zeroize`, `once_cell`, `getrandom`). They are in the trusted base. Executables that never use `Http` do not link them.
 
-Allowed by ADR 0116 (Appendix A, amendment of 2026-10-19), for `una-sys` only: `libc`, the Rust declarations of the operating system's interface (`sigaction`, `pipe`, `fcntl`, `write`, `read`, `raise`). It is bindings only: no C source is built, and it adds nothing to the supply chain, since it is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`).
+Allowed by ADR 0116 (Appendix A, amendment of 2026-10-19), for `una-sys` only: `libc`, the Rust declarations of the operating system's interface (`sigaction`, `pipe`, `fcntl`, `write`, `read`, `raise`, and, for the descriptor-relative writes of #1094, `openat`, `mkdirat`, `renameat`, `renameat2` on Linux and `renameatx_np` on macOS). It is bindings only: no C source is built, and it adds nothing to the supply chain, since it is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`).
 
 Allowed by ADR 0119, for `una-hash` only: `getrandom`, the process key of keyed hashing from the operating system's cryptographic random source. Its own `unsafe` code puts it in the trusted base (`docs/security/tcb.md`).
 
