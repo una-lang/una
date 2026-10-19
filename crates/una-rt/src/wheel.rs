@@ -42,7 +42,9 @@ const NIL: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TimerId {
     index: u32,
-    generation: u32,
+    /// 64 bits, so an entry is reused far fewer times than it would take to wrap: a stale id
+    /// never matches a live timer.
+    generation: u64,
 }
 
 /// The wheel cannot hold another timer: it already holds `u32::MAX - 1`. Timers are bounded by
@@ -55,7 +57,7 @@ struct Entry<T> {
     deadline: u64,
     /// The order the timer was armed in, to order timers that fire together.
     seq: u64,
-    generation: u32,
+    generation: u64,
     /// The list the entry is on: a slot (`level * SLOTS + slot`), [`DUE`], or `NIL` when free.
     list: u32,
     prev: u32,
@@ -72,6 +74,10 @@ pub struct Wheel<T> {
     free: Vec<u32>,
     len: usize,
     seq: u64,
+    /// Lists taken out while advancing, kept for their capacity so that advancing allocates
+    /// nothing once warm.
+    batch: Vec<u32>,
+    due: Vec<u32>,
     /// Entry moves between lists, for the scaling tests.
     #[cfg(test)]
     moves: u64,
@@ -88,6 +94,8 @@ impl<T> Wheel<T> {
             free: Vec::new(),
             len: 0,
             seq: 0,
+            batch: Vec::new(),
+            due: Vec::new(),
             #[cfg(test)]
             moves: 0,
         }
@@ -175,17 +183,29 @@ impl<T> Wheel<T> {
     /// wheel's time advances to the wheel's time. O(1) amortized per timer, plus O(levels) per
     /// slot reached.
     pub fn advance(&mut self, to: u64, fired: &mut Vec<(TimerId, T)>) {
+        self.advance_in(to, fired, true);
+    }
+
+    /// [`Wheel::advance`] without ordering the timers that fire together: O(1) amortized per
+    /// timer, with no allocation once `fired` and the wheel's own lists have grown, for a
+    /// caller that holds a lock while it advances and has no use for the order (the real
+    /// clock's timer thread).
+    pub fn advance_unordered(&mut self, to: u64, fired: &mut Vec<(TimerId, T)>) {
+        self.advance_in(to, fired, false);
+    }
+
+    fn advance_in(&mut self, to: u64, fired: &mut Vec<(TimerId, T)>, ordered: bool) {
         let to = to.max(self.now);
-        let mut batch = Vec::new();
+        let mut batch = std::mem::take(&mut self.batch);
+        let mut due = std::mem::take(&mut self.due);
         self.take_list(DUE, &mut batch);
-        self.fire(&mut batch, fired);
+        self.fire(&mut batch, fired, ordered);
         while let Some((list, start)) = self.next_slot() {
             if start > to {
                 break;
             }
             self.now = start.max(self.now);
             self.take_list(list, &mut batch);
-            let mut due = Vec::new();
             for index in batch.drain(..) {
                 let deadline = match self.entries.get(index as usize) {
                     Some(entry) => entry.deadline,
@@ -197,20 +217,24 @@ impl<T> Wheel<T> {
                     self.place(index);
                 }
             }
-            self.fire(&mut due, fired);
+            self.fire(&mut due, fired, ordered);
         }
         self.now = to;
+        self.batch = batch;
+        self.due = due;
     }
 
-    /// Removes the entries of `batch` from the slab and appends their timers to `fired`,
-    /// ordered by deadline, then arming order.
-    fn fire(&mut self, batch: &mut Vec<u32>, fired: &mut Vec<(TimerId, T)>) {
+    /// Removes the entries of `batch` from the slab and appends their timers to `fired`, when
+    /// `ordered` by deadline, then arming order.
+    fn fire(&mut self, batch: &mut Vec<u32>, fired: &mut Vec<(TimerId, T)>, ordered: bool) {
         let entries = &self.entries;
-        batch.sort_by_key(|&index| {
-            entries
-                .get(index as usize)
-                .map_or((u64::MAX, u64::MAX), |entry| (entry.deadline, entry.seq))
-        });
+        if ordered {
+            batch.sort_by_key(|&index| {
+                entries
+                    .get(index as usize)
+                    .map_or((u64::MAX, u64::MAX), |entry| (entry.deadline, entry.seq))
+            });
+        }
         for index in batch.drain(..) {
             let generation = match self.entries.get(index as usize) {
                 Some(entry) => entry.generation,
@@ -428,6 +452,45 @@ mod tests {
         let other = wheel.arm(100_001, 8).unwrap();
         assert_eq!(wheel.cancel(id), None);
         assert_eq!(wheel.cancel(other), Some(8));
+    }
+
+    #[test]
+    fn a_stale_id_never_cancels_the_timer_that_reuses_its_entry() {
+        let mut wheel = Wheel::new(0);
+        let stale = wheel.arm(5, 1).unwrap();
+        assert_eq!(fire(&mut wheel, 5), vec![1]);
+        // The freed entry is reused, many times over, by timers armed and cancelled in turn.
+        for value in 0..10_000 {
+            let id = wheel.arm(1_000, value).unwrap();
+            assert_eq!(id.index, stale.index);
+            assert_eq!(wheel.cancel(id), Some(value));
+        }
+        let live = wheel.arm(1_000, 7).unwrap();
+        assert_eq!(live.index, stale.index);
+        assert_eq!(wheel.cancel(stale), None);
+        assert_eq!(fire(&mut wheel, 1_000), vec![7]);
+    }
+
+    #[test]
+    fn unordered_advance_fires_the_same_timers() {
+        let mut ordered = Wheel::new(0);
+        let mut unordered = Wheel::new(0);
+        let mut random = Lcg(7);
+        for value in 0..2_000u64 {
+            let deadline = random.next() % 50_000;
+            ordered.arm(deadline, value).unwrap();
+            unordered.arm(deadline, value).unwrap();
+        }
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        ordered.advance(25_000, &mut a);
+        unordered.advance_unordered(25_000, &mut b);
+        let mut a: Vec<u64> = a.into_iter().map(|(_, v)| v).collect();
+        let mut b: Vec<u64> = b.into_iter().map(|(_, v)| v).collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b);
+        assert_eq!(ordered.len(), unordered.len());
     }
 
     #[test]

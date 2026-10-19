@@ -1369,6 +1369,25 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
+    /// The `cancelled` events of the tasks `from..to` of the block in progress, which a cut
+    /// stopped or kept from starting (`spec/27 §5`), in task order: each task the cut stops ends
+    /// with one, as natively, whatever had started.
+    fn cut_events(&mut self, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+            path.push((index + 1).to_string());
+            self.emit(Event {
+                seq: 0,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
     /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
     fn within_timeout_event(&mut self) {
         let task = self.task.join(".");
@@ -1726,8 +1745,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let start = self.events.len();
                     let mut parts = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
-                        let (result, part) = self.task(env, &caps, index, task);
-                        parts.push(part);
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => {
+                                let (result, part) = self.task(env, &caps, index, task);
+                                parts.push(part);
+                                result
+                            }
+                        };
                         match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
@@ -1735,6 +1760,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 self.adopt(start, &parts.iter().collect::<Vec<_>>());
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, tasks.len());
                                 }
                                 return Err(stop);
                             }
@@ -1771,11 +1799,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.later.push((expr, rebound));
                     let start = self.events.len();
                     let mut parts = Vec::with_capacity(items.len());
+                    let count = items.len();
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));
-                        let (result, part) = self.task(env, &caps, index, task);
-                        parts.push(part);
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => {
+                                let (result, part) = self.task(env, &caps, index, task);
+                                parts.push(part);
+                                result
+                            }
+                        };
                         env.truncate(mark);
                         match result {
                             Ok(result) => results.push(result),
@@ -1784,6 +1819,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 self.adopt(start, &parts.iter().collect::<Vec<_>>());
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, count);
                                 }
                                 return Err(stop);
                             }
