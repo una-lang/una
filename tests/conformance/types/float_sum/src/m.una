@@ -1,0 +1,6 @@
+-- test: F64 satisfies Eq and Ord, but not Integer: `sum` over a list of floats is refused
+-- spec: spec/29 §1
+-- expect: error U2025 at src/m.una:6:35
+module m
+
+pub total(xs: List[F64]) -> Int = sum(xs)

@@ -559,6 +559,18 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.3: `F64` is built in (`spec/29`, ADR 0114 rule 1.4).
+        if upper && self.package.settings.edition >= Edition::V0_3 && name == "F64" {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`F64` is a built-in floating-point type from edition 0.3, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.2: the built-in types, and the types of the prelude that every program
         // uses, cannot be shadowed by a declaration (`spec/03 §1`, ADR 0079): in edition 0.1 a
         // kind named `Int` silently replaced it (#130).

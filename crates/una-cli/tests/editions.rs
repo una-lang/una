@@ -150,6 +150,17 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
             ("U3026", "src/relay.una:83:12"),
         ],
     },
+    // ADR 0114 rule 15: a declaration named `F64`, built in from edition 0.3.
+    Difference::Stricter {
+        case: "types/float_names_edition_0_2",
+        edition_0_3: &[("U1002", "src/m.una:6:10")],
+    },
+    // ADR 0114 rule 15: a package function `to_f64` on integers, which the built-in
+    // conversion resolves ahead of in edition 0.3.
+    Difference::Stricter {
+        case: "types/float_to_f64_edition_0_2",
+        edition_0_3: &[("U1002", "src/m.una:6:5")],
+    },
     // ADR 0103 rule 1: a refined type argument, U2002 before edition 0.3.
     Difference::Looser {
         case: "verification/refined_elements_0_2",

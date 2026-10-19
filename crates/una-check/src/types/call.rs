@@ -183,6 +183,9 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             return ty;
         }
+        if let Some(ty) = self.float_method(&target_ty, method, args, span) {
+            return ty;
+        }
         if let Some(ty) = self.int_method(&target_ty, method, args, span, expected) {
             return ty;
         }

@@ -109,6 +109,8 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             // A fixed-width integer is an integer word: its range is proven, so arithmetic on
             // it never leaves the type (`spec/18 §3`).
             Base::Fixed(_) => Ok(Kind::Int),
+            // `F64` waits for its native step (`spec/29`, ADR 0114 rule 9).
+            Base::F64 => Err(unsupported("`F64` (spec/29)")),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
@@ -1931,6 +1933,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 _ => (self.literal("una_rt_int_literal", digits)?, Kind::Int),
             },
             Atom::Text(text) => (self.literal("una_rt_text_literal", text)?, Kind::Text),
+            Atom::F64(_) => return Err(unsupported("`F64` (spec/29)")),
         })
     }
 
@@ -2000,6 +2003,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Atom::Int(_) => base(Base::Int),
             Atom::Bool(_) => base(Base::Bool),
             Atom::Text(_) => base(Base::Text),
+            Atom::F64(_) => base(Base::F64),
             Atom::Unit => base(Base::Unit),
         }
     }
@@ -2533,6 +2537,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             // Lowered with their arguments' ownership, in `rhs`.
             Prim::Map(op) => Err(internal(format!("map `{}` out of place", op.as_str()))),
+            Prim::Float(_) => Err(unsupported("`F64` (spec/29)")),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {

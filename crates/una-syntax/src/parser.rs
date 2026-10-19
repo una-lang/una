@@ -232,6 +232,7 @@ fn can_start_expression(kind: &TokenKind) -> bool {
         | TokenKind::Reserved(_)
         | TokenKind::CapRef(_)
         | TokenKind::Int(_)
+        | TokenKind::Float(_)
         | TokenKind::TextStart
         | TokenKind::LParen
         | TokenKind::LBracket
@@ -3133,6 +3134,7 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let kind = match self.peek() {
             TokenKind::Int(_)
+            | TokenKind::Float(_)
             | TokenKind::TextStart
             | TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Unit) => {
                 ExprKind::Literal(self.literal()?)
@@ -3216,6 +3218,7 @@ impl<'a> Parser<'a> {
     fn literal(&mut self) -> Parse<Literal> {
         let literal = match self.peek() {
             TokenKind::Int(digits) => Literal::Int(digits.clone()),
+            TokenKind::Float(text) => Literal::Float(text.clone()),
             TokenKind::TextStart => return Ok(Literal::Text(self.text_literal()?)),
             TokenKind::Keyword(Keyword::True) => Literal::Bool(true),
             TokenKind::Keyword(Keyword::False) => Literal::Bool(false),

@@ -1047,6 +1047,12 @@ impl<'a> Checker<'_, 'a, '_> {
                         (Literal::Int(digits), Ty::Fixed(int)) => {
                             self.int_literal_type(false, digits, pattern, Some(&Ty::Fixed(int)))
                         }
+                        // A float literal is never a pattern (ADR 0114 rules 5.5 and 5.6).
+                        (Literal::Float(text), _) => {
+                            self.float_pattern(text, pattern);
+                            problem = true;
+                            Ty::F64
+                        }
                         _ => literal_type(literal),
                     };
                     if !self.vars.unify(&scrutinee, &literal_ty) {
@@ -1318,6 +1324,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
 fn literal_type(literal: &Literal) -> Ty {
     match literal {
         Literal::Int(_) => Ty::Int,
+        Literal::Float(_) => Ty::F64,
         Literal::Bool(_) => Ty::Bool,
         Literal::Text(_) => Ty::Text,
         Literal::Unit => Ty::Unit,
@@ -1328,6 +1335,7 @@ fn literal_type(literal: &Literal) -> Ty {
 fn literal_key(literal: &Literal) -> Option<String> {
     match literal {
         Literal::Int(digits) => Some(format!("int:{digits}")),
+        Literal::Float(text) => Some(format!("float:{text}")),
         Literal::Bool(value) => Some(format!("bool:{value}")),
         Literal::Unit => Some("unit".to_owned()),
         Literal::Text(text) => {

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::json::Halt;
 use una_core::{
-    Atom, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
+    Atom, Bound, CapOp, Ctor, Decl, Expr, FixedOp, FloatOp, Fun, HandlerOp, IntType, Label, Level,
     LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
@@ -307,6 +307,7 @@ impl<'p> Index<'p> {
             let mut parts: Vec<Task<'_, '_>> = Vec::new();
             match value {
                 Value::Int(n) => out.push_str(&n.to_string()),
+                Value::F64(x) => out.push_str(&una_core::float::render(*x)),
                 Value::Bool(b) => out.push_str(&b.to_string()),
                 Value::Text(t) => out.push_str(&una_core::quote(t)),
                 Value::Unit => out.push_str("unit"),
@@ -1119,6 +1120,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .parse::<BigInt>()
                     .map_err(|_| fault(format!("`{digits}` is not an integer")))?,
             ),
+            Atom::F64(bits) => Value::F64(una_core::float::from_bits(*bits)),
             Atom::Bool(b) => Value::Bool(*b),
             Atom::Text(text) => Value::text(text),
             Atom::Unit => Value::Unit,
@@ -1867,6 +1869,34 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .collect(),
             )),
             "parse_int" => return parse_int(&text(0)?),
+            // The functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
+            "nan" => Value::F64(f64::from_bits(una_core::float::CANONICAL_NAN)),
+            "infinity" => Value::F64(f64::INFINITY),
+            "f64_from_bits" => {
+                let bits = u64::try_from(&int(0)?).map_err(|_| bad())?;
+                Value::F64(una_core::float::from_bits(bits))
+            }
+            "parse_f64" => return parse_f64(&text(0)?),
+            "as_f64" => match arg(0)? {
+                Value::Data(data) => match (data.ctor.name.as_str(), data.fields.first()) {
+                    ("Number", Some(Value::Int(n))) => {
+                        some(Value::F64(una_core::float::from_int(n)))
+                    }
+                    ("Decimal", Some(Value::Text(t))) => match una_core::float::parse(t) {
+                        Ok(x) => some(Value::F64(x)),
+                        Err(_) => return Err(bad()),
+                    },
+                    _ => none(),
+                },
+                _ => return Err(bad()),
+            },
+            "json_number" => match arg(0)? {
+                Value::F64(x) if x.is_finite() => {
+                    some(crate::json::decimal(&una_core::float::render(x)))
+                }
+                Value::F64(_) => none(),
+                _ => return Err(bad()),
+            },
             "trim_start" => Value::text(text(0)?.trim_start()),
             "trim_end" => Value::text(text(0)?.trim_end()),
             "bytes" => Value::List(Rc::new(
@@ -2192,6 +2222,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         // A copy of the map when another name holds it; a binding at its last use gives it up
         // first, in `Machine::eval`.
         Prim::Map(op) => return map_apply(op, args.to_vec()),
+        Prim::Float(op) => return float_apply(op, args),
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),
@@ -2308,6 +2339,89 @@ fn parse_int<'p>(t: &str) -> Flow<'p> {
         Ok(n) => Ok(Value::Int(n)),
         Err(_) => failure("NoDigits", 2, Vec::new()),
     }
+}
+
+/// `parse_f64(t)` (`spec/29`, ADR 0114 rule 7.3): a failure says why, as `parse_int`'s does.
+fn parse_f64<'p>(t: &str) -> Flow<'p> {
+    use una_core::float::ParseFailure;
+    let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
+        Err(Stop::Fail(Value::data(
+            prelude_ctor("ParseError", name, index),
+            fields,
+        )))
+    };
+    match una_core::float::parse(t) {
+        Ok(x) => Ok(Value::F64(x)),
+        Err(ParseFailure::Empty) => failure("Empty", 0, Vec::new()),
+        Err(ParseFailure::NoDigits) => failure("NoDigits", 2, Vec::new()),
+        Err(ParseFailure::NotADigit(at)) => failure(
+            "NotADigit",
+            1,
+            vec![Value::int(i64::try_from(at).unwrap_or(i64::MAX))],
+        ),
+    }
+}
+
+/// An operation of `F64` (`spec/29`, ADR 0114 rules 3 to 5), each O(1), each `F64` result
+/// canonical (rule 9.8).
+fn float_apply<'p>(op: FloatOp, args: &[Value<'p>]) -> Flow<'p> {
+    use una_core::float as f;
+    let x = |i: usize| match args.get(i) {
+        Some(Value::F64(x)) => Ok(*x),
+        _ => Err(fault(format!(
+            "`{}` applied to a value that is not an `F64`",
+            op.as_str()
+        ))),
+    };
+    Ok(match op {
+        FloatOp::Add => Value::F64(f::add(x(0)?, x(1)?)),
+        FloatOp::Sub => Value::F64(f::sub(x(0)?, x(1)?)),
+        FloatOp::Mul => Value::F64(f::mul(x(0)?, x(1)?)),
+        FloatOp::Div => Value::F64(f::div(x(0)?, x(1)?)),
+        FloatOp::Neg => Value::F64(f::neg(x(0)?)),
+        FloatOp::Eq => Value::Bool(f::equal(x(0)?, x(1)?)),
+        FloatOp::Ne => Value::Bool(!f::equal(x(0)?, x(1)?)),
+        FloatOp::Lt => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_lt()),
+        FloatOp::Le => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_le()),
+        FloatOp::Gt => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_gt()),
+        FloatOp::Ge => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_ge()),
+        FloatOp::Abs => Value::F64(f::abs(x(0)?)),
+        FloatOp::Sqrt => Value::F64(f::sqrt(x(0)?)),
+        FloatOp::Fma => Value::F64(f::fma(x(0)?, x(1)?, x(2)?)),
+        FloatOp::Rem => Value::F64(f::rem(x(0)?, x(1)?)),
+        FloatOp::Floor => Value::F64(f::floor(x(0)?)),
+        FloatOp::Ceil => Value::F64(f::ceil(x(0)?)),
+        FloatOp::Trunc => Value::F64(f::trunc(x(0)?)),
+        FloatOp::RoundHalfEven => Value::F64(f::round_half_even(x(0)?)),
+        FloatOp::RoundHalfAway => Value::F64(f::round_half_away(x(0)?)),
+        FloatOp::CopySign => Value::F64(f::copy_sign(x(0)?, x(1)?)),
+        FloatOp::IeeeMin => Value::F64(f::ieee_min(x(0)?, x(1)?)),
+        FloatOp::IeeeMax => Value::F64(f::ieee_max(x(0)?, x(1)?)),
+        FloatOp::Clamp => Value::F64(f::clamp(x(0)?, x(1)?, x(2)?)),
+        FloatOp::IeeeEq => Value::Bool(f::ieee_compare(f::IeeeCompare::Eq, x(0)?, x(1)?)),
+        FloatOp::IeeeNe => Value::Bool(f::ieee_compare(f::IeeeCompare::Ne, x(0)?, x(1)?)),
+        FloatOp::IeeeLt => Value::Bool(f::ieee_compare(f::IeeeCompare::Lt, x(0)?, x(1)?)),
+        FloatOp::IeeeLe => Value::Bool(f::ieee_compare(f::IeeeCompare::Le, x(0)?, x(1)?)),
+        FloatOp::IeeeGt => Value::Bool(f::ieee_compare(f::IeeeCompare::Gt, x(0)?, x(1)?)),
+        FloatOp::IeeeGe => Value::Bool(f::ieee_compare(f::IeeeCompare::Ge, x(0)?, x(1)?)),
+        FloatOp::IsNan => Value::Bool(x(0)?.is_nan()),
+        FloatOp::IsFinite => Value::Bool(x(0)?.is_finite()),
+        FloatOp::IsInfinite => Value::Bool(x(0)?.is_infinite()),
+        FloatOp::IsSignNegative => Value::Bool(f::to_bits(x(0)?) >> 63 == 1),
+        FloatOp::IsZero => Value::Bool(x(0)? == 0.0),
+        FloatOp::IsPositiveZero => Value::Bool(f::to_bits(x(0)?) == 0),
+        FloatOp::IsNegativeZero => Value::Bool(f::to_bits(x(0)?) == 1 << 63),
+        FloatOp::ToBits => Value::Int(BigInt::from(f::to_bits(x(0)?))),
+        FloatOp::ToIntExact => match f::to_int_exact(x(0)?) {
+            Some(n) => some(Value::Int(n)),
+            None => none(),
+        },
+        FloatOp::FromInt => match args.first() {
+            Some(Value::Int(n)) => Value::F64(f::from_int(n)),
+            _ => return Err(fault("`to_f64` applied to a value that is not an integer")),
+        },
+        FloatOp::ToText => Value::text(&f::render(x(0)?)),
+    })
 }
 
 /// `append` and `set` of the prelude (`spec/14 §1`, `spec/17 §4`). They update the list in

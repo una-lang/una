@@ -691,7 +691,7 @@ impl Dumper<'_> {
 
     fn literal(&self, literal: &Literal) -> Node {
         match literal {
-            Literal::Int(digits) => atom(digits.clone()),
+            Literal::Int(digits) | Literal::Float(digits) => atom(digits.clone()),
             Literal::Text(text) => self.text(text),
             Literal::Bool(value) => atom(if *value { "true" } else { "false" }),
             Literal::Unit => atom("unit"),

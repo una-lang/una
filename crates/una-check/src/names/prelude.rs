@@ -122,6 +122,16 @@ pub(crate) const TEXT_0_2: [&str; 14] = [
     "bytes",
 ];
 
+/// The functions of `F64` that edition 0.3 adds to the prelude (`spec/29`, ADR 0114 rule 3.9).
+pub(crate) const FLOAT_0_3: [&str; 6] = [
+    "nan",
+    "infinity",
+    "f64_from_bits",
+    "parse_f64",
+    "as_f64",
+    "json_number",
+];
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]

@@ -187,6 +187,8 @@ pub enum Base {
     Int,
     /// A fixed-width integer type (`spec/18`).
     Fixed(IntType),
+    /// `F64`, IEEE 754 binary64, edition 0.3 (`spec/29`, ADR 0114).
+    F64,
     /// `Bool`.
     Bool,
     /// `Text`.
@@ -421,6 +423,8 @@ pub enum Atom {
     Var(Name),
     /// An integer literal, in decimal, with an optional `-`.
     Int(String),
+    /// A float literal, as the bits of its value (`spec/29`): never a NaN.
+    F64(u64),
     /// `true` or `false`.
     Bool(bool),
     /// A text literal, with its escapes decoded.
@@ -471,6 +475,281 @@ pub enum Prim {
     /// A built-in method of a map (`spec/21 §2`); `set` and `remove` are rebinds to `With`
     /// and `Without`.
     Map(MapOp),
+    /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
+    /// existing primitive changes meaning.
+    Float(FloatOp),
+}
+
+/// The operators, methods and conversions of `F64` (`spec/29`, ADR 0114 rules 3 to 5). Every
+/// one is total and O(1), and every `F64` it returns is canonical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FloatOp {
+    /// `+`.
+    Add,
+    /// `-`.
+    Sub,
+    /// `*`.
+    Mul,
+    /// `/`.
+    Div,
+    /// Unary `-`.
+    Neg,
+    /// `==`, identity of the canonical bits.
+    Eq,
+    /// `!=`.
+    Ne,
+    /// `<`, IEEE totalOrder.
+    Lt,
+    /// `<=`.
+    Le,
+    /// `>`.
+    Gt,
+    /// `>=`.
+    Ge,
+    /// `abs()`.
+    Abs,
+    /// `sqrt()`.
+    Sqrt,
+    /// `fma(times:, plus:)`.
+    Fma,
+    /// `rem(by:)`.
+    Rem,
+    /// `floor()`.
+    Floor,
+    /// `ceil()`.
+    Ceil,
+    /// `trunc()`.
+    Trunc,
+    /// `round_half_even()`.
+    RoundHalfEven,
+    /// `round_half_away()`.
+    RoundHalfAway,
+    /// `copy_sign(from:)`.
+    CopySign,
+    /// `ieee_min(other:)`.
+    IeeeMin,
+    /// `ieee_max(other:)`.
+    IeeeMax,
+    /// `clamp(lo:, hi:)`.
+    Clamp,
+    /// `ieee_eq(other:)`.
+    IeeeEq,
+    /// `ieee_ne(other:)`.
+    IeeeNe,
+    /// `ieee_lt(other:)`.
+    IeeeLt,
+    /// `ieee_le(other:)`.
+    IeeeLe,
+    /// `ieee_gt(other:)`.
+    IeeeGt,
+    /// `ieee_ge(other:)`.
+    IeeeGe,
+    /// `is_nan()`.
+    IsNan,
+    /// `is_finite()`.
+    IsFinite,
+    /// `is_infinite()`.
+    IsInfinite,
+    /// `is_sign_negative()`.
+    IsSignNegative,
+    /// `is_zero()`.
+    IsZero,
+    /// `is_positive_zero()`.
+    IsPositiveZero,
+    /// `is_negative_zero()`.
+    IsNegativeZero,
+    /// `to_bits()`, a `U64`.
+    ToBits,
+    /// `to_int_exact()`, an `Option[Int]`.
+    ToIntExact,
+    /// `to_f64()` of an integer of any integer type.
+    FromInt,
+    /// The rendering of `spec/29`, as `to_text` and interpolation write it.
+    ToText,
+}
+
+/// What a method of `F64` returns (ADR 0114 rule 3.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatResult {
+    /// `F64`.
+    F64,
+    /// `Bool`.
+    Bool,
+    /// `U64`.
+    U64,
+    /// `Option[Int]`.
+    OptionInt,
+}
+
+impl FloatOp {
+    /// The methods of `F64`, in the order of ADR 0114's table.
+    pub const METHODS: [FloatOp; 28] = [
+        FloatOp::Abs,
+        FloatOp::Sqrt,
+        FloatOp::Fma,
+        FloatOp::Rem,
+        FloatOp::Floor,
+        FloatOp::Ceil,
+        FloatOp::Trunc,
+        FloatOp::RoundHalfEven,
+        FloatOp::RoundHalfAway,
+        FloatOp::CopySign,
+        FloatOp::IeeeMin,
+        FloatOp::IeeeMax,
+        FloatOp::Clamp,
+        FloatOp::IeeeEq,
+        FloatOp::IeeeNe,
+        FloatOp::IeeeLt,
+        FloatOp::IeeeLe,
+        FloatOp::IeeeGt,
+        FloatOp::IeeeGe,
+        FloatOp::IsNan,
+        FloatOp::IsFinite,
+        FloatOp::IsInfinite,
+        FloatOp::IsSignNegative,
+        FloatOp::IsZero,
+        FloatOp::IsPositiveZero,
+        FloatOp::IsNegativeZero,
+        FloatOp::ToBits,
+        FloatOp::ToIntExact,
+    ];
+
+    /// The kind of the operation in Core and its export: `f64_` and the operation
+    /// (`spec/13 §8`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FloatOp::Add => "f64_add",
+            FloatOp::Sub => "f64_sub",
+            FloatOp::Mul => "f64_mul",
+            FloatOp::Div => "f64_div",
+            FloatOp::Neg => "f64_neg",
+            FloatOp::Eq => "f64_eq",
+            FloatOp::Ne => "f64_ne",
+            FloatOp::Lt => "f64_lt",
+            FloatOp::Le => "f64_le",
+            FloatOp::Gt => "f64_gt",
+            FloatOp::Ge => "f64_ge",
+            FloatOp::Abs => "f64_abs",
+            FloatOp::Sqrt => "f64_sqrt",
+            FloatOp::Fma => "f64_fma",
+            FloatOp::Rem => "f64_rem",
+            FloatOp::Floor => "f64_floor",
+            FloatOp::Ceil => "f64_ceil",
+            FloatOp::Trunc => "f64_trunc",
+            FloatOp::RoundHalfEven => "f64_round_half_even",
+            FloatOp::RoundHalfAway => "f64_round_half_away",
+            FloatOp::CopySign => "f64_copy_sign",
+            FloatOp::IeeeMin => "f64_ieee_min",
+            FloatOp::IeeeMax => "f64_ieee_max",
+            FloatOp::Clamp => "f64_clamp",
+            FloatOp::IeeeEq => "f64_ieee_eq",
+            FloatOp::IeeeNe => "f64_ieee_ne",
+            FloatOp::IeeeLt => "f64_ieee_lt",
+            FloatOp::IeeeLe => "f64_ieee_le",
+            FloatOp::IeeeGt => "f64_ieee_gt",
+            FloatOp::IeeeGe => "f64_ieee_ge",
+            FloatOp::IsNan => "f64_is_nan",
+            FloatOp::IsFinite => "f64_is_finite",
+            FloatOp::IsInfinite => "f64_is_infinite",
+            FloatOp::IsSignNegative => "f64_is_sign_negative",
+            FloatOp::IsZero => "f64_is_zero",
+            FloatOp::IsPositiveZero => "f64_is_positive_zero",
+            FloatOp::IsNegativeZero => "f64_is_negative_zero",
+            FloatOp::ToBits => "f64_to_bits",
+            FloatOp::ToIntExact => "f64_to_int_exact",
+            FloatOp::FromInt => "f64_from_int",
+            FloatOp::ToText => "f64_to_text",
+        }
+    }
+
+    /// The method's name in the source, for a method of `F64`; `None` for an operator.
+    pub fn method(self) -> Option<&'static str> {
+        Some(match self {
+            FloatOp::Abs => "abs",
+            FloatOp::Sqrt => "sqrt",
+            FloatOp::Fma => "fma",
+            FloatOp::Rem => "rem",
+            FloatOp::Floor => "floor",
+            FloatOp::Ceil => "ceil",
+            FloatOp::Trunc => "trunc",
+            FloatOp::RoundHalfEven => "round_half_even",
+            FloatOp::RoundHalfAway => "round_half_away",
+            FloatOp::CopySign => "copy_sign",
+            FloatOp::IeeeMin => "ieee_min",
+            FloatOp::IeeeMax => "ieee_max",
+            FloatOp::Clamp => "clamp",
+            FloatOp::IeeeEq => "ieee_eq",
+            FloatOp::IeeeNe => "ieee_ne",
+            FloatOp::IeeeLt => "ieee_lt",
+            FloatOp::IeeeLe => "ieee_le",
+            FloatOp::IeeeGt => "ieee_gt",
+            FloatOp::IeeeGe => "ieee_ge",
+            FloatOp::IsNan => "is_nan",
+            FloatOp::IsFinite => "is_finite",
+            FloatOp::IsInfinite => "is_infinite",
+            FloatOp::IsSignNegative => "is_sign_negative",
+            FloatOp::IsZero => "is_zero",
+            FloatOp::IsPositiveZero => "is_positive_zero",
+            FloatOp::IsNegativeZero => "is_negative_zero",
+            FloatOp::ToBits => "to_bits",
+            FloatOp::ToIntExact => "to_int_exact",
+            _ => return None,
+        })
+    }
+
+    /// The method of `F64` named `name`.
+    pub fn from_method(name: &str) -> Option<FloatOp> {
+        FloatOp::METHODS
+            .into_iter()
+            .find(|op| op.method() == Some(name))
+    }
+
+    /// The labels of a method's arguments after the receiver, in order: each is an `F64`.
+    pub fn params(self) -> &'static [&'static str] {
+        match self {
+            FloatOp::Fma => &["times", "plus"],
+            FloatOp::Rem => &["by"],
+            FloatOp::CopySign => &["from"],
+            FloatOp::Clamp => &["lo", "hi"],
+            FloatOp::IeeeMin
+            | FloatOp::IeeeMax
+            | FloatOp::IeeeEq
+            | FloatOp::IeeeNe
+            | FloatOp::IeeeLt
+            | FloatOp::IeeeLe
+            | FloatOp::IeeeGt
+            | FloatOp::IeeeGe => &["other"],
+            _ => &[],
+        }
+    }
+
+    /// What the operation returns.
+    pub fn result(self) -> FloatResult {
+        match self {
+            FloatOp::Eq
+            | FloatOp::Ne
+            | FloatOp::Lt
+            | FloatOp::Le
+            | FloatOp::Gt
+            | FloatOp::Ge
+            | FloatOp::IeeeEq
+            | FloatOp::IeeeNe
+            | FloatOp::IeeeLt
+            | FloatOp::IeeeLe
+            | FloatOp::IeeeGt
+            | FloatOp::IeeeGe
+            | FloatOp::IsNan
+            | FloatOp::IsFinite
+            | FloatOp::IsInfinite
+            | FloatOp::IsSignNegative
+            | FloatOp::IsZero
+            | FloatOp::IsPositiveZero
+            | FloatOp::IsNegativeZero => FloatResult::Bool,
+            FloatOp::ToBits => FloatResult::U64,
+            FloatOp::ToIntExact => FloatResult::OptionInt,
+            _ => FloatResult::F64,
+        }
+    }
 }
 
 /// The built-in methods of a map, in their order of arguments after the map (`spec/21 §2`).
@@ -629,6 +908,7 @@ impl Prim {
             },
             Prim::Fixed(op, _) => op.as_str(),
             Prim::Map(op) => op.as_str(),
+            Prim::Float(op) => op.as_str(),
         }
     }
 }

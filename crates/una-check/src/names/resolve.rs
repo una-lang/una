@@ -172,6 +172,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                             | "is_json_number"
                     ) || prelude::TEXT_0_2.contains(&name))
                         && self.checker.package.settings.edition >= Edition::V0_2)
+                    // Edition 0.3: the functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
+                    || (prelude::FLOAT_0_3.contains(&name)
+                        && self.checker.package.settings.edition >= Edition::V0_3)
             }
             Space::Upper => {
                 self.types.find(name).is_some()
@@ -196,6 +199,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                             )
                             || JSON_NAMES.contains(&name)
                             || HTTP_NAMES.contains(&name)))
+                    || (self.checker.package.settings.edition >= Edition::V0_3 && name == "F64")
             }
         }
     }
@@ -267,6 +271,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     ]);
                     names.extend(prelude::TEXT_0_2);
                 }
+                if self.checker.package.settings.edition >= Edition::V0_3 {
+                    names.extend(prelude::FLOAT_0_3);
+                }
             }
             Space::Upper => {
                 names.extend(self.types.names());
@@ -287,6 +294,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     ]);
                     names.extend(JSON_NAMES.iter().copied());
                     names.extend(HTTP_NAMES.iter().copied());
+                }
+                if self.checker.package.settings.edition >= Edition::V0_3 {
+                    names.push("F64");
                 }
             }
         }

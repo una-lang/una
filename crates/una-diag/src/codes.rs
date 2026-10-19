@@ -162,6 +162,12 @@ pub enum Code {
     U2029,
     /// A unit conversion without an expected unit, or not exact (ADR 0104).
     U2030,
+    /// A float literal rounds to an infinity, or is not zero and rounds to zero (ADR 0114).
+    U2031,
+    /// A float literal other than zero, or a float range, as a pattern (ADR 0114).
+    U2032,
+    /// A comparison of an `F64` with a float literal zero (ADR 0114).
+    U2033,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -241,6 +247,8 @@ pub enum Code {
     U6004,
     /// A host value is not valid UTF-8.
     U6005,
+    /// The floating-point environment of the platform is not the default one (ADR 0114).
+    U6006,
     /// Non-canonical formatting.
     U7001,
     /// Invalid `una.toml`.
@@ -257,7 +265,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 94] = [
+    pub const ALL: [Code; 98] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -307,6 +315,9 @@ impl Code {
         Code::U2028,
         Code::U2029,
         Code::U2030,
+        Code::U2031,
+        Code::U2032,
+        Code::U2033,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -346,6 +357,7 @@ impl Code {
         Code::U6003,
         Code::U6004,
         Code::U6005,
+        Code::U6006,
         Code::U7001,
         Code::U7002,
         Code::U7003,
@@ -616,6 +628,21 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "A unit conversion without an expected unit, or not exact",
             },
+            Code::U2031 => &Entry {
+                code: "U2031",
+                domain: Domain::Types,
+                meaning: "A float literal rounds to an infinity, or is not zero and rounds to zero",
+            },
+            Code::U2032 => &Entry {
+                code: "U2032",
+                domain: Domain::Types,
+                meaning: "A float literal other than zero, or a float range, as a pattern",
+            },
+            Code::U2033 => &Entry {
+                code: "U2033",
+                domain: Domain::Types,
+                meaning: "A comparison of an `F64` with a float literal zero",
+            },
             Code::U3001 => &Entry {
                 code: "U3001",
                 domain: Domain::Authority,
@@ -810,6 +837,11 @@ impl Code {
                 code: "U6005",
                 domain: Domain::Runtime,
                 meaning: "A host value is not valid UTF-8",
+            },
+            Code::U6006 => &Entry {
+                code: "U6006",
+                domain: Domain::Runtime,
+                meaning: "The floating-point environment of the platform is not the default one",
             },
             Code::U7001 => &Entry {
                 code: "U7001",

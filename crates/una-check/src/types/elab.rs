@@ -485,6 +485,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Text => Base::Text,
             Ty::Unit => Base::Unit,
             Ty::Hashed => Base::Hashed,
+            Ty::F64 => Base::F64,
             Ty::List(element) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "List".to_owned(),
@@ -772,6 +773,17 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.uses_of(&uses)
     }
 
+    /// Whether the expression at `span` is an `F64` (`spec/29`).
+    fn is_f64_at(&self, span: Span) -> bool {
+        matches!(
+            self.type_at(span),
+            Type::Base {
+                base: Base::F64,
+                ..
+            }
+        )
+    }
+
     /// The recorded type of the expression or binder at `span`.
     fn type_at(&self, span: Span) -> Type {
         self.records
@@ -1052,6 +1064,8 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn literal_term(&mut self, literal: &Literal) -> Term {
         match literal {
             Literal::Int(digits) => Term::Int(digits.clone()),
+            // No float term is in the refinement language yet (`spec/29 §8`).
+            Literal::Float(_) => self.outside(),
             Literal::Bool(value) => Term::Bool(*value),
             Literal::Unit => Term::Unit,
             Literal::Text(text) => match plain_text(text) {
@@ -3064,8 +3078,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::Binary { op, left, right } => self.binary(lets, *op, left, right, span),
             ExprKind::Unary { op, operand } => {
                 let operand_span = operand.span;
+                let float = self.is_f64_at(operand_span);
                 let operand = self.atom(lets, operand);
                 let prim = match op {
+                    UnaryOp::Neg if float => Prim::Float(una_core::FloatOp::Neg),
                     UnaryOp::Neg => Prim::Neg,
                     UnaryOp::Not => Prim::Not,
                 };
@@ -3392,6 +3408,14 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
         match literal {
             Literal::Int(digits) => Atom::Int(digits.clone()),
+            Literal::Float(text) => match una_core::float::literal(text) {
+                una_core::float::Literal::Value(value) => Atom::F64(value.to_bits()),
+                // U2031, which the checker reported.
+                _ => {
+                    self.broken = true;
+                    Atom::F64(0)
+                }
+            },
             Literal::Bool(value) => Atom::Bool(*value),
             Literal::Unit => Atom::Unit,
             Literal::Text(text) => self.text_atom(lets, text, span),
@@ -3481,21 +3505,35 @@ impl<'e, 'a> Fx<'e, 'a> {
             return self.push_expr(lets, span, test);
         }
         let arg_spans = vec![left.span, right.span];
+        let float = self.is_f64_at(left.span) && self.is_f64_at(right.span);
         let left = self.atom(lets, left);
         let right = self.atom(lets, right);
-        let prim = match op {
-            BinaryOp::Eq => Prim::Eq,
-            BinaryOp::NotEq => Prim::Ne,
-            BinaryOp::Lt => Prim::Lt,
-            BinaryOp::Le => Prim::Le,
-            BinaryOp::Gt => Prim::Gt,
-            BinaryOp::Ge => Prim::Ge,
-            BinaryOp::Add => Prim::Add,
-            BinaryOp::Sub => Prim::Sub,
-            BinaryOp::Mul => Prim::Mul,
-            BinaryOp::Div => Prim::Div,
-            BinaryOp::Mod => Prim::Mod,
-            BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => Prim::Eq,
+        let prim = match (op, float) {
+            // The operators of `F64` are their own primitives (ADR 0114 rule 17).
+            (BinaryOp::Add, true) => Prim::Float(una_core::FloatOp::Add),
+            (BinaryOp::Sub, true) => Prim::Float(una_core::FloatOp::Sub),
+            (BinaryOp::Mul, true) => Prim::Float(una_core::FloatOp::Mul),
+            (BinaryOp::Div, true) => Prim::Float(una_core::FloatOp::Div),
+            (BinaryOp::Eq, true) => Prim::Float(una_core::FloatOp::Eq),
+            (BinaryOp::NotEq, true) => Prim::Float(una_core::FloatOp::Ne),
+            (BinaryOp::Lt, true) => Prim::Float(una_core::FloatOp::Lt),
+            (BinaryOp::Le, true) => Prim::Float(una_core::FloatOp::Le),
+            (BinaryOp::Gt, true) => Prim::Float(una_core::FloatOp::Gt),
+            (BinaryOp::Ge, true) => Prim::Float(una_core::FloatOp::Ge),
+            (op, _) => match op {
+                BinaryOp::Eq => Prim::Eq,
+                BinaryOp::NotEq => Prim::Ne,
+                BinaryOp::Lt => Prim::Lt,
+                BinaryOp::Le => Prim::Le,
+                BinaryOp::Gt => Prim::Gt,
+                BinaryOp::Ge => Prim::Ge,
+                BinaryOp::Add => Prim::Add,
+                BinaryOp::Sub => Prim::Sub,
+                BinaryOp::Mul => Prim::Mul,
+                BinaryOp::Div => Prim::Div,
+                BinaryOp::Mod => Prim::Mod,
+                BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => Prim::Eq,
+            },
         };
         self.push(
             lets,
