@@ -14,7 +14,7 @@ A capability reference, `@name`, is a name for authority (the right to act outsi
 - **`with @x = @y`** gives the callee the caller's `@y` under the name `@x`;
 - **`with @x = h(args)`** installs a [handler](handler.md) `h`, written in Una, as the callee's `@x`.
 
-Learn more: [Passing authority: with, rebinding and narrowing](/learn/capabilities/#s12-4).
+Learn more: [Passing authority: with, rebinding and narrowing](/learn/capabilities/passing-authority-with-rebinding-and-narrowing/).
 
 ```una
 module shop
@@ -169,7 +169,7 @@ Further rules:
 
 ## Edition
 
-`with` and the second-class rule are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds the narrowed rebinding `with @x = @y[ops]`, which gives the callee the caller's `@y` restricted to `ops`, and checks each call into a boundary (a group of modules whose authority `una.toml` caps) against that cap. A call into a boundary gets no capability by name, so each one it needs is passed with `with` (U3020), and no policy call may be reachable from it (U3024). See [Granting less at the call](/learn/authority/#granting-less-at-the-call-with-x-yops) and [`[boundaries]`](../../configure/boundaries.md).
+`with` and the second-class rule are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds the narrowed rebinding `with @x = @y[ops]`, which gives the callee the caller's `@y` restricted to `ops`, and checks each call into a boundary (a group of modules whose authority `una.toml` caps) against that cap. A call into a boundary gets no capability by name, so each one it needs is passed with `with` (U3020), and no policy call may be reachable from it (U3024). See [Granting less at the call](/learn/authority/a-ceiling-for-a-module-boundaries/#granting-less-at-the-call-with-x-yops) and [`[boundaries]`](../../configure/boundaries.md).
 
 ## Normative source
 

@@ -11,7 +11,7 @@ codes: [U3012, U7002]
 
 `entry` names the module whose `main` function `una run` and `una build` start: the first code of the program to run. `main` is `pub main() -> Unit`, and it receives host capabilities, the authority to use the console, files, the clock and the like that the runtime provides, through its `uses` clauses.
 
-Learn more: [The host's capabilities and grants](/learn/capabilities/#s12-2).
+Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
 `una.toml`
 

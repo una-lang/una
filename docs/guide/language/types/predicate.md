@@ -24,7 +24,7 @@ pub kind Adult = Int where adult(it)
 pub grow(a: Adult) -> Adult = a + 1
 ```
 
-Learn more: [Refined kinds and predicates](/learn/contracts/#s5-3).
+Learn more: [Refined kinds and predicates](/learn/contracts/refined-kinds-and-predicates/).
 
 ## Forms
 

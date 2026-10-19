@@ -16,7 +16,7 @@ codes: [U0102, U2012, U2014, U5001, U5002]
 
 So a caller can rely on a function's header alone, without reading its body.
 
-Learn more: [Postconditions: ensures and counterexamples](/learn/contracts/#s5-2).
+Learn more: [Postconditions: ensures and counterexamples](/learn/contracts/postconditions-ensures-and-counterexamples/).
 
 ```una
 module shop
@@ -46,7 +46,7 @@ clause          = "requires" line_expr NEWLINE
 - A function may have any number of `ensures` clauses. They all hold together.
 - They come after every `requires` and before `uses`, `fails` and `derived from`.
 - The expression is in the refinement language (the expressions that a type's condition may use, which the solver can reason about), over the parameters and `result`.
-- **`old(x)`** (edition `0.2`): for an [Passing a value in and out: edit](/learn/memory/#s16-2) `x` (one the function may change for its caller), `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
+- **`old(x)`** (edition `0.2`): for an [Passing a value in and out: edit](/learn/memory/passing-a-value-in-and-out-edit/) `x` (one the function may change for its caller), `x` in `ensures` denotes its final value, and `old(x)` its value on entry.
 
 ## Examples
 

@@ -11,7 +11,7 @@ codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013, U3025, U4002]
 
 A statement whose expression can fail is followed by a handling clause, which says what the failure becomes at that line. There is no implicit propagation, so every failure is visible where it can occur. `if none` handles an `Option` (a value that is either `Some` of something or `None`) the same way, at the same place.
 
-Learn more: [Handling a failure: the clauses](/learn/failure/#s7-3).
+Learn more: [Handling a failure: the clauses](/learn/failure/handling-a-failure-the-clauses/).
 
 ```una
 module shop
@@ -273,7 +273,7 @@ pub reserve(units: Int) -> Int
 Further rules:
 
 - **One effect per line.** A fallible call is the whole expression of its statement, `let` or final expression, so that its clause has one site (U3013). Bind its result with `let` first.
-- **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009), and it is allowed only when the [Branches and failures: implicit flows](/learn/information-flow/#s17-3), the label of the conditions that decided whether this line runs, is `public` (U4002).
+- **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009), and it is allowed only when the [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/), the label of the conditions that decided whether this line runs, is `public` (U4002).
 - **Labeled failures.** A failure decided by labeled data (data marked with a label above `public`, such as `internal` or `secret`), such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`.
 - **An `if error` clause on a statement that cannot fail.** In edition `0.3`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is U3025, and `una fix` deletes it. Only `if error` is judged: on an `Option` that cannot fail, such as `let first = codes.first()`, an `if none` clause stays. Editions `0.1` and `0.2` accept the `if error` clause.
 - **Alternative.** `attempt` handles a failure by turning it into a `Result` value instead. See [`attempt`](attempt.md).

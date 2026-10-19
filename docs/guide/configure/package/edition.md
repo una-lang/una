@@ -11,7 +11,7 @@ codes: [U0103, U7002]
 
 A package is one program or library: a directory with its source files under `src/` and its manifest, `una.toml`. `edition` says which version of the Una language the package is written in: `"0.1"`, `"0.2"`, or the preview `"0.3"`. An edition fixes the language a package sees, so a package keeps compiling the same way when a newer `una` comes out. Edition `0.2` adds constructs and keywords to `0.1`, and some rules differ between them; edition `0.3` is cumulative: it has every construct, keyword and rule of edition `0.2`, and adds its own.
 
-Learn more: [An edition is part of the package](/learn/editions/#s19-1) and [Edition 0.3, a preview](/learn/editions/#s19-3).
+Learn more: [An edition is part of the package](/learn/editions/an-edition-is-part-of-the-package/) and [Edition 0.3, a preview](/learn/editions/edition-0-3-a-preview/).
 
 `una.toml`
 

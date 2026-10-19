@@ -19,7 +19,7 @@ Take a shop that copies in an image-resizing library as the module `shop.resize`
 
 So the code that calls a boundary states, at each call, exactly what it hands over, and the boundary can never receive more than its ceiling.
 
-Learn more: [A ceiling for a module: boundaries](/learn/authority/#s13-2) and [Limits on authority](/learn/authority/).
+Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/) and [Limits on authority](/learn/authority/).
 
 `una.toml`
 

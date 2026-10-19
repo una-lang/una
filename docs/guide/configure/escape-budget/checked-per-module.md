@@ -11,7 +11,7 @@ codes: [U7002, U7003]
 
 Una proves the facts a program relies on before it runs, such as a shelf number being between 0 and 9. When a fact cannot be proved, as with a number a customer types, `checked` tests it while the program runs instead, and fails when it does not hold. That gives up a proof, so it is an escape, and `checked_per_module` is the escape budget: how many times each module of the package may use `checked`. The default is 0, so a package that wants run-time tests says so here, and reviewers see it.
 
-Learn more: [When no proof can decide: checked and opaque predicates](/learn/failure/#s7-5).
+Learn more: [When no proof can decide: checked and opaque predicates](/learn/failure/when-no-proof-can-decide-checked-and-opaque-predicates/).
 
 `una.toml`
 

@@ -11,7 +11,7 @@ codes: [U3012, U7002]
 
 `grants` lists the host capabilities, the authority to use the console, files, the clock and the like, that `una run` gives the entry's `main`. Each is written as a grant spec, a short text such as `"console"` or `"files:./data:read"` that names one capability and how far it reaches. There is no ambient authority, no authority a program has just by running: a host capability that is not granted is not there, and `una check` reports a `main` that needs one.
 
-Learn more: [The host's capabilities and grants](/learn/capabilities/#s12-2).
+Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
 `una.toml`
 

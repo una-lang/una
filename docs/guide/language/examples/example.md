@@ -11,7 +11,7 @@ codes: [U1001, U1002, U3001, U3014, U3020, U3021]
 
 An `example` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs.
 
-Learn more: [Examples: do and expect](/learn/testing/#s14-1), [Fakes: given, expect performed and expect not performed](/learn/testing/#s14-3) and [Testing failures: expect fails](/learn/testing/#s14-2).
+Learn more: [Examples: do and expect](/learn/testing/examples-do-and-expect/), [Fakes: given, expect performed and expect not performed](/learn/testing/fakes-given-expect-performed-and-expect-not-performed/) and [Testing failures: expect fails](/learn/testing/testing-failures-expect-fails/).
 
 Its lines:
 
@@ -186,7 +186,7 @@ Further rules:
 
 ## Edition
 
-Examples are the same in editions `0.1` and `0.2`. Edition `0.3` adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/#s13-2).
+Examples are the same in editions `0.1` and `0.2`. Edition `0.3` adds boundaries (modules whose authority `una.toml` limits, see [`[boundaries]`](../../configure/boundaries.md)): the `given` handlers of an example of a boundary module count against its ceiling (U3021), and a `do` line that calls into a boundary from outside it grants it nothing by name (U3020). Learn more: [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 

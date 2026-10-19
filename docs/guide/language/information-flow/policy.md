@@ -11,7 +11,7 @@ codes: [U4002, U4004, U4005]
 
 [Labels](labels.md) only rise, except through a `policy`: a declared, named release of data from one label to a lower one, through a function that the policy names. Lowering a label this way is called declassification. A policy lives in a [trusted module](trusted.md) (a module that `una.toml` lists as allowed to declare policies, and that `una report` lists for review), and every call of it is listed by `una report` with its purpose and owner. So every place where data goes down is visible and reviewed.
 
-Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/#s17-5).
+Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/releasing-data-policies-and-trusted-modules/).
 
 `una.toml`
 
@@ -178,7 +178,7 @@ hundreds(text: confidential[Private] Text) -> public Nat
   text.len / 100
 ```
 
-**No release under a labeled program counter.** At a call `p(v)`, the program counter (the label of the conditions that decided whether this line runs; see [Branches and failures: implicit flows](/learn/information-flow/#s17-3)) must be below the `to` label. Choosing whether to release by a `secret` condition would reveal it:
+**No release under a labeled program counter.** At a call `p(v)`, the program counter (the label of the conditions that decided whether this line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)) must be below the `to` label. Choosing whether to release by a `secret` condition would reveal it:
 
 `una.toml`
 

@@ -11,7 +11,7 @@ codes: [U7002, U7005]
 
 `modules` lists the package's trusted modules: the modules that may hold declassification policies, the declared, reviewed places where data may be released to a lower label, such as a customer's note shown only as its length. A module is trusted only when it is listed here **and** its header says `trusted module`, so trust is visible both in the manifest and in the code.
 
-Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/#s17-5).
+Learn more: [Releasing data: policies and trusted modules](/learn/information-flow/releasing-data-policies-and-trusted-modules/).
 
 `una.toml`
 

@@ -18,7 +18,7 @@ codes: [U0101, U2001, U2007, U2008, U2022, U4002, U4008, U5001]
 
 Variant arms must cover every variant (U2007). Range and literal arms without `else` must be proven to cover every value. `when` is Una's only pattern match: `match` is not a keyword.
 
-Learn more: [Taking a sum apart: when](/learn/kinds/#s4-3).
+Learn more: [Taking a sum apart: when](/learn/kinds/taking-a-sum-apart-when/).
 
 ```una
 module shop
@@ -184,7 +184,7 @@ pub house_number(address: Address) -> Int
     is Address(number) -> number
 ```
 
-**Labeled values raise the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/#s17-3)). Every arm runs under the label of the value, so an arm cannot `fail` on `secret` data:
+**Labeled values raise the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)). Every arm runs under the label of the value, so an arm cannot `fail` on `secret` data:
 
 ```una
 -- fails with U4002

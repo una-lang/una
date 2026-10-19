@@ -11,7 +11,7 @@ codes: [U1002, U3002, U5001]
 
 A capability is unforgeable authority (no code can make one up: a function gets it from its caller, and `main` from the runtime) over something outside the program, such as a store, a clock or a network. `capability C` declares the operations that authority allows, each with `op`: an operation is one action on the outside world, such as reading a key. Code acts outside the program only through an operation of a capability it holds, written `@name.op(...)`. Every such call is an effect (an action outside the program), recorded in the program's trace (the list of effects a run performed, in order).
 
-Learn more: [Your own capabilities and handlers](/learn/capabilities/#s12-3). Related pages: [`uses`](uses.md), [handlers](handler.md) and [`with`](with.md).
+Learn more: [Your own capabilities and handlers](/learn/capabilities/your-own-capabilities-and-handlers/). Related pages: [`uses`](uses.md), [handlers](handler.md) and [`with`](with.md).
 
 ```una
 module shop

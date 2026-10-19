@@ -11,7 +11,7 @@ codes: [U3012, U4003, U6005]
 
 Host capabilities are the ones the runtime implements: `Console`, `Clock`, `Env`, `Files` and `Keys`, and from edition `0.2` on also `Http`. They enter a program only through `main`'s `uses` clauses, and the runtime provides them only when they are granted (allowed by whoever runs the program), in `una.toml` or with `--grant`. Other functions receive them from their callers by name, like any [capability](capability.md).
 
-Learn more: [The host's capabilities and grants](/learn/capabilities/#s12-2).
+Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
 `una.toml`
 
@@ -130,7 +130,7 @@ pub main() -> Unit
 Further rules:
 
 - **Files stay inside the grant.** A `Files` path is resolved against the grant's prefix (the directory the grant names). An absolute path, a `..` that leaves the prefix, or a final component that is a symbolic link (a file that points to another file) fails with `Denied`; path resolution never escapes the prefix.
-- **Keys stay outside values.** `Keys` loads its keys from the grant's file, and key material never enters Una values. The result of `hmac` is labeled `internal`, joined with every label of the type of `data`, and lowering it takes a policy. `key_name` accepts only `public`, so a labeled key name, or a call under a raised program counter (when the conditions that decided whether this line runs read labeled data; see [Branches and failures: implicit flows](/learn/information-flow/#s17-3)), is U4003.
+- **Keys stay outside values.** `Keys` loads its keys from the grant's file, and key material never enters Una values. The result of `hmac` is labeled `internal`, joined with every label of the type of `data`, and lowering it takes a policy. `key_name` accepts only `public`, so a labeled key name, or a call under a raised program counter (when the conditions that decided whether this line runs read labeled data; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)), is U4003.
 - **Labeled failures.** Whether a host operation fails is labeled by the arguments that decide it: the path of `Files`, not the content; the key name of `Keys.hmac`, not the data; and every argument of `Http`, so its failures are `internal`. A `Files.write` to an `internal` path fails `internal`, and every `Files` failure also carries the package's file-state label: the labels that decide where the package's writes land and whether they run.
 - **Host text.** When `Files.read` or `Env.get` meets bytes that are not valid UTF-8, the run aborts with U6005.
 - **Out of the model.** Races on a path, hard links, resource limits and other processes are outside what the checker reasons about, and `una report` lists such channels under `out_of_model`.

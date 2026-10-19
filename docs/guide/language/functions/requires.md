@@ -16,7 +16,7 @@ codes: [U0102, U2012, U2014, U5001, U5002]
 
 A precondition is proven, not tested at run time, so it costs nothing when the program runs.
 
-Learn more: [Preconditions: requires](/learn/contracts/#s5-1).
+Learn more: [Preconditions: requires](/learn/contracts/preconditions-requires/).
 
 ```una
 module shop

@@ -11,7 +11,7 @@ codes: [U0101, U0102, U2002, U3007, U3008, U3009, U3017, U3018, U3019]
 
 `fails E` is the header clause (a line between a function's signature and its body) that declares a function's error kind: the one sum kind (a kind whose values are each one of several named variants) whose variants the function may fail with. A function without `fails` cannot fail. Callers see the clause in the header, and must handle every failure at the line of the call.
 
-Learn more: [Declaring a failure: fails and fail](/learn/failure/#s7-2).
+Learn more: [Declaring a failure: fails and fail](/learn/failure/declaring-a-failure-fails-and-fail/).
 
 ```una
 module shop

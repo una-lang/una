@@ -11,7 +11,7 @@ codes: [U2001, U3008, U3009, U3010, U3011, U5001]
 
 A handler implements a [capability](capability.md) in Una: it gives a body to each operation. A caller installs it for one statement with `with`, or an example (a test written next to the code) installs it with `given`, so code that needs the capability runs against the handler instead of the outside world, as a fake store does in a test. Handler bodies are ordinary Una code, fully checked and verified (their contracts proved by the checker).
 
-Learn more: [Your own capabilities and handlers](/learn/capabilities/#s12-3).
+Learn more: [Your own capabilities and handlers](/learn/capabilities/your-own-capabilities-and-handlers/).
 
 ```una
 module shop

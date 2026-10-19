@@ -11,7 +11,7 @@ codes: [U2002, U2013, U2014, U5001, U5002]
 
 A refinement narrows a type by a predicate: `Text where valid_phone(it)` is the texts for which `valid_phone` holds, and `Int in 0..5000` the integers from 0 to 5000. The compiler proves, at every place a value enters the refined type, that the predicate holds. The proof happens at compile time, before the program runs, so a program that checks never holds a value outside its refinement.
 
-Learn more: [Refined kinds and predicates](/learn/contracts/#s5-3).
+Learn more: [Refined kinds and predicates](/learn/contracts/refined-kinds-and-predicates/).
 
 ```una
 module shop
