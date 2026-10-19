@@ -197,6 +197,7 @@ pub(crate) fn build_command(
                 section if section.starts_with('`') => section,
                 section => format!("`{section}`"),
             },
+            "stops": una_core::runs_ever(&analysis.program),
             "grants": grants,
             "uses": uses,
             "sites": sites,

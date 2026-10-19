@@ -291,6 +291,14 @@ pub(crate) fn run_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
+    // ADR 0116 rule 18: a run that can take a host stop installs the handlers of SIGINT and
+    // SIGTERM; any other keeps their default actions.
+    if una_core::runs_ever(&analysis.program)
+        && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install()
+    {
+        writeln!(stderr, "internal compiler error (U8001): {message}")?;
+        return Ok(ExitStatus::Internal);
+    }
     let (sender, receiver) = channel::<String>();
     let program = &analysis.program;
     let entry_path = entry.as_str();

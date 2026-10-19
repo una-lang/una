@@ -318,6 +318,9 @@ pub struct Meta {
     /// How U3012 names the grants of the manifest: `` `[run] grants` `` in `una.toml`, and
     /// `` `run grants` `` in `ita.una`.
     pub grants_section: String,
+    /// Whether the program has a `for ever`, so the run takes host stops: the executable then
+    /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
+    pub stops: bool,
 }
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
@@ -421,7 +424,9 @@ impl Meta {
             Some(section) => section.as_str()?.to_owned(),
             None => "`[run] grants`".to_owned(),
         };
+        let stops = value.get("stops").and_then(Value::as_bool).unwrap_or(false);
         Some(Meta {
+            stops,
             grants,
             uses,
             sites,
@@ -991,6 +996,17 @@ pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|cell| cell.borrow_mut().as_mut().map(f))
 }
 
+/// Whether a `for ever` stops at the iteration that starts now (ADR 0116 rules 13 and 14): a
+/// host stop request has come, which is sticky; its `stop` event is then traced. 1 to stop.
+pub fn ever_start() -> i64 {
+    if una_sys::attention::stop_requests() > 0 {
+        with_state(State::stop_event);
+        1
+    } else {
+        0
+    }
+}
+
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
 /// grants, calls `entry`, the compiled `main`, on a thread with the stack that `--max-depth`
 /// needs, and writes the trace. Returns the exit code.
@@ -1011,6 +1027,14 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // ADR 0116 rule 18: only a run that can take a host stop changes what SIGINT and SIGTERM
+    // do; any other keeps their default actions.
+    if meta.stops
+        && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install()
+    {
+        let _ = writeln!(stderr, "error: {message}");
+        return 3;
+    }
     let grants = match grants(&meta, &options) {
         Ok(grants) => grants,
         Err(message) => {

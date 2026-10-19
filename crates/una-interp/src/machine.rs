@@ -545,6 +545,12 @@ pub(crate) struct Machine<'p, 'w> {
     pub(crate) trace: Vec<Event>,
     depth: usize,
     max_depth: usize,
+    /// The host stop requests that had arrived when the run started: a request after it is
+    /// the run's (ADR 0116 rule 14). Signals reach every run of the process; a stop of the
+    /// run's own, by `--stop-after-iterations`, is `stopped`.
+    stop_baseline: u32,
+    /// Whether the run's own stop has come, sticky.
+    stopped: bool,
     /// The memory budget in MiB, the probe of the heap, and what the heap held when the run
     /// started, which does not count.
     max_memory: usize,
@@ -590,6 +596,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             trace: Vec::new(),
             depth: 0,
             max_depth,
+            stop_baseline: una_sys::attention::stop_requests(),
+            stopped: false,
             max_memory: limits.max_memory,
             http: limits.http,
             held: limits.held,
@@ -1305,8 +1313,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         mut current: Vec<Value<'p>>,
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
-            // `ever`: until `stop` or a failure (`spec/26 §5`).
+            // `ever`: until `stop`, a failure, or a host stop at the start of an iteration
+            // (`spec/26 §5`, ADR 0116 rules 13 and 14).
             LoopSource::Ever => loop {
+                if self.host_stop() {
+                    self.stop_event();
+                    break;
+                }
                 self.within_budget(span)?;
                 let stopped;
                 (current, stopped) =
@@ -1388,6 +1401,31 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
         }
         Ok(current)
+    }
+
+    /// Whether a host stop request has come for this run: a signal since it started, or its own
+    /// stop. Sticky (ADR 0116 rule 14).
+    pub(crate) fn host_stop(&mut self) -> bool {
+        if !self.stopped && una_sys::attention::stop_requests() > self.stop_baseline {
+            self.stopped = true;
+        }
+        self.stopped
+    }
+
+    /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
+    /// rule 14), in the current task.
+    pub(crate) fn stop_event(&mut self) {
+        let seq = self.trace.len() + 1;
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Stop,
+        });
     }
 
     /// The `on stop` block of a loop with the state `current` bound; returns the state it gives

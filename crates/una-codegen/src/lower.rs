@@ -789,9 +789,18 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         self.builder.ins().jump(head, &initial);
 
-        // An iteration: its budget, then the body, which owns the state, with its exits.
+        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
+        // budget, then the body, which owns the state, with its exits.
         self.builder.switch_to_block(head);
         let current = self.builder.block_params(head).to_vec();
+        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let started = self.builder.create_block();
+        let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        self.builder
+            .ins()
+            .brif(host_stop, exit, &current_arguments, started, &[]);
+        self.builder.switch_to_block(started);
         let stopping = self.call("una_rt_budget", &[site])?;
         self.stop_if(stopping);
         let mut inner = env.clone();

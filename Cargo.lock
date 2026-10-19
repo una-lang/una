@@ -1359,6 +1359,7 @@ dependencies = [
  "una-project",
  "una-report",
  "una-syntax",
+ "una-sys",
  "una-verify",
 ]
 
@@ -1435,6 +1436,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-syntax",
+ "una-sys",
 ]
 
 [[package]]
@@ -1477,6 +1479,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-interp",
+ "una-sys",
 ]
 
 [[package]]
