@@ -28,7 +28,10 @@ pub const MAX_DEADLINE_SECS: u64 = 31_536_000;
 pub const MAX_GRACE_SECS: u64 = 86_400;
 
 /// How often the watcher looks at the run's own requests and at its end while it waits for a
-/// first request: a signal or the deadline wakes it at once.
+/// first request. A signal or the deadline wakes it at once, through the wake pipe; but the
+/// run's own requests (`--stop-after-iterations`) do not write the pipe, which would stay
+/// readable for every later run of the process, and the end of the run has to be seen too, so
+/// the watcher also wakes every 100 ms: an O(1) look, ten times a second, while it waits.
 const IDLE_STEP: Duration = Duration::from_millis(100);
 
 /// How often the watcher looks at the requests during the grace periods.

@@ -881,13 +881,27 @@ fn iteration_stops() -> bool {
     if stop.stopped() {
         return true;
     }
-    let limit = STOP_AFTER.load(Ordering::SeqCst);
-    if limit > 0 && ITERATIONS.load(Ordering::SeqCst) >= limit {
-        stop.request_local();
+    if claim_iteration(&ITERATIONS, STOP_AFTER.load(Ordering::SeqCst)) {
+        return false;
+    }
+    stop.request_local();
+    true
+}
+
+/// Claims the start of one iteration on `count`, in one atomic step: true when it starts.
+/// With no limit (0), one `fetch_add`. With a limit, a compare-exchange loop that increments
+/// only while the count is below it, so threads that start iterations at once never start more
+/// than `limit` of them together.
+fn claim_iteration(count: &AtomicU64, limit: u64) -> bool {
+    if limit == 0 {
+        count.fetch_add(1, Ordering::SeqCst);
         return true;
     }
-    ITERATIONS.fetch_add(1, Ordering::SeqCst);
-    false
+    count
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |started| {
+            (started < limit).then(|| started + 1)
+        })
+        .is_ok()
 }
 
 /// Marks whether the thread's task runs the body of a `for ever` ([`State::in_ever`]).
@@ -1976,6 +1990,31 @@ pub fn leave() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn threads_racing_on_a_stop_count_start_exactly_that_many_iterations() {
+        // ADR 0116 rule 19: the claim is one atomic step, so eight threads that try 1,000
+        // claims each start exactly 1,000 iterations under a limit of 1,000.
+        let count = AtomicU64::new(0);
+        let started = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..1_000 {
+                        if claim_iteration(&count, 1_000) {
+                            started.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(started.load(Ordering::SeqCst), 1_000);
+        assert_eq!(count.load(Ordering::SeqCst), 1_000);
+        // Without a limit, every claim starts an iteration.
+        let free = AtomicU64::new(0);
+        assert!((0..10).all(|_| claim_iteration(&free, 0)));
+        assert_eq!(free.load(Ordering::SeqCst), 10);
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
