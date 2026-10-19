@@ -7,7 +7,7 @@ A `together` block runs its branches as concurrent **tasks**, and `together for`
 **Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`).
 - In edition `0.1`, `together` keeps its v0.1 reservation (`spec/01 §5`), so it is U0103.
 - A single file has the default settings, and so edition `0.1`.
-- The Gate 1 benchmark stays on edition `0.1`.
+- The benchmark baseline stays on edition `0.1`.
 
 ## 1. Syntax
 

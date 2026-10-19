@@ -1,1 +1,0 @@
-- **Advisory UNA-SA-015** (#801). `docs/security/advisories.md` lists the interpolated-pattern fix of v0.3.15 (High), and names the other fixes of v0.3.15 under "Not advisories" with the reason for each.
