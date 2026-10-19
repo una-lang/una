@@ -167,14 +167,13 @@ impl World for HostWorld<'_> {
         let _ = self.lines.send(Line::Out(line.to_owned()));
     }
 
+    /// The run keeps an event only for the document of `--json`: without it, the trace goes to
+    /// the file of `--trace`, or nowhere, so a long run's trace never grows in memory.
     fn trace_event(&mut self, event: &una_interp::Event) -> bool {
-        match &mut self.trace {
-            Some(file) => {
-                file.event(event);
-                !self.keep
-            }
-            None => false,
+        if let Some(file) = &mut self.trace {
+            file.event(event);
         }
+        !self.keep
     }
 
     fn task_aborted(&mut self, path: &str, abort: &Abort) {
