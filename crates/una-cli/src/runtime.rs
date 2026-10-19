@@ -378,7 +378,9 @@ pub(crate) fn run_command(
             Abort::Depth { .. }
             | Abort::Memory { .. }
             | Abort::HeaderValue { .. }
-            | Abort::NotText { .. },
+            | Abort::NotText { .. }
+            | Abort::NoRandomBytes
+            | Abort::Tables { .. },
         ) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
@@ -624,7 +626,8 @@ fn root_location(package: &Package) -> Location {
 }
 
 /// U6001 when `main` failed, U6003 when a call went too deep, U6004 for a header value with a
-/// control character, U6005 for host text that is not valid UTF-8, U8001 on a fault.
+/// control character, U6005 for host text that is not valid UTF-8, U6009 when the host gave no
+/// random bytes for keyed hashing, U8001 on a fault.
 fn completion_diagnostic(
     completion: &Completion,
     main: Span,
@@ -676,6 +679,17 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
         Abort::NotText { span, message } => {
             Diagnostic::error(Code::U6005, *message, sources.location(*span))
         }
+        // Before any code runs, so with no position of its own (`spec/13 §5`).
+        Abort::NoRandomBytes => Diagnostic::error(
+            Code::U6009,
+            "the host gave no random bytes for keyed hashing",
+            root.clone(),
+        ),
+        Abort::Tables { span } => Diagnostic::error(
+            Code::U6003,
+            "this call makes a hash table after the run's table counter reached its limit",
+            sources.location(*span),
+        ),
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,
             format!("evaluation stopped: {message}"),
