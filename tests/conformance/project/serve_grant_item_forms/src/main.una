@@ -1,13 +1,13 @@
--- test: a serve item in another unit, without its unit, `none` where the table has no `none`, an unknown item, a second rate and an item given twice are each U7008 at their line (spec/31 §2, ADR 0123 rule 7)
+-- test: a serve item in another unit, without its unit, `none` where the table has no `none`, and an unknown item are each U7008 at their line, and so are a second rate and an item given twice (spec/31 §2, ADR 0123 rule 7)
 -- spec: spec/31 §2
 -- expect: error U7008 at ita.una:8:7
 -- expect: error U7008 at ita.una:9:7
 -- expect: error U7008 at ita.una:10:7
 -- expect: error U7008 at ita.una:11:7
 -- expect: error U7008 at ita.una:12:7
--- expect: error U7008 at ita.una:14:7
--- expect: error U7008 at ita.una:16:7
--- expect: error U7008 at ita.una:18:7
+-- expect: error U7008 at ita.una:15:7
+-- expect: error U7008 at ita.una:17:7
+-- expect: error U7008 at ita.una:19:7
 module main
 
 pub one() -> Int = 1

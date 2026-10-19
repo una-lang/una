@@ -10,6 +10,7 @@ run
       idle within 5 minutes
       connections none
       backlog at most 5
+    serve "http://127.0.0.1:8081"
       at most 10 per second
       at most 600 per minute
       waiting at most 5
