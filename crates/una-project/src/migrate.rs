@@ -4,7 +4,7 @@
 //! Pure: it reads texts and returns texts, and the command writes them. O(n) in the files'
 //! size, and O(c log c) for the c comments it carries.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ita::{check_package_name, write_lock};
 use crate::lock::{Lock, parse_lock};
@@ -81,6 +81,7 @@ pub fn migrate(toml: &str, lock: Option<&str>, name: Option<&str>) -> Result<Mig
     let comments = Comments::read(toml);
     let mut out = Writer::default();
     out.comments(&comments.before_table("package"));
+    out.comments(&comments.before_key("package", "name"));
     out.line(0, &format!("ita {target}"));
     out.comments_at(1, &comments.before_key("package", "version"));
     out.line(1, &format!("version {version}"));
@@ -204,7 +205,7 @@ pub fn text(value: &str) -> String {
 struct Writer {
     text: String,
     /// The lines of `una.toml` whose comments were carried.
-    used: Vec<usize>,
+    used: BTreeSet<usize>,
 }
 
 impl Writer {
@@ -220,7 +221,7 @@ impl Writer {
 
     fn comments_at(&mut self, depth: usize, comments: &[(usize, String)]) {
         for (line, comment) in comments {
-            self.used.push(*line);
+            self.used.insert(*line);
             self.line(depth, &format!("--{}", comment.strip_prefix('#').unwrap_or(comment)));
         }
     }
@@ -301,7 +302,7 @@ impl Comments {
     }
 
     /// The comments that were not carried, in line order.
-    fn left(&self, used: &[usize]) -> Vec<(usize, String)> {
+    fn left(&self, used: &BTreeSet<usize>) -> Vec<(usize, String)> {
         self.all
             .iter()
             .filter(|(line, _)| !used.contains(line))
