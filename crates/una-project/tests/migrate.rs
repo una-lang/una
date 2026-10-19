@@ -146,7 +146,10 @@ fn refusals() {
         None,
     )
     .unwrap_err();
-    assert!(reasons.iter().any(|r| r.starts_with("verification.lock")), "{reasons:?}");
+    assert!(
+        reasons.iter().any(|r| r.starts_with("verification.lock")),
+        "{reasons:?}"
+    );
 }
 
 #[test]
@@ -154,5 +157,8 @@ fn grants_and_texts() {
     assert_eq!(grant_line("console"), "console");
     assert_eq!(grant_line("files:a:b/c:read"), "files \"a:b/c\" read");
     assert_eq!(grant_line("http:http://h:80"), "http \"http://h:80\"");
-    assert_eq!(text("a\"b\\c{d}\u{202e}"), "\"a\\\"b\\\\c\\{d\\}\\u{202E}\"");
+    assert_eq!(
+        text("a\"b\\c{d}\u{202e}"),
+        "\"a\\\"b\\\\c\\{d\\}\\u{202E}\""
+    );
 }

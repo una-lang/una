@@ -173,7 +173,8 @@ pub fn lines(text: &str) -> Lines {
     let mut text_start: Option<usize> = None;
     let mut text_value = String::new();
     // Whether no line feed lies between two offsets: the same physical line. O(distance).
-    let same_line = |from: usize, to: usize| text.get(from..to).is_some_and(|gap| !gap.contains('\n'));
+    let same_line =
+        |from: usize, to: usize| text.get(from..to).is_some_and(|gap| !gap.contains('\n'));
     for token in &lexed.tokens {
         let range = token.span.start..token.span.end;
         let item = match &token.kind {
@@ -495,7 +496,9 @@ impl<'l> Cursor<'l> {
         if !self.eat_punct("[") {
             return Err(Error::new(
                 self.here(),
-                format!("expected `[` and the operations of `{capability}`, such as `{capability}[get]`"),
+                format!(
+                    "expected `[` and the operations of `{capability}`, such as `{capability}[get]`"
+                ),
             ));
         }
         let mut ops: Vec<At<String>> = Vec::new();
@@ -870,7 +873,10 @@ fn head(line: &Line, manifest: &mut Manifest, errors: &mut Vec<Error>) {
     manifest.head = line.range.clone();
     let mut cursor = Cursor::new(line);
     cursor.next();
-    match cursor.pkg_name().and_then(|name| cursor.end().map(|()| name)) {
+    match cursor
+        .pkg_name()
+        .and_then(|name| cursor.end().map(|()| name))
+    {
         Ok(name) => manifest.name = Some(name),
         Err(error) => errors.push(error),
     }
@@ -1046,9 +1052,7 @@ fn section(name: &str, line: &Line, manifest: &mut Manifest, errors: &mut Vec<Er
                         ),
                     ));
                 }
-                manifest
-                    .contracts
-                    .push(ContractEntry { function, clauses });
+                manifest.contracts.push(ContractEntry { function, clauses });
             }
         }
         "run" => manifest.run = Some(run(line, errors)),
@@ -1206,7 +1210,10 @@ fn need(line: &Line) -> Result<Need, Error> {
             }
             cursor.end()?;
             if need.accept_name.is_some() {
-                return Err(Error::new(child.range.clone(), "`accept name` appears twice"));
+                return Err(Error::new(
+                    child.range.clone(),
+                    "`accept name` appears twice",
+                ));
             }
             need.accept_name = Some(child.range.clone());
         } else {
@@ -1263,8 +1270,7 @@ fn trust(line: &Line, out: &mut Vec<TrustLine>, errors: &mut Vec<Error>) {
             };
             let from = if cursor.eat_word("from") {
                 let source = cursor.word("a source name")?;
-                if source.value == "git" || source.value == "path" || source.value == "workspace"
-                {
+                if source.value == "git" || source.value == "path" || source.value == "workspace" {
                     return Err(Error::new(
                         source.range,
                         "a trust line names the registry source of a package",
@@ -1406,10 +1412,16 @@ fn grant(line: &Line) -> Result<Grant, Error> {
             loop {
                 let mode = cursor.word("`read` or `write`")?;
                 if mode.value != "read" && mode.value != "write" {
-                    return Err(Error::new(mode.range, "a file grant's modes are `read` and `write`"));
+                    return Err(Error::new(
+                        mode.range,
+                        "a file grant's modes are `read` and `write`",
+                    ));
                 }
                 if modes.contains(&mode.value) {
-                    return Err(Error::new(mode.range, format!("`{}` appears twice", mode.value)));
+                    return Err(Error::new(
+                        mode.range,
+                        format!("`{}` appears twice", mode.value),
+                    ));
                 }
                 modes.push(mode.value);
                 if !cursor.eat_punct(",") {
@@ -1434,7 +1446,10 @@ fn grant(line: &Line) -> Result<Grant, Error> {
                         ));
                     }
                     if methods.contains(&method.value) {
-                        return Err(Error::new(method.range, format!("`{}` appears twice", method.value)));
+                        return Err(Error::new(
+                            method.range,
+                            format!("`{}` appears twice", method.value),
+                        ));
                     }
                     methods.push(method.value);
                     if !cursor.eat_punct(",") {
@@ -1457,7 +1472,9 @@ fn grant(line: &Line) -> Result<Grant, Error> {
         other => {
             return Err(Error::new(
                 kind.range,
-                format!("unknown grant `{other}`; the grants are `console`, `clock`, `env`, `keys`, `files` and `http`"),
+                format!(
+                    "unknown grant `{other}`; the grants are `console`, `clock`, `env`, `keys`, `files` and `http`"
+                ),
             ));
         }
     };
@@ -1508,7 +1525,10 @@ fn drive(line: &Line, errors: &mut Vec<Error>) -> Drive {
                         &mut drive.budget
                     };
                     if slot.is_some() {
-                        Err(Error::new(child.range.clone(), format!("`{word}` appears twice")))
+                        Err(Error::new(
+                            child.range.clone(),
+                            format!("`{word}` appears twice"),
+                        ))
                     } else {
                         *slot = Some(value);
                         Ok(())
@@ -1732,7 +1752,10 @@ fn solver(line: &Line, errors: &mut Vec<Error>) -> Option<LockSolver> {
     for child in &line.children {
         no_children(child, errors);
         let Some(key) = child.word(0) else {
-            errors.push(Error::new(child.range.clone(), "expected a key of `solver`"));
+            errors.push(Error::new(
+                child.range.clone(),
+                "expected a key of `solver`",
+            ));
             continue;
         };
         let Some(index) = KEYS.iter().position(|k| *k == key) else {
@@ -1929,14 +1952,24 @@ fn package(line: &Line, errors: &mut Vec<Error>) -> Option<LockPackage> {
     // The order of rule 16: from, digest, [signed, logged], [replaced], needs*, granted*,
     // [consented], trusted*.
     const ORDER: [&str; 9] = [
-        "from", "digest", "signed", "logged", "replaced", "needs", "granted", "consented",
+        "from",
+        "digest",
+        "signed",
+        "logged",
+        "replaced",
+        "needs",
+        "granted",
+        "consented",
         "trusted",
     ];
     let mut at = 0;
     for child in &line.children {
         no_children(child, errors);
         let Some(key) = child.word(0) else {
-            errors.push(Error::new(child.range.clone(), "expected a line of `package`"));
+            errors.push(Error::new(
+                child.range.clone(),
+                "expected a line of `package`",
+            ));
             continue;
         };
         let Some(index) = ORDER.iter().position(|k| *k == key) else {
@@ -2025,7 +2058,9 @@ fn package(line: &Line, errors: &mut Vec<Error>) -> Option<LockPackage> {
     }
     // A line that was written but did not read has its own error already.
     let written = |key: &str| line.children.iter().any(|child| child.word(0) == Some(key));
-    if (package.from.is_none() && !written("from")) || (package.digest.is_none() && !written("digest")) {
+    if (package.from.is_none() && !written("from"))
+        || (package.digest.is_none() && !written("digest"))
+    {
         errors.push(Error::new(
             line.range.clone(),
             "a locked package has a `from` and a `digest` line",
@@ -2077,7 +2112,10 @@ pub fn parse_workspace(text: &str) -> (Workspace, Vec<Error>) {
             workspace,
             vec![Error::new(
                 0..0,
-                format!("the file holds {} bytes, more than the {MAX_MANIFEST_BYTES} it may hold", text.len()),
+                format!(
+                    "the file holds {} bytes, more than the {MAX_MANIFEST_BYTES} it may hold",
+                    text.len()
+                ),
             )],
         );
     }

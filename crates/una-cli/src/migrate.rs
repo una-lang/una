@@ -125,7 +125,10 @@ pub(crate) fn migrate_command(
     let mut written: Vec<&str> = Vec::new();
     let mut removed: Vec<&str> = Vec::new();
     if !options.dry_run {
-        for (name, text) in [("ita.una", &migration.manifest), ("ita.lock", &migration.lock)] {
+        for (name, text) in [
+            ("ita.una", &migration.manifest),
+            ("ita.lock", &migration.lock),
+        ] {
             if let Err(error) = crate::write_through_rename_or_create(&path.join(name), text) {
                 writeln!(stderr, "error: cannot write `{name}`: {error}")?;
                 return Ok(ExitStatus::Usage);

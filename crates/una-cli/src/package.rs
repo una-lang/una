@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
 use una_project::ita::{check_lock_consistency, parse_ita_lock, parse_ita_manifest};
-use una_project::{
-    Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest,
-};
+use una_project::{Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest};
 use una_syntax::{FileId, SourceDb, Span};
 
 pub use una_project::LoadError;
@@ -110,9 +108,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                 let (lock, errors) = parse_ita_lock(package.sources.file(id).text());
                 let invalid = !errors.is_empty();
                 located(id, errors);
-                if !invalid
-                    && let (Some(read), Some(manifest_id)) = (read, package.manifest)
-                {
+                if !invalid && let (Some(read), Some(manifest_id)) = (read, package.manifest) {
                     let consistency = check_lock_consistency(read, &lock);
                     located(manifest_id, consistency.in_manifest);
                     located(id, consistency.in_lock);

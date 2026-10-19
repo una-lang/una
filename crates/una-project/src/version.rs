@@ -92,7 +92,9 @@ impl Version {
         let mut identifiers = Vec::new();
         if let Some(pre) = pre {
             if parts.len() != 3 {
-                return Err("a pre-release follows a full version, `MAJOR.MINOR.PATCH-pre`".to_owned());
+                return Err(
+                    "a pre-release follows a full version, `MAJOR.MINOR.PATCH-pre`".to_owned(),
+                );
             }
             for identifier in pre.split('.') {
                 if identifier.is_empty() || !identifier.bytes().all(|b| b.is_ascii_alphanumeric()) {

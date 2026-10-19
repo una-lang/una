@@ -132,7 +132,13 @@ fn versions_are_one_token_and_text_is_not_interpolated() {
             &Item::Text("x{y".to_owned()),
         ]
     );
-    for bad in ["a 01.2\n", "a 1.2.3.4\n", "a 1.2.3+b\n", "a 1.2.3-01\n", "a \"{x}\"\n"] {
+    for bad in [
+        "a 01.2\n",
+        "a 1.2.3.4\n",
+        "a 1.2.3+b\n",
+        "a 1.2.3-01\n",
+        "a \"{x}\"\n",
+    ] {
         assert!(!lines(bad).errors.is_empty(), "{bad:?} is an error");
     }
 }
@@ -162,7 +168,10 @@ fn the_example_manifest_reads() {
     assert_eq!(manifest.needs.len(), 5);
     let core = &manifest.needs[2];
     assert_eq!(core.name.value.owner.as_deref(), Some("acme"));
-    assert_eq!(core.origin.as_ref().unwrap().value, Origin::Source("acme".to_owned()));
+    assert_eq!(
+        core.origin.as_ref().unwrap().value,
+        Origin::Source("acme".to_owned())
+    );
     assert_eq!(core.may[0].capability, "ledger.store.Store");
     assert_eq!(core.may[0].ops.len(), 2);
     assert_eq!(core.avoid[0].value, "0.3.4");
@@ -171,7 +180,10 @@ fn the_example_manifest_reads() {
         manifest.needs[3].origin.as_ref().unwrap().value,
         Origin::Path("../util".to_owned())
     );
-    assert_eq!(manifest.needs[4].origin.as_ref().unwrap().value, Origin::Workspace);
+    assert_eq!(
+        manifest.needs[4].origin.as_ref().unwrap().value,
+        Origin::Workspace
+    );
     assert_eq!(manifest.replace[0].version.value, "2.1.0");
     assert_eq!(manifest.trust[0].major.as_ref().unwrap().value, "1");
     assert_eq!(manifest.trust[0].modules.len(), 2);
@@ -204,18 +216,51 @@ fn the_example_manifest_reads() {
 #[test]
 fn the_grammar_is_closed() {
     let cases = [
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nforeign\n", "unknown section `foreign`"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n  color red\n", "unknown head line `color`"),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nforeign\n",
+            "unknown section `foreign`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n  color red\n",
+            "unknown head line `color`",
+        ),
         ("ita x\n  version 0.1.0\n", "the head has no `edition` line"),
-        ("ita x\n  version 0.1.0\n  version 0.2.0\n  edition 0.4\n", "the head line `version` appears twice"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nlabels\n  A\n\nlabels\n  B\n", "the section `labels` appears twice"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n\nneeds\n", "out of order"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nneeds\n  u from git\n", "there are no git dependencies"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nneeds\n  json 2\n", "at least `MAJOR.MINOR`"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nneeds\n  json 2.0\n    may Http\n", "expected `[`"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    foreign \"c\"\n", "there is no foreign grant"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    files \"d\" exec\n", "`read` and `write`"),
-        ("ita x\n  version 0.1.0\n  edition 0.4\n\nescapes\n  checked 1\n", "checked per module"),
+        (
+            "ita x\n  version 0.1.0\n  version 0.2.0\n  edition 0.4\n",
+            "the head line `version` appears twice",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nlabels\n  A\n\nlabels\n  B\n",
+            "the section `labels` appears twice",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n\nneeds\n",
+            "out of order",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nneeds\n  u from git\n",
+            "there are no git dependencies",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nneeds\n  json 2\n",
+            "at least `MAJOR.MINOR`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nneeds\n  json 2.0\n    may Http\n",
+            "expected `[`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    foreign \"c\"\n",
+            "there is no foreign grant",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    files \"d\" exec\n",
+            "`read` and `write`",
+        ),
+        (
+            "ita x\n  version 0.1.0\n  edition 0.4\n\nescapes\n  checked 1\n",
+            "checked per module",
+        ),
         ("needs\n", "starts with `ita <name>`"),
     ];
     for (text, expected) in cases {
@@ -327,7 +372,8 @@ impl XorShift {
 #[test]
 fn mutated_inputs_never_panic_and_the_canonical_form_is_stable() {
     const PIECES: [&[u8]; 14] = [
-        b"\n", b"  ", b"\t", b"\"", b"{", b"-", b"--", b".", b"1.", b"[", b"]", b"\xff", b"\r", b"\x00",
+        b"\n", b"  ", b"\t", b"\"", b"{", b"-", b"--", b".", b"1.", b"[", b"]", b"\xff", b"\r",
+        b"\x00",
     ];
     let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
     for seed in [MANIFEST, LOCK, "itaty\n  members\n    \"a\"\n"] {

@@ -40,20 +40,30 @@ pub fn migrate(toml: &str, lock: Option<&str>, name: Option<&str>) -> Result<Mig
     let mut refusal = Vec::new();
     let (manifest, errors) = parse_manifest(toml);
     // Edition 0.4 in `una.toml` is the one invalid setting migration exists for.
-    for error in errors.iter().filter(|e| !e.message.contains("run `una migrate`")) {
+    for error in errors
+        .iter()
+        .filter(|e| !e.message.contains("run `una migrate`"))
+    {
         refusal.push(format!("una.toml: {} ({})", error.message, error.code));
     }
     let solver = match lock {
         Some(text) => {
             let (lock, errors) = parse_lock(text);
             for error in &errors {
-                refusal.push(format!("verification.lock: {} ({})", error.message, error.code));
+                refusal.push(format!(
+                    "verification.lock: {} ({})",
+                    error.message, error.code
+                ));
             }
             lock
         }
         None => Lock::default(),
     };
-    let written = manifest.name.as_ref().map(|n| n.value.clone()).unwrap_or_default();
+    let written = manifest
+        .name
+        .as_ref()
+        .map(|n| n.value.clone())
+        .unwrap_or_default();
     let target = match name {
         Some(name) => name.to_owned(),
         None => written.replace('-', "_"),
@@ -71,7 +81,11 @@ pub fn migrate(toml: &str, lock: Option<&str>, name: Option<&str>) -> Result<Mig
     if let Err(message) = check_package_name(&parsed) {
         refusal.push(format!("{message}; give the package a name with `--name`"));
     }
-    let version = manifest.version.as_ref().map(|v| v.value.clone()).unwrap_or_default();
+    let version = manifest
+        .version
+        .as_ref()
+        .map(|v| v.value.clone())
+        .unwrap_or_default();
     if let Err(message) = Version::parse_full(&version) {
         refusal.push(format!("una.toml: [package] version {message}"));
     }
@@ -113,22 +127,34 @@ fn sections(manifest: &Manifest, comments: &Comments, out: &mut Writer) {
     }
     if manifest.checked_per_module > 0 {
         out.section(comments, "escape_budget", "escapes");
-        out.line(1, &format!("checked per module {}", manifest.checked_per_module));
+        out.line(
+            1,
+            &format!("checked per module {}", manifest.checked_per_module),
+        );
     }
     if !manifest.boundaries.is_empty() {
         out.section(comments, "boundaries", "boundaries");
         for boundary in &manifest.boundaries {
-            out.comments_at(1, &comments.before_key("boundaries", &boundary.module.value));
+            out.comments_at(
+                1,
+                &comments.before_key("boundaries", &boundary.module.value),
+            );
             out.line(1, &boundary.module.value);
             for ceiling in &boundary.ceiling {
-                out.line(2, &format!("may {}[{}]", ceiling.capability, ceiling.ops.join(", ")));
+                out.line(
+                    2,
+                    &format!("may {}[{}]", ceiling.capability, ceiling.ops.join(", ")),
+                );
             }
         }
     }
     if !manifest.contracts.is_empty() {
         out.section(comments, "contracts", "contracts");
         for contract in &manifest.contracts {
-            out.comments_at(1, &comments.before_key("contracts", &contract.function.value));
+            out.comments_at(
+                1,
+                &comments.before_key("contracts", &contract.function.value),
+            );
             out.line(1, &contract.function.value);
             for clause in &contract.clauses {
                 out.line(2, clause.value.trim());
@@ -166,7 +192,9 @@ pub fn grant_line(spec: &str) -> String {
         // The methods, when written, are the last `:` part, of letters and commas.
         if let Some((origin, methods)) = rest.rsplit_once(':')
             && !methods.is_empty()
-            && methods.bytes().all(|b| b.is_ascii_alphabetic() || b == b',')
+            && methods
+                .bytes()
+                .all(|b| b.is_ascii_alphabetic() || b == b',')
             && origin.contains("//")
         {
             return format!("http {} {}", text(origin), methods.replace(',', ", "));
@@ -222,7 +250,10 @@ impl Writer {
     fn comments_at(&mut self, depth: usize, comments: &[(usize, String)]) {
         for (line, comment) in comments {
             self.used.insert(*line);
-            self.line(depth, &format!("--{}", comment.strip_prefix('#').unwrap_or(comment)));
+            self.line(
+                depth,
+                &format!("--{}", comment.strip_prefix('#').unwrap_or(comment)),
+            );
         }
     }
 

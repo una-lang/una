@@ -49,7 +49,10 @@ fn path(dir: &Path) -> &str {
 fn lock_writes_the_default_solver_then_is_up_to_date() {
     let dir = package("writes", MANIFEST);
     let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
-    assert_eq!((code, out.as_str(), err.as_str()), (0, "wrote ita.lock\n", ""));
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (0, "wrote ita.lock\n", "")
+    );
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
     assert_eq!(
         lock,
@@ -136,7 +139,11 @@ fn the_binary_invoked_as_ita_is_una_ita() {
     for program in ["ita", "/usr/local/bin/ita", "ita.exe"] {
         let _ = std::fs::remove_file(dir.join("ita.lock"));
         let (code, out, err) = una(&[program, "lock", path(&dir)]);
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "wrote ita.lock\n", ""), "{program}");
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (0, "wrote ita.lock\n", ""),
+            "{program}"
+        );
     }
     // Another name stays `una`.
     let (code, _, _) = una(&["una-dev", "lock", path(&dir)]);
@@ -226,7 +233,12 @@ fn migrate_dry_run_writes_nothing() {
     assert!(out.starts_with("{\"schema\":\"una.migrate/1\""), "{out}");
     assert_eq!(document["written"], serde_json::json!([]));
     assert_eq!(document["edition"]["from"], "0.1");
-    assert!(document["ita_una"].as_str().unwrap().starts_with("ita demo_pkg\n"));
+    assert!(
+        document["ita_una"]
+            .as_str()
+            .unwrap()
+            .starts_with("ita demo_pkg\n")
+    );
     assert!(dir.join("una.toml").exists());
     assert!(!dir.join("ita.una").exists());
 }
@@ -240,7 +252,10 @@ fn migrate_prints_the_clashes_of_edition_0_4() {
     assert!(out.ends_with("edition 0.3 -> 0.4: 1 diagnostic\n"), "{out}");
     assert!(err.contains("U0103"), "{err}");
     // It applies no repair: the module is unchanged.
-    assert_eq!(std::fs::read_to_string(dir.join("src/demo.una")).unwrap(), source);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        source
+    );
 }
 
 #[test]

@@ -1021,7 +1021,9 @@ impl Lexer<'_> {
             }
             parts += 1;
             let more = self.peek() == Some('.')
-                && self.peek_at(self.pos + 1).is_some_and(|c| c.is_ascii_digit());
+                && self
+                    .peek_at(self.pos + 1)
+                    .is_some_and(|c| c.is_ascii_digit());
             if !more {
                 break;
             }

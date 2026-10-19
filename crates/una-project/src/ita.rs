@@ -268,9 +268,7 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
 
 fn is_https_url(text: &str) -> bool {
     text.strip_prefix("https://").is_some_and(|rest| {
-        !rest.is_empty()
-            && !rest.starts_with('/')
-            && rest.chars().all(|c| c.is_ascii_graphic())
+        !rest.is_empty() && !rest.starts_with('/') && rest.chars().all(|c| c.is_ascii_graphic())
     })
 }
 
@@ -278,7 +276,10 @@ fn is_https_url(text: &str) -> bool {
 /// lowercase hexadecimal digits (ADR 0122 rule 16).
 pub fn is_digest(text: &str) -> bool {
     text.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
 }
 
@@ -356,10 +357,7 @@ fn check_sources<'a>(
 }
 
 /// The source that serves `owner`, if a source of `sources` lists it (rule 8).
-fn owner_source<'a>(
-    sources: &BTreeMap<&'a str, &'a ita::Source>,
-    owner: &str,
-) -> Option<&'a str> {
+fn owner_source<'a>(sources: &BTreeMap<&'a str, &'a ita::Source>, owner: &str) -> Option<&'a str> {
     sources
         .iter()
         .find(|(_, source)| source.owners.iter().any(|o| o.value == owner))
@@ -493,7 +491,9 @@ fn check_needs(
                 errors.push(error(
                     code,
                     local.range.clone(),
-                    format!("{how} and cannot be a package's local name; give it another with `as`"),
+                    format!(
+                        "{how} and cannot be a package's local name; give it another with `as`"
+                    ),
                 ));
                 break;
             }

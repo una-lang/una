@@ -156,8 +156,7 @@ fn list(dir: &Path) -> Vec<Entry> {
             if path.is_dir() {
                 Entry::Dir {
                     // A package of edition 0.4 has `ita.una` in place of `una.toml` (ADR 0122).
-                    has_una_toml: path.join("una.toml").is_file()
-                        || path.join("ita.una").is_file(),
+                    has_una_toml: path.join("una.toml").is_file() || path.join("ita.una").is_file(),
                     name,
                 }
             } else {

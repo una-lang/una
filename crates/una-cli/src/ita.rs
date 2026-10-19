@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use una_diag::{Code, Diagnostic, render_human};
-use una_project::ita::{
-    check_lock_consistency, parse_ita_lock, parse_ita_manifest, write_lock,
-};
+use una_project::ita::{check_lock_consistency, parse_ita_lock, parse_ita_manifest, write_lock};
 use una_project::{Lock, ProjectError};
 use una_syntax::{FileId, SourceDb, Span};
 
@@ -164,11 +162,7 @@ pub(crate) fn lock_command(path: &Path, check: bool, out: Output<'_>) -> io::Res
     let text = write_lock(&solver);
     if check {
         match &existing {
-            None => diagnostics.extend(located(
-                &sources,
-                manifest_id,
-                vec![missing_lock()],
-            )),
+            None => diagnostics.extend(located(&sources, manifest_id, vec![missing_lock()])),
             Some((id, lock, _)) => {
                 if let Some(read) = manifest.ita.as_deref() {
                     let consistency = check_lock_consistency(read, lock);
@@ -217,7 +211,11 @@ fn missing_lock() -> ProjectError {
 }
 
 fn unreadable(path: &Path, error: &io::Error, out: Output<'_>) -> io::Result<ExitStatus> {
-    writeln!(out.stderr, "error: cannot read `{}`: {error}", path.display())?;
+    writeln!(
+        out.stderr,
+        "error: cannot read `{}`: {error}",
+        path.display()
+    )?;
     Ok(ExitStatus::Usage)
 }
 
@@ -280,7 +278,11 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
     } else if text != canonical || sources.file(id).first_crlf().is_some() {
         let target: PathBuf = path.to_path_buf();
         if let Err(error) = crate::write_through_rename(&target, &canonical) {
-            writeln!(out.stderr, "error: cannot write `{}`: {error}", target.display())?;
+            writeln!(
+                out.stderr,
+                "error: cannot write `{}`: {error}",
+                target.display()
+            )?;
             return Ok(ExitStatus::Usage);
         }
     }
