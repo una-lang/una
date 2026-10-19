@@ -6,16 +6,14 @@
 
 use std::collections::HashMap;
 
-use pretty_assertions::assert_eq;
 use ed25519_dalek::{Signer, SigningKey};
+use pretty_assertions::assert_eq;
 use una_project::tlog::ed25519::{Refusal, verify};
 use una_project::tlog::merkle::{
     Hash, consistency_proof, inclusion_proof, leaf_hash, node_hash, root, verify_consistency,
     verify_inclusion,
 };
-use una_project::tlog::note::{
-    Key, base64, encode_base64, parse_checkpoint, parse_note,
-};
+use una_project::tlog::note::{Key, base64, encode_base64, parse_checkpoint, parse_note};
 use una_project::tlog::witness::{
     Cosigned, Problem, checkpoint_time, fresh, logged_at, monotonic, waited,
 };
@@ -28,7 +26,9 @@ fn hex(text: &str) -> Vec<u8> {
 }
 
 fn leaves(n: usize) -> Vec<Hash> {
-    (0..n).map(|i| leaf_hash(format!("entry {i}").as_bytes())).collect()
+    (0..n)
+        .map(|i| leaf_hash(format!("entry {i}").as_bytes()))
+        .collect()
 }
 
 #[test]
@@ -38,14 +38,32 @@ fn inclusion_proofs_verify_for_every_leaf_and_no_other() {
         let top = root(&leaves);
         for index in 0..n {
             let proof = inclusion_proof(index, &leaves);
-            assert!(verify_inclusion(index as u64, n as u64, &leaves[index], &proof, &top));
+            assert!(verify_inclusion(
+                index as u64,
+                n as u64,
+                &leaves[index],
+                &proof,
+                &top
+            ));
             // Another leaf, or a changed hash of the proof, fails.
             let other = leaf_hash(b"other");
-            assert!(!verify_inclusion(index as u64, n as u64, &other, &proof, &top));
+            assert!(!verify_inclusion(
+                index as u64,
+                n as u64,
+                &other,
+                &proof,
+                &top
+            ));
             if let Some(first) = proof.first() {
                 let mut bad = proof.clone();
                 bad[0] = node_hash(first, first);
-                assert!(!verify_inclusion(index as u64, n as u64, &leaves[index], &bad, &top));
+                assert!(!verify_inclusion(
+                    index as u64,
+                    n as u64,
+                    &leaves[index],
+                    &bad,
+                    &top
+                ));
             }
         }
         assert!(!verify_inclusion(n as u64, n as u64, &leaves[0], &[], &top));
@@ -69,7 +87,13 @@ fn consistency_proofs_verify_for_every_prefix_and_catch_a_fork() {
                 let mut forked = leaves.clone();
                 forked[m - 1] = leaf_hash(b"rewritten");
                 let forked_prefix = root(&forked[..m]);
-                assert!(!verify_consistency(m as u64, n as u64, &forked_prefix, &top, &proof));
+                assert!(!verify_consistency(
+                    m as u64,
+                    n as u64,
+                    &forked_prefix,
+                    &top,
+                    &proof
+                ));
             }
         }
         assert!(!verify_consistency(n as u64 + 1, n as u64, &top, &top, &[]));
@@ -193,7 +217,11 @@ fn every_small_order_encoding_is_refused_as_key_and_as_r() {
         for sign in [0u8, 0x80] {
             let mut point = hex(y);
             point[31] |= sign;
-            assert_eq!(verify(&point, &message, &signature), Err(Refusal::Key), "{y}");
+            assert_eq!(
+                verify(&point, &message, &signature),
+                Err(Refusal::Key),
+                "{y}"
+            );
             let mut forged = signature.clone();
             forged[..32].copy_from_slice(&point);
             assert_eq!(verify(&public, &message, &forged), Err(Refusal::R), "{y}");
@@ -207,7 +235,9 @@ fn every_small_order_encoding_is_refused_as_key_and_as_r() {
 #[test]
 fn ed25519_follows_rfc_8032_strictly() {
     let key = hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
-    let signature = hex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+    let signature = hex(
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+    );
     assert_eq!(verify(&key, b"", &signature), Ok(()));
     assert_eq!(verify(&key, b"x", &signature), Err(Refusal::Equation));
     // S + L, the same signature with a non-canonical S, is refused before the equation.
@@ -329,13 +359,13 @@ fn witness_time_resists_fewer_than_the_threshold() {
     ];
     assert_eq!(logged_at(5, &seen, 3), Ok(1001));
     // An entry the first checkpoint does not include is logged by the later ones only.
-    assert_eq!(
-        logged_at(15, &seen, 1),
-        Ok(2000)
-    );
+    assert_eq!(logged_at(15, &seen, 1), Ok(2000));
     assert_eq!(
         logged_at(15, &seen, 3),
-        Err(Problem::TooFew { found: 1, needed: 3 })
+        Err(Problem::TooFew {
+            found: 1,
+            needed: 3
+        })
     );
     // One forward-dating witness cannot make a checkpoint look later.
     let checkpoint = [
@@ -393,7 +423,10 @@ fn release_statements_parse_strictly() {
         ("needs itaty json", "needs other json"),
         ("needs itaty text_utf8 1.0.3\n", ""),
         ("Http[get]", "Http[get, get]"),
-        ("trust modules ledger.keys\n", "trust modules ledger.keys\nextra\n"),
+        (
+            "trust modules ledger.keys\n",
+            "trust modules ledger.keys\nextra\n",
+        ),
         ("version 0.3.1", "version 0.3"),
         ("digest sha256:3b1f", "digest sha256:XX1f"),
     ] {
@@ -408,7 +441,11 @@ fn release_statements_parse_strictly() {
     // Rule 26: authority and trust may only shrink within an identity.
     let wider = parse_statement(&STATEMENT.replacen("Http[get]", "Http[get, post]", 1)).unwrap();
     assert!(within(&statement, &wider).is_ok());
-    assert!(within(&wider, &statement).unwrap_err().contains("Http[post]"));
+    assert!(
+        within(&wider, &statement)
+            .unwrap_err()
+            .contains("Http[post]")
+    );
     let mailer = parse_statement(&STATEMENT.replacen(
         "authority Http[get], ledger.store.Store[find, put]",
         "authority Mail[send]",
@@ -416,8 +453,13 @@ fn release_statements_parse_strictly() {
     ))
     .unwrap();
     assert!(within(&mailer, &statement).unwrap_err().contains("`Mail`"));
-    let trusting = parse_statement(&STATEMENT.replacen("ledger.keys", "ledger.keys, ledger.more", 1)).unwrap();
-    assert!(within(&trusting, &statement).unwrap_err().contains("ledger.more"));
+    let trusting =
+        parse_statement(&STATEMENT.replacen("ledger.keys", "ledger.keys, ledger.more", 1)).unwrap();
+    assert!(
+        within(&trusting, &statement)
+            .unwrap_err()
+            .contains("ledger.more")
+    );
     let none = parse_statement(&STATEMENT.replacen(
         "authority Http[get], ledger.store.Store[find, put]",
         "authority none",
@@ -433,12 +475,16 @@ fn root_document(version: u64, expires: u64, roots: &[u8], signers: &[u8]) -> St
         let (_, key) = keypair(seed, name);
         format!("key {} {}", key.name, encode_base64(&key.public))
     };
-    let mut text = format!("ita-root/1\nsource test\nversion {version}\nexpires {expires}\nroot 2\n");
+    let mut text =
+        format!("ita-root/1\nsource test\nversion {version}\nexpires {expires}\nroot 2\n");
     for seed in roots {
         text.push_str(&key(*seed, &format!("root.{seed}")));
         text.push('\n');
     }
-    text.push_str(&format!("log test.log {}\n", encode_base64(&keypair(90, "test.log").1.public)));
+    text.push_str(&format!(
+        "log test.log {}\n",
+        encode_base64(&keypair(90, "test.log").1.public)
+    ));
     text.push_str("witnesses 1\n");
     text.push_str(&key(91, "witness.a"));
     text.push_str("\nsecurity 1\n");
@@ -463,15 +509,24 @@ fn root_metadata_is_pinned_and_walked_by_thresholds() {
     assert_eq!(root.witnesses.keys.len(), 1);
     assert!(trust_first(&first, "sha256:00").is_err(), "another pin");
     let unsigned = root_document(1, 2_000, &[10, 11, 12], &[10]);
-    assert!(trust_first(&unsigned, &digest(&unsigned)).is_err(), "one signature of two");
+    assert!(
+        trust_first(&unsigned, &digest(&unsigned)).is_err(),
+        "one signature of two"
+    );
     // Version 2 rotates key 12 out for 13: signed by two keys of version 1 and two of its own.
     let second = root_document(2, 3_000, &[10, 11, 13], &[10, 13]);
-    assert!(walk(&root, &[&second], 1_000).is_err(), "one of version 1's keys only");
+    assert!(
+        walk(&root, &[&second], 1_000).is_err(),
+        "one of version 1's keys only"
+    );
     let second = root_document(2, 3_000, &[10, 11, 13], &[10, 11]);
     let walked = walk(&root, &[&second], 2_500).unwrap();
     assert_eq!(walked.version, 2);
     // A passed version may have expired; the last may not.
     assert!(walk(&root, &[&second], 3_000).is_err());
     let skipping = root_document(3, 3_000, &[10, 11, 13], &[10, 11]);
-    assert!(walk(&root, &[&skipping], 1_000).is_err(), "a version skipped");
+    assert!(
+        walk(&root, &[&skipping], 1_000).is_err(),
+        "a version skipped"
+    );
 }

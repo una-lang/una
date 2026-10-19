@@ -98,9 +98,13 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
     }
     at += 1;
     let source = next("source")?;
-    let version = number(&next("version")?).filter(|v| *v >= 1).ok_or("`version` is a number from 1")?;
+    let version = number(&next("version")?)
+        .filter(|v| *v >= 1)
+        .ok_or("`version` is a number from 1")?;
     let expires = number(&next("expires")?).ok_or("`expires` is a number of seconds")?;
-    let set = |label: &str, next: &mut dyn FnMut(&str) -> Result<String, String>| -> Result<Keys, String> {
+    let set = |label: &str,
+               next: &mut dyn FnMut(&str) -> Result<String, String>|
+     -> Result<Keys, String> {
         let threshold = usize::try_from(
             number(&next(label)?).ok_or_else(|| format!("`{label}` is a threshold"))?,
         )

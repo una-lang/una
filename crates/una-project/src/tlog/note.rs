@@ -83,7 +83,9 @@ pub fn parse_note(document: &str) -> Result<Note, String> {
         .find("\n\n")
         .ok_or("the note has no blank line before its signatures")?;
     let text = document.get(..=split).ok_or("the note's text is cut")?;
-    let rest = document.get(split + 2..).ok_or("the note has no signatures")?;
+    let rest = document
+        .get(split + 2..)
+        .ok_or("the note has no signatures")?;
     if text
         .chars()
         .any(|c| (c.is_control() && c != '\n') || c == '\u{feff}')
@@ -105,7 +107,9 @@ pub fn parse_note(document: &str) -> Result<Note, String> {
             return Err(format!("`{name}` is not a key name"));
         }
         let bytes = base64(encoded).ok_or("a signature is not canonical base64")?;
-        let Some((id, bytes)) = bytes.split_first_chunk::<4>().filter(|(_, b)| !b.is_empty())
+        let Some((id, bytes)) = bytes
+            .split_first_chunk::<4>()
+            .filter(|(_, b)| !b.is_empty())
         else {
             return Err("a signature is too short".to_owned());
         };
@@ -150,8 +154,7 @@ impl Note {
     pub fn cosignature(&self, witness: &Key) -> Option<u64> {
         let id = witness.cosignature_id();
         self.signatures.iter().find_map(|signature| {
-            if signature.name != witness.name || signature.id != id || signature.bytes.len() != 72
-            {
+            if signature.name != witness.name || signature.id != id || signature.bytes.len() != 72 {
                 return None;
             }
             let (time, sig) = signature.bytes.split_first_chunk::<8>()?;
@@ -185,7 +188,10 @@ pub fn parse_checkpoint(text: &str) -> Result<Checkpoint, String> {
         .strip_suffix('\n')
         .ok_or("a checkpoint ends with a line feed")?
         .split('\n');
-    let origin = lines.next().filter(|o| !o.is_empty()).ok_or("a checkpoint has no origin")?;
+    let origin = lines
+        .next()
+        .filter(|o| !o.is_empty())
+        .ok_or("a checkpoint has no origin")?;
     let size = lines.next().ok_or("a checkpoint has no size")?;
     let size_ok = !size.is_empty()
         && size.len() <= 20
@@ -240,7 +246,11 @@ pub fn base64(text: &str) -> Option<Vec<u8>> {
         }
         let mut n: u32 = 0;
         for (i, c) in chunk.iter().enumerate() {
-            let v = if i >= 4 - pad { 0 } else { u32::from(value(*c)?) };
+            let v = if i >= 4 - pad {
+                0
+            } else {
+                u32::from(value(*c)?)
+            };
             n = (n << 6) | v;
         }
         let triple = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
@@ -256,8 +266,7 @@ pub fn base64(text: &str) -> Option<Vec<u8>> {
 
 /// Canonical base64 with padding.
 pub fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let n = chunk

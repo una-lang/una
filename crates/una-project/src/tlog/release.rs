@@ -176,7 +176,9 @@ fn parse_authority(text: &str) -> Result<BTreeMap<String, BTreeSet<String>>, Str
     }
     let mut rest = text;
     loop {
-        let open = rest.find('[').ok_or("a capability lists its operations in brackets")?;
+        let open = rest
+            .find('[')
+            .ok_or("a capability lists its operations in brackets")?;
         let close = rest.find(']').ok_or("an operation list is not closed")?;
         let (capability, ops) = (
             rest.get(..open).unwrap_or(""),
