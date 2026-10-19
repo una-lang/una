@@ -2081,7 +2081,7 @@ fn function_grants(
 
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
-/// `fails` clause.
+/// `fails` clause. And U3027: none of them says `diverges` (rule 8).
 pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
     let Some(drive) = &settings.drive else {
         return;
@@ -2121,6 +2121,31 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
                     "handle each failure inside `{name}`, with `if error use` or `attempt`, and remove the `fails` clause"
                 )));
                 report.push(diagnostic);
+            }
+        }
+    }
+    // ADR 0116 rule 8: none of the driven functions may say `diverges` (U3027).
+    for name in ["init", "step", "on_stop"] {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+            continue;
+        };
+        for clause in &decl.clauses {
+            if matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges) {
+                report.error(
+                    Code::U3027,
+                    clause.span,
+                    format!(
+                        "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
+                        drive.module.value
+                    ),
+                );
             }
         }
     }
