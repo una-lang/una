@@ -7,5 +7,7 @@ pub mod map;
 pub mod merkle;
 pub mod note;
 pub mod release;
+pub mod publish;
 pub mod root;
+pub mod state;
 pub mod witness;
