@@ -38,7 +38,10 @@ fn publishing_refuses_what_rule_43_names() {
     ] {
         let (manifest, _) = parse_manifest(&published(extra));
         let found = refusals(&manifest);
-        assert!(found.iter().any(|r| r.contains(part)), "{extra:?}: {found:?}");
+        assert!(
+            found.iter().any(|r| r.contains(part)),
+            "{extra:?}: {found:?}"
+        );
     }
     let (bare, _) = parse_manifest("ita x\n  version 0.1.0\n  edition 0.4\n  publish to itaty\n");
     assert_eq!(refusals(&bare).len(), 2, "about and license");
@@ -47,12 +50,10 @@ fn publishing_refuses_what_rule_43_names() {
 #[test]
 fn the_statement_written_reads_back() {
     let (manifest, _) = parse_manifest(&published("\nneeds\n  text_utf8 1.0.3\n  json 2.1\n"));
-    let authority: BTreeMap<String, BTreeSet<String>> = [(
-        "Http".to_owned(),
-        ["get".to_owned()].into_iter().collect(),
-    )]
-    .into_iter()
-    .collect();
+    let authority: BTreeMap<String, BTreeSet<String>> =
+        [("Http".to_owned(), ["get".to_owned()].into_iter().collect())]
+            .into_iter()
+            .collect();
     let trust: BTreeSet<String> = ["ledger.keys".to_owned()].into_iter().collect();
     let text = statement(
         &manifest,
@@ -125,7 +126,13 @@ fn the_state_folds_releases_yanks_and_advisories() {
     assert!(fold(&lifted).unwrap()[&v("0.3.2")].threshold_fix);
     // An advisory signed by no security key, a second statement for a version, a yank of
     // nothing: each is refused.
-    lifted[4] = Entry::Advisory(fix, Signers { security: 0, owner_threshold: true });
+    lifted[4] = Entry::Advisory(
+        fix,
+        Signers {
+            security: 0,
+            owner_threshold: true,
+        },
+    );
     assert!(fold(&lifted).is_err());
     assert!(fold(&[release("0.3.0", D, 1), release("0.3.0", E, 2)]).is_err());
     assert_eq!(
@@ -147,8 +154,17 @@ fn the_state_folds_releases_yanks_and_advisories() {
 #[test]
 fn advisories_read_strictly() {
     assert!(parse_advisory(&advisory("none")).unwrap().fixed.is_none());
-    assert!(parse_advisory(&advisory("0.3.1 sha256:00")).is_err(), "a short digest");
-    assert!(parse_advisory(&advisory(&format!("0.3.1 {E}"))).is_err(), "a fix that is affected");
-    assert!(parse_advisory(&advisory(&format!("1.0.0 {E}"))).is_err(), "a fix on another line");
+    assert!(
+        parse_advisory(&advisory("0.3.1 sha256:00")).is_err(),
+        "a short digest"
+    );
+    assert!(
+        parse_advisory(&advisory(&format!("0.3.1 {E}"))).is_err(),
+        "a fix that is affected"
+    );
+    assert!(
+        parse_advisory(&advisory(&format!("1.0.0 {E}"))).is_err(),
+        "a fix on another line"
+    );
     assert!(parse_advisory(&advisory("none").replace("high", "urgent")).is_err());
 }

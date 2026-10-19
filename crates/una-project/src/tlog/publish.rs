@@ -13,7 +13,8 @@ pub fn refusals(manifest: &ita::Manifest) -> Vec<String> {
     let mut out = Vec::new();
     let Some(target) = manifest.publish_to.as_ref().map(|t| t.value.as_str()) else {
         return vec![
-            "the head has no `publish to <source>`, so the package is never published by accident".to_owned(),
+            "the head has no `publish to <source>`, so the package is never published by accident"
+                .to_owned(),
         ];
     };
     if manifest.about.is_none() {
@@ -128,7 +129,12 @@ pub fn statement(manifest: &ita::Manifest, release: &Release<'_>) -> Result<Stri
         let caps: Vec<String> = release
             .authority
             .iter()
-            .map(|(cap, ops)| format!("{cap}[{}]", ops.iter().cloned().collect::<Vec<_>>().join(", ")))
+            .map(|(cap, ops)| {
+                format!(
+                    "{cap}[{}]",
+                    ops.iter().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })
             .collect();
         text.push_str(&format!("authority {}\n", caps.join(", ")));
     }
