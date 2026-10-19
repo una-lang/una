@@ -1683,14 +1683,6 @@ impl<'p, 'w> Machine<'p, 'w> {
         Some(Ok(match name {
             // O(1): an empty ring buffer allocates nothing.
             "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
-            _ => return None,
-        }))
-    }
-
-    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), or `None`
-    /// for one the module declares in Una.
-    fn collections(&mut self, name: &str) -> Option<Flow<'p>> {
-        Some(Ok(match name {
             // O(1).
             "empty_set" => Value::Set(Rc::default()),
             _ => return None,

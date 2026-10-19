@@ -249,8 +249,8 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         "len" => &[
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
-            "(`spec/28 §6`).",
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
+            "count their items, in O(1) (`spec/28 §5`, `§6`).",
         ],
         "has" => &[
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
@@ -307,8 +307,9 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "`Some`, and `None` exactly when it is empty, in O(1) time (`spec/28 §5`).",
         ],
         "items" => &[
-            "The items as a list, a `Stack` top first and a `Queue` front first, as many as its",
-            "`len`, in O(n) time (`spec/28 §5`).",
+            "The items as a list: a `Stack` top first and a `Queue` front first, as many as its",
+            "`len`, in O(n) time (`spec/28 §5`); a `Set`'s in ascending order, as many as its",
+            "`len`, in O(n) time (`spec/28 §6`).",
         ],
         "push_front" => &[
             "Updates a `Queue` in place, written `edit q.push_front(item: x)`: `item` goes to the",
@@ -335,9 +336,6 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "The items of `s` from `low` to `high`, both included, in ascending order; none when",
             "`low` is above `high`. O(log n + k) for the k items listed (`spec/28 §6`).",
         ],
-        "items" => {
-            &["The items of `s` in ascending order, as many as `s.len`. O(n) (`spec/28 §6`)."]
-        }
         "union" => &[
             "The items of `s` and those of `other`. O(n + m), or less when `other` is much smaller",
             "(`spec/28 §6`).",
