@@ -174,3 +174,52 @@ Every operator and method is O(1): one instruction, or a routine of bounded size
 | U2032 | A float literal other than zero, or a float range, as a pattern |
 | U2033 | A comparison of an `F64` with a float literal zero |
 | U6006 | The floating-point environment of the platform is not the default one |
+
+## 16. Decimal
+
+(ADR 0120 rules 12 to 21.) An exact base-10 number for money, whose scale is part of its type and whose every rounding is written. This section applies only to packages of edition `0.4`; in earlier editions `Decimal` is an ordinary name, `Decimal[2]` is a syntax error (U0101), and the prelude has none of the names of rule 9.
+
+1. **The type.** `Decimal[s]`, with s an integer literal from 0 to 38, is a built-in type: an integer coefficient c, unbounded as `Int` is, with the value c × 10^-s. A scale above 38, and `Decimal` without its scale in brackets, is U2037. There is no negative zero: `-0.00` is `0.00`. A user kind, variant, capability or unit named `Decimal` is U1002; the prelude's variant `Json.Decimal` keeps its name, since a type is always written with brackets. `Decimal[s]` satisfies `Eq` and `Ord`, by value, and never `Integer`, so it is a map key and `sort` orders it.
+2. **Literals.** A float literal where `Decimal[s]` is expected denotes its exact value at scale s, padded (`5.0` is `5.00`), with the exponent form allowed (`1.5e3`). It is never rounded: a nonzero digit beyond the scale is U2037, and so is a coefficient of more than 4,300 digits, the language's digit cap, decided by counting digits before any number is built. An integer literal where a decimal is expected is U2001, with an edit that adds `.0`.
+   - **In an operator** (`+`, `-`, `*`), a float literal takes the other operand's scale and MUST fit it: with `price: Decimal[2]`, `price + 0.005` is U2037, and `price * 1.1` is `price * 1.10`, a `Decimal[4]`. A literal never widens the other operand's scale. With two literals, `+` and `-` give both the expected scale, and `*` gives each the scale of its own digits.
+   - **In a comparison** (`==`, `!=`, `<`, `<=`, `>`, `>=`) a float literal beside a decimal takes the scale of its own digits, the digits after its point less its exponent, since a comparison is exact across scales: `price < 0.005` compares with `0.005` exactly. An own scale above 38 is U2037.
+   - A float literal where nothing expects a decimal is an `F64` (§2), so a decimal from a literal needs its type written, as in `let zero: Decimal[2] = 0.00`.
+3. **Arithmetic** is exact, for operands of scales a and b:
+
+   | Operation | Result |
+   | --- | --- |
+   | `x + y`, `x - y` | `Decimal[max(a, b)]`, the operand of smaller scale aligned by 10^\|a - b\| |
+   | `-x` | `Decimal[a]` |
+   | `x * y` | `Decimal[a + b]`; U2037 when a + b > 38 |
+   | `==`, `!=`, `<`, `<=`, `>`, `>=` | `Bool`, by value across scales: `1.0 == 1.00` |
+   | `x / y`, `x mod y` | U2001, with repairs to `divide` and `remainder` |
+   | with an integer or an `F64` operand | U2001, with a repair to `n.to_decimal()` or `x.to_decimal(scale:, rounding:)` |
+
+4. **Rounding.** The prelude declares `kind Rounding = HalfEven | HalfAwayFromZero | HalfTowardZero | TowardZero | AwayFromZero | TowardPositive | TowardNegative`. Rounding an exact value v to an integer number of units of a scale works on the magnitude: with m = |v| in those units, q = ⌊m⌋ and f = m - q, the rounded magnitude is q or q + 1, and the sign of v is applied after. `TowardZero` gives q; `AwayFromZero` gives q + 1 when f > 0; `TowardPositive` acts as `AwayFromZero` for v > 0 and as `TowardZero` for v < 0, `TowardNegative` the reverse; the three `Half` modes give q when f < 1/2 and q + 1 when f > 1/2, and at f = 1/2, `HalfEven` gives the even one, `HalfAwayFromZero` q + 1, and `HalfTowardZero` q. No operation has a default mode.
+5. **Methods.** Each `scale:` is an integer literal from 0 to 38, else U2037; the arguments are written in the order shown, the first after the receiver unlabeled only when punned.
+
+   | Method | Result | Contract |
+   | --- | --- | --- |
+   | `x.widen(scale: s)` | `Decimal[s]` | exact; s at least a, else U2037 with a repair to `rescale` |
+   | `x.rescale(scale: s, rounding: r)` | `Decimal[s]` | s below a, else U2037 with a repair to `widen`; rounded once by r |
+   | `x.rescale_exact(scale: s)` | `Decimal[s]` | s below a; a `precondition` obligation that no nonzero digit is dropped |
+   | `x.divide(by: y, scale: s, rounding: r)` | `Decimal[s]` | the exact quotient rounded once to scale s by r; a `division` obligation `y != 0` unless `y` is a nonzero literal |
+   | `x.remainder(by: y, scale: s)` | `Decimal[max(a, b + s)]` | `x - y × q` with q `x.divide(by: y, scale: s, rounding: TowardZero)`, exact, so `x == y × q + remainder` and the remainder has the sign of x; a `division` obligation; U2037 when the scale is above 38 |
+   | `x.to_int(rounding: r)` | `Int` | rounded once to an integer by r |
+   | `x.to_f64()` | `F64` | the nearest binary64 value to the exact value, ties to even, an infinity beyond the range |
+   | `x.abs()` | `Decimal[a]` | exact |
+   | `x.coefficient()` | `Int` | c |
+   | `n.to_decimal()` on `Int` and the fixed-width types | `Decimal[0]` | exact |
+   | `x.to_decimal(scale: s, rounding: r)` on `F64` | `Option[Decimal[s]]` | `None` for NaN and the infinities; otherwise the float's exact binary value, rounded once |
+
+   `divide` computes in integers, with no intermediate rounding: for `x: Decimal[2]` equal to `1.00`, `x.divide(by: 3.00, scale: 2, rounding: HalfEven)` is `0.33`. A package function named `to_decimal` whose first parameter has an integer type, `F64`, or a type parameter is U1002, since the built-in conversion resolves ahead of it.
+6. **Text.** A decimal renders as an optional `-`, its integer part, and for s > 0 a point and exactly s digits: `-12.50`, `0.05`; `Decimal[0]` renders as an integer. Interpolation and the Una form of a value that holds a decimal write it so. `parse_decimal(t, scale: s)` gives `Decimal[s]` and fails with `ParseError`: it reads `-? (0 | [1-9][0-9]*) ("." [0-9]+)?`, with no exponent and no space; fraction digits beyond the scale are accepted only when they are zeros, else `NotADigit(at: i)` at the first nonzero digit beyond it; `Empty`, `NoDigits` and `NotADigit` otherwise as for `parse_f64`; and `TooLong` when the coefficient at the scale would have more than 4,300 digits, leading zeros not counted, decided in O(b) before any conversion. `parse_decimal(to_text(x), scale: s) == x` for every x within the cap.
+7. **JSON.** `as_decimal(j: Json, scale: s)` gives `Option[Decimal[s]]`: for `Number(n)`, n at scale s; for `Decimal(t)`, its exact value when it has one at scale s within the digit cap, the exponent read before any digit is built, so `1e1000000000` is `None` at once; `None` for every other `Json`. `json_decimal(x)` gives `Number(c)` at scale 0, and `Decimal(t)` with t the rendering of rule 6 otherwise.
+8. **The prelude's functions with a scale.** The scale of `parse_decimal`'s and `as_decimal`'s result is the literal of each call, so neither, nor `json_decimal`, is a function value: naming one as a value is U2037. A package declaration of one of these names, or of `Rounding` or its variants, is the package's own and keeps its meaning.
+9. **Names** that edition `0.4` adds to the prelude: `Rounding` and its seven variants, `parse_decimal`, `as_decimal` and `json_decimal`.
+10. **Labels.** A decimal carries labels as `Int` does (`spec/07`); the result of every operator, method and conversion joins the labels of all its operands, the rounding mode included, and `parse_decimal`, `as_decimal` and `json_decimal` carry their arguments' labels.
+11. **Verification.** A decimal is its coefficient, an SMT `Int`, so its queries stay in `QF_UFLIA`. In the refinement language, decimal literals, `+`, `-`, unary `-`, the comparisons, `*` with a literal factor and `coefficient()` are terms, each operand aligned by a literal power of ten; the other methods are code only (U2014 in a clause). `rescale`, `to_int`, `divide` and `remainder` are encoded by the magnitude form of ADR 0120 V2: the quotient q and remainder r of the operands' magnitudes, by SMT-LIB `div` and `mod` when the divisor is a literal and by `i!div!Int` and `i!mod!Int` otherwise, q or q + 1 by rule 4's case on r, written linearly, and then the sign. `rescale_exact`'s precondition is `(= (mod c 10^k) 0)`. A counterexample shows a decimal by its value.
+12. **Representation.** The coefficient is an `Int`: in native code a tagged word that promotes (`spec/16 §4` rule 2), and the scale is static, so a `Decimal[2]` below 4.6 × 10^16 is one machine word. Both engines compute every operation with the same exact routines.
+13. **Cost.** With d the limbs of a coefficient: `+`, `-`, comparisons and `widen` are O(d) beyond a multiplication by a constant power of ten; `*` is O(d²); `rescale`, `divide`, `remainder` and `to_int` are one division, O(d²); rendering is O(d²); `parse_decimal` is O(b) to decide and O(d²) to convert at most 4,300 digits; `to_f64()` is O(1) when |c| < 2^53 and s ≤ 22, and O(d²) otherwise. A coefficient a program grows by its own `*` is bounded by the memory budget, not by the cap.
+14. **Not yet.** Range sugar with decimal bounds (`Decimal[2] in 0.00..100.00`) is a syntax error until float bounds parse (§1); a refinement is written with `where`. `to_f32()` waits for `F32`, and units on decimals (ADR 0120 rule 63) for the units step. `to_f64()` and `to_decimal` on an `F64` are not compiled to native code until `F64` is (§9).
+15. **Diagnostics.** U2037, a decimal scale out of place: a scale that is not an integer literal from 0 to 38; a literal with a nonzero digit beyond its scale, also as an operator's operand, or whose coefficient passes the cap; a product or a remainder of scale above 38; `widen` to a smaller scale, or `rescale` or `rescale_exact` to a scale that is not smaller; a prelude function with a scale named as a value.

@@ -17,6 +17,9 @@ pub(crate) enum Value<'p> {
     Int(BigInt),
     /// An `F64`, always canonical: its NaN is the canonical NaN (`spec/29`, ADR 0114 rule 9.8).
     F64(f64),
+    /// A `Decimal[s]`: its coefficient and its scale (`spec/29 §16`, ADR 0120 rule 12). The
+    /// scale is the type's, so every value of one type has the same.
+    Decimal(BigInt, u8),
     /// A boolean.
     Bool(bool),
     /// A text.
@@ -59,6 +62,9 @@ impl Key {
         match value {
             Value::Int(n) => Some(Key::Int(n.clone())),
             Value::F64(x) => Some(Key::F64(una_core::float::order_key(*x))),
+            // The keys of one map share their type, so their scale: the coefficient orders
+            // them by value (ADR 0120 rule 18).
+            Value::Decimal(c, _) => Some(Key::Int(c.clone())),
             Value::Text(t) => Some(Key::Text(t.clone())),
             Value::Data(data) if data.fields.is_empty() => Some(Key::Variant(data.ctor.index)),
             _ => None,
@@ -175,6 +181,7 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::F64(x), Value::F64(y)) => una_core::float::equal(*x, *y),
+        (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b) == Ordering::Equal,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
@@ -290,8 +297,20 @@ pub(crate) fn compare(a: &Value<'_>, b: &Value<'_>) -> Ordering {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
         (Value::F64(x), Value::F64(y)) => una_core::float::total_cmp(*x, *y),
+        (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Data(x), Value::Data(y)) => x.ctor.index.cmp(&y.ctor.index),
+        _ => Ordering::Equal,
+    }
+}
+
+/// The order of two decimals by value, aligned to the larger scale (ADR 0120 rule 13).
+pub(crate) fn decimal_cmp(a: &Value<'_>, b: &Value<'_>) -> Ordering {
+    match (a, b) {
+        (Value::Decimal(x, s), Value::Decimal(y, t)) => {
+            let m = (*s).max(*t);
+            una_core::decimal::widen(x, *s, m).cmp(&una_core::decimal::widen(y, *t, m))
+        }
         _ => Ordering::Equal,
     }
 }

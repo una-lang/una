@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{generic, host, json, runtime, tasks, values};
+use crate::{decimal, generic, host, json, runtime, tasks, values};
 
 /// The allocator of a debug build (ADR 0113, I3): the release build's [`cap::Cap`], wrapped to
 /// keep the most bytes the process ever held, its high-water mark, and the bytes each thread
@@ -335,6 +335,10 @@ exported! {
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
     una_rt_fixed => values::fixed, (op, int, a, b);
+    una_rt_decimal => decimal::decimal, (op, scales, a, b, r);
+    una_rt_parse_decimal_failure => decimal::parse_decimal_failure, (t, scale);
+    una_rt_parse_decimal => decimal::parse_decimal, (t, scale);
+    una_rt_as_decimal => decimal::as_decimal, (j, scale);
     una_rt_range => values::range, (site, low, high, inclusive);
     una_rt_console_print => host::console_print, (line);
     una_rt_clock_now => host::clock_now, ();

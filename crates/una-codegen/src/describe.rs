@@ -69,6 +69,8 @@ impl<'p> Types<'p> {
             Base::Hashed => json!({ "shape": "hashed" }),
             // No `F64` value reaches native code yet (`spec/29`): an empty list of them may.
             Base::F64 => json!({ "shape": "other" }),
+            // A decimal is its coefficient, written with its scale (`spec/29 §16`).
+            Base::Decimal(scale) => json!({ "shape": "decimal", "scale": scale }),
             // Internal to the memory model: a tuple is never a value a trace or U6001 shows.
             Base::Tuple(_) => json!({ "shape": "other" }),
             Base::Named { module, name, args } if module == PRELUDE_MODULE => {

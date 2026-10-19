@@ -535,6 +535,7 @@ impl Vars {
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
             | (Ty::F64, Ty::F64) => true,
+            (Ty::Decimal(a), Ty::Decimal(b)) => a == b,
             (Ty::List(x), Ty::List(y)) => self.unify_in(x, y, fixed),
             (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
                 self.unify_in(xk, yk, fixed) && self.unify_in(xv, yv, fixed)

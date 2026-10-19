@@ -242,6 +242,16 @@ pub enum TypeCore {
     },
     /// `"[" type "]"`: a list.
     List(Box<Type>),
+    /// `"Decimal" "[" scale "]"`, edition 0.4 (`spec/29 §16`, ADR 0120 rule 2): an exact
+    /// decimal type whose scale is an integer literal.
+    Decimal {
+        /// The word `Decimal`.
+        name: Ident,
+        /// The scale's digits, as its integer token holds them.
+        scale: String,
+        /// The scale's span.
+        scale_span: Span,
+    },
     /// `"fn" "(" [ types ] ")" "->" type { fn_type_clause }`.
     Function {
         /// The parameter types.

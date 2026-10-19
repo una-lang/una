@@ -559,6 +559,18 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.4: `Decimal` is built in (`spec/29 §16`, ADR 0120 rule 3).
+        if upper && self.package.settings.edition >= Edition::V0_4 && name == "Decimal" {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`Decimal` is a built-in decimal type from edition 0.4, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.3: `F64` is built in (`spec/29`, ADR 0114 rule 1.4).
         if upper && self.package.settings.edition >= Edition::V0_3 && name == "F64" {
             let diagnostic = self.make(

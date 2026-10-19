@@ -7,8 +7,8 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::json::Halt;
 use una_core::{
-    Atom, Bound, CapOp, Ctor, Decl, Expr, FixedOp, FloatOp, Fun, HandlerOp, IntType, Label, Level,
-    LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
+    Atom, Bound, CapOp, Ctor, DecimalOp, Decl, Expr, FixedOp, FloatOp, Fun, HandlerOp, IntType,
+    Label, Level, LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
@@ -308,6 +308,7 @@ impl<'p> Index<'p> {
             match value {
                 Value::Int(n) => out.push_str(&n.to_string()),
                 Value::F64(x) => out.push_str(&una_core::float::render(*x)),
+                Value::Decimal(c, s) => out.push_str(&una_core::decimal::render(c, *s)),
                 Value::Bool(b) => out.push_str(&b.to_string()),
                 Value::Text(t) => out.push_str(&una_core::quote(t)),
                 Value::Unit => out.push_str("unit"),
@@ -1121,6 +1122,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .map_err(|_| fault(format!("`{digits}` is not an integer")))?,
             ),
             Atom::F64(bits) => Value::F64(una_core::float::from_bits(*bits)),
+            Atom::Decimal { coefficient, scale } => Value::Decimal(
+                coefficient
+                    .parse::<BigInt>()
+                    .map_err(|_| fault(format!("`{coefficient}` is not a coefficient")))?,
+                *scale,
+            ),
             Atom::Bool(b) => Value::Bool(*b),
             Atom::Text(text) => Value::text(text),
             Atom::Unit => Value::Unit,
@@ -1877,6 +1884,30 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::F64(una_core::float::from_bits(bits))
             }
             "parse_f64" => return parse_f64(&text(0)?),
+            // The functions of `Decimal` (`spec/29 §16`, ADR 0120 rules 16 and 17): the scale
+            // is the `scale:` literal, an `Int` operand.
+            "parse_decimal" => {
+                let scale = u8::try_from(&int(1)?).map_err(|_| bad())?;
+                return parse_decimal(&text(0)?, scale);
+            }
+            "as_decimal" => {
+                let scale = u8::try_from(&int(1)?).map_err(|_| bad())?;
+                match arg(0)? {
+                    Value::Data(data) => match (data.ctor.name.as_str(), data.fields.first()) {
+                        ("Number", Some(Value::Int(n))) => {
+                            some(Value::Decimal(una_core::decimal::widen(n, 0, scale), scale))
+                        }
+                        ("Decimal", Some(Value::Text(t))) => {
+                            match una_core::decimal::from_json_number(t, scale) {
+                                Some(c) => some(Value::Decimal(c, scale)),
+                                None => none(),
+                            }
+                        }
+                        _ => none(),
+                    },
+                    _ => return Err(bad()),
+                }
+            }
             "as_f64" => match arg(0)? {
                 Value::Data(data) => match (data.ctor.name.as_str(), data.fields.first()) {
                     ("Number", Some(Value::Int(n))) => {
@@ -2223,6 +2254,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         // first, in `Machine::eval`.
         Prim::Map(op) => return map_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
+        Prim::Decimal(op) => return decimal_apply(op, args),
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),
@@ -2339,6 +2371,140 @@ fn parse_int<'p>(t: &str) -> Flow<'p> {
         Ok(n) => Ok(Value::Int(n)),
         Err(_) => failure("NoDigits", 2, Vec::new()),
     }
+}
+
+/// `parse_decimal(t, scale: s)` (`spec/29 §16`, ADR 0120 rule 16): a failure says why, as
+/// `parse_int`'s does, `TooLong` past the shared digit cap.
+fn parse_decimal<'p>(t: &str, scale: u8) -> Flow<'p> {
+    use una_core::decimal::ParseFailure;
+    let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
+        Err(Stop::Fail(Value::data(
+            prelude_ctor("ParseError", name, index),
+            fields,
+        )))
+    };
+    match una_core::decimal::parse(t, scale) {
+        Ok(c) => Ok(Value::Decimal(c, scale)),
+        Err(ParseFailure::Empty) => failure("Empty", 0, Vec::new()),
+        Err(ParseFailure::NoDigits) => failure("NoDigits", 2, Vec::new()),
+        Err(ParseFailure::NotADigit(at)) => failure(
+            "NotADigit",
+            1,
+            vec![Value::int(i64::try_from(at).unwrap_or(i64::MAX))],
+        ),
+        Err(ParseFailure::TooLong) => failure("TooLong", 3, Vec::new()),
+    }
+}
+
+/// An operation of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13 to 17), exact, with the
+/// static scales of its operands; each rounding is the `Rounding` operand's mode.
+fn decimal_apply<'p>(op: DecimalOp, args: &[Value<'p>]) -> Flow<'p> {
+    use una_core::decimal as d;
+    let bad = || {
+        fault(format!(
+            "`{}` applied to values of the wrong types",
+            op.as_str()
+        ))
+    };
+    let coefficient = |i: usize| match args.get(i) {
+        Some(Value::Decimal(c, _)) => Ok(c),
+        _ => Err(bad()),
+    };
+    let rounding = |i: usize| match args.get(i) {
+        Some(Value::Data(data)) => d::Rounding::from_index(data.ctor.index).ok_or_else(bad),
+        _ => Err(bad()),
+    };
+    let compare = |a: u8, b: u8| -> Result<std::cmp::Ordering, Stop<'p>> {
+        let m = a.max(b);
+        Ok(d::widen(coefficient(0)?, a, m).cmp(&d::widen(coefficient(1)?, b, m)))
+    };
+    let division_by_zero =
+        || fault("a decimal divided by zero, which its `division` obligation excludes");
+    Ok(match op {
+        DecimalOp::Add(a, b) | DecimalOp::Sub(a, b) => {
+            let m = a.max(b);
+            let (x, y) = (
+                d::widen(coefficient(0)?, a, m),
+                d::widen(coefficient(1)?, b, m),
+            );
+            let c = if matches!(op, DecimalOp::Add(..)) {
+                x + y
+            } else {
+                x - y
+            };
+            Value::Decimal(c, m)
+        }
+        DecimalOp::Mul => match (args.first(), args.get(1)) {
+            (Some(Value::Decimal(x, a)), Some(Value::Decimal(y, b))) => {
+                Value::Decimal(x * y, a.saturating_add(*b))
+            }
+            _ => return Err(bad()),
+        },
+        DecimalOp::Neg => match args.first() {
+            Some(Value::Decimal(x, a)) => Value::Decimal(-x, *a),
+            _ => return Err(bad()),
+        },
+        DecimalOp::Abs => match args.first() {
+            Some(Value::Decimal(x, a)) => Value::Decimal(
+                BigInt::from_biguint(num_bigint::Sign::Plus, x.magnitude().clone()),
+                *a,
+            ),
+            _ => return Err(bad()),
+        },
+        DecimalOp::Eq(a, b) => Value::Bool(compare(a, b)?.is_eq()),
+        DecimalOp::Ne(a, b) => Value::Bool(compare(a, b)?.is_ne()),
+        DecimalOp::Lt(a, b) => Value::Bool(compare(a, b)?.is_lt()),
+        DecimalOp::Le(a, b) => Value::Bool(compare(a, b)?.is_le()),
+        DecimalOp::Gt(a, b) => Value::Bool(compare(a, b)?.is_gt()),
+        DecimalOp::Ge(a, b) => Value::Bool(compare(a, b)?.is_ge()),
+        DecimalOp::Widen(a, s) => Value::Decimal(d::widen(coefficient(0)?, a, s), s),
+        DecimalOp::Rescale(a, s) => {
+            Value::Decimal(d::rescale(coefficient(0)?, a, s, rounding(1)?), s)
+        }
+        DecimalOp::RescaleExact(a, s) => {
+            let c = coefficient(0)?;
+            if !d::rescales_exactly(c, a, s) {
+                return Err(fault(
+                    "`rescale_exact` dropped a nonzero digit, which its precondition excludes",
+                ));
+            }
+            Value::Decimal(d::rescale(c, a, s, d::Rounding::TowardZero), s)
+        }
+        DecimalOp::Divide(a, b, s) => Value::Decimal(
+            d::divide(coefficient(0)?, a, coefficient(1)?, b, s, rounding(2)?)
+                .ok_or_else(division_by_zero)?,
+            s,
+        ),
+        DecimalOp::Remainder(a, b, s) => Value::Decimal(
+            d::remainder(coefficient(0)?, a, coefficient(1)?, b, s).ok_or_else(division_by_zero)?,
+            d::remainder_scale(a, b, s),
+        ),
+        DecimalOp::ToInt(a) => Value::Int(d::rescale(coefficient(0)?, a, 0, rounding(1)?)),
+        DecimalOp::Coefficient => Value::Int(coefficient(0)?.clone()),
+        DecimalOp::FromInt => match args.first() {
+            Some(Value::Int(n)) => Value::Decimal(n.clone(), 0),
+            _ => return Err(bad()),
+        },
+        DecimalOp::FromF64(s) => match args.first() {
+            Some(Value::F64(x)) => match d::from_f64_bits(x.to_bits(), s, rounding(1)?) {
+                Some(c) => some(Value::Decimal(c, s)),
+                None => none(),
+            },
+            _ => return Err(bad()),
+        },
+        DecimalOp::ToF64(a) => Value::F64(d::to_f64(coefficient(0)?, a)),
+        DecimalOp::ToText(a) => Value::text(&d::render(coefficient(0)?, a)),
+        DecimalOp::ToJson(a) => {
+            let c = coefficient(0)?;
+            if a == 0 {
+                crate::json::number(c.clone())
+            } else {
+                crate::json::decimal(&d::render(c, a))
+            }
+        }
+        // Calls of the prelude, never primitives.
+        DecimalOp::Parse(_) | DecimalOp::FromJson(_) => return Err(bad()),
+    })
 }
 
 /// `parse_f64(t)` (`spec/29`, ADR 0114 rule 7.3): a failure says why, as `parse_int`'s does.

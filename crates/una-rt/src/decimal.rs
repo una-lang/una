@@ -1,0 +1,192 @@
+//! `Decimal[s]` in native code (`spec/29 §16`, ADR 0120 rule 20): a decimal is its coefficient,
+//! an `Int` word, and its scale is static, so the generated code passes each operation's
+//! scales with it. The operations are `una_core::decimal`'s, the ones the interpreter uses, so
+//! both engines compute the same digits.
+//!
+//! Every function borrows its words and returns a word the caller owns. A word that the
+//! generated code never passes gives a result of the right shape and no fault (#766): a zero
+//! divisor, which the `division` obligation excludes, gives 0, as `una_rt_int_div` does.
+
+use num_bigint::{BigInt, Sign};
+use una_core::DecimalOp;
+use una_core::decimal::{self, MAX_SCALE, ParseFailure, Rounding};
+
+use crate::values::{
+    NONE, data, field, int_value, int_word, is_data, push, release, some_owned, tag, text_value,
+    text_word,
+};
+
+/// The variants of `Json` that a decimal is written as (`spec/23 §1`).
+const NUMBER: i64 = 2;
+const DECIMAL: i64 = 3;
+
+/// The mode of the `Rounding` word `r`, by its variant's position; `HalfEven` for a word that
+/// is no `Rounding`.
+fn rounding(r: i64) -> Rounding {
+    usize::try_from(tag(r))
+        .ok()
+        .and_then(Rounding::from_index)
+        .unwrap_or(Rounding::HalfEven)
+}
+
+/// A variant of `Json` with one field, which it takes over.
+fn json(variant: i64, value: i64) -> i64 {
+    let word = data(variant);
+    push(word, value);
+    release(value);
+    word
+}
+
+/// The operation of `index` and `packed` (`DecimalOp::code`) on the coefficients `a` and `b`,
+/// with the `Rounding` word `r` where the operation rounds. A comparison gives 0 or 1, as a
+/// `Bool` word; `to_int` and `coefficient` an `Int` word; `to_text` a text; `json_decimal` a
+/// `Json`; every other operation the result's coefficient.
+pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
+    let zero = || int_word(&BigInt::default());
+    let Some(op) = DecimalOp::from_code(index, packed) else {
+        return zero();
+    };
+    if op.scales().iter().any(|s| *s > MAX_SCALE) {
+        return zero();
+    }
+    let (x, y) = (int_value(a), int_value(b));
+    let flag = |b: bool| i64::from(b);
+    let compare = |s: u8, t: u8| {
+        let m = s.max(t);
+        decimal::widen(&x, s, m).cmp(&decimal::widen(&y, t, m))
+    };
+    match op {
+        DecimalOp::Add(s, t) => {
+            let m = s.max(t);
+            int_word(&(decimal::widen(&x, s, m) + decimal::widen(&y, t, m)))
+        }
+        DecimalOp::Sub(s, t) => {
+            let m = s.max(t);
+            int_word(&(decimal::widen(&x, s, m) - decimal::widen(&y, t, m)))
+        }
+        DecimalOp::Mul => int_word(&(x * y)),
+        DecimalOp::Neg => int_word(&(-x)),
+        DecimalOp::Abs => int_word(&BigInt::from_biguint(Sign::Plus, x.magnitude().clone())),
+        DecimalOp::Eq(s, t) => flag(compare(s, t).is_eq()),
+        DecimalOp::Ne(s, t) => flag(compare(s, t).is_ne()),
+        DecimalOp::Lt(s, t) => flag(compare(s, t).is_lt()),
+        DecimalOp::Le(s, t) => flag(compare(s, t).is_le()),
+        DecimalOp::Gt(s, t) => flag(compare(s, t).is_gt()),
+        DecimalOp::Ge(s, t) => flag(compare(s, t).is_ge()),
+        DecimalOp::Widen(s, t) => int_word(&decimal::widen(&x, s, t)),
+        DecimalOp::Rescale(s, t) => int_word(&decimal::rescale(&x, s, t, rounding(b))),
+        // The precondition makes the rescaling exact; truncation then drops only zeros.
+        DecimalOp::RescaleExact(s, t) => {
+            int_word(&decimal::rescale(&x, s, t, Rounding::TowardZero))
+        }
+        DecimalOp::Divide(s, t, u) => {
+            int_word(&decimal::divide(&x, s, &y, t, u, rounding(r)).unwrap_or_default())
+        }
+        DecimalOp::Remainder(s, t, u) => {
+            int_word(&decimal::remainder(&x, s, &y, t, u).unwrap_or_default())
+        }
+        DecimalOp::ToInt(s) => int_word(&decimal::rescale(&x, s, 0, rounding(b))),
+        DecimalOp::Coefficient | DecimalOp::FromInt => int_word(&x),
+        DecimalOp::ToText(s) => text_word(decimal::render(&x, s)),
+        DecimalOp::ToJson(0) => json(NUMBER, int_word(&x)),
+        DecimalOp::ToJson(s) => json(DECIMAL, text_word(decimal::render(&x, s))),
+        // `F64` has no native code yet, and the prelude's calls have their own entry points.
+        DecimalOp::FromF64(_)
+        | DecimalOp::ToF64(_)
+        | DecimalOp::Parse(_)
+        | DecimalOp::FromJson(_) => zero(),
+    }
+}
+
+/// The scale of the word `scale`, an `Int` from 0 to 38, or `None`.
+fn scale_of(scale: i64) -> Option<u8> {
+    u8::try_from(int_value(scale))
+        .ok()
+        .filter(|s| *s <= MAX_SCALE)
+}
+
+/// Why `parse_decimal(t, scale: s)` fails, as the `ParseError` it fails with, or 0 when it does
+/// not (`spec/29 §16`): the failures of `una_core::decimal::parse`, `TooLong` past the shared
+/// digit cap, found in O(b) before any conversion.
+pub fn parse_decimal_failure(t: i64, scale: i64) -> i64 {
+    let Some(scale) = scale_of(scale) else {
+        return 0;
+    };
+    match decimal::parse(&text_value(t), scale) {
+        Ok(_) => 0,
+        Err(ParseFailure::Empty) => 1,
+        Err(ParseFailure::NotADigit(at)) => {
+            let failure = data(1);
+            let at = int_word(&BigInt::from(at));
+            push(failure, at);
+            release(at);
+            failure
+        }
+        Err(ParseFailure::NoDigits) => (2 << 1) | 1,
+        Err(ParseFailure::TooLong) => (3 << 1) | 1,
+    }
+}
+
+/// `parse_decimal(t, scale: s)` of a text that [`parse_decimal_failure`] accepts: the
+/// coefficient.
+pub fn parse_decimal(t: i64, scale: i64) -> i64 {
+    let parsed = scale_of(scale).and_then(|scale| decimal::parse(&text_value(t), scale).ok());
+    int_word(&parsed.unwrap_or_default())
+}
+
+/// `as_decimal(j, scale: s)` (`spec/29 §16`): `Some` of the coefficient of a JSON number at
+/// scale s when it has an exact value there within the digit cap, `None` otherwise.
+pub fn as_decimal(j: i64, scale: i64) -> i64 {
+    let Some(scale) = scale_of(scale) else {
+        return NONE;
+    };
+    if !is_data(j) {
+        return NONE;
+    }
+    let coefficient = match tag(j) {
+        NUMBER => Some(decimal::widen(&int_value(field(j, 0)), 0, scale)),
+        DECIMAL => decimal::from_json_number(&text_value(field(j, 0)), scale),
+        _ => None,
+    };
+    match coefficient {
+        Some(c) => some_owned(int_word(&c)),
+        None => NONE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(n: i64) -> i64 {
+        int_word(&BigInt::from(n))
+    }
+
+    #[test]
+    fn operations_match_the_shared_definitions() {
+        let (add, packed) = DecimalOp::Add(2, 4).code();
+        assert_eq!(
+            int_value(decimal(add, packed, word(1999), word(10), 1)),
+            BigInt::from(199_910)
+        );
+        let (lt, packed) = DecimalOp::Lt(2, 3).code();
+        assert_eq!(decimal(lt, packed, word(5), word(51), 1), 1);
+        // HalfEven is the first variant, an immediate word with tag 0.
+        let half_even = 1;
+        let (divide, packed) = DecimalOp::Divide(2, 2, 2).code();
+        assert_eq!(
+            int_value(decimal(divide, packed, word(100), word(300), half_even)),
+            BigInt::from(33)
+        );
+        // A zero divisor gives 0, and no fault.
+        assert_eq!(
+            int_value(decimal(divide, packed, word(1), word(0), 1)),
+            BigInt::default()
+        );
+        let (text, packed) = DecimalOp::ToText(2).code();
+        let written = decimal(text, packed, word(-5), 1, 1);
+        assert_eq!(text_value(written), "-0.05");
+        release(written);
+        assert_eq!(int_value(decimal(99, 0, 1, 1, 1)), BigInt::default());
+    }
+}

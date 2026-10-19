@@ -1138,6 +1138,7 @@ impl<'a> Env<'a> {
             self.function_signature(id, report);
         }
         self.no_function_to_f64(report);
+        self.no_function_to_decimal(report);
         // A policy fails and uses capabilities as its `via` function does (`spec/10 §7`).
         for id in 0..self.functions.len() {
             let Some((module, FnAst::Policy(policy))) =
@@ -1259,6 +1260,37 @@ impl<'a> Env<'a> {
                     Code::U1002,
                     function.name.span,
                     "`to_f64` on an integer is a built-in conversion from edition 0.3, so a function cannot take its name for an integer or a type parameter".to_owned(),
+                );
+            }
+        }
+    }
+
+    /// ADR 0120 rule 4: in edition 0.4, `to_decimal` on an integer and on an `F64` is built
+    /// in, ahead of a function of that name, so a package function `to_decimal` whose first
+    /// parameter has an integer type, a refinement or a measured one, `F64`, or a type
+    /// parameter, is U1002 at its name: no program changes meaning silently.
+    fn no_function_to_decimal(&self, report: &mut Report<'_>) {
+        if self.edition < Edition::V0_4 {
+            return;
+        }
+        for def in &self.functions {
+            let FnAst::Function(function) = def.ast else {
+                continue;
+            };
+            if def.name != "to_decimal" || !self.reports(def.module) {
+                continue;
+            }
+            let built_in = def.params.first().is_some_and(|param| {
+                matches!(
+                    param.ty.base.unlabeled(),
+                    Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::Param(_) | Ty::Measured(..)
+                )
+            });
+            if built_in {
+                report.error(
+                    Code::U1002,
+                    function.name.span,
+                    "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so a function cannot take its name for an integer, an `F64` or a type parameter".to_owned(),
                 );
             }
         }
@@ -1729,6 +1761,25 @@ impl<'a> Env<'a> {
                 let lowered = lowered.into_iter().map(|arg| self.nested(arg)).collect();
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
+            TypeCore::Decimal {
+                scale, scale_span, ..
+            } => match scale.parse::<u8>() {
+                Ok(scale) if scale <= una_core::decimal::MAX_SCALE => {
+                    Declared::plain(Ty::Decimal(scale))
+                }
+                _ => {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2037,
+                            *scale_span,
+                            format!(
+                                "the scale of `Decimal[{scale}]` is above 38, the largest scale of a decimal"
+                            ),
+                        );
+                    }
+                    Declared::error()
+                }
+            },
             TypeCore::List(element) => {
                 let lowered = self.lower_type(module, element, type_params, report);
                 self.type_argument(module, element.span, &lowered.base, report);
@@ -2060,6 +2111,18 @@ impl<'a> Env<'a> {
                 return arity(0, args.len());
             }
             return Declared::plain(Ty::Param(index));
+        }
+        // Edition 0.4: `Decimal` is the decimal type only with its scale, an integer literal,
+        // in brackets (ADR 0120 rule 2); the name alone is the `Json` variant.
+        if self.edition >= Edition::V0_4 && name == "Decimal" {
+            if reports {
+                report.error(
+                    Code::U2037,
+                    span,
+                    "the scale of `Decimal` is an integer literal from 0 to 38 in brackets, as in `Decimal[2]`".to_owned(),
+                );
+            }
+            return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
         let problem = match self.upper(module, name).first().copied() {

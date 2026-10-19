@@ -1542,6 +1542,85 @@
       ]
     },
     {
+      "name": "Rounding",
+      "module": "prelude",
+      "kind": "kind",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind Rounding = HalfEven | HalfAwayFromZero | HalfTowardZero | TowardZero | AwayFromZero | TowardPositive | TowardNegative",
+          "docs": [
+            "How a decimal operation rounds an exact value to the units of its result's scale",
+            "(`spec/29 §16`): on the magnitude, then the sign. No operation has a default mode."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_decimal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub parse_decimal(t: Text, scale: Int) -> Decimal[0]\n  fails ParseError",
+          "docs": [
+            "The `Decimal[s]` that `t` writes at the scale `s` of the literal `scale`, or why it writes",
+            "none (`spec/29 §16`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "as_decimal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub as_decimal(j: Json, scale: Int) -> Option[Decimal[0]]",
+          "docs": [
+            "The `Decimal[s]` of a JSON number at the scale `s` of the literal `scale`, `None` when it",
+            "has no exact value there, and for any other `Json` (`spec/29 §16`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "json_decimal",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §16"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub json_decimal[T](x: T) -> Json",
+          "docs": [
+            "A `Decimal[s]` as a JSON number: `Number` at scale 0, `Decimal` otherwise (`spec/29 §16`)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "fake_hash",
       "module": "std.testing",
       "kind": "function",

@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
-    Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
-    LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type, Use,
-    print_term_with,
+    Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
+    Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term,
+    Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -188,6 +188,8 @@ pub(crate) struct Shown {
 pub(crate) enum Show {
     /// An `Int` or a `Bool`, as the solver writes it.
     Value,
+    /// A `Decimal[s]`, its coefficient written with s digits after the point (ADR 0120).
+    Decimal(u8),
     /// A value of a sum, by the variant its tag names.
     Variant { tag: F, names: Vec<String> },
     /// Another value, as `<Kind>#<n>`.
@@ -759,6 +761,8 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             // the refinement language yet, so no query states a fact about a float
             // (`spec/29 §8`).
             Base::F64 => F64_SORT.to_owned(),
+            // A decimal is its coefficient, an `Int` (ADR 0120 V2): its queries stay linear.
+            Base::Decimal(_) => "Int".to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
                 if is_prelude(module) {
@@ -811,6 +815,7 @@ fn type_name(ty: &Type) -> String {
             Base::Unit => "Unit".to_owned(),
             Base::Hashed => "Hashed".to_owned(),
             Base::F64 => "F64".to_owned(),
+            Base::Decimal(scale) => format!("Decimal[{scale}]"),
             Base::Named { name, .. } | Base::Param(name) => name.clone(),
             Base::Tuple(_) => "Tuple".to_owned(),
             Base::Unknown => "Unknown".to_owned(),
@@ -2054,6 +2059,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     );
                     std::rc::Rc::make_mut(&mut ctx.divisions).push((divisor.f.clone(), *span));
                 }
+                self.decimal_sites(*prim, args, &values, arg_spans, *span, ctx);
                 self.fixed_sites(ty, *prim, args, &values, arg_spans, *span, ctx);
                 if let Prim::Fixed(op, int) = prim {
                     self.fixed_facts(*op, *int, args, &values, &x.f, ctx);
@@ -2722,7 +2728,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::ToText
                 | Prim::Convert(_)
                 | Prim::Fixed(..)
-                | Prim::Float(_) => unknown(),
+                | Prim::Float(_)
+                // A decimal's `Option` results have no fact behind their nested positions.
+                | Prim::Decimal(_) => unknown(),
             }),
             Rhs::Call {
                 function,
@@ -3219,6 +3227,11 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ty: base_type(Base::Bool),
             },
             Atom::Text(text) => text_literal(text),
+            // A decimal literal is its coefficient (ADR 0120 V2).
+            Atom::Decimal { coefficient, scale } => Tv {
+                f: F::Int(coefficient.clone()),
+                ty: base_type(Base::Decimal(*scale)),
+            },
             // A float literal is a constant of the uninterpreted sort, one per bit pattern: a
             // query may assume two literals equal, which weakens it and never proves more.
             Atom::F64(bits) => Tv {
@@ -3479,6 +3492,77 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
+    /// The obligations of an operation of `Decimal` (ADR 0120 rule 15, V2): `division` for
+    /// `divide` and `remainder` by a divisor that is not a nonzero literal, and the
+    /// precondition of `rescale_exact` that no nonzero digit is dropped,
+    /// `(= (mod c 10^k) 0)`, linear.
+    fn decimal_sites(
+        &mut self,
+        prim: Prim,
+        args: &[Atom],
+        values: &[Tv],
+        arg_spans: &[Span],
+        span: Span,
+        ctx: &mut Ctx,
+    ) {
+        let Prim::Decimal(op) = prim else {
+            return;
+        };
+        match op {
+            DecimalOp::Divide(..) | DecimalOp::Remainder(..) => {
+                let (Some(divisor), Some(divisor_atom)) = (values.get(1), args.get(1)) else {
+                    return;
+                };
+                let literal = match divisor_atom {
+                    Atom::Decimal { coefficient, .. } => coefficient.trim_start_matches('-') != "0",
+                    Atom::Var(name) => self.defs.get(name).is_some_and(nonzero_literal),
+                    _ => false,
+                };
+                if literal || nonzero_literal(&divisor.f) {
+                    return;
+                }
+                let text = format!(
+                    "{} != 0",
+                    arg_spans.get(1).map_or_else(String::new, |s| self.text(*s))
+                );
+                self.site(
+                    ObligationKind::Division,
+                    ctx,
+                    Some(F::not(F::eq(divisor.f.clone(), F::Int("0".to_owned())))),
+                    text,
+                    span,
+                    None,
+                );
+                std::rc::Rc::make_mut(&mut ctx.divisions).push((divisor.f.clone(), span));
+            }
+            DecimalOp::RescaleExact(a, s) => {
+                let Some(value) = values.first() else {
+                    return;
+                };
+                let k = a.saturating_sub(s);
+                let goal = F::eq(
+                    F::op("mod", vec![value.f.clone(), F::Int(pow10(k))]),
+                    F::Int("0".to_owned()),
+                );
+                let text = format!(
+                    "{} drops no nonzero digit at scale {s}",
+                    arg_spans
+                        .first()
+                        .map_or_else(String::new, |at| self.text(*at))
+                );
+                self.site(
+                    ObligationKind::Precondition,
+                    ctx,
+                    Some(goal),
+                    text,
+                    span,
+                    None,
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// The obligations of a primitive of fixed-width integers (`spec/18 §3`, `§5`): an
     /// `overflow` obligation for arithmetic whose result has a fixed-width type and for a
     /// narrowing conversion, and the precondition `0 <= n and n < width` of a shift. A negated
@@ -3729,7 +3813,112 @@ impl<'p, 'i> Walker<'p, 'i> {
             Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) | Prim::Float(_) => {
                 return None;
             }
+            Prim::Decimal(op) => return self.decimal(op, values),
         })
+    }
+
+    /// The term of an operation of `Decimal` over its operands' coefficients (ADR 0120 V2):
+    /// linear wherever a divisor or a factor is a literal. `None` for the operations known
+    /// only by their contracts (text, JSON and floats), whose results are fresh binders.
+    fn decimal(&self, op: DecimalOp, values: &[Tv]) -> Option<F> {
+        let arg = |i: usize| values.get(i).map(|v| v.f.clone());
+        let aligned = decimal_aligned;
+        let pair = |a: u8, b: u8| -> Option<(F, F)> {
+            let m = a.max(b);
+            Some((aligned(arg(0)?, m - a), aligned(arg(1)?, m - b)))
+        };
+        Some(match op {
+            DecimalOp::Add(a, b) => {
+                let (x, y) = pair(a, b)?;
+                F::op("+", vec![x, y])
+            }
+            DecimalOp::Sub(a, b) => {
+                let (x, y) = pair(a, b)?;
+                F::op("-", vec![x, y])
+            }
+            DecimalOp::Mul => arithmetic(BinOp::Mul, self.literal(arg(0)?), self.literal(arg(1)?)),
+            DecimalOp::Neg => F::op("-", vec![arg(0)?]),
+            DecimalOp::Eq(a, b) => {
+                let (x, y) = pair(a, b)?;
+                F::eq(x, y)
+            }
+            DecimalOp::Ne(a, b) => {
+                let (x, y) = pair(a, b)?;
+                F::not(F::eq(x, y))
+            }
+            DecimalOp::Lt(a, b)
+            | DecimalOp::Le(a, b)
+            | DecimalOp::Gt(a, b)
+            | DecimalOp::Ge(a, b) => {
+                let (x, y) = pair(a, b)?;
+                let symbol = match op {
+                    DecimalOp::Lt(..) => "<",
+                    DecimalOp::Le(..) => "<=",
+                    DecimalOp::Gt(..) => ">",
+                    _ => ">=",
+                };
+                F::op(symbol, vec![x, y])
+            }
+            DecimalOp::Widen(a, s) => aligned(arg(0)?, s.saturating_sub(a)),
+            DecimalOp::Rescale(a, s) => {
+                let mode = self.rounding_tag(values.get(1)?)?;
+                rounded_quotient(arg(0)?, F::Int(pow10(a.saturating_sub(s))), &mode)
+            }
+            DecimalOp::ToInt(a) => {
+                let mode = self.rounding_tag(values.get(1)?)?;
+                rounded_quotient(arg(0)?, F::Int(pow10(a)), &mode)
+            }
+            // The precondition makes the quotient exact, so Euclidean `div` by the literal is
+            // the exact quotient for either sign.
+            DecimalOp::RescaleExact(a, s) => {
+                F::op("div", vec![arg(0)?, F::Int(pow10(a.saturating_sub(s)))])
+            }
+            DecimalOp::Divide(a, b, s) => {
+                let mode = self.rounding_tag(values.get(2)?)?;
+                let n = aligned(self.literal(arg(0)?), b.saturating_add(s));
+                let d = aligned(literal_int(self.literal(arg(1)?)), a);
+                rounded_quotient(n, d, &mode)
+            }
+            DecimalOp::Remainder(a, b, s) => {
+                let toward_zero = F::Int(TOWARD_ZERO.to_string());
+                let n = aligned(self.literal(arg(0)?), b.saturating_add(s));
+                let d = aligned(literal_int(self.literal(arg(1)?)), a);
+                let q = rounded_quotient(n, d, &toward_zero);
+                let t = una_core::decimal::remainder_scale(a, b, s);
+                let product = arithmetic(BinOp::Mul, arg(1)?, q);
+                F::op(
+                    "-",
+                    vec![
+                        aligned(arg(0)?, t.saturating_sub(a)),
+                        aligned(product, t.saturating_sub(b.saturating_add(s))),
+                    ],
+                )
+            }
+            DecimalOp::Abs => {
+                let x = arg(0)?;
+                F::op(
+                    "ite",
+                    vec![
+                        F::op(">=", vec![x.clone(), F::Int("0".to_owned())]),
+                        x.clone(),
+                        F::op("-", vec![x]),
+                    ],
+                )
+            }
+            DecimalOp::Coefficient | DecimalOp::FromInt => arg(0)?,
+            DecimalOp::FromF64(_)
+            | DecimalOp::ToF64(_)
+            | DecimalOp::ToText(_)
+            | DecimalOp::Parse(_)
+            | DecimalOp::FromJson(_)
+            | DecimalOp::ToJson(_) => return None,
+        })
+    }
+
+    /// The tag of a `Rounding` operand: the position of its variant, in the order of
+    /// `una_core::decimal::Rounding::ALL`.
+    fn rounding_tag(&self, rounding: &Tv) -> Option<F> {
+        self.tag(rounding)
     }
 
     /// Equality of two values: of tags for a sum without payloads, of the values otherwise.
@@ -4898,6 +5087,13 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     fn show_kind(&self, value: &Tv) -> Show {
+        if let Type::Base {
+            base: Base::Decimal(scale),
+            ..
+        } = &value.ty
+        {
+            return Show::Decimal(*scale);
+        }
         let sort = value.f.sort();
         if sort == "Int" || sort == "Bool" {
             return Show::Value;
@@ -5620,6 +5816,118 @@ fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &s
 /// premise, so a conjunction with it would be dropped too, and the obligation stay refuted.
 fn restorable(locked: bool, header: Option<bool>) -> bool {
     locked && header.unwrap_or(true)
+}
+
+/// A negated integer literal, `(- 2)`, as the literal `-2`, so that alignment and division by
+/// it stay literal; any other term as it is.
+fn literal_int(f: F) -> F {
+    if let F::Op { op: "-", args } = &f
+        && let [F::Int(digits)] = args.as_slice()
+    {
+        return match digits.strip_prefix('-') {
+            Some(positive) => F::Int(positive.to_owned()),
+            None if digits == "0" => F::Int("0".to_owned()),
+            None => F::Int(format!("-{digits}")),
+        };
+    }
+    f
+}
+
+/// The position of `TowardZero` among the variants of `Rounding`.
+const TOWARD_ZERO: usize = 3;
+
+/// `f` times the literal 10^k, a coefficient aligned to a scale k larger (ADR 0120 V2); a
+/// literal coefficient stays a literal.
+fn decimal_aligned(f: F, k: u8) -> F {
+    if k == 0 {
+        return f;
+    }
+    if let F::Int(text) = &f {
+        // Ten to the k appends k zeros to the digits of a nonzero literal.
+        if text
+            .trim_start_matches('-')
+            .trim_start_matches('0')
+            .is_empty()
+        {
+            return f;
+        }
+        return F::Int(format!("{text}{}", "0".repeat(usize::from(k))));
+    }
+    F::op("*", vec![F::Int(pow10(k)), f])
+}
+
+/// 10^k in decimal digits, a literal of a decimal alignment (ADR 0120 V2).
+fn pow10(k: u8) -> String {
+    una_core::decimal::pow10(u32::from(k)).to_string()
+}
+
+/// The magnitude form of ADR 0120 V2: the exact quotient `n / d` rounded to an integer by the
+/// `Rounding` whose tag is `mode`, for `d` not zero. The magnitudes are divided, which floor,
+/// truncating and Euclidean division agree on, so SMT-LIB's `div` and `mod` (or `i!div!Int`
+/// and `i!mod!Int` for a divisor that is no literal) give the quotient q and the remainder r;
+/// the rounded magnitude is q or q + 1 by the mode's case on r, written linearly, and the sign
+/// is negative exactly when one of `n` and `d` is negative and `n` is not zero. The run time
+/// of `una_core::decimal::round_div` computes the same value.
+fn rounded_quotient(n: F, d: F, mode: &F) -> F {
+    let zero = || F::Int("0".to_owned());
+    let magnitude = |x: F| {
+        F::op(
+            "ite",
+            vec![
+                F::op(">=", vec![x.clone(), zero()]),
+                x.clone(),
+                F::op("-", vec![x]),
+            ],
+        )
+    };
+    let an = magnitude(n.clone());
+    // A literal divisor's magnitude is a literal, so its quotient stays linear.
+    let ad = match &d {
+        F::Int(text) => F::Int(text.trim_start_matches('-').to_owned()),
+        _ => magnitude(d.clone()),
+    };
+    let negative = F::and(vec![
+        F::not(F::eq(n.clone(), zero())),
+        F::not(F::eq(
+            F::op("<", vec![n, zero()]),
+            F::op("<", vec![d, zero()]),
+        )),
+    ]);
+    let q = arithmetic(BinOp::Div, an.clone(), ad.clone());
+    let r = arithmetic(BinOp::Mod, an, ad.clone());
+    let nonzero = F::op(">", vec![r.clone(), zero()]);
+    let twice = F::op("*", vec![F::Int("2".to_owned()), r]);
+    let above = F::op(">", vec![twice.clone(), ad.clone()]);
+    let tie = F::eq(twice, ad);
+    let odd = F::eq(
+        F::op("mod", vec![q.clone(), F::Int("2".to_owned())]),
+        F::Int("1".to_owned()),
+    );
+    // In the order of `Rounding::ALL`.
+    let ups = [
+        F::or(vec![above.clone(), F::and(vec![tie.clone(), odd])]),
+        F::or(vec![above.clone(), tie]),
+        above,
+        F::Bool(false),
+        nonzero.clone(),
+        F::and(vec![nonzero.clone(), F::not(negative.clone())]),
+        F::and(vec![nonzero, negative.clone()]),
+    ];
+    let mut up = F::Bool(false);
+    for (index, case) in ups.into_iter().enumerate().rev() {
+        up = F::op(
+            "ite",
+            vec![F::eq(mode.clone(), F::Int(index.to_string())), case, up],
+        );
+    }
+    let rounded = F::op(
+        "ite",
+        vec![up, F::op("+", vec![q.clone(), F::Int("1".to_owned())]), q],
+    );
+    F::op(
+        "ite",
+        vec![negative, F::op("-", vec![rounded.clone()]), rounded],
+    )
 }
 
 #[cfg(test)]

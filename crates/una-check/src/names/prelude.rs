@@ -132,6 +132,23 @@ pub(crate) const FLOAT_0_3: [&str; 6] = [
     "json_number",
 ];
 
+/// The functions of `Decimal` that edition 0.4 adds to the prelude (`spec/29 §16`, ADR 0120
+/// rules 16 and 17).
+pub(crate) const DECIMAL_0_4: [&str; 3] = ["parse_decimal", "as_decimal", "json_decimal"];
+
+/// The kind `Rounding` and its variants, which edition 0.4 adds to the prelude (`spec/29 §16`,
+/// ADR 0120 rule 14).
+pub(crate) const ROUNDING_0_4: [&str; 8] = [
+    "Rounding",
+    "HalfEven",
+    "HalfAwayFromZero",
+    "HalfTowardZero",
+    "TowardZero",
+    "AwayFromZero",
+    "TowardPositive",
+    "TowardNegative",
+];
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]

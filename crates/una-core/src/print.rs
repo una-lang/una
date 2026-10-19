@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use crate::ir::{
     Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, Fun, HandlerOp, LoopSource,
-    Module, Rhs, Source, Term, Type, Use,
+    Module, Prim, Rhs, Source, Term, Type, Use,
 };
 
 /// The text of a module's Core IR, newline-terminated.
@@ -213,6 +213,10 @@ pub fn print_atom(atom: &Atom) -> String {
         Atom::Var(name) => name.clone(),
         Atom::Int(digits) => digits.clone(),
         Atom::F64(bits) => crate::float::render(f64::from_bits(*bits)),
+        Atom::Decimal { coefficient, scale } => {
+            let c = coefficient.parse().unwrap_or_default();
+            format!("{}d", crate::decimal::render(&c, *scale))
+        }
         Atom::Bool(value) => value.to_string(),
         Atom::Text(text) => quote(text),
         Atom::Unit => "unit".to_owned(),
@@ -297,6 +301,7 @@ fn write_base(out: &mut String, base: &Base) {
         Base::Int => out.push_str("Int"),
         Base::Fixed(int) => out.push_str(int.as_str()),
         Base::F64 => out.push_str("F64"),
+        Base::Decimal(scale) => out.push_str(&format!("Decimal[{scale}]")),
         Base::Bool => out.push_str("Bool"),
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),
@@ -733,6 +738,15 @@ fn rhs_line(rhs: &Rhs) -> String {
     match rhs {
         Rhs::Atom(atom) => print_atom(atom),
         Rhs::Tuple(items) => format!("({})", atoms(items)),
+        Rhs::Prim {
+            prim: Prim::Decimal(op),
+            args,
+            ..
+        } => {
+            // The static scales are part of a decimal operation's meaning (`spec/29 §16`).
+            let scales: Vec<String> = op.scales().iter().map(u8::to_string).collect();
+            format!("{}[{}]({})", op.as_str(), scales.join(", "), atoms(args))
+        }
         Rhs::Prim { prim, args, .. } => format!("{}({})", prim.as_str(), atoms(args)),
         Rhs::Call {
             function,

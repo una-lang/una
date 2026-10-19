@@ -167,9 +167,16 @@ pub(crate) fn rejected(
 }
 
 /// The kinds of the prelude that Core IR declares, in the module `prelude`; the others are
-/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407).
-pub(crate) const PRELUDE_CORE_KINDS: [&str; 5] =
-    ["Json", "JsonError", "Header", "Response", "HttpError"];
+/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407). `Rounding` is
+/// edition 0.4's (`spec/29 §16`).
+pub(crate) const PRELUDE_CORE_KINDS: [&str; 6] = [
+    "Json",
+    "JsonError",
+    "Header",
+    "Response",
+    "HttpError",
+    "Rounding",
+];
 
 /// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
 /// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
@@ -486,6 +493,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Unit => Base::Unit,
             Ty::Hashed => Base::Hashed,
             Ty::F64 => Base::F64,
+            Ty::Decimal(scale) => Base::Decimal(*scale),
             Ty::List(element) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "List".to_owned(),
@@ -784,6 +792,17 @@ impl<'e, 'a> Fx<'e, 'a> {
         )
     }
 
+    /// The scale of the expression at `span` when it is a `Decimal[s]` (`spec/29 §16`).
+    fn decimal_at(&self, span: Span) -> Option<u8> {
+        match self.type_at(span) {
+            Type::Base {
+                base: Base::Decimal(scale),
+                ..
+            } => Some(scale),
+            _ => None,
+        }
+    }
+
     /// The recorded type of the expression or binder at `span`.
     fn type_at(&self, span: Span) -> Type {
         self.records
@@ -930,6 +949,16 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn term(&mut self, expr: &Expr) -> Term {
         match &expr.kind {
             ExprKind::Paren(inner) => self.term(inner),
+            // A decimal is its coefficient (`spec/29 §16`, ADR 0120 V2).
+            ExprKind::Literal(Literal::Float(text)) if self.decimal_at(expr.span).is_some() => {
+                let scale = self.decimal_at(expr.span).unwrap_or(0);
+                match una_core::decimal::literal(text, scale) {
+                    una_core::decimal::Literal::Value(coefficient) => {
+                        Term::Int(coefficient.to_string())
+                    }
+                    _ => self.outside(),
+                }
+            }
             ExprKind::Literal(literal) => self.literal_term(literal),
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
@@ -965,11 +994,24 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => Term::Result,
             },
             ExprKind::It => Term::It,
-            ExprKind::Binary { op, left, right } => Term::Binary {
-                op: bin_op(*op),
-                left: Box::new(self.term(left)),
-                right: Box::new(self.term(right)),
-            },
+            ExprKind::Binary { op, left, right } => {
+                // Decimal operands of `+`, `-` and the comparisons are aligned by a literal
+                // power of ten to the larger scale (ADR 0120 V2); `*` multiplies coefficients.
+                let (left_term, right_term) = (self.term(left), self.term(right));
+                let (left_term, right_term) =
+                    match (self.decimal_at(left.span), self.decimal_at(right.span)) {
+                        (Some(a), Some(b)) if *op != BinaryOp::Mul => {
+                            let m = a.max(b);
+                            (aligned(left_term, m - a), aligned(right_term, m - b))
+                        }
+                        _ => (left_term, right_term),
+                    };
+                Term::Binary {
+                    op: bin_op(*op),
+                    left: Box::new(left_term),
+                    right: Box::new(right_term),
+                }
+            }
             ExprKind::Unary { op, operand } => {
                 let operand = Box::new(self.term(operand));
                 match op {
@@ -1029,6 +1071,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                     left: Box::new(self.term(target)),
                     right: Box::new(Term::Int(ratio.to_string())),
                 },
+                // `x.coefficient()` is the decimal's own term (ADR 0120 V2).
+                Some(Res::IntMethod(Prim::Decimal(una_core::DecimalOp::Coefficient))) => {
+                    self.term(target)
+                }
                 // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
                 Some(Res::MapMethod(MapOp::Has)) => match args.first() {
                     Some(key) => Term::Has {
@@ -3079,9 +3125,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::Unary { op, operand } => {
                 let operand_span = operand.span;
                 let float = self.is_f64_at(operand_span);
+                let decimal = self.decimal_at(operand_span).is_some();
                 let operand = self.atom(lets, operand);
                 let prim = match op {
                     UnaryOp::Neg if float => Prim::Float(una_core::FloatOp::Neg),
+                    UnaryOp::Neg if decimal => Prim::Decimal(una_core::DecimalOp::Neg),
                     UnaryOp::Neg => Prim::Neg,
                     UnaryOp::Not => Prim::Not,
                 };
@@ -3272,6 +3320,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let mut arg_spans = vec![target.span];
                     let mut values = vec![self.atom(lets, target)];
                     for arg in args {
+                        // A decimal method's `scale:` is static, part of its operation
+                        // (`spec/29 §16`), and no operand.
+                        if matches!(prim, Prim::Decimal(_))
+                            && arg.label.as_ref().is_some_and(|l| self.name(l) == "scale")
+                        {
+                            continue;
+                        }
                         arg_spans.push(arg.value.span);
                         values.push(self.atom(lets, &arg.value));
                     }
@@ -3408,6 +3463,21 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
         match literal {
             Literal::Int(digits) => Atom::Int(digits.clone()),
+            // A literal typed as a decimal is its coefficient at that scale (`spec/29 §16`).
+            Literal::Float(text) if self.decimal_at(span).is_some() => {
+                let scale = self.decimal_at(span).unwrap_or(0);
+                match una_core::decimal::literal(text, scale) {
+                    una_core::decimal::Literal::Value(coefficient) => Atom::Decimal {
+                        coefficient: coefficient.to_string(),
+                        scale,
+                    },
+                    // U2037, which the checker reported.
+                    _ => {
+                        self.broken = true;
+                        Atom::Unit
+                    }
+                }
+            }
             Literal::Float(text) => match una_core::float::literal(text) {
                 una_core::float::Literal::Value(value) => Atom::F64(value.to_bits()),
                 // U2031, which the checker reported.
@@ -3439,6 +3509,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                     // An `F64` is written by its shortest round-trip text (`spec/29 §7`).
                     let prim = if self.is_f64_at(expr.span) {
                         Prim::Float(una_core::FloatOp::ToText)
+                    } else if let Some(scale) = self.decimal_at(expr.span) {
+                        // A decimal is written with exactly its scale's digits (`spec/29 §16`).
+                        Prim::Decimal(una_core::DecimalOp::ToText(scale))
                     } else {
                         Prim::ToText
                     };
@@ -3512,9 +3585,15 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
         let arg_spans = vec![left.span, right.span];
         let float = self.is_f64_at(left.span) && self.is_f64_at(right.span);
+        let decimal = match (self.decimal_at(left.span), self.decimal_at(right.span)) {
+            (Some(a), Some(b)) => decimal_op(op, a, b),
+            _ => None,
+        };
         let left = self.atom(lets, left);
         let right = self.atom(lets, right);
         let prim = match (op, float) {
+            // The operators of `Decimal` carry their operands' scales (`spec/29 §16`).
+            _ if decimal.is_some() => Prim::Decimal(decimal.unwrap_or(una_core::DecimalOp::Mul)),
             // The operators of `F64` are their own primitives (ADR 0114 rule 17).
             (BinaryOp::Add, true) => Prim::Float(una_core::FloatOp::Add),
             (BinaryOp::Sub, true) => Prim::Float(una_core::FloatOp::Sub),
@@ -3568,6 +3647,23 @@ impl<'e, 'a> Fx<'e, 'a> {
             return Atom::Unit;
         };
         let (values, arg_spans) = self.ordered_values(lets, span, receiver, args);
+        // `json_decimal(x)` writes `x` at its scale, which only its type knows: an operation
+        // of `Decimal` with that scale (`spec/29 §16`).
+        if def.module == self.env.prelude
+            && def.name == "json_decimal"
+            && let Some(scale) = arg_spans.first().and_then(|at| self.decimal_at(*at))
+        {
+            return self.push(
+                lets,
+                span,
+                Rhs::Prim {
+                    prim: Prim::Decimal(una_core::DecimalOp::ToJson(scale)),
+                    args: values,
+                    arg_spans,
+                    span,
+                },
+            );
+        }
         if def.kind == FnKind::Policy {
             let FnAst::Policy(policy) = def.ast else {
                 self.broken = true;
@@ -4307,5 +4403,37 @@ impl Scope {
     fn find(&self, name: &str) -> Option<Name> {
         let position = self.index.get(name)?.last()?;
         self.items.get(*position).map(|(_, binder)| binder.clone())
+    }
+}
+
+/// The operation of `Decimal` for the operator `op` on operands of scales `a` and `b`
+/// (`spec/29 §16`, ADR 0120 rule 13); `None` for an operator decimals do not have.
+fn decimal_op(op: BinaryOp, a: u8, b: u8) -> Option<una_core::DecimalOp> {
+    use una_core::DecimalOp;
+    Some(match op {
+        BinaryOp::Add => DecimalOp::Add(a, b),
+        BinaryOp::Sub => DecimalOp::Sub(a, b),
+        BinaryOp::Mul => DecimalOp::Mul,
+        BinaryOp::Eq => DecimalOp::Eq(a, b),
+        BinaryOp::NotEq => DecimalOp::Ne(a, b),
+        BinaryOp::Lt => DecimalOp::Lt(a, b),
+        BinaryOp::Le => DecimalOp::Le(a, b),
+        BinaryOp::Gt => DecimalOp::Gt(a, b),
+        BinaryOp::Ge => DecimalOp::Ge(a, b),
+        _ => return None,
+    })
+}
+
+/// `term` times the literal 10^k, a coefficient aligned to a scale k larger (ADR 0120 V2).
+fn aligned(term: Term, k: u8) -> Term {
+    if k == 0 {
+        return term;
+    }
+    Term::Binary {
+        op: BinOp::Mul,
+        left: Box::new(Term::Int(
+            una_core::decimal::pow10(u32::from(k)).to_string(),
+        )),
+        right: Box::new(term),
     }
 }

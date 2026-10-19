@@ -175,6 +175,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.3: the functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
                     || (prelude::FLOAT_0_3.contains(&name)
                         && self.checker.package.settings.edition >= Edition::V0_3)
+                    // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120).
+                    || (prelude::DECIMAL_0_4.contains(&name)
+                        && self.checker.package.settings.edition >= Edition::V0_4)
             }
             Space::Upper => {
                 self.types.find(name).is_some()
@@ -200,6 +203,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                             || JSON_NAMES.contains(&name)
                             || HTTP_NAMES.contains(&name)))
                     || (self.checker.package.settings.edition >= Edition::V0_3 && name == "F64")
+                    // Edition 0.4: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
+                    || (self.checker.package.settings.edition >= Edition::V0_4
+                        && prelude::ROUNDING_0_4.contains(&name))
             }
         }
     }
@@ -274,6 +280,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                 if self.checker.package.settings.edition >= Edition::V0_3 {
                     names.extend(prelude::FLOAT_0_3);
                 }
+                if self.checker.package.settings.edition >= Edition::V0_4 {
+                    names.extend(prelude::DECIMAL_0_4);
+                }
             }
             Space::Upper => {
                 names.extend(self.types.names());
@@ -297,6 +306,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
                 if self.checker.package.settings.edition >= Edition::V0_3 {
                     names.push("F64");
+                }
+                if self.checker.package.settings.edition >= Edition::V0_4 {
+                    names.extend(prelude::ROUNDING_0_4);
                 }
             }
         }
@@ -546,6 +558,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
             }
             TypeCore::List(element) => self.ty(element),
+            // `Decimal[s]` is built in, edition 0.4 (ADR 0120 rule 2).
+            TypeCore::Decimal { .. } => {}
             TypeCore::Function {
                 params,
                 result,

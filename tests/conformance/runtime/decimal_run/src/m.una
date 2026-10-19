@@ -1,0 +1,26 @@
+-- test: decimal arithmetic, rounding, rendering and the Una form, the same in both engines
+-- spec: spec/29 §16
+-- grant: console
+-- expect: run-output "19.99 0.0825 1.65 6.66 0.0100"
+-- expect: run-output "21.9890 false -19.99 19.99 1999"
+-- expect: run-output "Line(name: \"a\", price: 5.00) -0.05 0.00 20 7"
+module m
+
+pub kind Line
+  name: Text
+  price: Decimal[2]
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let price: Decimal[2] = 19.99
+  let rate: Decimal[4] = 0.0825
+  let tax = (price * rate).rescale(scale: 2, rounding: HalfEven)
+  let share = price.divide(by: 3.00, scale: 2, rounding: TowardZero)
+  let left = price.remainder(by: 3.00, scale: 2)
+  @console.print("{price} {rate} {tax} {share} {left}")
+  @console.print("{price * 1.1} {price < 0.005} {-price} {price.abs()} {price.coefficient()}")
+  let line = Line(name: "a", price: 5.0)
+  let small: Decimal[2] = -0.05
+  let unsigned: Decimal[2] = -0.00
+  @console.print("{line} {small} {unsigned} {price.to_int(rounding: HalfAwayFromZero)} {(7).to_decimal()}")

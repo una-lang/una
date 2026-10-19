@@ -183,6 +183,9 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             return ty;
         }
+        if let Some(ty) = self.decimal_method(&target_ty, method, args, span) {
+            return ty;
+        }
         if let Some(ty) = self.float_method(&target_ty, method, args, span) {
             return ty;
         }
@@ -205,7 +208,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.receiver_marker = Some((marker, target.clone()));
                 let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
                 self.receiver_marker = None;
-                ty
+                self.decimal_call(id, Some(target.span), args, span, ty)
             }
             _ => {
                 match resolved {
@@ -269,7 +272,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     return self.call_value(&ty, args, span, &format!("`{name}`"), site, of, index);
                 }
                 match self.env.lower(self.module, name) {
-                    Some(Entity::Function(id)) => self.call_function(id, None, args, span, site),
+                    Some(Entity::Function(id)) => {
+                        let ty = self.call_function(id, None, args, span, site);
+                        self.decimal_call(id, None, args, span, ty)
+                    }
                     Some(Entity::Handler(_)) => {
                         self.report.error(
                             Code::U2001,
@@ -2289,7 +2295,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 42] = [
+const PRELUDE_LABELED: [&str; 45] = [
     "abs",
     "append",
     "at",
@@ -2336,6 +2342,11 @@ const PRELUDE_LABELED: [&str; 42] = [
     "f64_from_bits",
     "as_f64",
     "json_number",
+    // `Decimal` (`spec/29 §16`, ADR 0120 IF1): a parsed or converted decimal, and the failure
+    // of `parse_decimal`, carry the labels of their arguments.
+    "parse_decimal",
+    "as_decimal",
+    "json_decimal",
 ];
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the
