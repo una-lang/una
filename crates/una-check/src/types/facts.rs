@@ -864,8 +864,12 @@ fn satisfies(
             Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => true,
             Ty::Param(index) => param_has(*index, need),
             // ADR 0104 rule 3: a measured type is ordered, but not `Integer`, whose `to_int()`
-            // would remove its unit without one of the three methods.
-            Ty::Text | Ty::Measured(..) => need == Constraint::Ord,
+            // would remove its unit without one of the three methods. A measured complex value
+            // is not ordered, as its magnitude is not (ADR 0120 rule 64).
+            Ty::Text => need == Constraint::Ord,
+            Ty::Measured(_, magnitude) => {
+                need == Constraint::Ord && !matches!(**magnitude, Ty::Kind(..))
+            }
             // `F64` is ordered by totalOrder, and never `Integer` (`spec/29`, ADR 0114 rule 1.5).
             Ty::F64 | Ty::F32 => need == Constraint::Ord,
             // `Decimal[s]` is ordered by value, and never `Integer` (ADR 0120 rule 18).

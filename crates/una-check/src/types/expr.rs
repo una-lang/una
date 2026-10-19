@@ -110,8 +110,16 @@ impl<'a> Checker<'_, 'a, '_> {
                         }
                         let resolved = self.resolve(&found);
                         let ty = match resolved {
-                            // `-` keeps a unit (ADR 0104 rule 3).
-                            measured @ Ty::Measured(..) => measured,
+                            // `-` keeps a unit (ADR 0104 rule 3), on a complex value too
+                            // (ADR 0120 rule 64), which stays code only.
+                            measured @ Ty::Measured(..) => {
+                                if self.is_complex(measured.magnitude()) {
+                                    self.outside_rl(span, || {
+                                        "negation of a complex value".to_owned()
+                                    });
+                                }
+                                measured
+                            }
                             // In a clause, every integer type reads as `Int` (`spec/18 §2`).
                             Ty::Fixed(_) if self.in_clause() => Ty::Int,
                             Ty::Fixed(int) => Ty::Fixed(int),
@@ -269,6 +277,15 @@ impl<'a> Checker<'_, 'a, '_> {
     fn literal(&mut self, literal: &Literal, span: Span, expected: Option<&Ty>) -> Ty {
         match literal {
             Literal::Int(digits) => self.int_literal_type(false, digits, span, expected),
+            // A float literal takes the unit its context expects, and is typed by the
+            // magnitude, as an integer literal is (ADR 0114 rule 12.4, ADR 0120 rule 61).
+            Literal::Float(_) if self.expected_unit(expected).is_some() => {
+                let Some((unit, magnitude)) = self.expected_unit(expected) else {
+                    return Ty::error();
+                };
+                let found = self.literal(literal, span, Some(&magnitude));
+                found.in_unit(Some(&unit))
+            }
             // A float literal where a decimal is expected is that decimal, exactly (ADR 0120
             // rule 12).
             Literal::Float(text) => match expected.and_then(|e| self.decimal_scale(e)) {
@@ -964,16 +981,22 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.compare_with_is(op, left, right, span, mark, needs);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
-                if self.is_float(&left_ty) || self.is_float(&right_ty) {
-                    let name = self.float_name_of(&left_ty, &right_ty);
+                let (left_number, right_number) =
+                    (self.number_of(&left_ty), self.number_of(&right_ty));
+                if self.is_float(&left_number) || self.is_float(&right_number) {
+                    let name = self.float_name_of(&left_number, &right_number);
                     self.zero_comparison(name, symbol, left, right, span, true);
                 }
                 let mark = self.report.count();
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
-                // Decimals compare by value across scales (ADR 0120 rule 13).
-                let decimals = self.is_decimal(&left_ty) && self.is_decimal(&right_ty);
+                // Decimals compare by value across scales (ADR 0120 rule 13), in one unit
+                // (rule 63).
+                let decimals = self.is_decimal(&left_number) && self.is_decimal(&right_number);
+                if decimals {
+                    self.same_unit(span, &left_ty, &right_ty);
+                }
                 let same = !decimals && self.same(span, &left_ty, &right_ty, symbol);
                 self.mixed_floats(mark, span, right, &left_ty, &right_ty);
                 if same {
@@ -1007,15 +1030,21 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (left_ty, right_ty) = self.operand_pair(left, right);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
-                if self.is_float(&left_ty) || self.is_float(&right_ty) {
-                    let name = self.float_name_of(&left_ty, &right_ty);
+                let (left_number, right_number) =
+                    (self.number_of(&left_ty), self.number_of(&right_ty));
+                if self.is_float(&left_number) || self.is_float(&right_number) {
+                    let name = self.float_name_of(&left_number, &right_number);
                     self.zero_comparison(name, symbol, left, right, span, false);
                 }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
-                // Decimals are ordered by value across scales (ADR 0120 rule 13).
-                let decimals = self.is_decimal(&left_ty) && self.is_decimal(&right_ty);
+                // Decimals are ordered by value across scales (ADR 0120 rule 13), in one unit
+                // (rule 63).
+                let decimals = self.is_decimal(&left_number) && self.is_decimal(&right_number);
+                if decimals {
+                    self.same_unit(span, &left_ty, &right_ty);
+                }
                 let mark = self.report.count();
                 let same = !decimals && self.same(span, &left_ty, &right_ty, symbol);
                 self.mixed_floats(mark, span, right, &left_ty, &right_ty);
@@ -1024,12 +1053,10 @@ impl<'a> Checker<'_, 'a, '_> {
                         // `F64` and `F32` are ordered by IEEE totalOrder (ADR 0114 rule 5.2,
                         // ADR 0120 rule 5).
                         Ty::F64 | Ty::F32 => {}
-                        Ty::Int
-                        | Ty::Fixed(_)
-                        | Ty::Measured(..)
-                        | Ty::Error(_)
-                        | Ty::Never
-                        | Ty::Var(_) => {}
+                        // A measured number is ordered as its magnitude is; a complex value
+                        // is not (ADR 0120 rule 64).
+                        Ty::Measured(_, magnitude) if !matches!(*magnitude, Ty::Kind(..)) => {}
+                        Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => {}
                         // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
@@ -1066,11 +1093,13 @@ impl<'a> Checker<'_, 'a, '_> {
                         || (self.env.edition >= Edition::V0_4
                             && super::decimal::is_float_literal(e))
                 };
-                // A complex product reported its own U2014 (ADR 0120 V3).
+                // A complex product reported its own U2014 (ADR 0120 V3). A measured product
+                // is read by its magnitude.
+                let number = self.number_of(&ty);
                 if !literal(left)
                     && !literal(right)
-                    && !self.is_float(&ty)
-                    && !self.is_complex(&ty)
+                    && !self.is_float(&number)
+                    && !self.is_complex(&number)
                     && self.module != self.env.prelude
                 {
                     self.outside_rl(span, || {
@@ -1089,10 +1118,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 // An `F64` division by zero gives an infinity or NaN, and has no obligation
                 // (ADR 0114 rule 3.2); a decimal has no `/` (ADR 0120 rule 13); a dense value divided by a scalar records
                 // its own, on integer elements (`spec/29 §17`).
+                let number = self.number_of(&ty);
                 if int_literal(right) != Some(true)
-                    && !self.is_float(&ty)
-                    && !self.is_decimal(&ty)
-                    && !self.is_complex(&ty)
+                    && !self.is_float(&number)
+                    && !self.is_decimal(&number)
+                    && !self.is_complex(&number)
                     && self.dense_of(&ty).is_none()
                 {
                     self.outside_rl(span, || {
@@ -1140,7 +1170,10 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let expected_resolved = expected.map(|e| self.vars.peel(e));
         let expected_magnitude = expected_resolved.as_ref().map(|e| e.magnitude().clone());
-        let expected_scale = expected.and_then(|e| self.decimal_scale(e));
+        // A measured decimal expected gives its scale too (ADR 0120 rule 63).
+        let expected_scale = expected_magnitude
+            .as_ref()
+            .and_then(|e| self.decimal_scale(e));
         let hint = if let (Some(scale), true) = (expected_scale, float(first)) {
             // Two literals: `+` and `-` give both the expected scale; `*` gives each the scale
             // of its own digits.
@@ -1172,26 +1205,29 @@ impl<'a> Checker<'_, 'a, '_> {
         if matches!(first_top, Ty::Dense(..)) {
             return self.dense_arithmetic(op, first, first_ty, second, None, span, swapped);
         }
+        // The other number types type the operator on the magnitudes, and the units of the
+        // operands give the result's (ADR 0114 rule 12.2, ADR 0120 rules 62 to 64).
+        let mark = self.operands.len();
+        let pair = (first, second);
         if let float @ (Ty::F64 | Ty::F32) = first_top.magnitude().clone() {
-            return self.float_arithmetic(
-                (op, swapped),
-                first,
-                float,
-                first_ty,
-                second,
-                operand,
-                span,
-            );
+            let ty =
+                self.float_arithmetic((op, swapped), first, float, first_ty, second, operand, span);
+            let expected = expected_resolved.as_ref();
+            return self.operator_units(ty, combine, pair, mark, swapped, expected, operand, span);
         }
         // `Complex[F64]` and `Complex[F32]` (ADR 0120 rule 23).
         if let Ty::Kind(id, _) = first_top.magnitude()
             && let Some(width) = self.complex_kind(*id)
         {
-            return self.complex_arithmetic(width, first, first_ty, second, operand, span, op);
+            let ty = self.complex_arithmetic(width, first, first_ty, second, operand, span, op);
+            let expected = expected_resolved.as_ref();
+            return self.operator_units(ty, combine, pair, mark, swapped, expected, operand, span);
         }
         if let Ty::Decimal(a) = first_top.magnitude() {
             let a = *a;
-            return self.decimal_arithmetic(first_ty, a, float(first), second, op, span);
+            let ty = self.decimal_arithmetic(first_ty, a, float(first), second, op, span);
+            let expected = expected_resolved.as_ref();
+            return self.operator_units(ty, combine, pair, mark, swapped, expected, operand, span);
         }
         let magnitude = match first_top.magnitude() {
             Ty::Fixed(int) if !clause => Ty::Fixed(*int),
@@ -1269,57 +1305,15 @@ impl<'a> Checker<'_, 'a, '_> {
         } else {
             (unit_of(first, &first_top), unit_of(second, &second_top))
         };
-        let unit = match combine {
-            Combine::Same => match units {
-                (Some(a), Some(b)) => {
-                    if a != b {
-                        // Two units that print alike, as two modules' `Meter`, print qualified.
-                        let alike = a.as_ref().map(ToString::to_string)
-                            == b.as_ref().map(ToString::to_string);
-                        let shown = |u: &Option<super::units::Unit>| match u {
-                            Some(u) if alike => format!("`{}`", u.qualified()),
-                            Some(u) => format!("`{u}`"),
-                            None => "no unit".to_owned(),
-                        };
-                        self.report.error(
-                            Code::U2028,
-                            span,
-                            format!(
-                                "{operand} needs one unit on both sides, and these have {} and {}",
-                                shown(&a),
-                                shown(&b)
-                            ),
-                        );
-                    }
-                    a
-                }
-                (Some(a), None) | (None, Some(a)) => a,
-                (None, None) => expected_resolved.as_ref().and_then(|e| e.unit().cloned()),
-            },
-            Combine::Mul | Combine::Div => {
-                let (a, b) = (units.0.flatten(), units.1.flatten());
-                let one = super::units::Unit::one();
-                let (a, b) = (a.unwrap_or_else(|| one.clone()), b.unwrap_or(one));
-                let product = if matches!(combine, Combine::Mul) {
-                    a.mul(&b)
-                } else {
-                    a.div(&b)
-                };
-                if product.is_none() {
-                    self.report.error(
-                        Code::U2029,
-                        span,
-                        "the unit of this product or quotient has a scale too large".to_owned(),
-                    );
-                }
-                if constant.0 && constant.1 {
-                    // A constant expression as a whole takes the expected unit.
-                    expected_resolved.as_ref().and_then(|e| e.unit().cloned())
-                } else {
-                    product
-                }
-            }
-        };
+        let expected_unit = expected_resolved.as_ref().and_then(|e| e.unit().cloned());
+        let unit = self.combine_units(
+            combine,
+            units,
+            constant.0 && constant.1,
+            expected_unit,
+            operand,
+            span,
+        );
         match unit {
             Some(unit) if !unit.is_one() => Ty::measured(unit, magnitude),
             _ => magnitude,
@@ -2348,7 +2342,7 @@ fn return_paths(expr: &Expr) -> Vec<Span> {
 
 /// How an arithmetic operator combines its operands' units (ADR 0104 rule 3).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Combine {
+pub(crate) enum Combine {
     /// `+`, `-`, `mod`: one unit.
     Same,
     /// `*`: the units multiply.

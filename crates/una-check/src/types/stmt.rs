@@ -633,7 +633,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 // ADR 0104 rule 3: both bounds have one unit, and the loop's value has it.
                 let base = match self.resolve(&first_ty).unlabeled() {
                     fixed @ Ty::Fixed(_) => fixed.clone(),
-                    measured @ Ty::Measured(..) => measured.clone(),
+                    // Only an integer magnitude ranges (ADR 0114 rule 12.1).
+                    measured @ Ty::Measured(_, magnitude)
+                        if matches!(**magnitude, Ty::Int | Ty::Fixed(_)) =>
+                    {
+                        measured.clone()
+                    }
                     _ => Ty::Int,
                 };
                 let second_ty = self.expr(second, Some(&base));
@@ -1260,10 +1265,11 @@ impl<'a> Checker<'_, 'a, '_> {
                     // (`spec/18 §2`).
                     if let Ty::Fixed(int) = self.resolve(&scrutinee) {
                         self.range_bounds(range, int);
-                    } else if self.is_float(&scrutinee) {
+                    } else if self.is_float(&self.number_of(&scrutinee)) {
                         // ADR 0114 rule 5.6: a range is never a pattern over an `F64`, nor over
-                        // an `F32` (ADR 0120 rule 5).
-                        let name = self.float_name_of(&scrutinee, &scrutinee);
+                        // an `F32` (ADR 0120 rule 5), measured or not.
+                        let number = self.number_of(&scrutinee);
+                        let name = self.float_name_of(&number, &number);
                         let mut diagnostic = self.report.make(
                             Code::U2032,
                             pattern,

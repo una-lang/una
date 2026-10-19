@@ -39,6 +39,7 @@ mod label;
 mod locals;
 mod lock;
 mod map;
+mod measured;
 mod memory;
 mod records;
 mod seq;

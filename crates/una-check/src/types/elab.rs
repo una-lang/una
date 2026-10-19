@@ -22,7 +22,7 @@ use una_syntax::{SourceDb, Span};
 use super::Findings;
 use super::complex::ComplexMethod;
 use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, Need};
-use super::records::{DenseOp, Records, Res};
+use super::records::{ConvertNumber, DenseOp, Records, Res};
 use super::ty::{Declared, FnUse, Refinement, Ty};
 
 /// A complex operation whose operands are one complex value, and a factor for `scale`
@@ -1429,6 +1429,32 @@ impl<'e, 'a> Fx<'e, 'a> {
                     left: Box::new(self.term(target)),
                     right: Box::new(Term::Int(ratio.to_string())),
                 },
+                // ADR 0114 rule 12.7 and ADR 0120 rule 65: on a float, the product or quotient
+                // by the float literal of the ratio; on a decimal, its coefficient times the
+                // ratio.
+                Some(Res::Convert {
+                    ratio,
+                    divide,
+                    number,
+                }) => {
+                    let value = self.term(target);
+                    let op = if divide { FloatOp::Div } else { FloatOp::Mul };
+                    match number {
+                        ConvertNumber::F64 => Term::Float {
+                            op,
+                            args: vec![value, Term::F64(float_ratio(ratio).to_bits())],
+                        },
+                        ConvertNumber::F32 => Term::Float32 {
+                            op,
+                            args: vec![value, Term::F32(float32_ratio(ratio).to_bits())],
+                        },
+                        ConvertNumber::Decimal(_) => Term::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(value),
+                            right: Box::new(Term::Int(ratio.to_string())),
+                        },
+                    }
+                }
                 // `x.coefficient()` is the decimal's own term (ADR 0120 V2).
                 Some(Res::IntMethod(Prim::Decimal(una_core::DecimalOp::Coefficient))) => {
                     self.term(target)
@@ -4095,6 +4121,44 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
+                // ADR 0114 rule 12.7: `E(x.convert())` on an `F64` is `E(x) * k` or `E(x) / k`
+                // with `k` the float literal of the ratio, and the same on an `F32`; on a
+                // decimal, `E(x) * k` with `k` a `Decimal[0]` literal, which keeps the scale
+                // (ADR 0120 rules 63 and 65).
+                Some(Res::Convert {
+                    ratio,
+                    divide,
+                    number,
+                }) => {
+                    let arg_spans = vec![target.span, span];
+                    let left = self.atom(lets, target);
+                    let op = if divide { FloatOp::Div } else { FloatOp::Mul };
+                    let (prim, k) = match number {
+                        ConvertNumber::F64 => {
+                            (Prim::Float(op), Atom::F64(float_ratio(ratio).to_bits()))
+                        }
+                        ConvertNumber::F32 => {
+                            (Prim::Float32(op), Atom::F32(float32_ratio(ratio).to_bits()))
+                        }
+                        ConvertNumber::Decimal(_) => (
+                            Prim::Decimal(una_core::DecimalOp::Mul),
+                            Atom::Decimal {
+                                coefficient: ratio.to_string(),
+                                scale: 0,
+                            },
+                        ),
+                    };
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim,
+                            args: vec![left, k],
+                            arg_spans,
+                            span,
+                        },
+                    )
+                }
                 // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
                 // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set
                 // that reads it or gives a new set (`spec/28 §6`).
@@ -5813,6 +5877,16 @@ impl Scope {
 
 /// The operation of `Decimal` for the operator `op` on operands of scales `a` and `b`
 /// (`spec/29 §16`, ADR 0120 rule 13); `None` for an operator decimals do not have.
+/// The ratio of a `convert()` on an `F64`, at most 2^53, so exact (ADR 0114 rule 12.5).
+fn float_ratio(ratio: u128) -> f64 {
+    ratio as f64
+}
+
+/// The ratio of a `convert()` on an `F32`, at most 2^24, so exact (ADR 0120 rule 62).
+fn float32_ratio(ratio: u128) -> f32 {
+    ratio as f32
+}
+
 fn decimal_op(op: BinaryOp, a: u8, b: u8) -> Option<una_core::DecimalOp> {
     use una_core::DecimalOp;
     Some(match op {

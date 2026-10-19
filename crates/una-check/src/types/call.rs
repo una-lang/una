@@ -75,6 +75,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 .fold(top, |label, (_, arg)| label.join(&arg.every_label(&kinds)));
             return Ty::Int.with_label(&label);
         }
+        // `z.re` and `z.im` of a measured complex value have its unit (ADR 0120 rule 64).
+        if let Ty::Measured(unit, magnitude) = labeled.unlabeled()
+            && let Some(ty) = self.record_field(magnitude, field)
+        {
+            if let Some((kind, index)) = self.field_index(magnitude, field) {
+                self.resolved(span, Res::Field { kind, index });
+            }
+            return ty.in_unit(Some(&**unit)).with_label(&top);
+        }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
                 self.resolved(span, Res::Field { kind, index });

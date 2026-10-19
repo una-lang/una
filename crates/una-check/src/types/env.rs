@@ -1994,6 +1994,27 @@ impl<'a> Env<'a> {
 
     /// Lowers a written type of module `module`, with `type_params` in scope. Labels wait for
     /// M6.
+    /// Whether a unit may follow `ty`, a written base type without its label: an integer
+    /// type, `F64` from edition 0.3 (ADR 0114 rule 12.1), and `F32`, `Decimal[s]`,
+    /// `Complex[F64]` and `Complex[F32]` in edition 0.4 (ADR 0120 rule 61). Those types exist
+    /// only in the editions that have them, so the type alone decides.
+    fn measurable(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::F32 | Ty::Decimal(_) => true,
+            Ty::Kind(id, args) => {
+                args.is_empty()
+                    && self.kinds.get(*id).is_some_and(|kind| {
+                        kind.module == self.prelude
+                            && matches!(
+                                kind.name,
+                                una_core::complex::COMPLEX_F64 | una_core::complex::COMPLEX_F32
+                            )
+                    })
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn lower_type(
         &mut self,
         module: usize,
@@ -2096,10 +2117,13 @@ impl<'a> Env<'a> {
                 })))
             }
         };
-        // ADR 0104 rule 2: a unit after `of`, on an integer type only.
+        // ADR 0104 rule 2: a unit after `of`, on a number type only: an integer type, `F64`
+        // from edition 0.3 (ADR 0114 rule 12.1), and `F32`, `Decimal[s]` and the complex types
+        // in edition 0.4 (ADR 0120 rule 61).
         if let Some(unit) = &ty.unit {
+            let measurable = self.measurable(declared.base.unlabeled());
             match declared.base.unlabeled() {
-                Ty::Int | Ty::Fixed(_) => match self.unit_expr(module, unit, None, report) {
+                _ if measurable => match self.unit_expr(module, unit, None, report) {
                     Some(unit) if unit.is_one() => {}
                     Some(unit) => {
                         // The label of an alias's base stays outside the unit, where the label
@@ -2115,12 +2139,14 @@ impl<'a> Env<'a> {
                 Ty::Error(_) => {}
                 _ => {
                     if self.reports(module) {
-                        report.error(
-                            Code::U2029,
-                            unit.span(),
+                        let message = if self.edition >= Edition::V0_4 {
+                            "a unit follows only a number type: `Int`, a fixed-width integer type, `F64`, `F32`, `Decimal[s]`, `Complex[F64]` or `Complex[F32]`"
+                        } else if self.edition >= Edition::V0_3 {
+                            "a unit follows only a number type: `Int`, a fixed-width integer type or `F64`"
+                        } else {
                             "a unit follows only an integer type, `Int` or a fixed-width one"
-                                .to_owned(),
-                        );
+                        };
+                        report.error(Code::U2029, unit.span(), message.to_owned());
                     }
                 }
             }
