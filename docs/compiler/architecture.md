@@ -91,6 +91,8 @@ Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` on
 
 Allowed by ADR 0074, for `una-http` only (v0.2): `rustls` with its `ring` provider, and `webpki-roots`, the TLS stack of the `Http` capability, with their dependencies (`rustls-webpki`, `rustls-pki-types`, `untrusted`, `subtle`, `zeroize`, `once_cell`, `getrandom`). They are in the trusted base. Executables that never use `Http` do not link them.
 
+Allowed by ADR 0116 (Appendix A, amendment of 2026-10-19), for `una-sys` only: `libc`, the Rust declarations of the operating system's interface (`sigaction`, `pipe`, `fcntl`, `write`, `read`, `raise`). It is bindings only: no C source is built, and it adds nothing to the supply chain, since it is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`).
+
 `una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`.
 
 ## 8. Targets

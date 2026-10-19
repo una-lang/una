@@ -24,9 +24,13 @@ una-project = { path = "crates/una-project" }
 una-report = { path = "crates/una-report" }
 una-rt = { path = "crates/una-rt" }
 una-syntax = { path = "crates/una-syntax" }
+una-sys = { path = "crates/una-sys" }
 una-verify = { path = "crates/una-verify" }
 # External crates, only from the allowlist of compiler/architecture.md §7.
 ariadne = "0.6.0"
+# Allowed by ADR 0116 Appendix A (amendment of 2026-10-19), for `una-sys` only: Rust
+# declarations of the system interface, with no C source built.
+libc = "0.2.189"
 cap = "0.1.2"
 clap = { version = "4.6.7", features = ["derive"] }
 # Allowed by ADR 0055 for una-codegen and una-rt only.

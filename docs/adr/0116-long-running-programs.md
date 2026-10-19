@@ -659,3 +659,10 @@ Usage errors, exit code 2:
 **ADR 0058, Amendment (2026-10-18).** A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks (ADR 0117 rule 2). It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.
 
 **ADR 0102, Amendment (2026-10-18).** Each check point (`enter`, `budget`, `poll`, and a loop iteration) also performs one relaxed atomic load of its thread's attention word (ADR 0116 rule 18), and compares it with a copy kept in `Hot`. When they differ, the slow path runs, and finds the stop request, the expired deadline, the time slice or the cancellation that changed it. Its cost is measured on the performance gate programs before the implementation merges. The other conditions of rule 2 are unchanged.
+
+## Amendment (2026-10-19): the `libc` crate in `una-sys`
+
+Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`. They need `sigaction`, `pipe`, `fcntl`, `write`, `read` and `raise`, which the Rust standard library does not expose. `una-sys` reaches them through the `libc` crate, allowed for `una-sys` only (`docs/compiler/architecture.md` §7):
+- **Bindings only.** `libc` is Rust declarations of the operating system's interface, as the standard library itself uses. No C source is built, and nothing is compiled from anything but Rust.
+- **No new supply chain.** `libc` is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`). Its build script only queries `rustc`.
+- **The other option,** writing the declarations in `una-sys`, would mean writing the layout of `struct sigaction` for each platform by hand, more `unsafe` code that a review would have to check against each system's headers.
