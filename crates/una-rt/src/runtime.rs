@@ -312,6 +312,18 @@ pub struct Meta {
     /// Whether the program is of edition 0.3, which writes and tests the floating-point
     /// environment before `main` (ADR 0114 rule 6.4).
     pub float_environment: bool,
+    /// The host-driven step, when the program is driven (ADR 0116 rule 3): its tick period and
+    /// step budget, in milliseconds.
+    pub drive: Option<DriveMeta>,
+}
+
+/// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DriveMeta {
+    /// The tick period, in milliseconds.
+    pub ticks: u64,
+    /// The step budget, in milliseconds, when one is set.
+    pub budget: Option<u64>,
 }
 
 /// One `uses` clause of `main`.
@@ -386,6 +398,16 @@ impl Meta {
             .get("float_environment")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let drive = match value.get("drive") {
+            Some(drive) => Some(DriveMeta {
+                ticks: drive.get("ticks")?.as_u64()?,
+                budget: match drive.get("budget") {
+                    None | Some(Value::Null) => None,
+                    Some(budget) => Some(budget.as_u64()?),
+                },
+            }),
+            None => None,
+        };
         Some(Meta {
             grants,
             uses,
@@ -394,6 +416,7 @@ impl Meta {
             ops,
             failure,
             float_environment,
+            drive,
         })
     }
 }
@@ -425,6 +448,9 @@ pub struct Options {
     pub max_memory: usize,
     /// `--max-response <MiB>` and `--http-timeout <seconds>` (`spec/24 §4`).
     pub http: una_http::client::Settings,
+    /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
+    /// 0116 rule 19).
+    pub stop_after: Option<u64>,
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -486,9 +512,22 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     options.http.timeout = std::time::Duration::from_secs(n);
                 }
             }
+            "--stop-after-iterations" => {
+                let text = value()?;
+                let n: u64 = text
+                    .parse()
+                    .map_err(|_| format!("`{flag} {text}` is not a number"))?;
+                if n == 0 || n > i64::MAX.unsigned_abs() {
+                    return Err(format!(
+                        "`{flag} {n}` is out of range; give from 1 to {}",
+                        i64::MAX
+                    ));
+                }
+                options.stop_after = Some(n);
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB> and --http-timeout <seconds>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds> and --stop-after-iterations <n>"
                 ));
             }
         }
@@ -737,6 +776,21 @@ impl State {
         self.installs.contains_key(name)
     }
 
+    /// Appends the event of a loop that stops at the start of an iteration (ADR 0116 rule 14).
+    pub(crate) fn stop_event(&mut self) {
+        if let Some(trace) = self.trace.as_mut() {
+            trace.push(Event {
+                seq: trace.len() + 1,
+                task: String::new(),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Stop,
+            });
+        }
+    }
+
     /// Appends the event that ends the task `task`, started and then cancelled
     /// (`spec/19 §7` rule 3).
     pub(crate) fn cancelled_event(&mut self, task: String) {
@@ -757,6 +811,69 @@ impl State {
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static HOT: Hot = const { Hot::inactive() };
+    static DRIVER: RefCell<Option<Driver>> = const { RefCell::new(None) };
+}
+
+/// The host's loop of a driven program (ADR 0116 rule 3), on the thread that runs it: its
+/// settings, when it started, the next tick due and the iterations started.
+struct Driver {
+    ticks: u64,
+    stop_after: Option<u64>,
+    start: Option<std::time::Instant>,
+    next: u64,
+    iterations: u64,
+}
+
+/// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
+/// `std.drive` after waiting for the next one due, delivering the latest one due with the
+/// count of those skipped; or 0 when the loop stops at this iteration start, once
+/// `--stop-after-iterations` iterations have started, with its `stop` event traced. The first
+/// tick is due at the first call, when `init` has returned.
+pub fn drive_tick() -> i64 {
+    let tick = DRIVER.with(|cell| {
+        let mut driver = cell.borrow_mut();
+        let driver = driver.as_mut()?;
+        if driver
+            .stop_after
+            .is_some_and(|limit| driver.iterations >= limit)
+        {
+            return None;
+        }
+        driver.iterations += 1;
+        let start = *driver.start.get_or_insert_with(std::time::Instant::now);
+        let period = std::time::Duration::from_millis(driver.ticks);
+        let due =
+            start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
+        let now = std::time::Instant::now();
+        if now < due {
+            std::thread::sleep(due - now);
+        }
+        let elapsed = start.elapsed().as_millis();
+        let latest = u64::try_from(elapsed / u128::from(driver.ticks.max(1)))
+            .unwrap_or(u64::MAX)
+            .max(driver.next);
+        let missed = latest - driver.next;
+        let at = latest.saturating_mul(driver.ticks);
+        driver.next = latest + 1;
+        Some((at, missed))
+    });
+    match tick {
+        Some((at, missed)) => {
+            let word = |n: u64| {
+                values::int_word(&num_bigint::BigInt::from(
+                    i64::try_from(n).unwrap_or(i64::MAX),
+                ))
+            };
+            let object = values::data(0);
+            values::push(object, word(at));
+            values::push(object, word(missed));
+            object
+        }
+        None => {
+            with_state(State::stop_event);
+            0
+        }
+    }
 }
 
 #[cfg(test)]
@@ -915,6 +1032,13 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    let drive = meta.drive.map(|drive| Driver {
+        ticks: drive.ticks,
+        stop_after: options.stop_after,
+        start: None,
+        next: 0,
+        iterations: 0,
+    });
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
@@ -971,6 +1095,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
             crate::ceiling(state.baseline.saturating_add(budget.saturating_mul(2)));
             install(state, 0);
+            DRIVER.with(|cell| *cell.borrow_mut() = drive);
             let status = entry();
             crate::ceiling(usize::MAX);
             // A debug build of the runtime checks the compiled code's reference counting: it

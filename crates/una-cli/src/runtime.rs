@@ -473,7 +473,7 @@ pub(crate) fn entry_main<'a>(
 /// `pub init() -> S`, `pub step(edit state: S, input: Tick) -> Unit` and, when declared,
 /// `pub on_stop(state: S) -> Unit`, with `Tick` of `std.drive`. Otherwise the message of the
 /// usage error.
-fn driven_init<'a>(
+pub(crate) fn driven_init<'a>(
     analysis: &'a Analysis,
     sources: &SourceDb,
     module: &str,
