@@ -4273,8 +4273,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             );
         }
         // ADR 0120: the type arguments of a call of a function that computes new elements keep
-        // no refinement, so neither its result nor its updated places are assumed refined
-        // (`super::dense::SYNTHESIZING`).
+        // no refinement (`super::dense::SYNTHESIZING`), so the verifier derives its result, and
+        // the new values of its `edit` places, without the element type's refinement: a
+        // binding or a place whose declared type claims it gets an obligation that the call's
+        // facts cannot prove, and the program is refused, never accepted on a false fact.
         let synthesizes = super::dense::synthesizes(self.env.prelude, def.module, def.name);
         let type_args: Vec<Type> = type_args
             .iter()
@@ -4366,6 +4368,15 @@ impl<'e, 'a> Fx<'e, 'a> {
         let Some(def) = self.env.functions.get(id) else {
             self.broken.set(true);
             return Rhs::Atom(Atom::Unit);
+        };
+        // A function that computes new elements is U2001 as a value; should that ever change,
+        // its call here keeps no refinement of the element type either, as every call does.
+        let stripped: Vec<Ty>;
+        let type_args = if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+            stripped = type_args.iter().map(Ty::without_refinements).collect();
+            stripped.as_slice()
+        } else {
+            type_args
         };
         let mark = self.scope.len();
         let params: Vec<(Name, Type)> = def
