@@ -2255,6 +2255,27 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
 /// Reports that `main` failed with `failure`, which the caller owns and the report releases:
 /// U6001 with the failure's `public` fields (`spec/04 §8`), after the output so far.
 pub fn main_failed(failure: i64) {
+    // The word of a stopped task (`una_codegen` `STOPPED`) is no failure: `main`'s thread ends
+    // the run at an abort, and every cut is caught by its own `within`, so `main` never returns
+    // it. Should it, that is an internal error (U8001, exit code 3), never a failure of `main`.
+    debug_assert_ne!(failure, -1, "`main` returned the stop of a task");
+    if failure == -1 {
+        let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
+        if let Some(state) = state {
+            let location = state
+                .failure
+                .as_ref()
+                .map_or_else(|| site_location(&state, usize::MAX), |f| f.location.clone());
+            abort_run(
+                state,
+                Code::U8001,
+                location,
+                "internal error: `main` returned the stop of a task, which no failure is"
+                    .to_owned(),
+            );
+        }
+        return;
+    }
     let _ = io::stdout().flush();
     let diagnostic = STATE.with(|cell| {
         let cell = cell.borrow();

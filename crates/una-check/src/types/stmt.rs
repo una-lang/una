@@ -936,6 +936,9 @@ impl<'a> Checker<'_, 'a, '_> {
         if !handled.handlings.is_empty() {
             self.outside_rl(handled.span, || "a handling clause".to_owned());
         }
+        if handled.within.is_some() {
+            self.outside_rl(handled.span, || "`within`".to_owned());
+        }
         // Edition 0.4: `e within d` (ADR 0117 rule 5). `d` is evaluated first, outside the
         // `with` bindings; the timing label's seed covers the handlers they install.
         let within = handled.within.as_ref().map(|deadline| {

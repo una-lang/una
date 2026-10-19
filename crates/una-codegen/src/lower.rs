@@ -950,12 +950,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.fail(failure, scope, catch);
                 self.builder.switch_to_block(running);
                 self.runtime("una_rt_operation_begin", &[]);
-                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                // The shield ends on every way out of `on stop`: a failure out of it, an abort
+                // today, ends it before going on to `catch` with the loop's scope.
+                let unshield = self.join();
+                let shielded = Catch {
+                    block: unshield,
+                    outer: Scope::new(),
+                    base: 0,
+                    exit: None,
+                };
+                let result =
+                    self.lower_on_stop(on_stop, env, &saved, &kinds, &shielded, &Scope::new())?;
                 if let Some(result) = result {
                     self.release(result, Kind::Tuple);
                     self.runtime("una_rt_operation_end", &[]);
                     self.fail(failure, scope, catch);
                 }
+                self.builder.switch_to_block(unshield);
+                let out = self.param(unshield)?;
+                self.runtime("una_rt_operation_end", &[]);
+                self.fail(out, scope, catch);
             }
             None => self.fail(failure, scope, catch),
         }
@@ -1605,10 +1619,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         };
         // A block stopped, status 2, goes on as [`STOPPED`] by the failure path.
         let status = self.call("una_rt_together_status", &[])?;
-        let stopped = self
-            .builder
-            .ins()
-            .icmp_imm_s(IntCC::Equal, status, 2);
+        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
         let word = self.builder.ins().iconst(types::I64, STOPPED);
         let value = self.builder.ins().select(stopped, word, value);
         self.check(value, status, scope, catch);
@@ -2135,7 +2146,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let stopping = self.call("una_rt_enter", &[call_site])?;
         let refused = self.builder.create_block();
         let calling = self.builder.create_block();
-        self.builder.ins().brif(stopping, refused, &[], calling, &[]);
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
         self.builder.switch_to_block(refused);
         self.runtime("una_rt_operation_end", &[]);
         let word = self.builder.ins().iconst(types::I64, STOPPED);
@@ -2809,14 +2822,18 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let stopping = self.call("una_rt_enter", &[site])?;
         let refused = self.builder.create_block();
         let calling = self.builder.create_block();
-        self.builder.ins().brif(stopping, refused, &[], calling, &[]);
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
         self.builder.switch_to_block(refused);
         for &arg in args {
             self.release(arg, Kind::Any);
         }
         let word = self.builder.ins().iconst(types::I64, STOPPED);
         let two = self.builder.ins().iconst(types::I64, 2);
-        self.builder.ins().jump(returned, &[word.into(), two.into()]);
+        self.builder
+            .ins()
+            .jump(returned, &[word.into(), two.into()]);
         self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &values);
         let results = self.builder.inst_results(call).to_vec();
