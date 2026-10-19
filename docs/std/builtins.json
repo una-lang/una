@@ -10,7 +10,7 @@
         "spec/14 §2",
         "spec/21 §2",
         "spec/14 §1",
-        "spec/28 §6"
+        "spec/28 §5"
       ],
       "variants": [
         {
@@ -21,8 +21,8 @@
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
-            "(`spec/28 §6`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
+            "count their items, in O(1) (`spec/28 §5`, `§6`)."
           ]
         },
         {
@@ -34,8 +34,8 @@
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
-            "(`spec/28 §6`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
+            "count their items, in O(1) (`spec/28 §5`, `§6`)."
           ]
         },
         {
@@ -46,8 +46,8 @@
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
-            "(`spec/28 §6`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue` and a `Set`",
+            "count their items, in O(1) (`spec/28 §5`, `§6`)."
           ]
         }
       ]
@@ -382,17 +382,19 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/28 §5"
+        "spec/28 §5",
+        "spec/28 §6"
       ],
       "variants": [
         {
           "editions": [
             "0.4"
           ],
-          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]",
+          "declaration": "s.items() -> List[T]\n  where s: Stack[T]\nq.items() -> List[T]\n  where q: Queue[T]\ns.items() -> List[T]\n  where s: Set[T]",
           "docs": [
-            "The items as a list, a `Stack` top first and a `Queue` front first, as many as its",
-            "`len`, in O(n) time (`spec/28 §5`)."
+            "The items as a list: a `Stack` top first and a `Queue` front first, as many as its",
+            "`len`, in O(n) time (`spec/28 §5`); a `Set`'s in ascending order, as many as its",
+            "`len`, in O(n) time (`spec/28 §6`)."
           ]
         }
       ]
@@ -532,25 +534,6 @@
           "docs": [
             "The items of `s` from `low` to `high`, both included, in ascending order; none when",
             "`low` is above `high`. O(log n + k) for the k items listed (`spec/28 §6`)."
-          ]
-        }
-      ]
-    },
-    {
-      "name": "items",
-      "module": "builtin",
-      "kind": "method",
-      "spec": [
-        "spec/28 §6"
-      ],
-      "variants": [
-        {
-          "editions": [
-            "0.4"
-          ],
-          "declaration": "s.items() -> List[T]\n  where s: Set[T]",
-          "docs": [
-            "The items of `s` in ascending order, as many as `s.len`. O(n) (`spec/28 §6`)."
           ]
         }
       ]
