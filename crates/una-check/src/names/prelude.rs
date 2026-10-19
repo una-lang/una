@@ -183,6 +183,11 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardNegative",
 ];
 
+/// The variant that edition 0.4 adds to `HttpError`: an operation that a host stop
+/// interrupts (ADR 0116 rule 12). Earlier editions keep the kind's eight variants, since a new
+/// variant changes which `when` arms are exhaustive.
+pub(crate) const HTTP_0_4: [&str; 1] = ["Interrupted"];
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]

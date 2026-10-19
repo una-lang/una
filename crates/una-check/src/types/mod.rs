@@ -71,6 +71,11 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// `Decimal` (`spec/29 §16`, ADR 0120), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
+/// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
+/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
+/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
+
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
 /// `spec/14 §1`), and `min`, `max`, `contains` and `sum` are generic over constrained types
@@ -176,7 +181,11 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
 pub fn standard_source(edition: Edition) -> StandardSource {
     let (prelude, keywords) = if edition >= Edition::V0_4 {
         (
-            format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+            format!(
+                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}",
+                of_prelude(),
+                PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
+            ),
             KeywordSet::V0_4,
         )
     } else if edition >= Edition::V0_3 {
@@ -1311,6 +1320,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+        assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
+        let line = |edition| {
+            standard_source(edition)
+                .prelude
+                .lines()
+                .find(|line| line.starts_with("pub kind HttpError ="))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            line(Edition::V0_4).as_deref(),
+            Some(
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+            )
+        );
+        for edition in [Edition::V0_2, Edition::V0_3] {
+            assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+        }
+    }
+
+    #[test]
     fn every_rewrite_of_the_prelude_applies_exactly_once() {
         // `str::replace` does nothing when its text is missing, so an edit of the prelude could
         // turn a rewrite of edition 0.2 off without a word (#648).
@@ -1337,8 +1368,10 @@ mod tests {
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
+                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
-                    format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
                     KeywordSet::V0_4,
                 )
             } else if *edition >= Edition::V0_3 {
