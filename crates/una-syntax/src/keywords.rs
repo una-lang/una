@@ -89,13 +89,22 @@ pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
 ];
 
 /// The words that edition 0.4 reserves for the constructs of ADR 0116 (`spec/26 §1`), with
-/// the message of their U0103 diagnostic, until each becomes a keyword.
-pub const RESERVED_IN_0_4: [(&str, &str); 2] = [
+/// the message of their U0103 diagnostic, until each becomes a keyword, and the rows whose
+/// message edition 0.4 changes: `async` and `await` (`spec/27 §7`, ADR 0117 Diagnostics).
+pub const RESERVED_IN_0_4: [(&str, &str); 4] = [
     (
         "diverges",
         "reserved for edition 0.4 (long-running programs)",
     ),
     ("within", "reserved for edition 0.4 (long-running programs)"),
+    (
+        "async",
+        "not supported; use `tasks` and `start`, or `together`",
+    ),
+    (
+        "await",
+        "not supported; use `tasks` and `start`, or `together`",
+    ),
 ];
 
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved.

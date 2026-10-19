@@ -678,6 +678,38 @@ pub enum Stmt {
     /// `on stop` with a block that follows a loop other than `for ever`, which U2034 reports
     /// (`spec/26 §5`).
     OnStop(Box<OnStop>),
+    /// `tasks [at most n at once]` with a block, in edition 0.4 (`spec/27 §7`).
+    Tasks(Box<TasksStmt>),
+    /// `start` with a handled expression, in edition 0.4 (`spec/27 §7`).
+    Start(Box<StartStmt>),
+}
+
+/// `"tasks" [ "at" "most" add_expr "at" "once" ] NEWLINE INDENT block DEDENT` (`spec/27 §7`,
+/// ADR 0117 rule 7): a block that runs in the current task and may start tasks with `start`,
+/// all of which end before the statement does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TasksStmt {
+    /// The bound after `at most`, when there is one.
+    pub bound: Option<Expr>,
+    /// The block.
+    pub block: Block,
+    /// The word `tasks`.
+    pub keyword: Span,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"start" line_expr [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ]`
+/// (`spec/27 §7`, ADR 0117 rule 7): starts a task for the expression and goes on. A `with`
+/// clause parses, so that the checker reports it (U2035).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartStmt {
+    /// The started expression, with its deadline and handling clauses.
+    pub handled: Handled,
+    /// The word `start`.
+    pub keyword: Span,
+    /// The whole statement.
+    pub span: Span,
 }
 
 /// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`,

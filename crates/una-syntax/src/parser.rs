@@ -12,8 +12,9 @@ use crate::ast::{
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
     OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
-    Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopAfter, StopStmt, TextLit,
-    TextPart, TogetherFor, TogetherStmt, FirstOf, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
+    Range, RequirementDecl, RequirementSource, SignedInt, StartStmt, Stmt, StopAfter, StopStmt,
+    TasksStmt, TextLit, TextPart, TogetherFor, TogetherStmt, FirstOf, Type, TypeCore, UnaryOp,
+    UnitExpr, UntilStmt, UsesClause,
     Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
@@ -2288,6 +2289,13 @@ impl<'a> Parser<'a> {
             TokenKind::LowerIdent(_) if self.v0_4 && self.at_on_stop() => {
                 Ok(Stmt::OnStop(Box::new(self.on_stop()?)))
             }
+            // Edition 0.4: `tasks` and `start` (`spec/27 §7`); elsewhere both words are names.
+            TokenKind::LowerIdent(_) if self.at_tasks() => {
+                Ok(Stmt::Tasks(Box::new(self.tasks_stmt()?)))
+            }
+            TokenKind::LowerIdent(_) if self.at_start() => {
+                Ok(Stmt::Start(Box::new(self.start_stmt()?)))
+            }
             // Edition 0.2: `for x in source` (`spec/17 §1`).
             TokenKind::Keyword(Keyword::For) if self.v0_2 => {
                 Ok(Stmt::For(Box::new(self.for_stmt()?)))
@@ -2342,6 +2350,72 @@ impl<'a> Parser<'a> {
     fn at_within(&self) -> bool {
         self.v0_4
             && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within")
+    }
+
+    /// Edition 0.4: whether the cursor is at a `tasks` statement (`spec/27 §7`, ADR 0117 rule
+    /// 7): the word `tasks` followed by the end of its line and an indented block, or by `at`.
+    /// Elsewhere `tasks` is a name, so a block may still end with it.
+    fn at_tasks(&self) -> bool {
+        self.v0_4
+            && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "tasks")
+            && (matches!(
+                (self.peek_at(1), self.peek_at(2)),
+                (TokenKind::Newline, TokenKind::Indent)
+            ) || matches!(self.peek_at(1), TokenKind::LowerIdent(at) if self.interner.resolve(*at) == "at"))
+    }
+
+    /// Edition 0.4: whether the cursor is at a `start` statement (`spec/27 §7`): the word
+    /// `start` followed by a name, a capability reference or `attempt`, which begin its
+    /// expression. Such a line is no expression of any edition, so `start(x)`, `start = v`,
+    /// `start.m()` and a final `start` stay names. It parses outside a `tasks` block too, where
+    /// the checker reports it (U2035).
+    fn at_start(&self) -> bool {
+        self.v0_4
+            && matches!(self.peek(), TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "start")
+            && matches!(
+                self.peek_at(1),
+                TokenKind::LowerIdent(_)
+                    | TokenKind::UpperIdent(_)
+                    | TokenKind::CapRef(_)
+                    | TokenKind::Keyword(Keyword::Attempt)
+            )
+    }
+
+    /// `"tasks" [ "at" "most" add_expr "at" "once" ] NEWLINE INDENT block DEDENT` (`spec/27
+    /// §7`).
+    fn tasks_stmt(&mut self) -> Parse<TasksStmt> {
+        let keyword = self.advance();
+        let bound = if self.at_word("at") {
+            self.advance();
+            self.expect_word("most")?;
+            let bound = self.add_expr()?;
+            self.expect_word("at")?;
+            self.expect_word("once")?;
+            Some(bound)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Newline, "end of line after `tasks`")?;
+        let block = self.indented_block()?;
+        Ok(TasksStmt {
+            bound,
+            block,
+            keyword,
+            span: self.since(keyword),
+        })
+    }
+
+    /// `"start" line_expr [ "within" add_expr ] NEWLINE [ INDENT handling { handling } DEDENT ]`
+    /// (`spec/27 §7`); a `with` clause parses too, for U2035.
+    fn start_stmt(&mut self) -> Parse<StartStmt> {
+        let keyword = self.advance();
+        let expr = self.line_expr()?;
+        let handled = self.handled_rest(expr)?;
+        Ok(StartStmt {
+            handled,
+            keyword,
+            span: self.since(keyword),
+        })
     }
 
     /// Whether the cursor is at `on stop` alone on its line.

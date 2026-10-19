@@ -305,6 +305,16 @@ impl Normalizer<'_> {
                 }
             }
             Stmt::OnStop(on_stop) => self.block(&mut on_stop.block),
+            Stmt::Tasks(stmt) => {
+                if let Some(bound) = &mut stmt.bound {
+                    self.expr(bound);
+                }
+                self.block(&mut stmt.block);
+            }
+            Stmt::Start(stmt) => {
+                self.expr(&mut stmt.handled.expr);
+                self.handlings(&mut stmt.handled);
+            }
         }
     }
 

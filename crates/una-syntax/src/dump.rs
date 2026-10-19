@@ -575,6 +575,15 @@ impl Dumper<'_> {
                     self.block(&stmt.block),
                 ],
             ),
+            Stmt::Tasks(stmt) => {
+                let mut items = vec![atom("tasks")];
+                if let Some(bound) = &stmt.bound {
+                    items.push(list("at-most", [self.expr(bound)]));
+                }
+                items.push(self.block(&stmt.block));
+                Node::List(items)
+            }
+            Stmt::Start(stmt) => list("start", [self.handled(&stmt.handled)]),
         }
     }
 
