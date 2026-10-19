@@ -1,34 +1,49 @@
 //! Reading and writing the files of a package without following a link (ADR 0122 rules 27 and
 //! 30), for Itaoca and the vendor directory.
 //!
-//! **Reading.** A package directory is reached from a base the user chose, such as Itaoca's root
-//! or the package's root, canonicalized once, so a link above the base (macOS's `/tmp`, say) is
-//! the user's own choice; every component below it must be a directory and not a link. Every
-//! directory and file of the package is then opened with `O_NOFOLLOW`, and on macOS with
-//! `O_NOFOLLOW_ANY` too, which refuses a link at any component of the path. The descriptor's
-//! identity (device and inode) must be the entry's as it was listed, and after each file the
-//! identity of every directory above it is compared again with the one opened, so an entry
-//! swapped for a link while the package is read refuses it. Only directories and regular files
-//! with a single link are read: a symbolic or hard link, a device, a FIFO or a socket refuses
-//! the package, and so does every path that rule 27 refuses, before any byte of it is read.
-//! Each file is read once, through its descriptor, and those bytes are the ones hashed.
+//! **Reading: the bytes are verified once, in memory, and only those are used.** A package
+//! directory is reached from a base the user chose, such as the package's root, canonicalized
+//! once, so a link above the base (macOS's `/tmp`, say) is the user's own choice; every
+//! component below it must be a directory and not a link. [`list`] then walks the package by
+//! path: only directories and regular files of one link are listed, and a symbolic or hard
+//! link, a device, a FIFO or a socket refuses the package, as does every path and bound that
+//! rule 27 refuses, before any byte is read. [`Listing::verify`] reads each listed file once,
+//! through a descriptor opened with `O_NOFOLLOW` (and on macOS `O_NOFOLLOW_ANY`, which refuses
+//! a link at any component), checked by device and inode to be the entry listed, and computes
+//! the content digest over the bytes read. Only when that digest is the one asked for does it
+//! return a [`VerifiedTree`]: the paths and the bytes that were hashed, the only way this crate
+//! hands out the contents of a stored or vendored package. Every later step (the provenance's
+//! check, the copy into the vendor directory, a build) uses those bytes, and nothing opens a
+//! package file by its path again. An entry swapped for a link or another file while the
+//! package is read can therefore at most change the bytes read, and then the digest differs and
+//! the load fails closed.
 //!
-//! **Writing.** A fresh directory is created, which must not exist; each directory below it with
-//! `mkdir`, which never follows a link; and each file with `O_CREAT | O_EXCL | O_NOFOLLOW`, so
-//! nothing is written through a link or over an existing file.
+//! **Writing: into a private directory of our own, then one rename.** [`store_tree`] and
+//! [`store_file`] create a fresh directory with a name of their own, which must not exist
+//! (`mkdir` fails otherwise), with mode 0700, so no other user can create or replace anything
+//! in it; each directory below it is created the same way, and each file with
+//! `O_CREAT | O_EXCL | O_NOFOLLOW`. A file's permissions are set through its open descriptor,
+//! never by path, and each file and directory is synced before the directory (or, for one
+//! file, the file) is renamed into place. The fresh directory's identity is taken from its
+//! open descriptor when it is created, and it must still be that directory before each file
+//! is written and before the rename. A write that fails removes the fresh directory only when
+//! it is still ours by that identity; otherwise it is left in place and the refusal says so.
 //!
-//! The standard library opens files by path, not relative to a directory descriptor. On a
-//! platform without `O_NOFOLLOW_ANY` (Linux), a directory above a file that is swapped for a
-//! link and back between two of the checks is therefore not excluded; the digest of the bytes
-//! read still decides what loads. A platform whose flag values this module does not know
-//! refuses every read and write: nothing falls back to following links.
+//! The standard library opens files by path, not relative to a directory descriptor
+//! (`openat`). What that leaves is stated where it applies: a component above the base, which
+//! the user chose, is resolved once, and a swap of the fresh directory's path by someone who
+//! can rename entries of its parent is detected before the rename and fails the write. A
+//! platform whose flag values this module does not know refuses every read and write: nothing
+//! falls back to following links.
 //!
-//! Costs: O(B) for the B bytes read or written; O(d) identity checks per file at depth d, at
-//! most 32; O(e log e) to sort the e entries of a directory.
+//! Costs: O(B) for the B bytes read or written, with one SHA-256 pass; O(e log e) to sort the e
+//! entries of a directory.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::content::{self, File, MAX_BYTES, MAX_FILES, MAX_SEGMENTS};
 
@@ -104,6 +119,54 @@ fn with_flags(options: &mut OpenOptions, flags: i32) {
 #[cfg(not(unix))]
 fn with_flags(_: &mut OpenOptions, _: i32) {}
 
+/// The mode of a file while it is written: 0600.
+#[cfg(unix)]
+fn with_private_mode(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn with_private_mode(_: &mut OpenOptions) {}
+
+/// `mkdir` with mode 0700, failing when anything is at `path`, a link included.
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
+}
+
+/// Sets the mode of the file or directory open as `handle`, through the descriptor (`fchmod`).
+#[cfg(unix)]
+fn set_mode(handle: &fs::File, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    handle.set_permissions(fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_mode(handle: &fs::File, mode: u32) -> std::io::Result<()> {
+    let mut permissions = handle.metadata()?.permissions();
+    permissions.set_readonly(mode & 0o200 == 0);
+    handle.set_permissions(permissions)
+}
+
+/// Whether the permission bits of `meta` grant nothing to the group or to others.
+#[cfg(unix)]
+fn private(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.mode() & 0o077 == 0
+}
+
+#[cfg(not(unix))]
+fn private(_: &fs::Metadata) -> bool {
+    true
+}
+
 /// A file's identity: its device and inode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Identity {
@@ -172,8 +235,23 @@ fn base_dir(base: &Path) -> Result<Option<PathBuf>, Refusal> {
     Ok(Some(canonical))
 }
 
+/// Refuses `base` when it is itself a symbolic link: for a store's root, which the user names
+/// but which is never reached through a link of its own. What lies above it is the user's
+/// choice and is resolved once. A missing base is not refused.
+pub fn not_a_link(base: &Path) -> Result<(), Refusal> {
+    match fs::symlink_metadata(base) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "`{}` is a symbolic link, which is never followed",
+            base.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(cannot("read", base, &error)),
+    }
+}
+
 /// Refuses `path` unless it is a directory and not a link.
-fn real_directory(path: &Path) -> Result<(), Refusal> {
+fn real_directory(path: &Path) -> Result<fs::Metadata, Refusal> {
     let meta = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
     if meta.file_type().is_symlink() {
         return Err(format!(
@@ -184,7 +262,7 @@ fn real_directory(path: &Path) -> Result<(), Refusal> {
     if !meta.is_dir() {
         return Err(format!("`{}` is not a directory", path.display()));
     }
-    Ok(())
+    Ok(meta)
 }
 
 /// Where `relative` is below `base`, when each of its components exists, none of them is a
@@ -216,7 +294,8 @@ pub fn locate(base: &Path, relative: &[&str]) -> Result<Option<PathBuf>, Refusal
 
 /// Creates the directories `relative` below `base`, each missing one with `mkdir`, and checks
 /// that each one already there is a directory and not a link; the base itself is created when
-/// missing. Returns the last one's path.
+/// missing. Returns the last one's path. These are the shared directories a fresh one is
+/// renamed into ([`store_tree`], [`store_file`]); nothing is written in them directly.
 pub fn make_dirs(base: &Path, relative: &[&str]) -> Result<PathBuf, Refusal> {
     flags()?;
     fs::create_dir_all(base).map_err(|e| cannot("create", base, &e))?;
@@ -224,19 +303,14 @@ pub fn make_dirs(base: &Path, relative: &[&str]) -> Result<PathBuf, Refusal> {
     for part in relative {
         component(part)?;
         path.push(part);
-        make_dir(&path)?;
+        match fs::create_dir(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(cannot("create", &path, &error)),
+        }
+        real_directory(&path)?;
     }
     Ok(path)
-}
-
-/// `mkdir`, then a check that what is there is a directory and not a link.
-fn make_dir(path: &Path) -> Result<(), Refusal> {
-    match fs::create_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(cannot("create", path, &error)),
-    }
-    real_directory(path)
 }
 
 fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
@@ -294,7 +368,8 @@ fn read_exactly(handle: &fs::File, size: u64, path: &Path) -> Result<Vec<u8>, Re
 
 /// Reads the regular file at `path`, of at most `limit` bytes, once, through a descriptor
 /// opened with no link followed; a file with another hard link is refused. `path` comes from
-/// [`locate`].
+/// [`locate`]. For a single document that the caller verifies on the bytes returned, such as a
+/// provenance; a package's files are read with [`list`] and [`Listing::verify`] only.
 pub fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, Refusal> {
     let flags = flags()?;
     let (handle, size) = open_regular(path, flags, flags.no_follow | flags.no_follow_any, true)?;
@@ -309,7 +384,8 @@ pub fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, Refusal> {
 
 /// Reads the regular file at `path` once, through a descriptor opened with no link followed at
 /// its last component, and checked to be the entry `path` names: for a path dependency's files,
-/// whose directories the caller has walked without following a link.
+/// whose directories the caller has walked without following a link. A path dependency has no
+/// digest to verify; its bytes are the ones checked and built, and its file is not read again.
 pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     let flags = flags()?;
     // The path dependency's directory may lie below a link the user chose, such as macOS's
@@ -324,32 +400,158 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     read_exactly(&handle, size, path)
 }
 
-/// Reads every file of the package directory `dir`, which comes from [`locate`], as this
-/// module states: rule 27's paths and bounds, only directories and regular files of one link,
-/// no link followed, each file read once. The files are in no particular order.
-pub fn read_package(dir: &Path) -> Result<Vec<File>, Refusal> {
-    let mut reader = Reader {
-        flags: flags()?,
+/// A file [`list`] found: its path in the package, on disk, its identity and its size.
+#[derive(Clone, Debug)]
+struct Listed {
+    path: String,
+    disk: PathBuf,
+    identity: Identity,
+    size: u64,
+}
+
+/// The files of a package directory, listed and not read: no byte of them can be had from it
+/// except through [`Listing::verify`].
+#[derive(Debug)]
+pub struct Listing {
+    dir: PathBuf,
+    flags: Flags,
+    files: Vec<Listed>,
+}
+
+/// The files of a package, read once each into memory and verified there: the content digest
+/// of exactly these paths and bytes is [`VerifiedTree::digest`]. Made only by
+/// [`Listing::verify`], from a package directory, and by [`VerifiedTree::from_archive`], from
+/// an archive read once into memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedTree {
+    files: Vec<File>,
+    digest: String,
+}
+
+impl VerifiedTree {
+    /// The package that `archive` carries, read and hashed in memory (ADR 0122 rule 29).
+    pub fn from_archive(archive: &[u8]) -> Result<VerifiedTree, Refusal> {
+        let read = content::read_archive(archive)?;
+        let mut files = Vec::with_capacity(read.files.len());
+        for (path, range) in read.files {
+            let bytes = archive
+                .get(range)
+                .ok_or("an archive range is out of bounds")?;
+            files.push(File {
+                path,
+                bytes: bytes.to_vec(),
+            });
+        }
+        Ok(VerifiedTree {
+            files,
+            digest: read.digest,
+        })
+    }
+
+    /// The files, in ascending byte order of their paths.
+    pub fn files(&self) -> &[File] {
+        &self.files
+    }
+
+    /// The bytes of the file at `path`, when the package holds it.
+    pub fn file(&self, path: &str) -> Option<&[u8]> {
+        self.files
+            .iter()
+            .find(|f| f.path == path)
+            .map(|f| f.bytes.as_slice())
+    }
+
+    /// The content digest of the files, `sha256:<hex>`.
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    /// The files, given up.
+    pub fn into_files(self) -> Vec<File> {
+        self.files
+    }
+}
+
+/// Lists the package directory `dir`, which comes from [`locate`], as this module states:
+/// rule 27's paths and bounds, only directories and regular files of one link, no link
+/// followed; no byte of a file is read.
+pub fn list(dir: &Path) -> Result<Listing, Refusal> {
+    let mut walk = Walk {
         files: Vec::new(),
         bytes: 0,
         entries: 0,
-        held: Vec::new(),
     };
-    reader.directory(dir, "", 0)?;
-    Ok(reader.files)
+    let flags = flags()?;
+    walk.directory(dir, "", 0)?;
+    Ok(Listing {
+        dir: dir.to_path_buf(),
+        flags,
+        files: walk.files,
+    })
 }
 
-/// The state of [`read_package`].
-struct Reader {
-    flags: Flags,
-    files: Vec<File>,
+/// Reads the package directory `dir` and verifies it against `digest`: [`list`], then
+/// [`Listing::verify`].
+pub fn read_verified(dir: &Path, digest: &str) -> Result<VerifiedTree, Refusal> {
+    list(dir)?.verify(digest)
+}
+
+impl Listing {
+    /// How many files are listed.
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Whether no file is listed.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Reads each listed file once, through a descriptor opened with no link followed and
+    /// checked to be the entry listed, and returns the files when the content digest of the
+    /// bytes read is `digest`. Nothing read is returned otherwise.
+    pub fn verify(self, digest: &str) -> Result<VerifiedTree, Refusal> {
+        let refuse = self.flags.no_follow | self.flags.no_follow_any;
+        let mut files = Vec::with_capacity(self.files.len());
+        for listed in self.files {
+            let (handle, size) = open_regular(&listed.disk, self.flags, refuse, true)?;
+            let now = handle
+                .metadata()
+                .map_err(|e| cannot("read", &listed.disk, &e))?;
+            if identity(&now) != listed.identity || size != listed.size {
+                return Err(format!(
+                    "`{}` changed while the package was read",
+                    listed.disk.display()
+                ));
+            }
+            let bytes = read_exactly(&handle, size, &listed.disk)?;
+            files.push(File {
+                path: listed.path,
+                bytes,
+            });
+        }
+        let found = content::digest_of(&mut files)?;
+        if found != digest {
+            return Err(format!(
+                "the files read from `{}` have the digest {found}, not {digest}: they were changed after they were written",
+                self.dir.display()
+            ));
+        }
+        Ok(VerifiedTree {
+            files,
+            digest: found,
+        })
+    }
+}
+
+/// The state of [`list`].
+struct Walk {
+    files: Vec<Listed>,
     bytes: u64,
     entries: usize,
-    /// The directories open above the entry read, each with its identity.
-    held: Vec<(PathBuf, Identity, fs::File)>,
 }
 
-impl Reader {
+impl Walk {
     fn directory(&mut self, path: &Path, prefix: &str, depth: usize) -> Result<(), Refusal> {
         if depth >= MAX_SEGMENTS {
             return Err(format!(
@@ -359,20 +561,10 @@ impl Reader {
         let listed = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
         if listed.file_type().is_symlink() || !listed.is_dir() {
             return Err(format!(
-                "`{}` is not a directory, or is a link",
+                "`{}` is not a directory, or is a symbolic link",
                 path.display()
             ));
         }
-        let handle = open(
-            path,
-            self.flags.no_follow | self.flags.no_follow_any | self.flags.directory,
-        )?;
-        let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
-        let id = identity(&opened);
-        if !opened.is_dir() || id != identity(&listed) {
-            return Err(format!("`{}` changed while it was opened", path.display()));
-        }
-        self.held.push((path.to_path_buf(), id, handle));
         let mut entries: Vec<(String, fs::FileType)> = Vec::new();
         for entry in fs::read_dir(path).map_err(|e| cannot("list", path, &e))? {
             let entry = entry.map_err(|e| cannot("list", path, &e))?;
@@ -403,16 +595,15 @@ impl Reader {
             } else if kind.is_dir() {
                 self.directory(&child, &relative, depth + 1)?;
             } else if kind.is_file() {
-                self.file(&child, relative)?;
+                self.file(child, relative)?;
             } else {
                 return Err(format!("`{relative}` is not a regular file or a directory"));
             }
         }
-        self.held.pop();
-        self.unchanged(path, id)
+        Ok(())
     }
 
-    fn file(&mut self, path: &Path, relative: String) -> Result<(), Refusal> {
+    fn file(&mut self, disk: PathBuf, relative: String) -> Result<(), Refusal> {
         if !content::is_package_file(&relative) {
             return Err(format!(
                 "`{relative}` is not a file a package holds: ita.una, src/**/*.una, README.md, CHANGELOG.md and LICENSE files only"
@@ -421,91 +612,310 @@ impl Reader {
         if self.files.len() >= MAX_FILES {
             return Err(format!("the package holds more than {MAX_FILES} files"));
         }
-        let refuse = self.flags.no_follow | self.flags.no_follow_any;
-        let (handle, size) = open_regular(path, self.flags, refuse, true)?;
+        let meta = fs::symlink_metadata(&disk).map_err(|e| cannot("read", &disk, &e))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "`{relative}` is a symbolic link, which a package may not hold"
+            ));
+        }
+        if !meta.is_file() {
+            return Err(format!("`{relative}` is not a regular file or a directory"));
+        }
+        if links(&meta) != 1 {
+            return Err(format!(
+                "`{relative}` has more than one hard link, which a package may not hold"
+            ));
+        }
+        let size = meta.len();
         if size > MAX_BYTES.saturating_sub(self.bytes) {
             return Err(format!("the package holds more than {MAX_BYTES} bytes"));
         }
-        let bytes = read_exactly(&handle, size, path)?;
         self.bytes = self.bytes.saturating_add(size);
-        for (dir, id, _) in &self.held {
-            self.unchanged(dir, *id)?;
-        }
-        self.files.push(File {
+        self.files.push(Listed {
             path: relative,
-            bytes,
+            disk,
+            identity: identity(&meta),
+            size,
         });
         Ok(())
     }
+}
 
-    /// Refuses the package unless `dir` is still the directory of identity `id`, not a link.
-    fn unchanged(&self, dir: &Path, id: Identity) -> Result<(), Refusal> {
-        let now = fs::symlink_metadata(dir).map_err(|e| cannot("read", dir, &e))?;
-        if now.file_type().is_symlink() || !now.is_dir() || identity(&now) != id {
+/// The mode of a file written read-only, and of one written otherwise.
+const READ_ONLY_MODE: u32 = 0o444;
+const WRITABLE_MODE: u32 = 0o644;
+/// The mode of a directory once it is complete, set through its descriptor before the rename.
+const DIRECTORY_MODE: u32 = 0o755;
+/// How many fresh names are tried before a write is refused.
+const FRESH_TRIES: u32 = 16;
+
+/// A name for a fresh directory: the process id, a counter of this process and the current
+/// time. It only avoids collisions; it is no secret, and needs not be, since the directory is
+/// created with `mkdir`, which fails on any name already there, and with mode 0700.
+fn fresh_name() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(".una-fresh-{}-{count}-{nanos}", std::process::id())
+}
+
+/// A private directory this process created, with what it created in it.
+struct Fresh {
+    flags: Flags,
+    /// Its path, in the directory it is renamed into.
+    path: PathBuf,
+    /// Its identity, from its open descriptor when it was created.
+    identity: Identity,
+    /// Its descriptor.
+    handle: fs::File,
+    /// Each directory created in it, by its path in the package, with its descriptor.
+    dirs: BTreeMap<String, fs::File>,
+    /// The mode each file gets.
+    file_mode: u32,
+}
+
+impl Fresh {
+    /// Creates a fresh private directory in `parent`, which [`make_dirs`] made or checked.
+    fn create(parent: &Path, read_only: bool) -> Result<Fresh, Refusal> {
+        let flags = flags()?;
+        real_directory(parent)?;
+        let mut tries = 0;
+        let path = loop {
+            let path = parent.join(fresh_name());
+            match create_private_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists && tries < FRESH_TRIES => {
+                    tries += 1;
+                }
+                Err(error) => return Err(cannot("create", &path, &error)),
+            }
+        };
+        let handle = open_private_dir(&path, flags)?;
+        let meta = handle.metadata().map_err(|e| cannot("read", &path, &e))?;
+        Ok(Fresh {
+            flags,
+            identity: identity(&meta),
+            path,
+            handle,
+            dirs: BTreeMap::new(),
+            file_mode: if read_only {
+                READ_ONLY_MODE
+            } else {
+                WRITABLE_MODE
+            },
+        })
+    }
+
+    /// Refuses unless the fresh directory's path still names the directory created.
+    fn still_ours(&self) -> Result<(), Refusal> {
+        let now = fs::symlink_metadata(&self.path).map_err(|e| cannot("read", &self.path, &e))?;
+        if now.file_type().is_symlink() || !now.is_dir() || identity(&now) != self.identity {
             return Err(format!(
-                "`{}` changed while the package was read",
-                dir.display()
+                "`{}` was replaced while it was written",
+                self.path.display()
             ));
         }
         Ok(())
     }
-}
 
-/// Creates the directory `dir`, which must not exist, and writes `files` into it: each
-/// directory below it with `mkdir`, each file with `O_CREAT | O_EXCL | O_NOFOLLOW`, then made
-/// read-only when `read_only`. Every path is checked by rule 27 first.
-pub fn write_fresh(dir: &Path, files: &[(&str, &[u8])], read_only: bool) -> Result<(), Refusal> {
-    let flags = flags()?;
-    fs::create_dir(dir).map_err(|e| cannot("create", dir, &e))?;
-    real_directory(dir)?;
-    for (path, bytes) in files {
+    /// Writes `bytes` at `path`, a path of rule 27, creating the directories above it.
+    fn write(&mut self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
         content::check_path(path)?;
+        self.still_ours()?;
         let segments: Vec<&str> = path.split('/').collect();
         let Some((name, parents)) = segments.split_last() else {
             return Err(format!("`{path}` is not a path"));
         };
-        let mut target = dir.to_path_buf();
+        let mut target = self.path.clone();
+        let mut relative = String::new();
         for parent in parents {
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(parent);
             target.push(parent);
-            make_dir(&target)?;
+            if self.dirs.contains_key(&relative) {
+                continue;
+            }
+            create_private_dir(&target).map_err(|e| cannot("create", &target, &e))?;
+            let handle = open_private_dir(&target, self.flags)?;
+            self.dirs.insert(relative.clone(), handle);
         }
         target.push(name);
-        write_new(&target, bytes, read_only, flags)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        with_private_mode(&mut options);
+        with_flags(
+            &mut options,
+            self.flags.no_follow | self.flags.no_follow_any,
+        );
+        let mut file = options
+            .open(&target)
+            .map_err(|e| cannot("create", &target, &e))?;
+        file.write_all(bytes)
+            .map_err(|e| cannot("write", &target, &e))?;
+        // Through the descriptor (`fchmod`), never by path.
+        set_mode(&file, self.file_mode).map_err(|e| cannot("protect", &target, &e))?;
+        file.sync_all().map_err(|e| cannot("write", &target, &e))?;
+        Ok(())
     }
-    Ok(())
+
+    /// Sets each directory's final mode through its descriptor and syncs it, the fresh one
+    /// last, then checks that the fresh directory is still the one created.
+    fn seal(&self) -> Result<(), Refusal> {
+        for (relative, handle) in self.dirs.iter().rev() {
+            let shown = self.path.join(relative);
+            set_mode(handle, DIRECTORY_MODE).map_err(|e| cannot("protect", &shown, &e))?;
+            sync_dir(handle, &shown)?;
+        }
+        set_mode(&self.handle, DIRECTORY_MODE).map_err(|e| cannot("protect", &self.path, &e))?;
+        sync_dir(&self.handle, &self.path)?;
+        self.still_ours()
+    }
+
+    /// Renames the fresh directory to `name` in its parent. The name that results must be the
+    /// directory created.
+    fn commit(self, name: &str) -> Result<(), Refusal> {
+        let target = self.parent()?.join(name);
+        if let Err(error) = self.seal() {
+            return Err(self.discard(error));
+        }
+        if let Err(error) = fs::rename(&self.path, &target) {
+            let refusal = format!("cannot move `{}` into place: {error}", target.display());
+            return Err(self.discard(refusal));
+        }
+        let placed = fs::symlink_metadata(&target).map_err(|e| cannot("read", &target, &e))?;
+        if placed.file_type().is_symlink() || identity(&placed) != self.identity {
+            return Err(format!(
+                "`{}` is not the directory written, after it was moved into place",
+                target.display()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Renames the one file `file` of the fresh directory to `name` in its parent, then removes
+    /// the fresh directory, now empty.
+    fn commit_file(self, file: &str, name: &str) -> Result<(), Refusal> {
+        let target = self.parent()?.join(name);
+        if let Err(error) = self.seal() {
+            return Err(self.discard(error));
+        }
+        // A rename replaces the name itself: a link there is replaced, never followed.
+        if let Err(error) = fs::rename(self.path.join(file), &target) {
+            let refusal = format!("cannot move `{}` into place: {error}", target.display());
+            return Err(self.discard(refusal));
+        }
+        if let Err(refusal) = self.still_ours() {
+            return Err(format!("{refusal}; it was left in place"));
+        }
+        fs::remove_dir(&self.path).map_err(|e| cannot("remove", &self.path, &e))
+    }
+
+    fn parent(&self) -> Result<&Path, Refusal> {
+        self.path
+            .parent()
+            .ok_or_else(|| format!("`{}` has no parent", self.path.display()))
+    }
+
+    /// Removes the fresh directory after `refusal`, when its path still names the directory
+    /// created; otherwise leaves it, and says so.
+    fn discard(self, refusal: Refusal) -> Refusal {
+        if let Err(changed) = self.still_ours() {
+            return format!("{refusal}; {changed}, so it was left in place");
+        }
+        match fs::remove_dir_all(&self.path) {
+            Ok(()) => refusal,
+            Err(error) => format!(
+                "{refusal}; {}",
+                cannot("remove the unfinished", &self.path, &error)
+            ),
+        }
+    }
 }
 
-/// Writes a new file at `path` with `O_CREAT | O_EXCL | O_NOFOLLOW`: never through a link and
-/// never over a file that exists.
-pub fn write_new_file(path: &Path, bytes: &[u8], read_only: bool) -> Result<(), Refusal> {
-    let flags = flags()?;
-    write_new(path, bytes, read_only, flags)
+/// Syncs the directory open as `handle`. A file system that cannot sync a directory at all
+/// (`EINVAL`, or no support) is not an error: its files were each synced already.
+fn sync_dir(handle: &fs::File, path: &Path) -> Result<(), Refusal> {
+    match handle.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::InvalidInput | ErrorKind::Unsupported
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(cannot("write", path, &error)),
+    }
 }
 
-fn write_new(path: &Path, bytes: &[u8], read_only: bool, flags: Flags) -> Result<(), Refusal> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    with_flags(&mut options, flags.no_follow | flags.no_follow_any);
-    let mut file = options.open(path).map_err(|e| cannot("create", path, &e))?;
-    file.write_all(bytes)
-        .map_err(|e| cannot("write", path, &e))?;
-    file.sync_all().map_err(|e| cannot("write", path, &e))?;
-    if read_only {
-        let mut permissions = file
-            .metadata()
-            .map_err(|e| cannot("read", path, &e))?
-            .permissions();
-        permissions.set_readonly(true);
-        // Through the descriptor (fchmod), never by path.
-        file.set_permissions(permissions)
-            .map_err(|e| cannot("protect", path, &e))?;
+/// Opens the directory at `path`, just created by this process, with no link followed: it must
+/// be a directory that grants nothing to others, the same one its path names.
+fn open_private_dir(path: &Path, flags: Flags) -> Result<fs::File, Refusal> {
+    let handle = open(
+        path,
+        flags.no_follow | flags.no_follow_any | flags.directory,
+    )?;
+    let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
+    let listed = real_directory(path)?;
+    if !opened.is_dir() || !private(&opened) || identity(&opened) != identity(&listed) {
+        return Err(format!(
+            "`{}` is not the private directory just created",
+            path.display()
+        ));
     }
-    Ok(())
+    Ok(handle)
+}
+
+/// Writes the verified package `tree` as the directory `name` in `parent`, which [`make_dirs`]
+/// made: into a fresh private directory, each file read-only when `read_only`, then renamed into
+/// place. Fails when `parent` already holds `name`, unless that is an empty directory, which a
+/// rename replaces.
+pub fn store_tree(
+    parent: &Path,
+    name: &str,
+    tree: &VerifiedTree,
+    read_only: bool,
+) -> Result<(), Refusal> {
+    component(name)?;
+    let mut fresh = Fresh::create(parent, read_only)?;
+    for file in tree.files() {
+        if let Err(refusal) = fresh.write(&file.path, &file.bytes) {
+            return Err(fresh.discard(refusal));
+        }
+    }
+    fresh.commit(name)
+}
+
+/// Writes `bytes` as the file `name` in `parent`, which [`make_dirs`] made: into a fresh private
+/// directory, read-only when `read_only`, then renamed into place, replacing what `name` was.
+pub fn store_file(parent: &Path, name: &str, bytes: &[u8], read_only: bool) -> Result<(), Refusal> {
+    component(name)?;
+    let mut fresh = Fresh::create(parent, read_only)?;
+    // The file's name inside the fresh directory is fixed, and a path of rule 27.
+    const INSIDE: &str = "file";
+    if let Err(refusal) = fresh.write(INSIDE, bytes) {
+        return Err(fresh.discard(refusal));
+    }
+    fresh.commit_file(INSIDE, name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let dir = base.join(format!("una-tree-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     /// The flag values are this module's own constants: opening a link with them must fail, and
     /// opening it without them must not, so a wrong value fails here.
@@ -513,9 +923,7 @@ mod tests {
     #[test]
     fn the_flags_refuse_a_link_and_change_nothing() {
         let flags = flags().unwrap();
-        let base = fs::canonicalize(std::env::temp_dir()).unwrap();
-        let dir = base.join(format!("una-tree-flags-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = scratch("flags");
         fs::create_dir_all(dir.join("real")).unwrap();
         fs::write(dir.join("real/file"), b"bytes").unwrap();
         std::os::unix::fs::symlink(dir.join("real/file"), dir.join("link")).unwrap();
@@ -532,6 +940,65 @@ mod tests {
         assert!(open(&dir.join("link"), 0).is_ok());
         // Opening read the file and wrote nothing to it.
         assert_eq!(fs::read(dir.join("real/file")).unwrap(), b"bytes");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh directory is private, and one whose path is swapped for another directory, or
+    /// for a link, while it is written is never renamed into place nor removed: the write fails
+    /// closed and leaves it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fresh_directory_swapped_while_written_fails_closed() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = scratch("fresh-swap");
+        let mut fresh = Fresh::create(&dir, false).unwrap();
+        assert_eq!(fs::metadata(&fresh.path).unwrap().mode() & 0o777, 0o700);
+        fresh.write("src/a.una", b"module a\n").unwrap();
+        // Someone who can rename in the parent moves it away and puts another directory there.
+        let moved = dir.join("moved");
+        fs::rename(&fresh.path, &moved).unwrap();
+        fs::create_dir(&fresh.path).unwrap();
+        fs::write(fresh.path.join("planted"), b"x").unwrap();
+        assert!(fresh.write("src/b.una", b"module b\n").is_err());
+        let path = fresh.path.clone();
+        let refusal = fresh.commit("pkg").unwrap_err();
+        assert!(refusal.contains("left in place"), "{refusal}");
+        assert!(!dir.join("pkg").exists());
+        assert!(path.join("planted").exists());
+        assert!(moved.join("src/a.una").exists());
+        // The same with a link in its place.
+        let mut fresh = Fresh::create(&dir, false).unwrap();
+        fresh.write("ita.una", b"ita x\n").unwrap();
+        let away = dir.join("away");
+        fs::rename(&fresh.path, &away).unwrap();
+        std::os::unix::fs::symlink(&away, &fresh.path).unwrap();
+        let link = fresh.path.clone();
+        assert!(fresh.commit("pkg2").unwrap_err().contains("left in place"));
+        assert!(!dir.join("pkg2").exists());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(away.join("ita.una").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A failed write removes what it created, and nothing else.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_removes_only_its_own_directory() {
+        let dir = scratch("fresh-fail");
+        fs::write(dir.join("keep"), b"x").unwrap();
+        let mut fresh = Fresh::create(&dir, false).unwrap();
+        fresh.write("ita.una", b"ita x\n").unwrap();
+        // The same file twice: `O_EXCL` refuses it, and the fresh directory is removed.
+        let refusal = fresh.write("ita.una", b"again").unwrap_err();
+        let path = fresh.path.clone();
+        let _ = fresh.discard(refusal);
+        assert!(!path.exists());
+        assert!(dir.join("keep").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -55,7 +55,8 @@ fn a_package_is_stored_once_and_loads_verified() {
     let digest = itaoca.store(&bytes).unwrap();
     assert_eq!(digest, digest_of(&mut package()).unwrap());
     let loaded = itaoca.load(&digest).unwrap();
-    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded.files().len(), 2);
+    assert_eq!(loaded.digest(), digest);
     // Stored files are read-only.
     let dir = itaoca.package_dir(&digest).unwrap();
     assert!(
@@ -83,7 +84,7 @@ fn a_store_tampered_with_does_not_load() {
         itaoca
             .load(&digest)
             .unwrap_err()
-            .contains("changed after it was fetched")
+            .contains("were changed after they were written")
     );
     // An extra file, or a link, refuses it too.
     std::fs::write(dir.join("src/a/b.una"), "module a.b\n").unwrap();
@@ -130,6 +131,41 @@ fn storing_never_writes_through_a_link() {
         assert!(refusal.contains("symbolic link"), "{refusal}");
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_store_root_that_is_a_link_is_refused() {
+    let itaoca = store("root-link");
+    let real = itaoca.root.with_file_name("root-link-real");
+    if real.exists() {
+        make_writable(&real);
+        std::fs::remove_dir_all(&real).unwrap();
+    }
+    std::fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &itaoca.root).unwrap();
+    let bytes = archive(&mut package()).unwrap();
+    let refusal = itaoca.store(&bytes).unwrap_err();
+    assert!(refusal.contains("symbolic link"), "{refusal}");
+    assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+    // A package stored in the real directory does not load through the link either.
+    let direct = Itaoca { root: real.clone() };
+    let digest = direct.store(&bytes).unwrap();
+    assert!(itaoca.load(&digest).unwrap_err().contains("symbolic link"));
+    assert!(itaoca.contains(&digest).is_err());
+    std::fs::remove_file(&itaoca.root).unwrap();
+}
+
+#[test]
+fn storing_leaves_no_fresh_directory_behind() {
+    let itaoca = store("no-leftover");
+    let digest = itaoca.store(&archive(&mut package()).unwrap()).unwrap();
+    let parent = itaoca.package_dir(&digest).unwrap();
+    let names: Vec<String> = std::fs::read_dir(parent.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, [digest.strip_prefix("sha256:").unwrap()]);
 }
 
 #[test]

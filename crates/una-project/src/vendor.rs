@@ -5,23 +5,23 @@
 //! A registry package `owner/name` at `version` of `source` is vendored in
 //! `vendor/ita/<source>/<owner>+<name>-<version>/` (an unscoped name has no `<owner>+`), with its
 //! provenance beside it in `<owner>+<name>-<version>.provenance`. Both places are verified the
-//! same way on every load: the files are read as [`crate::tree`] states, their digest is the
-//! lock's, the provenance verifies against the lock ([`crate::provenance`]), and the statement's
-//! `manifest` is the digest of the package's `ita.una`. A vendored package that does not verify
-//! refuses the load: Itaoca is not tried in its place, and nothing is repaired.
+//! same way on every load: the files are read once each into memory as [`crate::tree`] states,
+//! the digest of those bytes is the lock's ([`crate::tree::VerifiedTree`]), the provenance
+//! verifies against the lock ([`crate::provenance`]), and the statement's `manifest` is the
+//! digest of those same bytes of the package's `ita.una`. A vendored package that does not
+//! verify refuses the load: Itaoca is not tried in its place, and nothing is repaired.
+//! Vendoring writes the verified bytes of Itaoca's copy, never a file re-read by its path.
 //!
 //! Costs: O(B) for the B bytes of the package, and the provenance's O(log L) hashes.
 
-use std::fs;
 use std::path::Path;
 
 use una_syntax::ita;
 
-use crate::content::{self, File};
 use crate::ita::ITATY;
 use crate::itaoca::Itaoca;
 use crate::provenance::{self, Expected};
-use crate::tree;
+use crate::tree::{self, VerifiedTree};
 
 /// The directory of the vendored packages, below the root.
 pub const VENDOR: [&str; 2] = ["vendor", "ita"];
@@ -49,8 +49,8 @@ pub enum Place {
 pub struct Loaded {
     /// Where it was loaded from.
     pub place: Place,
-    /// Its files, in listing order.
-    pub files: Vec<File>,
+    /// Its files, as read once and verified.
+    pub tree: VerifiedTree,
     /// Its provenance document, as stored.
     pub provenance: Vec<u8>,
 }
@@ -163,29 +163,20 @@ pub fn expected(
     })
 }
 
-/// The release's files, verified: read from `dir` with no link followed, with the digest
+/// The release's files, verified: read once from `dir` with no link followed, with the digest
 /// `digest`.
-fn read_verified(dir: &Path, digest: &str) -> Result<Vec<File>, Problem> {
-    let mut files = tree::read_package(dir).map_err(Problem::Refused)?;
-    let found = content::digest_of(&mut files).map_err(Problem::Refused)?;
-    if found != digest {
-        return Err(Problem::Refused(format!(
-            "`{}` has the digest {found}, not the lock's {digest}: it was changed",
-            dir.display()
-        )));
-    }
-    Ok(files)
+fn read_verified(dir: &Path, digest: &str) -> Result<VerifiedTree, Problem> {
+    tree::read_verified(dir, digest).map_err(Problem::Refused)
 }
 
 /// Checks the provenance `bytes` against the lock and the release's files.
-fn check(files: &[File], bytes: &[u8], expected: &Expected) -> Result<(), Problem> {
+fn check(files: &VerifiedTree, bytes: &[u8], expected: &Expected) -> Result<(), Problem> {
     let read = provenance::parse(bytes).map_err(Problem::Refused)?;
     let statement = provenance::verify(&read, expected).map_err(Problem::Refused)?;
     let manifest = files
-        .iter()
-        .find(|f| f.path == "ita.una")
+        .file("ita.una")
         .ok_or_else(|| Problem::Refused(format!("`{}` has no ita.una", expected.name)))?;
-    if statement.manifest != provenance::sha256_digest(&manifest.bytes) {
+    if statement.manifest != provenance::sha256_digest(manifest) {
         return Err(Problem::Refused(format!(
             "the ita.una of `{} {}` is not the one its release statement names",
             expected.name, expected.version
@@ -219,7 +210,7 @@ pub fn vendored(root: &Path, expected: &Expected) -> Result<Option<Loaded>, Prob
     check(&files, &bytes, expected)?;
     Ok(Some(Loaded {
         place: Place::Vendor,
-        files,
+        tree: files,
         provenance: bytes,
     }))
 }
@@ -248,7 +239,7 @@ pub fn stored(itaoca: &Itaoca, expected: &Expected) -> Result<Option<Loaded>, Pr
     check(&files, &bytes, expected)?;
     Ok(Some(Loaded {
         place: Place::Itaoca,
-        files,
+        tree: files,
         provenance: bytes,
     }))
 }
@@ -391,38 +382,19 @@ pub fn vendor(
         })?;
     let parent = tree::make_dirs(root, &[VENDOR[0], VENDOR[1], &expected.source])
         .map_err(Problem::Refused)?;
-    let pid = std::process::id();
     if present.is_none() {
-        let fresh = parent.join(format!(".vendoring-{dir_name}-{pid}"));
-        let files: Vec<(&str, &[u8])> = from
-            .files
-            .iter()
-            .map(|f| (f.path.as_str(), f.bytes.as_slice()))
-            .collect();
-        if let Err(refusal) = tree::write_fresh(&fresh, &files, false) {
-            let _ = fs::remove_dir_all(&fresh);
-            return Err(Problem::Refused(refusal));
-        }
-        if let Err(error) = fs::rename(&fresh, parent.join(&dir_name)) {
-            let _ = fs::remove_dir_all(&fresh);
-            return Err(Problem::Refused(format!(
-                "cannot move the vendored copy into `{relative}/{dir_name}`: {error}"
-            )));
-        }
+        tree::store_tree(&parent, &dir_name, &from.tree, false).map_err(|refusal| {
+            Problem::Refused(format!(
+                "cannot write the vendored copy into `{relative}/{dir_name}`: {refusal}"
+            ))
+        })?;
         written.push(format!("{relative}/{dir_name}"));
     }
-    let temporary = parent.join(format!(".vendoring-{provenance_name}-{pid}"));
-    if let Err(refusal) = tree::write_new_file(&temporary, &from.provenance, false) {
-        let _ = fs::remove_file(&temporary);
-        return Err(Problem::Refused(refusal));
-    }
-    // A rename replaces the name itself: a link there is replaced, never followed.
-    if let Err(error) = fs::rename(&temporary, parent.join(&provenance_name)) {
-        let _ = fs::remove_file(&temporary);
-        return Err(Problem::Refused(format!(
-            "cannot write `{relative}/{provenance_name}`: {error}"
-        )));
-    }
+    tree::store_file(&parent, &provenance_name, &from.provenance, false).map_err(|refusal| {
+        Problem::Refused(format!(
+            "cannot write `{relative}/{provenance_name}`: {refusal}"
+        ))
+    })?;
     written.push(format!("{relative}/{provenance_name}"));
     // The copy loads verified, as every load does.
     match vendored(root, expected)? {

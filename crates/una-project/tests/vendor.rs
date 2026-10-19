@@ -392,7 +392,7 @@ fn a_release_loads_from_itaoca_verified() {
     let root = fresh("from-itaoca-root");
     let loaded = vendor::load(&root, Some(&itaoca), &release.expected).unwrap();
     assert_eq!(loaded.place, Place::Itaoca);
-    assert_eq!(loaded.files.len(), 2);
+    assert_eq!(loaded.tree.files().len(), 2);
     // Nothing anywhere: absent.
     let empty = Itaoca {
         root: fresh("from-itaoca-empty"),
@@ -493,6 +493,28 @@ fn vendoring_never_writes_through_a_link() {
     ));
     assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0);
     // Nor loads through one.
+    assert!(matches!(
+        vendor::load(&root, Some(&itaoca), &release.expected),
+        Err(Problem::Refused(_))
+    ));
+    // A component further down, `vendor/ita/acme`, that is a link: refused the same way.
+    let root = fresh("vendor-link-deeper");
+    let away = fresh("vendor-link-deeper-away");
+    std::fs::create_dir_all(root.join("vendor/ita")).unwrap();
+    std::os::unix::fs::symlink(&away, root.join("vendor/ita/acme")).unwrap();
+    assert!(matches!(
+        vendor::vendor(&root, Some(&itaoca), &release.expected),
+        Err(Problem::Refused(_))
+    ));
+    assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0);
+    // A vendored file replaced by a link to a file of the same bytes: refused, not followed.
+    let root = fresh("vendor-file-link");
+    vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
+    let file = root.join("vendor/ita/acme/acme+ledger-0.3.1/src/ledger.una");
+    let copy = root.join("ledger.una");
+    std::fs::copy(&file, &copy).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(&copy, &file).unwrap();
     assert!(matches!(
         vendor::load(&root, Some(&itaoca), &release.expected),
         Err(Problem::Refused(_))

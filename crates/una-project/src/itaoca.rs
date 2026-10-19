@@ -1,26 +1,26 @@
 //! Itaoca, the local store of fetched packages (ADR 0122 rule 30), under `~/.una/itaoca` or the
 //! directory `UNA_ITAOCA` names:
 //!
-//! - `packages/sha256/<hex>/`: each package by the digest of its content, unpacked once into a
-//!   fresh directory, every file created exclusively, with no link followed, and made
-//!   read-only, then renamed into place;
+//! - `packages/sha256/<hex>/`: each package by the digest of its content, written once from the
+//!   archive's verified bytes into a fresh private directory, every file created exclusively,
+//!   with no link followed, and made read-only through its descriptor, then renamed into place
+//!   ([`crate::tree::store_tree`]);
 //! - `registry/<source>/releases/<release>/checkpoint-<size>.provenance`: the provenance of a
 //!   release at the resolution point of size `size` ([`crate::provenance`]), where `<release>`
 //!   is the release's directory name ([`crate::vendor::release_dir`]).
 //!
-//! A package is verified on every load, not once: its files are read again as
-//! [`crate::tree`] states, with no link followed, only directories and regular files of one
-//! link, each file read once; and the digest of what was read is compared with the one asked
-//! for. A store tampered with after the fetch gives an error (U7010 where the command reports
-//! it), never a different program.
+//! The root itself must not be a symbolic link; what lies above it is the user's choice. A
+//! package is verified on every load, not once: its files are read again as [`crate::tree`]
+//! states, each once, into memory, and the digest of those bytes is compared with the one asked
+//! for before any of them is used ([`crate::tree::VerifiedTree`]). A store tampered with after
+//! the fetch gives an error (U7010 where the command reports it), never a different program.
 //!
 //! Costs: storing and loading are O(B) for the B bytes of a package, with one SHA-256 pass.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::content::{self, File};
-use crate::{provenance, tree, vendor};
+use crate::tree::{self, VerifiedTree};
+use crate::{provenance, vendor};
 
 /// The store at `root`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +66,7 @@ impl Itaoca {
     /// the way refuses.
     pub fn contains(&self, digest: &str) -> Result<bool, Refusal> {
         let hex = digest_hex(digest).ok_or_else(|| format!("`{digest}` is not a digest"))?;
+        tree::not_a_link(&self.root)?;
         Ok(tree::locate(&self.root, &["packages", "sha256", hex])?.is_some())
     }
 
@@ -73,53 +74,36 @@ impl Itaoca {
     /// returns its digest. A package already stored is loaded and verified instead; what is
     /// written is loaded and verified too.
     pub fn store(&self, archive: &[u8]) -> Result<String, Refusal> {
-        let read = content::read_archive(archive)?;
-        let hex = digest_hex(&read.digest).ok_or("the archive's digest is not a digest")?;
+        let read = VerifiedTree::from_archive(archive)?;
+        let digest = read.digest().to_owned();
+        let hex = digest_hex(&digest).ok_or("the archive's digest is not a digest")?;
+        tree::not_a_link(&self.root)?;
         let parent = tree::make_dirs(&self.root, &["packages", "sha256"])?;
-        if self.contains(&read.digest)? {
-            self.load(&read.digest)?;
-            return Ok(read.digest);
+        if self.contains(&digest)? {
+            self.load(&digest)?;
+            return Ok(digest);
         }
-        let mut files: Vec<(&str, &[u8])> = Vec::with_capacity(read.files.len());
-        for (path, range) in &read.files {
-            let bytes = archive
-                .get(range.clone())
-                .ok_or("an archive range is out of bounds")?;
-            files.push((path.as_str(), bytes));
-        }
-        // A fresh directory, created here and nowhere else: a leftover is an error, not reused.
-        let fresh = parent.join(format!(".unpacking-{hex}-{}", std::process::id()));
-        if let Err(refusal) = tree::write_fresh(&fresh, &files, true) {
-            let _ = fs::remove_dir_all(&fresh);
-            return Err(refusal);
-        }
-        if let Err(error) = fs::rename(&fresh, parent.join(hex)) {
-            let _ = fs::remove_dir_all(&fresh);
+        if let Err(refusal) = tree::store_tree(&parent, hex, &read, true) {
             // Another process stored it first: what is there must still verify.
-            if self.contains(&read.digest)? {
-                self.load(&read.digest)?;
-                return Ok(read.digest);
+            if self.contains(&digest)? {
+                self.load(&digest)?;
+                return Ok(digest);
             }
-            return Err(format!("cannot store the package: {error}"));
+            return Err(format!("cannot store the package: {refusal}"));
         }
-        self.load(&read.digest)?;
-        Ok(read.digest)
+        self.load(&digest)?;
+        Ok(digest)
     }
 
     /// Loads the package of `digest`, verified: its files read again with no link followed,
-    /// only regular files and directories, and the digest of what was read equal to `digest`.
-    pub fn load(&self, digest: &str) -> Result<Vec<File>, Refusal> {
+    /// only regular files and directories, each once into memory, and the digest of those bytes
+    /// equal to `digest`.
+    pub fn load(&self, digest: &str) -> Result<VerifiedTree, Refusal> {
         let hex = digest_hex(digest).ok_or_else(|| format!("`{digest}` is not a digest"))?;
+        tree::not_a_link(&self.root)?;
         let dir = tree::locate(&self.root, &["packages", "sha256", hex])?
             .ok_or_else(|| format!("the package `{digest}` is not in Itaoca"))?;
-        let mut files = tree::read_package(&dir)?;
-        let found = content::digest_of(&mut files)?;
-        if found != digest {
-            return Err(format!(
-                "the stored package `{digest}` has the digest {found}: it was changed after it was fetched"
-            ));
-        }
-        Ok(files)
+        tree::read_verified(&dir, digest)
     }
 
     /// The components of the provenance of a release at the resolution point of `size`.
@@ -141,7 +125,8 @@ impl Itaoca {
 
     /// Stores the provenance of a release at the resolution point of `size`, once: the
     /// document must read ([`provenance::parse`]), and one already stored must be the same
-    /// bytes. It is written to a fresh file, never through a link, then renamed into place.
+    /// bytes. It is written into a fresh private directory, never through a link, then renamed
+    /// into place.
     pub fn store_provenance(
         &self,
         source: &str,
@@ -162,6 +147,7 @@ impl Itaoca {
             };
         }
         let [registry, source_dir, releases, release, file] = &parts;
+        tree::not_a_link(&self.root)?;
         let parent = tree::make_dirs(
             &self.root,
             &[
@@ -171,16 +157,8 @@ impl Itaoca {
                 release.as_str(),
             ],
         )?;
-        let temporary = parent.join(format!(".storing-{file}-{}", std::process::id()));
-        if let Err(refusal) = tree::write_new_file(&temporary, bytes, true) {
-            let _ = fs::remove_file(&temporary);
-            return Err(refusal);
-        }
-        if let Err(error) = fs::rename(&temporary, parent.join(file)) {
-            let _ = fs::remove_file(&temporary);
-            return Err(format!("cannot store the provenance: {error}"));
-        }
-        Ok(())
+        tree::store_file(&parent, file, bytes, true)
+            .map_err(|refusal| format!("cannot store the provenance: {refusal}"))
     }
 
     /// The provenance of a release at the resolution point of `size`, read once with no link
@@ -194,6 +172,7 @@ impl Itaoca {
     ) -> Result<Option<Vec<u8>>, Refusal> {
         let parts = Self::provenance_parts(source, name, version, size)?;
         let relative: Vec<&str> = parts.iter().map(String::as_str).collect();
+        tree::not_a_link(&self.root)?;
         match tree::locate(&self.root, &relative)? {
             Some(path) => tree::read_file(&path, provenance::MAX_BYTES as u64).map(Some),
             None => Ok(None),
