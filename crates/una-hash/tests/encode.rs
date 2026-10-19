@@ -21,13 +21,26 @@ fn magnitude(v: u128, pad: usize) -> Vec<u8> {
 #[test]
 fn a_small_integer_is_the_byte_0_and_8_bytes_little_endian() {
     assert_eq!(enc(|e| e.int(1)), [0, 1, 0, 0, 0, 0, 0, 0, 0]);
-    assert_eq!(enc(|e| e.int(-1)), [0, 255, 255, 255, 255, 255, 255, 255, 255]);
+    assert_eq!(
+        enc(|e| e.int(-1)),
+        [0, 255, 255, 255, 255, 255, 255, 255, 255]
+    );
     assert_eq!(enc(|e| e.int(0)), [0; 9]);
 }
 
 #[test]
 fn a_promoted_int_encodes_as_a_tagged_one_of_the_same_value() {
-    for v in [0i64, 1, -1, 42, -42, i64::MAX, i64::MIN, i64::MAX - 1, i64::MIN + 1] {
+    for v in [
+        0i64,
+        1,
+        -1,
+        42,
+        -42,
+        i64::MAX,
+        i64::MIN,
+        i64::MAX - 1,
+        i64::MIN + 1,
+    ] {
         let tagged = enc(|e| e.int(v));
         let m = magnitude(u128::from(v.unsigned_abs()), 0);
         for pad in [0, 1, 7, 9] {
@@ -46,7 +59,11 @@ fn a_u64_from_2_to_the_63_takes_the_big_form_as_an_int_of_that_value() {
         assert_eq!(unsigned, int, "{v}");
         assert_eq!(unsigned.first(), Some(&1));
         assert_eq!(unsigned.get(1), Some(&0), "positive");
-        assert_eq!(unsigned.get(2..10), Some(8u64.to_le_bytes().as_slice()), "an 8-byte magnitude");
+        assert_eq!(
+            unsigned.get(2..10),
+            Some(8u64.to_le_bytes().as_slice()),
+            "an 8-byte magnitude"
+        );
     }
     // Up to 2^63 - 1, the small form.
     assert_eq!(enc(|e| e.uint(5)), enc(|e| e.int(5)));
@@ -70,16 +87,25 @@ fn small_values_of_every_kind_share_the_integer_form() {
     assert_eq!(enc(|e| e.bool(false)), enc(|e| e.int(0)));
     assert_eq!(enc(|e| e.unit()), enc(|e| e.int(0)));
     assert_eq!(enc(|e| e.index(3)), enc(|e| e.int(3)));
-    assert_eq!(enc(|e| e.f32_bits(0x3f80_0000)), enc(|e| e.int(0x3f80_0000)));
+    assert_eq!(
+        enc(|e| e.f32_bits(0x3f80_0000)),
+        enc(|e| e.int(0x3f80_0000))
+    );
 }
 
 #[test]
 fn an_f64_is_the_byte_2_and_its_bits() {
     let one = enc(|e| e.f64_bits(1.0f64.to_bits()));
     assert_eq!(one.first(), Some(&2));
-    assert_eq!(one.get(1..), Some(1.0f64.to_bits().to_le_bytes().as_slice()));
+    assert_eq!(
+        one.get(1..),
+        Some(1.0f64.to_bits().to_le_bytes().as_slice())
+    );
     // -0.0 and 0.0 differ, as their `==` does in Una.
-    assert_ne!(enc(|e| e.f64_bits(0.0f64.to_bits())), enc(|e| e.f64_bits((-0.0f64).to_bits())));
+    assert_ne!(
+        enc(|e| e.f64_bits(0.0f64.to_bits())),
+        enc(|e| e.f64_bits((-0.0f64).to_bits()))
+    );
 }
 
 #[test]
@@ -93,7 +119,8 @@ fn a_text_is_its_length_then_its_bytes() {
 #[test]
 fn distinct_values_of_one_type_encode_differently() {
     // Texts that a missing length would confuse.
-    let pairs: [(&[&[u8]], &[&[u8]]); 3] = [
+    type Texts<'a> = &'a [&'a [u8]];
+    let pairs: [(Texts, Texts); 3] = [
         (&[b"ab", b"c"], &[b"a", b"bc"]),
         (&[b"", b"x"], &[b"x", b""]),
         (&[b"a"], &[b"a", b""]),
@@ -120,6 +147,10 @@ fn distinct_values_of_one_type_encode_differently() {
     }
     for v in [1u128 << 63, (1u128 << 64) - 1, 1u128 << 64, 1u128 << 100] {
         assert!(seen.insert(enc(|e| e.big(false, &magnitude(v, 0)))), "+{v}");
-        assert!(seen.insert(enc(|e| e.big(true, &magnitude(v + 1, 0)))), "-{}", v + 1);
+        assert!(
+            seen.insert(enc(|e| e.big(true, &magnitude(v + 1, 0)))),
+            "-{}",
+            v + 1
+        );
     }
 }

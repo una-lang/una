@@ -97,7 +97,11 @@ fn a_computation_fed_in_parts_gives_the_same_result() {
             let mut state = Sip24::new(key());
             state.write(a);
             state.write(b);
-            assert_eq!(state.finish(), u64::from_le_bytes(*expected), "vector {n} split at {split}");
+            assert_eq!(
+                state.finish(),
+                u64::from_le_bytes(*expected),
+                "vector {n} split at {split}"
+            );
         }
     }
 }

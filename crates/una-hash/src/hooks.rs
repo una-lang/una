@@ -7,7 +7,7 @@
 //! variable, flag or `una.toml` key reaches it: a test sets it through these functions. The
 //! release gate fails when `nm` finds [`UNA_HASH_TEST_HOOKS_MARKER`] in a shipped artifact.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use crate::key::{KeyError, ProcessKey};
 use crate::siphash::SipKey;

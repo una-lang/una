@@ -1,7 +1,10 @@
 //! The ordered hash table and the keys (ADR 0119 rules 9, 10 and 19).
 use una_hash::{OrderedTable, SipKey, hash, index_capacity};
 
-const TEST_KEY: SipKey = SipKey { k0: 0x0706_0504_0302_0100, k1: 0x0f0e_0d0c_0b0a_0908 };
+const TEST_KEY: SipKey = SipKey {
+    k0: 0x0706_0504_0302_0100,
+    k1: 0x0f0e_0d0c_0b0a_0908,
+};
 
 fn h(n: i64) -> u64 {
     hash(TEST_KEY, |e| e.int(n))

@@ -2,7 +2,10 @@
 //! process, so no other test may run beside them.
 use una_hash::{KeyError, OrderedTable, ProcessKey, SipKey, hash, hooks, table_key};
 
-const TEST_KEY: SipKey = SipKey { k0: 0x0706_0504_0302_0100, k1: 0x0f0e_0d0c_0b0a_0908 };
+const TEST_KEY: SipKey = SipKey {
+    k0: 0x0706_0504_0302_0100,
+    k1: 0x0f0e_0d0c_0b0a_0908,
+};
 
 fn h(n: i64) -> u64 {
     hash(TEST_KEY, |e| e.int(n))
@@ -36,7 +39,10 @@ fn hooks_fixed_key_constant_hash_probes_counter_and_missing_source() {
         assert!(t.contains(h(k), |x| *x == k));
     }
     let probes = hooks::probes() - before;
-    assert!(probes < 10_000 * 3, "{probes} probes for 10,000 present keys");
+    assert!(
+        probes < 10_000 * 3,
+        "{probes} probes for 10,000 present keys"
+    );
 
     // A fixed process key gives tables 0, 1 and 2 six distinct key halves.
     hooks::fix_key(TEST_KEY);
@@ -65,7 +71,10 @@ fn hooks_fixed_key_constant_hash_probes_counter_and_missing_source() {
             return;
         }
     };
-    assert_eq!(process.next_table_key().err(), Some(KeyError::CounterExhausted));
+    assert_eq!(
+        process.next_table_key().err(),
+        Some(KeyError::CounterExhausted)
+    );
 
     // A missing random source gives no process key (U6009), and no fallback key.
     hooks::reset();

@@ -52,12 +52,18 @@ impl ProcessKey {
     /// A process key with the given bits, for the test builds' fixed key.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn from_key(key: SipKey) -> ProcessKey {
-        ProcessKey { key, tables: AtomicU64::new(crate::hooks::first_table()) }
+        ProcessKey {
+            key,
+            tables: AtomicU64::new(crate::hooks::first_table()),
+        }
     }
 
     #[cfg(not(feature = "test-hooks"))]
     fn from_key(key: SipKey) -> ProcessKey {
-        ProcessKey { key, tables: AtomicU64::new(0) }
+        ProcessKey {
+            key,
+            tables: AtomicU64::new(0),
+        }
     }
 
     /// The key of the next table, from the counter's next value. A copy of a table, a `with` or
@@ -82,5 +88,8 @@ pub fn table_key(process: SipKey, n: u64) -> SipKey {
     if let Some(last) = x2.last_mut() {
         *last = 0x01;
     }
-    SipKey { k0: sip24(process, &x1), k1: sip24(process, &x2) }
+    SipKey {
+        k0: sip24(process, &x1),
+        k1: sip24(process, &x2),
+    }
 }

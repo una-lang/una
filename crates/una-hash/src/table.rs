@@ -110,7 +110,11 @@ impl<K, V> Default for OrderedTable<K, V> {
 impl<K, V> OrderedTable<K, V> {
     /// An empty table.
     pub fn new() -> OrderedTable<K, V> {
-        OrderedTable { entries: Vec::new(), live: 0, index: Index::with_capacity(index_capacity(0)) }
+        OrderedTable {
+            entries: Vec::new(),
+            live: 0,
+            index: Index::with_capacity(index_capacity(0)),
+        }
     }
 
     /// The number of keys.
@@ -149,10 +153,11 @@ impl<K, V> OrderedTable<K, V> {
             }
             if slot_tag == tag(hash) {
                 let position = (position - 1) as usize;
-                if let Some(Some(entry)) = self.entries.get(position) {
-                    if entry.hash == hash && same(&entry.key) {
-                        return Some(position);
-                    }
+                if let Some(Some(entry)) = self.entries.get(position)
+                    && entry.hash == hash
+                    && same(&entry.key)
+                {
+                    return Some(position);
                 }
             }
             at = (at + 1) & mask;
@@ -169,7 +174,10 @@ impl<K, V> OrderedTable<K, V> {
     /// The value of that key, to change in place.
     pub fn get_mut(&mut self, hash: u64, mut same: impl FnMut(&K) -> bool) -> Option<&mut V> {
         let position = self.find(hash, &mut same)?;
-        self.entries.get_mut(position)?.as_mut().map(|e| &mut e.value)
+        self.entries
+            .get_mut(position)?
+            .as_mut()
+            .map(|e| &mut e.value)
     }
 
     /// Whether a key with `hash` for which `same` holds is present.
@@ -180,7 +188,13 @@ impl<K, V> OrderedTable<K, V> {
     /// Sets the value of `key`. A present key keeps its place in the listing and gets the new
     /// value, and the old one is returned; a new key goes last. Expected O(1), amortized over
     /// the index's growth.
-    pub fn insert(&mut self, hash: u64, key: K, value: V, mut same: impl FnMut(&K) -> bool) -> Option<V> {
+    pub fn insert(
+        &mut self,
+        hash: u64,
+        key: K,
+        value: V,
+        mut same: impl FnMut(&K) -> bool,
+    ) -> Option<V> {
         if let Some(position) = self.find(hash, &mut same) {
             let entry = self.entries.get_mut(position)?.as_mut()?;
             return Some(core::mem::replace(&mut entry.value, value));
@@ -228,8 +242,12 @@ impl<K, V> OrderedTable<K, V> {
     /// A new index of `capacity` slots from the stored hashes, in O(n), with no key hashed again.
     fn rebuild(&mut self, capacity: usize) {
         self.index = Index::with_capacity(capacity);
-        let hashes: Vec<(usize, u64)> =
-            self.entries.iter().enumerate().filter_map(|(i, e)| e.as_ref().map(|e| (i, e.hash))).collect();
+        let hashes: Vec<(usize, u64)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.as_ref().map(|e| (i, e.hash)))
+            .collect();
         for (position, hash) in hashes {
             self.place(position, hash);
         }
@@ -241,12 +259,22 @@ impl<K: Clone, V: Clone> Clone for OrderedTable<K, V> {
         let entries = self
             .entries
             .iter()
-            .map(|e| e.as_ref().map(|e| Entry { hash: e.hash, key: e.key.clone(), value: e.value.clone() }))
+            .map(|e| {
+                e.as_ref().map(|e| Entry {
+                    hash: e.hash,
+                    key: e.key.clone(),
+                    value: e.value.clone(),
+                })
+            })
             .collect();
         let index = match &self.index {
             Index::Narrow(slots) => Index::Narrow(slots.clone()),
             Index::Wide(slots) => Index::Wide(slots.clone()),
         };
-        OrderedTable { entries, live: self.live, index }
+        OrderedTable {
+            entries,
+            live: self.live,
+            index,
+        }
     }
 }
