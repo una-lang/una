@@ -479,6 +479,12 @@ pub extern "C" fn una_rt_ever_start() -> i64 {
     runtime::ever_start()
 }
 
+/// Leaves the body of a `for ever` ([`runtime::ever_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_ever_end() {
+    runtime::ever_end();
+}
+
 /// 1 when the task must stop before an operation ([`runtime::poll`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_poll() -> i64 {

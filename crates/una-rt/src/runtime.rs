@@ -5,11 +5,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
+use una_interp::stopping::{HardStop, RunStop};
 use una_interp::{Event, EventOutcome, Grant};
 
 use crate::host::OpSite;
@@ -470,6 +471,11 @@ pub struct Options {
     /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
     /// 0116 rule 19).
     pub stop_after: Option<u64>,
+    /// `--deadline <seconds>`: a host stop request after this many seconds (ADR 0116 rule 14).
+    pub deadline: Option<u64>,
+    /// `--stop-grace <seconds>`: the grace period before the hard stop, 10 when not given
+    /// (rule 16).
+    pub stop_grace: Option<u64>,
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -544,9 +550,30 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 options.stop_after = Some(n);
             }
+            "--deadline" | "--stop-grace" => {
+                let text = value()?;
+                let n: u64 = text
+                    .parse()
+                    .map_err(|_| format!("`{flag} {text}` is not a number"))?;
+                let most = if flag == "--deadline" {
+                    una_interp::stopping::MAX_DEADLINE_SECS
+                } else {
+                    una_interp::stopping::MAX_GRACE_SECS
+                };
+                if n == 0 || n > most {
+                    return Err(format!(
+                        "`{flag} {n}` is out of range; give from 1 to {most}"
+                    ));
+                }
+                if flag == "--deadline" {
+                    options.deadline = Some(n);
+                } else {
+                    options.stop_grace = Some(n);
+                }
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds> and --stop-after-iterations <n>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds> and --stop-grace <seconds>"
                 ));
             }
         }
@@ -595,6 +622,9 @@ pub(crate) struct State {
     operations: Vec<usize>,
     /// In a task, the abort that stopped it, U6003, U6004 or U6005, which its block reports.
     pub(crate) stopped: Option<(Code, Location, String)>,
+    /// Whether the thread's task runs the body of a `for ever`, callees included: its `Http`
+    /// operations are interruptible there (ADR 0116 rule 14). A task starts outside one.
+    pub(crate) in_ever: bool,
 }
 
 /// Makes an abort say, on stderr, the debug high-water mark of the heap and the run's ceiling, in
@@ -827,6 +857,51 @@ impl State {
     }
 }
 
+/// The run's host stop state, set once at start (ADR 0116 rules 14 and 16).
+static RUN_STOP: OnceLock<Arc<RunStop>> = OnceLock::new();
+
+/// `--stop-after-iterations`, 0 when it is not given, and the iterations of `for ever` loops
+/// and of the host's loop started so far (rule 19).
+static STOP_AFTER: AtomicU64 = AtomicU64::new(0);
+static ITERATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The hard stop, once it has come (rule 16).
+fn hard_stop() -> Option<HardStop> {
+    RUN_STOP.get().and_then(|stop| stop.hard())
+}
+
+/// Whether the loop of the host, or a `for ever`, stops at the iteration that starts now
+/// (rules 13, 14 and 19): a host stop request has reached the run, which is sticky; or
+/// `--stop-after-iterations` iterations have started, which makes the run's own request now.
+/// Otherwise the iteration counts as started.
+fn iteration_stops() -> bool {
+    let Some(stop) = RUN_STOP.get() else {
+        return false;
+    };
+    if stop.stopped() {
+        return true;
+    }
+    let limit = STOP_AFTER.load(Ordering::SeqCst);
+    if limit > 0 && ITERATIONS.load(Ordering::SeqCst) >= limit {
+        stop.request_local();
+        return true;
+    }
+    ITERATIONS.fetch_add(1, Ordering::SeqCst);
+    false
+}
+
+/// Marks whether the thread's task runs the body of a `for ever` ([`State::in_ever`]).
+fn set_in_ever(inside: bool) {
+    with_state(|state| state.in_ever = inside);
+}
+
+/// The interruption of an `Http` operation of the thread's task, when it runs in the body of
+/// a `for ever` (rule 12).
+pub(crate) fn op_interrupt() -> Option<&'static RunStop> {
+    let inside = with_state(|state| state.in_ever).unwrap_or(false);
+    RUN_STOP.get().filter(|_| inside).map(AsRef::as_ref)
+}
+
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static HOT: Hot = const { Hot::inactive() };
@@ -837,34 +912,40 @@ thread_local! {
 /// settings, when it started, the next tick due and the iterations started.
 struct Driver {
     ticks: u64,
-    stop_after: Option<u64>,
     start: Option<std::time::Instant>,
     next: u64,
-    iterations: u64,
 }
 
 /// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
 /// `std.drive` after waiting for the next one due, delivering the latest one due with the
-/// count of those skipped; or 0 when the loop stops at this iteration start, once
-/// `--stop-after-iterations` iterations have started, with its `stop` event traced. The first
-/// tick is due at the first call, when `init` has returned.
+/// count of those skipped; or 0 when the loop stops at this iteration start, after a host stop
+/// request (rule 3), with its `stop` event traced. A host stop interrupts the wait, and the
+/// loop then stops, as at the next iteration start. The step that a tick starts is the body
+/// of the host's `for ever`. The first tick is due at the first call, when `init` has
+/// returned.
 pub fn drive_tick() -> i64 {
+    set_in_ever(false);
     let tick = DRIVER.with(|cell| {
         let mut driver = cell.borrow_mut();
         let driver = driver.as_mut()?;
-        if driver
-            .stop_after
-            .is_some_and(|limit| driver.iterations >= limit)
-        {
+        if iteration_stops() {
             return None;
         }
-        driver.iterations += 1;
         let start = *driver.start.get_or_insert_with(std::time::Instant::now);
         let period = std::time::Duration::from_millis(driver.ticks);
         let due = start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
         let now = std::time::Instant::now();
         if now < due {
-            std::thread::sleep(due - now);
+            let waited = match RUN_STOP.get() {
+                Some(stop) => una_interp::stopping::wait_tick(stop, due - now),
+                None => {
+                    std::thread::sleep(due - now);
+                    true
+                }
+            };
+            if !waited {
+                return None;
+            }
         }
         let elapsed = start.elapsed().as_millis();
         let latest = u64::try_from(elapsed / u128::from(driver.ticks.max(1)))
@@ -877,6 +958,7 @@ pub fn drive_tick() -> i64 {
     });
     match tick {
         Some((at, missed)) => {
+            set_in_ever(true);
             let word = |n: u64| {
                 values::int_word(&num_bigint::BigInt::from(
                     i64::try_from(n).unwrap_or(i64::MAX),
@@ -925,6 +1007,10 @@ struct Hot {
     /// `shielded >= flags`.
     shielded: Cell<usize>,
     flags: Cell<usize>,
+    /// The thread's attention word, and its value at the last check point (ADR 0116 rule 18,
+    /// ADR 0102 amendment of 2026-10-18).
+    word: Cell<Option<una_sys::attention::Word>>,
+    seen: Cell<u64>,
 }
 
 impl Hot {
@@ -939,6 +1025,24 @@ impl Hot {
             mem_ceiling: Cell::new(usize::MAX),
             shielded: Cell::new(0),
             flags: Cell::new(0),
+            word: Cell::new(None),
+            seen: Cell::new(u64::MAX),
+        }
+    }
+
+    /// Whether the thread's attention word changed since the last check point: one relaxed
+    /// load on the fast path. A change takes the slow path once, which looks for the hard stop.
+    fn attention(&self) -> bool {
+        match self
+            .word
+            .get()
+            .map(|word| word.changed_since(self.seen.get()))
+        {
+            Some(Some(now)) => {
+                self.seen.set(now);
+                hard_stop().is_some()
+            }
+            _ => false,
         }
     }
 
@@ -970,6 +1074,17 @@ fn install(state: State, depth: usize) {
             .set(mem_ceiling(state.baseline, state.max_memory));
         hot.shielded.set(state.shielded);
         hot.flags.set(state.cancel.len());
+        let word = hot.word.get().unwrap_or_else(una_sys::attention::register);
+        hot.word.set(Some(word));
+        // The word as it stands, read before the hard stop is: a hard stop that comes after
+        // the read raises the word, and one that came before it is seen here, with a value no
+        // word holds, so the first check point takes the slow path.
+        let seen = word.load();
+        hot.seen.set(if hard_stop().is_some() {
+            u64::MAX
+        } else {
+            seen
+        });
         hot.active.set(true);
     });
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
@@ -999,12 +1114,22 @@ pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 /// Whether a `for ever` stops at the iteration that starts now (ADR 0116 rules 13 and 14): a
 /// host stop request has come, which is sticky; its `stop` event is then traced. 1 to stop.
 pub fn ever_start() -> i64 {
-    if una_sys::attention::stop_requests() > 0 {
-        with_state(State::stop_event);
+    if iteration_stops() {
+        with_state(|state| {
+            state.in_ever = false;
+            state.stop_event();
+        });
         1
     } else {
+        set_in_ever(true);
         0
     }
+}
+
+/// Leaves the body of a `for ever`: the loop ended, by `stop`, a host stop or a failure, and
+/// its `on stop` and the code after it are outside the body (rule 14).
+pub fn ever_end() {
+    set_in_ever(false);
 }
 
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
@@ -1027,14 +1152,31 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
-    // ADR 0116 rule 18: only a run that can take a host stop changes what SIGINT and SIGTERM
-    // do; any other keeps their default actions.
+    // ADR 0116 rule 18: only a run that can reach a `for ever` or runs a driver changes what
+    // SIGINT and SIGTERM do; any other keeps their default actions.
     if meta.stops
         && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install()
     {
         let _ = writeln!(stderr, "error: {message}");
         return 3;
     }
+    // The run's host stop state, and its watcher when a request can come: a signal, or the
+    // deadline (rules 14 and 16).
+    let stop = RunStop::new(
+        options
+            .stop_grace
+            .unwrap_or(una_interp::stopping::DEFAULT_GRACE_SECS),
+    );
+    if (meta.stops || options.deadline.is_some())
+        && stop
+            .watch(options.deadline.map(std::time::Duration::from_secs))
+            .is_err()
+    {
+        let _ = writeln!(stderr, "error: cannot start the watcher of host stops");
+        return 3;
+    }
+    let _ = RUN_STOP.set(Arc::clone(&stop));
+    STOP_AFTER.store(options.stop_after.unwrap_or(0), Ordering::SeqCst);
     let grants = match grants(&meta, &options) {
         Ok(grants) => grants,
         Err(message) => {
@@ -1071,10 +1213,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
-        stop_after: options.stop_after,
         start: None,
         next: 0,
-        iterations: 0,
     });
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
@@ -1099,6 +1239,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         shielded: 0,
         operations: Vec::new(),
         stopped: None,
+        in_ever: false,
     };
     // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
     // any code of the program runs; each thread the program runs on writes it too.
@@ -1173,6 +1314,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                 return USAGE;
             }
         };
+    stop.finish();
     let mut code = if status == 0 { 0 } else { 1 };
     if let Some(state) = state {
         code = code.max(finish(state));
@@ -1358,7 +1500,8 @@ pub fn enter(site: usize) -> i64 {
         let clear = depth < hot.max_depth.get()
             && hot.stack_base.get().abs_diff(position) <= hot.stack_budget.get()
             && held <= hot.mem_ceiling.get()
-            && !hot.cancelled();
+            && !hot.cancelled()
+            && !hot.attention();
         if clear {
             // No borrow of the state runs compiled code (ADR 0102 rule 2).
             debug_assert!(STATE.with(|cell| cell.try_borrow_mut().is_ok()));
@@ -1375,6 +1518,12 @@ pub fn enter(site: usize) -> i64 {
         let state = cell.as_mut()?;
         if state.cancelled() {
             return Some(None);
+        }
+        // ADR 0116 rule 16: the hard stop cancels the run, or the task, at this call.
+        if let Some(hard) = hard_stop() {
+            let location = site_location(state, site);
+            let message = una_interp::stopping::hard_stop_message(hard);
+            return Some(stop_or_abort(&mut cell, Code::U6007, location, message));
         }
         let depth = HOT.with(|hot| hot.depth.get());
         let used = state.stack_base.abs_diff(position);
@@ -1409,8 +1558,9 @@ pub fn enter(site: usize) -> i64 {
 pub fn budget(site: usize) -> i64 {
     let held = crate::held();
     // ADR 0102: the negated abort conditions, on `Hot`.
-    let proceed =
-        HOT.with(|hot| !hot.active.get() || (held <= hot.mem_ceiling.get() && !hot.cancelled()));
+    let proceed = HOT.with(|hot| {
+        !hot.active.get() || (held <= hot.mem_ceiling.get() && !hot.cancelled() && !hot.attention())
+    });
     if proceed {
         return 0;
     }
@@ -1420,6 +1570,12 @@ pub fn budget(site: usize) -> i64 {
         let state = cell.as_mut()?;
         if state.cancelled() {
             return Some(None);
+        }
+        // ADR 0116 rule 16: the hard stop cancels the run, or the task, at this iteration.
+        if let Some(hard) = hard_stop() {
+            let location = site_location(state, site);
+            let message = una_interp::stopping::hard_stop_message(hard);
+            return Some(stop_or_abort(&mut cell, Code::U6007, location, message));
         }
         let message = over_budget(state, held)?;
         let location = site_location(state, site);
@@ -1589,6 +1745,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         shielded: template.shielded,
         operations: Vec::new(),
         stopped: None,
+        in_ever: false,
     };
     state.stack_base = stack_position(&state);
     install(state, template.depth);
@@ -1665,6 +1822,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         shielded: 0,
         operations: Vec::new(),
         stopped: None,
+        in_ever: false,
     };
     state.stack_base = stack_position(&state);
     install(state, 0);

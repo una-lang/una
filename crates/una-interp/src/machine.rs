@@ -612,6 +612,20 @@ impl<'p, 'w> Machine<'p, 'w> {
         limits: Limits<'w>,
     ) -> Machine<'p, 'w> {
         let max_depth = limits.max_depth;
+        let stop = limits.stop.map_or_else(
+            || RunStop::new(crate::stopping::DEFAULT_GRACE_SECS),
+            Arc::clone,
+        );
+        // The thread's attention word as it stands, read before the hard stop is: a hard stop
+        // after the read raises the word, and one before it is seen here, with a value no word
+        // holds, so the first check point takes the slow path.
+        let word = una_sys::attention::register();
+        let seen = word.load();
+        let seen = if stop.hard().is_some() {
+            u64::MAX
+        } else {
+            seen
+        };
         Machine {
             index,
             world,
@@ -620,16 +634,12 @@ impl<'p, 'w> Machine<'p, 'w> {
             trace: Vec::new(),
             depth: 0,
             max_depth,
-            stop: limits.stop.map_or_else(
-                || RunStop::new(crate::stopping::DEFAULT_GRACE_SECS),
-                Arc::clone,
-            ),
+            stop,
             stop_after: limits.stop_after,
             iterations: 0,
             in_ever: false,
-            word: una_sys::attention::register(),
-            // No word holds this value, so the first check point takes the slow path once.
-            seen: Cell::new(u64::MAX),
+            word,
+            seen: Cell::new(seen),
             max_memory: limits.max_memory,
             http: limits.http,
             held: limits.held,

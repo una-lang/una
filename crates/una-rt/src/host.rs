@@ -446,7 +446,14 @@ fn http(
         body: body.as_bytes(),
         bearer: bearer.as_deref(),
     };
-    match send(&request, &grants, &settings) {
+    // In the body of a `for ever`, a host stop interrupts the request (ADR 0116 rule 12).
+    let sent = match crate::runtime::op_interrupt() {
+        Some(stop) => {
+            una_http::client::send_interruptible(&request, &grants, &settings, &stop.interrupt())
+        }
+        None => send(&request, &grants, &settings),
+    };
+    match sent {
         Ok(response) => {
             let list = values::list();
             for (name, value) in response.headers {
@@ -556,6 +563,8 @@ mod tests {
             (Error::Tls, "Tls"),
             (Error::Protocol, "Protocol"),
         ];
+        // Edition 0.4 adds `Interrupted` last (ADR 0116 rule 12).
+        assert_eq!(http_error_index(Error::Interrupted), 8);
         assert_eq!(declared.len(), cases.len(), "{declared:?}");
         for (error, name) in cases {
             let index = usize::try_from(http_error_index(error)).expect("an index");
