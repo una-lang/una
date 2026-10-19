@@ -842,20 +842,20 @@ mod tests {
     #[test]
     fn conversions_round_on_every_bit() {
         let two = BigInt::from(2);
-        let p = |e: u32| two.pow(e);
-        assert_eq!(from_int(&(p(53) + 1)), 2f64.powi(53));
+        let p = |e: u32| -> BigInt { two.pow(e) };
+        assert_eq!(from_int(&(p(53) + BigInt::from(1))), 2f64.powi(53));
         assert_eq!(from_int(&(p(100) + p(47))), 2f64.powi(100));
         assert_eq!(
-            from_int(&(p(100) + p(47) + 1)),
+            from_int(&(p(100) + p(47) + BigInt::from(1))),
             2f64.powi(100) + 2f64.powi(48)
         );
         assert_eq!(
-            from_int(&-(p(100) + p(47) + 1)),
+            from_int(&-(p(100) + p(47) + BigInt::from(1))),
             -(2f64.powi(100) + 2f64.powi(48))
         );
         let limit = p(1024) - p(970);
         assert_eq!(from_int(&limit), f64::INFINITY);
-        assert_eq!(from_int(&(limit - 1)), f64::MAX);
+        assert_eq!(from_int(&(limit - BigInt::from(1))), f64::MAX);
         assert_eq!(to_int_exact(-0.0), Some(BigInt::default()));
         assert_eq!(to_int_exact(0.5), None);
         assert_eq!(to_int_exact(2f64.powi(63)), Some(p(63)));
