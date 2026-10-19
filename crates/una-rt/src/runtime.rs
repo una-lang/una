@@ -1993,8 +1993,19 @@ fn finish(mut state: State) -> i32 {
 /// §7`). Never returns.
 pub(crate) fn end_run_from_task(code: Code, location: Location, message: String) {
     let state = STATE.with(|cell| take_state(&mut cell.borrow_mut()));
-    if let Some(state) = state {
-        abort_run(state, code, location, message);
+    match state {
+        Some(state) => abort_run(state, code, location, message),
+        // The task's state is gone, after a panic of the runtime: the run ends all the same,
+        // with one line on stderr and no trace, as a stop with no state does.
+        None => {
+            end_once();
+            let _ = io::stdout().flush();
+            let _ = writeln!(io::stderr(), "[{code}] Error: {message}");
+            let exit = if code == Code::U8001 { 3 } else { 1 };
+            // Nothing unwinds through the compiled frames (spec/16 §4 rule 3).
+            #[allow(clippy::exit)]
+            std::process::exit(exit);
+        }
     }
 }
 

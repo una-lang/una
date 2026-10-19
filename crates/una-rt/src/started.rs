@@ -270,7 +270,7 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
                 started(&template, path, entry, form, (site, invoke));
             }));
             if outcome.is_err() {
-                runtime::abort_from_task(
+                runtime::end_run_from_task(
                     Code::U8001,
                     template.location.clone(),
                     "internal error: the runtime panicked in a started task".to_owned(),
@@ -329,7 +329,7 @@ fn started(
             None
         }
         Err(message) => {
-            runtime::abort_from_task(Code::U8001, template.location.clone(), message);
+            runtime::end_run_from_task(Code::U8001, template.location.clone(), message);
             None
         }
     };
@@ -340,8 +340,8 @@ fn started(
             values::release(closure);
         }
         if status == 1 {
-            // A started task cannot fail (U3029): reaching it is a defect.
-            runtime::abort_from_task(
+            // A started task cannot fail (U3029): reaching it is a defect, which ends the run.
+            runtime::end_run_from_task(
                 Code::U8001,
                 template.location.clone(),
                 "internal error: a started task failed, which its checks exclude".to_owned(),
