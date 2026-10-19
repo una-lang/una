@@ -67,6 +67,13 @@ pub(crate) struct Run<'p, 'w> {
     /// The started tasks that have not ended, and the most this system allows at once.
     pub(crate) live: Cell<usize>,
     pub(crate) cap: Option<usize>,
+    /// Whether [`drive`] serves the run's queue now: only then may a task suspend, so the
+    /// interpreter never suspends a coroutine it does not own.
+    serving: Cell<bool>,
+    /// The payload of the first panic of the interpreter in a task, caught on the task's own
+    /// stack and raised again on the thread's once the driver has ended, where the command
+    /// reports it as U8001 (`spec/13 §5`).
+    panic: RefCell<Option<Box<dyn std::any::Any + Send>>>,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -89,7 +96,30 @@ impl<'p, 'w> Run<'p, 'w> {
             abort: RefCell::new(None),
             live: Cell::new(0),
             cap: crate::concurrency::task_cap(),
+            serving: Cell::new(false),
+            panic: RefCell::new(None),
         }
+    }
+
+    /// Runs `body`, a task's, catching a panic of the interpreter on the task's own stack, so
+    /// that nothing unwinds across a switch: the first payload is kept for [`Run::take_panic`],
+    /// and every other task of the run stops at its next check point, as after an abort.
+    pub(crate) fn guarded(&self, body: impl FnOnce()) {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+            self.abort_run(Abort::Fault {
+                message: "the interpreter panicked in a task".to_owned(),
+                span: None,
+            });
+            let mut slot = self.panic.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(payload);
+            }
+        }
+    }
+
+    /// The payload of the panic a task caught, taken out of the run.
+    pub(crate) fn take_panic(&self) -> Option<Box<dyn std::any::Any + Send>> {
+        self.panic.borrow_mut().take()
     }
 
     /// Writes `event`, numbering its `seq` (ADR 0117 rule 10): the world takes it, as the trace
@@ -131,13 +161,13 @@ impl<'p, 'w> Run<'p, 'w> {
     /// after [`TURN`] of them, while another task is ready, the task goes to the back of the
     /// queue and the next one runs. Nothing of the run is borrowed at the switch.
     pub(crate) fn tick(&self) {
-        if !self.coroutines {
+        if !self.coroutines || !self.serving.get() {
             return;
         }
         let switch = {
             let mut sched = self.sched.borrow_mut();
             sched.turn = sched.turn.saturating_add(1);
-            if sched.turn >= TURN && !sched.queue.is_empty() && una_sys::coroutine::inside() {
+            if sched.turn >= TURN && !sched.queue.is_empty() {
                 let current = sched.current;
                 sched.queue.push_back(current);
                 true
@@ -156,9 +186,9 @@ impl<'p, 'w> Run<'p, 'w> {
     }
 
     /// Parks the task that runs until a task it waits for wakes it: its coroutine suspends.
-    /// `false`, with no switch, outside a coroutine, which only a defect reaches.
+    /// `false`, with no switch, unless [`drive`] serves the run, which only a defect reaches.
     pub(crate) fn park(&self) -> bool {
-        una_sys::coroutine::suspend()
+        self.serving.get() && una_sys::coroutine::suspend()
     }
 }
 
@@ -250,8 +280,11 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
 ) {
     let mut table: BTreeMap<usize, Coroutine<'s>> = BTreeMap::new();
     let mut pool: Vec<Stack> = Vec::new();
+    // Nothing of an earlier drive of this run is served: its queue and its bodies are dropped.
+    clear(run);
     table.insert(0, root);
     run.sched.borrow_mut().queue.push_back(0);
+    run.serving.set(true);
     loop {
         let next = {
             let mut sched = run.sched.borrow_mut();
@@ -279,7 +312,10 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
                     table.insert(id, scope.spawn(stack, body));
                 }
                 None => {
-                    run.abort_run(Abort::Unstarted { span, cap: None });
+                    run.abort_run(Abort::Unstarted {
+                        span: Some(span),
+                        cap: None,
+                    });
                     // The body never runs: its drop ends the task for its statement.
                     drop(body);
                     continue;
@@ -298,9 +334,33 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
             pool.push(stack);
         }
     }
-    // Nothing is pending once the queue is empty; a body left over would hold the run.
-    let left = std::mem::take(&mut run.sched.borrow_mut().pending);
+    run.serving.set(false);
+    clear(run);
+    // INVARIANT: every task waits only for tasks that end, so the queue empties only once every
+    // coroutine has finished. One left suspended would make its scope abort the process; the
+    // panic names the condition on stderr first, through the panic hook.
+    if !table.is_empty() {
+        #[allow(clippy::panic)]
+        {
+            panic!(
+                "internal error: {} tasks of the interpreter were left parked with nothing to wake them",
+                table.len()
+            );
+        }
+    }
+}
+
+/// Drops the queue and the bodies not yet started of `run`'s scheduler: a body left over would
+/// hold the run through an `Rc` cycle. The bodies are dropped once the scheduler's borrow ends,
+/// since each one's end wakes through it.
+fn clear(run: &Run<'_, '_>) {
+    let left = {
+        let mut sched = run.sched.borrow_mut();
+        sched.queue.clear();
+        std::mem::take(&mut sched.pending)
+    };
     drop(left);
+    run.sched.borrow_mut().queue.clear();
 }
 
 #[cfg(test)]
@@ -351,6 +411,45 @@ mod tests {
             log.borrow().as_slice(),
             ["root starts", "root goes on", "a", "b", "root again"]
         );
+    }
+
+    #[test]
+    fn a_panic_in_a_task_is_kept_and_the_other_tasks_end() {
+        // Review of S4, S4U-1: a panic of the interpreter in a task is caught on the task's
+        // stack, never across a switch; the run keeps its payload for the thread to raise once
+        // the driver has ended, and the root still runs to its end.
+        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
+        let mut world = crate::host::NoWorld;
+        let run = Rc::new(Run::new(&mut world, Clock::virtual_time(), true));
+        rooted(&run, || {
+            run.guarded(|| {
+                let (log, own) = (&log, Rc::clone(&run));
+                run.sched.borrow_mut().start(
+                    Box::new(move || {
+                        own.guarded(|| {
+                            log.borrow_mut().push("task");
+                            #[allow(clippy::panic)]
+                            {
+                                panic!("a test makes a task panic");
+                            }
+                        });
+                    }),
+                    64 * 1024,
+                    span(),
+                );
+                // The root's turn ends, the task runs and panics, and the root goes on.
+                for _ in 0..TURN {
+                    run.tick();
+                }
+                log.borrow_mut().push("root ends");
+            });
+        });
+        assert_eq!(log.borrow().as_slice(), ["task", "root ends"]);
+        assert!(run.take_panic().is_some());
+        assert!(matches!(run.aborted(), Some(Abort::Fault { .. })));
+        // Outside the driver no task suspends.
+        assert!(!run.serving.get());
+        assert!(!run.park());
     }
 
     #[test]

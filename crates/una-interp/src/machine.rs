@@ -195,10 +195,11 @@ pub enum Abort {
     },
     /// The `start` at this span could not start its task (U6003, `spec/27 §7`): no stack could
     /// be mapped for it, or, with `cap`, the run already holds as many started tasks as this
-    /// system allows at once (ADR 0117 rule 2).
+    /// system allows at once (ADR 0117 rule 2). Without a span, the root task of a program with
+    /// a `tasks` statement could not get its stack.
     Unstarted {
-        /// The `start`.
-        span: Span,
+        /// The `start`, if any.
+        span: Option<Span>,
         /// The most started tasks the system allows at once, when that is why.
         cap: Option<usize>,
     },
@@ -1245,37 +1246,59 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Runs `f` on this machine, the root task of its run: as a coroutine that takes turns
     /// with the tasks it starts, when the program has a `tasks` statement, under the driver of
     /// the run's queue (ADR 0117 rule 11); on the thread's own stack otherwise, at no cost.
-    /// Writes the events the root holds when `f` returns. `None` only when the root did not
-    /// run to its end, which the driver excludes: its scope would have aborted the process.
-    pub(crate) fn rooted<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
-        let stack = (self.run.coroutines && !una_sys::coroutine::inside())
-            .then(|| crate::stack_bytes(self.max_depth))
-            .flatten()
-            .and_then(|bytes| una_sys::coroutine::Stack::new(bytes).ok());
-        // Without a coroutine, a `tasks` statement's wait finds no scheduler and stops the run
-        // with an internal error, which fails closed.
-        let Some(stack) = stack else {
+    /// Writes the events the root holds when `f` returns.
+    ///
+    /// The abort when the root cannot run as a coroutine: its stack cannot be mapped (U6003),
+    /// or the interpreter already runs on a coroutine, which none of its callers does (a
+    /// fault). A panic of the interpreter in a task is caught on that task's stack and raised
+    /// again here, on the thread's, once every task has ended, so the command reports it.
+    pub(crate) fn rooted<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> Result<R, Abort> {
+        if !self.run.coroutines {
             let result = f(self);
             self.finish_trace();
-            return Some(result);
+            return Ok(result);
+        }
+        if una_sys::coroutine::inside() {
+            return Err(Abort::Fault {
+                message: "the interpreter runs its tasks on a coroutine of another owner".to_owned(),
+                span: None,
+            });
+        }
+        let stack = crate::stack_bytes(self.max_depth)
+            .and_then(|bytes| una_sys::coroutine::Stack::new(bytes).ok());
+        let Some(stack) = stack else {
+            return Err(Abort::Unstarted {
+                span: None,
+                cap: None,
+            });
         };
         let run = Rc::clone(&self.run);
         let mut out = None;
         {
             let slot = &mut out;
             let machine = &mut *self;
+            let guard = Rc::clone(&run);
             una_sys::coroutine::scope(|scope| {
                 let root = scope.spawn(stack, move || {
-                    let base = 0usize;
-                    let saved = std::mem::replace(&mut machine.stack_base, stack_position(&base));
-                    *slot = Some(f(machine));
-                    machine.stack_base = saved;
-                    machine.finish_trace();
+                    guard.guarded(|| {
+                        let base = 0usize;
+                        let saved =
+                            std::mem::replace(&mut machine.stack_base, stack_position(&base));
+                        *slot = Some(f(machine));
+                        machine.stack_base = saved;
+                        machine.finish_trace();
+                    });
                 });
                 crate::tasks::drive(scope, &run, root);
             });
         }
-        out
+        if let Some(payload) = run.take_panic() {
+            std::panic::resume_unwind(payload);
+        }
+        out.ok_or_else(|| Abort::Fault {
+            message: "the root task did not run to its end".to_owned(),
+            span: None,
+        })
     }
 
     /// The outermost `within` in progress from position `from` on whose deadline has passed on
@@ -2337,7 +2360,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             && self.run.live.get() >= cap
         {
             return Err(Stop::Abort(Abort::Unstarted {
-                span,
+                span: Some(span),
                 cap: Some(cap),
             }));
         }
@@ -2356,12 +2379,15 @@ impl<'p, 'w> Machine<'p, 'w> {
         };
         let body = move || {
             // Its statement counts it ended once its events are written, or, if it never
-            // starts, when the driver drops it.
+            // starts, when the driver drops it, or after a panic, which the run keeps.
             let _ending = ending;
-            let base = 0usize;
-            child.stack_base = stack_position(&base);
-            let result = child.eval(&mut captured, &caps, task);
-            child.started_end(result);
+            let run = Rc::clone(&child.run);
+            run.guarded(|| {
+                let base = 0usize;
+                child.stack_base = stack_position(&base);
+                let result = child.eval(&mut captured, &caps, task);
+                child.started_end(result);
+            });
         };
         self.run.sched.borrow_mut().start(Box::new(body), bytes, span);
         Ok(())

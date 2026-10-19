@@ -66,7 +66,7 @@ pub fn run_main(
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
     let result = machine
         .rooted(|machine| machine.run_main(main))
-        .unwrap_or_else(unfinished);
+        .unwrap_or_else(unrooted);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
@@ -103,7 +103,7 @@ pub fn run_drive(
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
     let result = machine
         .rooted(|machine| machine.drive(init, step, on_stop, &drive))
-        .unwrap_or_else(unfinished);
+        .unwrap_or_else(unrooted);
     let completion = completion(&index, result, Form::Redacted);
     Ok(Run {
         completion,
@@ -111,13 +111,10 @@ pub fn run_drive(
     })
 }
 
-/// The outcome of a root task that did not run to its end, which the driver of its run
-/// excludes (ADR 0117 rule 11): an internal error rather than a value.
-fn unfinished<'p>() -> Flow<'p> {
-    Err(Stop::Abort(Abort::Fault {
-        message: "the root task did not run to its end".to_owned(),
-        span: None,
-    }))
+/// The outcome of a root task that could not run as a coroutine (ADR 0117 rule 11): the abort
+/// rather than a value.
+fn unrooted<'p>(abort: Abort) -> Flow<'p> {
+    Err(Stop::Abort(abort))
 }
 
 fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
@@ -211,7 +208,7 @@ fn run_example<'p>(
     machine.run.stop_after.set(example.stop_after);
     let result = machine
         .rooted(|machine| machine.eval_closed(&mut Env::new(), &example.body))
-        .unwrap_or_else(unfinished);
+        .unwrap_or_else(unrooted);
     let failure = match &result {
         Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
             expectation: None,
@@ -296,7 +293,7 @@ where
             }
             let checked = machine
                 .rooted(|machine| machine.eval_closed(&mut env, check))
-                .unwrap_or_else(unfinished);
+                .unwrap_or_else(unrooted);
             let reason = match checked {
                 Ok(Value::Bool(true)) => return None,
                 Ok(_) => match result {
