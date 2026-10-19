@@ -35,7 +35,12 @@ pub struct Edge {
 /// The effective ceiling of every package, by index, for `packages` packages of which `root`
 /// is the root, whose grants allow `granted`. A package no need reaches from the root has the
 /// empty set.
-pub fn effective(packages: usize, root: usize, granted: &Authority, edges: &[Edge]) -> Vec<Authority> {
+pub fn effective(
+    packages: usize,
+    root: usize,
+    granted: &Authority,
+    edges: &[Edge],
+) -> Vec<Authority> {
     let mut eff: Vec<Authority> = vec![Authority::new(); packages];
     let mut out: BTreeMap<usize, Vec<&Edge>> = BTreeMap::new();
     for edge in edges {
@@ -120,10 +125,26 @@ mod tests {
     fn a_dependency_needed_twice_takes_the_union() {
         let granted = ops(&[("Http", "get"), ("Files", "read")]);
         let edges = [
-            Edge { from: 0, to: 1, ceiling: ops(&[("Http", "get")]) },
-            Edge { from: 0, to: 2, ceiling: ops(&[("Files", "read")]) },
-            Edge { from: 1, to: 3, ceiling: ops(&[("Http", "get")]) },
-            Edge { from: 2, to: 3, ceiling: ops(&[("Files", "read"), ("Http", "get")]) },
+            Edge {
+                from: 0,
+                to: 1,
+                ceiling: ops(&[("Http", "get")]),
+            },
+            Edge {
+                from: 0,
+                to: 2,
+                ceiling: ops(&[("Files", "read")]),
+            },
+            Edge {
+                from: 1,
+                to: 3,
+                ceiling: ops(&[("Http", "get")]),
+            },
+            Edge {
+                from: 2,
+                to: 3,
+                ceiling: ops(&[("Files", "read"), ("Http", "get")]),
+            },
         ];
         let eff = effective(4, 0, &granted, &edges);
         assert_eq!(eff[3], ops(&[("Http", "get"), ("Files", "read")]));

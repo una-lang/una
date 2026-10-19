@@ -1121,14 +1121,23 @@ pub(crate) fn dependencies(
         // What its code uses: the `uses` of its functions and handlers.
         let prefix = format!("{}.", mount.local);
         let mut used = una_project::authority::Authority::new();
-        for header in analysis.headers.iter().filter(|h| h.module.starts_with(&prefix)) {
+        for header in analysis
+            .headers
+            .iter()
+            .filter(|h| h.module.starts_with(&prefix))
+        {
             for u in &header.uses {
                 for op in &u.ops {
                     used.insert((u.capability.clone(), op.clone()));
                 }
             }
         }
-        for module in analysis.program.modules.iter().filter(|m| m.path.starts_with(&prefix)) {
+        for module in analysis
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path.starts_with(&prefix))
+        {
             for decl in &module.decls {
                 if let Decl::Handler { uses, .. } = decl {
                     for u in uses {

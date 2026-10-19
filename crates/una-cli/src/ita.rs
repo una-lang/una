@@ -496,8 +496,14 @@ pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatu
     let packages = crate::report::dependencies(&package, &manifest, &analysis);
     let root = format!(
         "{} {}",
-        manifest.name.as_ref().map_or("", |name| name.value.as_str()),
-        manifest.version.as_ref().map_or("", |version| version.value.as_str())
+        manifest
+            .name
+            .as_ref()
+            .map_or("", |name| name.value.as_str()),
+        manifest
+            .version
+            .as_ref()
+            .map_or("", |version| version.value.as_str())
     );
     let status = if analysis.diagnostics.is_empty() {
         ExitStatus::Success
@@ -528,7 +534,11 @@ pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatu
         )?;
         writeln!(out.stdout, "{root}")?;
         for dependency in &packages {
-            writeln!(out.stdout, "  {}", crate::report::dependency_line(dependency))?;
+            writeln!(
+                out.stdout,
+                "  {}",
+                crate::report::dependency_line(dependency)
+            )?;
         }
     }
     Ok(status)
@@ -552,22 +562,34 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         )?;
         return Ok(ExitStatus::Usage);
     }
-    let Some(need) = read.needs.iter().find(|need| need.name.value.to_string() == name) else {
+    let Some(need) = read
+        .needs
+        .iter()
+        .find(|need| need.name.value.to_string() == name)
+    else {
         writeln!(out.stderr, "error: the package does not need `{name}`")?;
         return Ok(ExitStatus::Usage);
     };
     let lines = ita::lines(&text);
-    let Some(section) = lines
-        .lines
-        .iter()
-        .find(|line| line.tokens.first().is_some_and(|t| t.item == ita::Item::Word("needs".to_owned())))
-    else {
+    let Some(section) = lines.lines.iter().find(|line| {
+        line.tokens
+            .first()
+            .is_some_and(|t| t.item == ita::Item::Word("needs".to_owned()))
+    }) else {
         return Ok(ExitStatus::Usage);
     };
     // The byte range of whole lines to remove: the need's line and its children, or the whole
     // section when the need is its only one.
-    let line_start = |offset: usize| text.get(..offset).and_then(|head| head.rfind('\n')).map_or(0, |at| at + 1);
-    let line_end = |offset: usize| text.get(offset..).and_then(|tail| tail.find('\n')).map_or(text.len(), |at| offset + at + 1);
+    let line_start = |offset: usize| {
+        text.get(..offset)
+            .and_then(|head| head.rfind('\n'))
+            .map_or(0, |at| at + 1)
+    };
+    let line_end = |offset: usize| {
+        text.get(offset..)
+            .and_then(|tail| tail.find('\n'))
+            .map_or(text.len(), |at| offset + at + 1)
+    };
     let last_of = |line: &ita::Line| {
         let mut last = line.range.end;
         let mut stack: Vec<&ita::Line> = line.children.iter().collect();
@@ -585,7 +607,11 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         }
         (from, line_end(last_of(section)))
     } else {
-        let Some(child) = section.children.iter().find(|c| c.range.start == need.range.start) else {
+        let Some(child) = section
+            .children
+            .iter()
+            .find(|c| c.range.start == need.range.start)
+        else {
             return Ok(ExitStatus::Usage);
         };
         (line_start(child.range.start), line_end(last_of(child)))
@@ -594,7 +620,11 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
     edited.push_str(text.get(..from).unwrap_or(""));
     edited.push_str(text.get(to..).unwrap_or(""));
     if let Err(error) = crate::write_through_rename(&manifest_path, &edited) {
-        writeln!(out.stderr, "error: cannot write `{}`: {error}", manifest_path.display())?;
+        writeln!(
+            out.stderr,
+            "error: cannot write `{}`: {error}",
+            manifest_path.display()
+        )?;
         return Ok(ExitStatus::Usage);
     }
     lock_command(path, false, false, out)
