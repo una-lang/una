@@ -50,6 +50,12 @@ impl VirtualClock {
         self.now.fetch_max(to, Ordering::AcqRel).max(to)
     }
 
+    /// Puts the clock back at 0, for a new run that reuses it: only before any task of that run
+    /// reads it, since inside a run time never goes back.
+    pub fn restart(&self) {
+        self.now.store(0, Ordering::Release);
+    }
+
     /// Moves the clock forward by `by` milliseconds, saturating at `u64::MAX`, and returns the
     /// time after the move.
     pub fn advance_by(&self, by: u64) -> u64 {
@@ -188,6 +194,14 @@ mod tests {
         let shared = VirtualClock::new();
         assert_eq!(shared.advance_to(100), 100);
         assert_eq!(shared.advance_to(10), 100);
+    }
+
+    #[test]
+    fn a_restarted_virtual_clock_reads_zero() {
+        let clock = VirtualClock::new();
+        clock.advance_to(250);
+        clock.restart();
+        assert_eq!(clock.now(), 0);
     }
 
     #[test]

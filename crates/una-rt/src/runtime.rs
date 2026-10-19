@@ -950,7 +950,8 @@ struct Driver {
 /// clock's reading one more atomic load. It is read on hot paths, each iteration of a
 /// `for ever within`, each `Http` call and each `Clock.now`, so a mutex there would cost
 /// every task a contended lock, against the performance parity of native code. An executable
-/// runs one run, so one setting suffices.
+/// runs one run, so one setting suffices; a later virtual run in the same process, as in
+/// tests, restarts the virtual clock at 0 in `start`.
 static CLOCK: OnceLock<Clock> = OnceLock::new();
 
 /// Makes the run's clock the virtual one when `virtual_time` holds, the real one otherwise.
@@ -964,7 +965,7 @@ fn set_clock(virtual_time: bool) -> bool {
 }
 
 /// The run's clock: the one the executable set, or the real clock before any run started.
-pub(crate) fn clock() -> &'static Clock {
+pub fn clock() -> &'static Clock {
     CLOCK.get_or_init(Clock::real)
 }
 
@@ -1280,6 +1281,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             "error: this process already ran a run on a clock of the other kind"
         );
         return 3;
+    }
+    // Each run's virtual clock starts at 0 (`spec/26 §8`), also in a process that ran one
+    // before, as tests do: one atomic store, before any of the run's code reads it.
+    if let Clock::Virtual(virtual_clock) = clock() {
+        virtual_clock.restart();
     }
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
