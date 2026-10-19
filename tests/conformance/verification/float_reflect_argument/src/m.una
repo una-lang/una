@@ -1,0 +1,12 @@
+-- test: a predicate over a `U32` parameter takes no `Int` term in a clause, so its conversion never sees a value beyond its type's range: `zero32(y + 1)` is U2001
+-- spec: spec/29 §8
+-- expect: error U2001 at src/m.una:10:18
+module m
+
+pub predicate reflect zero32(x: U32) -> Bool = x.to_f64().is_zero()
+
+pub g(y: U32) -> Bool
+  requires y == 4294967295
+  ensures zero32(y + 1)
+=
+  true

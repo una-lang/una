@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
-    DataVariant, Decl, Example, Expectation, Expr as CoreExpr, Fun, HandlerOp as CoreHandlerOp,
-    Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim, Program,
-    Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
+    DataVariant, Decl, Example, Expectation, Expr as CoreExpr, FloatOp, Fun,
+    HandlerOp as CoreHandlerOp, Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim,
+    Program, Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
@@ -1176,6 +1176,27 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => Term::Result,
             },
             ExprKind::It => Term::It,
+            ExprKind::Binary { op, left, right }
+                if self.is_f64_at(left.span) && self.is_f64_at(right.span) =>
+            {
+                let op = match op {
+                    BinaryOp::Add => FloatOp::Add,
+                    BinaryOp::Sub => FloatOp::Sub,
+                    BinaryOp::Mul => FloatOp::Mul,
+                    BinaryOp::Div => FloatOp::Div,
+                    BinaryOp::Eq => FloatOp::Eq,
+                    BinaryOp::NotEq => FloatOp::Ne,
+                    BinaryOp::Lt => FloatOp::Lt,
+                    BinaryOp::Le => FloatOp::Le,
+                    BinaryOp::Gt => FloatOp::Gt,
+                    BinaryOp::Ge => FloatOp::Ge,
+                    _ => return self.outside(),
+                };
+                Term::Float {
+                    op,
+                    args: vec![self.term(left), self.term(right)],
+                }
+            }
             ExprKind::Binary { op, left, right } => {
                 // Decimal operands of `+`, `-` and the comparisons are aligned by a literal
                 // power of ten to the larger scale (ADR 0120 V2); `*` multiplies coefficients.
@@ -1194,6 +1215,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                     right: Box::new(right_term),
                 }
             }
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if self.is_f64_at(operand.span) => Term::Float {
+                op: FloatOp::Neg,
+                args: vec![self.term(operand)],
+            },
             ExprKind::Unary { op, operand } => {
                 let operand = Box::new(self.term(operand));
                 match op {
@@ -1257,6 +1285,23 @@ impl<'e, 'a> Fx<'e, 'a> {
                 Some(Res::IntMethod(Prim::Decimal(una_core::DecimalOp::Coefficient))) => {
                     self.term(target)
                 }
+                // `n.to_f64()` of an integer (ADR 0114 rule 8.4), with its type's width.
+                Some(Res::IntMethod(Prim::Float(FloatOp::FromInt))) => Term::ToF64 {
+                    value: Box::new(self.term(target)),
+                    from: match self.type_at(target.span) {
+                        Type::Base {
+                            base: Base::Fixed(int),
+                            ..
+                        } => Some(int),
+                        _ => None,
+                    },
+                },
+                // A method of `F64` of the refinement language (ADR 0114 rule 8.4).
+                Some(Res::IntMethod(Prim::Float(op))) if op.in_refinement_language() => {
+                    let mut terms = vec![self.term(target)];
+                    terms.extend(args.iter().map(|arg| self.term(&arg.value)));
+                    Term::Float { op, args: terms }
+                }
                 // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
                 Some(Res::MapMethod(MapOp::Has)) => match args.first() {
                     Some(key) => Term::Has {
@@ -1276,6 +1321,23 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => self.outside(),
             },
             ExprKind::Call { args, .. } => match self.res(expr.span) {
+                // `nan()` and `infinity()` are constants (ADR 0114 rule 8.4).
+                Some(Res::Function { id, .. })
+                    if self.env.functions.get(id).is_some_and(|f| {
+                        f.module == self.env.prelude && matches!(f.name, "nan" | "infinity")
+                    }) =>
+                {
+                    let infinity = self
+                        .env
+                        .functions
+                        .get(id)
+                        .is_some_and(|f| f.name == "infinity");
+                    Term::F64(if infinity {
+                        f64::INFINITY.to_bits()
+                    } else {
+                        una_core::float::CANONICAL_NAN
+                    })
+                }
                 Some(Res::Function { id, .. }) => {
                     let args = self.ordered_terms(expr.span, None, args);
                     Term::Call {
@@ -1293,7 +1355,10 @@ impl<'e, 'a> Fx<'e, 'a> {
         match literal {
             Literal::Int(digits) => Term::Int(digits.clone()),
             // No float term is in the refinement language yet (`spec/29 §8`).
-            Literal::Float(_) => self.outside(),
+            Literal::Float(text) => match una_core::float::literal(text) {
+                una_core::float::Literal::Value(value) => Term::F64(value.to_bits()),
+                _ => self.outside(),
+            },
             Literal::Bool(value) => Term::Bool(*value),
             Literal::Unit => Term::Unit,
             Literal::Text(text) => match plain_text(text) {

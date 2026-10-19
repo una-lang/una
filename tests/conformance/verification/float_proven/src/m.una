@@ -1,0 +1,35 @@
+-- test: contracts over F64 are exact: a refined kind over [0, 1], a bound on one square root, a product of two values in [0, 1] within [0, 1], a product of finite values that is not NaN, a conversion of an integer of modest range, the IEEE comparisons and the classifications are proven
+-- spec: spec/29 §8
+-- expect: ok
+module m
+
+pub kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0
+
+pub root(x: Unit01) -> F64
+  ensures result <= 1.0
+=
+  x.sqrt()
+
+pub product(a: Unit01, b: Unit01) -> Unit01 = a * b
+
+pub finite_product(x: F64, y: F64) -> F64
+  requires x.is_finite() and y.is_finite()
+  ensures not result.is_nan()
+=
+  x * y
+
+pub small(n: Int) -> F64
+  requires 0 <= n and n <= 100
+  ensures result <= 100.0
+=
+  n.to_f64()
+
+pub magnitude(x: F64) -> F64
+  ensures result.is_nan() or result.ieee_ge(other: 0.0)
+=
+  x.abs()
+
+pub specials() -> Bool
+  ensures result
+=
+  nan().is_nan() and infinity().is_infinite() and -infinity() < 0.5 and nan() == nan()

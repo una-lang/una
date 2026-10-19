@@ -2465,3 +2465,127 @@ fn units_are_erased_before_the_verifier() {
     }
     assert_eq!(documents[0], documents[1]);
 }
+
+/// The queries of `source`, a package of edition 0.3, by goal.
+fn float_queries(name: &str, source: &str) -> Vec<(String, String)> {
+    let root = package_of_edition(name, "0.3", &[("src/m.una", source)]);
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, [], "{name}");
+    let text = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let queries = una_verify::queries(&obligations, &lock);
+    let _ = std::fs::remove_dir_all(&root);
+    obligations
+        .iter()
+        .map(|o| o.goal.clone())
+        .zip(queries)
+        .collect()
+}
+
+/// A function of `lets` float lets and one list index, as ADR 0114 rule 16.7 states it.
+fn float_lets(lets: usize) -> String {
+    let mut body = String::from("  let f0 = k * 2.0\n");
+    for i in 1..lets {
+        let op = ["*", "+", "/", "-"][i % 4];
+        body.push_str(&format!("  let f{i} = f{} {op} 1.5\n", i - 1));
+    }
+    format!(
+        "module m\n\nget(xs: List[Int], i: Int) -> Int\n  requires 0 <= i and i < xs.len\n=\n  when at(xs, index: i)\n    is Some(v) -> v\n    is None -> 0\n\npub scaled(xs: List[Int], i: Int, k: F64) -> F64\n  requires 0 <= i and i + 1 < xs.len\n=\n{body}  let n = get(xs, i: i + 1)\n  f{} + n.to_f64()\n",
+        lets - 1
+    )
+}
+
+#[test]
+fn integer_obligations_beside_float_lets_have_no_float_term() {
+    // ADR 0114 rules 8.2, 8.3 and 16.7: the index obligation of a function with float lets
+    // keeps no float hypothesis, so its query is in `QF_UFLIA` with no `F64` term, and its
+    // text does not grow with the number of float lets: the cone is linear in Π, and the
+    // integer query is the same at 5 and at 60 lets.
+    let index = |lets: usize| {
+        let queries = float_queries(&format!("float_lets_{lets}"), &float_lets(lets));
+        let (_, query) = queries
+            .iter()
+            .find(|(goal, _)| goal.contains("(i + 1) < xs.len"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no index obligation: {queries:?}"));
+        // The temporary of the index is numbered after the lets.
+        query.replace(&format!("%t{lets}|"), "%t|")
+    };
+    let small = index(5);
+    let large = index(60);
+    for query in [&small, &large] {
+        assert!(query.contains("(set-logic QF_UFLIA)"), "{query}");
+        assert!(
+            !query.contains("Float64") && !query.contains("fp."),
+            "{query}"
+        );
+    }
+    assert_eq!(small, large);
+}
+
+#[test]
+fn float_queries_are_in_logic_all_with_the_fixed_budget() {
+    // ADR 0114 rules 8.2 and 8.3: a query with an `F64` term declares `ALL` and the fixed
+    // step budget 5,000,000, whatever the lock sets; literals are their exact bits and the
+    // orders are the defined functions `i!lt!F64` and `i!le!F64`.
+    let root = package_of_edition(
+        "float_budget",
+        "0.3",
+        &[(
+            "src/m.una",
+            "module m\n\npub half(x: F64) -> F64\n  requires x <= 1.0\n  ensures result <= 0.5\n=\n  x / 2.0\n",
+        )],
+    );
+    let lock_path = root.join("verification.lock");
+    let text = std::fs::read_to_string(&lock_path)
+        .unwrap()
+        .replace("step_budget      = 5000000", "step_budget      = 9000000");
+    std::fs::write(&lock_path, &text).unwrap();
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, []);
+    let (lock, _) = una_project::parse_lock(&text);
+    assert_eq!(lock.step_budget, 9_000_000);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let queries = una_verify::queries(&obligations, &lock);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(queries.len(), 1, "{queries:?}");
+    let query = &queries[0];
+    assert!(query.contains("(set-option :rlimit 5000000)"), "{query}");
+    assert!(query.contains("(set-logic ALL)"), "{query}");
+    // 1.0 and 0.5 by their bits, and `/` rounded to nearest, ties to even.
+    assert!(
+        query.contains(
+            "(fp #b0 #b01111111111 #b0000000000000000000000000000000000000000000000000000)"
+        ),
+        "{query}"
+    );
+    assert!(
+        query.contains(
+            "(fp #b0 #b01111111110 #b0000000000000000000000000000000000000000000000000000)"
+        ),
+        "{query}"
+    );
+    assert!(query.contains("(fp.div RNE |u!v!x|"), "{query}");
+    assert!(query.contains("(define-fun i!lt!F64 "), "{query}");
+    assert!(query.contains("(define-fun i!le!F64 "), "{query}");
+}
+
+#[test]
+fn the_cone_query_of_a_float_function_is_stable_across_runs() {
+    // ADR 0114 rule 16.7, "Order": the cone query's text is stable, so its cache key is.
+    let source = float_lets(12);
+    let first = float_queries("float_stable_a", &source);
+    let second = float_queries("float_stable_b", &source);
+    assert_eq!(first, second);
+}

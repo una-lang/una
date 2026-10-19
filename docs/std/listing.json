@@ -1433,7 +1433,7 @@
             "0.3",
             "0.4"
           ],
-          "declaration": "pub nan() -> F64",
+          "declaration": "pub nan() -> F64\n  ensures result.is_nan()",
           "docs": [
             "The canonical NaN, `0x7FF8000000000000`: the one NaN of `F64` (`spec/29 §3`)."
           ]
@@ -1453,7 +1453,7 @@
             "0.3",
             "0.4"
           ],
-          "declaration": "pub infinity() -> F64",
+          "declaration": "pub infinity() -> F64\n  ensures result.is_infinite() and not result.is_sign_negative()",
           "docs": [
             "The positive infinity of `F64`; `-infinity()` is the negative one (`spec/29 §3`)."
           ]

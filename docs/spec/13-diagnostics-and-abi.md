@@ -450,7 +450,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float`, `decimal` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `Source` | `rebind`, `handler` |
-| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call` |
+| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64` |
 | `Type` | `base`, `fn` |
 
 **What inference adds** (#443). Core holds what elaboration gives it. The document adds facts the checker infers, each as an additive key, in the order shown:
