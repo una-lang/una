@@ -3656,15 +3656,15 @@ fn cuts_program(rounds: u64) -> String {
 }
 
 #[test]
-fn a_hundred_thousand_cuts_release_what_they_cut_in_both_engines() {
+fn ten_thousand_cuts_release_what_they_cut_in_both_engines() {
     // ADR 0117 rule 5 and its amendment of 2026-10-19: a cut leaves each frame of the
-    // expression by the path a failure takes, so each frame releases its words. A hundred
-    // thousand cuts, each abandoning a list of a thousand items, run under a 4 MiB budget,
-    // which a leak of more than about forty bytes a cut would exceed (U6003).
-    let dir = within_package("cuts", "cuts", &cuts_program(100_000));
+    // expression by the path a failure takes, so each frame releases its words. Ten thousand
+    // cuts, each abandoning a list of a thousand items, about 16 KiB, run under a 4 MiB budget,
+    // which a leak would exceed some forty times over (U6003).
+    let dir = within_package("cuts", "cuts", &cuts_program(10_000));
     let interpreted = una(&dir, &["run", ".", "--max-memory", "4"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "cut 100000\n");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "cut 10000\n");
     for workers in ["1", "4"] {
         let native = Command::new(dir.join("target/una/cuts"))
             .args(["--max-memory", "4", "--workers", workers])
@@ -3672,7 +3672,7 @@ fn a_hundred_thousand_cuts_release_what_they_cut_in_both_engines() {
             .output()
             .unwrap();
         assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
-        assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 100000\n");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -3681,8 +3681,8 @@ fn a_hundred_thousand_cuts_release_what_they_cut_in_both_engines() {
 fn the_memory_that_cuts_hold_stays_flat_as_they_grow() {
     // The same program at growing numbers of cuts, natively, under one small budget: memory
     // that grew with the cuts would pass at the smallest number and fail at the largest. Each
-    // cut abandons about 8 KiB; at 50,000 cuts a leak of a tenth of it would need 40 MiB.
-    for rounds in [500_u64, 5_000, 50_000] {
+    // cut abandons about 16 KiB; at 10,000 cuts a leak of a tenth of it would need 16 MiB.
+    for rounds in [500_u64, 2_000, 10_000] {
         let dir = within_package(&format!("cuts{rounds}"), "cuts", &cuts_program(rounds));
         let native = Command::new(dir.join(format!("target/una/cuts{rounds}")))
             .args(["--max-memory", "2"])

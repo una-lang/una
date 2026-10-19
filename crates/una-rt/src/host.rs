@@ -172,6 +172,10 @@ fn record_write(written: io::Result<()>) {
 /// Records that the host operation in progress failed, with a failure the caller then reads
 /// as its value.
 pub(crate) fn failed(word: i64) -> i64 {
+    // A failure is a value of an error kind, a sum: a handle (even, not 0) or a variant without
+    // fields, `(index << 1) | 1` with `index >= 0`. So it is never `-1`, the word of a stopped
+    // task in the generated code (`una_codegen::lower::STOPPED`).
+    debug_assert_ne!(word, -1, "a failure word equal to the stop of a task");
     with_state(|state| state.host_failed = true);
     word
 }

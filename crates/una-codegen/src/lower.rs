@@ -1811,6 +1811,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// The owned value `ctor(args)`.
     fn construct(&mut self, ctor: &Ctor, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
         let index = i64::try_from(ctor.index).map_err(crate::internal)?;
+        // The representation invariant that keeps a failure from equalling [`STOPPED`].
+        debug_assert!(index >= 0 && (index << 1) | 1 != STOPPED);
         if args.is_empty() {
             return Ok(self.builder.ins().iconst(types::I64, (index << 1) | 1));
         }
@@ -3690,8 +3692,19 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
 /// The failure word of a stopped task (`spec/19 §6` rule 4): a task that is cancelled, by a
 /// failed sibling or a `within` whose deadline passed (`spec/27 §5`), or that aborts, leaves
 /// every frame by the path a failure takes, so each frame releases what it owns, and a frame
-/// that catches failures passes this word on. `-1` is no failure: a variant without fields is
-/// `(index << 1) | 1` with `index >= 0`, and a variant with fields a handle.
+/// that catches failures passes this word on.
+///
+/// **Why `-1` is never a real failure.** A failure is a value of the function's error kind,
+/// which is always a sum kind (`fails` names one, U2002), and a value of a sum kind is one of
+/// two words, by the representation of `una-rt` (`values`):
+/// - a variant without fields: the immediate `(index << 1) | 1`, with `index`, its position
+///   in its kind, at least 0, so the word is at least 1 ([`Lowerer::construct`]);
+/// - a variant with fields: a handle, an even word other than 0 (`values::is_handle`).
+///
+/// `-1` is odd, so no handle, and below 1, so no variant without fields. The integer `-1`,
+/// whose small-integer word is also `-1`, is never a failure: no error kind is `Int`. Debug
+/// builds assert it where a failure word is made: [`Lowerer::construct`] for variants, and
+/// `una_rt::host::failed` for the failures of host operations.
 const STOPPED: i64 = -1;
 
 /// The trap of a branch that verification proves unreachable.
