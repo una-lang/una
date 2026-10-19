@@ -1319,6 +1319,7 @@ name = "una-project"
 version = "0.3.16"
 dependencies = [
  "pretty_assertions",
+ "sha2",
  "toml",
  "una-core",
  "una-diag",

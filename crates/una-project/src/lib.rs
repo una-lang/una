@@ -7,8 +7,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod content;
 mod document;
 pub mod ita;
+pub mod itaoca;
 pub mod literal;
 mod lock;
 mod manifest;
