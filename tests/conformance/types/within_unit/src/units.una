@@ -1,0 +1,28 @@
+-- test: the deadline of `within` is an `Int of Millisecond`: a deadline in seconds or a unitless `Int` is U2028, a type that is not an integer is U2001 (spec/27 §5, ADR 0117 rule 5)
+-- spec: spec/27 §5
+-- expect: error U2028 at src/units.una:13:22
+-- expect: error U2028 at src/units.una:19:22
+-- expect: error U2001 at src/units.una:25:22
+module units
+
+import std.time (Second)
+
+next(n: Int) -> Int = n + 1
+
+pub seconds(n: Int, limit: Int of Second) -> Int
+=
+  let x = next(n) within limit
+    if error use 0
+  x
+
+pub unitless(n: Int) -> Int
+=
+  let x = next(n) within 100
+    if error use 0
+  x
+
+pub text(n: Int) -> Int
+=
+  let x = next(n) within "soon"
+    if error use 0
+  x

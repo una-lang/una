@@ -1,0 +1,51 @@
+-- test: `if error pass` after `within` passes `TimedOut` as the function's own `TimedOut` and `Failed(error: x)` as `x`: accepted when the function's kind has `TimedOut` without fields and the expression cannot fail or fails with that kind; U3008 for a kind without `TimedOut`, and for an expression that fails with another kind (spec/27 §5, ADR 0117 rule 5)
+-- spec: spec/27 §5
+-- expect: error U3008 at src/route.una:39:5
+-- expect: error U3008 at src/route.una:46:5
+module route
+
+import std.time (millisecond)
+
+pub kind RouteError = NoPath | TimedOut
+
+pub kind LookupError = Missing
+
+shortest(n: Int) -> Int
+  fails RouteError
+=
+  if n < 0 then fail NoPath else n
+
+sum(n: Int) -> Int = n + 1
+
+pub plan(n: Int) -> Int
+  fails RouteError
+=
+  let route = shortest(n) within 50 * millisecond
+    if error pass
+  route
+
+pub total(n: Int) -> Int
+  fails RouteError
+=
+  let value = sum(n) within 50 * millisecond
+    if error pass
+  value
+
+pub look(n: Int) -> Int
+  fails LookupError
+=
+  let value = sum(n) within 50 * millisecond
+    if error pass
+  value
+
+pub mixed(n: Int) -> Int
+  fails RouteError
+=
+  let value = find(n) within 50 * millisecond
+    if error pass
+  value
+
+find(n: Int) -> Int
+  fails LookupError
+=
+  if n < 0 then fail Missing else n

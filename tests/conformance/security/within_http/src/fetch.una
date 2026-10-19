@@ -1,0 +1,33 @@
+-- test: a time-out over `Http` is at least `internal` (ADR 0117 IF2): it can be recovered from with `attempt` or `if error use`, never failed on publicly (U4002), and an expression over `Http` that reads a `secret` binding makes `Http`'s `internal` failure too low (U4001 at the `within`, ADR 0116 IF8)
+-- spec: spec/27 §5
+-- expect: error U4002 at src/fetch.una:16:5
+-- expect: error U4001 at src/fetch.una:31:17
+module fetch
+
+import std.time (second)
+
+pub kind FetchError = Unreachable | TimedOut
+
+pub strict(url: Text) -> Unit
+  uses @http: Http[get]
+  fails FetchError
+=
+  let reply = @http.get(url, headers: [], key_name: None) within 2 * second
+    if error fail Unreachable
+  unit
+
+pub tolerant(url: Text) -> internal Bool
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None) within 2 * second
+  when outcome
+    is Ok(response) -> true
+    is Err(failure) -> false
+
+pub leaky(url: Text, key: secret Int) -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(pick(url, key: key), headers: [], key_name: None) within 2 * second
+  unit
+
+pick(url: Text, key: secret Int) -> Text = url

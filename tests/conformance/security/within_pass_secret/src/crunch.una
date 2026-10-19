@@ -1,0 +1,23 @@
+-- test: the failure of `e within d` carries `τ(e)` (ADR 0117 IF2): over a pure function of a `secret` value, `if error pass` is U4002, while `if error use` is accepted
+-- spec: spec/27 §5
+-- expect: error U4002 at src/crunch.una:17:5
+module crunch
+
+import std.time (millisecond)
+
+pub kind CalcError = Overflow | TimedOut
+
+triple(key: secret Int) -> secret Int = key * 3
+
+pub passed(key: secret Int) -> secret Int
+  fails CalcError
+=
+  let value = triple(key) within 10 * millisecond
+    if error pass
+  value
+
+pub used(key: secret Int) -> secret Int
+=
+  let value = triple(key) within 10 * millisecond
+    if error use 0
+  value
