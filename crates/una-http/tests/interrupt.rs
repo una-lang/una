@@ -22,6 +22,10 @@ use una_sys::signals::{Readiness, install, request_host_stop, wait};
 struct HostStop;
 
 impl Interrupt for HostStop {
+    fn waits(&self) -> bool {
+        true
+    }
+
     fn stopped(&self) -> bool {
         una_sys::attention::stop_requests() > 0
     }
@@ -42,6 +46,10 @@ impl Interrupt for HostStop {
 struct Flag(Arc<AtomicBool>);
 
 impl Interrupt for Flag {
+    fn waits(&self) -> bool {
+        true
+    }
+
     fn stopped(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }

@@ -122,6 +122,26 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "Map" => {
                 Ok(Kind::Map)
             }
+            // Dense values wait for their native step (`spec/29 §17`, ADR 0120 rule 28).
+            Base::Named { module, name, .. }
+                if module == PRELUDE_MODULE && matches!(name.as_str(), "Array" | "Matrix") =>
+            {
+                Err(unsupported("dense values (spec/29)"))
+            }
+            // `Stack` and `Queue` wait for their native layout (`spec/28 §5`, ADR 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE
+                    && (name == "Stack" || name == "Queue") =>
+            {
+                Err(unsupported("`Stack` and `Queue` (spec/28)"))
+            }
+            // The sets of `std.collections` wait for their native layout (`spec/28 §6`, ADR
+            // 0119 rule 19).
+            Base::Named { module, name, .. }
+                if module == una_core::COLLECTIONS_MODULE && name == "Set" =>
+            {
+                Err(unsupported("`Set` (spec/28)"))
+            }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
             Base::Param(_) | Base::Unknown => Ok(Kind::Any),
@@ -3054,6 +3074,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let (a, b, c) = (word(0), word(1), word(2));
                 self.call("una_rt_f64_op", &[code, a, b, c])
             }
+            // Dense values have no native representation yet (`spec/29 §17`).
+            Prim::Shape(_) => Err(unsupported("dense values (spec/29)")),
             // Every operation of `Decimal` is the runtime's, on coefficients, with the
             // operation's static scales, and its conversions with `F64` on boxed values
             // (`spec/29 §16`).
@@ -3071,6 +3093,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 self.call("una_rt_decimal", &words)
             }
+            Prim::Seq(_) => Err(unsupported("`Stack` and `Queue` (spec/28)")),
+            Prim::Set(_) => Err(unsupported("`Set` (spec/28)")),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {

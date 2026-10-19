@@ -287,6 +287,23 @@ pub enum Term {
     },
     /// `a.len`.
     Len(Box<Term>),
+    /// A shape function of a dense value other than `len`: `m.rows`, `m.columns`
+    /// (`spec/29 §17`, ADR 0120 rule 33).
+    Shape {
+        /// Which function.
+        fun: ShapeFun,
+        /// The dense value.
+        value: Box<Term>,
+    },
+    /// `a.get(index: i)` or `m.get(row: i, column: j)` of a dense value, in the refinement
+    /// language (`spec/29 §17`, ADR 0120 rule 33): the element at the indices, which a
+    /// precondition keeps in range wherever code reads it.
+    Element {
+        /// The dense value.
+        value: Box<Term>,
+        /// The indices, one per axis.
+        indices: Vec<Term>,
+    },
     /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
     Has {
         /// The map.
@@ -502,9 +519,18 @@ pub enum Prim {
     /// A built-in method of a map (`spec/21 §2`); `set` and `remove` are rebinds to `With`
     /// and `Without`.
     Map(MapOp),
+    /// A built-in method of a `Stack` or a `Queue` of `std.collections` (`spec/28 §5`, ADR 0119
+    /// rules 5 and 6), both held as one double-ended sequence; `push` and `pop` are rebinds of
+    /// the receiver to the new sequence.
+    Seq(SeqOp),
+    /// A built-in method of a `Set` of `std.collections` (`spec/28 §6`, ADR 0119 rule 7);
+    /// `add` and `remove` are rebinds to `With` and `Without`.
+    Set(SetOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
+    /// A shape function of a dense value other than `len` (`spec/29 §17`, ADR 0120 rule 33).
+    Shape(ShapeFun),
     /// An operator, method or conversion of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13 to
     /// 17), with the static scales of its operands.
     Decimal(DecimalOp),
@@ -699,6 +725,26 @@ impl DecimalOp {
             | DecimalOp::Abs
             | DecimalOp::Coefficient
             | DecimalOp::FromInt => Vec::new(),
+        }
+    }
+}
+
+/// The shape functions of a dense value beside `len`, which `Array` has as a list does
+/// (`spec/29 §17`, ADR 0120 rule 33). Each is an `Int` of at least 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShapeFun {
+    /// `m.rows`.
+    Rows,
+    /// `m.columns`.
+    Columns,
+}
+
+impl ShapeFun {
+    /// The name of the function, as source writes it after the point.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShapeFun::Rows => "rows",
+            ShapeFun::Columns => "columns",
         }
     }
 }
@@ -1078,6 +1124,121 @@ impl MapOp {
     }
 }
 
+/// The operations of the double-ended sequence that holds a `Stack[T]` or a `Queue[T]`
+/// (`spec/28 §5`, ADR 0119 rules 5, 6 and 19), each over the sequence in its first argument. A
+/// stack keeps its top at the front, so both types list front first. Every operation is O(1),
+/// amortized for the updates, except `Items`, O(n).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SeqOp {
+    /// The sequence with `item` added at the front: a stack's `push`, a queue's `push_front`.
+    PushFront,
+    /// The sequence with `item` added at the back: a queue's `push`.
+    PushBack,
+    /// The sequence without its front, the same sequence when it is empty: the update of a
+    /// stack's or a queue's `pop`.
+    PopFront,
+    /// The sequence without its back, the same sequence when it is empty: the update of a
+    /// queue's `pop_back`.
+    PopBack,
+    /// `Some` of the front, `None` when empty: `peek`, and the result of `pop`.
+    PeekFront,
+    /// `Some` of the back, `None` when empty: a queue's `peek_back`, and the result of
+    /// `pop_back`.
+    PeekBack,
+    /// The elements, front first, as a `List`: `items()`.
+    Items,
+}
+
+impl SeqOp {
+    /// The operation's name in Core.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeqOp::PushFront => "push_front",
+            SeqOp::PushBack => "push_back",
+            SeqOp::PopFront => "pop_front",
+            SeqOp::PopBack => "pop_back",
+            SeqOp::PeekFront => "peek_front",
+            SeqOp::PeekBack => "peek_back",
+            SeqOp::Items => "items",
+        }
+    }
+
+    /// Whether the operation gives a new sequence built from its receiver, which it may update
+    /// in place when the receiver is given up (`spec/28 §5`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            SeqOp::PushFront | SeqOp::PushBack | SeqOp::PopFront | SeqOp::PopBack
+        )
+    }
+
+    /// The read that gives a removal's result, read before the removal: `PeekFront` for
+    /// `PopFront` and `PeekBack` for `PopBack`; `None` for any other operation.
+    pub fn removed(self) -> Option<SeqOp> {
+        match self {
+            SeqOp::PopFront => Some(SeqOp::PeekFront),
+            SeqOp::PopBack => Some(SeqOp::PeekBack),
+            _ => None,
+        }
+    }
+}
+
+/// The built-in methods of `Set[T]` (`spec/28 §6`, ADR 0119 rule 7), each over the set in its
+/// first argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetOp {
+    /// `has(item:)`.
+    Has,
+    /// `with(item:)`, and `edit add`.
+    With,
+    /// `without(item:)`, and `edit remove`.
+    Without,
+    /// `first()`, the least item.
+    First,
+    /// `last()`, the greatest item.
+    Last,
+    /// `between(low:, high:)`, the items from `low` to `high`, both included.
+    Between,
+    /// `items()`, ascending.
+    Items,
+    /// `union(other:)`.
+    Union,
+    /// `intersection(other:)`.
+    Intersection,
+    /// `difference(other:)`.
+    Difference,
+    /// `is_subset(of:)`.
+    IsSubset,
+}
+
+impl SetOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SetOp::Has => "has",
+            SetOp::With => "with",
+            SetOp::Without => "without",
+            SetOp::First => "first",
+            SetOp::Last => "last",
+            SetOp::Between => "between",
+            SetOp::Items => "items",
+            SetOp::Union => "union",
+            SetOp::Intersection => "intersection",
+            SetOp::Difference => "difference",
+            SetOp::IsSubset => "is_subset",
+        }
+    }
+
+    /// Whether the operation gives a new set built from its receiver, which it may update in
+    /// place when the receiver is given up (`spec/28 §6`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            SetOp::With | SetOp::Without | SetOp::Union | SetOp::Intersection | SetOp::Difference
+        )
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1200,7 +1361,10 @@ impl Prim {
             },
             Prim::Fixed(op, _) => op.as_str(),
             Prim::Map(op) => op.as_str(),
+            Prim::Seq(op) => op.as_str(),
+            Prim::Set(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
+            Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),
         }
     }
@@ -1918,12 +2082,14 @@ pub const PRELUDE_MODULE: &str = "prelude";
 
 /// The kinds of the prelude that Core IR does not declare, which each engine knows itself: the
 /// collections and a map's `Entry`, `Option` and `Result`, the failure kinds of `Files` and
-/// `Keys`, and `ParseError`. Every other kind of the prelude is a [`Decl::Data`] of the module
+/// `Keys`, `ParseError`, and the dense types of edition 0.4 (`spec/29 §17`). Every other kind of the prelude is a [`Decl::Data`] of the module
 /// [`PRELUDE_MODULE`]. A `Named` kind that is neither, nor declared by the package, is a bug of
 /// elaboration, and the verifier and the native backend stop on it (#407).
-pub const PRELUDE_ENGINE_KINDS: [&str; 8] = [
+pub const PRELUDE_ENGINE_KINDS: [&str; 10] = [
     "List",
     "Map",
+    "Array",
+    "Matrix",
     "Entry",
     "Option",
     "Result",
@@ -1969,6 +2135,107 @@ pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
             ("TooLong", &[]),
         ]),
         _ => None,
+    }
+}
+
+/// The module path of the collections of edition `0.4` (ADR 0119 rule 0): their types are
+/// `Named` in it, and its kind `Ranked` is a [`Decl::Data`] of it.
+pub const COLLECTIONS_MODULE: &str = "std.collections";
+
+/// A collection type of `std.collections`, edition `0.4` (ADR 0119). Each engine knows its
+/// values itself, as it knows a list's and a map's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Coll {
+    /// `Stack[T]`, last in, first out (rule 5).
+    Stack,
+    /// `Queue[T]`, first in, first out, with both ends open (rule 6).
+    Queue,
+    /// `Set[T]`, an ordered set over an `Ord` item (rule 7).
+    Set,
+    /// `HashMap[K, V]`, keyed by any `Eq` type, in insertion order (rules 8 to 12).
+    HashMap,
+    /// `HashSet[T]`, of any `Eq` item, in insertion order (rules 8 to 12).
+    HashSet,
+    /// `PriorityQueue[T, P]`, a stable heap over an `Ord` priority (rule 13).
+    PriorityQueue,
+    /// `BitSet`, the integers of a fixed range (rule 14).
+    BitSet,
+}
+
+impl Coll {
+    /// Every collection type, in the order of ADR 0119's export list.
+    pub const ALL: [Coll; 7] = [
+        Coll::Stack,
+        Coll::Queue,
+        Coll::Set,
+        Coll::HashMap,
+        Coll::HashSet,
+        Coll::PriorityQueue,
+        Coll::BitSet,
+    ];
+
+    /// The name of the type, as `std.collections` exports it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Coll::Stack => "Stack",
+            Coll::Queue => "Queue",
+            Coll::Set => "Set",
+            Coll::HashMap => "HashMap",
+            Coll::HashSet => "HashSet",
+            Coll::PriorityQueue => "PriorityQueue",
+            Coll::BitSet => "BitSet",
+        }
+    }
+
+    /// The collection type named `name`, if any.
+    pub fn from_name(name: &str) -> Option<Coll> {
+        Coll::ALL.into_iter().find(|coll| coll.as_str() == name)
+    }
+
+    /// The number of its type arguments.
+    pub fn arity(self) -> usize {
+        match self {
+            Coll::BitSet => 0,
+            Coll::HashMap | Coll::PriorityQueue => 2,
+            Coll::Stack | Coll::Queue | Coll::Set | Coll::HashSet => 1,
+        }
+    }
+
+    /// Whether its values can satisfy `Eq` (ADR 0119 rule 2): a hash map, a hash set and a
+    /// priority queue never do.
+    pub fn has_eq(self) -> bool {
+        !matches!(self, Coll::HashMap | Coll::HashSet | Coll::PriorityQueue)
+    }
+
+    /// The constraint that its type argument `index` must satisfy: `Ord` for a set's item and
+    /// a priority, `Eq` for a hash key or item (ADR 0119 rules 7, 8 and 13).
+    pub fn needs(self, index: usize) -> Constraint {
+        match (self, index) {
+            (Coll::Set, 0) | (Coll::PriorityQueue, 1) => Constraint::Ord,
+            (Coll::HashMap | Coll::HashSet, 0) => Constraint::Eq,
+            _ => Constraint::None,
+        }
+    }
+
+    /// Whether its type argument `index` is part of its shape: the items of a set, the keys of
+    /// a hash map and the priorities of a queue decide its size or its order, so their labels
+    /// are below its top label (ADR 0119 rule 3, IF2 to IF4).
+    pub fn is_shape(self, index: usize) -> bool {
+        matches!(
+            (self, index),
+            (Coll::Set | Coll::HashMap | Coll::HashSet, 0) | (Coll::PriorityQueue, 1)
+        )
+    }
+
+    /// What its type argument `index` is called in messages: `item`, `key`, `value` or
+    /// `priority`.
+    pub fn arg_role(self, index: usize) -> &'static str {
+        match (self, index) {
+            (Coll::HashMap, 0) => "key",
+            (Coll::HashMap, _) => "value",
+            (Coll::PriorityQueue, 1) => "priority",
+            _ => "item",
+        }
     }
 }
 

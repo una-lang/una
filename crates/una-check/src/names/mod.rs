@@ -596,6 +596,22 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.4: the dense types are built in, and `Tensor` and `Lu` are reserved for
+        // them (`spec/29 §17`, ADR 0120 rule 3).
+        if upper
+            && self.package.settings.edition >= Edition::V0_4
+            && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
+        {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`{name}` is a built-in dense type from edition 0.4, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.2: the built-in types, and the types of the prelude that every program
         // uses, cannot be shadowed by a declaration (`spec/03 §1`, ADR 0079): in edition 0.1 a
         // kind named `Int` silently replaced it (#130).
@@ -942,7 +958,8 @@ impl<'p, 'a> Checker<'p, 'a> {
             {
                 table.edges.push((target, import.module.span));
             }
-            // The importable standard modules (`spec/10 §11` rule 10).
+            // The importable standard modules (`spec/10 §11` rule 10), `std.collections` among
+            // them from edition 0.4 (ADR 0119 rule 0).
             let edition = self.package.settings.edition;
             let importable = prelude::importable(edition);
             let is_std = importable.contains(&path.as_str());
@@ -952,6 +969,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 prelude::STD_HOST => prelude::std_host_names(edition),
                 prelude::STD_TIME => &prelude::STD_TIME_NAMES,
                 prelude::STD_DRIVE => &prelude::STD_DRIVE_NAMES,
+                prelude::STD_COLLECTIONS => &prelude::STD_COLLECTIONS_NAMES,
                 _ => &[],
             };
             if target.is_none() && !is_std {

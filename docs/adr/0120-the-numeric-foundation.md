@@ -857,3 +857,23 @@ Found while implementing rules 15 to 17 (issue #985).
 1. **No function value of `parse_decimal`, `as_decimal` or `json_decimal`.** The scale of `parse_decimal`'s and `as_decimal`'s result is the literal of each call, and `json_decimal` writes its argument at that argument's scale, which only its type knows. A function value carries one signature, so it could not carry either. Naming one of the three as a value is **U2037** in edition `0.4`, a meaning the U2037 row of Diagnostics gains: "a prelude function whose result's scale is a literal of each call, named as a value". A lambda that calls it is the repair.
 2. **The `scale` argument binds by its parameter.** The argument that binds the parameter `scale` of `parse_decimal` and `as_decimal` is an integer literal from 0 to 38, whether it is labeled, punned or at its position (`spec/04 §3`). Otherwise it is U2037, so no run-time value sets a scale.
 3. **`to_f64()`'s general path** (rule 15) reads the exact decimal text `c` × 10^-s with Rust's correctly rounded `str::parse::<f64>`, the standard library's, rather than a routine of the project. Its fast path is tested bit for bit against it over 20,000 random coefficients and scales.
+
+## Amendment (2026-10-19): what the first step of dense values settles (issue #987)
+
+The first step of section E, `Array[T]` and `Matrix[T]` (`spec/29 §17`), settles four points that the text above leaves open or states otherwise. None of them makes the language accept more.
+
+1. **The loop of V4.** It reads `m` inside `edit m.set(...)`, which `spec/17 §3` rejects (U2018: a call that passes a binding by `edit` cannot read it in its other arguments). The loop reads the element with its own `let` first:
+
+   ```una
+   for i in 0..<m.rows
+     for j in 0..<m.columns
+       let x = m.get(row: i, column: j)
+       edit m.set(row: i, column: j, item: x * 2.0)
+   ```
+
+   The shape frame and the refutation of the `0..m.rows` loop are as V4 states (`spec/29 §17` rule 18).
+2. **IF4, in its strict form.** The index of `set` is a `public` argument, so a `secret` index is U4001 whatever the element label. IF4 also admits a labeled index into elements of at least its label; a later step may admit that case, which only accepts more programs (`spec/29 §17` rule 22).
+3. **The product kernels and reductions of rules 36 and 37 are defined on float elements.** Their chains are rule 46's, made of `fma`, which integers do not have. On fixed-width elements, `sum_exact` and `dot_exact` (rule 36, rule 51) are the exact forms; `multiply`, `multiply_array`, `add_product`, `add_scaled`, `scale`, `sum`, `dot`, `norm2`, `row_sums` and `column_sums` are not methods there, and the name resolves as a function of the package (rule 26).
+4. **Rule 40's `to_list`, and rule 35's `map`, `zip_map`, `update` and `fold`, are on numeric elements,** as rule 26 says of rules 34 to 43. An `Array` of another element type has `get`, `set`, `at`, `slice`, `compact` and `len` (rules 29 and 30). Whether `to_list`, `map` and `fold` extend to every element type, which rule 43's route to JSON would use, is left to a later record.
+
+And one rule the text implies, stated: **a trusted function that computes new elements keeps no refinement of its element type in its result.** ADR 0103 rule 5 lets a refinement flow through a generic call's covariant result because the callee can only return values it was given; `matrix_diagonal`'s `+0`, the reductions and the products compute new values, so their results are over the element type's base (`spec/29 §17` rule 6).

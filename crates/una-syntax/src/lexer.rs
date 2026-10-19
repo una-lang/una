@@ -31,6 +31,12 @@ pub struct Lexed {
     /// Edition 0.3: the symbol of `from`, interned when the keyword `from` is followed by `:`,
     /// which the parser reads as the argument label of `copy_sign(from: y)` (`spec/29 §3`).
     pub from_label: Option<Symbol>,
+    /// Edition 0.4: the symbols of `with` and `and`, interned when the keyword is followed by
+    /// `:`, which the parser reads as the argument labels of the dense methods, as in
+    /// `a.dot(with: b)` and `edit c.add_product(of: a, and: b)` (`spec/29 §17`, ADR 0120).
+    pub with_label: Option<Symbol>,
+    /// See [`Lexed::with_label`].
+    pub and_label: Option<Symbol>,
 }
 
 /// A U0103 error of [`Lexed::errors`] that gets a rename edit (issue #75, #105, #125).
@@ -1097,6 +1103,16 @@ impl Lexer<'_> {
         // label in a call's arguments only, so no declaration can take the name.
         if word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':') {
             self.out.from_label = Some(self.interner.intern("from"));
+        }
+        // Edition 0.4: `with` and `and` right before `:` may be argument labels of the dense
+        // methods (ADR 0120); they stay keywords, which the parser accepts as labels in a
+        // call's arguments only.
+        if self.out.keywords >= KeywordSet::V0_4 && self.peek() == Some(':') {
+            match word.as_str() {
+                "with" => self.out.with_label = Some(self.interner.intern("with")),
+                "and" => self.out.and_label = Some(self.interner.intern("and")),
+                _ => {}
+            }
         }
         // Edition 0.4: `diverges` alone on its line is the clause of a header (`spec/26 §5`);
         // anywhere else it stays reserved (U0103).

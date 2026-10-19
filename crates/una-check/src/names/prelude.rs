@@ -141,14 +141,35 @@ pub(crate) const STD_DRIVE: &str = "std.drive";
 /// What `std.drive` exports: the kind of a tick (ADR 0116 rule 2).
 pub(crate) const STD_DRIVE_NAMES: [&str; 1] = ["Tick"];
 
-/// The standard modules a package of `edition` may import (`spec/10 §11` rule 10).
+/// The standard modules a package of `edition` may import (`spec/10 §11` rule 10, ADR 0119
+/// rule 0).
 pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
     if edition >= Edition::V0_4 {
-        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE]
+        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE, STD_COLLECTIONS]
     } else {
         &[STD_HOST, STD_TESTING]
     }
 }
+
+/// The path of the standard module of the collections, edition 0.4 (ADR 0119 rule 0).
+pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
+
+/// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`
+/// and the functions that make the types implemented so far (ADR 0119 rule 0). The other
+/// functions join the list with the types they make.
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 11] = [
+    "Stack",
+    "Queue",
+    "Set",
+    "HashMap",
+    "HashSet",
+    "PriorityQueue",
+    "Ranked",
+    "BitSet",
+    "empty_stack",
+    "empty_queue",
+    "empty_set",
+];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
 pub(crate) const TEXT_0_2: [&str; 14] = [
@@ -177,6 +198,23 @@ pub(crate) const FLOAT_0_3: [&str; 6] = [
     "as_f64",
     "json_number",
 ];
+
+/// The constructors of dense values that edition 0.4 adds to the prelude (`spec/29 §17`, ADR
+/// 0120 rule 32). The methods of dense values are resolved by their receiver, through
+/// functions of the prelude whose names start with [`DENSE_HIDDEN`], which no name in a program
+/// reaches.
+pub(crate) const DENSE_0_4: [&str; 5] = [
+    "array",
+    "array_filled",
+    "matrix",
+    "matrix_filled",
+    "matrix_diagonal",
+];
+
+/// The prefix of the prelude functions that implement the methods and operators of dense
+/// values (`spec/29 §17`): only the checker's resolution by receiver reaches them, never a name
+/// written in a program.
+pub(crate) const DENSE_HIDDEN: &str = "dense_";
 
 /// The functions of `Decimal` that edition 0.4 adds to the prelude (`spec/29 §16`, ADR 0120
 /// rules 16 and 17).

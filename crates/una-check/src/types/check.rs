@@ -1029,6 +1029,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     let Some(def) = env.functions.get(current) else {
                         continue;
                     };
+                    // The contracts of the dense methods state the element equations of `get`
+                    // and `set` over any element type, which the verifier encodes as equality
+                    // of terms of the element's sort (`spec/29 §17`): no constraint is asked of
+                    // their callers.
+                    if def.module == env.prelude
+                        && def.name.starts_with(crate::names::prelude::DENSE_HIDDEN)
+                    {
+                        continue;
+                    }
                     let written = def.constraints_written.get(index).copied().unwrap_or(false);
                     let have = def.constraints.get(index).copied().unwrap_or_default();
                     if !def.public && !written {

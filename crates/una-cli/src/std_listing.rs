@@ -79,6 +79,11 @@ pub fn std_items() -> Vec<Item> {
                 let Some((name, kind, declaration)) = public(decl, &interner, text) else {
                     continue;
                 };
+                // The functions that the methods of dense values resolve to are reached by
+                // their receiver only, never by name (`spec/29 §17`): not part of the listing.
+                if module == MODULES[0] && name.starts_with("dense_") {
+                    continue;
+                }
                 let docs = docs(decl, text);
                 let at = *index.entry((module, name.clone())).or_insert_with(|| {
                     items.push(Item {
