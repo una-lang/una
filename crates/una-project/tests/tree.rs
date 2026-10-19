@@ -253,7 +253,7 @@ fn writing_goes_through_a_fresh_private_directory() {
     let tree = VerifiedTree::from_archive(&archive(&mut files).unwrap()).unwrap();
     let parent = make_dirs(&base, &["store"]).unwrap();
     store_tree(&parent, "out", &tree, true).unwrap();
-    let target = parent.join("out");
+    let target = parent.path().join("out");
     assert_eq!(
         std::fs::read_to_string(target.join("src/a/b.una")).unwrap(),
         "module a.b\n"
@@ -274,27 +274,37 @@ fn writing_goes_through_a_fresh_private_directory() {
     }
     // What was written reads back verified, and nothing else is left in the parent.
     assert_eq!(read_verified(&target, &digest).unwrap(), tree);
-    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
     // A directory already there is never written over.
     assert!(store_tree(&parent, "out", &tree, false).is_err());
-    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
+    // Nor is an empty one: the rename refuses anything at the name.
+    std::fs::create_dir(parent.path().join("empty")).unwrap();
+    assert!(store_tree(&parent, "empty", &tree, false).is_err());
+    assert_eq!(
+        std::fs::read_dir(parent.path().join("empty"))
+            .unwrap()
+            .count(),
+        0
+    );
+    std::fs::remove_dir(parent.path().join("empty")).unwrap();
     // A single file replaces the name atomically.
     store_file(&parent, "doc.provenance", b"one", false).unwrap();
     store_file(&parent, "doc.provenance", b"two", false).unwrap();
     assert_eq!(
-        std::fs::read(parent.join("doc.provenance")).unwrap(),
+        std::fs::read(parent.path().join("doc.provenance")).unwrap(),
         b"two"
     );
-    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 2);
     #[cfg(unix)]
     {
         // A dangling link where the file goes: the link is replaced, not followed.
         let aim = base.join("aim.provenance");
-        std::os::unix::fs::symlink(&aim, parent.join("dangling.provenance")).unwrap();
+        std::os::unix::fs::symlink(&aim, parent.path().join("dangling.provenance")).unwrap();
         store_file(&parent, "dangling.provenance", b"x", false).unwrap();
         assert!(!aim.exists());
         assert!(
-            std::fs::symlink_metadata(parent.join("dangling.provenance"))
+            std::fs::symlink_metadata(parent.path().join("dangling.provenance"))
                 .unwrap()
                 .is_file()
         );
@@ -303,11 +313,10 @@ fn writing_goes_through_a_fresh_private_directory() {
         std::os::unix::fs::symlink(base.join("away"), base.join("made")).unwrap();
         assert!(make_dirs(&base, &["made", "deeper"]).is_err());
         assert!(!base.join("away/deeper").exists());
-        // A parent that is a link: nothing is written through it.
-        assert!(store_tree(&base.join("made"), "out", &tree, false).is_err());
-        assert!(store_file(&base.join("made"), "doc", b"x", false).is_err());
+        // A parent that is a link is never opened, so nothing is written through it.
+        assert!(make_dirs(&base, &["made"]).is_err());
         assert_eq!(std::fs::read_dir(base.join("away")).unwrap().count(), 0);
     }
     let made = make_dirs(&base, &["new", "deeper"]).unwrap();
-    assert!(made.is_dir());
+    assert!(made.path().is_dir());
 }

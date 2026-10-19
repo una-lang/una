@@ -13,6 +13,9 @@ toml.workspace = true
 una-core.workspace = true
 una-diag.workspace = true
 una-syntax.workspace = true
+# The descriptor-relative writes of vendoring and Itaoca (#1094); this crate stays free of
+# `unsafe`.
+una-sys.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

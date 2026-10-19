@@ -18,22 +18,28 @@
 //! package is read can therefore at most change the bytes read, and then the digest differs and
 //! the load fails closed.
 //!
-//! **Writing: into a private directory of our own, then one rename.** [`store_tree`] and
-//! [`store_file`] create a fresh directory with a name of their own, which must not exist
-//! (`mkdir` fails otherwise), with mode 0700, so no other user can create or replace anything
-//! in it; each directory below it is created the same way, and each file with
-//! `O_CREAT | O_EXCL | O_NOFOLLOW`. A file's permissions are set through its open descriptor,
-//! never by path, and each file and directory is synced before the directory (or, for one
-//! file, the file) is renamed into place. The fresh directory's identity is taken from its
-//! open descriptor when it is created, and it must still be that directory before each file
-//! is written and before the rename. A write that fails removes the fresh directory only when
-//! it is still ours by that identity; otherwise it is left in place and the refusal says so.
+//! **Writing: into a private directory of our own, through descriptors, then one rename.**
+//! [`make_dirs`] opens the base once, by its canonical path, checks that the descriptor is the
+//! directory the path names, and creates and opens each directory below it relative to the one
+//! above, with no link followed, giving a [`Parent`]: a descriptor. [`store_tree`] and
+//! [`store_file`] create in it, relative to that descriptor, a fresh directory with a name of
+//! their own, which must not exist (`mkdirat` fails otherwise), with mode 0700, so no other user
+//! can create or replace anything in it, and open it with no link followed. Each directory below
+//! it is created and opened the same way, relative to the one above, and each file with
+//! `openat` and `O_CREAT | O_EXCL | O_NOFOLLOW`, relative to its directory's descriptor
+//! (`una_sys::dir`). Nothing is created by path, so a path swapped for a link while the write
+//! runs redirects nothing. A file's permissions are set through its open descriptor, never by
+//! path, and each file and directory is synced before the directory is renamed into place,
+//! relative to the parent's descriptor and refusing anything already at its name
+//! (`RENAME_NOREPLACE`, `RENAME_EXCL`), or, for one file, the file is renamed from the fresh
+//! directory's descriptor to the parent's, replacing what was there. The fresh name must be the
+//! directory created, by the identity taken from its descriptor, just before the rename, and the
+//! final name must be it just after: a swap refuses the write, and leaves the directory. A
+//! write that fails removes the fresh directory only when its name is still that directory;
+//! otherwise it is left in place and the refusal says so.
 //!
-//! The standard library opens files by path, not relative to a directory descriptor
-//! (`openat`). What that leaves is stated where it applies: a component above the base, which
-//! the user chose, is resolved once, and a swap of the fresh directory's path by someone who
-//! can rename entries of its parent is detected before the rename and fails the write. A
-//! platform whose flag values this module does not know refuses every read and write: nothing
+//! A component above the base, which the user chose, is resolved once, when the base is opened.
+//! A platform whose flag values this module does not know refuses every read and write: nothing
 //! falls back to following links.
 //!
 //! Costs: O(B) for the B bytes read or written, with one SHA-256 pass; O(e log e) to sort the e
@@ -44,6 +50,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use una_sys::dir::{self as sys, DirHandle};
 
 use crate::content::{self, File, MAX_BYTES, MAX_FILES, MAX_SEGMENTS};
 
@@ -119,29 +127,7 @@ fn with_flags(options: &mut OpenOptions, flags: i32) {
 #[cfg(not(unix))]
 fn with_flags(_: &mut OpenOptions, _: i32) {}
 
-/// The mode of a file while it is written: 0600.
-#[cfg(unix)]
-fn with_private_mode(options: &mut OpenOptions) {
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(0o600);
-}
-
-#[cfg(not(unix))]
-fn with_private_mode(_: &mut OpenOptions) {}
-
-/// `mkdir` with mode 0700, failing when anything is at `path`, a link included.
-#[cfg(unix)]
-fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new().mode(0o700).create(path)
-}
-
-#[cfg(not(unix))]
-fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    fs::create_dir(path)
-}
-
-/// Sets the mode of the file or directory open as `handle`, through the descriptor (`fchmod`).
+/// Sets the mode of the file open as `handle`, through the descriptor (`fchmod`).
 #[cfg(unix)]
 fn set_mode(handle: &fs::File, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -292,25 +278,54 @@ pub fn locate(base: &Path, relative: &[&str]) -> Result<Option<PathBuf>, Refusal
     Ok(Some(path))
 }
 
-/// Creates the directories `relative` below `base`, each missing one with `mkdir`, and checks
-/// that each one already there is a directory and not a link; the base itself is created when
-/// missing. Returns the last one's path. These are the shared directories a fresh one is
-/// renamed into ([`store_tree`], [`store_file`]); nothing is written in them directly.
-pub fn make_dirs(base: &Path, relative: &[&str]) -> Result<PathBuf, Refusal> {
+/// A directory that fresh directories are created in and renamed into, open as a descriptor
+/// through which every write goes, with its path for messages. Made only by [`make_dirs`].
+#[derive(Debug)]
+pub struct Parent {
+    path: PathBuf,
+    handle: DirHandle,
+}
+
+impl Parent {
+    /// The directory's path, as [`make_dirs`] reached it.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Creates the directories `relative` below `base`, each missing one with `mkdir`, and opens
+/// each one with no link followed; the base itself is created when missing. The base is opened
+/// once, by its canonical path, and must then be the directory that path names; each component
+/// below it is created and opened relative to the descriptor of the one above, so a link swapped
+/// in anywhere below the base is refused, never followed. Returns the last one, open. These are
+/// the shared directories a fresh one is renamed into ([`store_tree`], [`store_file`]); nothing
+/// is written in them directly.
+pub fn make_dirs(base: &Path, relative: &[&str]) -> Result<Parent, Refusal> {
     flags()?;
-    fs::create_dir_all(base).map_err(|e| cannot("create", base, &e))?;
-    let mut path = base_dir(base)?.ok_or_else(|| format!("`{}` is missing", base.display()))?;
     for part in relative {
         component(part)?;
+    }
+    fs::create_dir_all(base).map_err(|e| cannot("create", base, &e))?;
+    let mut path = base_dir(base)?.ok_or_else(|| format!("`{}` is missing", base.display()))?;
+    let mut handle =
+        DirHandle::open(&path).map_err(|e| cannot("open, without following a link,", &path, &e))?;
+    // The parent's identity at open time: the descriptor is the directory its path names.
+    let opened = handle.metadata().map_err(|e| cannot("read", &path, &e))?;
+    let listed = real_directory(&path)?;
+    if !opened.is_dir() || identity(&opened) != identity(&listed) {
+        return Err(format!("`{}` changed while it was opened", path.display()));
+    }
+    for part in relative {
         path.push(part);
-        match fs::create_dir(&path) {
+        match sys::mkdir_at(&handle, part, 0o777) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
             Err(error) => return Err(cannot("create", &path, &error)),
         }
-        real_directory(&path)?;
+        handle = sys::open_dir_at(&handle, part)
+            .map_err(|e| cannot("open, without following a link,", &path, &e))?;
     }
-    Ok(path)
+    Ok(Parent { path, handle })
 }
 
 fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
@@ -662,41 +677,46 @@ fn fresh_name() -> String {
     format!(".una-fresh-{}-{count}-{nanos}", std::process::id())
 }
 
-/// A private directory this process created, with what it created in it.
-struct Fresh {
-    flags: Flags,
-    /// Its path, in the directory it is renamed into.
+/// A private directory this process created in a [`Parent`], with what it created in it. Every
+/// file and directory of a write is created relative to its descriptor, or to that of a
+/// directory created in it, never by path.
+struct Fresh<'p> {
+    parent: &'p Parent,
+    /// Its name in the parent.
+    name: String,
+    /// Its path, for messages and for the removal of an unfinished write.
     path: PathBuf,
     /// Its identity, from its open descriptor when it was created.
     identity: Identity,
     /// Its descriptor.
-    handle: fs::File,
+    handle: DirHandle,
     /// Each directory created in it, by its path in the package, with its descriptor.
-    dirs: BTreeMap<String, fs::File>,
+    dirs: BTreeMap<String, DirHandle>,
     /// The mode each file gets.
     file_mode: u32,
 }
 
-impl Fresh {
-    /// Creates a fresh private directory in `parent`, which [`make_dirs`] made or checked.
-    fn create(parent: &Path, read_only: bool) -> Result<Fresh, Refusal> {
-        let flags = flags()?;
-        real_directory(parent)?;
+impl<'p> Fresh<'p> {
+    /// Creates a fresh private directory in `parent`, relative to its descriptor.
+    fn create(parent: &'p Parent, read_only: bool) -> Result<Fresh<'p>, Refusal> {
+        flags()?;
         let mut tries = 0;
-        let path = loop {
-            let path = parent.join(fresh_name());
-            match create_private_dir(&path) {
-                Ok(()) => break path,
+        let name = loop {
+            let name = fresh_name();
+            match sys::mkdir_at(&parent.handle, &name, 0o700) {
+                Ok(()) => break name,
                 Err(error) if error.kind() == ErrorKind::AlreadyExists && tries < FRESH_TRIES => {
                     tries += 1;
                 }
-                Err(error) => return Err(cannot("create", &path, &error)),
+                Err(error) => return Err(cannot("create", &parent.path.join(&name), &error)),
             }
         };
-        let handle = open_private_dir(&path, flags)?;
+        let path = parent.path.join(&name);
+        let handle = open_private_dir(&parent.handle, &name, &path)?;
         let meta = handle.metadata().map_err(|e| cannot("read", &path, &e))?;
         Ok(Fresh {
-            flags,
+            parent,
+            name,
             identity: identity(&meta),
             path,
             handle,
@@ -709,122 +729,126 @@ impl Fresh {
         })
     }
 
-    /// Refuses unless the fresh directory's path still names the directory created.
-    fn still_ours(&self) -> Result<(), Refusal> {
-        let now = fs::symlink_metadata(&self.path).map_err(|e| cannot("read", &self.path, &e))?;
-        if now.file_type().is_symlink() || !now.is_dir() || identity(&now) != self.identity {
-            return Err(format!(
-                "`{}` was replaced while it was written",
-                self.path.display()
-            ));
+    /// The descriptor of the directory at `relative` in the fresh one, which is itself at "".
+    fn dir(&self, relative: &str) -> Result<&DirHandle, Refusal> {
+        if relative.is_empty() {
+            return Ok(&self.handle);
         }
-        Ok(())
+        self.dirs
+            .get(relative)
+            .ok_or_else(|| format!("`{relative}` was not created before a file in it"))
     }
 
-    /// Writes `bytes` at `path`, a path of rule 27, creating the directories above it.
+    /// Writes `bytes` at `path`, a path of rule 27, creating the directories above it, each
+    /// relative to the descriptor of the one above.
     fn write(&mut self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
         content::check_path(path)?;
-        self.still_ours()?;
         let segments: Vec<&str> = path.split('/').collect();
         let Some((name, parents)) = segments.split_last() else {
             return Err(format!("`{path}` is not a path"));
         };
-        let mut target = self.path.clone();
         let mut relative = String::new();
-        for parent in parents {
+        for segment in parents {
+            let above = relative.clone();
             if !relative.is_empty() {
                 relative.push('/');
             }
-            relative.push_str(parent);
-            target.push(parent);
+            relative.push_str(segment);
             if self.dirs.contains_key(&relative) {
                 continue;
             }
-            create_private_dir(&target).map_err(|e| cannot("create", &target, &e))?;
-            let handle = open_private_dir(&target, self.flags)?;
+            let shown = self.path.join(&relative);
+            let dir = self.dir(&above)?;
+            sys::mkdir_at(dir, segment, 0o700).map_err(|e| cannot("create", &shown, &e))?;
+            let handle = open_private_dir(dir, segment, &shown)?;
             self.dirs.insert(relative.clone(), handle);
         }
-        target.push(name);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        with_private_mode(&mut options);
-        with_flags(
-            &mut options,
-            self.flags.no_follow | self.flags.no_follow_any,
-        );
-        let mut file = options
-            .open(&target)
-            .map_err(|e| cannot("create", &target, &e))?;
+        let shown = self.path.join(path);
+        let mut file = sys::create_file_at(self.dir(&relative)?, name, 0o600)
+            .map_err(|e| cannot("create", &shown, &e))?;
         file.write_all(bytes)
-            .map_err(|e| cannot("write", &target, &e))?;
+            .map_err(|e| cannot("write", &shown, &e))?;
         // Through the descriptor (`fchmod`), never by path.
-        set_mode(&file, self.file_mode).map_err(|e| cannot("protect", &target, &e))?;
-        file.sync_all().map_err(|e| cannot("write", &target, &e))?;
+        set_mode(&file, self.file_mode).map_err(|e| cannot("protect", &shown, &e))?;
+        file.sync_all().map_err(|e| cannot("write", &shown, &e))?;
         Ok(())
     }
 
     /// Sets each directory's final mode through its descriptor and syncs it, the fresh one
-    /// last, then checks that the fresh directory is still the one created.
+    /// last.
     fn seal(&self) -> Result<(), Refusal> {
         for (relative, handle) in self.dirs.iter().rev() {
             let shown = self.path.join(relative);
-            set_mode(handle, DIRECTORY_MODE).map_err(|e| cannot("protect", &shown, &e))?;
+            handle
+                .set_mode(DIRECTORY_MODE)
+                .map_err(|e| cannot("protect", &shown, &e))?;
             sync_dir(handle, &shown)?;
         }
-        set_mode(&self.handle, DIRECTORY_MODE).map_err(|e| cannot("protect", &self.path, &e))?;
-        sync_dir(&self.handle, &self.path)?;
-        self.still_ours()
+        self.handle
+            .set_mode(DIRECTORY_MODE)
+            .map_err(|e| cannot("protect", &self.path, &e))?;
+        sync_dir(&self.handle, &self.path)
     }
 
-    /// Renames the fresh directory to `name` in its parent. The name that results must be the
-    /// directory created.
-    fn commit(self, name: &str) -> Result<(), Refusal> {
-        let target = self.parent()?.join(name);
-        if let Err(error) = self.seal() {
-            return Err(self.discard(error));
-        }
-        if let Err(error) = fs::rename(&self.path, &target) {
-            let refusal = format!("cannot move `{}` into place: {error}", target.display());
-            return Err(self.discard(refusal));
-        }
-        let placed = fs::symlink_metadata(&target).map_err(|e| cannot("read", &target, &e))?;
-        if placed.file_type().is_symlink() || identity(&placed) != self.identity {
+    /// Refuses unless `name` in the parent is the fresh directory, by the identity of what
+    /// opening it relative to the parent's descriptor, with no link followed, gives.
+    fn named(&self, name: &str) -> Result<(), Refusal> {
+        let shown = self.parent.path.join(name);
+        let now = sys::open_dir_at(&self.parent.handle, name)
+            .and_then(|handle| handle.metadata())
+            .map_err(|e| cannot("open, without following a link,", &shown, &e))?;
+        if identity(&now) != self.identity {
             return Err(format!(
-                "`{}` is not the directory written, after it was moved into place",
-                target.display()
+                "`{}` is not the directory written",
+                shown.display()
             ));
         }
         Ok(())
     }
 
-    /// Renames the one file `file` of the fresh directory to `name` in its parent, then removes
-    /// the fresh directory, now empty.
+    /// Renames the fresh directory to `name` in its parent, relative to the parent's
+    /// descriptor, refusing anything already at `name`. The fresh name must still be the
+    /// directory written just before, and `name` must be it just after.
+    fn commit(self, name: &str) -> Result<(), Refusal> {
+        let target = self.parent.path.join(name);
+        if let Err(error) = self.seal().and_then(|()| self.named(&self.name)) {
+            return Err(self.discard(error));
+        }
+        if let Err(error) =
+            sys::rename_at(&self.parent.handle, &self.name, &self.parent.handle, name)
+        {
+            let refusal = format!("cannot move `{}` into place: {error}", target.display());
+            return Err(self.discard(refusal));
+        }
+        sync_dir(&self.parent.handle, &self.parent.path)?;
+        self.named(name).map_err(|refusal| {
+            format!("{refusal}, after it was moved into place, so it fails to load")
+        })
+    }
+
+    /// Renames the one file `file` of the fresh directory to `name` in its parent, relative to
+    /// both descriptors, replacing what `name` was, then removes the fresh directory, now empty.
     fn commit_file(self, file: &str, name: &str) -> Result<(), Refusal> {
-        let target = self.parent()?.join(name);
+        let target = self.parent.path.join(name);
         if let Err(error) = self.seal() {
             return Err(self.discard(error));
         }
         // A rename replaces the name itself: a link there is replaced, never followed.
-        if let Err(error) = fs::rename(self.path.join(file), &target) {
+        if let Err(error) = sys::replace_at(&self.handle, file, &self.parent.handle, name) {
             let refusal = format!("cannot move `{}` into place: {error}", target.display());
             return Err(self.discard(refusal));
         }
-        if let Err(refusal) = self.still_ours() {
+        sync_dir(&self.parent.handle, &self.parent.path)?;
+        if let Err(refusal) = self.named(&self.name) {
             return Err(format!("{refusal}; it was left in place"));
         }
         fs::remove_dir(&self.path).map_err(|e| cannot("remove", &self.path, &e))
     }
 
-    fn parent(&self) -> Result<&Path, Refusal> {
-        self.path
-            .parent()
-            .ok_or_else(|| format!("`{}` has no parent", self.path.display()))
-    }
-
-    /// Removes the fresh directory after `refusal`, when its path still names the directory
-    /// created; otherwise leaves it, and says so.
+    /// Removes the fresh directory after `refusal`, when its name in the parent still names the
+    /// directory created; otherwise leaves it, and says so.
     fn discard(self, refusal: Refusal) -> Refusal {
-        if let Err(changed) = self.still_ours() {
+        if let Err(changed) = self.named(&self.name) {
             return format!("{refusal}; {changed}, so it was left in place");
         }
         match fs::remove_dir_all(&self.path) {
@@ -839,8 +863,8 @@ impl Fresh {
 
 /// Syncs the directory open as `handle`. A file system that cannot sync a directory at all
 /// (`EINVAL`, or no support) is not an error: its files were each synced already.
-fn sync_dir(handle: &fs::File, path: &Path) -> Result<(), Refusal> {
-    match handle.sync_all() {
+fn sync_dir(handle: &DirHandle, path: &Path) -> Result<(), Refusal> {
+    match handle.fsync() {
         Ok(()) => Ok(()),
         Err(error)
             if matches!(
@@ -854,30 +878,26 @@ fn sync_dir(handle: &fs::File, path: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// Opens the directory at `path`, just created by this process, with no link followed: it must
-/// be a directory that grants nothing to others, the same one its path names.
-fn open_private_dir(path: &Path, flags: Flags) -> Result<fs::File, Refusal> {
-    let handle = open(
-        path,
-        flags.no_follow | flags.no_follow_any | flags.directory,
-    )?;
-    let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
-    let listed = real_directory(path)?;
-    if !opened.is_dir() || !private(&opened) || identity(&opened) != identity(&listed) {
+/// Opens the directory `name` in `dir`, just created by this process, with no link followed: it
+/// must be a directory that grants nothing to others.
+fn open_private_dir(dir: &DirHandle, name: &str, shown: &Path) -> Result<DirHandle, Refusal> {
+    let handle = sys::open_dir_at(dir, name)
+        .map_err(|e| cannot("open, without following a link,", shown, &e))?;
+    let opened = handle.metadata().map_err(|e| cannot("read", shown, &e))?;
+    if !opened.is_dir() || !private(&opened) {
         return Err(format!(
             "`{}` is not the private directory just created",
-            path.display()
+            shown.display()
         ));
     }
     Ok(handle)
 }
 
 /// Writes the verified package `tree` as the directory `name` in `parent`, which [`make_dirs`]
-/// made: into a fresh private directory, each file read-only when `read_only`, then renamed into
-/// place. Fails when `parent` already holds `name`, unless that is an empty directory, which a
-/// rename replaces.
+/// opened: into a fresh private directory, each file read-only when `read_only`, then renamed
+/// into place. Fails when `parent` already holds anything at `name`.
 pub fn store_tree(
-    parent: &Path,
+    parent: &Parent,
     name: &str,
     tree: &VerifiedTree,
     read_only: bool,
@@ -892,9 +912,15 @@ pub fn store_tree(
     fresh.commit(name)
 }
 
-/// Writes `bytes` as the file `name` in `parent`, which [`make_dirs`] made: into a fresh private
-/// directory, read-only when `read_only`, then renamed into place, replacing what `name` was.
-pub fn store_file(parent: &Path, name: &str, bytes: &[u8], read_only: bool) -> Result<(), Refusal> {
+/// Writes `bytes` as the file `name` in `parent`, which [`make_dirs`] opened: into a fresh
+/// private directory, read-only when `read_only`, then renamed into place, replacing what `name`
+/// was.
+pub fn store_file(
+    parent: &Parent,
+    name: &str,
+    bytes: &[u8],
+    read_only: bool,
+) -> Result<(), Refusal> {
     component(name)?;
     let mut fresh = Fresh::create(parent, read_only)?;
     // The file's name inside the fresh directory is fixed, and a path of rule 27.
@@ -943,45 +969,74 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A fresh directory is private, and one whose path is swapped for another directory, or
-    /// for a link, while it is written is never renamed into place nor removed: the write fails
-    /// closed and leaves it.
+    /// The swap of #1094: someone who can rename entries of the parent moves the fresh
+    /// directory away while it is written and puts a link to another directory in its place.
+    /// The writes go through the descriptors, so they land in the directory created, wherever
+    /// it now is, and nothing in the link's target; the rename then refuses, since the fresh
+    /// name is no longer the directory written, so nothing is moved into place, and nothing is
+    /// removed.
     #[cfg(unix)]
     #[test]
-    fn a_fresh_directory_swapped_while_written_fails_closed() {
-        use std::os::unix::fs::MetadataExt;
+    fn a_fresh_directory_swapped_while_written_redirects_nothing() {
+        use std::os::unix::fs::{MetadataExt, symlink};
         let dir = scratch("fresh-swap");
-        let mut fresh = Fresh::create(&dir, false).unwrap();
+        let parent = make_dirs(&dir, &[]).unwrap();
+        let mut fresh = Fresh::create(&parent, false).unwrap();
         assert_eq!(fs::metadata(&fresh.path).unwrap().mode() & 0o777, 0o700);
         fresh.write("src/a.una", b"module a\n").unwrap();
-        // Someone who can rename in the parent moves it away and puts another directory there.
         let moved = dir.join("moved");
+        let away = dir.join("away");
+        fs::create_dir(&away).unwrap();
         fs::rename(&fresh.path, &moved).unwrap();
-        fs::create_dir(&fresh.path).unwrap();
-        fs::write(fresh.path.join("planted"), b"x").unwrap();
-        assert!(fresh.write("src/b.una", b"module b\n").is_err());
-        let path = fresh.path.clone();
+        symlink(&away, &fresh.path).unwrap();
+        // A new directory, a file in a directory already made, and one at the top.
+        fresh.write("src/deep/b.una", b"module b\n").unwrap();
+        fresh.write("src/c.una", b"module c\n").unwrap();
+        fresh.write("ita.una", b"ita x\n").unwrap();
+        assert_eq!(
+            fs::read(moved.join("src/deep/b.una")).unwrap(),
+            b"module b\n"
+        );
+        assert_eq!(fs::read(moved.join("src/c.una")).unwrap(), b"module c\n");
+        assert_eq!(fs::read(moved.join("ita.una")).unwrap(), b"ita x\n");
+        assert_eq!(fs::read_dir(&away).unwrap().count(), 0);
+        let link = fresh.path.clone();
         let refusal = fresh.commit("pkg").unwrap_err();
         assert!(refusal.contains("left in place"), "{refusal}");
-        assert!(!dir.join("pkg").exists());
-        assert!(path.join("planted").exists());
-        assert!(moved.join("src/a.una").exists());
-        // The same with a link in its place.
-        let mut fresh = Fresh::create(&dir, false).unwrap();
-        fresh.write("ita.una", b"ita x\n").unwrap();
-        let away = dir.join("away");
-        fs::rename(&fresh.path, &away).unwrap();
-        std::os::unix::fs::symlink(&away, &fresh.path).unwrap();
-        let link = fresh.path.clone();
-        assert!(fresh.commit("pkg2").unwrap_err().contains("left in place"));
-        assert!(!dir.join("pkg2").exists());
+        assert!(fs::symlink_metadata(dir.join("pkg")).is_err());
         assert!(
             fs::symlink_metadata(&link)
                 .unwrap()
                 .file_type()
                 .is_symlink()
         );
-        assert!(away.join("ita.una").exists());
+        assert_eq!(fs::read_dir(&away).unwrap().count(), 0);
+        // The same with another directory put in its place, which is never written in.
+        let mut fresh = Fresh::create(&parent, false).unwrap();
+        fresh.write("ita.una", b"ita x\n").unwrap();
+        let moved = dir.join("moved-again");
+        fs::rename(&fresh.path, &moved).unwrap();
+        fs::create_dir(&fresh.path).unwrap();
+        fs::write(fresh.path.join("planted"), b"x").unwrap();
+        fresh.write("src/a.una", b"module a\n").unwrap();
+        assert!(moved.join("src/a.una").exists());
+        let path = fresh.path.clone();
+        assert!(!path.join("src").exists());
+        let refusal = fresh.commit("pkg2").unwrap_err();
+        assert!(refusal.contains("left in place"), "{refusal}");
+        assert!(!dir.join("pkg2").exists());
+        assert!(path.join("planted").exists());
+        // A single file goes from the fresh directory's descriptor to the parent's: the swap
+        // cannot change which file is moved into place.
+        let mut fresh = Fresh::create(&parent, false).unwrap();
+        fresh.write("file", b"ours").unwrap();
+        let moved = dir.join("moved-file");
+        fs::rename(&fresh.path, &moved).unwrap();
+        fs::create_dir(&fresh.path).unwrap();
+        fs::write(fresh.path.join("file"), b"planted").unwrap();
+        let refusal = fresh.commit_file("file", "doc").unwrap_err();
+        assert!(refusal.contains("left in place"), "{refusal}");
+        assert_eq!(fs::read(dir.join("doc")).unwrap(), b"ours");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -991,7 +1046,8 @@ mod tests {
     fn a_failed_write_removes_only_its_own_directory() {
         let dir = scratch("fresh-fail");
         fs::write(dir.join("keep"), b"x").unwrap();
-        let mut fresh = Fresh::create(&dir, false).unwrap();
+        let parent = make_dirs(&dir, &[]).unwrap();
+        let mut fresh = Fresh::create(&parent, false).unwrap();
         fresh.write("ita.una", b"ita x\n").unwrap();
         // The same file twice: `O_EXCL` refuses it, and the fresh directory is removed.
         let refusal = fresh.write("ita.una", b"again").unwrap_err();

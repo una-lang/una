@@ -1466,6 +1466,7 @@ dependencies = [
  "una-core",
  "una-diag",
  "una-syntax",
+ "una-sys",
 ]
 
 [[package]]

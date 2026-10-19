@@ -2,9 +2,10 @@
 //! directory `UNA_ITAOCA` names:
 //!
 //! - `packages/sha256/<hex>/`: each package by the digest of its content, written once from the
-//!   archive's verified bytes into a fresh private directory, every file created exclusively,
-//!   with no link followed, and made read-only through its descriptor, then renamed into place
-//!   ([`crate::tree::store_tree`]);
+//!   archive's verified bytes into a fresh private directory, every file and directory created
+//!   exclusively relative to the descriptor of the directory it is in, with no link followed,
+//!   and made read-only through its descriptor, then renamed into place relative to the
+//!   parent's descriptor ([`crate::tree::store_tree`]);
 //! - `registry/<source>/releases/<release>/checkpoint-<size>.provenance`: the provenance of a
 //!   release at the resolution point of size `size` ([`crate::provenance`]), where `<release>`
 //!   is the release's directory name ([`crate::vendor::release_dir`]).
