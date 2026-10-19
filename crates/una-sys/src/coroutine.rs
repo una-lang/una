@@ -3,8 +3,11 @@
 //!
 //! - A [`Coroutine`] owns its [`Stack`] and its body, and is neither `Send` nor `Sync`: it runs
 //!   only on the thread that made it, so thread-local storage read on its stack is its thread's.
-//! - A body is `'static`: it borrows nothing, so a coroutine leaked while suspended leaves no
-//!   borrow that could outlive its data, whatever its frames lend to other threads.
+//! - Coroutines are made only inside [`scope`], which owns them as `std::thread::scope` owns its
+//!   threads: a handle borrows its scope, and the scope aborts the process rather than return
+//!   while one of its coroutines is unfinished, a leaked one included. So no suspended coroutine
+//!   outlives its thread, nor anything its frames borrow, thread-locals included.
+//! - A body is `'static`: it borrows nothing of its caller.
 //! - A panic that escapes a body aborts the process: nothing unwinds across a switch.
 //! - Dropping a suspended coroutine aborts the process, running no code on its stack: freeing it
 //!   could leave dangling what still points into it, and running its destructors would mean
@@ -15,7 +18,12 @@
 //! ```compile_fail
 //! let local = vec![1];
 //! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
-//! let _ = una_sys::coroutine::Coroutine::new(stack, || drop(local.len())); // borrows `local`
+//! una_sys::coroutine::scope(|s| drop(s.spawn(stack, || drop(local.len())))); // borrows `local`
+//! ```
+//!
+//! ```compile_fail
+//! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
+//! let escaped = una_sys::coroutine::scope(|s| s.spawn(stack, || {})); // outlives its scope
 //! ```
 #![allow(unsafe_code)]
 
@@ -39,7 +47,8 @@ pub struct Stack {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackError;
 
-fn page_size() -> usize {
+/// The page size of the system, at least 4 KiB.
+pub fn page_size() -> usize {
     // SAFETY: `sysconf` reads a constant of the system and touches no memory of the process.
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     usize::try_from(page).unwrap_or(4096).max(4096)
@@ -60,7 +69,7 @@ impl Stack {
             return Err(StackError);
         }
         #[cfg(target_os = "linux")]
-        let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE;
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE | libc::MAP_STACK;
         #[cfg(not(target_os = "linux"))]
         let flags = libc::MAP_PRIVATE | libc::MAP_ANON;
         let protection = libc::PROT_READ | libc::PROT_WRITE;
@@ -79,6 +88,14 @@ impl Stack {
         // SAFETY: the first `guard` bytes lie inside the mapping just made, which nothing else
         // uses yet; on failure `stack`'s drop unmaps it.
         if unsafe { libc::mprotect(base.as_ptr().cast(), guard, libc::PROT_NONE) } != 0 {
+            return Err(StackError);
+        }
+        // No transparent huge pages on Linux, so the pages a stack holds are the pages its task
+        // touched, which the memory budget charges; `MAP_STACK` implies it from Linux 6.7, and
+        // older kernels need the advice. A stack the advice fails on is not used (fail closed).
+        // SAFETY: the advice covers exactly the mapping just made, and changes no data in it.
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::madvise(base.as_ptr().cast(), len, libc::MADV_NOHUGEPAGE) } != 0 {
             return Err(StackError);
         }
         Ok(stack)
@@ -164,20 +181,45 @@ pub enum Resumed {
     Finished,
 }
 
-/// A body that runs on its own stack, and that can suspend itself with [`suspend`] at any depth
-/// and be resumed later on the same thread. Borrowing bodies would need a scoped constructor
-/// that never lets a suspended coroutine leak (future work, design note §2).
-pub struct Coroutine {
-    shared: NonNull<Shared>,
-    stack: Option<Stack>,
-    run: Run,
+/// The owner of the coroutines made in it, as `std::thread::scope` is of its threads: made only
+/// by [`scope`], which never returns while a coroutine it made is unfinished. A coroutine leaked
+/// while suspended (`mem::forget`, an `Rc` cycle) keeps its count up, so [`scope`] aborts the
+/// process instead of returning: no suspended coroutine outlives the frame that runs its
+/// scope, so none outlives its thread or the thread-locals its frames may borrow.
+pub struct Scope {
+    /// The coroutines made in this scope that have not finished or been dropped unstarted.
+    live: Cell<usize>,
     /// Neither `Send` nor `Sync`.
     _marker: PhantomData<*mut ()>,
 }
 
-impl Coroutine {
-    /// A coroutine that will run `body` on `stack` when first resumed.
-    pub fn new(stack: Stack, body: impl FnOnce() + 'static) -> Coroutine {
+/// Runs `f` with a [`Scope`] in which it makes coroutines, and returns its result once every
+/// coroutine made in it has finished or was dropped before it started. Otherwise, at the end of
+/// `f` or while a panic unwinds out of it, aborts the process.
+pub fn scope<R>(f: impl FnOnce(&Scope) -> R) -> R {
+    /// Checks the count when the scope ends, a panic's unwinding included.
+    struct End<'s>(&'s Scope);
+    impl Drop for End<'_> {
+        fn drop(&mut self) {
+            if self.0.live.get() != 0 {
+                std::process::abort();
+            }
+        }
+    }
+    let scope = Scope {
+        live: Cell::new(0),
+        _marker: PhantomData,
+    };
+    let end = End(&scope);
+    let result = f(end.0);
+    drop(end);
+    result
+}
+
+impl Scope {
+    /// A coroutine of this scope that will run `body` on `stack` when first resumed. A body is
+    /// `'static`, so it borrows nothing of its caller.
+    pub fn spawn(&self, stack: Stack, body: impl FnOnce() + 'static) -> Coroutine<'_> {
         let body: Box<dyn FnOnce()> = Box::new(body);
         let shared = Box::new(Shared {
             resumer: Cell::new(0),
@@ -186,18 +228,34 @@ impl Coroutine {
             finished: Cell::new(false),
         });
         let shared = NonNull::from(Box::leak(shared));
+        self.live.set(self.live.get() + 1);
         let mut coroutine = Coroutine {
             shared,
             stack: Some(stack),
             run: Run::NotStarted,
+            scope: self,
             _marker: PhantomData,
         };
         coroutine.prepare();
         coroutine
     }
+}
 
-    /// Writes the first frame on the stack, as a switch away from it would have saved it
-    /// (`arch::initial_frame`).
+/// A body that runs on its own stack, and that can suspend itself with [`suspend`] at any depth
+/// and be resumed later on the same thread. It borrows the [`Scope`] that made it.
+pub struct Coroutine<'s> {
+    shared: NonNull<Shared>,
+    stack: Option<Stack>,
+    run: Run,
+    scope: &'s Scope,
+    /// Neither `Send` nor `Sync`.
+    _marker: PhantomData<*mut ()>,
+}
+
+impl Coroutine<'_> {
+    /// Writes the first frame on the stack, as a switch away from it would have saved it: the
+    /// shared record and the entry function in callee-saved registers, a zero frame pointer,
+    /// and the trampoline as the return address (`arch::initial_frame`).
     fn prepare(&mut self) {
         let Some(stack) = &self.stack else {
             return;
@@ -220,7 +278,7 @@ impl Coroutine {
     }
 
     fn shared(&self) -> &Shared {
-        // SAFETY: `shared` comes from `Box::leak` in `new` and is freed only in `drop`.
+        // SAFETY: `shared` comes from `Box::leak` in `spawn` and is freed only in `drop`.
         unsafe { self.shared.as_ref() }
     }
 
@@ -246,6 +304,7 @@ impl Coroutine {
         CURRENT.with(|current| current.set(previous));
         if self.shared().finished.get() {
             self.run = Run::Finished;
+            self.scope.live.set(self.scope.live.get() - 1);
             Resumed::Finished
         } else {
             self.run = Run::Suspended;
@@ -253,8 +312,9 @@ impl Coroutine {
         }
     }
 
-    /// The stack of a coroutine that finished or never started; else the coroutine back.
-    pub fn into_stack(mut self) -> Result<Stack, Coroutine> {
+    /// The stack back, for a coroutine that finished or never started; the coroutine itself
+    /// otherwise.
+    pub fn into_stack(mut self) -> Result<Stack, Self> {
         if matches!(self.run, Run::Finished | Run::NotStarted)
             && let Some(stack) = self.stack.take()
         {
@@ -264,13 +324,23 @@ impl Coroutine {
     }
 }
 
-impl Drop for Coroutine {
+impl std::fmt::Debug for Coroutine<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Coroutine")
+            .field("run", &self.run)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Coroutine<'_> {
     fn drop(&mut self) {
-        if matches!(self.run, Run::Suspended | Run::Running) {
+        match self.run {
             // Decision D1: no code runs on a suspended stack, and it is not freed.
-            std::process::abort();
+            Run::Suspended | Run::Running => std::process::abort(),
+            Run::NotStarted => self.scope.live.set(self.scope.live.get() - 1),
+            Run::Finished => {}
         }
-        // SAFETY: `shared` comes from `Box::leak` in `new`, and the coroutine is not running,
+        // SAFETY: `shared` comes from `Box::leak` in `spawn`, and the coroutine is not running,
         // so nothing else refers to it; a body that never ran is dropped here, on this stack.
         drop(unsafe { Box::from_raw(self.shared.as_ptr()) });
     }
@@ -342,19 +412,32 @@ mod arch {
     #[unsafe(naked)]
     pub(super) unsafe extern "C" fn switch(save: *mut usize, load: usize) {
         core::arch::naked_asm!(
-            "sub sp, sp, #160\nstp x19, x20, [sp, #0]",
-            "stp x21, x22, [sp, #16]\nstp x23, x24, [sp, #32]",
-            "stp x25, x26, [sp, #48]\nstp x27, x28, [sp, #64]",
-            "stp x29, x30, [sp, #80]\nstp d8, d9, [sp, #96]",
-            "stp d10, d11, [sp, #112]\nstp d12, d13, [sp, #128]",
-            "stp d14, d15, [sp, #144]\nmov x2, sp",
-            "str x2, [x0]\nmov sp, x1",
-            "ldp x19, x20, [sp, #0]\nldp x21, x22, [sp, #16]",
-            "ldp x23, x24, [sp, #32]\nldp x25, x26, [sp, #48]",
-            "ldp x27, x28, [sp, #64]\nldp x29, x30, [sp, #80]",
-            "ldp d8, d9, [sp, #96]\nldp d10, d11, [sp, #112]",
-            "ldp d12, d13, [sp, #128]\nldp d14, d15, [sp, #144]",
-            "add sp, sp, #160\nret",
+            "sub sp, sp, #160",
+            "stp x19, x20, [sp, #0]",
+            "stp x21, x22, [sp, #16]",
+            "stp x23, x24, [sp, #32]",
+            "stp x25, x26, [sp, #48]",
+            "stp x27, x28, [sp, #64]",
+            "stp x29, x30, [sp, #80]",
+            "stp d8, d9, [sp, #96]",
+            "stp d10, d11, [sp, #112]",
+            "stp d12, d13, [sp, #128]",
+            "stp d14, d15, [sp, #144]",
+            "mov x2, sp",
+            "str x2, [x0]",
+            "mov sp, x1",
+            "ldp x19, x20, [sp, #0]",
+            "ldp x21, x22, [sp, #16]",
+            "ldp x23, x24, [sp, #32]",
+            "ldp x25, x26, [sp, #48]",
+            "ldp x27, x28, [sp, #64]",
+            "ldp x29, x30, [sp, #80]",
+            "ldp d8, d9, [sp, #96]",
+            "ldp d10, d11, [sp, #112]",
+            "ldp d12, d13, [sp, #128]",
+            "ldp d14, d15, [sp, #144]",
+            "add sp, sp, #160",
+            "ret",
         )
     }
 
@@ -387,16 +470,26 @@ mod arch {
     #[unsafe(naked)]
     pub(super) unsafe extern "C" fn switch(save: *mut usize, load: usize) {
         core::arch::naked_asm!(
-            "push rbp\npush rbx",
-            "push r12\npush r13",
-            "push r14\npush r15",
-            "sub rsp, 8\nstmxcsr dword ptr [rsp]",
-            "fnstcw word ptr [rsp + 4]\nmov qword ptr [rdi], rsp",
-            "mov rsp, rsi\nldmxcsr dword ptr [rsp]",
-            "fldcw word ptr [rsp + 4]\nadd rsp, 8",
-            "pop r15\npop r14",
-            "pop r13\npop r12",
-            "pop rbx\npop rbp",
+            "push rbp",
+            "push rbx",
+            "push r12",
+            "push r13",
+            "push r14",
+            "push r15",
+            "sub rsp, 8",
+            "stmxcsr dword ptr [rsp]",
+            "fnstcw word ptr [rsp + 4]",
+            "mov qword ptr [rdi], rsp",
+            "mov rsp, rsi",
+            "ldmxcsr dword ptr [rsp]",
+            "fldcw word ptr [rsp + 4]",
+            "add rsp, 8",
+            "pop r15",
+            "pop r14",
+            "pop r13",
+            "pop r12",
+            "pop rbx",
+            "pop rbp",
             "ret",
         )
     }
