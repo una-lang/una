@@ -3472,7 +3472,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// evaluated in its place and captured.
     fn dense_op(&mut self, lets: &mut Vec<Let>, span: Span, operands: &[&Expr]) -> Atom {
         let Some(Res::DenseOp { id, op }) = self.res(span) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
         let element = |ty: &Type| match ty {
@@ -3503,7 +3503,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
         }
         let Some(out) = element(&self.type_at(span)) else {
-            self.broken = true;
+            self.broken.set(true);
             return Atom::Unit;
         };
         let float = matches!(

@@ -916,7 +916,10 @@ mod tests {
             let Some(name) = rest.get(..end) else {
                 continue;
             };
-            assert!(is_dense(name), "`{name}` is a dense function");
+            // The prelude of edition 0.4 holds `Decimal`'s functions too.
+            if !is_dense(name) {
+                continue;
+            }
             let method = name
                 .strip_prefix("dense_array_")
                 .or_else(|| name.strip_prefix("dense_matrix_"))
