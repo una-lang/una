@@ -224,6 +224,26 @@ struct TcbDoc {
     /// The key file that authenticates the cache's entries, part of the Trusted zone, or `null`
     /// when the run used no cache (ADR 0064).
     proof_cache_key: Option<String>,
+    /// Each registry source of the program, with the digest of its root metadata (ADR 0122
+    /// rule 58): none while only path dependencies load.
+    registries: Vec<RegistryDoc>,
+    /// The trusted modules of dependencies that the root consented to, with their line counts,
+    /// by package: none while trust lines do not load.
+    dependency_trust: Vec<DependencyTrustedDoc>,
+}
+
+/// A registry source and the digest of its root metadata.
+#[derive(Serialize)]
+struct RegistryDoc {
+    source: String,
+    root: String,
+}
+
+/// A dependency's trusted modules, by package.
+#[derive(Serialize)]
+struct DependencyTrustedDoc {
+    package: String,
+    modules: Vec<TrustedDoc>,
 }
 
 #[derive(Serialize)]
@@ -637,6 +657,8 @@ fn build(
             solver: format!("z3 {}", lock.solver_version),
             proof_cache: PROOF_CACHE,
             proof_cache_key,
+            registries: Vec::new(),
+            dependency_trust: Vec::new(),
         },
         requirements,
         coverage: CoverageDoc {
