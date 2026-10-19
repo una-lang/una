@@ -7,7 +7,7 @@ A type parameter of a function may carry one of three built-in **constraints**: 
 **Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`).
 - In edition `0.1`, type parameters stay unconstrained, equality on them keeps the inferred bound of `spec/10 §12` rule 9, and the prelude keeps its v0.1 signatures (`spec/14 §1`).
 - A single file has the default settings, and so edition `0.1`.
-- The Gate 1 benchmark stays on edition `0.1`.
+- The benchmark baseline stays on edition `0.1`.
 
 ## 1. The constraints
 

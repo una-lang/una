@@ -34,7 +34,7 @@ fn root() -> PathBuf {
 const FIELDS: [&str; 5] = ["Severity", "Affected", "Fixed in", "Summary", "References"];
 
 /// The severities of the page's scale.
-const SEVERITIES: [&str; 4] = ["Critical", "High", "Medium", "Low"];
+const SEVERITIES: [&str; 5] = ["Critical", "High", "Medium", "Low", "Availability"];
 
 /// The release names in `text`: `v` followed by a version, as `v0.3.13` or `v0.2.0-alpha.3`.
 fn releases(text: &str) -> Vec<String> {

@@ -854,6 +854,61 @@ pub f(x: Int, y: Int, s: S, flag: Bool) -> Unit
 }
 
 #[test]
+fn a_sum_value_through_a_record_field_shows_in_the_counterexample() {
+    // #902: a sum kind's value reached through a record field and passed to a function with no
+    // `ensures` is shown by its tag, which no assertion of the query used. The model query
+    // named it undeclared, and the counterexample was "not available" with a solver error.
+    let source = "module shipping
+
+kind Zone = Home | Neighbor | World
+
+kind Parcel
+  grams: Int
+  zone: Zone
+
+pub base_rate(grams: Int) -> Int
+  requires grams > 0
+  ensures result >= 790
+=
+  790
+
+pub surcharge(zone: Zone) -> Int
+=
+  when zone
+    is Home -> 0
+    is Neighbor -> 600
+    is World -> 1_800
+
+pub rate(parcel: Parcel) -> Int
+  requires parcel.grams > 0
+  ensures result >= 790
+=
+  base_rate(parcel.grams) + parcel.zone.surcharge
+";
+    let root = package_of_edition(
+        "counterexample-sum-field",
+        "0.2",
+        &[("src/shipping.una", source)],
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(text.contains("U5001"), "{text}");
+    let line = text
+        .lines()
+        .find(|line| line.contains("counterexample:"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(!line.contains("not available"), "{line}");
+    assert!(!line.contains("unknown constant"), "{line}");
+    assert!(
+        ["Home", "Neighbor", "World"]
+            .iter()
+            .any(|variant| line.contains(variant)),
+        "{line}"
+    );
+}
+
+#[test]
 fn a_ground_goal_has_no_repair_and_no_counterexample() {
     // R-021, `spec/13 §3` ("when applicable"): `0 != 0` has no free binder, so no guard,
     // `requires` or type can make it hold, and a counterexample would bind nothing.

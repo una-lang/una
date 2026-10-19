@@ -49,11 +49,12 @@ They are prelude functions, called with method syntax, as `line.split(on: ",")` 
 
 ## 4. Parsing integers
 
-1. The prelude declares `kind ParseError = Empty | NotADigit(at: Int) | NoDigits`.
+1. The prelude declares `kind ParseError = Empty | NotADigit(at: Int) | NoDigits | TooLong`. (Security fix, 2026-10-18, #914: `TooLong` is new, in every edition that has `parse_int`. A `when` over a `ParseError` that names each variant and has no `else` arm becomes non-exhaustive, a check error and never a silent change.)
 2. `parse_int(t)` reads an optional `-` followed by one or more ASCII digits, as `to_int` does (`spec/14 §1`), and returns the integer. Otherwise it fails:
    - `Empty` when `t` is empty;
    - `NoDigits` when `t` is `-` alone;
-   - `NotADigit(at: i)` at the first position `i` that is neither the leading `-` nor a digit.
+   - `NotADigit(at: i)` at the first position `i` that is neither the leading `-` nor a digit;
+   - `TooLong` when `t` is an optional `-` and more than 4300 digits, the sign excluded and leading zeros included, the bound of a JSON integer (`spec/23 §3`). Converting d digits to an integer takes O(d²), so a longer text is refused before any conversion, and the cost of `parse_int` stays O(b) (security fix, 2026-10-18, #914). A text with a character that is not a digit fails with `NotADigit`, whatever its length.
 3. Space is not trimmed: `parse_int(trim(t))` reads a padded number.
 4. The result is an unbounded `Int`. A fixed-width integer is parsed through a narrowing conversion, with its `overflow` obligation (`spec/18 §4`).
 5. `to_int` keeps its meaning.
