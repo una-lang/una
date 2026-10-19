@@ -1,0 +1,11 @@
+-- test: edition 0.4 reserves `diverges` and `within` for the constructs of long-running programs (spec/26 §1, ADR 0116 rule 0)
+-- spec: spec/26 §1
+-- expect: error U0103 at src/words04.una:9:3
+-- expect: error U0103 at src/words04.una:10:3
+module words04
+
+pub total() -> Int
+=
+  let diverges = 1
+  let within = 2
+  diverges + within

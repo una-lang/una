@@ -210,7 +210,7 @@ fn a_test_on_a_labeled_value_carries_its_label_in_the_core_export() {
     let source = format!(
         "module app.main\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{lines}\n"
     );
-    for edition in ["0.1", "0.2", "0.3"] {
+    for edition in ["0.1", "0.2", "0.3", "0.4"] {
         let dir = package("when", edition, &source);
         let got = bool_temporary_labels(&dir);
         // The literal arm's `==`; the range arm's `<=`, `<=` and their `if`; the `in`
