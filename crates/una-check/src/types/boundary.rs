@@ -232,7 +232,7 @@ mod tests {
                 mount: None,
             }],
             standard.source(&standard.prelude),
-            standard.source(&standard.testing),
+            standard.after_prelude(),
             Vec::new(),
             Edition::V0_3,
             &mut report,

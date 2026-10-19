@@ -467,6 +467,12 @@ pub extern "C" fn una_rt_budget(site: i64) -> i64 {
     runtime::budget(usize::try_from(site).unwrap_or(usize::MAX))
 }
 
+/// The next tick of a driven program's loop, or 0 when it stops ([`runtime::drive_tick`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_drive_tick() -> i64 {
+    runtime::drive_tick()
+}
+
 /// 1 when the task must stop before an operation ([`runtime::poll`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_poll() -> i64 {

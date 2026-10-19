@@ -39,6 +39,9 @@ pub(crate) enum Res {
     Op { capability: CapId },
     /// A handler installed with `with` or `given`.
     Handler { id: usize },
+    /// A built-in constant of `std.time`, elaborated to its value (ADR 0116 rule 0, amended
+    /// 2026-10-19).
+    Constant(i64),
 }
 
 /// The records of pass 2.

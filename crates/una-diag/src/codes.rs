@@ -223,6 +223,9 @@ pub enum Code {
     U3025,
     /// `attempt` of a call that cannot fail (edition 0.3, ADR 0100).
     U3026,
+    /// A failure that must be handled where it is not: a `fails` clause on `step` or `on_stop`
+    /// of a `[drive]` module (edition 0.4, ADR 0116).
+    U3029,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -275,7 +278,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 103] = [
+    pub const ALL: [Code; 104] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -355,6 +358,7 @@ impl Code {
         Code::U3024,
         Code::U3025,
         Code::U3026,
+        Code::U3029,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -792,6 +796,11 @@ impl Code {
                 code: "U3026",
                 domain: Domain::Authority,
                 meaning: "`attempt` of a call that cannot fail",
+            },
+            Code::U3029 => &Entry {
+                code: "U3029",
+                domain: Domain::Authority,
+                meaning: "A failure that must be handled where it is not",
             },
             Code::U4001 => &Entry {
                 code: "U4001",

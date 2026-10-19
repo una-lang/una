@@ -104,6 +104,40 @@ pub(crate) fn std_host_names(edition: Edition) -> &'static [&'static str] {
 /// The public functions of `std.testing`.
 pub(crate) const STD_TESTING_NAMES: [&str; 1] = ["fake_hash"];
 
+/// The path of the standard module of time units, edition 0.4 (ADR 0116 rule 0).
+pub(crate) const STD_TIME: &str = "std.time";
+
+/// What `std.time` exports: its measures, and the built-in constants `millisecond`, `second`
+/// and `minute`, of type `Int of Millisecond` (ADR 0116 rule 0 and its amendment of
+/// 2026-10-19).
+pub(crate) const STD_TIME_NAMES: [&str; 6] = [
+    "Second",
+    "Millisecond",
+    "Minute",
+    "millisecond",
+    "second",
+    "minute",
+];
+
+/// The built-in constants of `std.time` and their values in milliseconds.
+pub(crate) const STD_TIME_CONSTANTS: [(&str, i64); 3] =
+    [("millisecond", 1), ("second", 1000), ("minute", 60_000)];
+
+/// The path of the standard module of the host-driven step, edition 0.4 (ADR 0116 rule 2).
+pub(crate) const STD_DRIVE: &str = "std.drive";
+
+/// What `std.drive` exports: the kind of a tick (ADR 0116 rule 2).
+pub(crate) const STD_DRIVE_NAMES: [&str; 1] = ["Tick"];
+
+/// The standard modules a package of `edition` may import (`spec/10 §11` rule 10).
+pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
+    if edition >= Edition::V0_4 {
+        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE]
+    } else {
+        &[STD_HOST, STD_TESTING]
+    }
+}
+
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
 pub(crate) const TEXT_0_2: [&str; 14] = [
     "split",

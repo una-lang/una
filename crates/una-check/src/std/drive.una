@@ -1,0 +1,11 @@
+-- `std.drive` (spec/26 §2), edition 0.4: what the host hands the `step` of a `[drive]`
+-- package (ADR 0116 rule 2).
+module std.drive
+
+import std.time (Millisecond)
+
+--- A tick of the driver: `at`, when it was due on the monotonic clock, and `missed`, how many
+--- due ticks the driver skipped just before it, because a step ran late.
+pub kind Tick
+  at: Int of Millisecond
+  missed: Int

@@ -288,10 +288,32 @@ fn unsupported_settings_are_refused_not_ignored() {
         Code::U7008,
         "limits on grants",
     );
+}
+
+#[test]
+fn a_drive_section_maps_into_the_manifest_with_its_ranges() {
+    // ADR 0116 rule 1, as amended for `ita.una`: the host-driven step.
+    let manifest = parse_ita_manifest(&format!(
+        "{HEAD}\ndrive\n  module main\n  ticks 16\n  budget 8\n"
+    ))
+    .0;
+    let drive = manifest.drive.unwrap();
+    assert_eq!(drive.module.value, "main");
+    assert_eq!((drive.ticks, drive.budget), (16, Some(8)));
     has(
-        &format!("{HEAD}\ndrive\n  module main\n  ticks 1\n"),
+        &format!("{HEAD}\ndrive\n  module main\n  ticks 0\n"),
         Code::U7008,
-        "`drive` section",
+        "`ticks` is a number of milliseconds",
+    );
+    has(
+        &format!("{HEAD}\ndrive\n  ticks 16\n"),
+        Code::U7008,
+        "has no `module`",
+    );
+    has(
+        &format!("{HEAD}\nrun\n  entry main\n\ndrive\n  module main\n  ticks 16\n"),
+        Code::U7008,
+        "not both",
     );
 }
 

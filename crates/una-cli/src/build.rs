@@ -13,7 +13,7 @@ use una_diag::{Diagnostic, render_human};
 use una_syntax::ast::ClauseKind;
 
 use crate::contract::Modules;
-use crate::runtime::{entry_main, rejected_status};
+use crate::runtime::{driven_init, entry_main, rejected_status};
 use crate::verification::tier_one;
 use crate::{ExitStatus, analyze, load, on_large_stack};
 
@@ -95,65 +95,96 @@ pub(crate) fn build_command(
         }
         return Ok(status);
     }
-    let Some(entry) = analysis.entry.clone() else {
-        writeln!(
-            stderr,
-            "error: una.toml has no `[run] entry`; name the module whose `main` runs"
-        )?;
-        return Ok(ExitStatus::Usage);
-    };
-    let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
-        writeln!(
-            stderr,
-            "error: the module `{entry}` has no `pub main() -> Unit` to run"
-        )?;
-        return Ok(ExitStatus::Usage);
+    // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
+    // whose `main` runs.
+    let (manifest, _) = crate::package::project(&package);
+    let (entry, main, started) = if let Some(driven) = &manifest.drive {
+        let module = driven.module.value.clone();
+        match driven_init(&analysis, &package.sources, &module) {
+            Ok(init) => (module, init, ["init", "step", "on_stop"].as_slice()),
+            Err(message) => {
+                writeln!(stderr, "error: {message}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    } else {
+        let Some(entry) = analysis.entry.clone() else {
+            writeln!(
+                stderr,
+                "error: una.toml has no `[run] entry`; name the module whose `main` runs"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        let Some(main) = entry_main(&analysis, &package.sources, &entry) else {
+            writeln!(
+                stderr,
+                "error: the module `{entry}` has no `pub main() -> Unit` to run"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        (entry, main, ["main"].as_slice())
     };
     // The description the executable reads at start: `[run] grants`, and every `uses` of
-    // `main` with where it is written, for U3012 (`spec/16 §3`).
-    let (manifest, _) = crate::package::project(&package);
+    // `main`, or of the driven functions, with where it is written, for U3012 (`spec/16 §3`).
     let modules = Modules {
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
         mounts: &analysis.mounts,
     };
-    let clauses: Vec<(String, una_syntax::Span)> = modules
-        .function(&format!("{entry}.main"))
-        .map(|(_, _, function)| {
-            function
-                .clauses
-                .iter()
-                .filter_map(|clause| match &clause.kind {
-                    ClauseKind::Uses(uses) => Some((
-                        analysis.interner.resolve(uses.cap.name).to_owned(),
-                        uses.span,
-                    )),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let uses: Vec<serde_json::Value> = main
-        .uses
-        .iter()
-        .map(|need| {
+    let mut uses: Vec<serde_json::Value> = Vec::new();
+    for name in started {
+        let Some(function) = analysis
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path == entry)
+            .flat_map(|m| &m.decls)
+            .find_map(|decl| match decl {
+                una_core::Decl::Fun(fun) if fun.name == *name => Some(fun.as_ref()),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        let clauses: Vec<(String, una_syntax::Span)> = modules
+            .function(&format!("{entry}.{name}"))
+            .map(|(_, _, function)| {
+                function
+                    .clauses
+                    .iter()
+                    .filter_map(|clause| match &clause.kind {
+                        ClauseKind::Uses(uses) => Some((
+                            analysis.interner.resolve(uses.cap.name).to_owned(),
+                            uses.span,
+                        )),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        uses.extend(function.uses.iter().map(|need| {
             let span = clauses
                 .iter()
                 .find(|(name, _)| *name == need.cap)
-                .map_or(main.span, |(_, span)| *span);
+                .map_or(function.span, |(_, span)| *span);
             json!({
+                "function": name,
                 "name": need.cap,
                 "capability": need.capability,
                 "ops": need.ops,
                 "location": package.sources.location(span),
             })
-        })
-        .collect();
+        }));
+    }
     let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
+    let drive = manifest
+        .drive
+        .as_ref()
+        .map(|drive| json!({ "ticks": drive.ticks, "budget": drive.budget }));
     // What the generated code refers to by index: the calls' locations, for U6003 at the call
     // that exceeds the maximum depth, the types the runtime renders, the operations a trace
-    // records, and where `main` is named, for U6001.
+    // records, and where `main`, or `init`, is named, for U6001.
     let main_location = package.sources.location(main.span);
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
@@ -162,6 +193,10 @@ pub(crate) fn build_command(
             .map(|span| package.sources.location(*span))
             .collect();
         let mut meta = json!({
+            "grants_section": match manifest.format.section("[run] grants") {
+                section if section.starts_with('`') => section,
+                section => format!("`{section}`"),
+            },
             "grants": grants,
             "uses": uses,
             "sites": sites,
@@ -181,9 +216,17 @@ pub(crate) fn build_command(
                 json!({ "location": main_location, "root": root }),
             );
         }
+        if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {
+            object.insert("drive".to_owned(), drive.clone());
+        }
         meta.to_string()
     };
-    let object = match una_codegen::compile(&analysis.program, &entry, &meta) {
+    let compiled = if manifest.drive.is_some() {
+        una_codegen::compile_drive(&analysis.program, &entry, &meta)
+    } else {
+        una_codegen::compile(&analysis.program, &entry, &meta)
+    };
+    let object = match compiled {
         Ok(object) => object,
         Err(CodegenError::NoMain) => {
             writeln!(

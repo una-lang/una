@@ -41,7 +41,7 @@ pub struct EventDoc<'a> {
 
 impl<'a> From<&'a Event> for EventDoc<'a> {
     fn from(event: &'a Event) -> Self {
-        let operation = !matches!(event.outcome, EventOutcome::Cancelled);
+        let operation = !matches!(event.outcome, EventOutcome::Cancelled | EventOutcome::Stop);
         EventDoc {
             seq: event.seq,
             task: &event.task,
@@ -54,6 +54,7 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
                 EventOutcome::Fail { variant, value } => OutcomeDoc::Fail { variant, value },
                 EventOutcome::Aborted => OutcomeDoc::Aborted,
                 EventOutcome::Cancelled => OutcomeDoc::Cancelled,
+                EventOutcome::Stop => OutcomeDoc::Stop,
             },
         }
     }
@@ -79,6 +80,8 @@ pub enum OutcomeDoc<'a> {
     Aborted,
     /// The task was cancelled (`spec/19 §7` rule 3).
     Cancelled,
+    /// A loop stopped at the start of an iteration (ADR 0116 rule 14).
+    Stop,
 }
 
 /// A trace as a JSON array of events, compact, as `una run --json` writes its `trace`.

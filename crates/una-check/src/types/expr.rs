@@ -584,6 +584,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
                 Ty::error()
             }
+            // A built-in constant of `std.time`: a public `Int` in its unit, elaborated to its
+            // value (ADR 0116 rule 0, amended 2026-10-19).
+            Some(Entity::Constant { value, unit }) => {
+                self.resolved(ident.span, Res::Constant(value));
+                let norm = self.env.units.get(unit).and_then(|def| def.norm.clone());
+                match norm {
+                    Some(norm) => Ty::measured((*norm).clone(), Ty::Int),
+                    None => Ty::Int,
+                }
+            }
             // An unknown name is U1001, reported by M3.
             _ => {
                 self.vars.mark_unknown();
@@ -767,7 +777,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U2001,
                 format!("`{name}` is a unit, not a value; a value takes it with `measured()`"),
             ),
-            Entity::Function(_) | Entity::Handler(_) => return Ty::error(),
+            Entity::Function(_) | Entity::Handler(_) | Entity::Constant { .. } => {
+                return Ty::error();
+            }
         };
         self.report.error(problem.0, span, problem.1);
         Ty::error()

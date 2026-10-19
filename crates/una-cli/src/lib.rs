@@ -1040,6 +1040,7 @@ fn run_command(
                 max_response,
                 http_timeout,
                 solver_wallclock,
+                stop_after_iterations,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1051,6 +1052,7 @@ fn run_command(
                     color: use_color(color, stderr_is_terminal),
                     environment,
                     solving: solving(solver_wallclock),
+                    stop_after: stop_after_iterations,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1084,6 +1086,7 @@ fn run_command(
                     color: use_color(color, stderr_is_terminal),
                     environment,
                     solving: solving(solver_wallclock),
+                    stop_after: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

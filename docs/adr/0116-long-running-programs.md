@@ -654,6 +654,10 @@ Usage errors, exit code 2:
   - a second signal during a long `on stop` gives U6007;
   - a third signal during a blocked `Files.read` of a named pipe ends the process by the default action.
 
+## Amendment (2026-10-19): the constants of `std.time`
+
+Rule 0 says that `std.time` declares the constants `millisecond`, `second` and `minute`. Una has no module-level value declaration (`spec/02 §1`), so no Una source can declare them. They are built-in names of `std.time`: a module that imports one of them from `std.time` sees a name of type `Int of Millisecond`, whose value is 1, 1000 or 60000, and both engines lower it to that integer literal. The source of `std.time` declares only its measures. ADR 0117's `import std.time (second)` resolves the same way. A general module-level constant is left to a later record.
+
 ## Appendix A. Amendments to accepted records, appended on 2026-10-18
 
 **ADR 0058, Amendment (2026-10-18).** A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks (ADR 0117 rule 2). It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.

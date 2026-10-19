@@ -24,6 +24,8 @@ pub struct Manifest {
     pub entry: Option<Located>,
     /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
     pub grants: Vec<Located>,
+    /// The `drive` section of `ita.una`, edition `0.4`: the host-driven step (ADR 0116 rule 1).
+    pub drive: Option<Drive>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
     pub edition: Edition,
     /// `[contracts]`, edition `0.3`: the locked `uses` clauses of public functions (ADR 0092
@@ -109,6 +111,26 @@ impl Format {
             Format::Ita => "ita.una",
         }
     }
+}
+
+/// The longest tick period and step budget of `[drive]`, in milliseconds: a day (ADR 0116 rule
+/// 1).
+pub const MAX_DRIVE_MILLISECONDS: u64 = 86_400_000;
+
+/// The `drive` section of `ita.una`, edition `0.4` (ADR 0116 rule 1, ADR 0122 rule 11,
+/// `spec/26 §2`): the module whose `init`, `step` and `on_stop` the host drives, the tick period
+/// and the step budget, in milliseconds. `una.toml` has no such table: edition 0.4 reads only
+/// `ita.una`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drive {
+    /// `module`, a module of the package.
+    pub module: Located,
+    /// `ticks`, the period, from 1 to [`MAX_DRIVE_MILLISECONDS`].
+    pub ticks: u64,
+    /// `budget`, the time limit of one step, with the same range.
+    pub budget: Option<u64>,
+    /// Where the table's name is written.
+    pub at: std::ops::Range<usize>,
 }
 
 /// A locked function of `[contracts]` (ADR 0092 rule 8, as amended): its qualified name and

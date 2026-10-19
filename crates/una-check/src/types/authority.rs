@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use una_core::Label;
 use una_diag::{Code, Escape, Repair, Widening};
 use una_project::Manifest;
 use una_syntax::Span;
@@ -1926,7 +1927,8 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 }
 
 /// U3012: the capabilities that `main` of the `[run] entry` module uses must be granted
-/// (`spec/04 §8`, `spec/05 §7`). A capability that is not a host capability
+/// (`spec/04 §8`, `spec/05 §7`), and so must those of `init`, `step` and `on_stop` of a
+/// `[drive]` module (ADR 0116 rule 2). A capability that is not a host capability
 /// can never be granted; host capabilities are compared with `[run] grants` when `una.toml`
 /// lists grants, and with the final grants of `una run` when it checks the package to run it.
 pub(crate) fn grants(
@@ -1935,34 +1937,50 @@ pub(crate) fn grants(
     run: Option<RunInput<'_>>,
     report: &mut Report<'_>,
 ) {
-    let entry = match (run, &settings.entry) {
-        (Some(run), _) => run.entry,
-        (None, Some(entry)) => entry.value.as_str(),
-        (None, None) => return,
+    let (path, names): (&str, &[&str]) = match (run, &settings.entry, &settings.drive) {
+        (Some(run), _, _) => (run.entry, &["main"]),
+        (None, Some(entry), _) => (entry.value.as_str(), &["main"]),
+        (None, None, Some(drive)) => (drive.module.value.as_str(), &["init", "step", "on_stop"]),
+        (None, None, None) => return,
     };
     let Some(module) =
-        (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == entry))
+        (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == path))
     else {
         return;
     };
     if !env.reports(module) {
         return;
     }
-    let Some(Entity::Function(main)) = env
-        .modules
-        .get(module)
-        .and_then(|m| m.lower.get("main").copied())
-    else {
-        return;
-    };
-    let Some(def) = env.functions.get(main) else {
-        return;
-    };
     let strings: Vec<String> = match run {
         Some(run) => run.grants.to_vec(),
         None => settings.grants.iter().map(|g| g.value.clone()).collect(),
     };
     let granted = granted(&strings);
+    for &name in names {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        if let Some(def) = env.functions.get(id) {
+            function_grants(env, settings, run, name, def, &granted, report);
+        }
+    }
+}
+
+/// U3012 for each `uses` of `name`, a function the host calls: `main`, or a function of a
+/// `[drive]` module.
+fn function_grants(
+    env: &Env<'_>,
+    settings: &Manifest,
+    run: Option<RunInput<'_>>,
+    name: &str,
+    def: &super::env::FnDef<'_>,
+    granted: &BTreeMap<&str, BTreeSet<&str>>,
+    report: &mut Report<'_>,
+) {
     for need in &def.uses {
         let Some(capability) = need.usage.capability.and_then(|c| env.capabilities.get(c)) else {
             continue;
@@ -1973,12 +1991,12 @@ pub(crate) fn grants(
                 Code::U3012,
                 need.span,
                 format!(
-                    "`main` uses `@{}: {}`, which is not a host capability, so no grant can provide it",
+                    "`{name}` uses `@{}: {}`, which is not a host capability, so no grant can provide it",
                     need.usage.name, capability.name
                 ),
             );
             diagnostic.repairs.push(Report::advice(format!(
-                "install a handler of `{}` for `@{}` with `with` inside `main`",
+                "install a handler of `{}` for `@{}` with `with` inside `{name}`",
                 capability.name, need.usage.name
             )));
             report.push(diagnostic);
@@ -1996,16 +2014,23 @@ pub(crate) fn grants(
             .map(|op| format!("`{op}`"))
             .collect();
         if !missing.is_empty() {
-            let granter = if run.is_some() {
-                "neither `[run] grants` nor a `--grant` flag grants"
+            // `[run] grants` in `una.toml`, `run grants` in `ita.una`, in backticks either way.
+            let section = settings.format.section("[run] grants");
+            let section = if section.starts_with('`') {
+                section
             } else {
-                "`[run] grants` does not grant"
+                format!("`{section}`")
+            };
+            let granter = if run.is_some() {
+                format!("neither {section} nor a `--grant` flag grants")
+            } else {
+                format!("{section} does not grant")
             };
             let mut diagnostic = report.make(
                 Code::U3012,
                 need.span,
                 format!(
-                    "`main` uses {} of `{}`, which {granter}",
+                    "`{name}` uses {} of `{}`, which {granter}",
                     missing.join(", "),
                     capability.name
                 ),
@@ -2013,15 +2038,263 @@ pub(crate) fn grants(
             // ADR 0097 rule 7: granting is the route, and it widens what the program may do
             // when it runs.
             let mut grant = Report::advice(format!(
-                "grant {} of `{}` in `[run] grants` of `una.toml`, or with `--grant`",
+                "grant {} of `{}` in {section} of `{}`, or with `--grant`",
                 missing.join(", "),
-                capability.name
+                capability.name,
+                settings.format.file()
             ));
             grant.widens = Some(Widening::Grant);
             diagnostic.repairs.push(grant);
             report.push(diagnostic);
         }
     }
+}
+
+/// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
+/// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
+/// `fails` clause.
+pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(drive) = &settings.drive else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    for name in ["step", "on_stop"] {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+            continue;
+        };
+        for clause in &decl.clauses {
+            if matches!(clause.kind, una_syntax::ast::ClauseKind::Fails(_)) {
+                let mut diagnostic = report.make(
+                    Code::U3029,
+                    clause.span,
+                    format!(
+                        "`{name}` of the driven module `{}` declares `fails`, but the host has no caller to give a failure to",
+                        drive.module.value
+                    ),
+                );
+                diagnostic.repairs.push(Report::advice(format!(
+                    "handle each failure inside `{name}`, with `if error use` or `attempt`, and remove the `fails` clause"
+                )));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// U4001 at the `input` parameter of `step` of a `[drive]` module whose label is not at least
+/// the timing label of the step (ADR 0116 IF7): the tick's `at` and `missed` depend on how long
+/// earlier steps took, so `input` carries what that running time can depend on, `τ⁰` of the
+/// step joined with `τ_conc` at the driver (IF5, IF6). This is a preview over-approximation that
+/// may only get less strict (`spec/26 §2`):
+/// - every operation of the step and of every function it reaches counts, by `ℓ*` of its result,
+///   its `accepts` label and `ℓ*` of its failure kind;
+/// - every handler such a function installs, and every handler of a capability the step needs
+///   that is not the host's, counts by `ℓ*` of its parameters, the top label for one of function
+///   type, and by the operations it needs;
+/// - a call of a function value anywhere the step reaches makes it the top label (#1023);
+/// - concurrent tasks: the top label when a function holding a task construct reaches the step.
+///
+/// O(functions + call edges + operations).
+pub(crate) fn drive_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    report: &mut Report<'_>,
+) {
+    let Some(drive) = &settings.drive else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    let Some(Entity::Function(step)) = env
+        .modules
+        .get(module)
+        .and_then(|m| m.lower.get("step").copied())
+    else {
+        return;
+    };
+    let Some(def) = env.functions.get(step) else {
+        return;
+    };
+    let (Some(state), Some(input)) = (def.params.first(), def.params.get(1)) else {
+        return;
+    };
+    let kinds = env.kind_labels.as_ref();
+    let top = Label::top(&env.categories);
+    // Each source with its label, in the order a message names them.
+    let mut sources: Vec<(Label, String)> = vec![(
+        state.ty.base.deep_label(kinds),
+        format!("the parameter `{}`", state.name),
+    )];
+    // The functions the step reaches, itself included.
+    let mut callees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(caller, callee, _) in &findings.edges {
+        callees.entry(caller).or_default().push(callee);
+    }
+    let mut reached: BTreeSet<usize> = BTreeSet::new();
+    let mut pending = vec![step];
+    while let Some(f) = pending.pop() {
+        if reached.insert(f) {
+            pending.extend(callees.get(&f).into_iter().flatten().copied());
+        }
+    }
+    let mut handlers: BTreeSet<usize> = findings
+        .installs
+        .iter()
+        .filter(|(f, _)| reached.contains(f))
+        .map(|&(_, h)| h)
+        .collect();
+    let mut needs: Vec<(CapId, String)> = Vec::new();
+    for &f in &reached {
+        let Some(function) = env.functions.get(f) else {
+            continue;
+        };
+        if findings.value_callers.contains(&f) {
+            sources.push((
+                top.clone(),
+                format!("a call of a function value in `{}`", function.name),
+            ));
+        }
+        // A prelude function that applies a function argument, such as `map`.
+        if function.module >= env.prelude
+            && function
+                .params
+                .iter()
+                .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
+        {
+            sources.push((
+                top.clone(),
+                format!("the function argument of `{}`", function.name),
+            ));
+        }
+        for need in &function.uses {
+            if let Some(cap) = need.usage.capability {
+                needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
+            }
+        }
+    }
+    // The operations, and the handlers that can serve those of a capability that is not the
+    // host's, with the operations those handlers need, to a fixpoint over capabilities.
+    let mut seen: BTreeSet<(CapId, String)> = BTreeSet::new();
+    let mut handled: BTreeSet<usize> = BTreeSet::new();
+    while !needs.is_empty() || handlers.iter().any(|h| !handled.contains(h)) {
+        while let Some((cap, op)) = needs.pop() {
+            if !seen.insert((cap, op.clone())) {
+                continue;
+            }
+            let Some(capability) = env.capabilities.get(cap) else {
+                continue;
+            };
+            if let Some(def) = capability.ops.iter().find(|d| d.name == op) {
+                let mut rho = def.result.base.deep_label(kinds);
+                if let Some(accepts) = &def.accepts {
+                    rho = rho.join(accepts);
+                }
+                if let Some(fails) = &def.fails {
+                    rho = rho.join(&fails.deep_label(kinds));
+                }
+                sources.push((rho, format!("the operation `{}.{op}`", capability.name)));
+            }
+            if capability.module != env.prelude {
+                handlers.extend(
+                    env.handlers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, h)| h.capability == Some(cap))
+                        .map(|(id, _)| id),
+                );
+            }
+        }
+        let next: Vec<usize> = handlers.difference(&handled).copied().collect();
+        for id in next {
+            handled.insert(id);
+            let Some(handler) = env.handlers.get(id) else {
+                continue;
+            };
+            for param in &handler.params {
+                let label = if matches!(param.ty.base.unlabeled(), Ty::Fn(_)) {
+                    top.clone()
+                } else {
+                    param.ty.base.deep_label(kinds)
+                };
+                sources.push((
+                    label,
+                    format!("the parameter `{}` of a handler", param.name),
+                ));
+            }
+            for need in &handler.uses {
+                if let Some(cap) = need.usage.capability {
+                    needs.extend(need.usage.ops.iter().map(|op| (cap, op.clone())));
+                }
+            }
+        }
+    }
+    // Concurrent tasks (IF6): the top label when a function holding a task construct reaches
+    // the step, the exact join of its siblings coming with `for ever within`.
+    let concurrent = findings.task_functions.iter().any(|&f| {
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        let mut pending = vec![f];
+        while let Some(g) = pending.pop() {
+            if g == step {
+                return true;
+            }
+            if seen.insert(g) {
+                pending.extend(callees.get(&g).into_iter().flatten().copied());
+            }
+        }
+        false
+    });
+    if concurrent {
+        sources.push((top.clone(), "tasks that can run beside the step".to_owned()));
+    }
+    let declared = input.ty.base.deep_label(kinds);
+    let tau = sources
+        .iter()
+        .fold(Label::public(), |tau, (label, _)| tau.join(label));
+    if tau.flows_to(&declared) {
+        return;
+    }
+    let culprit = sources
+        .iter()
+        .find(|(label, _)| !label.flows_to(&declared))
+        .map_or_else(String::new, |(_, source)| source.clone());
+    let mut diagnostic = report.make(
+        Code::U4001,
+        input.span,
+        format!(
+            "the tick `{}` of `step` is labeled `{declared}`, but its time depends on {culprit}, labeled above it; the step's timing label is `{tau}`",
+            input.name
+        ),
+    );
+    diagnostic.repairs.push(Report::advice(format!(
+        "label `{}` at least `{tau}`, as `{}: {tau} Tick`",
+        input.name, input.name
+    )));
+    report.push(diagnostic);
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the
