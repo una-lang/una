@@ -2,7 +2,12 @@
 //! advisories and avoided releases, the cooldown, each bound, and the scaling test.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::result_large_err,
+    clippy::unwrap_used
+)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
