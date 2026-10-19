@@ -10,6 +10,7 @@ A fix made before any release that it would affect is not an advisory. Neither i
 - **High:** an accepted program breaks a stated guarantee, noninterference or authority, in a narrower shape, or the run uses a handler the checker did not check.
 - **Medium:** an accepted program reveals `internal`-labeled facts, or one bit decided by them.
 - **Low:** details of the machine or account that built a release are exposed in its artifacts.
+- **Availability:** a denial of service: an accepted program that reads untrusted input can be made to use resources, time or memory, without bound or superlinearly in the size of that input.
 
 "Affected" names the releases that `CHANGELOG.md` names. Where it names none, the entry says so, rather than infer a range.
 

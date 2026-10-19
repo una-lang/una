@@ -127,7 +127,7 @@
    ],
    "returns": {
     "type": "Option[Int]",
-    "meaning": "`Some` of the integer `t` writes, an optional `-` and one or more ASCII digits; `None` for any other text, among them a leading `+`"
+    "meaning": "`Some` of the integer `t` writes, an optional `-` and from 1 to 4300 ASCII digits; `None` for any other text, among them a leading `+` and more than 4300 digits"
    },
    "use_instead": [
     {
@@ -558,6 +558,10 @@
     {
      "variant": "NoDigits",
      "when": "`t` is `-` alone"
+    },
+    {
+     "variant": "TooLong",
+     "when": "`t` is an optional `-` and more than 4300 ASCII digits, leading zeros included"
     }
    ],
    "use_instead": [
@@ -704,6 +708,11 @@
      "name": "NoDigits",
      "fields": [],
      "meaning": "the text is `-` alone"
+    },
+    {
+     "name": "TooLong",
+     "fields": [],
+     "meaning": "the text writes more than 4300 digits, the sign excluded and leading zeros included"
     }
    ],
    "see_also": [
