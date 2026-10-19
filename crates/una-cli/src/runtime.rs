@@ -301,23 +301,30 @@ pub(crate) fn run_command(
     };
     // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
     // handlers of SIGINT and SIGTERM; any other keeps their default actions.
+    // The run's host stop state is made first, so a signal that comes while the handlers are
+    // installed counts for the run.
     let stops = takes_stops(&analysis, &package.sources, &entry, drive.is_some());
+    let stop = una_interp::stopping::RunStop::new(options.stop_grace);
     if stops && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install() {
         writeln!(stderr, "internal compiler error (U8001): {message}")?;
         return Ok(ExitStatus::Internal);
     }
-    // The run's host stop state, and its watcher when a request can come: a signal, or the
-    // deadline (rules 14 and 16).
-    let stop = una_interp::stopping::RunStop::new(options.stop_grace);
-    if (stops || options.deadline.is_some())
-        && let Err(error) = stop.watch(options.deadline.map(std::time::Duration::from_secs))
-    {
-        writeln!(
-            stderr,
-            "internal compiler error (U8001): cannot start the watcher of host stops: {error}"
-        )?;
-        return Ok(ExitStatus::Internal);
-    }
+    // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
+    // Its guard ends the watch on every way out, a panic's included.
+    let watching = if stops || options.deadline.is_some() {
+        match stop.watch(options.deadline.map(std::time::Duration::from_secs)) {
+            Ok(watching) => Some(watching),
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "internal compiler error (U8001): cannot start the watcher of host stops: {error}"
+                )?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+    } else {
+        None
+    };
     let (sender, receiver) = channel::<String>();
     let program = &analysis.program;
     let entry_path = entry.as_str();
@@ -361,7 +368,7 @@ pub(crate) fn run_command(
         )
     });
     drop(ceiling);
-    stop.finish();
+    drop(watching);
     let run = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {

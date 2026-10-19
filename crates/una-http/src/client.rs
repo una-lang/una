@@ -90,6 +90,8 @@ pub enum Waited {
     Stopped,
     /// The time given passed.
     TimedOut,
+    /// The wait itself failed, as `poll` can: the request fails as an unreachable one.
+    Failed,
 }
 
 /// What can interrupt a request (ADR 0116 rule 12): an engine gives one for an operation in
@@ -100,8 +102,16 @@ pub trait Interrupt {
     fn stopped(&self) -> bool;
 
     /// Waits until `socket` is ready to read, or to write when `write`, until a host stop
-    /// request comes, or until `timeout` passes.
+    /// request comes, or until `timeout` passes. It must really wait: the socket is then
+    /// non-blocking, and each `WouldBlock` comes back here.
     fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited;
+
+    /// Whether [`Interrupt::wait`] waits. When it does, the request's socket is non-blocking,
+    /// so no read, write or step of the TLS handshake blocks past one wait, and a stop is seen
+    /// at the next one.
+    fn waits(&self) -> bool {
+        true
+    }
 }
 
 /// No interruption: every wait is left to the socket's own timeouts.
@@ -114,6 +124,10 @@ impl Interrupt for Uninterrupted {
 
     fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
         Waited::Ready
+    }
+
+    fn waits(&self) -> bool {
+        false
     }
 }
 
@@ -133,11 +147,13 @@ pub fn send(
 }
 
 /// [`send`], which `interrupt` interrupts (ADR 0116 rule 12): after the header values are
-/// checked, a request whose stop has come fails with `Interrupted` before anything is sent; and
-/// each wait on the socket to read or write, the TLS handshake's included, also ends with
-/// `Interrupted` when the stop comes. Name resolution and the TCP connection are not waited on
-/// with `interrupt`: a stop that comes during them takes effect when they return, within the
-/// request's deadline (ADR 0116, implementation plan, item 6).
+/// checked, a request whose stop has come fails with `Interrupted` before anything is sent.
+/// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
+/// write and step of the TLS handshake that would block waits through `interrupt` instead, and
+/// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
+/// Name resolution and the TCP connection are not waited on with `interrupt`: a stop that comes
+/// during them takes effect when they return, within the request's deadline (ADR 0116,
+/// implementation plan, item 6).
 pub fn send_interruptible(
     request: &Request<'_>,
     grants: &[Grant],
@@ -322,25 +338,58 @@ impl Connection {
             .map_err(|_| Error::Unreachable)
     }
 
-    /// Waits until the socket is ready to read, or to write when `write`, within the deadline,
-    /// unless `interrupt` ends the wait. A TLS stream with plaintext already decrypted reads
-    /// without waiting.
-    fn ready(
+    /// Waits on the socket, to write when `write` and to read otherwise, within the deadline,
+    /// unless `interrupt` ends the wait first.
+    fn wait_on(
         &self,
         write: bool,
         deadline: Instant,
         interrupt: &dyn Interrupt,
     ) -> Result<(), Error> {
-        if !write
-            && let Connection::Tls(stream) = self
-            && !stream.conn.wants_read()
-        {
-            return Ok(());
-        }
         match interrupt.wait(self.socket().as_raw_fd(), write, left(deadline)?) {
             Waited::Ready => Ok(()),
             Waited::Stopped => Err(Error::Interrupted),
             Waited::TimedOut => Err(Error::TimedOut),
+            Waited::Failed => Err(Error::Unreachable),
+        }
+    }
+
+    /// The direction a connection waits in after `WouldBlock`: TLS writes first when it has
+    /// bytes to send, as a step of the handshake may; plain I/O waits as `write` says.
+    fn direction(&self, write: bool) -> bool {
+        match self {
+            Connection::Plain(_) => write,
+            Connection::Tls(stream) => stream.conn.wants_write(),
+        }
+    }
+
+    /// Runs `step`, an I/O step on the connection, within the deadline (ADR 0116 rule 12).
+    /// Without an interruption, the socket blocks, bounded by the time left. With one, the
+    /// socket is non-blocking: each `WouldBlock` waits through `interrupt`, and a stop is
+    /// checked before each try, so a stop is seen within one wait, whatever the peer sends.
+    fn io<T>(
+        &mut self,
+        write: bool,
+        deadline: Instant,
+        interrupt: &dyn Interrupt,
+        mut step: impl FnMut(&mut Connection) -> std::io::Result<T>,
+    ) -> Result<std::io::Result<T>, Error> {
+        if !interrupt.waits() {
+            self.bound(deadline)?;
+            return Ok(step(self));
+        }
+        loop {
+            if interrupt.stopped() {
+                return Err(Error::Interrupted);
+            }
+            left(deadline)?;
+            match step(self) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.wait_on(self.direction(write), deadline, interrupt)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                done => return Ok(done),
+            }
         }
     }
 
@@ -352,22 +401,22 @@ impl Connection {
     ) -> Result<(), Error> {
         let mut rest = bytes;
         while !rest.is_empty() {
-            self.ready(true, deadline, interrupt)?;
-            self.bound(deadline)?;
-            let written = match self {
+            let written = self.io(true, deadline, interrupt, |connection| match connection {
                 Connection::Plain(stream) => stream.write(rest),
                 Connection::Tls(stream) => stream.write(rest),
-            };
+            })?;
             match written {
+                // A TLS stream whose buffer is full takes nothing until the socket drains.
+                Ok(0) if interrupt.waits() => self.wait_on(true, deadline, interrupt)?,
                 Ok(0) => return Err(Error::Unreachable),
                 Ok(n) => rest = rest.get(n..).unwrap_or_default(),
                 Err(error) => return Err(io_error(&error, deadline)),
             }
         }
-        match self {
+        self.io(true, deadline, interrupt, |connection| match connection {
             Connection::Plain(stream) => stream.flush(),
             Connection::Tls(stream) => stream.flush(),
-        }
+        })?
         .map_err(|error| io_error(&error, deadline))
     }
 
@@ -377,12 +426,10 @@ impl Connection {
         deadline: Instant,
         interrupt: &dyn Interrupt,
     ) -> Result<usize, Error> {
-        self.ready(false, deadline, interrupt)?;
-        self.bound(deadline)?;
-        let read = match self {
+        let read = self.io(false, deadline, interrupt, |connection| match connection {
             Connection::Plain(stream) => stream.read(buffer),
             Connection::Tls(stream) => stream.read(buffer),
-        };
+        })?;
         match read {
             Ok(n) => Ok(n),
             // A peer that closes without TLS's close_notify ends the stream; the parser decides
@@ -500,6 +547,12 @@ fn connect(url: &Url, deadline: Instant, interrupt: &dyn Interrupt) -> Result<Co
         return Err(Error::Interrupted);
     }
     let _ = stream.set_nodelay(true);
+    // An interruptible request never blocks on its socket (ADR 0116 rule 12).
+    if interrupt.waits() {
+        stream
+            .set_nonblocking(true)
+            .map_err(|_| Error::Unreachable)?;
+    }
     if !url.tls {
         return Ok(Connection::Plain(stream));
     }
@@ -511,31 +564,17 @@ fn connect(url: &Url, deadline: Instant, interrupt: &dyn Interrupt) -> Result<Co
     let server = rustls::pki_types::ServerName::try_from(name).map_err(|_| Error::BadUrl)?;
     let client = rustls::ClientConnection::new(tls_config(), server).map_err(|_| Error::Tls)?;
     let mut connection = Connection::Tls(Box::new(rustls::StreamOwned::new(client, stream)));
-    // The handshake, within the deadline.
-    if let Connection::Tls(tls) = &mut connection {
-        loop {
-            if !tls.conn.is_handshaking() {
-                break;
-            }
-            let write = !tls.conn.wants_read() && tls.conn.wants_write();
-            match interrupt.wait(tls.sock.as_raw_fd(), write, left(deadline)?) {
-                Waited::Ready => {}
-                Waited::Stopped => return Err(Error::Interrupted),
-                Waited::TimedOut => return Err(Error::TimedOut),
-            }
-            let left = left(deadline)?;
-            let _ = tls.sock.set_read_timeout(Some(left));
-            let _ = tls.sock.set_write_timeout(Some(left));
-            tls.conn.complete_io(&mut tls.sock).map_err(|error| {
-                match io_error(&error, deadline) {
-                    Error::TimedOut => Error::TimedOut,
-                    Error::Unreachable if error.kind() == std::io::ErrorKind::InvalidData => {
-                        Error::Tls
-                    }
-                    other => other,
-                }
-            })?;
-        }
+    // The handshake, within the deadline, each step through `io`.
+    while matches!(&connection, Connection::Tls(tls) if tls.conn.is_handshaking()) {
+        let stepped = connection.io(true, deadline, interrupt, |connection| match connection {
+            Connection::Tls(tls) => tls.conn.complete_io(&mut tls.sock).map(drop),
+            Connection::Plain(_) => Ok(()),
+        })?;
+        stepped.map_err(|error| match io_error(&error, deadline) {
+            Error::TimedOut => Error::TimedOut,
+            Error::Unreachable if error.kind() == std::io::ErrorKind::InvalidData => Error::Tls,
+            other => other,
+        })?;
     }
     Ok(connection)
 }

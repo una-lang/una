@@ -1169,6 +1169,13 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // The run's host stop state is made first, so a signal that comes while the handlers are
+    // installed counts for the run.
+    let stop = RunStop::new(
+        options
+            .stop_grace
+            .unwrap_or(una_interp::stopping::DEFAULT_GRACE_SECS),
+    );
     // ADR 0116 rule 18: only a run that can reach a `for ever` or runs a driver changes what
     // SIGINT and SIGTERM do; any other keeps their default actions.
     if meta.stops
@@ -1177,21 +1184,19 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         let _ = writeln!(stderr, "error: {message}");
         return 3;
     }
-    // The run's host stop state, and its watcher when a request can come: a signal, or the
-    // deadline (rules 14 and 16).
-    let stop = RunStop::new(
-        options
-            .stop_grace
-            .unwrap_or(una_interp::stopping::DEFAULT_GRACE_SECS),
-    );
-    if (meta.stops || options.deadline.is_some())
-        && stop
-            .watch(options.deadline.map(std::time::Duration::from_secs))
-            .is_err()
-    {
-        let _ = writeln!(stderr, "error: cannot start the watcher of host stops");
-        return 3;
-    }
+    // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
+    // Its guard ends the watch on every way out, a panic's included.
+    let watching = if meta.stops || options.deadline.is_some() {
+        match stop.watch(options.deadline.map(std::time::Duration::from_secs)) {
+            Ok(watching) => Some(watching),
+            Err(_) => {
+                let _ = writeln!(stderr, "error: cannot start the watcher of host stops");
+                return 3;
+            }
+        }
+    } else {
+        None
+    };
     let _ = RUN_STOP.set(Arc::clone(&stop));
     STOP_AFTER.store(options.stop_after.unwrap_or(0), Ordering::SeqCst);
     let grants = match grants(&meta, &options) {
@@ -1331,7 +1336,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                 return USAGE;
             }
         };
-    stop.finish();
+    drop(watching);
     let mut code = if status == 0 { 0 } else { 1 };
     if let Some(state) = state {
         code = code.max(finish(state));
