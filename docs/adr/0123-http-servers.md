@@ -1,8 +1,8 @@
 # 0123. HTTP servers: the `HttpServer` capability, granted by address, with limits, strict HTTP/1.1 and graceful shutdown
 
-- Status: Proposed
-- Date: 2026-10-18
-- Deciders:
+- Status: Accepted
+- Date: 2026-10-19
+- Deciders: Una project (accepted on 2026-10-19)
 - Resolves: issue #897
 - Related:
   - ADR 0116 (long-running programs: `for ever`, `on stop`, stop points, interruptible operations, the timing label `τ`, virtual time), whose examples name "the capability of #897";
@@ -21,17 +21,18 @@
   - **Native backend:** `spec/16 §3` (flags), `§5` (scripted connections in the equivalence tests);
   - **Accepted records:** ADRs 0116 and 0117, by the dated amendments of Appendix A.
 
-  These rules would live in a new chapter, `spec/NN-http-servers.md`, numbered at acceptance by ADR 0121 rule 20 (draft).
+  These rules would live in a new chapter, `spec/31-http-servers.md`.
 
 ## Questions for acceptance
 
-Each question changes what a programmer writes or can rely on. The text below follows each recommendation.
+Each question changes what a programmer writes or can rely on. The project accepted this record on 2026-10-19, taking the recommendation of each question; each states its decision, and the text below follows them.
 
 1. **One server capability, for HTTP only, now.**
    - **The choice.** (a) A host capability `HttpServer`, which reads HTTP/1.1 requests and writes replies, with the host doing all parsing, framing and TLS. (b) Also a lower-level `Listener` that hands the program raw TCP connections.
    - **Cost to the programmer of (a):** no raw TCP, so no custom binary protocols, WebSockets or HTTP/2 yet. Request and reply bodies are `Text`, so a body that is not UTF-8 is refused by the host with `400` before the program sees it (rule 10): binary uploads wait for a type of bytes, and so do ordinary file uploads through `multipart/form-data` with binary parts.
    - **Cost of (b):** Una has no type of bytes and no streams (ADR 0074 H1, H4), so a `Listener` would hand the program `Text` read from a socket, and every server would parse HTTP in Una code, where request smuggling is easy to get wrong.
    - **Recommendation:** (a). `Listener` comes with a later record on bytes and streams, which also lifts the UTF-8 limit.
+   - **Decided:** (a). One host capability, `HttpServer`, for HTTP/1.1 only; no `Listener` in this record.
 
    ```una
    pub main() -> Unit
@@ -43,6 +44,7 @@ Each question changes what a programmer writes or can rely on. The text below fo
    - **This record:** both. (a) The host-driven form: a `[serve]` table names a module whose function `handle(request) -> Reply` answers one request; the host runs the loop, a task per request, the limits and the shutdown (rule 16). (b) The language form: a `diverges` function with a `for ever` loop over `@server.next()`, `tasks` and `start` per request, and `@server.reply` (rule 15).
    - **Cost to the programmer:** (a) needs no loop, no `diverges` and no reply right. It is the faster path: a request is read, handled and answered on the core that owns its connection, with no hand-off of the request between threads; the grant's limits still cost a few atomic operations on state the cores share (rule 19). It has no time limit per request in code by default, since a `within` would stop a `handle` that reads `secret` data from replying at all (rule 16); the host's `answer` limit still bounds what each client waits. (b) is for servers that need their own loop, such as one that paces itself or combines a server with other work; it adds two hand-offs between threads per request.
    - **Recommendation:** accept both, and teach (a) first.
+   - **Decided:** both forms, with the host-driven form (a), `[serve]`, taught first.
 
    ```una
    module health                                       -- (a): [serve] module = "health"
@@ -63,6 +65,7 @@ Each question changes what a programmer writes or can rely on. The text below fo
      
      On Windows, `https` grants are refused until a later record checks the file's access list.
    - **Recommendation:** accept, with (a).
+   - **Decided:** TLS in this record, with its keys in the grant, and (a): TLS 1.3 only by default, TLS 1.2 only through the `tls12` item, which requires the extended master secret.
 
    ```toml
    [run]
@@ -75,6 +78,7 @@ Each question changes what a programmer writes or can rely on. The text below fo
    - **(b)** Follow ADR 0117 IF4: require the timing label of every handler, joined with `τ_conc`, to be at most `internal` (U4001).
    - **Cost to the programmer of (b):** a server whose request tasks read a `secret` value anywhere, such as a password hash or a medical record, could not be written at all, since the queue that refuses requests is not optional. (a) costs nothing in code. Its cost is a stated gap: the model does not bound what `internal` code, or a peer, learns from a server's timing.
    - **Recommendation:** (a).
+   - **Decided:** (a). The request stream is input from outside, as a deliberate exception to ADR 0117 IF4, stated in the report (IF5).
 
    ```una
    let next = attempt @server.next()      -- internal Exchange: input from outside
@@ -85,6 +89,7 @@ Each question changes what a programmer writes or can rely on. The text below fo
    - **This record:** every request comes with a **reply right**, held by one task at a time. `@server.next()` gives it to the calling task, and `start` moves it to the started task that captures it (rule 4). When a task ends still holding a reply right, the host answers for it: `500` when the task returned or ended alone, `503` when it was cancelled or stopped. A second reply to one reply right, or a reply by a task that does not hold it, fails with `NotHeld`. A reply that comes after the host's own deadline for the request (rule 7, `answer`) is discarded and returns `unit`, so no value of the program depends on that timing.
    - **Cost to the programmer:** a forgotten reply is a `500` at the end of the task, not a hang. The alternative, a static rule that every reply right is used exactly once (a linear type), would need a new kind of type for one capability.
    - **Recommendation:** accept.
+   - **Decided:** yes. Reply rights held by one task at a time, with auto-answers at a task's end (rule 4).
 
    ```una
    start forward(exchange) within 5 * second    -- the reply right moves with `exchange`
@@ -95,6 +100,7 @@ Each question changes what a programmer writes or can rely on. The text below fo
    - **This record:** the host refuses every request that two HTTP implementations might read differently, with `400` and a closed connection: a bare LF or CR, empty lines before the request line, a folded header line, whitespace before a header's colon, a control character in a header value, both `Content-Length` and `Transfer-Encoding`, two `Content-Length` headers even when equal, a chunk extension, a `Transfer-Encoding` other than `chunked` alone, a `Connection` header that names anything but `close`, `keep-alive` and the connection's own headers, an `HTTP/1.0` request without `Host`, and, in the path, `.` and `..` segments and the encoded `/`, `\` and NUL (rules 10 and 11). These are the forms behind request smuggling, hop-by-hop header abuse and path confusion.
    - **Cost to the programmer:** none in code. A rare client gets `400`: one that sends bare LF, a blank line before the request, chunk extensions, an `HTTP/1.0` request without `Host`, or characters RFC 3986 does not allow unencoded, such as `|`, `{` and `"` in a query. HTTP allows a server most of this strictness (RFC 9112 §2.2, §3.2, §5.1, §5.2, §6.3). Two choices depart from it: RFC 9112 §2.2 asks a server to ignore at least one empty line before the request line, and §7.1.1 asks a recipient to ignore unknown chunk extensions. Both are refused because lenient handling of those places has been a route for smuggling, and clients rarely send them.
    - **Recommendation:** accept.
+   - **Decided:** yes. The host refuses every ambiguous form and never repairs one (rules 10 and 11).
 
    ```text
    POST /orders HTTP/1.1          -- refused: 400 and the connection closes
@@ -107,6 +113,7 @@ Each question changes what a programmer writes or can rely on. The text below fo
    - **This record:** (i) without `hosts=`, a grant accepts only `localhost` and IP literals in `Host`, on every address, so DNS rebinding cannot reach any server that has not named its host names (rule 8); (ii) a finite default for connections from one peer, with IPv6 peers counted per /64 (rule 7); (iii) the bytes the host holds are budgeted per grant with a share per peer: request bodies (`buffers`, `peer_buffers`), unwritten replies (`replies`, `peer_replies`) and delivered requests (`delivered`), with a reserve per connection for its request head; a body that does not fit is refused with `503`, and under pressure a peer over its share of reply bytes loses its slowest connection, so slow peers cannot stall the others or end the run (rule 13).
    - **Cost to the programmer:** a server reached by name must list its names, `hosts=shop.example`, or opt out with `hosts=*`. A server behind a proxy or a load balancer, where every connection comes from the proxy's address, sets `peer=none`, `peer_buffers=none` and `peer_replies=none`, or larger values.
    - **Recommendation:** yes to all three.
+   - **Decided:** yes to all three (rules 7, 8 and 13).
 
    ```toml
    grants = ["serve:http://0.0.0.0:8080;hosts=api.example;peer=none;peer_buffers=none;peer_replies=none"]   # behind a proxy
@@ -603,7 +610,7 @@ IF7. **Labels in a server, in practice.** A request task branches on `internal` 
 - **Per request on the `[serve]` path,** keep-alive, plain HTTP, small request: one `read` and one `write` system call, the readiness wait amortized over the ready connections, the parse, a few atomic operations on the grant's shared counters, one coroutine started from the stack pool, the handler and the serialization, with no hand-off of the request between threads (rule 19). The shared counters are the cost that a server with limits per worker would not pay; a measurement decides whether they need per-worker batches.
 - **The language form** adds two hand-offs between threads: to the task that calls `next`, and back to the connection's worker through the placement of rule 19, two queue operations, O(1) each, and a wake-up of the other worker when it sleeps.
 - **Header lookup** in the program is a scan of `headers`, O(h), which rule 7 bounds by 100 lines by default.
-- **The goal and how it is measured.** The project's bar for native code, parity with Rust (a geometric mean of at most 1.1x Rust's time, no program above 1.5x, and memory at most 1.2x), was set for compute programs (ADR 0106, Context). This record proposes the same bar for servers, on CPU time per request at saturation and on memory, against a like-for-like baseline, and reports latency without a bar.
+- **The goal and how it is measured.** The project's bar for native code, parity with Rust (a geometric mean of at most 1.1x Rust's time, no program above 1.5x, and memory at most 1.2x), was set for compute programs (ADR 0106, Context). This record sets the same bar for servers, on CPU time per request at saturation and on memory, against a like-for-like baseline, and reports latency without a bar.
   - **The baseline.** A Rust server on `hyper` over HTTP/1.1, on the multi-threaded `tokio` runtime, with the same work and the same limits: `tower`'s `ConcurrencyLimit` and `RateLimit` for `/once` and the rate, `http-body-util`'s `Limited` for `body`, a timeout on reading the head, a cap on connections, and a handler that checks UTF-8 and decodes the path and the query as rule 11 does and builds the same lists. A bare `hyper` server is reported beside it, to show what the checks cost.
   - **The programs.** A health endpoint and a JSON endpoint, with keep-alive and without, plain and TLS, on the same machine.
   - **The records.** CPU time per request at saturation; the 50th and 99th percentile latency at fixed loads, with uniform handler costs and with skewed ones (one request in a hundred a hundred times slower); and memory per idle connection. Any program above the bar is stated with its reason.
@@ -999,11 +1006,11 @@ inbound(headers: internal List[Header]) -> internal List[Header]
 
 The labels hold without a policy: requests and upstream responses are `internal`, and `reply`, `Http` and `acquire` accept `internal`. The `within` on `start` checks `forward` under the timing floor of ADR 0117 IF2 with `τ` at `internal`, which those sinks accept, and IF6 holds since `forward` replies.
 
-## Appendix A. Amendments to accepted records, appended on 2026-10-18
+## Appendix A. Amendments to accepted records, appended on 2026-10-19
 
-**ADR 0116, Amendment (2026-10-18).** The capability of #897 is `HttpServer` (ADR 0123). The examples of rules 10 and 14, written with `Listener[accept, close]` and `accept`, read as `HttpServer[next, close]` and `next`, with `handle(exchange)` for `handle(connection)`, and without the `if error use unit` after `close()`, which cannot fail (a handling clause there is U3025, `spec/06 §3`); the trace of rule 14 names `host:HttpServer`, `HttpServer` and `next`. `HttpServer.next` joins the interruptible operations of rule 12, with `ServeError.Interrupted` and `ServeError.TimedOut` as its failures.
+**ADR 0116, Amendment (2026-10-19).** The capability of #897 is `HttpServer` (ADR 0123). The examples of rules 10 and 14, written with `Listener[accept, close]` and `accept`, read as `HttpServer[next, close]` and `next`, with `handle(exchange)` for `handle(connection)`, and without the `if error use unit` after `close()`, which cannot fail (a handling clause there is U3025, `spec/06 §3`); the trace of rule 14 names `host:HttpServer`, `HttpServer` and `next`. `HttpServer.next` joins the interruptible operations of rule 12, with `ServeError.Interrupted` and `ServeError.TimedOut` as its failures.
 
-**ADR 0117, Amendment (2026-10-18).**
+**ADR 0117, Amendment (2026-10-19).**
 - Rule 3: the operation that ADR 0123 marks is `HttpServer.next`, which parks its task and is interruptible. `reply` and `close` do not park.
 - Rule 2: a started task whose captures hold a reply right of ADR 0123 runs on the worker that owns the reply right's connection, instead of the next worker in turn; the choice is O(1), and the task stays pinned.
 - Rule 8: grants of `HttpServer` (`serve:`) also carry limits, those of ADR 0123 rule 7, and "a limit on a grant other than `Http`" is U7002 only for the other capabilities.
