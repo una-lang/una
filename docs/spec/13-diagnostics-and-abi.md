@@ -437,8 +437,8 @@ Keys are printed in this order, and two runs over the same sources print the sam
 
 | Enum | Kinds |
 | --- | --- |
-| `Atom` | `var`, `int`, `f64`, `decimal`, `bool`, `text`, `unit` |
-| `Base` | `int`, `fixed`, `f64`, `decimal`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
+| `Atom` | `var`, `int`, `f64`, `decimal`, `f32`, `bool`, `text`, `unit` |
+| `Base` | `int`, `fixed`, `f64`, `decimal`, `f32`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
 | `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
 | `Bound` | `rhs`, `expr` |
 | `Coll` | `stack`, `queue`, `set`, `hash_map`, `hash_set`, `priority_queue`, `bit_set` |
@@ -449,17 +449,17 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `ExitTag` | `next`, `stop` |
 | `Expr` | `atom`, `let`, `let_tuple`, `loop`, `exit`, `together`, `together_for`, `if`, `case`, `fail`, `handle`, `attempt`, `with`, `unreachable` |
 | `FixedOp` | `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `saturating_add`, `saturating_sub`, `saturating_mul`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shift_right`, `wrapping_shift_left` |
-| `FloatOp` | `add`, `sub`, `mul`, `div`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `abs`, `sqrt`, `fma`, `rem`, `floor`, `ceil`, `trunc`, `round_half_even`, `round_half_away`, `copy_sign`, `ieee_min`, `ieee_max`, `clamp`, `ieee_eq`, `ieee_ne`, `ieee_lt`, `ieee_le`, `ieee_gt`, `ieee_ge`, `is_nan`, `is_finite`, `is_infinite`, `is_sign_negative`, `is_zero`, `is_positive_zero`, `is_negative_zero`, `to_bits`, `to_int_exact`, `from_int`, `to_text` |
+| `FloatOp` | `add`, `sub`, `mul`, `div`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `abs`, `sqrt`, `fma`, `rem`, `floor`, `ceil`, `trunc`, `round_half_even`, `round_half_away`, `copy_sign`, `ieee_min`, `ieee_max`, `clamp`, `ieee_eq`, `ieee_ne`, `ieee_lt`, `ieee_le`, `ieee_gt`, `ieee_ge`, `is_nan`, `is_finite`, `is_infinite`, `is_sign_negative`, `is_zero`, `is_positive_zero`, `is_negative_zero`, `to_bits`, `to_int_exact`, `from_int`, `to_text`, `to_f32`, `to_f64` |
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
 | `LoopSource` | `list`, `range` |
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
-| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `seq`, `set`, `float`, `shape`, `decimal` |
+| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `seq`, `set`, `float`, `shape`, `decimal`, `float32` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `SeqOp` | `push_front`, `push_back`, `pop_front`, `pop_back`, `peek_front`, `peek_back`, `items` |
 | `SetOp` | `has`, `with`, `without`, `first`, `last`, `between`, `items`, `union`, `intersection`, `difference`, `is_subset` |
 | `ShapeFun` | `rows`, `columns` |
 | `Source` | `rebind`, `handler` |
-| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `shape`, `element`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64` |
+| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `shape`, `element`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call`, `f64`, `float`, `to_f64`, `f32`, `float32`, `to_f32` |
 | `Type` | `base`, `fn` |
 
 **What inference adds** (#443). Core holds what elaboration gives it. The document adds facts the checker infers, each as an additive key, in the order shown:
@@ -479,5 +479,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 (ADR 0114.) An `f64` atom, a float literal, has one key after `kind`, `bits`: its bits as 16 lowercase hex digits. An operation of `F64` is a `float` primitive whose `value` is its `FloatOp`, so no existing kind changes meaning.
 
 (ADR 0120.) A `decimal` base has one key after `kind`, `scale`. A `decimal` atom, a decimal literal, has two, `coefficient`, in decimal with an optional `-`, and `scale`: its value is the coefficient times ten to the minus scale. An operation of `Decimal` is a `decimal` primitive whose `value` is its `DecimalOp`, with a key `scales` after `kind`: the static scales its meaning depends on, in the order `spec/29 §16` gives them.
+
+(ADR 0120 rule 5.) An `f32` atom, an `F32` literal, and an `f32` term have one key after `kind`, `bits`: its bits as 8 lowercase hex digits. An operation of `F32` is a `float32` primitive whose `value` is its `FloatOp`, and in a clause a `float32` term whose `op` is its `FloatOp`, so no existing kind changes meaning.
 
 **Versioning** (ADR 0076). The `kind` of a node is an **open** field: Core gains forms as the language grows, and adding one keeps `una.core/1`. A consumer MUST report a declaration that holds a `kind` it does not know as not understood, never as accepted or checked. A label's `level` is closed. Any other change follows ADR 0076.

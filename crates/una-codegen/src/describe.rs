@@ -70,6 +70,7 @@ impl<'p> Types<'p> {
             Base::F64 => json!({ "shape": "f64" }),
             // A decimal is its coefficient, written with its scale (`spec/29 §16`).
             Base::Decimal(scale) => json!({ "shape": "decimal", "scale": scale }),
+            Base::F32 => json!({ "shape": "f32" }),
             // Internal to the memory model: a tuple is never a value a trace or U6001 shows.
             Base::Tuple(_) => json!({ "shape": "other" }),
             Base::Named { module, name, args } if module == PRELUDE_MODULE => {

@@ -2461,7 +2461,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 85] = [
+const PRELUDE_LABELED: [&str; 87] = [
     "abs",
     "append",
     "at",
@@ -2556,6 +2556,9 @@ const PRELUDE_LABELED: [&str; 85] = [
     "dense_matrix_sum_exact",
     "dense_matrix_multiply",
     "dense_matrix_multiply_array",
+    // `F32` (ADR 0120 rule 5): the same for `parse_f32` and `f32_from_bits`.
+    "parse_f32",
+    "f32_from_bits",
 ];
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the

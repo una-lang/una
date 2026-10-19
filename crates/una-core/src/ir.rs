@@ -101,7 +101,7 @@ pub enum IntType {
     U16,
     /// `U32`.
     U32,
-    /// `U64`.
+    /// `U64`, or `U32` for an `F32`.
     U64,
 }
 
@@ -192,6 +192,8 @@ pub enum Base {
     /// `Decimal[s]`, an exact decimal of scale s, edition 0.4 (`spec/29 §16`, ADR 0120): its
     /// value is an integer coefficient c, worth c × 10^-s.
     Decimal(u8),
+    /// `F32`, IEEE 754 binary32, edition 0.4 (`spec/29`, ADR 0120 rule 5).
+    F32,
     /// `Bool`.
     Bool,
     /// `Text`.
@@ -373,6 +375,23 @@ pub enum Term {
         /// Its fixed-width type, or `None` for `Int`.
         from: Option<IntType>,
     },
+    /// An `F32` literal as its bits (`spec/29`, ADR 0120 V1).
+    F32(u32),
+    /// An operation of `F32` of the refinement language, its receiver first; `ToF64` is
+    /// `x.to_f64()` of an `F32` (ADR 0120 V1).
+    Float32 {
+        /// The operation.
+        op: FloatOp,
+        /// Its operands.
+        args: Vec<Term>,
+    },
+    /// `n.to_f32()` of an integer term, with the integer's type: `None` for `Int`.
+    ToF32 {
+        /// The integer.
+        value: Box<Term>,
+        /// Its fixed-width type, or `None` for `Int`.
+        from: Option<IntType>,
+    },
 }
 
 /// A binary operator of the refinement language.
@@ -469,6 +488,9 @@ pub enum Atom {
         /// The scale.
         scale: u8,
     },
+    /// An `F32` literal, as the bits of its value, rounded once from the decimal (ADR 0120
+    /// rule 6): never a NaN.
+    F32(u32),
     /// `true` or `false`.
     Bool(bool),
     /// A text literal, with its escapes decoded.
@@ -534,6 +556,9 @@ pub enum Prim {
     /// An operator, method or conversion of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13 to
     /// 17), with the static scales of its operands.
     Decimal(DecimalOp),
+    /// An operator, method or conversion of `F32` (ADR 0120 rule 5): the operations of `F64`
+    /// at binary32, its own kind, so no existing primitive changes meaning.
+    Float32(FloatOp),
 }
 
 /// The operators, methods and conversions of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13
@@ -835,13 +860,20 @@ pub enum FloatOp {
     FromInt,
     /// The rendering of `spec/29`, as `to_text` and interpolation write it.
     ToText,
+    /// `x.to_f32()` of an `F64`: IEEE `convertFormat`, ties to even (ADR 0120 rule 8). Only
+    /// under `Prim::Float`.
+    ToF32,
+    /// `x.to_f64()` of an `F32`, exact (ADR 0120 rule 8). Only under `Prim::Float32`.
+    ToF64,
 }
 
-/// What a method of `F64` returns (ADR 0114 rule 3.3).
+/// What a method of `F64` or `F32` returns (ADR 0114 rule 3.3, ADR 0120 rule 5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FloatResult {
-    /// `F64`.
+    /// The receiver's type, `F64` or `F32`.
     F64,
+    /// The other float type: `to_f32()` of an `F64`, `to_f64()` of an `F32`.
+    Other,
     /// `Bool`.
     Bool,
     /// `U64`.
@@ -853,7 +885,7 @@ pub enum FloatResult {
 impl FloatOp {
     /// Every operation, in declaration order: the code the native backend passes to the
     /// runtime is the position here.
-    pub const ALL: [FloatOp; 41] = [
+    pub const ALL: [FloatOp; 43] = [
         FloatOp::Add,
         FloatOp::Sub,
         FloatOp::Mul,
@@ -895,6 +927,8 @@ impl FloatOp {
         FloatOp::ToIntExact,
         FloatOp::FromInt,
         FloatOp::ToText,
+        FloatOp::ToF32,
+        FloatOp::ToF64,
     ];
 
     /// The methods of `F64`, in the order of ADR 0114's table.
@@ -974,6 +1008,57 @@ impl FloatOp {
             FloatOp::ToIntExact => "f64_to_int_exact",
             FloatOp::FromInt => "f64_from_int",
             FloatOp::ToText => "f64_to_text",
+            FloatOp::ToF32 => "f64_to_f32",
+            FloatOp::ToF64 => "f64_to_f64",
+        }
+    }
+
+    /// The kind of the operation of `F32` in Core and its export: `f32_` and the operation.
+    pub fn as_str_32(self) -> &'static str {
+        match self {
+            FloatOp::Add => "f32_add",
+            FloatOp::Sub => "f32_sub",
+            FloatOp::Mul => "f32_mul",
+            FloatOp::Div => "f32_div",
+            FloatOp::Neg => "f32_neg",
+            FloatOp::Eq => "f32_eq",
+            FloatOp::Ne => "f32_ne",
+            FloatOp::Lt => "f32_lt",
+            FloatOp::Le => "f32_le",
+            FloatOp::Gt => "f32_gt",
+            FloatOp::Ge => "f32_ge",
+            FloatOp::Abs => "f32_abs",
+            FloatOp::Sqrt => "f32_sqrt",
+            FloatOp::Fma => "f32_fma",
+            FloatOp::Rem => "f32_rem",
+            FloatOp::Floor => "f32_floor",
+            FloatOp::Ceil => "f32_ceil",
+            FloatOp::Trunc => "f32_trunc",
+            FloatOp::RoundHalfEven => "f32_round_half_even",
+            FloatOp::RoundHalfAway => "f32_round_half_away",
+            FloatOp::CopySign => "f32_copy_sign",
+            FloatOp::IeeeMin => "f32_ieee_min",
+            FloatOp::IeeeMax => "f32_ieee_max",
+            FloatOp::Clamp => "f32_clamp",
+            FloatOp::IeeeEq => "f32_ieee_eq",
+            FloatOp::IeeeNe => "f32_ieee_ne",
+            FloatOp::IeeeLt => "f32_ieee_lt",
+            FloatOp::IeeeLe => "f32_ieee_le",
+            FloatOp::IeeeGt => "f32_ieee_gt",
+            FloatOp::IeeeGe => "f32_ieee_ge",
+            FloatOp::IsNan => "f32_is_nan",
+            FloatOp::IsFinite => "f32_is_finite",
+            FloatOp::IsInfinite => "f32_is_infinite",
+            FloatOp::IsSignNegative => "f32_is_sign_negative",
+            FloatOp::IsZero => "f32_is_zero",
+            FloatOp::IsPositiveZero => "f32_is_positive_zero",
+            FloatOp::IsNegativeZero => "f32_is_negative_zero",
+            FloatOp::ToBits => "f32_to_bits",
+            FloatOp::ToIntExact => "f32_to_int_exact",
+            FloatOp::FromInt => "f32_from_int",
+            FloatOp::ToText => "f32_to_text",
+            FloatOp::ToF32 => "f32_to_f32",
+            FloatOp::ToF64 => "f32_to_f64",
         }
     }
 
@@ -1008,6 +1093,8 @@ impl FloatOp {
             FloatOp::IsNegativeZero => "is_negative_zero",
             FloatOp::ToBits => "to_bits",
             FloatOp::ToIntExact => "to_int_exact",
+            FloatOp::ToF32 => "to_f32",
+            FloatOp::ToF64 => "to_f64",
             _ => return None,
         })
     }
@@ -1085,6 +1172,7 @@ impl FloatOp {
             | FloatOp::IsNegativeZero => FloatResult::Bool,
             FloatOp::ToBits => FloatResult::U64,
             FloatOp::ToIntExact => FloatResult::OptionInt,
+            FloatOp::ToF32 | FloatOp::ToF64 => FloatResult::Other,
             _ => FloatResult::F64,
         }
     }
@@ -1366,6 +1454,7 @@ impl Prim {
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),
+            Prim::Float32(op) => op.as_str_32(),
         }
     }
 }
@@ -2250,6 +2339,8 @@ mod float_op_tests {
             FloatOp::ToIntExact => 38,
             FloatOp::FromInt => 39,
             FloatOp::ToText => 40,
+            FloatOp::ToF32 => 41,
+            FloatOp::ToF64 => 42,
         }
     }
 

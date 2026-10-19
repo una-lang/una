@@ -321,6 +321,7 @@ impl<'p> Index<'p> {
                 Value::Int(n) => out.push_str(&n.to_string()),
                 Value::F64(x) => out.push_str(&una_core::float::render(*x)),
                 Value::Decimal(c, s) => out.push_str(&una_core::decimal::render(c, *s)),
+                Value::F32(x) => out.push_str(&una_core::float32::render(*x)),
                 Value::Bool(b) => out.push_str(&b.to_string()),
                 Value::Text(t) => out.push_str(&una_core::quote(t)),
                 Value::Unit => out.push_str("unit"),
@@ -1349,6 +1350,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .map_err(|_| fault(format!("`{coefficient}` is not a coefficient")))?,
                 *scale,
             ),
+            Atom::F32(bits) => Value::F32(una_core::float32::from_bits(*bits)),
             Atom::Bool(b) => Value::Bool(*b),
             Atom::Text(text) => Value::text(text),
             Atom::Unit => Value::Unit,
@@ -2173,6 +2175,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                     _ => return Err(bad()),
                 }
             }
+            // The functions of `F32` (ADR 0120 rule 5).
+            "f32_from_bits" => {
+                let bits = u32::try_from(&int(0)?).map_err(|_| bad())?;
+                Value::F32(una_core::float32::from_bits(bits))
+            }
+            "parse_f32" => return parse_f32(&text(0)?),
             "as_f64" => match arg(0)? {
                 Value::Data(data) => match (data.ctor.name.as_str(), data.fields.first()) {
                     ("Number", Some(Value::Int(n))) => {
@@ -2544,6 +2552,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             }
             _ => return Err(fault("a shape of a value that is not a matrix")),
         },
+        Prim::Float32(op) => return float32_apply(op, args),
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),
@@ -2876,6 +2885,82 @@ fn float_apply<'p>(op: FloatOp, args: &[Value<'p>]) -> Flow<'p> {
             _ => return Err(fault("`to_f64` applied to a value that is not an integer")),
         },
         FloatOp::ToText => Value::text(&f::render(x(0)?)),
+        FloatOp::ToF32 => Value::F32(una_core::float32::from_f64(x(0)?)),
+        FloatOp::ToF64 => return Err(fault("`to_f64` applied to an `F64`")),
+    })
+}
+
+/// `parse_f32(t)` (ADR 0120 rule 5): the failures of `parse_f64`, the value rounded once to
+/// binary32.
+fn parse_f32<'p>(t: &str) -> Flow<'p> {
+    match una_core::float32::parse(t) {
+        Ok(x) => Ok(Value::F32(x)),
+        Err(_) => parse_f64(t),
+    }
+}
+
+/// An operation of `F32` (ADR 0120 rules 5 to 9), each O(1), each `F32` result canonical:
+/// the routines of `una_core::float32`, which native code calls too.
+fn float32_apply<'p>(op: FloatOp, args: &[Value<'p>]) -> Flow<'p> {
+    use una_core::float::IeeeCompare;
+    use una_core::float32 as f;
+    let x = |i: usize| match args.get(i) {
+        Some(Value::F32(x)) => Ok(*x),
+        _ => Err(fault(format!(
+            "`{}` applied to a value that is not an `F32`",
+            op.as_str_32()
+        ))),
+    };
+    Ok(match op {
+        FloatOp::Add => Value::F32(f::add(x(0)?, x(1)?)),
+        FloatOp::Sub => Value::F32(f::sub(x(0)?, x(1)?)),
+        FloatOp::Mul => Value::F32(f::mul(x(0)?, x(1)?)),
+        FloatOp::Div => Value::F32(f::div(x(0)?, x(1)?)),
+        FloatOp::Neg => Value::F32(f::neg(x(0)?)),
+        FloatOp::Eq => Value::Bool(f::equal(x(0)?, x(1)?)),
+        FloatOp::Ne => Value::Bool(!f::equal(x(0)?, x(1)?)),
+        FloatOp::Lt => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_lt()),
+        FloatOp::Le => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_le()),
+        FloatOp::Gt => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_gt()),
+        FloatOp::Ge => Value::Bool(f::total_cmp(x(0)?, x(1)?).is_ge()),
+        FloatOp::Abs => Value::F32(f::abs(x(0)?)),
+        FloatOp::Sqrt => Value::F32(f::sqrt(x(0)?)),
+        FloatOp::Fma => Value::F32(f::fma(x(0)?, x(1)?, x(2)?)),
+        FloatOp::Rem => Value::F32(f::rem(x(0)?, x(1)?)),
+        FloatOp::Floor => Value::F32(f::floor(x(0)?)),
+        FloatOp::Ceil => Value::F32(f::ceil(x(0)?)),
+        FloatOp::Trunc => Value::F32(f::trunc(x(0)?)),
+        FloatOp::RoundHalfEven => Value::F32(f::round_half_even(x(0)?)),
+        FloatOp::RoundHalfAway => Value::F32(f::round_half_away(x(0)?)),
+        FloatOp::CopySign => Value::F32(f::copy_sign(x(0)?, x(1)?)),
+        FloatOp::IeeeMin => Value::F32(f::ieee_min(x(0)?, x(1)?)),
+        FloatOp::IeeeMax => Value::F32(f::ieee_max(x(0)?, x(1)?)),
+        FloatOp::Clamp => Value::F32(f::clamp(x(0)?, x(1)?, x(2)?)),
+        FloatOp::IeeeEq => Value::Bool(f::ieee_compare(IeeeCompare::Eq, x(0)?, x(1)?)),
+        FloatOp::IeeeNe => Value::Bool(f::ieee_compare(IeeeCompare::Ne, x(0)?, x(1)?)),
+        FloatOp::IeeeLt => Value::Bool(f::ieee_compare(IeeeCompare::Lt, x(0)?, x(1)?)),
+        FloatOp::IeeeLe => Value::Bool(f::ieee_compare(IeeeCompare::Le, x(0)?, x(1)?)),
+        FloatOp::IeeeGt => Value::Bool(f::ieee_compare(IeeeCompare::Gt, x(0)?, x(1)?)),
+        FloatOp::IeeeGe => Value::Bool(f::ieee_compare(IeeeCompare::Ge, x(0)?, x(1)?)),
+        FloatOp::IsNan => Value::Bool(x(0)?.is_nan()),
+        FloatOp::IsFinite => Value::Bool(x(0)?.is_finite()),
+        FloatOp::IsInfinite => Value::Bool(x(0)?.is_infinite()),
+        FloatOp::IsSignNegative => Value::Bool(f::to_bits(x(0)?) >> 31 == 1),
+        FloatOp::IsZero => Value::Bool(x(0)? == 0.0),
+        FloatOp::IsPositiveZero => Value::Bool(f::to_bits(x(0)?) == 0),
+        FloatOp::IsNegativeZero => Value::Bool(f::to_bits(x(0)?) == 1 << 31),
+        FloatOp::ToBits => Value::Int(BigInt::from(f::to_bits(x(0)?))),
+        FloatOp::ToIntExact => match f::to_int_exact(x(0)?) {
+            Some(n) => some(Value::Int(n)),
+            None => none(),
+        },
+        FloatOp::FromInt => match args.first() {
+            Some(Value::Int(n)) => Value::F32(f::from_int(n)),
+            _ => return Err(fault("`to_f32` applied to a value that is not an integer")),
+        },
+        FloatOp::ToText => Value::text(&f::render(x(0)?)),
+        FloatOp::ToF64 => Value::F64(f::to_f64(x(0)?)),
+        FloatOp::ToF32 => return Err(fault("`to_f32` applied to an `F32`")),
     })
 }
 

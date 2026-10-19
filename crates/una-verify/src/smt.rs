@@ -14,24 +14,23 @@ pub(crate) type Sort = String;
 
 /// The sorts that SMT-LIB defines, which queries never declare.
 fn builtin(sort: &str) -> bool {
-    matches!(sort, "Int" | "Bool" | FLOAT64)
+    matches!(sort, "Int" | "Bool" | FLOAT64 | FLOAT32)
 }
 
 /// The sort of `F64`: `(_ FloatingPoint 11 53)` of the FloatingPoint theory (`spec/29 §8`).
 pub(crate) const FLOAT64: &str = "Float64";
 
-/// The operators of the FloatingPoint theory whose result is a `Float64`.
-const FLOAT_OPS: [&str; 9] = [
-    "fp.add",
-    "fp.sub",
-    "fp.mul",
-    "fp.div",
-    "fp.neg",
-    "fp.abs",
-    "fp.sqrt",
-    "(_ to_fp 11 53)",
-    "(_ to_fp_unsigned 11 53)",
-];
+/// The sort of `F32`: `(_ FloatingPoint 8 24)` (ADR 0120 V1).
+pub(crate) const FLOAT32: &str = "Float32";
+
+/// Whether `sort` is a float sort, of `F64` or `F32`.
+pub(crate) fn is_float_sort(sort: &str) -> bool {
+    sort == FLOAT64 || sort == FLOAT32
+}
+
+/// The rounded operators of the FloatingPoint theory, whose result has the sort of their
+/// operand after the rounding mode.
+const ROUNDED_OPS: [&str; 5] = ["fp.add", "fp.sub", "fp.mul", "fp.div", "fp.sqrt"];
 
 /// The sort of `Text`.
 pub(crate) const TEXT: &str = "i!Text";
@@ -58,6 +57,8 @@ pub(crate) enum F {
     Int(String),
     /// An `F64` literal, as its bits: `(fp #b<sign> #b<exponent> #b<significand>)`.
     Float(u64),
+    /// An `F32` literal, as its bits (ADR 0120 V1).
+    Float32(u32),
     /// `true` or `false`.
     Bool(bool),
     /// A declared constant.
@@ -169,13 +170,19 @@ impl F {
         match self {
             F::Int(_) => "Int".to_owned(),
             F::Float(_) => FLOAT64.to_owned(),
+            F::Float32(_) => FLOAT32.to_owned(),
             F::Bool(_) => "Bool".to_owned(),
             F::Const(c) => c.sort.clone(),
             F::Local { sort, .. } => sort.clone(),
             F::App { fun, .. } => fun.result.clone(),
             F::Op { op, args } => match *op {
                 "+" | "-" | "*" | "div" | "mod" => "Int".to_owned(),
-                op if FLOAT_OPS.contains(&op) => FLOAT64.to_owned(),
+                op if ROUNDED_OPS.contains(&op) => {
+                    args.get(1).map_or_else(|| FLOAT64.to_owned(), F::sort)
+                }
+                "fp.neg" | "fp.abs" => args.first().map_or_else(|| FLOAT64.to_owned(), F::sort),
+                "(_ to_fp 11 53)" | "(_ to_fp_unsigned 11 53)" => FLOAT64.to_owned(),
+                "(_ to_fp 8 24)" | "(_ to_fp_unsigned 8 24)" => FLOAT32.to_owned(),
                 // The rounding mode and the bit-vectors of a conversion have sorts of their
                 // own, so nothing reads them as Booleans (the abstraction of `spec/29 §8`).
                 "RNE" => "RoundingMode".to_owned(),
@@ -236,7 +243,7 @@ impl F {
                 out.push(self);
             }
             F::Const(_) => out.push(self),
-            F::Int(_) | F::Float(_) | F::Bool(_) | F::Local { .. } => {}
+            F::Int(_) | F::Float(_) | F::Float32(_) | F::Bool(_) | F::Local { .. } => {}
         }
     }
 
@@ -256,6 +263,15 @@ impl F {
                     bits >> 63,
                     (bits >> 52) & 0x7FF,
                     bits & ((1 << 52) - 1)
+                );
+            }
+            F::Float32(bits) => {
+                let _ = write!(
+                    out,
+                    "(fp #b{:01b} #b{:08b} #b{:023b})",
+                    bits >> 31,
+                    (bits >> 23) & 0xFF,
+                    bits & ((1 << 23) - 1)
                 );
             }
             F::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
@@ -292,13 +308,13 @@ impl F {
     /// application of the sort `Float64`, or an operator of the FloatingPoint theory.
     pub(crate) fn mentions_float(&self) -> bool {
         match self {
-            F::Float(_) => true,
+            F::Float(_) | F::Float32(_) => true,
             F::Int(_) | F::Bool(_) => false,
-            F::Const(c) => c.sort == FLOAT64,
-            F::Local { sort, .. } => sort == FLOAT64,
+            F::Const(c) => is_float_sort(&c.sort),
+            F::Local { sort, .. } => is_float_sort(sort),
             F::App { fun, args } => {
-                fun.result == FLOAT64
-                    || fun.args.iter().any(|sort| sort == FLOAT64)
+                is_float_sort(&fun.result)
+                    || fun.args.iter().any(|sort| is_float_sort(sort))
                     || args.iter().any(F::mentions_float)
             }
             F::Op { op, args } => {
@@ -352,7 +368,7 @@ impl Query {
             || self
                 .definitions
                 .values()
-                .any(|d| d.body.mentions_float() || d.params.iter().any(|(_, s)| s == FLOAT64))
+                .any(|d| d.body.mentions_float() || d.params.iter().any(|(_, s)| is_float_sort(s)))
     }
 
     /// The declarations and assertions as SMT-LIB text: sorts, constants and functions sorted

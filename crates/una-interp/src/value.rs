@@ -20,6 +20,8 @@ pub(crate) enum Value<'p> {
     /// A `Decimal[s]`: its coefficient and its scale (`spec/29 §16`, ADR 0120 rule 12). The
     /// scale is the type's, so every value of one type has the same.
     Decimal(BigInt, u8),
+    /// An `F32`, always canonical: its NaN is `0x7FC00000` (ADR 0120 rule 5).
+    F32(f32),
     /// A boolean.
     Bool(bool),
     /// A text.
@@ -109,6 +111,8 @@ pub(crate) enum Key {
     Int(BigInt),
     /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
     F64(i64),
+    /// An `F32` by the key of totalOrder (ADR 0120 rule 10).
+    F32(i32),
     Text(Rc<Text>),
     Variant(usize),
 }
@@ -122,6 +126,7 @@ impl Key {
             // The keys of one map share their type, so their scale: the coefficient orders
             // them by value (ADR 0120 rule 18).
             Value::Decimal(c, _) => Some(Key::Int(c.clone())),
+            Value::F32(x) => Some(Key::F32(una_core::float32::order_key(*x))),
             Value::Text(t) => Some(Key::Text(t.clone())),
             Value::Data(data) if data.fields.is_empty() => Some(Key::Variant(data.ctor.index)),
             _ => None,
@@ -317,6 +322,7 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::F64(x), Value::F64(y)) => una_core::float::equal(*x, *y),
         (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b) == Ordering::Equal,
+        (Value::F32(x), Value::F32(y)) => una_core::float32::equal(*x, *y),
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
@@ -545,6 +551,7 @@ pub(crate) fn compare(a: &Value<'_>, b: &Value<'_>) -> Ordering {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
         (Value::F64(x), Value::F64(y)) => una_core::float::total_cmp(*x, *y),
         (Value::Decimal(..), Value::Decimal(..)) => decimal_cmp(a, b),
+        (Value::F32(x), Value::F32(y)) => una_core::float32::total_cmp(*x, *y),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Data(x), Value::Data(y)) => x.ctor.index.cmp(&y.ctor.index),
         _ => Ordering::Equal,

@@ -218,6 +218,8 @@ impl Writer<'_> {
             Base::F64 => J::Obj(vec![("kind", s("f64"))]),
             // ADR 0120: the kind `decimal`, with its scale.
             Base::Decimal(scale) => node!(Decimal, "scale" => n(usize::from(*scale))),
+            // ADR 0120 rule 5: the kind `f32`.
+            Base::F32 => J::Obj(vec![("kind", s("f32"))]),
             Base::Named { module, name, args } => node!(Named,
                 "module" => s(module),
                 "name" => s(name),
@@ -331,6 +333,23 @@ impl Writer<'_> {
                 "value" => self.term(value),
                 "from" => opt(from.as_ref(), |i| self.int_type(*i)),
             ),
+            // ADR 0120 rule 5: `F32` by its bits as 8 lowercase hex digits, its operations
+            // under `float32`.
+            Term::F32(bits) => J::Obj(vec![
+                ("kind", s("f32")),
+                ("bits", J::Str(format!("{bits:08x}"))),
+            ]),
+            Term::Float32 { op, args } => node!(Float32,
+                "op" => J::Obj(vec![(
+                    "kind",
+                    s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+                )]),
+                "args" => list(args, |a| self.term(a)),
+            ),
+            Term::ToF32 { value, from } => node!(ToF32,
+                "value" => self.term(value),
+                "from" => opt(from.as_ref(), |i| self.int_type(*i)),
+            ),
         }
     }
 
@@ -386,6 +405,10 @@ impl Writer<'_> {
                 "coefficient" => s(coefficient),
                 "scale" => n(usize::from(*scale)),
             ),
+            Atom::F32(bits) => J::Obj(vec![
+                ("kind", s("f32")),
+                ("bits", J::Str(format!("{bits:08x}"))),
+            ]),
             Atom::Bool(b) => node!(Bool, "value" => J::Bool(*b)),
             Atom::Text(text) => node!(Text, "value" => s(text)),
             Atom::Unit => node!(Unit),
@@ -434,6 +457,11 @@ impl Writer<'_> {
             Prim::Shape(fun) => node!(Shape, "fun" => s(fun.as_str())),
             // ADR 0120: an operation of `Decimal`, its `DecimalOp` with its static scales.
             Prim::Decimal(op) => node!(Decimal, "value" => self.decimal_op(*op)),
+            // ADR 0120 rule 5: the operations of `F32`, under `float32`, by the same names.
+            Prim::Float32(op) => node!(Float32, "value" => J::Obj(vec![(
+                "kind",
+                s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+            )])),
         }
     }
 

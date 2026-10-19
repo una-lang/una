@@ -1,12 +1,12 @@
 # 29. Numerics
 
-Status: Normative, v0.3 (ADR 0114; the chapter of the numeric foundation, ADR 0121 rule 20).
+Status: Normative, v0.3 (ADR 0114; the chapter of the numeric foundation, ADR 0121 rule 20); §16 to §18 edition 0.4 (ADR 0120).
 
-This chapter holds the numeric types beyond the integers of `spec/03` and `spec/18`. It opens with `F64`, IEEE 754 binary64, the rules of ADR 0114; the other types of the numeric foundation (ADR 0120) join it in later sections: the dense values `Array[T]` and `Matrix[T]` of edition `0.4` are §17.
+This chapter holds the numeric types beyond the integers of `spec/03` and `spec/18`. It opens with `F64`, IEEE 754 binary64, the rules of ADR 0114; the other types of the numeric foundation (ADR 0120) join it in later sections: the dense values `Array[T]` and `Matrix[T]` of edition `0.4` are §17, and `F32` and the finite kinds §18.
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`). In editions `0.1` and `0.2`, `F64` is an ordinary name, `1.0` keeps its error (U0101), `to_f64` resolves as any function name does, and the prelude has none of the functions of §3 rule 9.
+**Editions.** The rules of §1 to §15 apply only to packages of edition `0.3` (`spec/13 §7`) and later, and those of §16 to §18 only to packages of edition `0.4`. In editions `0.1` and `0.2`, `F64` is an ordinary name, `1.0` keeps its error (U0101), `to_f64` resolves as any function name does, and the prelude has none of the functions of §3 rule 9.
 
-**What has landed.** The front end, the checker, the interpreter, the verifier and native code implement this chapter. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
+**What has landed.** The front end, the checker, the interpreter, the verifier and native code implement this chapter, `F32` and the finite kinds of §18 included, except what §16 rule 14, §17 and §18 rule 15 list. Ranges with float bounds (`x in 0.5..1.0`) are syntax errors until a later step, a range of integer bounds over an `F64` is U2001, and `F64 of` a unit (§12) is U2029.
 
 ## 1. The type
 
@@ -192,7 +192,7 @@ Every operator and method is O(1): one instruction, or a routine of bounded size
 | --- | --- |
 | U2031 | A float literal rounds to an infinity, or is not zero and rounds to zero |
 | U2032 | A float literal other than zero, or a float range, as a pattern |
-| U2033 | A comparison of an `F64` with a float literal zero |
+| U2033 | A comparison of an `F64` or an `F32` with a float literal zero |
 | U6006 | The floating-point environment of the platform is not the default one |
 
 ## 16. Decimal
@@ -243,7 +243,7 @@ Every operator and method is O(1): one instruction, or a routine of bounded size
 13. **Cost.** With d the limbs of a coefficient: `+`, `-`, comparisons and `widen` are O(d) beyond a multiplication by a constant power of ten; `*` is O(d²); `rescale`, `divide`, `remainder` and `to_int` are one division, O(d²); rendering is O(d²); `parse_decimal` is O(b) to decide and O(d²) to convert at most 4,300 digits; `to_f64()` is O(1) when |c| < 2^53 and s ≤ 22, and O(d²) otherwise. A coefficient a program grows by its own `*` is bounded by the memory budget, not by the cap.
 14. **Not yet.** Each of these refuses what it does not implement, or is a later step's:
     - range sugar with decimal bounds (`Decimal[2] in 0.00..100.00`) is a syntax error until float bounds parse (§1), and `in` with a decimal literal range is U2001; a refinement is written with `where`;
-    - `to_f32()` waits for `F32`, and units on decimals (ADR 0120 rule 63) for the units step;
+    - `to_f32()` of a decimal and `to_decimal` of an `F32` wait for a later step (§18 rule 15), and units on decimals (ADR 0120 rule 63) for the units step;
     - `to_f64()` and `to_decimal` on an `F64` are not compiled to native code until `F64` is (§9);
     - the `overflow` obligation of rule 19 on coefficient operations in a `systems` package waits for the `systems` profile;
     - U1002 for an imported `to_decimal` holds for a function of a module outside the package, which only dependencies will declare; the edition ledger test of ADR 0121 that pins it, and the other items of ADR 0120's table, waits for that record's test;
@@ -359,3 +359,37 @@ Edition `0.4` (ADR 0120 rules 26 to 47, V4, IF2 to IF8). Everything in this sect
 25. **What stays out of model:** timing, as `spec/07 §1` states, and termination by the memory budget: whether a buffer is refused (U6003) is decided by a shape, so a run that builds a dense value of a `secret` shape may stop or not depending on it, the resource channel of a list of `secret` length. The `out_of_model` entries `timing` and the budget's own cover both.
 
 **Cost.** `get`, `set`, `at` and the shape terms are O(1); the views of rule 5 are O(1); `compact`, a copy on write and `to_list` are O(n); element-wise operations, `map`, `zip_map`, `update`, `fold`, the sums, `dot`, `norm2`, `all_finite` and `==` are O(n); `multiply_array` is O(mn) and `multiply` and `add_product` O(mkn), by the chains of rule 14; Strassen-type products are not used. Every buffer is checked against the memory budget before it is allocated, in checked arithmetic, and a refused one is U6003. The interpreter computes every `fma` by the project's routine of §6, so its kernels are slower than native code's, with the same bits.
+
+## 18. F32 and the finite kinds
+
+(ADR 0120 rules 5 to 11 and V1.) `F32`, IEEE 754 binary32, under the rules of `F64` with the substitutions below, and the refined kinds `Finite64` and `Finite32`. This section applies only to packages of edition `0.4`; in earlier editions `F32`, `Finite64` and `Finite32` are ordinary names, `to_f32` resolves as any function name does, and the prelude has none of the names of rule 9.
+
+1. **The type.** `F32` is a built-in type: every binary32 value that is not a NaN, and one NaN, the canonical NaN of `F32`, whose bits are `0x7FC00000`. Every rule of §1 to §14 applies to `F32` with these substitutions, and no other: the format binary32; `to_bits()` gives a `U32`; the bounds of rule 3; rendering and parsing at binary32 (rule 8); the SMT sort `Float32` (rule 10). `F32` satisfies `Eq` and `Ord`, and never `Integer`. A user kind, variant, capability or unit named `F32`, `Complex`, `Array`, `Matrix`, `Tensor` or `Lu` is U1002, as one named `Decimal` is (§16 rule 1).
+2. **Literals.** A float literal takes the type `F32` where its context expects `F32`, by the rule of expected types of `spec/18 §2` rule 1: a binding or a result of type `F32`, an argument, an element of a `List[F32]`, and the other operand of an operator or a comparison, on either side, so that in `x + 0.1`, `0.1 + x` and `x < 0.5` with `x: F32` the literal is an `F32`. Elsewhere it is an `F64` (§2 rule 6). An `F32` literal is rounded **once**, from its exact decimal value to the nearest binary32 value, ties to even, never through binary64: `0.1` as an `F32` is `0x3DCCCCCD`, and `1.000000059604644776327862400740697910706` is 1 + 2^-23, where rounding through binary64 would give `1.0`. An integer literal never takes the type `F32`: where `F32` is expected, `1` is U2001, with an edit to `1.0`.
+3. **Range.** An `F32` literal is U2031 when it rounds to an infinity or is not zero and rounds to zero:
+   - **Overflow:** a literal whose value is at least 2^128 - 2^103, the midpoint between the largest finite value and 2^128, rounds to an infinity (the midpoint itself is a tie that rounds to even, 2^128). `3.4028235677973366e38` lies just below the midpoint and is accepted as the largest finite value, `3.4028235e38`; `3.4028235677973367e38` and `340282356779733661637539395458142568448.0`, the midpoint, are U2031.
+   - **Underflow:** a literal whose value is not zero and at most 2^-150, half the smallest subnormal, rounds to zero (2^-150 itself is a tie that rounds to even, zero), so it is U2031. `1.0e-45` is accepted: it is the smallest subnormal, 2^-149.
+4. **Distinct.** `F32` is distinct from `F64` and from every integer type. An operator or a comparison with an `F32` and an `F64` operand is U2001, with a repair that converts the second operand to the first one's type by `to_f32()` or `to_f64()`; with an integer operand, a repair that converts it by `to_f32()`.
+5. **Operations.** The operators and the methods of §3 rule 3 apply to `F32`, with `F32` arguments and results, `to_bits()` excepted, and run in binary32: no engine computes an `F32` operation in binary64 and rounds afterwards. `x.fma(times: y, plus: z)` is rounded once in binary32, never through binary64, where it would round twice. `mod` is U2001, with a repair to `rem`. The comparisons with a literal zero are U2033, and float literal patterns U2032, as in §5 rules 5 and 6. `nan()` and `infinity()` stay `F64`: the NaN and the infinities of `F32` are `nan().to_f32()`, `infinity().to_f32()` and `-infinity().to_f32()`.
+6. **Conversions.**
+   - `x.to_f64()` on an `F32` is exact.
+   - `y.to_f32()` on an `F64` is IEEE `convertFormat` in roundTiesToEven: a value beyond the range gives an infinity, never a failure, and a NaN the canonical NaN of `F32`.
+   - `n.to_f32()` on `Int` or a fixed-width integer is IEEE `convertFromInt`: the nearest binary32 value, ties to even, decided on every bit of the integer, so `16777217` gives `16777216.0`. An `Int` of magnitude 2^128 - 2^103 or more gives an infinity of its sign.
+   - `x.to_int_exact()` is §4 rule 2's.
+   - The conversions resolve ahead of a function of their name. A package function `to_f32` whose first parameter has an integer type, `F64`, or is a type parameter, and a package function `to_decimal` whose first parameter is an `F32`, are U1002 at their names, and so is an import of one (ADR 0120 rule 4).
+7. **Equality, order and determinism** are those of §5 and §6 on the canonical bits of `F32`: `==` is identity, `<` is IEEE totalOrder, NaN is canonical outside registers, and no engine contracts or reassociates. The self-test of the environment (§6 rule 4) of a command that reads a package of edition `0.4` runs the same probes in binary32 too, in the CLI and in a native executable, and a failed one is U6006.
+8. **Text.** `to_text`, interpolation and the Una form write an `F32` as §7 rule 1 writes an `F64`, with the shortest digits that `parse_f32` reads back to the same bits: `0.1` renders `0.1`, the largest finite value `3.4028235e38`, and the smallest subnormal `1.0e-45`. `parse_f32(t)` gives `F32 fails ParseError`: it reads the texts of §7 rule 2, with the failures of §7 rule 3, and rounds once, from the exact decimal value to the nearest binary32 value, ties to even. `parse_f32(to_text(x)) == x` for every `F32`.
+9. **The prelude** of edition `0.4` gains `f32_from_bits(bits: U32) -> F32`, where any NaN gives the canonical NaN, `parse_f32(t: Text) -> F32 fails ParseError`, and the refined kinds:
+
+   ```una
+   pub kind Finite64 = F64 where it.is_finite()
+   pub kind Finite32 = F32 where it.is_finite()
+   ```
+
+   They are ordinary refined kinds: a value enters one through a branch, as in `if x.is_finite() then use(x) else fallback`. An operation on finite values is not finite in general (the largest finite value plus itself is an infinity), so its result is an `F64` or an `F32`, and flows back into a finite kind with an obligation that the verifier decides by §8. A package declaration of one of these four names is the package's own and keeps its meaning (`spec/10 §11` rule 5).
+10. **Verification.** An `F32` is the SMT-LIB sort `(_ FloatingPoint 8 24)`, `Float32`, with every row of §8 rule 1 at that format: a literal is `(fp ...)` of its exact bits, the order is the defined functions `i!lt!F32` and `i!le!F32`, and `n.to_f32()` is the form of `n.to_f64()` with `(_ to_fp 8 24)` and `(_ to_fp_unsigned 8 24)`, and the uninterpreted `i!to_f32!Int` beyond 64 bits, pinned as §8 rule 8 pins `i!to_f64!Int`. The conversions between the formats are `((_ to_fp 11 53) RNE x)` for `x.to_f64()` and `((_ to_fp 8 24) RNE y)` for `y.to_f32()`; both are in the refinement language. The rules of §8 rules 3 to 7 that name "an `F64` term" apply to a float term of either sort: the logic, the step budget, the cone, the Boolean abstraction and the weighted bound of 4, in which a conversion between the formats of a value that is not a literal weighs 4. A counterexample shows an `F32` by its rendering.
+11. **Representation.** The representation is not observable (`spec/16 §4`). The interpreter holds an `F32` inline in its value. Native code holds an `F32` as the tagged word of its totalOrder key, never behind a handle, so it never allocates: the key is the canonical bits as a signed 32-bit integer, with every bit but the sign flipped when the sign is set. The key determines the bits, and integer order on keys is totalOrder, so equality stays identity and `sort` and map keys compare words. Every operation is the runtime's, computed by the same routines of `una-core` as the interpreter's. A type descriptor (`spec/20 §7`) has a kind for `F32`: equality by its bits, and totalOrder. The raw cells and packed lists of 4 bytes per element of ADR 0120 rule 10 wait for those of ADR 0107, as §9 says for `F64`.
+12. **Information flow** is §11's: an `F32` carries labels as `Int` does, every result joins the labels of its operands, and `parse_f32` and `f32_from_bits` label their results with their arguments' labels.
+13. **Cost.** Every operator, method and conversion between the formats is O(1); rendering is O(1), at most 9 significant digits; parsing is O(b) in the text's length; `n.to_f32()` of an `Int` of m limbs is O(m). The binary32 probes add O(1) to the self-test.
+14. **Diagnostics.** U1002 for the names of rule 1 and the functions of rule 6; U2001 for mixed operands and an integer literal where an `F32` is expected; U2031 at the bounds of rule 3; U2032 and U2033 as for `F64`; U5001 and U5002 for refinements into `Finite64` and `Finite32`; U6006 for a failed binary32 probe.
+15. **Not yet.** `x.to_f32()` of a `Decimal[s]` and `x.to_decimal(scale:, rounding:)` of an `F32` (ADR 0120 rule 15) wait for a later step: on an `F32` receiver, `to_decimal` resolves as a function of the package. `F32 of` a unit waits for the units step (ADR 0120 rule 63), as `F64 of` a unit does (§12). Range sugar with float bounds is a syntax error, as in §1.

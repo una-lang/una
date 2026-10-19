@@ -220,20 +220,43 @@ fn decode(x: f64) -> (bool, u64, i64) {
     }
 }
 
-/// `negative`, `m * 2^e` rounded to the nearest `F64`, ties to even, with overflow to an
-/// infinity and underflow to a subnormal or a signed zero: the one rounding of every
-/// conversion and of `fma`. O(bits of `m`).
-fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
-    let sign = if negative { SIGN } else { 0 };
+/// The result of rounding a magnitude to a binary format (`round_magnitude`).
+pub(crate) enum Rounded {
+    /// Beyond the largest finite value: an infinity of the sign.
+    Infinity,
+    /// `mantissa * 2^quantum`, with `mantissa < 2^precision`; a subnormal when the mantissa
+    /// is below `2^(precision - 1)`, at the smallest quantum.
+    Finite {
+        /// The significand, the hidden bit included.
+        mantissa: u64,
+        /// The exponent of its last bit.
+        quantum: i64,
+    },
+}
+
+/// `m * 2^e`, `m > 0`, rounded to the nearest value of the binary format of `precision` bits
+/// whose quanta run from `min_quantum` to `max_quantum`, ties to even, with overflow to an
+/// infinity and underflow to a subnormal or zero: the one rounding of every conversion and of
+/// `fma`, for `F64` and `F32` alike. O(bits of `m`).
+pub(crate) fn round_magnitude(
+    m: &BigUint,
+    e: i64,
+    precision: i64,
+    min_quantum: i64,
+    max_quantum: i64,
+) -> Rounded {
     let bits = i64::try_from(m.bits()).unwrap_or(i64::MAX);
     if bits == 0 {
-        return f64::from_bits(sign);
+        return Rounded::Finite {
+            mantissa: 0,
+            quantum: min_quantum,
+        };
     }
     let top = bits - 1 + e;
-    if top > 1023 {
-        return f64::from_bits(sign | 0x7FF0_0000_0000_0000);
+    if top > max_quantum + precision - 1 {
+        return Rounded::Infinity;
     }
-    let mut quantum = (top - 52).max(MIN_QUANTUM);
+    let mut quantum = (top - (precision - 1)).max(min_quantum);
     let shift = quantum - e;
     let mut mantissa: u64 = if shift <= 0 {
         let shifted: BigUint = m << usize::try_from(-shift).unwrap_or(0);
@@ -251,19 +274,28 @@ fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
         let round_up = half_set && (below_half || kept & 1 == 1);
         if round_up { kept + 1 } else { kept }
     };
-    if mantissa == 1 << 53 {
+    if mantissa == 1 << precision {
         mantissa >>= 1;
         quantum += 1;
     }
-    if quantum > MAX_QUANTUM {
-        return f64::from_bits(sign | 0x7FF0_0000_0000_0000);
+    if quantum > max_quantum {
+        return Rounded::Infinity;
     }
-    if mantissa >= HIDDEN {
-        let biased = u64::try_from(quantum + 1075).unwrap_or(0);
-        f64::from_bits(sign | (biased << 52) | (mantissa & FRACTION))
-    } else {
-        // A subnormal, at the smallest quantum.
-        f64::from_bits(sign | mantissa)
+    Rounded::Finite { mantissa, quantum }
+}
+
+/// `negative`, `m * 2^e` rounded to the nearest `F64`, ties to even, with overflow to an
+/// infinity and underflow to a subnormal or a signed zero. O(bits of `m`).
+fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
+    let sign = if negative { SIGN } else { 0 };
+    match round_magnitude(m, e, 53, MIN_QUANTUM, MAX_QUANTUM) {
+        Rounded::Infinity => f64::from_bits(sign | 0x7FF0_0000_0000_0000),
+        Rounded::Finite { mantissa, quantum } if mantissa >= HIDDEN => {
+            let biased = u64::try_from(quantum + 1075).unwrap_or(0);
+            f64::from_bits(sign | (biased << 52) | (mantissa & FRACTION))
+        }
+        // A subnormal, at the smallest quantum, or a signed zero.
+        Rounded::Finite { mantissa, .. } => f64::from_bits(sign | mantissa),
     }
 }
 
@@ -332,6 +364,13 @@ pub fn rem(x: f64, y: f64) -> f64 {
 /// `x.fma(times: y, plus: z)`: IEEE `fusedMultiplyAdd`, `x * y + z` rounded once, computed
 /// exactly on integers of at most about 4,300 bits.
 pub fn fma(x: f64, y: f64, z: f64) -> f64 {
+    fma_exact(x, y, z, round_to_f64)
+}
+
+/// `x * y + z` computed exactly and rounded once by `round`, which rounds a sign and a
+/// magnitude `m * 2^e` to the format of the result: `fma` of `F64` and of `F32`, whose
+/// operands are exactly their `f64` widenings. Special values follow IEEE `fusedMultiplyAdd`.
+pub(crate) fn fma_exact(x: f64, y: f64, z: f64, round: impl Fn(bool, &BigUint, i64) -> f64) -> f64 {
     if x.is_nan() || y.is_nan() || z.is_nan() {
         return f64::from_bits(CANONICAL_NAN);
     }
@@ -399,8 +438,8 @@ pub fn fma(x: f64, y: f64, z: f64) -> f64 {
     match sum.sign() {
         // An exact cancellation of nonzero values is +0 in roundTiesToEven.
         Sign::NoSign => 0.0,
-        Sign::Minus => round_to_f64(true, sum.magnitude(), base),
-        Sign::Plus => round_to_f64(false, sum.magnitude(), base),
+        Sign::Minus => round(true, sum.magnitude(), base),
+        Sign::Plus => round(false, sum.magnitude(), base),
     }
 }
 
@@ -537,10 +576,14 @@ pub fn render(x: f64) -> String {
         return format!("{sign}0.0");
     }
     // Rust's `{:e}` writes the shortest digits that round-trip, the nearest of them: `d.ddde-k`.
-    let scientific = format!("{:e}", x.abs());
-    let (mantissa, exponent) = scientific
-        .split_once('e')
-        .unwrap_or((scientific.as_str(), "0"));
+    layout(sign, &format!("{:e}", x.abs()))
+}
+
+/// The layout of rule 7.1 for the sign `sign` and the shortest digits of a finite nonzero
+/// magnitude as Rust's `{:e}` writes them, `d.ddde-k`: positional when `k` is in `-6..=20`,
+/// scientific otherwise. Shared by `F64` and `F32`.
+pub(crate) fn layout(sign: &str, scientific: &str) -> String {
+    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((scientific, "0"));
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     let k: i64 = exponent.parse().unwrap_or(0);
     let body = if (-6..=20).contains(&k) {
@@ -602,6 +645,22 @@ enum State {
 /// `parse_f64(t)` (rule 7.3): an RFC 8259 number, `nan`, `inf` or `-inf`, rounded to the
 /// nearest value, ties to even. O(b) in the bytes of `t`, with a bounded slow path.
 pub fn parse(t: &str) -> Result<f64, ParseFailure> {
+    grammar(t)?;
+    match t {
+        "nan" => return Ok(f64::from_bits(CANONICAL_NAN)),
+        "inf" => return Ok(f64::INFINITY),
+        "-inf" => return Ok(f64::NEG_INFINITY),
+        _ => {}
+    }
+    // The grammar is a subset of what Rust's correctly rounded parser reads.
+    t.parse::<f64>()
+        .map(canonical)
+        .map_err(|_| ParseFailure::NotADigit(0))
+}
+
+/// The grammar of rule 7.3 and its failures (rule 7.4): an RFC 8259 number, `nan`, `inf` or
+/// `-inf`. Shared by `parse_f64` and `parse_f32`. O(b).
+pub(crate) fn grammar(t: &str) -> Result<(), ParseFailure> {
     let mut state = State::Start;
     for (at, c) in t.chars().enumerate() {
         state = match (state, c) {
@@ -634,16 +693,7 @@ pub fn parse(t: &str) -> Result<f64, ParseFailure> {
             _ => ParseFailure::NotADigit(t.chars().count()),
         });
     }
-    match t {
-        "nan" => return Ok(f64::from_bits(CANONICAL_NAN)),
-        "inf" => return Ok(f64::INFINITY),
-        "-inf" => return Ok(f64::NEG_INFINITY),
-        _ => {}
-    }
-    // The grammar above is a subset of what Rust's correctly rounded parser reads.
-    t.parse::<f64>()
-        .map(canonical)
-        .map_err(|_| ParseFailure::NotADigit(0))
+    Ok(())
 }
 
 /// The value of a float literal of the source (rule 2.4), its `_` already removed.

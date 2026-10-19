@@ -69,6 +69,9 @@ enum Kind {
     Hashed,
     /// A handle to a boxed `F64` (ADR 0114 rule 9.6).
     F64,
+    /// An `F32`: the tagged word of the key of totalOrder of its canonical bits, which fits 63
+    /// bits, so it never allocates (ADR 0120 rule 10). Never a handle.
+    F32,
     /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
     /// parameters (`spec/17 §4`).
     Tuple,
@@ -79,7 +82,7 @@ enum Kind {
 impl Kind {
     /// Whether the word may be a handle, which reference counting tracks.
     fn counted(self) -> bool {
-        !matches!(self, Kind::Bool | Kind::Unit)
+        !matches!(self, Kind::Bool | Kind::Unit | Kind::F32)
     }
 
     /// Whether the word is always a handle.
@@ -116,6 +119,7 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             // A decimal is its coefficient, an integer word; its scale is static (ADR 0120
             // rule 20).
             Base::Decimal(_) => Ok(Kind::Int),
+            Base::F32 => Ok(Kind::F32),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
@@ -183,6 +187,7 @@ pub(crate) fn constant_descriptor(
         Base::Text => Descriptor::Text,
         Base::F64 => Descriptor::F64,
         Base::Decimal(_) => Descriptor::Decimal(index(ty)),
+        Base::F32 => Descriptor::F32,
         // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
         Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
             Descriptor::Sum(index(ty))
@@ -2068,6 +2073,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ),
                 _ => (self.literal("una_rt_int_literal", coefficient)?, Kind::Int),
             },
+            // The tagged word of its totalOrder key, an immediate (ADR 0120 rule 10).
+            Atom::F32(bits) => {
+                let key = i64::from(una_core::float32::order_key(f32::from_bits(*bits)));
+                (
+                    self.builder.ins().iconst(types::I64, (key << 1) | 1),
+                    Kind::F32,
+                )
+            }
         })
     }
 
@@ -2139,6 +2152,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Atom::Text(_) => base(Base::Text),
             Atom::F64(_) => base(Base::F64),
             Atom::Decimal { scale, .. } => base(Base::Decimal(*scale)),
+            Atom::F32(_) => base(Base::F32),
             Atom::Unit => base(Base::Unit),
         }
     }
@@ -2503,6 +2517,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 return Ok(word);
             }
             "f64_from_bits" => "una_rt_f64_from_bits",
+            // The functions of `F32` (ADR 0120 rule 5).
+            "f32_from_bits" => "una_rt_f32_from_bits",
+            "parse_f32" => {
+                let t = arg(0)?;
+                let failure = self.call("una_rt_parse_f64_failure", &[t])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_f32", &[t]);
+            }
             // A failure of `parse_f64` goes to `catch`, as `parse_int`'s does.
             "parse_f64" => {
                 let t = arg(0)?;
@@ -2709,13 +2732,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
         if !matches!(
             prim,
             Prim::Float(_)
+                | Prim::Float32(_)
                 | Prim::Eq
                 | Prim::Ne
                 | Prim::ToText
                 | Prim::Decimal(una_core::DecimalOp::FromF64(_))
-        ) && args.iter().any(|(_, kind)| *kind == Kind::F64)
+        ) && args
+            .iter()
+            .any(|(_, kind)| matches!(kind, Kind::F64 | Kind::F32))
         {
-            return Err(internal(format!("`{}` on an `F64`", prim.as_str())));
+            return Err(internal(format!("`{}` on a float", prim.as_str())));
         }
         match prim {
             // A conversion keeps the value: a narrowing one carries an `overflow` obligation that
@@ -2766,6 +2792,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Prim::Seq(_) => Err(unsupported("`Stack` and `Queue` (spec/28)")),
             Prim::Set(_) => Err(unsupported("`Set` (spec/28)")),
+            // The operations of `F32`, over its tagged words (ADR 0120 rules 9 and 10): the
+            // routines of `una_core::float32`, as in the interpreter.
+            Prim::Float32(op) => {
+                let code = una_core::FloatOp::ALL
+                    .iter()
+                    .position(|x| *x == op)
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| internal("an unknown operation of `F32`"))?;
+                let code = self.builder.ins().iconst(types::I64, code);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let word = |i: usize| args.get(i).map_or(zero, |(value, _)| *value);
+                let (a, b, c) = (word(0), word(1), word(2));
+                self.call("una_rt_f32_op", &[code, a, b, c])
+            }
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {
@@ -2898,6 +2938,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         let code = self.builder.ins().iconst(types::I64, code);
                         let zero = self.builder.ins().iconst(types::I64, 0);
                         self.call("una_rt_f64_op", &[code, a, zero, zero])
+                    }
+                    Kind::F32 => {
+                        let code = una_core::FloatOp::ALL
+                            .iter()
+                            .position(|x| *x == una_core::FloatOp::ToText)
+                            .and_then(|i| i64::try_from(i).ok())
+                            .ok_or_else(|| internal("an unknown operation of `F32`"))?;
+                        let code = self.builder.ins().iconst(types::I64, code);
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        self.call("una_rt_f32_op", &[code, a, zero, zero])
                     }
                     Kind::Text => {
                         self.retain(a, Kind::Text);

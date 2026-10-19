@@ -220,6 +220,11 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardPositive",
     "TowardNegative",
 ];
+/// The functions of `F32` that edition 0.4 adds to the prelude (`spec/29`, ADR 0120 rule 5).
+pub(crate) const FLOAT_0_4: [&str; 2] = ["f32_from_bits", "parse_f32"];
+
+/// The upper names that edition 0.4 adds: `F32` and the finite kinds (ADR 0120 rules 5, 11).
+pub(crate) const UPPER_0_4: [&str; 3] = ["F32", "Finite64", "Finite32"];
 
 #[cfg(test)]
 mod tests {

@@ -121,6 +121,11 @@ impl Checker<'_, '_, '_> {
             self.int_literal_for_f64(negative, digits, span);
             return Ty::F64;
         }
+        // ADR 0120 rule 6: nor `F32`.
+        if expected.is_some_and(|e| self.is_f32(e)) {
+            self.int_literal_for_float("F32", negative, digits, span);
+            return Ty::F32;
+        }
         let Some(int) = self.expected_fixed(expected) else {
             return Ty::Int;
         };
