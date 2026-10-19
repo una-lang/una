@@ -1273,25 +1273,50 @@ impl<'a> Env<'a> {
         if self.edition < Edition::V0_4 {
             return;
         }
+        let built_in = |def: &FnDef<'_>| {
+            def.name == "to_decimal"
+                && def.params.first().is_some_and(|param| {
+                    matches!(
+                        param.ty.base.unlabeled(),
+                        Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::Param(_) | Ty::Measured(..)
+                    )
+                })
+        };
         for def in &self.functions {
             let FnAst::Function(function) = def.ast else {
                 continue;
             };
-            if def.name != "to_decimal" || !self.reports(def.module) {
-                continue;
-            }
-            let built_in = def.params.first().is_some_and(|param| {
-                matches!(
-                    param.ty.base.unlabeled(),
-                    Ty::Int | Ty::Fixed(_) | Ty::F64 | Ty::Param(_) | Ty::Measured(..)
-                )
-            });
-            if built_in {
+            if self.reports(def.module) && built_in(def) {
                 report.error(
                     Code::U1002,
                     function.name.span,
                     "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so a function cannot take its name for an integer, an `F64` or a type parameter".to_owned(),
                 );
+            }
+        }
+        // An import of such a function, from a dependency or another module, is U1002 at the
+        // name it imports: the built-in would resolve ahead of it there too.
+        for module in self.modules.iter().filter(|module| module.reports) {
+            for import in &module.tree.imports {
+                for ident in &import.names {
+                    if module.interner.resolve(ident.name) != "to_decimal" {
+                        continue;
+                    }
+                    let Some(Entity::Function(id)) = module.imports.get("to_decimal") else {
+                        continue;
+                    };
+                    let foreign = self
+                        .functions
+                        .get(*id)
+                        .is_some_and(|def| built_in(def) && !self.reports(def.module));
+                    if foreign {
+                        report.error(
+                            Code::U1002,
+                            ident.span,
+                            "`to_decimal` on an integer or an `F64` is a built-in conversion from edition 0.4, so an imported function of that name for an integer, an `F64` or a type parameter would never be called".to_owned(),
+                        );
+                    }
+                }
             }
         }
     }
@@ -1773,7 +1798,7 @@ impl<'a> Env<'a> {
                             Code::U2037,
                             *scale_span,
                             format!(
-                                "the scale of `Decimal[{scale}]` is above 38, the largest scale of a decimal"
+                                "the scale of `Decimal[{scale}]` is not an integer from 0 to 38, the scales of a decimal"
                             ),
                         );
                     }

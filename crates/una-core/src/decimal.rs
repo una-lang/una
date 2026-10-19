@@ -271,7 +271,8 @@ pub fn parse(t: &str, scale: u8) -> Result<BigInt, ParseFailure> {
                 fraction_len += 1;
                 State::Fraction
             }
-            _ => return Err(ParseFailure::NotADigit(at)),
+            // A nonzero digit beyond the scale, seen earlier, is the first failing position.
+            _ => return Err(ParseFailure::NotADigit(beyond.unwrap_or(at))),
         };
     }
     match state {

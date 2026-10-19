@@ -198,7 +198,9 @@ impl Checker<'_, '_, '_> {
             .flatten();
         let second_ty = if let Some(own) = own {
             self.infer(second, Some(&Ty::Decimal(own)))
-        } else if is_float_literal(second) {
+        } else if is_float_literal(second) || fixed::is_constant(second) {
+            // A float literal takes the scale `a`; an integer literal is U2001 with the edit
+            // that adds `.0` (ADR 0120 rule 12).
             self.infer(second, Some(&Ty::Decimal(a)))
         } else {
             self.infer(second, None)
@@ -228,7 +230,7 @@ impl Checker<'_, '_, '_> {
                         .repair_since(mark, Code::U2001, second.span, repair);
                 } else if matches!(found, Ty::F64) {
                     let repair = super::Report::advice(format!(
-                        "convert the float with `({text}).to_decimal(scale: {a}, rounding: HalfEven)`, which names its scale and its rounding"
+                        "convert the float with `({text}).to_decimal(scale: {a}, rounding: r)`, naming one of the seven `Rounding` modes as `r`; it gives an `Option[Decimal[{a}]]`, `None` for NaN and the infinities, so match its `Some` before the arithmetic"
                     ));
                     self.report
                         .repair_since(mark, Code::U2001, second.span, repair);
@@ -263,7 +265,7 @@ impl Checker<'_, '_, '_> {
                     "`/` is not defined on `Decimal`; a quotient names its scale and its rounding",
                 );
                 diagnostic.repairs.push(super::Report::advice(format!(
-                    "write `x.divide(by: y, scale: {a}, rounding: HalfEven)`, with the scale and the rounding the quotient needs"
+                    "write `x.divide(by: y, scale: {a}, rounding: r)`, with the scale the quotient needs and, as `r`, the `Rounding` mode it needs: `HalfEven`, `HalfAwayFromZero`, `HalfTowardZero`, `TowardZero`, `AwayFromZero`, `TowardPositive` or `TowardNegative`"
                 )));
                 self.report.push(diagnostic);
                 Ty::Decimal(a)
@@ -319,7 +321,19 @@ impl Checker<'_, '_, '_> {
         self.method_label(method, "by", arg);
         let found = match float_text(&arg.value).map(decimal::literal_scale) {
             Some(Some(own)) => self.infer(&arg.value, Some(&Ty::Decimal(own))),
-            _ => self.infer(&arg.value, None),
+            Some(None) => {
+                self.report.error(
+                    Code::U2037,
+                    arg.value.span,
+                    format!(
+                        "the literal `{}` has more than 38 digits after the point, beyond the largest scale of a decimal",
+                        float_text(&arg.value).unwrap_or_default()
+                    ),
+                );
+                self.infer(&arg.value, None);
+                return (None, Label::public());
+            }
+            None => self.infer(&arg.value, None),
         };
         let label = self.deep(&found);
         match self.resolve(&found).unlabeled() {
@@ -460,7 +474,7 @@ impl Checker<'_, '_, '_> {
                         ),
                     );
                     diagnostic.repairs.push(super::Report::advice(format!(
-                        "drop digits with `rescale(scale: {s}, rounding: HalfEven)`, which names its rounding"
+                        "drop digits with `rescale(scale: {s}, rounding: r)`, naming the `Rounding` mode `r` that the value needs"
                     )));
                     self.report.push(diagnostic);
                     return Some(Ty::error());
@@ -555,12 +569,29 @@ impl Checker<'_, '_, '_> {
     /// The scale of the prelude function call `name(args)` whose result's scale is its
     /// `scale:` literal (`parse_decimal`, `as_decimal`), after `call_function` checked it as
     /// declared at scale 0: the result `ty` at that scale (ADR 0120 rules 16 and 17).
-    pub(crate) fn decimal_function_result(&mut self, name: &str, args: &[Arg], ty: Ty) -> Ty {
+    pub(crate) fn decimal_function_result(
+        &mut self,
+        name: &str,
+        method: bool,
+        args: &[Arg],
+        span: Span,
+        ty: Ty,
+    ) -> Ty {
+        // The argument that binds the parameter `scale`: the one labeled `scale`, else the one
+        // at its position, written, punned or unlabeled. Whichever it is, it must be a
+        // literal, so a variable never sets the scale at run time.
+        let position = if method { 0 } else { 1 };
         let scale = args
             .iter()
-            .find(|arg| arg.label.as_ref().is_some_and(|l| self.name(l) == "scale"));
+            .find(|arg| arg.label.as_ref().is_some_and(|l| self.name(l) == "scale"))
+            .or_else(|| args.get(position));
         let Some(scale) = scale else {
-            return ty;
+            self.report.error(
+                Code::U2037,
+                span,
+                format!("`{name}` takes the scale of its result as a literal, as in `scale: 2`"),
+            );
+            return Ty::error();
         };
         let Some(s) = scale_literal(&scale.value) else {
             self.report.error(
@@ -638,7 +669,7 @@ impl Checker<'_, '_, '_> {
         match def.name {
             name @ ("parse_decimal" | "as_decimal") => {
                 self.outside_rl(span, || format!("a call of `{name}`"));
-                self.decimal_function_result(name, args, ty)
+                self.decimal_function_result(name, receiver.is_some(), args, span, ty)
             }
             "json_decimal" => {
                 let value = receiver.or_else(|| args.first().map(|arg| arg.value.span));

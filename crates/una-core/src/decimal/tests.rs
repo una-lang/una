@@ -395,3 +395,61 @@ fn rendering_digits_matches_rendering_numbers() {
     assert_eq!(render_digits("x", 2), None);
     assert_eq!(render_digits("", 2), None);
 }
+
+#[test]
+fn the_first_failing_position_is_reported() {
+    // The nonzero digit beyond the scale comes before the invalid character.
+    assert_eq!(parse("1.234x", 2), Err(ParseFailure::NotADigit(4)));
+    assert_eq!(parse("1.200x", 2), Err(ParseFailure::NotADigit(5)));
+}
+
+/// The least of three timings of `run`, in seconds.
+fn best(mut run: impl FnMut()) -> f64 {
+    (0..3)
+        .map(|_| {
+            let start = std::time::Instant::now();
+            run();
+            start.elapsed().as_secs_f64()
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn refusing_a_text_past_the_cap_is_linear_in_its_digits() {
+    // ADR 0120, Costs: a text past the digit cap is refused in O(b), before any conversion.
+    // From 10^4 to 8 × 10^4 to 6.4 × 10^5 digits, each eight times the last, the time grows
+    // about eightfold, against 64 for a quadratic step; the bound, 24, leaves a margin, and a
+    // floor of a millisecond keeps the clock's noise out of the ratio.
+    let sizes = [10_000usize, 80_000, 640_000];
+    let times: Vec<f64> = sizes
+        .iter()
+        .map(|&n| {
+            let text = "9".repeat(n);
+            best(|| assert_eq!(parse(&text, 2), Err(ParseFailure::TooLong)))
+        })
+        .collect();
+    for pair in times.windows(2) {
+        let (small, large) = (pair[0].max(1e-3), pair[1].max(1e-3));
+        assert!(large / small < 24.0, "{sizes:?} took {times:?}");
+    }
+}
+
+#[test]
+fn parsing_under_the_cap_is_at_most_quadratic_in_its_digits() {
+    // ADR 0120 rule 16: under the cap, the conversion to a binary coefficient is O(d²), so from
+    // 500 to 4,000 digits, eight times as many, the time grows at most 64-fold; the bound, 192,
+    // leaves a margin, and texts of 10 and 100 digits parse exactly.
+    for digits in [10usize, 100, 1_000, 4_298] {
+        let text = format!("{}.99", "9".repeat(digits));
+        let parsed = parse(&text, 2).unwrap();
+        assert_eq!(parsed.to_string().len(), digits + 2);
+    }
+    let time = |n: usize| {
+        let text = "7".repeat(n);
+        best(|| {
+            parse(&text, 0).unwrap();
+        })
+    };
+    let (small, large) = (time(500).max(1e-4), time(4_000).max(1e-4));
+    assert!(large / small < 192.0, "{small} {large}");
+}

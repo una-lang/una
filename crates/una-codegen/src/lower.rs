@@ -2303,6 +2303,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 return self.call("una_rt_parse_decimal", &[t, scale]);
             }
             "as_decimal" => "una_rt_as_decimal",
+            // Elaboration writes `json_decimal(x)` as an operation with the scale of `x`.
+            "json_decimal" => {
+                return Err(internal("`json_decimal` called without the scale of its argument"));
+            }
             "split" => "una_rt_split",
             "join" => "una_rt_join",
             "ends_with" => "una_rt_ends_with",

@@ -1890,6 +1890,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                 let scale = u8::try_from(&int(1)?).map_err(|_| bad())?;
                 return parse_decimal(&text(0)?, scale);
             }
+            // Elaboration writes `json_decimal(x)` as an operation that carries the scale of
+            // `x` (`spec/29 §16`): a call of the prelude's stub is an internal error.
+            "json_decimal" => {
+                return Err(fault(
+                    "`json_decimal` reached the prelude's stub, without the scale of its argument",
+                ));
+            }
             "as_decimal" => {
                 let scale = u8::try_from(&int(1)?).map_err(|_| bad())?;
                 match arg(0)? {

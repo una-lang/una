@@ -849,3 +849,11 @@ The conformance cases of rule 9 gain, for each case: two equal values with diffe
 - `F32` (ADR 0120 rule 5), a decimal type and SIMD, deferred by rule 19, are decided by ADR 0120.
 
 **`spec/17 §5` rule 3**, in edition `0.4`, gains after the length frame: "(ADR 0120.) **The shape frame.** A dense binding that the loop updates keeps its shape when every completing path gives it a value whose callee ensures an unchanged shape. For such a binding, the verifier assumes its starting shape in the body and after the loop."
+
+## Amendment (2026-10-19): the prelude's functions with a scale, and `to_f64`'s slow path
+
+Found while implementing rules 15 to 17 (issue #985).
+
+1. **No function value of `parse_decimal`, `as_decimal` or `json_decimal`.** The scale of `parse_decimal`'s and `as_decimal`'s result is the literal of each call, and `json_decimal` writes its argument at that argument's scale, which only its type knows. A function value carries one signature, so it could not carry either. Naming one of the three as a value is **U2037** in edition `0.4`, a meaning the U2037 row of Diagnostics gains: "a prelude function whose result's scale is a literal of each call, named as a value". A lambda that calls it is the repair.
+2. **The `scale` argument binds by its parameter.** The argument that binds the parameter `scale` of `parse_decimal` and `as_decimal` is an integer literal from 0 to 38, whether it is labeled, punned or at its position (`spec/04 §3`). Otherwise it is U2037, so no run-time value sets a scale.
+3. **`to_f64()`'s general path** (rule 15) reads the exact decimal text `c` × 10^-s with Rust's correctly rounded `str::parse::<f64>`, the standard library's, rather than a routine of the project. Its fast path is tested bit for bit against it over 20,000 random coefficients and scales.

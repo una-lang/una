@@ -1884,6 +1884,24 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked(args);
             return Ty::error();
         }
+        // ADR 0120 rule 3: `Decimal(...)` is the `Json` variant, never the decimal type.
+        if name == "Decimal"
+            && let Some(scale) = expected.and_then(|e| self.decimal_scale(e))
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                format!(
+                    "`Decimal(...)` is the `Json` variant, not a `Decimal[{scale}]`; a decimal is written as a literal, such as `1.50`, or read with `parse_decimal(t, scale: {scale})`"
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write the value as a decimal literal, or `parse_decimal(t, scale: {scale})` for a text"
+            )));
+            self.report.push(diagnostic);
+            self.unchecked(args);
+            return Ty::Decimal(scale);
+        }
         let problem = match self.choose_upper(ident, expected) {
             Some(Entity::Variant(kind, index)) => {
                 let (params, kind_name) = self.kind_params(kind);
