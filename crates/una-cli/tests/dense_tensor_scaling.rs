@@ -1,7 +1,8 @@
 //! The costs of tensors and factorizations that ADR 0120 states (Costs): `get` and `set` of a
 //! tensor in a loop cost the same per access whatever its size, since a `set` of a tensor held
-//! once updates it in place; and `solve` of an n × n matrix, an LU factorization and two
-//! triangular solves, grows as n³ and no faster. Only the run is timed, and a miss is measured
+//! once updates it in place; `solve` of an n × n matrix, an LU factorization and two
+//! triangular solves, grows as n³ and no faster; and so do a matrix product and a Cholesky
+//! factorization by the blocked kernels (#988). Only the run is timed, and a miss is measured
 //! twice more (#341).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -136,6 +137,31 @@ fn solve_grows_as_the_cube_of_the_size() {
         timing::FLOOR,
         128.0,
         |n| run_seconds(&dir, &solve(n)),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `main` multiplying two n × n matrices and factoring a definite one by Cholesky: O(n³) each,
+/// by the blocked kernels (ADR 0120 rule 53).
+fn product_and_cholesky(n: usize) -> String {
+    format!(
+        "module main\n\npub main() -> Unit\n=\n  let n = {n}\n  let zero = 0.0\n  let edit a = matrix_filled(rows: n, columns: n, value: zero)\n  for i in 0..<a.rows\n    for j in 0..<a.columns\n      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)\n      let d = if i == j then 2.0 else 0.0\n      edit a.set(row: i, column: j, item: x + d)\n  let c = a.multiply(by: a)\n  let l = c.cholesky()\n  unit\n"
+    )
+}
+
+#[test]
+fn a_product_and_a_cholesky_factorization_grow_as_the_cube_of_the_size() {
+    // From n = 32 to n = 128, the product and the factorization do 64 times the work: within
+    // 128, which a quartic algorithm, at 256 times, would miss.
+    let dir = std::env::temp_dir().join(format!("una-dense-product-{}", std::process::id()));
+    let fixed = timing::best_of_three(|| run_seconds(&dir, &product_and_cholesky(2)));
+    timing::assert_growth(
+        "matrix size",
+        &[32, 128],
+        fixed,
+        timing::FLOOR,
+        128.0,
+        |n| run_seconds(&dir, &product_and_cholesky(n)),
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
