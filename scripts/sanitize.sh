@@ -96,8 +96,10 @@ reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
+# Both runtimes: `una build` links `libuna_rt_http.a`, found beside UNA_RT_LIB, into the
+# programs that use `Http` (#1102).
 step "una-rt with AddressSanitizer" \
-    env RUSTFLAGS="-Zsanitizer=address" cargo +"$channel" build -p una-rt \
+    env RUSTFLAGS="-Zsanitizer=address" cargo +"$channel" build -p una-rt -p una-rt-http \
     --target "$host" --target-dir target/sanitize
 
 # Cargo's own links (build scripts, procedural macros, the test binaries) name the system `cc`,

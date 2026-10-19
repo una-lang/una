@@ -4,6 +4,8 @@
 #
 #   UNA_HOME/bin/una
 #   UNA_HOME/lib/libuna_rt.a        (where `una build` looks, beside `bin/`)
+#   UNA_HOME/lib/libuna_rt_http.a   (the runtime of executables that use `Http`, from releases
+#                                    that ship it, #1102)
 #   UNA_HOME/z3/bin/z3, and UNA_HOME/bin/z3 linking to it
 #   UNA_HOME/docs/guide/*.md        (the guides, from releases that ship them, #410)
 #
@@ -208,6 +210,14 @@ cp "$work/$z3_asset/bin/z3" "$home/z3/bin/z3"
 chmod +x "$home/bin/una" "$home/z3/bin/z3"
 ln -sf ../z3/bin/z3 "$home/bin/z3"
 files="bin/una bin/z3 lib/libuna_rt.a z3/bin/z3"
+# The runtime of executables that use `Http`, from releases that ship it (#1102); one left by a
+# later release would not match this `una`.
+if [ -f "$unpacked/lib/libuna_rt_http.a" ]; then
+    cp "$unpacked/lib/libuna_rt_http.a" "$home/lib/libuna_rt_http.a"
+    files="$files lib/libuna_rt_http.a"
+else
+    rm -f "${home:?}/lib/libuna_rt_http.a"
+fi
 for doc in README.md LICENSE; do
     if [ -f "$unpacked/$doc" ]; then
         cp "$unpacked/$doc" "$home/$doc"

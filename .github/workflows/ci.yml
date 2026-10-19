@@ -47,6 +47,9 @@ jobs:
             targets:
               - 'crates/una-codegen/**'
               - 'crates/una-rt/**'
+              - 'crates/una-rt-http/**'
+              - 'crates/una-http/**'
+              - 'crates/una-http-core/**'
               - 'crates/una-cli/src/build.rs'
               - 'crates/una-cli/src/build/**'
               - 'scripts/release.sh'

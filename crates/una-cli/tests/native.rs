@@ -35,11 +35,14 @@ fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
+            .args(["build", "--quiet", "-p", "una-rt", "-p", "una-rt-http"])
             .current_dir(root())
             .status()
             .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
+        assert!(
+            status.success(),
+            "cargo build -p una-rt -p una-rt-http failed"
+        );
     });
 }
 

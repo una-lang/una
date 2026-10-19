@@ -8,7 +8,9 @@ publish.workspace = true
 description = "The runtime library that every native Una executable links (spec/16, ADR 0055)"
 
 [lib]
-# The static library that `una build` links into executables, and an rlib for tests.
+# The static library that `una build` links into executables that never use `Http`, and an rlib
+# for tests. It holds no TLS code: executables that use `Http` link `libuna_rt_http.a` of
+# `crates/una-rt-http`, this source with the TLS client (#1102).
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
@@ -26,7 +28,9 @@ una-interp.workspace = true
 [lints.rust]
 unsafe_code = "deny"
 # `una_fuzz`: set only by scripts/sanitize.sh for the fuzz targets of `fuzz/` (#766).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)"] }
+# `una_rt_tls`: set only by the build script of `una-rt-http`, which builds this source into
+# `libuna_rt_http.a` with the TLS client of `una-http` (#1102).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)", "cfg(una_rt_tls)"] }
 
 [lints.clippy]
 dbg_macro = "deny"

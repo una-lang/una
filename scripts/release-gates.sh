@@ -6,7 +6,7 @@
 #
 # Gates, in order (all of them when none is named):
 #   clone        a fresh clone of the commit, from the repository's remote
-#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold
+#   build        cargo build --release -p una-cli -p una-rt -p una-rt-http, then cargo test --workspace, cold
 #   deps         scripts/deps-audit.sh (#770): cargo-deny at its pinned version against the
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
@@ -179,7 +179,7 @@ gate_build() {
     run build sh -c '
         if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
         scripts/check-solver.sh \
-            && cargo build --locked --release -p una-cli -p una-rt \
+            && cargo build --locked --release -p una-cli -p una-rt -p una-rt-http \
             && cargo test --workspace --locked'
 }
 

@@ -242,7 +242,7 @@ You need the Rust toolchain pinned in `rust-toolchain.toml` (installed with [rus
 ```bash
 git clone https://github.com/una-lang/una.git && cd una
 scripts/install-z3.sh "$HOME/.local/z3" && export PATH="$HOME/.local/z3/bin:$PATH"
-cargo build --release -p una-cli -p una-rt && export PATH="$PWD/target/release:$PATH"
+cargo build --release -p una-cli -p una-rt -p una-rt-http && export PATH="$PWD/target/release:$PATH"
 
 una check examples/events    # every check and every proof
 una test examples/events     # run the examples, with effect traces

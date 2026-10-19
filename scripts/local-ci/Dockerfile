@@ -33,7 +33,7 @@ RUN case "$TARGETARCH" in \
     && echo "$sha256  /tmp/rustup-init" | sha256sum --check \
     && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --no-modify-path --profile minimal \
-        --default-toolchain "$TOOLCHAIN" --component clippy --component rustfmt \
+        --default-toolchain "$TOOLCHAIN" --component clippy --component rustfmt --component llvm-tools \
     && rm /tmp/rustup-init
 
 WORKDIR /work

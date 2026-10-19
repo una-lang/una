@@ -2,6 +2,7 @@
 //! of the `[run] entry` module into an object through `una-codegen`, and links it with the
 //! runtime library `una-rt` through the system `cc` into a native executable.
 
+use std::cell::Cell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,8 +21,13 @@ use crate::{ExitStatus, analyze, load, on_large_stack};
 /// The JSON schema of `una build --json` (`spec/16 §2`).
 const BUILD_SCHEMA: &str = "una.build/1";
 
-/// The runtime library that every executable links (ADR 0055 rule 5).
+/// The runtime library that every executable links (ADR 0055 rule 5), when it makes no `Http`
+/// request: it holds no TLS code (ADR 0074 H7, #1102).
 const RUNTIME: &str = "libuna_rt.a";
+
+/// The runtime library of an executable that makes an `Http` request: the same runtime, with
+/// the TLS client of `una-http` (#1102).
+const RUNTIME_HTTP: &str = "libuna_rt_http.a";
 
 /// What `una build` needs besides the package.
 #[derive(Clone)]
@@ -34,7 +40,7 @@ pub(crate) struct BuildOptions<'a> {
     pub(crate) color: bool,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
-    /// The environment variables, for `UNA_RT_LIB`.
+    /// The environment variables, for `UNA_RT_LIB` and `UNA_RT_HTTP_LIB`.
     pub(crate) environment: crate::Environment<'a>,
 }
 
@@ -186,7 +192,10 @@ pub(crate) fn build_command(
     // that exceeds the maximum depth, the types the runtime renders, the operations a trace
     // records, and where `main`, or `init`, is named, for U6001.
     let main_location = package.sources.location(main.span);
+    // Whether the generated code makes an `Http` request, which decides the runtime library.
+    let http = Cell::new(false);
     let meta = |described: &una_codegen::Described<'_>| {
+        http.set(described.http);
         let sites: Vec<una_diag::Location> = described
             .sites
             .iter()
@@ -263,7 +272,7 @@ pub(crate) fn build_command(
     }
     let object_path = output.with_extension("o");
     std::fs::write(&object_path, object)?;
-    let linked = link(&object_path, &output, options.environment);
+    let linked = link(&object_path, &output, http.get(), options.environment);
     let _ = std::fs::remove_file(&object_path);
     if let Err(message) = linked {
         writeln!(stderr, "error: {message}")?;
@@ -311,9 +320,15 @@ fn package_root(package: &crate::package::Package) -> PathBuf {
         .unwrap_or_default()
 }
 
-/// Links `object` with the runtime library into the executable `output` through `cc`.
-fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Result<(), String> {
-    let runtime = runtime_library(environment)?;
+/// Links `object` with the runtime library into the executable `output` through `cc`: with
+/// `http`, the one with the TLS client.
+fn link(
+    object: &Path,
+    output: &Path,
+    http: bool,
+    environment: crate::Environment<'_>,
+) -> Result<(), String> {
+    let runtime = runtime_library(environment, http)?;
     let mut command = Command::new("cc");
     command.arg(object).arg(&runtime).arg("-o").arg(output);
     // No debug information (#382, S-13): the macOS debug map names each object by the absolute
@@ -322,8 +337,11 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     // installs. The behavior of the program does not depend on them. `-S` means this to both
     // ld64 and GNU ld.
     command.arg("-Wl,-S");
-    // Only the runtime functions the program calls are kept: an executable that never uses
-    // `Http` carries no TLS stack (ADR 0074 H7).
+    // Only the runtime functions the program calls are kept. That is not what keeps the TLS
+    // stack out of an executable that never uses `Http`: `ld64` dead-strips no object assembled
+    // without `.subsections_via_symbols`, as `ring`'s assembly kernels are, and loading an
+    // archive member pulls in every member it names, so any program would keep those kernels.
+    // Such an executable links `libuna_rt.a`, which has no TLS code at all (ADR 0074 H7, #1102).
     if cfg!(target_os = "macos") {
         command.arg("-Wl,-dead_strip");
     } else if cfg!(target_os = "linux") {
@@ -359,7 +377,7 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
 }
 
 /// The command that builds `una` with its runtime, for a source build (#203).
-const SOURCE_BUILD: &str = "cargo build --release -p una-cli -p una-rt";
+const SOURCE_BUILD: &str = "cargo build --release -p una-cli -p una-rt -p una-rt-http";
 
 /// A hint for a link that fails on a runtime symbol: the runtime library is older than this
 /// `una`, as when `cargo build -p una-cli` rebuilt only the compiler (#203).
@@ -374,20 +392,41 @@ fn stale_runtime_hint(linker_output: &str, runtime: &Path) -> Option<String> {
     })
 }
 
-/// The message when no runtime library is found beside `una` in `dir` (#203).
-fn missing_runtime(dir: &Path) -> String {
+/// The message when the runtime library `name` is not found beside `una` in `dir`, whose path
+/// the variable `variable` may give instead (#203).
+fn missing_runtime(dir: &Path, name: &str, variable: &str) -> String {
     format!(
-        "the native runtime `{RUNTIME}` is not next to `una` ({}); a source build makes it with `{SOURCE_BUILD}` (without `--release` for target/debug), or set UNA_RT_LIB to its path",
+        "the native runtime `{name}` is not next to `una` ({}); a source build makes it with `{SOURCE_BUILD}` (without `--release` for target/debug), or set {variable} to its path",
         dir.display()
     )
 }
 
 /// The runtime library: `UNA_RT_LIB` when set, else `libuna_rt.a` in the `lib` directory
 /// beside the `una` binary, as a release archive ships it (ADR 0059), next to the binary, as a
-/// Cargo build leaves it, or in `../lib`.
-fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, String> {
-    if let Some(path) = crate::variable(environment, "UNA_RT_LIB") {
+/// Cargo build leaves it, or in `../lib`. With `http`, `libuna_rt_http.a` in the same places:
+/// `UNA_RT_HTTP_LIB` when set, else beside `UNA_RT_LIB` when that is set (#1102).
+fn runtime_library(environment: crate::Environment<'_>, http: bool) -> Result<PathBuf, String> {
+    let (name, variable) = if http {
+        (RUNTIME_HTTP, "UNA_RT_HTTP_LIB")
+    } else {
+        (RUNTIME, "UNA_RT_LIB")
+    };
+    if let Some(path) = crate::variable(environment, variable) {
         return Ok(PathBuf::from(path));
+    }
+    if http && let Some(path) = crate::variable(environment, "UNA_RT_LIB") {
+        let beside = Path::new(&path)
+            .parent()
+            .map(|dir| dir.join(RUNTIME_HTTP))
+            .unwrap_or_else(|| PathBuf::from(RUNTIME_HTTP));
+        return if beside.is_file() {
+            Ok(beside)
+        } else {
+            Err(format!(
+                "the native runtime `{RUNTIME_HTTP}`, which an executable that uses `Http` links, is not beside UNA_RT_LIB ({}); set UNA_RT_HTTP_LIB to its path",
+                beside.display()
+            ))
+        };
     }
     // Through a symlink, macOS reports the link's path: the runtime is beside the binary the
     // link resolves to (#185).
@@ -398,15 +437,15 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
     // A release archive ships it in `lib/` beside `una` (ADR 0059); a Cargo build leaves it
     // next to `una`.
     let candidates = [
-        dir.join("lib").join(RUNTIME),
-        dir.join(RUNTIME),
-        dir.join("..").join("lib").join(RUNTIME),
+        dir.join("lib").join(name),
+        dir.join(name),
+        dir.join("..").join("lib").join(name),
     ];
     candidates
         .iter()
         .find(|path| path.is_file())
         .cloned()
-        .ok_or_else(|| missing_runtime(&dir))
+        .ok_or_else(|| missing_runtime(&dir, name, variable))
 }
 
 #[cfg(test)]
@@ -415,12 +454,20 @@ mod tests {
 
     #[test]
     fn a_missing_runtime_names_the_command_that_builds_it() {
-        let message = missing_runtime(Path::new("/src/una/target/release"));
+        let message = missing_runtime(Path::new("/src/una/target/release"), RUNTIME, "UNA_RT_LIB");
         assert!(
-            message.contains("`cargo build --release -p una-cli -p una-rt`"),
+            message.contains("`cargo build --release -p una-cli -p una-rt -p una-rt-http`"),
             "{message}"
         );
+        assert!(message.contains("`libuna_rt.a`"), "{message}");
         assert!(message.contains("UNA_RT_LIB"), "{message}");
+        let message = missing_runtime(
+            Path::new("/src/una/target/release"),
+            RUNTIME_HTTP,
+            "UNA_RT_HTTP_LIB",
+        );
+        assert!(message.contains("`libuna_rt_http.a`"), "{message}");
+        assert!(message.contains("UNA_RT_HTTP_LIB"), "{message}");
     }
 
     #[test]

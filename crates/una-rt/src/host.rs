@@ -444,6 +444,12 @@ fn http(
         body: body.as_bytes(),
         bearer: bearer.as_deref(),
     };
+    // `libuna_rt_http.a`, the runtime of executables that use `Http`, is this source built with
+    // `una_rt_tls` and `una-http`, whose TLS client it installs. `libuna_rt.a` has none, so an
+    // `https` request fails with `Tls` there, never in the clear; `una build` links it only
+    // into executables that make no `Http` request (#1102).
+    #[cfg(una_rt_tls)]
+    una_http::install_tls();
     match send(&request, &grants, &settings) {
         Ok(response) => {
             let list = values::list();

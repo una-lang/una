@@ -1569,6 +1569,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 (capability_path.name.as_str(), op.as_str()),
                 ("Http", _) | ("Env", "get") | ("Files", "read")
             );
+            // The executable needs the runtime with the TLS client (#1102).
+            if capability_path.name == "Http" {
+                self.emitter.http = true;
+            }
             let value = if sited {
                 // The call's site, where a header value with a control character aborts with
                 // U6004, and host text that is not valid UTF-8 with U6005 (S-16, ADR

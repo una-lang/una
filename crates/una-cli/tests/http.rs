@@ -19,16 +19,20 @@ fn root() -> PathBuf {
         .unwrap()
 }
 
-/// Builds the runtime library next to the `una` binary, once.
+/// Builds the runtime libraries next to the `una` binary, once: `libuna_rt.a`, and
+/// `libuna_rt_http.a`, which executables that use `Http` link (#1102).
 fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
+            .args(["build", "--quiet", "-p", "una-rt", "-p", "una-rt-http"])
             .current_dir(root())
             .status()
             .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
+        assert!(
+            status.success(),
+            "cargo build -p una-rt -p una-rt-http failed"
+        );
     });
 }
 
@@ -481,10 +485,10 @@ fn http_grants_are_checked_before_main_in_both_engines() {
 
 #[test]
 fn an_executable_that_never_uses_http_carries_no_tls_stack() {
-    // ADR 0074 H7: the linker keeps only the runtime functions a program calls, so
-    // `hello` carries no TLS code: no function of a client connection, a handshake or a root
-    // store. A few small generic functions of the standard library may keep a TLS crate's name
-    // in their symbols, deduplicated from its object file; they hold no TLS code.
+    // ADR 0074 H7, #1102: `hello` links `libuna_rt.a`, which holds no TLS code, so not one symbol
+    // of `ring`, `rustls` or `webpki` is in it, defined or undefined, on either platform. Linking
+    // with dead stripping alone left `ring`'s assembly kernels in every executable on macOS:
+    // `ld64` does not dead-strip an object assembled without `.subsections_via_symbols`.
     let hello = "module hello\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"Hello, Una\")\n";
     let dir = package(
         "plain",
@@ -493,61 +497,150 @@ fn an_executable_that_never_uses_http_carries_no_tls_stack() {
     );
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
-    // The symbols of its code, not its bytes: on Linux the debug information keeps the names of
-    // types whose code the linker dropped, as `ClientConnection`.
-    let symbols = Command::new("nm")
-        .arg(dir.join("target/una/plain"))
-        .output()
-        .unwrap();
-    assert!(symbols.status.success(), "{symbols:?}");
-    let symbols = String::from_utf8_lossy(&symbols.stdout);
-    for needle in ["ClientConnection", "handshake", "TLS_SERVER_ROOTS"] {
-        assert!(
-            !symbols.contains(needle),
-            "{needle} found in a program that never uses Http"
-        );
-    }
-    // No `ring` code either, with one residual on macOS. `ld64` does not dead-strip
-    // an object file assembled without `.subsections_via_symbols`, as `ring`'s assembly
-    // kernels (SHA-2, AES, ChaCha20, P-256) are, once the transitive loading of the runtime
-    // archive has pulled them in: about 39 KB, which no call reaches. `--gc-sections` drops
-    // them on Linux.
-    let ring = ring_bytes(&dir.join("target/una/plain"));
-    if cfg!(target_os = "macos") {
-        assert!(ring <= 64 * 1024, "{ring} bytes of ring code");
-    } else {
-        assert_eq!(ring, 0, "ring code in a program that never uses Http");
-    }
+    let symbols = symbols(&dir.join("target/una/plain"));
+    // The symbol table was read: the runtime's own entry points are in it.
+    assert!(
+        symbols.iter().any(|symbol| symbol.contains("una_rt_start")),
+        "no runtime symbol read from the executable"
+    );
+    let tls = tls_symbols(&symbols);
+    assert!(
+        tls.is_empty(),
+        "{} TLS symbols in a program that never uses Http, among them {:?}",
+        tls.len(),
+        &tls[..tls.len().min(10)]
+    );
     let output = Command::new(dir.join("target/una/plain")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&output.stdout), "Hello, Una\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The bytes of `ring`'s code in `executable`: each `ring_core` text symbol runs to the next
-/// symbol, by `nm -n`.
-fn ring_bytes(executable: &Path) -> u64 {
-    let listed = Command::new("nm")
-        .arg("-n")
+#[test]
+fn an_executable_that_uses_http_links_the_tls_stack_and_sends_its_request() {
+    // #1102: a program with an `Http` operation links `libuna_rt_http.a`, the runtime with the
+    // TLS client, and its request goes as the interpreter's does.
+    let server = Server::start();
+    let port = server.port;
+    let program = format!(
+        r#"module fetch
+
+shown(r: internal Result[internal Response, internal HttpError]) -> internal Text
+=
+  when r
+    is Ok(response) -> "{{response.status}} {{response.body}}"
+    is Err(e) -> "{{e}}"
+
+pub main() -> Unit
+  uses @files: Files[write]
+  uses @http: Http[get]
+  fails FileError
+=
+  let a = attempt @http.get("http://127.0.0.1:{port}/ok", headers: [], key_name: None)
+  @files.write("out.txt", content: "{{shown(a)}}")
+    if error pass
+"#
+    );
+    let dir = package(
+        "fetch",
+        &format!(
+            "\n[run]\nentry = \"fetch\"\ngrants = [\"files:.:write\", \"http:http://127.0.0.1:{port}:get\"]\n"
+        ),
+        &[("src/fetch.una", &program)],
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let symbols = symbols(&dir.join("target/una/fetch"));
+    let tls = tls_symbols(&symbols);
+    assert!(
+        tls.iter().any(|symbol| symbol.contains("ring_core_")),
+        "no `ring` symbol in a program that uses Http: it did not link libuna_rt_http.a"
+    );
+    assert!(
+        tls.iter().any(|symbol| symbol.contains("rustls")),
+        "no `rustls` symbol in a program that uses Http: it did not link libuna_rt_http.a"
+    );
+    assert!(
+        tls_symbols(&["alloc::string::String::push".to_owned()]).is_empty(),
+        "a symbol of `alloc::string` taken for `ring`"
+    );
+    let native = Command::new(dir.join("target/una/fetch"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out.txt")).unwrap(),
+        "200 {\"a\": true}"
+    );
+    let requests = server.requests.lock().unwrap().clone();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.starts_with("GET /ok HTTP/1.1\r\n")),
+        "{requests:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The toolchain's `llvm-nm`, of the `llvm-tools` component that `rust-toolchain.toml` lists:
+/// the same tool on both platforms, and one that demangles Rust's symbols. A toolchain without
+/// it fails the test rather than skipping it.
+fn llvm_nm() -> PathBuf {
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .current_dir(root())
+        .output()
+        .unwrap();
+    assert!(sysroot.status.success(), "{sysroot:?}");
+    let sysroot = PathBuf::from(String::from_utf8(sysroot.stdout).unwrap().trim());
+    let tool = sysroot
+        .join("lib/rustlib")
+        .join(una_codegen::host_target())
+        .join("bin/llvm-nm");
+    assert!(
+        tool.is_file(),
+        "no llvm-nm at {}: install the toolchain's llvm-tools component (rust-toolchain.toml)",
+        tool.display()
+    );
+    tool
+}
+
+/// Every symbol of `executable`, defined and undefined, local and global, by name, demangled.
+fn symbols(executable: &Path) -> Vec<String> {
+    let listed = Command::new(llvm_nm())
+        .args(["--demangle", "--format=just-symbols"])
         .arg(executable)
         .output()
         .unwrap();
     assert!(listed.status.success(), "{listed:?}");
-    let symbols: Vec<(u64, bool)> = String::from_utf8_lossy(&listed.stdout)
+    String::from_utf8_lossy(&listed.stdout)
         .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let address = u64::from_str_radix(parts.next()?, 16).ok()?;
-            let kind = parts.next()?;
-            let name = parts.next()?;
-            Some((
-                address,
-                matches!(kind, "t" | "T") && name.contains("ring_core_"),
-            ))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The symbols of `symbols` that belong to the TLS stack: `ring`'s C and assembly, whose global
+/// names carry its `ring_core_` prefix and whose local names its kernels' (`vpaes_`,
+/// `ecp_nistz256`, `ChaCha20_`), and the Rust code of the crates `ring`, `rustls`,
+/// `rustls_pki_types` and `webpki`, named in a path (`ring::` or `ring[...]::`) as a whole
+/// word, so that `alloc::string::String` is not taken for `ring`.
+fn tls_symbols(symbols: &[String]) -> Vec<String> {
+    const NATIVE: [&str; 4] = ["ring_core_", "vpaes_", "ecp_nistz256", "ChaCha20_"];
+    const CRATES: [&str; 4] = ["ring", "rustls", "rustls_pki_types", "webpki"];
+    let names_crate = |symbol: &str, name: &str| {
+        symbol.match_indices(name).any(|(at, _)| {
+            let before = symbol[..at].chars().next_back();
+            let after = &symbol[at + name.len()..];
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                && (after.starts_with("::") || after.starts_with('['))
         })
-        .collect();
+    };
     symbols
-        .windows(2)
-        .filter(|pair| pair[0].1)
-        .map(|pair| pair[1].0 - pair[0].0)
-        .sum()
+        .iter()
+        .filter(|symbol| {
+            NATIVE.iter().any(|mark| symbol.contains(mark))
+                || CRATES.iter().any(|name| names_crate(symbol, name))
+        })
+        .cloned()
+        .collect()
 }

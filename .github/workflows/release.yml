@@ -25,7 +25,7 @@ jobs:
         run: >
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag
           --title "Una $GITHUB_REF_NAME"
-          --notes "The una binary with its native runtime library (lib/libuna_rt.a), license and readme, for Linux (x86_64) and macOS (arm64), each with its SHA-256 digest. una checks at tier 1 with Z3 at the version pinned in verification.lock on PATH; scripts/install-z3.sh installs it."
+          --notes "The una binary with its native runtime libraries (lib/libuna_rt.a, and lib/libuna_rt_http.a for programs that use Http), license and readme, for Linux (x86_64) and macOS (arm64), each with its SHA-256 digest. una checks at tier 1 with Z3 at the version pinned in verification.lock on PATH; scripts/install-z3.sh installs it."
 
   build:
     name: ${{ matrix.target }}

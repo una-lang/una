@@ -114,6 +114,10 @@ pub struct Described<'a> {
     pub ops: &'a [serde_json::Value],
     /// The type of `main`'s failures, when it can fail.
     pub failure: Option<usize>,
+    /// Whether the generated code calls an operation of the host's `Http`, which only the
+    /// runtime library `libuna_rt_http.a` performs over TLS: `una build` links that library
+    /// then, and `libuna_rt.a`, which has no TLS code, otherwise (ADR 0074 H7, #1102).
+    pub http: bool,
 }
 
 /// The object file of the program: `main` of module `entry` and the functions it reaches,
@@ -205,6 +209,7 @@ fn compile_start(
         types: emitter.types.shapes(),
         ops: &emitter.ops,
         failure,
+        http: emitter.http,
     });
     match loop_functions {
         None => emitter.entry(main_id.id, main, &meta)?,
@@ -497,6 +502,8 @@ struct Emitter<'p> {
     types: describe::Types<'p>,
     /// The operations, by the index passed to `una_rt_event`.
     ops: Vec<serde_json::Value>,
+    /// Whether a call of an `Http` operation of the runtime was emitted.
+    http: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -529,6 +536,7 @@ impl<'p> Emitter<'p> {
             sites: Vec::new(),
             types: describe::Types::new(program),
             ops: Vec::new(),
+            http: false,
         })
     }
 

@@ -49,9 +49,9 @@ fi
 # Keyed hashing's test hooks (a fixed key, a probe counter, a constant hash) exist only in the
 # toolchain's own test builds (ADR 0119 rule 9). Their module holds a marker that its key path
 # keeps: neither the symbol, by `nm`, nor its bytes, which a stripped binary still holds, may be
-# in the shipped `una` or `libuna_rt.a`.
+# in the shipped `una`, `libuna_rt.a` or `libuna_rt_http.a`.
 marker=UNA_HASH_TEST_HOOKS_MARKER
-for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/$name/lib/libuna_rt_http.a"; do
     if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
         echo "error: $artifact was built with keyed hashing's test hooks (ADR 0119 rule 9)" >&2
         exit 1
@@ -70,8 +70,16 @@ for guide in getting-started.md syntax-reference.md una-compact.md una-for-agent
         exit 1
     fi
 done
-if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
-    echo "error: $name.tar.gz has no lib/libuna_rt.a" >&2
+# Both runtimes, and nothing else under lib/: `libuna_rt.a`, which links no TLS code, and
+# `libuna_rt_http.a`, which `una build` links into executables that use `Http` (#1102).
+libs=$(cd "$tmp/$name/lib" && LC_ALL=C ls | tr '\n' ' ')
+if [ "$libs" != "libuna_rt.a libuna_rt_http.a " ]; then
+    echo "error: $name.tar.gz holds lib/ $libs; expected libuna_rt.a libuna_rt_http.a" >&2
+    exit 1
+fi
+# The runtime without `Http` holds no TLS code: no object of `ring`, `rustls` or `webpki`.
+if nm -A "$tmp/$name/lib/libuna_rt.a" 2>/dev/null | grep -q -E 'ring_core_|_4ring[0-9A-Z_]|N4ring|[_N]6rustls|_16rustls_pki_types|[_N]6webpki'; then
+    echo "error: $name.tar.gz has TLS code in lib/libuna_rt.a (#1102)" >&2
     exit 1
 fi
 una="$tmp/$name/una"
@@ -113,7 +121,7 @@ fi
 # The builder's user name is refused too, in any form (`~name`, a home elsewhere), when it is long
 # enough to mean something; inside Rust's own path, as a CI runner's user is, it is allowed.
 user=$(id -un 2>/dev/null || true)
-for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/install-one/out/hello"; do
+for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/$name/lib/libuna_rt_http.a" "$tmp/install-one/out/hello"; do
     found=$(grep -a -o -E '(/Users|/home)/[^[:space:][:cntrl:]"]*' "$file" | grep -v '^/Users/runner/work/rust/' | LC_ALL=C sort -u | head -5 || true)
     if [ "${#user}" -ge 4 ] && [ -z "$found" ]; then
         found=$(LC_ALL=C grep -a -o -E ".{0,16}$user.{0,16}" "$file" | grep -v -F '/Users/runner/work/rust' | LC_ALL=C sort -u | head -5 || true)

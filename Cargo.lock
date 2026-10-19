@@ -1495,6 +1495,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-rt-http"
+version = "0.3.16"
+dependencies = [
+ "cap",
+ "num-bigint",
+ "serde_json",
+ "una-core",
+ "una-diag",
+ "una-http",
+ "una-http-core",
+ "una-interp",
+]
+
+[[package]]
 name = "una-syntax"
 version = "0.3.16"
 dependencies = [

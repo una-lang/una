@@ -1,0 +1,51 @@
+[package]
+name = "una-rt-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The runtime library of native Una executables that use Http: una-rt with the TLS client of una-http (ADR 0074 H7, #1102)"
+build = "build.rs"
+
+[lib]
+# `libuna_rt_http.a`, which `una build` links instead of `libuna_rt.a` into an executable that
+# makes an `Http` request: the source of `una-rt`, built with `--cfg una_rt_tls` (build.rs) and
+# with `una-http`, whose TLS client it installs. A package of its own, so that the TLS stack
+# never joins `una-rt`'s dependency graph, as a cargo feature would by unification. Its tests are
+# `una-rt`'s.
+name = "una_rt_http"
+path = "../una-rt/src/lib.rs"
+crate-type = ["staticlib"]
+test = false
+doctest = false
+bench = false
+
+# The dependencies of `una-rt`, and `una-http`.
+[dependencies]
+cap.workspace = true
+num-bigint.workspace = true
+serde_json.workspace = true
+una-core.workspace = true
+una-diag.workspace = true
+una-http.workspace = true
+una-http-core.workspace = true
+una-interp.workspace = true
+
+# The lints of `una-rt`: its `ffi.rs` is the one module that may use `unsafe` (ADR 0058).
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)", "cfg(una_rt_tls)"] }
+
+[lints.clippy]
+dbg_macro = "deny"
+exit = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

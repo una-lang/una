@@ -6,8 +6,9 @@
 #
 # Two containers, one after the other:
 # 1. The build, as scripts/local-ci.sh runs its own: the release `una`, the pinned Z3 and Lean in
-#    their volumes, the native runtime that `una build` links (`libuna_rt.a`, next to `una`), and
-#    the re-check's executable (`lake build una-core-check`).
+#    their volumes, the native runtimes that `una build` links (`libuna_rt.a` and
+#    `libuna_rt_http.a`, next to `una`), and the re-check's executable
+#    (`lake build una-core-check`).
 # 2. The gate, hardened: no network (`--network none`, loopback only), a read-only root with a
 #    `tmpfs` for /tmp, the checkout and the tools mounted read-only, OUT the only writable mount,
 #    the caller's user (never root), no capability (`--cap-drop ALL`), no-new-privileges, an init
@@ -83,7 +84,7 @@ docker run --rm --platform "linux/$arch" \
         set -e
         [ -x /opt/z3/bin/z3 ] || scripts/install-z3.sh /opt/z3
         PATH=/opt/z3/bin:$PATH scripts/check-solver.sh
-        cargo build --locked --release -p una-cli -p una-rt
+        cargo build --locked --release -p una-cli -p una-rt -p una-rt-http
         root=/work
         . scripts/lean-env.sh
         (cd formal && lake build una-core-check)
