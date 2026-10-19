@@ -38,11 +38,15 @@ pub type Refusal = String;
 /// device name of Windows, at most 32 segments and 255 bytes.
 pub fn check_path(path: &str) -> Result<(), Refusal> {
     if path.is_empty() || path.len() > MAX_PATH_BYTES {
-        return Err(format!("the path `{path}` is empty or longer than {MAX_PATH_BYTES} bytes"));
+        return Err(format!(
+            "the path `{path}` is empty or longer than {MAX_PATH_BYTES} bytes"
+        ));
     }
     let segments: Vec<&str> = path.split('/').collect();
     if segments.len() > MAX_SEGMENTS {
-        return Err(format!("the path `{path}` has more than {MAX_SEGMENTS} segments"));
+        return Err(format!(
+            "the path `{path}` has more than {MAX_SEGMENTS} segments"
+        ));
     }
     for segment in segments {
         let valid = !segment.is_empty()
@@ -62,7 +66,11 @@ pub fn check_path(path: &str) -> Result<(), Refusal> {
         if segment.ends_with('.') {
             return Err(format!("the path `{path}` has a segment ending with `.`"));
         }
-        let stem = segment.split('.').next().unwrap_or(segment).to_ascii_lowercase();
+        let stem = segment
+            .split('.')
+            .next()
+            .unwrap_or(segment)
+            .to_ascii_lowercase();
         if DEVICES.contains(&stem.as_str()) {
             return Err(format!(
                 "the path `{path}` has a segment `{segment}` that is a device name of Windows"
@@ -207,12 +215,16 @@ pub fn read_archive(bytes: &[u8]) -> Result<Read, Refusal> {
         return Err(format!("the archive does not start with `{ARCHIVE_MAGIC}`"));
     }
     let length = next_line(bytes, &mut at).ok_or("the archive has no listing length")?;
-    let length = decimal(length).ok_or("the listing's length is not a decimal without a leading zero")?;
+    let length =
+        decimal(length).ok_or("the listing's length is not a decimal without a leading zero")?;
     if length > MAX_BYTES {
         return Err("the listing is longer than a package may be".to_owned());
     }
     let length = usize::try_from(length).map_err(|_| "the listing is too long".to_owned())?;
-    let end = at.checked_add(length).filter(|end| *end <= bytes.len()).ok_or("the listing's length runs past the end of the archive")?;
+    let end = at
+        .checked_add(length)
+        .filter(|end| *end <= bytes.len())
+        .ok_or("the listing's length runs past the end of the archive")?;
     let listing = std::str::from_utf8(bytes.get(at..end).unwrap_or_default())
         .map_err(|_| "the listing is not UTF-8".to_owned())?;
     if !listing.is_empty() && !listing.ends_with('\n') {
@@ -226,9 +238,16 @@ pub fn read_archive(bytes: &[u8]) -> Result<Read, Refusal> {
         else {
             return Err("an entry of the listing is not `path NUL length NUL hash`".to_owned());
         };
-        let len = decimal(len.as_bytes()).ok_or("a file's length is not a decimal without a leading zero")?;
-        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-            return Err(format!("the hash of `{path}` is not 64 lowercase hexadecimal digits"));
+        let len = decimal(len.as_bytes())
+            .ok_or("a file's length is not a decimal without a leading zero")?;
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(format!(
+                "the hash of `{path}` is not 64 lowercase hexadecimal digits"
+            ));
         }
         entries.push((path, len, hash));
     }
@@ -251,7 +270,9 @@ pub fn read_archive(bytes: &[u8]) -> Result<Read, Refusal> {
             .ok_or_else(|| format!("the length of `{path}` runs past the end of the archive"))?;
         let contents = bytes.get(cursor..stop).unwrap_or_default();
         if hex(&Sha256::digest(contents)) != hash {
-            return Err(format!("the bytes of `{path}` do not have the hash the listing gives"));
+            return Err(format!(
+                "the bytes of `{path}` do not have the hash the listing gives"
+            ));
         }
         files.push((path.to_owned(), cursor..stop));
         cursor = stop;

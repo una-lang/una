@@ -41,10 +41,11 @@ fn the_digest_depends_only_on_paths_and_bytes() {
         .lines()
         .map(|line| line.split('\0').next().unwrap())
         .collect();
-    assert_eq!(paths, ["LICENSE-MIT", "ita.una", "src/a/c.una", "src/b.una"]);
-    assert!(listing.starts_with(
-        "LICENSE-MIT\u{0}4\u{0}"
-    ));
+    assert_eq!(
+        paths,
+        ["LICENSE-MIT", "ita.una", "src/a/c.una", "src/b.una"]
+    );
+    assert!(listing.starts_with("LICENSE-MIT\u{0}4\u{0}"));
     // A file renamed, or a byte changed, changes it.
     let mut renamed = package();
     renamed[0].path = "src/d.una".to_owned();
@@ -56,10 +57,28 @@ fn the_digest_depends_only_on_paths_and_bytes() {
 
 #[test]
 fn a_package_holds_una_sources_and_its_documents_only() {
-    for path in ["ita.una", "src/a.una", "src/a/b.una", "README.md", "CHANGELOG.md", "LICENSE", "LICENSE-MIT", "LICENSE.txt"] {
+    for path in [
+        "ita.una",
+        "src/a.una",
+        "src/a/b.una",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE",
+        "LICENSE-MIT",
+        "LICENSE.txt",
+    ] {
         assert!(is_package_file(path), "{path}");
     }
-    for path in ["ita.lock", "src/a.c", "src/lib.a", "build.rs", "src/.una", "docs/x.md", "LICENSES/x", "una.toml"] {
+    for path in [
+        "ita.lock",
+        "src/a.c",
+        "src/lib.a",
+        "build.rs",
+        "src/.una",
+        "docs/x.md",
+        "LICENSES/x",
+        "una.toml",
+    ] {
         assert!(!is_package_file(path), "{path}");
     }
 }
@@ -67,8 +86,18 @@ fn a_package_holds_una_sources_and_its_documents_only() {
 #[test]
 fn paths_are_refused_by_form() {
     for path in [
-        "", "/src/a.una", "src/../a.una", "src/./a.una", "src/.hidden.una", "src/a.", "src//a.una",
-        "src/CON.una", "src/nul.txt", "src/a b.una", "src/a\\b.una", "src/é.una",
+        "",
+        "/src/a.una",
+        "src/../a.una",
+        "src/./a.una",
+        "src/.hidden.una",
+        "src/a.",
+        "src//a.una",
+        "src/CON.una",
+        "src/nul.txt",
+        "src/a b.una",
+        "src/a\\b.una",
+        "src/é.una",
     ] {
         assert!(check_path(path).is_err(), "{path:?}");
     }
@@ -86,7 +115,11 @@ fn listings_refuse_case_collisions_and_file_directory_clashes() {
     let mut clash = vec![file("src/A.una", b""), file("src/a.una/b.una", b"")];
     assert!(listing(&mut clash).unwrap_err().contains("directory"));
     let mut foreign = vec![file("src/lib.c", b"int x;")];
-    assert!(listing(&mut foreign).unwrap_err().contains("not a file a package holds"));
+    assert!(
+        listing(&mut foreign)
+            .unwrap_err()
+            .contains("not a file a package holds")
+    );
 }
 
 #[test]
@@ -113,14 +146,26 @@ fn malformed_archives_are_refused() {
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("trailing bytes", [good.clone(), b"x".to_vec()].concat()),
         ("a truncated file", good[..good.len() - 1].to_vec()),
-        ("another magic", text.replacen("ita-archive/1", "ita-archive/2", 1).into_bytes()),
+        (
+            "another magic",
+            text.replacen("ita-archive/1", "ita-archive/2", 1)
+                .into_bytes(),
+        ),
         ("a leading zero", {
             let mut b = good[..listing_start].to_vec();
             b.extend_from_slice(b"0");
             b.extend_from_slice(&good[listing_start..]);
             b
         }),
-        ("a length past the end", text.replacen(&format!("\n{}\n", text.lines().nth(1).unwrap()), "\n999999\n", 1).into_bytes()),
+        (
+            "a length past the end",
+            text.replacen(
+                &format!("\n{}\n", text.lines().nth(1).unwrap()),
+                "\n999999\n",
+                1,
+            )
+            .into_bytes(),
+        ),
         ("a changed byte", {
             let mut b = good.clone();
             let last = b.len() - 2;
@@ -133,7 +178,12 @@ fn malformed_archives_are_refused() {
         assert!(read_archive(&bytes).is_err(), "{what} is refused");
     }
     // A listing out of order, or with a path rule 27 refuses, made by hand.
-    for (a, b) in [("src/b.una", "src/a.una"), ("src/a.una", "src/a.una"), ("src/../x.una", "src/y.una"), ("src/a.c", "src/b.una")] {
+    for (a, b) in [
+        ("src/b.una", "src/a.una"),
+        ("src/a.una", "src/a.una"),
+        ("src/../x.una", "src/y.una"),
+        ("src/a.c", "src/b.una"),
+    ] {
         let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let listing = format!("{a}\u{0}0\u{0}{hash}\n{b}\u{0}0\u{0}{hash}\n");
         let bytes = format!("{ARCHIVE_MAGIC}\n{}\n{listing}", listing.len()).into_bytes();

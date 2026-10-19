@@ -43,8 +43,10 @@ impl Itaoca {
     /// The directory of the package of `digest`, `sha256:<hex>`.
     pub fn package_dir(&self, digest: &str) -> Option<PathBuf> {
         let hex = digest.strip_prefix("sha256:")?;
-        let valid =
-            hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        let valid = hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
         valid.then(|| self.root.join("packages").join("sha256").join(hex))
     }
 
@@ -70,7 +72,9 @@ impl Itaoca {
         fs::create_dir(&fresh).map_err(|e| format!("cannot create `{}`: {e}", fresh.display()))?;
         let written = (|| -> Result<(), Refusal> {
             for (path, range) in &read.files {
-                let bytes = archive.get(range.clone()).ok_or("an archive range is out of bounds")?;
+                let bytes = archive
+                    .get(range.clone())
+                    .ok_or("an archive range is out of bounds")?;
                 let target = fresh.join(path);
                 if let Some(directory) = target.parent() {
                     fs::create_dir_all(directory)
@@ -130,7 +134,8 @@ impl Itaoca {
 /// Reads every file under `dir` as `prefix/...`, refusing a link or any entry that is not a
 /// regular file or a directory.
 fn read_tree(dir: &Path, prefix: &str, files: &mut Vec<File>) -> Result<(), Refusal> {
-    let meta = fs::symlink_metadata(dir).map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
+    let meta =
+        fs::symlink_metadata(dir).map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
     if !meta.file_type().is_dir() {
         return Err(format!("`{}` is not a directory", dir.display()));
     }
@@ -150,7 +155,8 @@ fn read_tree(dir: &Path, prefix: &str, files: &mut Vec<File>) -> Result<(), Refu
         if kind.is_dir() {
             read_tree(&path, &relative, files)?;
         } else if kind.is_file() {
-            let bytes = fs::read(&path).map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+            let bytes =
+                fs::read(&path).map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
             files.push(File {
                 path: relative,
                 bytes,

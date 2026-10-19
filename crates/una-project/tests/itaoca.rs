@@ -11,7 +11,9 @@ use una_project::content::{File, archive, digest_of};
 use una_project::itaoca::Itaoca;
 
 fn store(name: &str) -> Itaoca {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("itaoca").join(name);
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("itaoca")
+        .join(name);
     if root.exists() {
         make_writable(&root);
         std::fs::remove_dir_all(&root).unwrap();
@@ -56,7 +58,12 @@ fn a_package_is_stored_once_and_loads_verified() {
     assert_eq!(loaded.len(), 2);
     // Stored files are read-only.
     let dir = itaoca.package_dir(&digest).unwrap();
-    assert!(std::fs::metadata(dir.join("src/a/b.una")).unwrap().permissions().readonly());
+    assert!(
+        std::fs::metadata(dir.join("src/a/b.una"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
     // Storing it again verifies what is there.
     assert_eq!(itaoca.store(&bytes).unwrap(), digest);
 }
@@ -67,8 +74,17 @@ fn a_store_tampered_with_does_not_load() {
     let digest = itaoca.store(&archive(&mut package()).unwrap()).unwrap();
     let dir = itaoca.package_dir(&digest).unwrap();
     make_writable(&dir);
-    std::fs::write(dir.join("src/a/b.una"), "module a.b\n\npub evil() -> Int = 1\n").unwrap();
-    assert!(itaoca.load(&digest).unwrap_err().contains("changed after it was fetched"));
+    std::fs::write(
+        dir.join("src/a/b.una"),
+        "module a.b\n\npub evil() -> Int = 1\n",
+    )
+    .unwrap();
+    assert!(
+        itaoca
+            .load(&digest)
+            .unwrap_err()
+            .contains("changed after it was fetched")
+    );
     // An extra file, or a link, refuses it too.
     std::fs::write(dir.join("src/a/b.una"), "module a.b\n").unwrap();
     assert!(itaoca.load(&digest).is_ok());
@@ -78,7 +94,12 @@ fn a_store_tampered_with_does_not_load() {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(dir.join("ita.una"), dir.join("src/link.una")).unwrap();
-        assert!(itaoca.load(&digest).unwrap_err().contains("not a regular file"));
+        assert!(
+            itaoca
+                .load(&digest)
+                .unwrap_err()
+                .contains("not a regular file")
+        );
     }
 }
 
