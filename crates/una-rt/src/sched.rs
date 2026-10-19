@@ -622,8 +622,7 @@ pub(crate) fn blocking_interruptible<T: Send + 'static>(
     drop(shared);
     let (sender, receiver) = channel::<Waited<T>>();
     let mailbox = Arc::clone(&sender.0);
-    let wake: crate::interrupt::Wake =
-        Arc::new(move || close(&mailbox, Some(Waited::Interrupted)));
+    let wake: crate::interrupt::Wake = Arc::new(move || close(&mailbox, Some(Waited::Interrupted)));
     let registration = crate::interrupt::register(entries, &wake);
     drop(wake);
     // A cancellation that came before the registration woke nothing: seen here, the operation

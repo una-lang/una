@@ -3823,7 +3823,11 @@ fn a_race_has_the_same_winner_output_and_trace_in_both_engines_under_virtual_tim
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(
             String::from_utf8_lossy(&native.stdout),
             "a\nb\nwon 2\nt1\ntie 1\ndeep done\n"
@@ -3847,9 +3851,16 @@ fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         let output = String::from_utf8_lossy(&native.stdout).into_owned();
-        assert!(output.ends_with("deep done\n"), "--workers {workers}: {output}");
+        assert!(
+            output.ends_with("deep done\n"),
+            "--workers {workers}: {output}"
+        );
         // The race prints `a` and `b` and maybe `c`, and one of the branches that return wins.
         assert!(
             output.contains("won 2\n") || output.contains("won 3\n"),
@@ -3886,7 +3897,11 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "won 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -3910,7 +3925,11 @@ fn a_branch_too_deep_for_task_depth_aborts_the_run_in_both_engines() {
         .current_dir(&dir)
         .output()
         .unwrap();
-    assert_eq!(native.status.code(), interpreted.status.code(), "{native:?}");
+    assert_eq!(
+        native.status.code(),
+        interpreted.status.code(),
+        "{native:?}"
+    );
     assert_eq!(String::from_utf8_lossy(&native.stdout), "shallow 5\n");
     assert!(
         String::from_utf8_lossy(&native.stderr).contains("U6003"),

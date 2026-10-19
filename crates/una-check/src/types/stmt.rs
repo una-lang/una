@@ -6,8 +6,9 @@ use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
-    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
-    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
+    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt,
+    LetValue, Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt,
+    WhenExpr,
 };
 
 use super::Report;

@@ -948,7 +948,11 @@ pub main() -> Unit
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "--workers {workers}: the loser was not interrupted"

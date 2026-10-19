@@ -7,13 +7,13 @@ use una_diag::Code;
 use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
     CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch, EverStmt,
-    ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
+    ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FirstOf, FnTypeClause,
     ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
     OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
     Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopAfter, StopStmt, TextLit,
-    TextPart, TogetherFor, TogetherStmt, FirstOf, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
+    TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
     Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};

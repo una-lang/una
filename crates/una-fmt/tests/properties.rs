@@ -354,6 +354,11 @@ impl Normalizer<'_> {
                 self.source(&mut together.source);
                 self.block(&mut together.block);
             }
+            BlockExpr::FirstOf(first) => {
+                for branch in &mut first.body {
+                    self.stmt(branch);
+                }
+            }
         }
     }
 

@@ -149,6 +149,10 @@ impl Deadline {
     }
 }
 
+/// A branch's events in the trace, from and to, and, per handler name, the ids it installed:
+/// how many before it, and how many it made (`Machine::winner_first`).
+type Part = (usize, usize, BTreeMap<String, (usize, usize)>);
+
 /// Why a run stops without a value or a failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Abort {
@@ -2038,7 +2042,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let end = self.trace.len();
         // Each branch's range of events and, per handler name, the ids it installed: the
         // installations before it and how many it made.
-        let mut ranges: Vec<(usize, usize, BTreeMap<String, (usize, usize)>)> = Vec::new();
+        let mut ranges: Vec<Part> = Vec::new();
         for (position, (from, before)) in parts.iter().enumerate() {
             let (to, after) = match parts.get(position + 1) {
                 Some((to, after)) => (*to, after),
@@ -2056,12 +2060,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         if let Some(winner) = ranges.pop() {
             ranges.insert(0, winner);
         }
-        let mut events: Vec<Option<Event>> = self
-            .trace
-            .split_off(start)
-            .into_iter()
-            .map(Some)
-            .collect();
+        let mut events: Vec<Option<Event>> =
+            self.trace.split_off(start).into_iter().map(Some).collect();
         // The ids each name gets, in the new order, from the installations before the block.
         let mut next: BTreeMap<String, usize> = parts
             .first()
