@@ -329,6 +329,17 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     } else if cfg!(target_os = "linux") {
         command.arg("-Wl,--gc-sections");
     }
+    // Only the system libraries the executable imports a symbol from get a load command or a
+    // `NEEDED` entry (#1103): ld64 drops the others with `-dead_strip_dylibs`, and GNU ld, with
+    // `--as-needed` before the libraries below, records none of them that the link does not use
+    // (since glibc 2.34, `libutil`, `librt`, `libpthread` and `libdl` are empty stubs). Some
+    // distributions' compilers pass `--as-needed` by default, others do not, so it is explicit.
+    // scripts/load-commands.sh fails on any load command outside scripts/load-commands.txt.
+    if cfg!(target_os = "macos") {
+        command.arg("-Wl,-dead_strip_dylibs");
+    } else if cfg!(target_os = "linux") {
+        command.arg("-Wl,--as-needed");
+    }
     // The system libraries that the Rust standard library inside `una-rt` needs, as
     // `rustc --print native-static-libs` lists them for each target.
     if cfg!(target_os = "linux") {
