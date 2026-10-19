@@ -1,0 +1,17 @@
+-- test: every collection of `std.collections` interpolates, and so does a record that holds a `HashSet`, though neither has `==`; a collection that holds a `Hashed` does not (ADR 0119 rule 3)
+-- spec: spec/28 §4
+-- expect: error U2001 at src/m.una:17:45
+module m
+
+import std.collections (BitSet, HashMap, HashSet, PriorityQueue, Queue, Set, Stack)
+
+pub kind Bag
+  items: HashSet[Int]
+
+pub sequences(a: Stack[Int], b: Queue[Text], c: PriorityQueue[Text, Int]) -> Text = "{a} {b} {c}"
+
+pub sets(d: Set[Int], e: HashSet[Text], f: BitSet, g: HashMap[Text, Int]) -> Text = "{d} {e} {f} {g}"
+
+pub bag(h: Bag) -> Text = "{h}"
+
+pub digests(i: HashSet[Hashed]) -> Text = "{i}"

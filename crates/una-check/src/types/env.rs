@@ -17,10 +17,11 @@ use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
+use super::dense::dense_numeric;
 use super::label::{Accepts, Label};
 use super::ty::{
-    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
-    Shared, Show, Ty,
+    AliasId, CapId, Declared, Dense, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names,
+    Refinement, Shared, Show, Ty,
 };
 use crate::names::prelude;
 
@@ -81,6 +82,8 @@ pub(crate) enum Builtin {
     Map,
     /// `F64`, built in from edition 0.3 (`spec/29`, ADR 0114 rule 1).
     F64,
+    /// A collection type that `std.collections` exports, edition 0.4 (ADR 0119 rule 0).
+    Coll(una_core::Coll),
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -438,15 +441,41 @@ pub(crate) struct Env<'a> {
     /// declaration and examples keeps from it, by function id: the handler's name and the first
     /// place it is named, which the U4002 at a call of their policy shows.
     pub(crate) blocked_vias: BTreeMap<usize, (String, Span)>,
+    /// The module of the map's built-in method `update`, in edition 0.4 (ADR 0119 rule 18):
+    /// in no scope, so only method syntax on a map reaches it.
+    pub(crate) map_module: Option<usize>,
+    /// The function `update` of that module.
+    pub(crate) map_update: Option<usize>,
+    /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
+    /// rule 0).
+    pub(crate) collections: Option<usize>,
 }
 
-/// The key type of a written `Map[K, V]`, where it is written, and the function whose type
-/// parameters it may name.
+/// The key type of a written `Map[K, V]`, or an argument of a written collection type that
+/// must satisfy a constraint (ADR 0119 rules 7, 8 and 13), where it is written, and the
+/// function whose type parameters it may name.
 #[derive(Clone, Debug)]
 pub(crate) struct MapKey {
     pub(crate) key: Ty,
     pub(crate) span: Span,
     pub(crate) owner: Option<usize>,
+    /// The collection type and the index of the argument; `None` for a map's key.
+    pub(crate) of: Option<(una_core::Coll, usize)>,
+}
+
+impl MapKey {
+    /// The constraint the argument must satisfy: `Ord` for a map's key.
+    pub(crate) fn need(&self) -> Constraint {
+        match self.of {
+            None => Constraint::Ord,
+            Some((coll, index)) => match coll.needs(index) {
+                una_core::Constraint::Eq => Constraint::Eq,
+                una_core::Constraint::Ord => Constraint::Ord,
+                una_core::Constraint::Integer => Constraint::Integer,
+                una_core::Constraint::None => Constraint::None,
+            },
+        }
+    }
 }
 
 /// A step from a position of a type to a position inside it (ADR 0067).
@@ -481,12 +510,16 @@ pub(crate) fn position_text(path: &[Step]) -> String {
 }
 
 impl<'a> Env<'a> {
-    /// Builds the environment of the package modules, then the prelude and `std.testing`, and
-    /// lowers every signature.
+    /// Builds the environment of the package modules, then the prelude, `std.testing`, in
+    /// edition 0.4 the module of the map's `update` and, when the package imports it,
+    /// `std.collections`, and lowers every signature.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         package: Vec<Source<'a>>,
         prelude: Source<'a>,
         after_prelude: Vec<Source<'a>>,
+        map_0_4: Option<Source<'a>>,
+        collections: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
         report: &mut Report<'_>,
@@ -532,6 +565,9 @@ impl<'a> Env<'a> {
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
+            map_module: None,
+            map_update: None,
+            collections: None,
         };
         for source in package
             .into_iter()
@@ -539,6 +575,29 @@ impl<'a> Env<'a> {
             .chain(after_prelude)
         {
             env.register(source);
+        }
+        if let Some(source) = map_0_4 {
+            env.map_module = Some(env.modules.len());
+            env.register(source);
+        }
+        if let Some(source) = collections {
+            env.collections = Some(env.modules.len());
+            env.register(source);
+        }
+        env.map_update =
+            env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        // ADR 0119 rule 0: `std.collections` exports its built-in types beside its kinds.
+        if let Some(module) = env.collections.and_then(|index| env.modules.get_mut(index)) {
+            for coll in una_core::Coll::ALL {
+                module
+                    .upper
+                    .entry(coll.as_str())
+                    .or_insert(Entity::Builtin(Builtin::Coll(coll)));
+            }
         }
         if let Some(module) = env.modules.get_mut(count) {
             for (name, builtin) in BUILTINS {
@@ -828,8 +887,11 @@ impl<'a> Env<'a> {
                 let joined = path.join(".");
                 let host = joined == prelude::STD_HOST;
                 let time = joined == prelude::STD_TIME;
-                let standard =
-                    host || time || joined == "std.testing" || joined == prelude::STD_DRIVE;
+                let standard = host
+                    || time
+                    || joined == "std.testing"
+                    || joined == prelude::STD_DRIVE
+                    || joined == prelude::STD_COLLECTIONS;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {
@@ -884,6 +946,19 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`
+    /// and `Matrix` are built in, ahead of any declaration and of the variant `Json.Array`.
+    pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
+        if self.edition < Edition::V0_4 {
+            return None;
+        }
+        match name {
+            "Array" => Some(Dense::Array),
+            "Matrix" => Some(Dense::Matrix),
+            _ => None,
+        }
+    }
+
     /// The candidates for an upper-case name in `module`, from the innermost scope that holds
     /// any (ADR 0023 rule 2). Several candidates are variants of imported kinds.
     pub(crate) fn upper(&self, module: usize, name: &str) -> Vec<Entity> {
@@ -914,11 +989,25 @@ impl<'a> Env<'a> {
             .get(name)
             .or_else(|| scope.imports.get(name))
             .or_else(|| {
+                // The prelude functions of dense methods are reached by their receiver only
+                // (`spec/29 §17`): no name in a program finds them.
+                if name.starts_with(prelude::DENSE_HIDDEN) {
+                    return None;
+                }
                 self.modules
                     .get(self.prelude)
                     .and_then(|p| p.lower.get(name))
             })
             .copied()
+    }
+
+    /// The prelude function `name`, whatever scopes a program declares: the functions that the
+    /// methods of dense values resolve to (`spec/29 §17`).
+    pub(crate) fn prelude_function(&self, name: &str) -> Option<usize> {
+        match self.modules.get(self.prelude)?.lower.get(name)? {
+            Entity::Function(id) => Some(*id),
+            _ => None,
+        }
     }
 
     /// The kind `name` of the prelude, such as `Option` or `Result`.
@@ -2193,11 +2282,45 @@ impl<'a> Env<'a> {
             return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
+        // Edition 0.4 (ADR 0120 rule 3): `Array` and `Matrix` are built-in types, which no
+        // declaration can hide; the prelude's variant `Json.Array` is a constructor, written
+        // with parentheses, so it never meets the type, written with brackets.
+        if let Some(dense) = self.dense_name(name) {
+            if bases.len() != 1 {
+                return arity(1, bases.len());
+            }
+            let element = bases.into_iter().next().unwrap_or(Ty::error());
+            // The prelude declares the methods of `Matrix[T]` over a type parameter, whose element types
+            // its callers' receivers decide.
+            if dense == Dense::Matrix
+                && reports
+                && module != self.prelude
+                && !dense_numeric(&element)
+            {
+                report.error(
+                    Code::U2002,
+                    span,
+                    format!(
+                        "`Matrix` takes a numeric element type, `F64` or one of `I8` to `U64`, and `{}` is not one",
+                        Show(
+                            &element,
+                            &LowerNames {
+                                env: self,
+                                type_params,
+                            }
+                        )
+                    ),
+                );
+                return Declared::error();
+            }
+            return Declared::plain(Ty::Dense(dense, Shared::new(element)));
+        }
         let problem = match self.upper(module, name).first().copied() {
             Some(Entity::Builtin(builtin)) => {
                 let expected = match builtin {
                     Builtin::List => 1,
                     Builtin::Map => 2,
+                    Builtin::Coll(coll) => coll.arity(),
                     _ => 0,
                 };
                 if bases.len() != expected {
@@ -2223,9 +2346,27 @@ impl<'a> Env<'a> {
                                 key: key.clone(),
                                 span,
                                 owner: self.owner,
+                                of: None,
                             });
                         }
                         Ty::Map(Shared::new(key), Shared::new(value))
+                    }
+                    // ADR 0119: a set's item and a priority must satisfy `Ord`, and a hash key
+                    // or item `Eq`, where the type is written, as a map's key must.
+                    Builtin::Coll(coll) => {
+                        if reports {
+                            for (index, arg) in bases.iter().enumerate() {
+                                if coll.needs(index) != una_core::Constraint::None {
+                                    self.map_keys.push(MapKey {
+                                        key: arg.clone(),
+                                        span,
+                                        owner: self.owner,
+                                        of: Some((coll, index)),
+                                    });
+                                }
+                            }
+                        }
+                        Ty::Coll(coll, bases.into())
                     }
                 };
                 return Declared::plain(base);

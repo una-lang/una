@@ -1413,6 +1413,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-hash"
+version = "0.3.16"
+dependencies = [
+ "getrandom 0.4.3",
+ "una-hash",
+]
+
+[[package]]
 name = "una-http"
 version = "0.3.16"
 dependencies = [

@@ -8,16 +8,16 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source,
-    Term, Type, Use, print_term_with,
+    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
+    SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
 
 use crate::run::Problem;
 use crate::smt::{
-    Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query,
-    Sort, TEXT, UNIT, kind_sort, path_selector,
+    ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP,
+    MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// A proof obligation of `spec/12 §3`, with its query.
@@ -392,6 +392,35 @@ fn is_prelude(module: &str) -> bool {
     module == una_core::PRELUDE_MODULE
 }
 
+/// The prefix of the sorts of `Stack[T]`, `i!Stack_<T>` (ADR 0119 V1).
+const STACK: &str = "i!Stack_";
+
+/// The prefix of the sorts of `Queue[T]`, `i!Queue_<T>` (ADR 0119 V1).
+const QUEUE: &str = "i!Queue_";
+
+/// The element type of a `Stack[T]` or a `Queue[T]` of `std.collections`, refinements
+/// included; `None` for any other type.
+fn seq_element(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Base {
+            base: Base::Named { module, name, args },
+            ..
+        } if module == una_core::COLLECTIONS_MODULE
+            && (name == "Stack" || name == "Queue")
+            && args.len() == 1 =>
+        {
+            args.first()
+        }
+        _ => None,
+    }
+}
+
+/// Whether (`module`, `name`) is a collection type of `std.collections` (ADR 0119), which Core
+/// does not declare: its sort is the encoder's, as a list's is (V1).
+fn is_collection(module: &str, name: &str) -> bool {
+    module == una_core::COLLECTIONS_MODULE && una_core::Coll::from_name(name).is_some()
+}
+
 /// The variants of the prelude's kinds, which the program does not declare: names and field
 /// counts (`spec/14 §1, §3`).
 fn prelude_variants(kind: &str) -> Option<&'static [(&'static str, &'static [&'static str])]> {
@@ -557,10 +586,11 @@ impl<'p> Index<'p> {
         if self.kinds.contains_key(&(module, name)) {
             return false;
         }
-        let prelude = is_prelude(module);
+        let collection = is_collection(module, name);
+        let prelude = is_prelude(module) || collection;
         // The kinds Core does not declare: `prelude_variants` has the variants of some, and
-        // the verifier does not look into the others' values.
-        if !(prelude && una_core::PRELUDE_ENGINE_KINDS.contains(&name)) {
+        // the verifier does not look into the others' values, nor into a collection's.
+        if !(collection || (prelude && una_core::PRELUDE_ENGINE_KINDS.contains(&name))) {
             self.unresolved
                 .borrow_mut()
                 .insert((module.to_owned(), name.to_owned()));
@@ -766,7 +796,7 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Decimal(_) => "Int".to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
-                if is_prelude(module) {
+                if is_prelude(module) || is_collection(module, name) {
                     let mut sort = format!("i!{name}");
                     for arg in &args {
                         sort.push('_');
@@ -1709,8 +1739,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                         }
                         let x = own(&body_ctx, name);
                         let entry = self.atom(atom, &ctx);
-                        if let (Some(now), Some(then)) = (self.len(&x), self.len(&entry)) {
-                            body_ctx.assume(F::eq(now, then));
+                        // The shape frame of ADR 0120 V4: a matrix's rows and columns too.
+                        let (now, then) = (self.shape_terms(&x), self.shape_terms(&entry));
+                        if now.len() == then.len() {
+                            for (now, then) in now.into_iter().zip(then) {
+                                body_ctx.assume(F::eq(now, then));
+                            }
                         }
                     }
                     // `for until c decreases m` (ADR 0116 V1): `c` is false in the body when it
@@ -2041,10 +2075,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                                         continue;
                                     }
                                     let entry = self.atom(atom, &ctx);
-                                    if let (Some(now), Some(then)) =
-                                        (self.len(&component), self.len(&entry))
-                                    {
-                                        ctx.define(F::eq(now, then));
+                                    let (now, then) =
+                                        (self.shape_terms(&component), self.shape_terms(&entry));
+                                    if now.len() == then.len() {
+                                        for (now, then) in now.into_iter().zip(then) {
+                                            ctx.define(F::eq(now, then));
+                                        }
                                     }
                                 }
                             }
@@ -2439,6 +2475,59 @@ impl<'p, 'i> Walker<'p, 'i> {
                         }
                     }
                     self.map_facts(*op, &values, &x, ctx);
+                }
+                if let Prim::Seq(op) = prim {
+                    // ADR 0119 rule 1 and ADR 0103 rule 3: a push stores its item at the
+                    // element type, a flow site with its `refinement` obligations; the other
+                    // operations store nothing.
+                    if matches!(op, SeqOp::PushFront | SeqOp::PushBack)
+                        && let Some(Type::Base {
+                            base: Base::Named { args: element, .. },
+                            ..
+                        }) = values.first().map(|seq| &seq.ty)
+                        && let (Some(target), Some(value)) =
+                            (element.first().cloned(), values.get(1))
+                        && has_refinements(&target)
+                    {
+                        let at = arg_spans.get(1).copied().unwrap_or(*span);
+                        self.refined_flow(&target, value, at, ctx);
+                    }
+                    self.seq_facts(*op, &values, &x, ctx);
+                }
+                // ADR 0119 rule 1 and ADR 0103 rule 3: `add` and `with` store their item at
+                // the set's item type, a flow site with its `refinement` obligations; a lookup,
+                // `has`, `remove` and `without`, stores nothing.
+                if *prim == Prim::Set(SetOp::With)
+                    && let Some(Type::Base {
+                        base: Base::Named { args: item, .. },
+                        ..
+                    }) = values.first().map(|set| &set.ty)
+                    && let (Some(target), Some(value)) = (item.first().cloned(), values.get(1))
+                    && has_refinements(&target)
+                {
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, value, at, ctx);
+                }
+                // `union` stores the other set's items at the receiver's item type: the other
+                // set flows into the receiver's type, with the obligations of its nested
+                // positions (ADR 0103 rule 4). The other set operations keep only the
+                // receiver's items, so their other set stores nothing.
+                if *prim == Prim::Set(SetOp::Union)
+                    && let (Some(set), Some(other)) = (values.first(), values.get(1))
+                    && let Type::Base {
+                        base: base @ Base::Named { .. },
+                        label,
+                        ..
+                    } = &set.ty
+                    && has_refinements(&set.ty)
+                {
+                    let target = Type::Base {
+                        base: base.clone(),
+                        refinements: Vec::new(),
+                        label: label.clone(),
+                    };
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, other, at, ctx);
                 }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
@@ -3088,8 +3177,92 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Convert(_)
                 | Prim::Fixed(..)
                 | Prim::Float(_)
+                | Prim::Shape(_)
                 // A decimal's `Option` results have no fact behind their nested positions.
                 | Prim::Decimal(_) => unknown(),
+                // ADR 0119 V6: what a `Stack` or a `Queue` gives back carries its element
+                // position's refinements, as an element of a list does (ADR 0103 rule 6), and an
+                // update gives a sequence of the receiver's type.
+                Prim::Seq(op) => {
+                    let receiver = args.first().map(|seq| self.atom(seq, ctx).ty);
+                    let element = receiver.as_ref().and_then(seq_element).cloned();
+                    match (receiver, element) {
+                        (Some(sequence), Some(element)) => {
+                            let wrapped = |name: &str| Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: name.to_owned(),
+                                    args: vec![element.clone()],
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            };
+                            match op {
+                                SeqOp::PeekFront | SeqOp::PeekBack => wrapped("Option"),
+                                SeqOp::Items => wrapped("List"),
+                                SeqOp::PushFront
+                                | SeqOp::PushBack
+                                | SeqOp::PopFront
+                                | SeqOp::PopBack => sequence,
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: an item a set gives back carries its position's refinements,
+                // as an element of a list does (ADR 0103 rule 6).
+                Prim::Set(op) => {
+                    let receiver = args.first().map(|set| self.atom(set, ctx).ty);
+                    match (op, receiver) {
+                        (
+                            SetOp::First | SetOp::Last | SetOp::Between | SetOp::Items,
+                            Some(Type::Base {
+                                base: Base::Named { module, name, args },
+                                ..
+                            }),
+                        ) if is_collection(&module, &name) && name == "Set" && args.len() == 1 => {
+                            let wrapper = match op {
+                                SetOp::First | SetOp::Last => "Option",
+                                _ => "List",
+                            };
+                            Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: wrapper.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        // A set that an update or a set operation gives holds the receiver's
+                        // items, and the items `add`, `with` and `union` store, each a flow
+                        // site of its own: its type is the receiver's, as a map's `with` is.
+                        (
+                            SetOp::With
+                            | SetOp::Without
+                            | SetOp::Union
+                            | SetOp::Intersection
+                            | SetOp::Difference,
+                            Some(Type::Base {
+                                base: base @ Base::Named { .. },
+                                ..
+                            }),
+                        ) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "Set" && args.len() == 1
+                        ) =>
+                        {
+                            Type::Base {
+                                base,
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
             }),
             Rhs::Call {
                 function,
@@ -3730,8 +3903,38 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// `.len` of a text, list or map, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
-        let has_len = sort == TEXT || sort.starts_with(LIST) || sort.starts_with(MAP);
+        // A `Stack` and a `Queue` have a length too (ADR 0119 V1), with its ground fact
+        // `len >= 0`.
+        let has_len = sort == TEXT
+            || sort.starts_with(LIST)
+            || sort.starts_with(MAP)
+            || sort.starts_with(ARRAY)
+            || sort.starts_with(STACK)
+            || sort.starts_with(QUEUE);
         has_len.then(|| len_of(&value.f))
+    }
+
+    /// `m.rows` or `m.columns` of a matrix, `i!rows!<Sort>` or `i!columns!<Sort>` (ADR 0120
+    /// V4).
+    fn shape(&self, value: &Tv, fun: ShapeFun) -> Option<F> {
+        value
+            .f
+            .sort()
+            .starts_with(MATRIX)
+            .then(|| shape_of(&value.f, fun))
+    }
+
+    /// The shape of a value as the terms that the frame of a loop keeps (ADR 0071, ADR 0120
+    /// V4): its length, or its rows and its columns.
+    fn shape_terms(&self, value: &Tv) -> Vec<F> {
+        if value.f.sort().starts_with(MATRIX) {
+            vec![
+                shape_of(&value.f, ShapeFun::Rows),
+                shape_of(&value.f, ShapeFun::Columns),
+            ]
+        } else {
+            self.len(value).into_iter().collect()
+        }
     }
 
     /// The contract of a map's operation as facts of its result `x` (`spec/21 §4`): `has` and
@@ -3804,6 +4007,48 @@ impl<'p, 'i> Walker<'p, 'i> {
             MapOp::Keys | MapOp::Values | MapOp::Entries => {
                 if let Some(new_len) = self.len(x) {
                     ctx.assume(F::eq(new_len, old_len));
+                }
+            }
+        }
+    }
+
+    /// Facts of a `Stack`'s or a `Queue`'s operation on its result `x` (ADR 0119 rules 5 and 6),
+    /// each true of every sequence: a push adds one to the length, a removal takes one off a
+    /// nonempty sequence and keeps an empty one, `items()` has the sequence's length, and a
+    /// read is `None` exactly when the sequence is empty. The facts of ADR 0119 V2 about which
+    /// element a read gives back need the uninterpreted `peek` of V1, which this encoding does
+    /// not have yet, so a read's payload is unknown here. O(1) facts per call.
+    fn seq_facts(&mut self, op: SeqOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let Some(old_len) = values.first().and_then(|seq| self.len(seq)) else {
+            return;
+        };
+        let zero = || F::Int("0".to_owned());
+        let one = || F::Int("1".to_owned());
+        match op {
+            SeqOp::PushFront | SeqOp::PushBack => {
+                if let Some(new_len) = self.len(x) {
+                    ctx.assume(F::eq(new_len, F::op("+", vec![old_len, one()])));
+                }
+            }
+            SeqOp::PopFront | SeqOp::PopBack => {
+                if let Some(new_len) = self.len(x) {
+                    let nonempty = F::op(">", vec![old_len.clone(), zero()]);
+                    let shorter = F::op("-", vec![old_len, one()]);
+                    ctx.assume(F::eq(
+                        new_len,
+                        F::op("ite", vec![nonempty, shorter, zero()]),
+                    ));
+                }
+            }
+            SeqOp::Items => {
+                if let Some(new_len) = self.len(x) {
+                    ctx.assume(F::eq(new_len, old_len));
+                }
+            }
+            // `None` is variant 1 of `Option`.
+            SeqOp::PeekFront | SeqOp::PeekBack => {
+                if let Some(tag) = self.tag(x) {
+                    ctx.assume(F::eq(F::eq(tag, one()), F::eq(old_len, zero())));
                 }
             }
         }
@@ -3995,7 +4240,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                 format!("{written}.to_int()")
             }
         };
+        // An element-wise operator of dense values (ADR 0120 rule 34) applies the operation to
+        // the elements its lambda receives, whose operands carry the operator's own span: no
+        // guard written on the operands' text would test them.
+        let element_wise = arg_spans.contains(&span);
         let guard = match prim {
+            _ if element_wise => None,
             Prim::Convert(_) => {
                 let written = arg_spans
                     .first()
@@ -4146,6 +4396,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 self.order(op, &a, &b)?
             }
             Prim::Len => self.len(&arg(0)?)?,
+            // `m.rows` and `m.columns` (ADR 0120 V4).
+            Prim::Shape(fun) => self.shape(&arg(0)?, fun)?,
             // `to_int()` on a type parameter under `Integer` is uninterpreted (`spec/20 §5`).
             Prim::Convert(None) if is_param_sort(&arg(0)?.f.sort()) => {
                 let value = arg(0)?.f;
@@ -4175,7 +4427,15 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
                 float_term(op, &args)?
             }
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) => {
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms. A
+            // set's methods are known by their facts, which ADR 0119 V2 to V4 give, not as
+            // terms: until then, each result is a fresh binder, which proves nothing about it.
+            Prim::Concat
+            | Prim::ToText
+            | Prim::Fixed(..)
+            | Prim::Map(_)
+            | Prim::Seq(_)
+            | Prim::Set(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
@@ -4469,6 +4729,37 @@ impl<'p, 'i> Walker<'p, 'i> {
                 Tv {
                     f: self.len(&value)?,
                     ty: int(),
+                }
+            }
+            Term::Shape { fun, value } => {
+                let value = self.term(value, env)?;
+                Tv {
+                    f: self.shape(&value, *fun)?,
+                    ty: int(),
+                }
+            }
+            // The element of a dense value, uninterpreted, of its element type's sort (ADR
+            // 0120 V4): no fact relates it to other elements, which would need a quantifier.
+            Term::Element { value, indices } => {
+                let value = self.term(value, env)?;
+                let sort = value.f.sort();
+                if !(sort.starts_with(ARRAY) || sort.starts_with(MATRIX)) {
+                    return None;
+                }
+                let element = match &value.ty {
+                    Type::Base {
+                        base: Base::Named { args, .. },
+                        ..
+                    } => args.first()?.clone(),
+                    _ => return None,
+                };
+                let mut args = vec![value.f.clone()];
+                for index in indices {
+                    args.push(self.term(index, env)?.f);
+                }
+                Tv {
+                    f: element_of(&args, &self::sort(&element)),
+                    ty: element,
                 }
             }
             Term::Has { map, key } => {
@@ -5288,7 +5579,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let mut new = Vec::new();
                 match &term {
                     F::App { fun, args } => match &fun.role {
-                        FunRole::Len => {
+                        FunRole::Len | FunRole::Shape => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
                         }
                         // A map that has a key is not empty, so an empty one has none.
@@ -5357,7 +5648,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 }
                             }
                         }
-                        FunRole::Predicate | FunRole::Get | FunRole::Other => {}
+                        FunRole::Predicate | FunRole::Get | FunRole::Element | FunRole::Other => {}
                     },
                     F::Const(Const {
                         role: ConstRole::Text(text),
@@ -5660,6 +5951,21 @@ impl<'p, 'i> Walker<'p, 'i> {
                 match &fun.role {
                     FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
                     FunRole::Len => (format!("{}.len", first()), 1),
+                    FunRole::Shape => (format!("{}.{base}", first()), 1),
+                    FunRole::Element => {
+                        let labels: &[&str] = if args.len() == 2 {
+                            &["index"]
+                        } else {
+                            &["row", "column"]
+                        };
+                        let shown: Vec<String> = args
+                            .iter()
+                            .skip(1)
+                            .zip(labels)
+                            .map(|(a, label)| format!("{label}: {}", operand(a, 10)))
+                            .collect();
+                        (format!("{}.get({})", first(), shown.join(", ")), 1)
+                    }
                     FunRole::Tag { .. } => (format!("tag({})", first()), 1),
                     FunRole::Has | FunRole::Get => {
                         let key = args.get(1).map_or_else(String::new, |a| operand(a, 10));
@@ -5996,6 +6302,35 @@ fn get_of(map: &F, key: &F, option: &Sort) -> F {
             role: FunRole::Get,
         },
         args: vec![map.clone(), key.clone()],
+    }
+}
+
+/// `m.rows` or `m.columns`, `i!rows!<Sort>` or `i!columns!<Sort>` (ADR 0120 V4).
+fn shape_of(value: &F, fun: ShapeFun) -> F {
+    let sort = value.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!{}!{sort}", fun.as_str()),
+            args: vec![sort],
+            result: "Int".to_owned(),
+            role: FunRole::Shape,
+        },
+        args: vec![value.clone()],
+    }
+}
+
+/// The element of a dense value at its indices, `i!get!<Sort>` with the value first, then one
+/// `Int` per axis, of the element's sort (ADR 0120 V4).
+fn element_of(args: &[F], element: &Sort) -> F {
+    let sort = args.first().map_or_else(String::new, F::sort);
+    F::App {
+        fun: SmtFun {
+            name: format!("i!get!{sort}"),
+            args: args.iter().map(F::sort).collect(),
+            result: element.clone(),
+            role: FunRole::Element,
+        },
+        args: args.to_vec(),
     }
 }
 

@@ -1,0 +1,45 @@
+-- test: the shape preconditions of a whole computation are proven from `requires` and from the kernels' and views' `ensures`: a chain of products, a row's dot product, transposes, blocks, slices and element-wise operators
+-- spec: spec/29 §17
+-- expect: ok
+module dense
+
+pub chain(a: Matrix[F64], b: Matrix[F64], c: Matrix[F64]) -> Matrix[F64]
+  requires a.columns == b.rows and b.columns == c.rows
+  ensures result.rows == a.rows and result.columns == c.columns
+=
+  a.multiply(by: b).multiply(by: c)
+
+pub gram(x: Matrix[F64]) -> Matrix[F64]
+  ensures result.rows == x.columns and result.columns == x.columns
+=
+  x.transpose().multiply(by: x)
+
+pub row_dot(m: Matrix[F64], v: Array[F64], i: Int) -> F64
+  requires 0 <= i and i < m.rows and v.len == m.columns
+=
+  m.row(index: i).dot(with: v)
+
+pub corner(m: Matrix[F64]) -> Matrix[F64]
+  requires m.rows >= 2 and m.columns >= 3
+  ensures result.rows == 2 and result.columns == 3
+=
+  m.block(row_from: 0, row_until: 2, column_from: 0, column_until: 3).compact()
+
+pub middle(a: Array[F64]) -> Array[F64]
+  requires a.len >= 4
+  ensures result.len == a.len - 2
+=
+  a.slice(from: 1, until: a.len - 1)
+
+pub residual(m: Matrix[F64], x: Array[F64], b: Array[F64]) -> Array[F64]
+  requires m.columns == x.len and m.rows == b.len
+  ensures result.len == b.len
+=
+  m.multiply_array(by: x) - b
+
+pub update(edit y: Array[F64], x: Array[F64], k: F64) -> Unit
+  requires y.len == x.len
+  ensures y.len == old(y).len
+=
+  edit y.add_scaled(x, by: k)
+  edit y.scale(by: 0.5)

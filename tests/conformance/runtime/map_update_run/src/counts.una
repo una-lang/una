@@ -1,0 +1,53 @@
+-- test: in edition 0.4, `edit m.update(key:, initial:, change:)` sets the key to `change` of its value, or of `initial` when the map lacks it, calling `change` once; when `change` fails, the map keeps its value; a function `update` on another type stays reachable by method syntax; both engines agree (ADR 0119 rule 18)
+-- spec: spec/21 §2
+-- grant: console
+-- expect: run-output "counts: {\"be\": 2, \"not\": 1, \"or\": 1, \"to\": 2}"
+-- expect: run-output "raised: {\"be\": 2, \"not\": 1, \"or\": 2, \"to\": 2} / {\"be\": 2, \"new\": 1, \"not\": 1, \"or\": 1, \"to\": 2}"
+-- expect: run-output "stopped: TooMany, counts: {\"be\": 2, \"not\": 1, \"or\": 1, \"to\": 2}"
+-- expect: run-output "counter: 2"
+module counts
+
+pub kind Stop = TooMany | Empty
+
+pub kind Counter
+  count: Int
+
+--- A function named `update` on a record: the map's method does not hide it.
+update(c: Counter) -> Counter = Counter(count: c.count + 1)
+
+--- How often each word occurs.
+count(words: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for word in words
+    edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
+  counts
+
+--- `m` with `key` raised by one, failing from 2 on.
+capped(m: Map[Text, Int], key: Text) -> Map[Text, Int]
+  fails Stop
+=
+  let edit out = m
+  edit out.update(key: key, initial: 0, change: fn(n) -> if n >= 2 then fail TooMany else n + 1)
+    if error pass
+  out
+
+--- The map, or the failure's name.
+shown(r: Result[Map[Text, Int], Stop]) -> Text
+=
+  when r
+    is Ok(m) -> "{m}"
+    is Err(e) -> "{e}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let counts = count(["to", "be", "or", "not", "to", "be"])
+  @console.print("counts: {counts}")
+  let raised = attempt capped(m: counts, key: "or")
+  let added = attempt capped(m: counts, key: "new")
+  @console.print("raised: {shown(raised)} / {shown(added)}")
+  let stopped = attempt capped(m: counts, key: "to")
+  @console.print("stopped: {shown(stopped)}, counts: {counts}")
+  let c = Counter(count: 1).update()
+  @console.print("counter: {c.count}")
