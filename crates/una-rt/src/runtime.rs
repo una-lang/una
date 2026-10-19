@@ -290,6 +290,9 @@ pub(crate) fn guarded<R>(doing: &str, f: impl FnOnce() -> R) -> Result<R, String
     })
 }
 
+/// The trace file of the run, once `start` made it: a stop that writes no trace removes it.
+static TRACE_FILE: OnceLock<PathBuf> = OnceLock::new();
+
 /// The bytes that 2^32 − 1 references take, one word each: a count at its limit with less held
 /// in the heap and the stacks cannot be the program's (ADR 0113 rule 5).
 const COUNT_LIMIT_BYTES: usize = (values::COUNT_LIMIT as usize).saturating_mul(8);
@@ -319,6 +322,11 @@ pub(crate) fn count_limit_reached() -> ! {
     // The allocator's ceiling stays: the threads that still run until the process ends keep
     // their hard cap, and this stop allocates nothing.
     end_once();
+    // The trace file, made when the run started (ADR 0117 rule 10), is removed: this stop
+    // writes none.
+    if let Some(path) = TRACE_FILE.get() {
+        let _ = std::fs::remove_file(path);
+    }
     let held = crate::held().saturating_add(STACKS.load(Ordering::SeqCst));
     let (code, message, exit) = if held >= count_limit_bytes() {
         (
@@ -1698,7 +1706,10 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // 10): one that cannot be made is a usage error.
     let shared = match &options.trace {
         Some(path) => match crate::started::RunShared::tracing(path) {
-            Ok(shared) => shared,
+            Ok(shared) => {
+                let _ = TRACE_FILE.set(path.clone());
+                shared
+            }
             Err(error) => {
                 let _ = writeln!(
                     stderr,
