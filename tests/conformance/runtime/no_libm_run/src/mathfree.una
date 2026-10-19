@@ -1,0 +1,72 @@
+-- test: integers past 2^64 (a power by repeated multiplication, a product, Euclidean division and remainder by either sign, rendering, parse_int of a repeated text), F64 arithmetic and conversions, text, lists and maps run alike in both engines, so the native differential links an executable that uses each of them and the release check of scripts/no-libm.sh finds no C math library symbol in it (#1092)
+-- spec: spec/29 §6
+-- grant: console
+-- expect: run-output "power 1267650600228229401496703205376 2503155504993241601315571986085849"
+-- expect: run-output "product 3173126578369279394610431020106175019306389315838160670214324224"
+-- expect: run-output "divide 172015536491973397937608084154552685262429583 10458767908098895862 -172015536491973397937608084154552685262429584 7987976165610655767"
+-- expect: run-output "negative divisor -172015536491973397937608084154552685262429583 10458767908098895862 172015536491973397937608084154552685262429584 7987976165610655767"
+-- expect: run-output "text 64 Some(9) true"
+-- expect: run-output "parse 123456789123456789123456789123456789123456789 370370367370370367370370367370370367370370368 211 true"
+-- expect: run-output "float 3.475 0.5 1.4142135623730951 -3.0 3.0 -2.0 1.5 2.0"
+-- expect: run-output "convert 1.2676506002282294e30 3.1731265783692794e63 Some(100000000000000000000) Some(-3) 12.345 Ok(625.0)"
+-- expect: run-output "list [1, 3, 5, 9] 22817710804108129226940657696768 5391 [5, 3, 9, 1, 7]"
+-- expect: run-output "map 3 [\"a\", \"b\", \"p\"] Some(1267650600228229401496703205376) None"
+-- expect: run-output "words alpha-beta-gamma ALPHA,BETA,GAMMA alpha-beta-gamma 16"
+module mathfree
+
+power(base: Int, exponent: Int) -> Int
+=
+  let edit total = 1
+  for i in 0..<exponent
+    total = total * base
+  total
+
+parsed(t: Text) -> Int
+=
+  let n = t.parse_int()
+    if error use 0
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = power(2, exponent: 100)
+  let b = power(3, exponent: 70)
+  let product = a * b
+  @console.print("power {a} {b}")
+  @console.print("product {product}")
+  let d = 18446744073709551629
+  let nd = 0 - d
+  let n = product + 12345
+  let m = 0 - n
+  @console.print("divide {n / d} {n mod d} {m / d} {m mod d}")
+  @console.print("negative divisor {n / nd} {n mod nd} {m / nd} {m mod nd}")
+  let digits = "{product}"
+  let tail = "224"
+  let inner = "8369"
+  @console.print("text {digits.len} {digits.find(text: inner)} {digits.ends_with(suffix: tail)}")
+  let edit repeated = ""
+  for i in 0..<5
+    repeated = "{repeated}123456789"
+  let read = parsed(repeated)
+  let negative = parsed("-{repeated}")
+  @console.print("parse {read} {read * 3 + 1} {negative mod 1000} {read == 123456789123456789123456789123456789123456789}")
+  let x = 1.5
+  let y = x * 2.25 + 0.1
+  @console.print("float {y} {x / 3.0} {2.0.sqrt()} {(-2.75).floor()} {2.75.ceil()} {(-2.5).trunc()} {7.5.rem(by: 2.0)} {2.5.round_half_even()}")
+  let f = attempt parse_f64("6.25e2")
+  @console.print("convert {a.to_f64()} {product.to_f64()} {1.0e20.to_int_exact()} {(0.0 - 3.0).to_int_exact()} {12345.to_f64() / 1000.0} {f}")
+  let xs = [5, 3, 9, 1]
+  let scaled = map(xs, each: fn(v: Int) -> v * a)
+  let folded = fold(xs, initial: 0, step: fn(acc, v) -> acc * 10 + v)
+  @console.print("list {sort(xs)} {sum(scaled)} {folded} {xs.append(item: 7)}")
+  let empty: Map[Text, Int] = empty_map()
+  let prices = empty.with(key: "b", value: b).with(key: "a", value: a).with(key: "p", value: product)
+  let found = prices.get(key: "a")
+  let missing = prices.get(key: "z")
+  @console.print("map {prices.len} {prices.keys()} {found} {missing}")
+  let csv = "alpha,beta,gamma"
+  let comma = ","
+  let dash = "-"
+  let parts = csv.split(on: comma)
+  @console.print("words {parts.join(separator: dash)} {csv.to_upper()} {csv.replace(pattern: comma, by: dash)} {csv.len}")
