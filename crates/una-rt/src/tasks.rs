@@ -526,8 +526,9 @@ fn run(tasks: Tasks, shape: Shape, site: usize, invoke: Invoke) -> (i64, i64) {
             }
         }
     };
-    // Under virtual time a race runs its branches one after another (ADR 0117 rule 12).
-    let sequential = race && runtime::clock().is_virtual();
+    // Under virtual time a block runs its tasks one after another, each to its end, as the
+    // interpreter does (ADR 0117 rule 12).
+    let sequential = runtime::clock().is_virtual();
     let counters = Counters::new();
     let mut first = 0;
     while first < total {
@@ -1505,7 +1506,7 @@ fn report(
 /// a debug build, whatever the task's end, a stop included, so that a fault in a task that
 /// stopped is reported (#424), then tears the heap down whole, its objects freed together
 /// rather than released one by one (ADR 0113 rule 5).
-fn exit_task() {
+pub(crate) fn exit_task() {
     let _ = runtime::leave_task();
     if cfg!(debug_assertions) {
         TASK_FAULTS.fetch_add(values::faults(), Ordering::SeqCst);

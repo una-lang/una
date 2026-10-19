@@ -507,6 +507,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Expr::Together { .. } | Expr::TogetherFor { .. } | Expr::FirstOf { .. } => {
                     return self.together(expr, env, scope, catch);
                 }
+                Expr::Tasks { bound, body, span } => {
+                    return self.tasks(bound.as_ref(), body, *span, env, scope, catch);
+                }
+                Expr::Start { task, span } => {
+                    return self.start(task, *span, env, scope, catch);
+                }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     // A binding the scope owns moves out as the result; another word is
@@ -1632,6 +1638,143 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.release(owned, kind);
         }
         Ok(Some(value))
+    }
+
+    /// `tasks(b) body` (`spec/27 §7`, ADR 0117 rule 7): the runtime opens the statement
+    /// (`una_rt_tasks_begin`), `body` runs in this task, and every way out of it ends the
+    /// statement (`una_rt_tasks_end`), which waits for the tasks it started: its value, after
+    /// they ran to their end; its failure or stop, after they were cancelled; and an exit of an
+    /// enclosing loop, which crosses the statement, after they ran to their end.
+    ///
+    /// `body` is lowered with a scope of its own, as `within` lowers its expression, so it
+    /// borrows the words of `scope`, which are released here on every path.
+    #[allow(clippy::too_many_arguments)]
+    fn tasks(
+        &mut self,
+        bound: Option<&(Atom, Span)>,
+        body: &'p Expr,
+        span: Span,
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let site = self.site(span);
+        let (word, bounded) = match bound {
+            Some((atom, _)) => {
+                let (word, _) = self.atom(atom, env)?;
+                (word, self.builder.ins().iconst(types::I64, 1))
+            }
+            None => {
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                (zero, zero)
+            }
+        };
+        let begun = self.call("una_rt_tasks_begin", &[word, bounded, site])?;
+        // A task that stops before the block runs goes on as [`STOPPED`].
+        let stop = self.builder.ins().iconst(types::I64, STOPPED);
+        self.check(stop, begun, scope, catch);
+        let succeeded = self.join();
+        let failed = self.join();
+        let done = self.join();
+        // The exits of an enclosing loop leave the block through blocks of their own, which
+        // end the statement first.
+        let crossing = catch.exit.as_ref().map(|outer| {
+            let next = self.builder.create_block();
+            let stop = self.builder.create_block();
+            for _ in &outer.kinds {
+                self.builder.append_block_param(next, types::I64);
+                self.builder.append_block_param(stop, types::I64);
+            }
+            (outer.clone(), next, stop)
+        });
+        let inner = Catch {
+            block: failed,
+            outer: Scope::new(),
+            base: 0,
+            exit: crossing.as_ref().map(|(outer, next, stop)| Exit {
+                next: *next,
+                stop: *stop,
+                kinds: outer.kinds.clone(),
+                outer: Scope::new(),
+                base: 0,
+            }),
+        };
+        let reached = self.branch(body, env, &Scope::new(), succeeded, &inner)?;
+
+        // The block ended: its tasks run to their end.
+        self.builder.switch_to_block(succeeded);
+        if reached {
+            let value = self.param(succeeded)?;
+            let keep = self.builder.ins().iconst(types::I64, 0);
+            self.runtime("una_rt_tasks_end", &[keep]);
+            for &(owned, kind) in scope.iter().rev() {
+                self.release(owned, kind);
+            }
+            self.builder.ins().jump(done, &[value.into()]);
+        } else {
+            self.builder.ins().trap(TRAP);
+        }
+
+        // The block failed or stops: its tasks are cancelled, then the failure or the stop goes
+        // on.
+        self.builder.switch_to_block(failed);
+        let failure = self.param(failed)?;
+        let cancel = self.builder.ins().iconst(types::I64, 1);
+        self.runtime("una_rt_tasks_end", &[cancel]);
+        self.fail(failure, scope, catch);
+
+        // An exit of an enclosing loop: the statement ends, then the exit goes on with the
+        // loop's state, releasing what the loop's own exit releases.
+        if let Some((outer, next, stop)) = crossing {
+            for (block, target) in [(next, outer.next), (stop, outer.stop)] {
+                self.builder.switch_to_block(block);
+                let state: Vec<Value> = self.builder.block_params(block).to_vec();
+                let keep = self.builder.ins().iconst(types::I64, 0);
+                self.runtime("una_rt_tasks_end", &[keep]);
+                for &(owned, kind) in scope.iter().skip(outer.base).rev() {
+                    self.release(owned, kind);
+                }
+                for &(owned, kind) in outer.outer.iter().rev() {
+                    self.release(owned, kind);
+                }
+                let args: Vec<cranelift_codegen::ir::BlockArg> =
+                    state.iter().map(|&value| value.into()).collect();
+                self.builder.ins().jump(target, &args);
+            }
+        }
+
+        self.builder.switch_to_block(done);
+        if reached {
+            Ok(Some(self.param(done)?))
+        } else {
+            self.builder.ins().trap(TRAP);
+            Ok(None)
+        }
+    }
+
+    /// `start task` (`spec/27 §7`, ADR 0117 rule 7): `task` as a closure over the bindings it
+    /// reads, as a `together` task is, which the runtime starts as a task of the innermost
+    /// `tasks` statement, then the code goes on. A start that stops the task, by an abort or
+    /// a cancellation, goes on as [`STOPPED`]. Its value is `unit`.
+    fn start(
+        &mut self,
+        task: &'p Expr,
+        span: Span,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let site = self.site(span);
+        let closure = self.closure(&[], task, env)?;
+        let status = self.call("una_rt_start", &[closure, site])?;
+        self.release(closure, Kind::Fn);
+        let stop = self.builder.ins().iconst(types::I64, STOPPED);
+        self.check(stop, status, scope, catch);
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        let (unit, _) = self.atom(&Atom::Unit, env)?;
+        Ok(Some(unit))
     }
 
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
@@ -3693,10 +3836,16 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             borrowed_from(body, out);
             borrowed_from(handler, out);
         }
-        Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+        Expr::Attempt { body, .. }
+        | Expr::With { body, .. }
+        | Expr::Within { body, .. }
+        | Expr::Tasks { body, .. } => {
             borrowed_from(body, out);
         }
-        Expr::Together { .. } | Expr::TogetherFor { .. } | Expr::FirstOf { .. } => {
+        Expr::Together { .. }
+        | Expr::TogetherFor { .. }
+        | Expr::FirstOf { .. }
+        | Expr::Start { .. } => {
             // A task's captures are never moved: every name the block reads stays pinned
             // (#162).
             vars(expr, out);

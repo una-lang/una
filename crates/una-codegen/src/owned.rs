@@ -205,9 +205,13 @@ impl<'e> Facts<'e> {
                 self.expr(body, owned);
                 self.expr(handler, owned);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+            Expr::Attempt { body, .. }
+            | Expr::With { body, .. }
+            | Expr::Within { body, .. }
+            | Expr::Tasks { body, .. } => {
                 self.expr(body, owned);
             }
+            Expr::Start { task, .. } => self.expr(task, owned),
         }
     }
 }

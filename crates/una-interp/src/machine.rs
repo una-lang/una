@@ -1076,6 +1076,9 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// short before it, the run aborts with U6003 rather than overflow the stack, and so it
     /// does when the heap the run holds is over its budget (ADR 0061).
     fn enter(&mut self, span: Span) -> Result<(), Stop<'p>> {
+        // A call is a check point of the task's turn: after 1024 of them, the next ready task
+        // runs (ADR 0117 rules 11 and 12), as native code counts its calls.
+        self.run.tick();
         let used = self.stack_base.abs_diff(stack_position(&span));
         if self.depth >= self.max_depth || used > self.stack_budget {
             return Err(Stop::Abort(Abort::Depth {
@@ -1094,9 +1097,6 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Whether the heap the run holds is within its budget (ADR 0061): checked at each call
     /// and at each iteration of a `for` loop, at `span`, else the run aborts with U6003.
     fn within_budget(&self, span: Span) -> Result<(), Stop<'p>> {
-        // A check point of the task's turn: after 1024 of them, the next ready task runs (ADR
-        // 0117 rules 11 and 12).
-        self.run.tick();
         // ADR 0116 rule 16: the hard stop cancels the run at its next check point, found on
         // the slow path when the thread's attention word changed (rule 18).
         if let Some(now) = self.word.changed_since(self.seen.get()) {
@@ -2010,6 +2010,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         self.stop_event();
                         break Ok(());
                     }
+                    self.run.tick();
                     if let Err(stop) = self.within_budget(span) {
                         break Err(stop);
                     }
@@ -2033,6 +2034,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
             LoopSource::Until { cond, .. } => loop {
+                self.run.tick();
                 self.within_budget(span)?;
                 let mark = env.len();
                 for ((name, _), value) in state.iter().zip(&current) {
@@ -2057,7 +2059,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                     return Err(fault("a loop over a value that is not a list"));
                 };
                 for item in items.iter() {
-                    self.within_budget(span)?;
+                    self.run.tick();
+                self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
                         self.iteration(env, caps, var, state, current, item, body)?;
@@ -2087,7 +2090,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                         break;
                     }
                     let item = Value::Int(index.clone());
-                    self.within_budget(span)?;
+                    self.run.tick();
+                self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
                         self.iteration(env, caps, var, state, current, &item, body)?;

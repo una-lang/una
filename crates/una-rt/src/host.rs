@@ -344,9 +344,21 @@ pub fn host_instance(capability: i64) -> i64 {
 pub fn handler_instance(name: i64) -> i64 {
     let name = values::text_value(name);
     let id = with_state(|state| {
-        let count = state.installs.entry(name.clone()).or_insert(0);
-        *count += 1;
-        let count = *count;
+        // A streaming task, the root or a started one, counts run-wide (`spec/27 §7`).
+        let count = if state.streaming {
+            let mut counts = state
+                .shared
+                .installs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let count = counts.entry(name.clone()).or_insert(0);
+            *count += 1;
+            *count
+        } else {
+            let count = state.installs.entry(name.clone()).or_insert(0);
+            *count += 1;
+            *count
+        };
         state.install_id(&name, count)
     })
     .unwrap_or_else(|| format!("with:{name}#1"));
@@ -360,17 +372,21 @@ pub fn event(site: i64, instance: i64) -> i64 {
     with_state(|state| {
         let op = usize::try_from(site).ok().and_then(|s| state.ops.get(s))?;
         let (capability, name) = (op.capability.clone(), op.op.clone());
+        let task = state.path.clone();
         let trace = state.trace.as_mut()?;
         let slot = trace.len();
         trace.push(Event {
             seq: slot + 1,
-            task: state.path.clone(),
+            task,
             instance: id,
             capability,
             op: name,
             args: Vec::new(),
             outcome: EventOutcome::Aborted,
         });
+        // Open until it ends: no event is written before it, so its slot stays (ADR 0117 rule
+        // 10).
+        state.open_events += 1;
         i64::try_from(slot).ok()
     })
     .flatten()
@@ -415,6 +431,16 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     let (Ok(site), Ok(slot)) = (usize::try_from(site), usize::try_from(slot)) else {
         return;
     };
+    end_event(site, slot, value, (failed, interrupted));
+    // The event is complete: a streaming task writes what it holds once no other is open.
+    with_state(|state| {
+        state.open_events = state.open_events.saturating_sub(1);
+        state.flush();
+    });
+}
+
+/// Fills in the outcome of the event at `slot`, of operation `site`, by how it ended.
+fn end_event(site: usize, slot: usize, value: i64, (failed, interrupted): (i64, bool)) {
     if interrupted {
         with_state(|state| {
             if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {

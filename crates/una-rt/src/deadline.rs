@@ -303,6 +303,7 @@ fn timeout_event(task: String) {
                 outcome: EventOutcome::Timeout,
             });
         }
+        state.flush();
     });
 }
 
