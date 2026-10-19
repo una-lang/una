@@ -1,0 +1,19 @@
+# The undefined symbols of `libuna_rt.a` that scripts/no-libm.sh accepts (#1092), each by the
+# object of the archive that holds it and with its reason. Only the archive has this file: the
+# `una` binary and every linked executable are strict, with no exception.
+#
+# One entry per line: <object> <symbol> <reason>. <object> is a shell pattern on the object's
+# name in the archive (`num_bigint-<hash>.num_bigint.<hash>-cgu.0.rcgu.o`), written as the crate's
+# prefix with `*`, so that it does not depend on the hashes. <symbol> is a name of
+# scripts/no-libm.txt, without the platform's prefix. The rest of the line is the reason. `#`
+# starts a comment. An entry that no hit uses fails the check too, so the file stays exact.
+#
+# num-bigint and num-integer compute the integer roots of their `Roots` trait from a float guess
+# (`f64::cbrt`, `ln` and `exp`). Una never calls them, and the linker removes that code from
+# `una` and from every executable `una build` links.
+num_bigint-* cbrt unreachable integer roots (Roots) of the dependency; removed by #1093
+num_bigint-* exp unreachable integer roots (Roots) of the dependency; removed by #1093
+num_bigint-* log unreachable integer roots (Roots) of the dependency; removed by #1093
+num_integer-* cbrt unreachable integer roots (Roots) of the dependency; removed by #1093
+num_integer-* exp unreachable integer roots (Roots) of the dependency; removed by #1093
+num_integer-* log unreachable integer roots (Roots) of the dependency; removed by #1093
