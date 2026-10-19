@@ -532,9 +532,16 @@ pub(crate) fn dependency_problems(
 
 /// The digest of a path dependency's content, from its files' bytes on disk (ADR 0122 rule 28):
 /// its `ita.una` and its modules.
-pub(crate) fn dependency_digest(package: &Package, dependency: &Dependency) -> Result<String, String> {
+pub(crate) fn dependency_digest(
+    package: &Package,
+    dependency: &Dependency,
+) -> Result<String, String> {
     let mut files = Vec::new();
-    for id in dependency.manifest.into_iter().chain(dependency.modules.iter().copied()) {
+    for id in dependency
+        .manifest
+        .into_iter()
+        .chain(dependency.modules.iter().copied())
+    {
         let name = package.sources.file(id).path();
         let relative = name
             .strip_prefix(&format!("{}/", dependency.dir))
@@ -618,7 +625,12 @@ fn trust_dependency(
     }
     let digest = match dependency_digest(package, dependency) {
         Ok(digest) => digest,
-        Err(reason) => return refuse(format!("`{}` holds what a package may not: {reason}", need.name.value)),
+        Err(reason) => {
+            return refuse(format!(
+                "`{}` holds what a package may not: {reason}",
+                need.name.value
+            ));
+        }
     };
     let consented = lock.and_then(|lock| {
         lock.read.packages.iter().find(|p| {
@@ -661,7 +673,10 @@ fn trust_dependency(
                 capability: cap.capability.clone(),
                 ops,
                 at: una_project::Located {
-                    value: manifest_text.get(cap.range.clone()).unwrap_or("").to_owned(),
+                    value: manifest_text
+                        .get(cap.range.clone())
+                        .unwrap_or("")
+                        .to_owned(),
                     range: cap.range.clone(),
                 },
             })

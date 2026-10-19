@@ -420,13 +420,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .iter()
         .enumerate()
         .take(package.modules.len())
-        .filter(|(_, module)| {
-            package
-                .settings
-                .dependency_trusted
-                .iter()
-                .any(|path| *path == module.path)
-        })
+        .filter(|(_, module)| package.settings.dependency_trusted.contains(&module.path))
         .map(|(index, _)| index)
         .collect();
     // Edition 0.3: the boundaries of `una.toml`, checked against the package (ADR 0093).

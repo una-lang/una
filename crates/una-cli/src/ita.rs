@@ -282,7 +282,8 @@ pub(crate) fn lock_command(
         // its whole content, and recorded only with `--accept-trust <name>`.
         if !settings.trusted.is_empty() {
             let name = need.name.value.to_string();
-            let mut trusted: Vec<&str> = settings.trusted.iter().map(|t| t.value.as_str()).collect();
+            let mut trusted: Vec<&str> =
+                settings.trusted.iter().map(|t| t.value.as_str()).collect();
             trusted.sort_unstable();
             let line = crate::package::trust_line(
                 read,
@@ -298,7 +299,9 @@ pub(crate) fn lock_command(
                 lock.read.packages.iter().any(|p| {
                     p.name.value == need.name.value
                         && p.consented.as_ref().is_some_and(|c| c.value == digest)
-                        && trusted.iter().all(|t| p.trusted.iter().any(|m| m.value == *t))
+                        && trusted
+                            .iter()
+                            .all(|t| p.trusted.iter().any(|m| m.value == *t))
                 })
             });
             if !covered {
@@ -316,7 +319,7 @@ pub(crate) fn lock_command(
                 ));
                 continue;
             }
-            if !consented && !accept_trust.iter().any(|accepted| *accepted == name) {
+            if !consented && !accept_trust.contains(&name) {
                 diagnostics.extend(located(
                     sources,
                     manifest_id,
