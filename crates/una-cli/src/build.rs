@@ -210,6 +210,12 @@ pub(crate) fn build_command(
         {
             object.insert("float_environment".to_owned(), json!(true));
         }
+        // `spec/31 §2` rule 4: an executable of edition 0.4 may take `serve:` grants.
+        if manifest.edition >= una_project::Edition::V0_4
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("serve".to_owned(), json!(true));
+        }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(
                 "failure".to_owned(),

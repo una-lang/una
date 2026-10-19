@@ -216,14 +216,25 @@ pub(crate) fn run_command(
     }
     for spec in options.grants {
         let Some(grant) = Grant::parse(spec, Path::new("")) else {
-            writeln!(
-                stderr,
-                "error: `{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
-            )?;
+            writeln!(stderr, "error: {}", una_interp::invalid_grant(spec))?;
             return Ok(ExitStatus::Usage);
         };
         specs.push(spec.clone());
         grants.push(grant);
+    }
+    // A server exists from edition 0.4 (`spec/31 §2` rule 4): a `serve:` flag for a single
+    // file or a package of an earlier edition is a usage error.
+    if manifest.edition < una_project::Edition::V0_4
+        && let Some(spec) = specs
+            .iter()
+            .find(|spec| spec.starts_with(una_core::http::serve::PREFIX))
+    {
+        writeln!(
+            stderr,
+            "error: `{spec}` needs a package of edition 0.4, described by ita.una; this package is of edition {}",
+            manifest.edition.name()
+        )?;
+        return Ok(ExitStatus::Usage);
     }
     let mut analysis = on_large_stack(|| analyze(&package, Some(&specs)));
     if analysis.diagnostics.is_empty() {
@@ -277,6 +288,16 @@ pub(crate) fn run_command(
     };
     let keys = match load_keys(&grants) {
         Ok(keys) => keys,
+        Err(message) => {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    // The `serve:` grants, before `main` (`spec/31 §2` rule 7): the descriptor limit, the TLS
+    // files checked on their open descriptors, and the listeners, held until the run ends.
+    // Nothing accepts on them until the serve threads of ADR 0123 step 4 take them over.
+    let _listeners = match una_http::serve::prepare(&serve_inputs(&grants)) {
+        Ok(prepared) => prepared,
         Err(message) => {
             writeln!(stderr, "error: {message}")?;
             return Ok(ExitStatus::Usage);
@@ -587,6 +608,26 @@ fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
         Decl::Fun(fun) if fun.name == "main" => Some(fun.as_ref()),
         _ => None,
     })
+}
+
+/// The `serve:` grants among `grants`, with their TLS files' paths, for
+/// [`una_http::serve::prepare`].
+fn serve_inputs(grants: &[Grant]) -> Vec<una_http::serve::ServeInput<'_>> {
+    grants
+        .iter()
+        .filter_map(|grant| match grant {
+            Grant::Serve {
+                grant,
+                certificate,
+                key,
+            } => Some(una_http::serve::ServeInput {
+                grant,
+                certificate: certificate.as_deref(),
+                key: key.as_deref(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The keys of the key files of `keys:` grants; the first grant of a name wins.
