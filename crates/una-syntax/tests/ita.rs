@@ -476,3 +476,16 @@ fn serve_item_lines_of_other_forms_are_errors() {
         assert!(manifest.run.unwrap().grants.is_empty(), "{line}");
     }
 }
+
+/// The origin of a `serve` grant cannot carry an item after a `;`.
+#[test]
+fn serve_origins_hold_no_items() {
+    let text = "ita x\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    serve \"http://127.0.0.1:8080;peer=none\"\n";
+    let (manifest, errors) = parse_manifest(text);
+    let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        ["the address of a serve grant holds no `;`; write each item on a line below it"]
+    );
+    assert!(manifest.run.unwrap().grants.is_empty());
+}

@@ -1549,6 +1549,13 @@ fn serve_grant(line: &Line, cursor: &mut Cursor<'_>) -> Result<Grant, Vec<Error>
         .text("the address the grant listens on, as \"http://127.0.0.1:8080\"")
         .and_then(|origin| cursor.end().map(|()| origin))
         .map_err(|error| vec![error])?;
+    // Each item is a line of its own, so the origin cannot carry one after a `;`.
+    if origin.value.contains(';') {
+        return Err(vec![Error::new(
+            origin.range,
+            "the address of a serve grant holds no `;`; write each item on a line below it",
+        )]);
+    }
     let mut spec = format!("serve:{}", origin.value);
     let mut items = Vec::new();
     let mut errors = Vec::new();
