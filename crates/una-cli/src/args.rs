@@ -267,6 +267,10 @@ pub(crate) enum ItaCommand {
         /// Record a ceiling wider than the one the lock records: an authority change
         #[arg(long)]
         accept_authority: bool,
+
+        /// Record consent to the trusted modules of this package as its content is now
+        #[arg(long, value_name = "PACKAGE")]
+        accept_trust: Vec<String>,
     },
 }
 

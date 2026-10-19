@@ -415,6 +415,20 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .map(|entry| entry.value.clone())
         .collect();
     env.project_code = package.settings.format.code();
+    env.trusted_dependencies = env
+        .modules
+        .iter()
+        .enumerate()
+        .take(package.modules.len())
+        .filter(|(_, module)| {
+            package
+                .settings
+                .dependency_trusted
+                .iter()
+                .any(|path| *path == module.path)
+        })
+        .map(|(index, _)| index)
+        .collect();
     // Edition 0.3: the boundaries of `una.toml`, checked against the package (ADR 0093).
     env.boundaries = boundary::resolve(
         &env,

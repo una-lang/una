@@ -592,15 +592,46 @@ fn build(
         }
     }
     assumptions.sort_by(|a, b| a.capability.cmp(&b.capability));
+    // The root's own trusted modules; those of dependencies are under `dependency_trust`.
     let mut trusted_modules: Vec<TrustedDoc> = manifest
         .trusted
         .iter()
+        .filter(|trusted| !manifest.dependency_trusted.contains(&trusted.value))
         .map(|trusted| TrustedDoc {
             module: trusted.value.clone(),
             lines: module_lines(&modules, &trusted.value),
         })
         .collect();
     trusted_modules.sort_by(|a, b| a.module.cmp(&b.module));
+    // The trusted modules of dependencies the root consented to, by package (ADR 0122 rule 58).
+    let mut dependency_trust: Vec<DependencyTrustedDoc> = Vec::new();
+    for mount in &manifest.mounts {
+        let prefix = format!("{}.", mount.local);
+        let mut trusted: Vec<TrustedDoc> = manifest
+            .dependency_trusted
+            .iter()
+            .filter(|path| path.starts_with(&prefix))
+            .map(|path| TrustedDoc {
+                module: path.clone(),
+                lines: module_lines(&modules, path),
+            })
+            .collect();
+        if trusted.is_empty() {
+            continue;
+        }
+        trusted.sort_by(|a, b| a.module.cmp(&b.module));
+        let name = package
+            .dependencies
+            .iter()
+            .find(|d| mount.src == format!("{}/src/", d.dir))
+            .and_then(|d| manifest.ita.as_deref()?.needs.get(d.need))
+            .map_or_else(|| mount.local.clone(), |need| need.name.value.to_string());
+        dependency_trust.push(DependencyTrustedDoc {
+            package: name,
+            modules: trusted,
+        });
+    }
+    dependency_trust.sort_by(|a, b| a.package.cmp(&b.package));
     let (requirements, derived_functions) = requirements(&modules);
     let public_functions: Vec<(&String, &una_core::Fun)> = program
         .modules
@@ -658,7 +689,7 @@ fn build(
             proof_cache: PROOF_CACHE,
             proof_cache_key,
             registries: Vec::new(),
-            dependency_trust: Vec::new(),
+            dependency_trust,
         },
         requirements,
         coverage: CoverageDoc {
@@ -1181,7 +1212,12 @@ pub(crate) fn dependencies(
             effective_ceiling,
             authority: render_authority(used),
             trust: DependencyTrustDoc {
-                modules: Vec::new(),
+                modules: manifest
+                    .dependency_trusted
+                    .iter()
+                    .filter(|path| path.starts_with(&prefix))
+                    .cloned()
+                    .collect(),
             },
         });
     }

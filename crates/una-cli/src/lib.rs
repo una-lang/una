@@ -1022,7 +1022,8 @@ fn run_command(
                         path,
                         check,
                         accept_authority,
-                    } => ita::lock_command(&path, check, accept_authority, output),
+                        accept_trust,
+                    } => ita::lock_command(&path, check, accept_authority, &accept_trust, output),
                 }
             }
             Command::Fmt { path, check } => {

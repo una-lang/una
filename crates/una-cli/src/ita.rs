@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use una_diag::{Code, Diagnostic, render_human};
 
-use una_project::content;
 use una_project::ita::{parse_ita_lock, parse_ita_manifest, recorded_ceiling, write_lock};
 use una_project::migrate::text;
 use una_project::version::Version;
@@ -112,6 +111,7 @@ pub(crate) fn lock_command(
     path: &Path,
     check: bool,
     accept_authority: bool,
+    accept_trust: &[String],
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     let lock_path = path.join("ita.lock");
@@ -210,23 +210,7 @@ pub(crate) fn lock_command(
             continue;
         };
         // The digest of the files as they are on disk, read again in their bytes (rule 28).
-        let mut files = Vec::new();
-        for id in std::iter::once(dependency_manifest).chain(dependency.modules.iter().copied()) {
-            let name = sources.file(id).path();
-            let relative = name
-                .strip_prefix(&format!("{}/", dependency.dir))
-                .unwrap_or(name)
-                .to_owned();
-            let bytes = match package.disk_paths.get(&id).map(std::fs::read) {
-                Some(Ok(bytes)) => bytes,
-                _ => sources.file(id).text().as_bytes().to_vec(),
-            };
-            files.push(content::File {
-                path: relative,
-                bytes,
-            });
-        }
-        let digest = match content::digest_of(&mut files) {
+        let digest = match crate::package::dependency_digest(&package, dependency) {
             Ok(digest) => digest,
             Err(reason) => {
                 diagnostics.extend(located(
@@ -292,6 +276,63 @@ pub(crate) fn lock_command(
                         need.name.value
                     ),
                 }],
+            ));
+        }
+        // Trust (rules 10, 25 and 53): consent to a dependency's trusted modules is pinned to
+        // its whole content, and recorded only with `--accept-trust <name>`.
+        if !settings.trusted.is_empty() {
+            let name = need.name.value.to_string();
+            let mut trusted: Vec<&str> = settings.trusted.iter().map(|t| t.value.as_str()).collect();
+            trusted.sort_unstable();
+            let line = crate::package::trust_line(
+                read,
+                need,
+                settings.version.as_ref().map(|v| v.value.as_str()),
+            );
+            let covered = line.is_some_and(|line| {
+                trusted
+                    .iter()
+                    .all(|t| line.modules.iter().any(|m| m.value == *t))
+            });
+            let consented = existing.as_ref().is_some_and(|(_, lock, _)| {
+                lock.read.packages.iter().any(|p| {
+                    p.name.value == need.name.value
+                        && p.consented.as_ref().is_some_and(|c| c.value == digest)
+                        && trusted.iter().all(|t| p.trusted.iter().any(|m| m.value == *t))
+                })
+            });
+            if !covered {
+                diagnostics.extend(located(
+                    sources,
+                    manifest_id,
+                    vec![ProjectError {
+                        code: Code::U7012,
+                        range: need.range.clone(),
+                        message: format!(
+                            "`{name}` has trusted modules, which no trust line of the root names; write `trust` with `{name} modules {}` after reviewing them",
+                            trusted.join(", ")
+                        ),
+                    }],
+                ));
+                continue;
+            }
+            if !consented && !accept_trust.iter().any(|accepted| *accepted == name) {
+                diagnostics.extend(located(
+                    sources,
+                    manifest_id,
+                    vec![ProjectError {
+                        code: Code::U7012,
+                        range: need.range.clone(),
+                        message: format!(
+                            "the trust of `{name}` is not consented for its content as it is now; review its trusted modules and the code they run, then run `una ita lock --accept-trust {name}`"
+                        ),
+                    }],
+                ));
+                continue;
+            }
+            block.push_str(&format!(
+                "  consented \"{digest}\"\n  trusted modules {}\n",
+                trusted.join(", ")
             ));
         }
         entries.push((need.name.value.to_string(), version, block));
@@ -627,5 +668,5 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         )?;
         return Ok(ExitStatus::Usage);
     }
-    lock_command(path, false, false, out)
+    lock_command(path, false, false, &[], out)
 }

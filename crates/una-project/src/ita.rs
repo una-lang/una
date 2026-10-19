@@ -696,21 +696,18 @@ fn check_trust(
             ));
         }
         // The major and the source may be left out only for a package the root needs
-        // directly from a registry (rule 10).
+        // directly (rule 10): they are then those of that need.
         if line.major.is_none() || line.from.is_none() {
-            let direct = read.needs.iter().any(|need| {
-                need.name.value == line.name.value
-                    && !matches!(
-                        need.origin.as_ref().map(|o| &o.value),
-                        Some(Origin::Path(_) | Origin::Workspace)
-                    )
-            });
+            let direct = read
+                .needs
+                .iter()
+                .any(|need| need.name.value == line.name.value);
             if !direct {
                 errors.push(error(
                     code,
                     line.name.range.clone(),
                     format!(
-                        "`{}` is not needed directly from a registry, so its trust line names its major line and source: `{} <major> from <source> modules ...`",
+                        "`{}` is not needed directly, so its trust line names its major line and source: `{} <major> from <source> modules ...`",
                         line.name.value, line.name.value
                     ),
                 ));

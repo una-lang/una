@@ -216,6 +216,10 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             .and_then(|read| read.name.as_ref())
             .map(|name| name.value.to_string())
             .unwrap_or_default();
+        // The lock as written, for the consents to trust; its errors are reported below.
+        let lock_read = package
+            .lock
+            .map(|id| parse_ita_lock(package.sources.file(id).text()).0);
         // The path dependencies: checked, then mounted with their package extents.
         let mut versions: BTreeMap<String, String> = BTreeMap::new();
         for (index, need) in needs.iter().enumerate() {
@@ -322,10 +326,26 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                     .collect(),
                 package: true,
             });
+            // A dependency's trusted modules (rule 53): each needs a trust line of the root by
+            // identity and module path, and the lock's consent to the package's whole content.
+            if !settings.trusted.is_empty() {
+                let problems = trust_dependency(
+                    package,
+                    dependency,
+                    need,
+                    &settings,
+                    read.as_deref(),
+                    lock_read.as_ref(),
+                    &local.value,
+                    manifest_text,
+                    &mut manifest,
+                );
+                located(manifest_id, problems);
+            }
         }
         // The root's own settings never reach into a dependency: a dependency's module is
-        // trusted only by a trust line (ADR 0122 rule 53, not loaded yet), and its boundaries,
-        // contracts and entry are its own.
+        // trusted only by a trust line (ADR 0122 rule 53), and its boundaries, contracts and
+        // entry are its own.
         let inside = |path: &str| {
             manifest.mounts.iter().any(|mount| {
                 path.strip_prefix(mount.local.as_str())
@@ -334,7 +354,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
         };
         let mut reaching: Vec<ProjectError> = Vec::new();
         for entry in &manifest.trusted {
-            if inside(&entry.value) {
+            if inside(&entry.value) && !manifest.dependency_trusted.contains(&entry.value) {
                 reaching.push(ProjectError {
                     code: Code::U7008,
                     range: entry.range.clone(),
@@ -482,7 +502,6 @@ pub(crate) fn dependency_problems(
     let unsupported = [
         (!read.needs.is_empty(), "needs of its own"),
         (!read.labels.is_empty(), "label categories"),
-        (!read.trusted.is_empty(), "trusted modules"),
         (!read.boundaries.is_empty(), "boundaries"),
         (!read.contracts.is_empty(), "contracts"),
     ];
@@ -509,4 +528,167 @@ pub(crate) fn dependency_problems(
         }
     }
     problems
+}
+
+/// The digest of a path dependency's content, from its files' bytes on disk (ADR 0122 rule 28):
+/// its `ita.una` and its modules.
+pub(crate) fn dependency_digest(package: &Package, dependency: &Dependency) -> Result<String, String> {
+    let mut files = Vec::new();
+    for id in dependency.manifest.into_iter().chain(dependency.modules.iter().copied()) {
+        let name = package.sources.file(id).path();
+        let relative = name
+            .strip_prefix(&format!("{}/", dependency.dir))
+            .unwrap_or(name)
+            .to_owned();
+        let bytes = match package.disk_paths.get(&id).map(std::fs::read) {
+            Some(Ok(bytes)) => bytes,
+            _ => package.sources.file(id).text().as_bytes().to_vec(),
+        };
+        files.push(una_project::content::File {
+            path: relative,
+            bytes,
+        });
+    }
+    una_project::content::digest_of(&mut files)
+}
+
+/// The trust line of the root that names the dependency of `need` at `version`: its name, its
+/// major line when written, and no registry source, since a path package has none.
+pub(crate) fn trust_line<'r>(
+    root: &'r ita::Manifest,
+    need: &ita::Need,
+    version: Option<&str>,
+) -> Option<&'r ita::TrustLine> {
+    let line = version
+        .and_then(|v| una_project::version::Version::parse_full(v).ok())
+        .map(|v| v.line());
+    root.trust.iter().find(|trust| {
+        trust.name.value == need.name.value
+            && trust.from.is_none()
+            && trust.major.as_ref().is_none_or(|major| {
+                una_project::version::Line::parse(&major.value) == line && line.is_some()
+            })
+    })
+}
+
+/// Rule 53 for one mounted dependency with trusted modules: every one of them covered by the
+/// root's trust line, and the lock's `consented` digest the package's content now, with each
+/// trusted module recorded. Then each is listed as trusted in the program, as an extent of its
+/// own (rule 53.1). Until a crossing's ceiling depends on its direction, the package extent
+/// and its trusted extents share one ceiling, the intersection of the root's `may` lines and
+/// the trust line's: never wider than either. Problems are U7012 at the need.
+#[allow(clippy::too_many_arguments)]
+fn trust_dependency(
+    package: &Package,
+    dependency: &Dependency,
+    need: &ita::Need,
+    settings: &Manifest,
+    root: Option<&ita::Manifest>,
+    lock: Option<&una_project::ita::ItaLock>,
+    local: &str,
+    manifest_text: &str,
+    manifest: &mut Manifest,
+) -> Vec<ProjectError> {
+    let refuse = |message: String| {
+        vec![ProjectError {
+            code: Code::U7012,
+            range: need.range.clone(),
+            message,
+        }]
+    };
+    let version = settings.version.as_ref().map(|v| v.value.as_str());
+    let Some(line) = root.and_then(|root| trust_line(root, need, version)) else {
+        return refuse(format!(
+            "`{}` has trusted modules, which no trust line of the root names; write `trust` with `{} modules ...` after reviewing them",
+            need.name.value, need.name.value
+        ));
+    };
+    let uncovered: Vec<&str> = settings
+        .trusted
+        .iter()
+        .map(|t| t.value.as_str())
+        .filter(|t| !line.modules.iter().any(|m| m.value == *t))
+        .collect();
+    if !uncovered.is_empty() {
+        return refuse(format!(
+            "the trust line of `{}` does not name its trusted module `{}`",
+            need.name.value,
+            uncovered.join("`, `")
+        ));
+    }
+    let digest = match dependency_digest(package, dependency) {
+        Ok(digest) => digest,
+        Err(reason) => return refuse(format!("`{}` holds what a package may not: {reason}", need.name.value)),
+    };
+    let consented = lock.and_then(|lock| {
+        lock.read.packages.iter().find(|p| {
+            p.name.value == need.name.value
+                && matches!(
+                    p.from.as_ref().map(|f| &f.value),
+                    Some(ita::LockOrigin::Path(dir)) if dir.trim_end_matches('/') == dependency.dir
+                )
+        })
+    });
+    let consented_ok = consented.is_some_and(|p| {
+        p.consented.as_ref().is_some_and(|c| c.value == digest)
+            && settings
+                .trusted
+                .iter()
+                .all(|t| p.trusted.iter().any(|m| m.value == t.value))
+    });
+    if !consented_ok {
+        return refuse(format!(
+            "the trust of `{}` is not consented for its content as it is now; review its trusted modules and the code they run, then run `una ita lock --accept-trust {}`",
+            need.name.value, need.name.value
+        ));
+    }
+    // One ceiling for the package and its trusted extents: the root's `may` ∩ the trust line's.
+    let ceiling: Vec<una_project::Ceiling> = need
+        .may
+        .iter()
+        .filter_map(|cap| {
+            let ops: Vec<String> = cap
+                .ops
+                .iter()
+                .map(|op| op.value.clone())
+                .filter(|op| {
+                    line.may.iter().any(|t| {
+                        t.capability == cap.capability && t.ops.iter().any(|o| o.value == *op)
+                    })
+                })
+                .collect();
+            (!ops.is_empty()).then(|| una_project::Ceiling {
+                capability: cap.capability.clone(),
+                ops,
+                at: una_project::Located {
+                    value: manifest_text.get(cap.range.clone()).unwrap_or("").to_owned(),
+                    range: cap.range.clone(),
+                },
+            })
+        })
+        .collect();
+    if let Some(extent) = manifest
+        .boundaries
+        .iter_mut()
+        .find(|b| b.package && b.module.value == local)
+    {
+        extent.ceiling.clone_from(&ceiling);
+    }
+    for module in &line.modules {
+        let path = format!("{local}.{}", module.value);
+        manifest.trusted.push(una_project::Located {
+            value: path.clone(),
+            range: module.range.clone(),
+        });
+        manifest.boundaries.push(una_project::Boundary {
+            module: una_project::Located {
+                value: path.clone(),
+                range: module.range.clone(),
+            },
+            ceiling: ceiling.clone(),
+            package: true,
+        });
+        manifest.dependency_trusted.push(path);
+    }
+    Vec::new()
 }
