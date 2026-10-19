@@ -167,8 +167,13 @@ fn a_sum_of_decimals_is_linear_in_its_amounts() {
     let dir = std::env::temp_dir().join(format!("una-interp-decimals-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fixed = run_edition_seconds(&dir, &decimal_sum(10), "0.4");
-    timing::assert_growth("decimal amounts", &[10_000, 80_000], fixed, 1e-6, 24.0, |n| {
-        run_edition_seconds(&dir, &decimal_sum(n), "0.4")
-    });
+    timing::assert_growth(
+        "decimal amounts",
+        &[10_000, 80_000],
+        fixed,
+        1e-6,
+        24.0,
+        |n| run_edition_seconds(&dir, &decimal_sum(n), "0.4"),
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
