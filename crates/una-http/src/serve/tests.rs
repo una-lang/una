@@ -215,7 +215,7 @@ fn tls_files_are_read_from_checked_descriptors() {
 
     // Too large, missing, or not what it should hold.
     let large = dir.join("large.pem");
-    write(&large, &vec![b'#'; 1 << 20 | 1], 0o600);
+    write(&large, &vec![b'#'; (1 << 20) + 1], 0o600);
     let error = input(&chain, &large).unwrap_err();
     assert!(error.ends_with("is larger than 1 MiB"), "{error}");
     let error = input(&chain, &dir.join("missing.pem")).unwrap_err();

@@ -502,7 +502,7 @@ impl Item {
         match self {
             Item::Once(_) => "once",
             Item::Rate(_) => "rate",
-            Item::Count(name, _) | Item::Share(name, _) => name,
+            Item::Count(name, _) | Item::Share(name, _) => *name,
             Item::Hosts(_) => "hosts",
             Item::Certificate(_) => "certificate",
             Item::Key(_) => "key",
