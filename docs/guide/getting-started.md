@@ -10,10 +10,35 @@ The installer puts a release in `~/.una`: the `una` binary, the native runtime t
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
-export PATH="$HOME/.una/bin:$PATH"
 ```
 
 It installs only an archive whose digest the release's validation record lists. `una build` also needs a C compiler as `cc`, to link. The README describes the other ways to install, and how to uninstall.
+
+The installer changes nothing outside `~/.una`, so your shell finds `una` only once that directory is on your `PATH`:
+
+```sh
+export PATH="$HOME/.una/bin:$PATH"
+```
+
+That line lasts for the current shell. To keep it, add the same line to your shell's profile: `~/.zshrc` for zsh, the default shell on macOS, or `~/.bashrc` for bash. A new shell then finds `una` too.
+
+Check the version:
+
+```sh
+una --version
+```
+
+It prints three lines: `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3`, and the version of Z3 it needs.
+
+A release older than 0.3 has no `--version` flag, and answers with an error:
+
+```text
+error: unexpected argument '--version' found
+```
+
+If you see that error after installing, the shell found an older `una` first. `which -a una` lists every `una` on your `PATH`, in the order the shell tries them. Remove the old one, or put `$HOME/.una/bin` before its directory.
+
+To update, run the installer again. It replaces the release in `~/.una` with the current one, and prints the new version when it is done.
 
 Check that it works by asking `una` to explain a diagnostic code:
 
