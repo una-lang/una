@@ -828,10 +828,8 @@ impl<'a> Env<'a> {
                 let joined = path.join(".");
                 let host = joined == prelude::STD_HOST;
                 let time = joined == prelude::STD_TIME;
-                let standard = host
-                    || time
-                    || joined == "std.testing"
-                    || joined == prelude::STD_DRIVE;
+                let standard =
+                    host || time || joined == "std.testing" || joined == prelude::STD_DRIVE;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {
