@@ -198,3 +198,53 @@ fn workspaces_are_checked() {
     assert_eq!(render(&errors), Vec::<String>::new());
     assert_eq!(workspace.members.len(), 2);
 }
+
+/// Every check `una.toml` makes has its twin in `ita.una` (ADR 0122 rules 11 and 13): the same
+/// mistake written in each format is refused by each, with U7002 in `una.toml` and U7008 in
+/// `ita.una`, or with the same code of another domain. The checks the checker makes against the
+/// modules (a boundary, a contract or an entry naming no module) have their twins in the
+/// conformance cases `project/ita_*` beside `project/boundaries_*` and `project/unknown_entry`.
+#[test]
+fn every_una_toml_check_has_its_ita_una_twin() {
+    use una_project::parse_manifest;
+    const TOML: &str = "[package]\nname = \"case\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n";
+    let twins: [(&str, &str, &str, Code); 17] = [
+        ("an unknown table", "[extra]\nkey = 1\n", "\nextra\n  key\n", Code::U7008),
+        ("an unknown key of the head", "", "  color \"red\"\n", Code::U7008),
+        ("a syntax error", "[labels\n", "\nlabels\n  [\n", Code::U7008),
+        ("a category not UpperCamelCase", "[labels]\ncategories = [\"Bad_name\"]\n", "\nlabels\n  Bad_name\n", Code::U1005),
+        ("a category twice", "[labels]\ncategories = [\"PII\", \"PII\"]\n", "\nlabels\n  PII\n  PII\n", Code::U1002),
+        ("a trusted module that is not a path", "[trusted]\nmodules = [\"A\"]\n", "\ntrusted\n  A\n", Code::U7008),
+        ("a negative escape budget", "[escape_budget]\nchecked_per_module = -1\n", "\nescapes\n  checked per module -1\n", Code::U7008),
+        ("an entry that is not a path", "[run]\nentry = \"A\"\n", "\nrun\n  entry A\n", Code::U7008),
+        ("an unknown grant", "[run]\ngrants = [\"teleport\"]\n", "\nrun\n  grants\n    teleport\n", Code::U7008),
+        ("a malformed file grant", "[run]\ngrants = [\"files:data:exec\"]\n", "\nrun\n  grants\n    files \"data\" exec\n", Code::U7008),
+        ("a malformed http grant", "[run]\ngrants = [\"http:ftp://x\"]\n", "\nrun\n  grants\n    http \"ftp://x\"\n", Code::U7008),
+        ("a ceiling without operations", "[boundaries]\n\"gallery\" = [\"Files\"]\n", "\nboundaries\n  gallery\n    may Files\n", Code::U7008),
+        ("a ceiling naming a capability twice", "[boundaries]\n\"gallery\" = [\"Files[read]\", \"Files[write]\"]\n", "\nboundaries\n  gallery\n    may Files[read]\n    may Files[write]\n", Code::U7008),
+        ("a boundary inside another", "[boundaries]\n\"a\" = []\n\"a.b\" = []\n", "\nboundaries\n  a\n  a.b\n", Code::U7008),
+        ("a trusted module inside a boundary", "[trusted]\nmodules = [\"a.b\"]\n\n[boundaries]\n\"a\" = []\n", "\ntrusted\n  a.b\n\nboundaries\n  a\n", Code::U7008),
+        ("the entry inside a boundary", "[boundaries]\n\"a\" = []\n\n[run]\nentry = \"a.main\"\n", "\nboundaries\n  a\n\nrun\n  entry a.main\n", Code::U7008),
+        ("an operation named twice", "[boundaries]\n\"gallery\" = [\"Files[read, read]\"]\n", "\nboundaries\n  gallery\n    may Files[read, read]\n", Code::U7008),
+    ];
+    for (what, toml, ita, code) in twins {
+        let toml_code = if code == Code::U7008 { Code::U7002 } else { code };
+        let toml_text = if toml.is_empty() {
+            format!("{}color = \"red\"\n", TOML)
+        } else {
+            format!("{TOML}{toml}")
+        };
+        let (_, toml_errors) = parse_manifest(&toml_text);
+        assert!(
+            toml_errors.iter().any(|e| e.code == toml_code),
+            "una.toml, {what}: {:?}",
+            render(&toml_errors)
+        );
+        let (_, ita_errors) = parse_ita_manifest(&format!("{HEAD}{ita}"));
+        assert!(
+            ita_errors.iter().any(|e| e.code == code),
+            "ita.una, {what}: {:?}",
+            render(&ita_errors)
+        );
+    }
+}
