@@ -132,7 +132,15 @@ fn the_state_folds_releases_yanks_and_advisories() {
         audit(&state, &v("0.3.1")),
         ["0.3.1 is named by the advisory ITA-2026-0007"]
     );
-    assert_eq!(audit(&state, &v("0.3.0")), ["0.3.0 is yanked"]);
+    // A yanked release that an advisory also names reports both (rule 41): neither hides
+    // the other.
+    assert_eq!(
+        audit(&state, &v("0.3.0")),
+        [
+            "0.3.0 is yanked",
+            "0.3.0 is named by the advisory ITA-2026-0007"
+        ]
+    );
     assert!(audit(&state, &v("0.3.2")).is_empty());
 }
 
