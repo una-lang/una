@@ -1364,6 +1364,43 @@ fn a_list_built_by_append_in_a_loop_is_never_copied_at_any_size() {
 }
 
 #[test]
+fn collections_updated_in_a_loop_are_never_copied_at_any_size() {
+    // ADR 0119 Costs and rule 19 (#981): a `Queue`, a `Set`, a `PriorityQueue`, a `BitSet` and
+    // a `HashSet` updated in a loop while uniquely held are updated in place, at every size, so
+    // building them takes linear time; one push while a second binding holds the queue copies
+    // it once. The debug runtime counts every copy: exactly 1 at every size. The output is the
+    // interpreter's.
+    for n in [1 << 10, 1 << 12, 1 << 14] {
+        let program = format!(
+            "module grown\n\nimport std.collections (BitSet, HashSet, PriorityQueue, Queue, Set, empty_bit_set, empty_hash_set, empty_queue, empty_set, lowest_first)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit q: Queue[Int] = empty_queue()\n  let edit s: Set[Int] = empty_set()\n  let edit p: PriorityQueue[Int, Int] = lowest_first()\n  let edit b: BitSet = empty_bit_set(size: {n})\n  let edit h: HashSet[Int] = empty_hash_set()\n  for i in 0..<{n}\n    edit q.push(item: i)\n    edit s.add(item: i)\n    edit p.push(item: i, priority: i)\n    if 0 <= i and i < b.size\n      edit b.add(item: i)\n    edit h.add(item: i)\n  let kept = q\n  edit q.push(item: 0)\n  @console.print(\"{{kept.len}} {{q.len}} {{s.len}} {{p.len}} {{b.len}} {{h.len}}\")\n"
+        );
+        let dir = ita_package(
+            &format!("grown{n}"),
+            "\nrun\n  entry grown\n  grants\n    console\n",
+            &[("src/grown.una", &program)],
+        );
+        let expected = format!("{n} {} {n} {n} {n} {n}\n", n + 1);
+        let interpreted = una(&dir, &["run"]);
+        assert_eq!(interpreted.status.code(), Some(0), "{n}: {interpreted:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&interpreted.stdout),
+            expected,
+            "{n}"
+        );
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{n}: {built:?}");
+        let output = Command::new(dir.join(format!("target/una/grown{n}")))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{n}: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected, "{n}");
+        assert_eq!(copied(&output), 1, "{n}: {output:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
 fn a_loop_runs_in_constant_memory() {
     // #201: a loop whose state takes constant space runs in constant space, also in the debug
     // runtime the tests link, whose quarantine of freed slots is bounded: 10,000,000 iterations
