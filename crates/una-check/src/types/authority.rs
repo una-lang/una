@@ -2014,7 +2014,13 @@ fn function_grants(
             .map(|op| format!("`{op}`"))
             .collect();
         if !missing.is_empty() {
+            // `[run] grants` in `una.toml`, `run grants` in `ita.una`, in backticks either way.
             let section = settings.format.section("[run] grants");
+            let section = if section.starts_with('`') {
+                section
+            } else {
+                format!("`{section}`")
+            };
             let granter = if run.is_some() {
                 format!("neither {section} nor a `--grant` flag grants")
             } else {

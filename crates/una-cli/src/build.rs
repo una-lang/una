@@ -193,7 +193,10 @@ pub(crate) fn build_command(
             .map(|span| package.sources.location(*span))
             .collect();
         let mut meta = json!({
-            "grants_section": manifest.format.section("[run] grants"),
+            "grants_section": match manifest.format.section("[run] grants") {
+                section if section.starts_with('`') => section,
+                section => format!("`{section}`"),
+            },
             "grants": grants,
             "uses": uses,
             "sites": sites,
