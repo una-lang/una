@@ -461,7 +461,7 @@ pub struct Options {
     /// `--max-memory <MiB>` (ADR 0061).
     pub max_memory: usize,
     /// `--max-response <MiB>` and `--http-timeout <seconds>` (`spec/24 §4`).
-    pub http: una_http::client::Settings,
+    pub http: una_http_core::client::Settings,
     /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
     /// 0116 rule 19).
     pub stop_after: Option<u64>,
@@ -513,7 +513,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 if n == 0 {
                     return Err(format!("`{flag} 0` allows nothing; give at least 1"));
                 }
-                let day = una_http::client::MAX_TIMEOUT_SECS;
+                let day = una_http_core::client::MAX_TIMEOUT_SECS;
                 if flag == "--http-timeout" && n > day {
                     return Err(format!(
                         "`{flag} {n}` is longer than a day; give at most {day}"
@@ -563,7 +563,7 @@ pub(crate) struct State {
     pub(crate) grants: Arc<Vec<Grant>>,
     pub(crate) keys: Arc<BTreeMap<String, Vec<u8>>>,
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
-    pub(crate) http: una_http::client::Settings,
+    pub(crate) http: una_http_core::client::Settings,
     pub(crate) types: Arc<Types>,
     pub(crate) ops: Arc<Vec<OpSite>>,
     /// Whether the last host operation failed.
@@ -620,7 +620,7 @@ pub(crate) struct TaskTemplate {
     failure: Option<Arc<Failure>>,
     grants: Arc<Vec<Grant>>,
     keys: Arc<BTreeMap<String, Vec<u8>>>,
-    http: una_http::client::Settings,
+    http: una_http_core::client::Settings,
     types: Arc<Types>,
     ops: Arc<Vec<OpSite>>,
     max_memory: usize,

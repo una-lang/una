@@ -566,7 +566,7 @@ pub struct Limits<'a> {
     /// The bytes the process holds on the heap now.
     pub held: &'a (dyn Fn() -> usize + Sync),
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
-    pub http: una_http::client::Settings,
+    pub http: una_http_core::client::Settings,
 }
 
 impl Limits<'_> {
@@ -577,7 +577,7 @@ impl Limits<'_> {
             max_depth,
             max_memory: usize::MAX,
             held: &unmeasured,
-            http: una_http::client::Settings::default(),
+            http: una_http_core::client::Settings::default(),
         }
     }
 }
@@ -602,7 +602,7 @@ pub(crate) struct Machine<'p, 'w> {
     grants: &'w [Grant],
     keys: &'w BTreeMap<String, Vec<u8>>,
     /// The limits and deadline of each HTTP request.
-    http: una_http::client::Settings,
+    http: una_http_core::client::Settings,
     /// The trace so far.
     pub(crate) trace: Vec<Event>,
     depth: usize,
@@ -1790,8 +1790,8 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send};
-        use una_http::grant::Method;
+        use una_http_core::client::{Error, Request, send};
+        use una_http_core::grant::Method;
         let fail = |error: Error| {
             let (name, index) = match error {
                 Error::Denied => ("Denied", 0),
@@ -3081,7 +3081,7 @@ mod tests {
         let held = std::sync::atomic::AtomicUsize::new(100 << 20);
         let probe = || held.load(std::sync::atomic::Ordering::Relaxed);
         let limits = Limits {
-            http: una_http::client::Settings::default(),
+            http: una_http_core::client::Settings::default(),
             max_depth: 10,
             max_memory: 2,
             held: &probe,

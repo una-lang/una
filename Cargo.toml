@@ -19,6 +19,7 @@ una-explain = { path = "crates/una-explain" }
 una-fmt = { path = "crates/una-fmt" }
 una-hash = { path = "crates/una-hash" }
 una-http = { path = "crates/una-http" }
+una-http-core = { path = "crates/una-http-core" }
 una-interp = { path = "crates/una-interp" }
 una-lsp = { path = "crates/una-lsp" }
 una-project = { path = "crates/una-project" }

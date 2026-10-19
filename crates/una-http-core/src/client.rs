@@ -1,9 +1,14 @@
 //! Sending a request (`spec/24 §3`, §4): HTTP/1.1, directly to the origin, over TCP or TLS,
 //! within one deadline for the whole request, its redirects included.
+//!
+//! TLS is the client that the process installs ([`install_tls`]): `una-http` holds it, over
+//! `rustls`, so that this crate, and the runtime library that executables without `Http` link,
+//! carry no TLS code (ADR 0074 H7, #1102). With none installed, an `https` request fails with
+//! [`Error::Tls`] once connected, before any byte of it is sent.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::grant::{Grant, Method, Url, allowed};
@@ -82,6 +87,38 @@ pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 
 /// The most redirects followed in a row (`spec/24 §2` rule 3).
 const MAX_REDIRECTS: usize = 5;
+
+/// A TLS connection over a connected socket, as [`Tls::connect`] makes it.
+pub trait TlsStream: Read + Write {
+    /// The socket under the connection, whose timeouts bound each read and write.
+    fn socket(&self) -> &TcpStream;
+}
+
+/// The TLS client of `https` requests (`spec/24 §3` rule 4), which a process installs once with
+/// [`install_tls`].
+pub trait Tls: Sync {
+    /// The TLS connection to the server `name` over `stream`, its handshake done before
+    /// `deadline`: [`Error::BadUrl`] when `name` is not a server name, [`Error::Tls`] when the
+    /// handshake or the certificate fails, and [`Error::TimedOut`] past the deadline.
+    fn connect(
+        &self,
+        name: &str,
+        stream: TcpStream,
+        deadline: Instant,
+    ) -> Result<Box<dyn TlsStream>, Error>;
+
+    /// Whether `error`, of a connection this client made, is a failure of TLS.
+    fn failed(&self, error: &std::io::Error) -> bool;
+}
+
+/// The TLS client of the process, once installed.
+static TLS: OnceLock<&'static dyn Tls> = OnceLock::new();
+
+/// Installs `tls` as the TLS client of every later `https` request of the process. The first
+/// installation stays: a later one changes nothing.
+pub fn install_tls(tls: &'static dyn Tls) {
+    let _ = TLS.set(tls);
+}
 
 /// Sends `request` where `grants` allow, within `settings` (`spec/24`).
 pub fn send(
@@ -199,7 +236,7 @@ fn check_headers(headers: &[(String, String)], bearer: Option<&[u8]>) -> Result<
 }
 
 /// The time left before `deadline`, or `TimedOut`.
-fn left(deadline: Instant) -> Result<Duration, Error> {
+pub fn left(deadline: Instant) -> Result<Duration, Error> {
     let now = Instant::now();
     if now >= deadline {
         return Err(Error::TimedOut);
@@ -235,14 +272,14 @@ fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, 
 /// A connection, over TCP or TLS.
 enum Connection {
     Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Tls(Box<dyn TlsStream>),
 }
 
 impl Connection {
     fn socket(&self) -> &TcpStream {
         match self {
             Connection::Plain(stream) => stream,
-            Connection::Tls(stream) => &stream.sock,
+            Connection::Tls(stream) => stream.socket(),
         }
     }
 
@@ -293,9 +330,9 @@ impl Connection {
     }
 }
 
-/// The failure of an I/O error: past the deadline, a timeout; a TLS error, `Tls`; else the
-/// connection failed.
-fn io_error(error: &std::io::Error, deadline: Instant) -> Error {
+/// The failure of an I/O error: past the deadline, a timeout; a TLS error, as the installed
+/// TLS client tells it, `Tls`; else the connection failed.
+pub fn io_error(error: &std::io::Error, deadline: Instant) -> Error {
     if Instant::now() >= deadline
         || matches!(
             error.kind(),
@@ -304,76 +341,10 @@ fn io_error(error: &std::io::Error, deadline: Instant) -> Error {
     {
         return Error::TimedOut;
     }
-    if error
-        .get_ref()
-        .is_some_and(|inner| inner.downcast_ref::<rustls::Error>().is_some())
-    {
+    if TLS.get().is_some_and(|tls| tls.failed(error)) {
         return Error::Tls;
     }
     Error::Unreachable
-}
-
-/// The TLS settings: the Mozilla roots compiled in (`spec/24 §3` rule 4); in debug builds only,
-/// also the roots of the PEM file that `UNA_HTTP_TEST_ROOTS` names, for the tests' local
-/// servers. Release builds have no such hook.
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    Arc::clone(CONFIG.get_or_init(|| {
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        #[cfg(debug_assertions)]
-        let roots = {
-            let mut roots = roots;
-            test_roots(&mut roots);
-            roots
-        };
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .map(|builder| builder.with_root_certificates(roots).with_no_client_auth());
-        match config {
-            Ok(config) => Arc::new(config),
-            // INVARIANT: the ring provider supports the default versions; an empty config
-            // would refuse every handshake, which fails safe.
-            Err(_) => Arc::new(
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(rustls::RootCertStore::empty())
-                    .with_no_client_auth(),
-            ),
-        }
-    }))
-}
-
-/// The PEM file of test roots that [`trust_test_roots`] names, in debug builds only.
-#[cfg(debug_assertions)]
-static TEST_ROOTS: OnceLock<std::path::PathBuf> = OnceLock::new();
-
-/// Debug builds only: trusts the roots of the PEM file at `path` too, for tests that serve TLS
-/// locally. It takes effect only before the first TLS connection of the process.
-#[cfg(debug_assertions)]
-pub fn trust_test_roots(path: &std::path::Path) {
-    let _ = TEST_ROOTS.set(path.to_owned());
-}
-
-#[cfg(debug_assertions)]
-#[allow(clippy::disallowed_methods)]
-fn test_roots(roots: &mut rustls::RootCertStore) {
-    use rustls::pki_types::CertificateDer;
-    use rustls::pki_types::pem::PemObject;
-    let path = match TEST_ROOTS.get() {
-        Some(path) => path.clone(),
-        None => match std::env::var_os("UNA_HTTP_TEST_ROOTS") {
-            Some(path) => std::path::PathBuf::from(path),
-            None => return,
-        },
-    };
-    let Ok(certs) = CertificateDer::pem_file_iter(path) else {
-        return;
-    };
-    for cert in certs.flatten() {
-        let _ = roots.add(cert);
-    }
 }
 
 /// Connects to the URL's origin within the deadline, with TLS for `https`.
@@ -397,35 +368,10 @@ fn connect(url: &Url, deadline: Instant) -> Result<Connection, Error> {
     if !url.tls {
         return Ok(Connection::Plain(stream));
     }
-    let name = url
-        .host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_owned();
-    let server = rustls::pki_types::ServerName::try_from(name).map_err(|_| Error::BadUrl)?;
-    let client = rustls::ClientConnection::new(tls_config(), server).map_err(|_| Error::Tls)?;
-    let mut connection = Connection::Tls(Box::new(rustls::StreamOwned::new(client, stream)));
-    // The handshake, within the deadline.
-    if let Connection::Tls(tls) = &mut connection {
-        loop {
-            if !tls.conn.is_handshaking() {
-                break;
-            }
-            let left = left(deadline)?;
-            let _ = tls.sock.set_read_timeout(Some(left));
-            let _ = tls.sock.set_write_timeout(Some(left));
-            tls.conn.complete_io(&mut tls.sock).map_err(|error| {
-                match io_error(&error, deadline) {
-                    Error::TimedOut => Error::TimedOut,
-                    Error::Unreachable if error.kind() == std::io::ErrorKind::InvalidData => {
-                        Error::Tls
-                    }
-                    other => other,
-                }
-            })?;
-        }
-    }
-    Ok(connection)
+    // No TLS client installed: the request fails, and is never sent in the clear.
+    let tls = TLS.get().ok_or(Error::Tls)?;
+    let name = url.host.trim_start_matches('[').trim_end_matches(']');
+    tls.connect(name, stream, deadline).map(Connection::Tls)
 }
 
 /// The bytes of a request (`spec/24 §3` rule 2).

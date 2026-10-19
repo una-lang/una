@@ -1426,8 +1426,15 @@ version = "0.3.16"
 dependencies = [
  "rcgen",
  "rustls",
- "una-core",
+ "una-http-core",
  "webpki-roots",
+]
+
+[[package]]
+name = "una-http-core"
+version = "0.3.16"
+dependencies = [
+ "una-core",
 ]
 
 [[package]]
@@ -1441,7 +1448,7 @@ dependencies = [
  "toml",
  "una-core",
  "una-diag",
- "una-http",
+ "una-http-core",
  "una-syntax",
 ]
 
@@ -1483,7 +1490,7 @@ dependencies = [
  "serde_json",
  "una-core",
  "una-diag",
- "una-http",
+ "una-http-core",
  "una-interp",
 ]
 

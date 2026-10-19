@@ -375,8 +375,8 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
 
 /// The index of an `HttpError` variant in its declaration order (`spec/24 §1`), which the
 /// formal track's model uses as the failure's code (#470); a test pins it to the prelude.
-fn http_error_index(error: una_http::client::Error) -> i64 {
-    use una_http::client::Error;
+fn http_error_index(error: una_http_core::client::Error) -> i64 {
+    use una_http_core::client::Error;
     match error {
         Error::Denied => 0,
         Error::BadUrl => 1,
@@ -395,13 +395,13 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
 /// as a `Response` record, or an `HttpError`, which `una_rt_host_failed` then reports.
 fn http(
     site: i64,
-    method: una_http::grant::Method,
+    method: una_http_core::grant::Method,
     url: i64,
     headers: i64,
     body: Option<i64>,
     key_name: i64,
 ) -> i64 {
-    use una_http::client::{Error, Request, send};
+    use una_http_core::client::{Error, Request, send};
     // The variants of `HttpError`, in declaration order, as words.
     let variant = |error: Error| (http_error_index(error) << 1) | 1;
     let url = values::text_value(url);
@@ -426,7 +426,7 @@ fn http(
         None => None,
     };
     let (grants, settings) = with_state(|state| {
-        let grants: Vec<una_http::grant::Grant> = state
+        let grants: Vec<una_http_core::grant::Grant> = state
             .grants
             .iter()
             .filter_map(|grant| match grant {
@@ -481,7 +481,7 @@ fn http(
 pub fn http_get(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
     http(
         site,
-        una_http::grant::Method::Get,
+        una_http_core::grant::Method::Get,
         url,
         headers,
         None,
@@ -493,7 +493,7 @@ pub fn http_get(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
 pub fn http_post(site: i64, url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
     http(
         site,
-        una_http::grant::Method::Post,
+        una_http_core::grant::Method::Post,
         url,
         headers,
         Some(body),
@@ -505,7 +505,7 @@ pub fn http_post(site: i64, url: i64, headers: i64, body: i64, key_name: i64) ->
 pub fn http_put(site: i64, url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
     http(
         site,
-        una_http::grant::Method::Put,
+        una_http_core::grant::Method::Put,
         url,
         headers,
         Some(body),
@@ -517,7 +517,7 @@ pub fn http_put(site: i64, url: i64, headers: i64, body: i64, key_name: i64) -> 
 pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
     http(
         site,
-        una_http::grant::Method::Delete,
+        una_http_core::grant::Method::Delete,
         url,
         headers,
         None,
@@ -528,7 +528,7 @@ pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::http_error_index;
-    use una_http::client::Error;
+    use una_http_core::client::Error;
 
     #[test]
     fn http_error_codes_follow_the_declaration_order() {

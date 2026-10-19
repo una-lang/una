@@ -701,6 +701,9 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    // The interpreter sends `Http` requests through `una-http-core`, which has no TLS client of
+    // its own: `una` installs `una-http`'s before any command runs (#1102).
+    una_http::install_tls();
     let mut args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     // The same binary invoked as `ita` is `una ita` (ADR 0122 rule 1): `ita lock` is
     // `una ita lock`.

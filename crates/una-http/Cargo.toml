@@ -5,9 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+description = "The TLS client of `Http` over rustls, the only crate that links the TLS stack, and the framing of HTTP servers (ADR 0074, ADR 0123)"
 
 [dependencies]
-una-core.workspace = true
+una-http-core.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 
