@@ -1926,7 +1926,8 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 }
 
 /// U3012: the capabilities that `main` of the `[run] entry` module uses must be granted
-/// (`spec/04 §8`, `spec/05 §7`). A capability that is not a host capability
+/// (`spec/04 §8`, `spec/05 §7`), and so must those of `init`, `step` and `on_stop` of a
+/// `[drive]` module (ADR 0116 rule 2). A capability that is not a host capability
 /// can never be granted; host capabilities are compared with `[run] grants` when `una.toml`
 /// lists grants, and with the final grants of `una run` when it checks the package to run it.
 pub(crate) fn grants(
@@ -1935,34 +1936,50 @@ pub(crate) fn grants(
     run: Option<RunInput<'_>>,
     report: &mut Report<'_>,
 ) {
-    let entry = match (run, &settings.entry) {
-        (Some(run), _) => run.entry,
-        (None, Some(entry)) => entry.value.as_str(),
-        (None, None) => return,
+    let (path, names): (&str, &[&str]) = match (run, &settings.entry, &settings.drive) {
+        (Some(run), _, _) => (run.entry, &["main"]),
+        (None, Some(entry), _) => (entry.value.as_str(), &["main"]),
+        (None, None, Some(drive)) => (drive.module.value.as_str(), &["init", "step", "on_stop"]),
+        (None, None, None) => return,
     };
     let Some(module) =
-        (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == entry))
+        (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == path))
     else {
         return;
     };
     if !env.reports(module) {
         return;
     }
-    let Some(Entity::Function(main)) = env
-        .modules
-        .get(module)
-        .and_then(|m| m.lower.get("main").copied())
-    else {
-        return;
-    };
-    let Some(def) = env.functions.get(main) else {
-        return;
-    };
     let strings: Vec<String> = match run {
         Some(run) => run.grants.to_vec(),
         None => settings.grants.iter().map(|g| g.value.clone()).collect(),
     };
     let granted = granted(&strings);
+    for &name in names {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        if let Some(def) = env.functions.get(id) {
+            function_grants(env, settings, run, name, def, &granted, report);
+        }
+    }
+}
+
+/// U3012 for each `uses` of `name`, a function the host calls: `main`, or a function of a
+/// `[drive]` module.
+fn function_grants(
+    env: &Env<'_>,
+    settings: &Manifest,
+    run: Option<RunInput<'_>>,
+    name: &str,
+    def: &super::env::FnDef<'_>,
+    granted: &BTreeMap<&str, BTreeSet<&str>>,
+    report: &mut Report<'_>,
+) {
     for need in &def.uses {
         let Some(capability) = need.usage.capability.and_then(|c| env.capabilities.get(c)) else {
             continue;
@@ -1973,12 +1990,12 @@ pub(crate) fn grants(
                 Code::U3012,
                 need.span,
                 format!(
-                    "`main` uses `@{}: {}`, which is not a host capability, so no grant can provide it",
+                    "`{name}` uses `@{}: {}`, which is not a host capability, so no grant can provide it",
                     need.usage.name, capability.name
                 ),
             );
             diagnostic.repairs.push(Report::advice(format!(
-                "install a handler of `{}` for `@{}` with `with` inside `main`",
+                "install a handler of `{}` for `@{}` with `with` inside `{name}`",
                 capability.name, need.usage.name
             )));
             report.push(diagnostic);
@@ -2005,7 +2022,7 @@ pub(crate) fn grants(
                 Code::U3012,
                 need.span,
                 format!(
-                    "`main` uses {} of `{}`, which {granter}",
+                    "`{name}` uses {} of `{}`, which {granter}",
                     missing.join(", "),
                     capability.name
                 ),
@@ -2020,6 +2037,53 @@ pub(crate) fn grants(
             grant.widens = Some(Widening::Grant);
             diagnostic.repairs.push(grant);
             report.push(diagnostic);
+        }
+    }
+}
+
+/// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
+/// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
+/// `fails` clause.
+pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(drive) = &settings.drive else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    for name in ["step", "on_stop"] {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+            continue;
+        };
+        for clause in &decl.clauses {
+            if matches!(clause.kind, una_syntax::ast::ClauseKind::Fails(_)) {
+                let mut diagnostic = report.make(
+                    Code::U3029,
+                    clause.span,
+                    format!(
+                        "`{name}` of the driven module `{}` declares `fails`, but the host has no caller to give a failure to",
+                        drive.module.value
+                    ),
+                );
+                diagnostic.repairs.push(Report::advice(format!(
+                    "handle each failure inside `{name}`, with `if error use` or `attempt`, and remove the `fails` clause"
+                )));
+                report.push(diagnostic);
+            }
         }
     }
 }

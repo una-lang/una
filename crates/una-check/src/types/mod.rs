@@ -572,6 +572,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         facts::generic_equality(&env, &facts, &findings, &mut report);
     }
     authority::grants(&env, package.settings, package.run, &mut report);
+    authority::drive_failures(&env, package.settings, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(

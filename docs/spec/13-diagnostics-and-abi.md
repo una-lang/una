@@ -203,6 +203,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3024 | authority | Call into a boundary module from which a release is reachable |
 | U3025 | authority | `if error` clause on an expression that cannot fail |
 | U3026 | authority | `attempt` of a call that cannot fail |
+| U3029 | authority | A failure that must be handled where it is not |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
 | U4003 | security | Sink label exceeded |
