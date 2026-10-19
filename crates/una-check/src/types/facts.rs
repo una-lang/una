@@ -63,7 +63,7 @@ impl KindFacts {
                 params.insert(*index);
                 false
             }
-            Ty::List(element) => self.walk(element, params),
+            Ty::List(element) | Ty::Dense(_, element) => self.walk(element, params),
             Ty::Map(key, value) => self.walk(key, params) | self.walk(value, params),
             Ty::Kind(kind, args) => {
                 let mut holds = self.direct.get(*kind).copied().unwrap_or(false);
@@ -354,9 +354,10 @@ fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
     // Every kind that a field type mentions, at any depth.
     fn mentioned(ty: &Ty, out: &mut Vec<(KindId, Vec<Ty>)>) {
         match ty {
-            Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => {
-                mentioned(inner, out)
-            }
+            Ty::Labeled(_, inner)
+            | Ty::Refined(_, inner)
+            | Ty::List(inner)
+            | Ty::Dense(_, inner) => mentioned(inner, out),
             Ty::Map(key, value) => {
                 mentioned(key, out);
                 mentioned(value, out);
@@ -448,6 +449,9 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         Ty::Labeled(_, inner) | Ty::Refined(_, inner) => written(env, kind, inner),
         Ty::Param(index) => kind.params.get(*index).copied().unwrap_or("?").to_owned(),
         Ty::List(element) => format!("List[{}]", written(env, kind, element)),
+        Ty::Dense(dense, element) => {
+            format!("{}[{}]", dense.as_str(), written(env, kind, element))
+        }
         Ty::Map(key, value) => format!(
             "Map[{}, {}]",
             written(env, kind, key),

@@ -102,6 +102,10 @@ impl<'a> Checker<'_, 'a, '_> {
                             _ => self.expected_fixed(expected).map(Ty::Fixed),
                         };
                         let found = self.infer(operand, hint.as_ref());
+                        // `-x` of a dense value (`spec/29 §17`).
+                        if let Some(ty) = self.dense_negation(&found, span) {
+                            return ty;
+                        }
                         let resolved = self.resolve(&found);
                         let ty = match resolved {
                             // `-` keeps a unit (ADR 0104 rule 3).
@@ -350,7 +354,7 @@ impl<'a> Checker<'_, 'a, '_> {
         match ty.unlabeled() {
             Ty::Fn(_) => Some("this value is a function".to_owned()),
             Ty::Hashed => Some("this value is a `Hashed`".to_owned()),
-            Ty::List(element) => self.unwritable(element, seen),
+            Ty::List(element) | Ty::Dense(_, element) => self.unwritable(element, seen),
             Ty::Map(key, value) => self
                 .unwritable(key, seen)
                 .or_else(|| self.unwritable(value, seen)),
@@ -395,7 +399,7 @@ impl<'a> Checker<'_, 'a, '_> {
         seen: &mut BTreeSet<KindId>,
     ) -> Option<(String, String, Label)> {
         match ty.unlabeled() {
-            Ty::List(element) => self.labeled_field(element, seen),
+            Ty::List(element) | Ty::Dense(_, element) => self.labeled_field(element, seen),
             Ty::Map(key, value) => self
                 .labeled_field(key, seen)
                 .or_else(|| self.labeled_field(value, seen)),
@@ -616,6 +620,27 @@ impl<'a> Checker<'_, 'a, '_> {
                     def.name, def.name
                 ),
             );
+            return Ty::error();
+        }
+        // ADR 0120: a trusted function that computes new elements gives a result without the
+        // refinement of its element type at each call (`super::dense::SYNTHESIZING`). A function
+        // value's result type is fixed where the value flows, after its type arguments take
+        // their refinements, so it would claim the refinement for elements the function made;
+        // such a function is not a value, and a lambda that calls it is.
+        if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                format!(
+                    "`{}` computes new elements, so it is not a function value; call it in a lambda",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "write a lambda that calls `{}` with its arguments",
+                def.name
+            )));
+            self.report.push(diagnostic);
             return Ty::error();
         }
         // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
@@ -1006,7 +1031,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         || (self.env.edition >= Edition::V0_4
                             && super::decimal::is_float_literal(e))
                 };
-                if !literal(left) && !literal(right) && !self.is_f64(&ty) {
+                if !literal(left)
+                    && !literal(right)
+                    && !self.is_f64(&ty)
+                    && self.module != self.env.prelude
+                {
                     self.outside_rl(span, || {
                         "`*` of two operands that are not literals".to_owned()
                     });
@@ -1021,8 +1050,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 };
                 let ty = self.ints(left, right, &operand, span, expected, combine, op);
                 // An `F64` division by zero gives an infinity or NaN, and has no obligation
-                // (ADR 0114 rule 3.2); a decimal has no `/` (ADR 0120 rule 13).
-                if int_literal(right) != Some(true) && !self.is_f64(&ty) && !self.is_decimal(&ty) {
+                // (ADR 0114 rule 3.2); a decimal has no `/` (ADR 0120 rule 13); a dense value divided by a scalar records
+                // its own, on integer elements (`spec/29 §17`).
+                if int_literal(right) != Some(true)
+                    && !self.is_f64(&ty)
+                    && !self.is_decimal(&ty)
+                    && self.dense_of(&ty).is_none()
+                {
                     self.outside_rl(span, || {
                         format!("`{symbol}` by a divisor that is not a nonzero literal")
                     });
@@ -1092,8 +1126,21 @@ impl<'a> Checker<'_, 'a, '_> {
         let first_ty = self.infer(first, hint.as_ref());
         // Each operand's top node, read once (ADR 0077: no rebuilding per operation).
         let first_top = self.vars.peel(&first_ty);
+        // An operator of dense values (`spec/29 §17`).
+        let swapped = constant.0 && !constant.1;
+        if matches!(first_top, Ty::Dense(..)) {
+            return self.dense_arithmetic(op, first, first_ty, second, None, span, swapped);
+        }
         if matches!(first_top.magnitude(), Ty::F64) {
-            return self.float_arithmetic(first_ty, second, operand, span, combine);
+            return self.float_arithmetic(
+                (op, swapped),
+                first,
+                first_ty,
+                second,
+                operand,
+                span,
+                combine,
+            );
         }
         if let Ty::Decimal(a) = first_top.magnitude() {
             let a = *a;
@@ -1118,6 +1165,18 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let second_ty = self.infer(second, Some(&second_hint));
         let second_top = self.vars.peel(&second_ty);
+        // `k * x` with the scalar first (`spec/29 §17`).
+        if matches!(second_top, Ty::Dense(..)) {
+            return self.dense_arithmetic(
+                op,
+                first,
+                first_ty,
+                second,
+                Some(second_ty),
+                span,
+                swapped,
+            );
+        }
         let second_magnitude = second_top.magnitude().clone();
         if !(clause && fixed::is_integer(&second_magnitude)) {
             let mark = self.report.count();
@@ -1217,8 +1276,11 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The second operand and the type of an arithmetic operator whose first operand is an
     /// `F64` (ADR 0114 rule 3.1): both are `F64`, an integer operand is U2001 with a repair
     /// that converts it by `to_f64()`, and `mod` is U2001 with a repair to `rem`.
+    #[allow(clippy::too_many_arguments)]
     fn float_arithmetic(
         &mut self,
+        (op, swapped): (BinaryOp, bool),
+        first: &Expr,
         first_ty: Ty,
         second: &Expr,
         operand: &str,
@@ -1228,6 +1290,18 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.report.count();
         let second_ty = self.infer(second, Some(&Ty::F64));
         let second_top = self.vars.peel(&second_ty);
+        // `k * x` with the scalar first (`spec/29 §17`): the order as written is kept.
+        if matches!(second_top, Ty::Dense(..)) {
+            return self.dense_arithmetic(
+                op,
+                first,
+                first_ty,
+                second,
+                Some(second_ty),
+                span,
+                swapped,
+            );
+        }
         if !matches!(second_top.magnitude(), Ty::F64) {
             self.unify_at(second.span, &Ty::F64, &second_ty, Role::Condition(operand));
             if fixed::is_integer(second_top.magnitude()) {
@@ -2136,7 +2210,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
 /// Whether `expr` is an integer literal, possibly negated or in parentheses, and then whether
 /// it is nonzero.
-fn int_literal(expr: &Expr) -> Option<bool> {
+pub(crate) fn int_literal(expr: &Expr) -> Option<bool> {
     match &expr.kind {
         ExprKind::Literal(Literal::Int(digits)) => Some(digits != "0"),
         ExprKind::Unary {

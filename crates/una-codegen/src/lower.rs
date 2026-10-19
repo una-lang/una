@@ -122,6 +122,12 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "Map" => {
                 Ok(Kind::Map)
             }
+            // Dense values wait for their native step (`spec/29 §17`, ADR 0120 rule 28).
+            Base::Named { module, name, .. }
+                if module == PRELUDE_MODULE && matches!(name.as_str(), "Array" | "Matrix") =>
+            {
+                Err(unsupported("dense values (spec/29)"))
+            }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
             Base::Param(_) | Base::Unknown => Ok(Kind::Any),
@@ -2725,6 +2731,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let (a, b, c) = (word(0), word(1), word(2));
                 self.call("una_rt_f64_op", &[code, a, b, c])
             }
+            // Dense values have no native representation yet (`spec/29 §17`).
+            Prim::Shape(_) => Err(unsupported("dense values (spec/29)")),
             // Every operation of `Decimal` is the runtime's, on coefficients, with the
             // operation's static scales, and its conversions with `F64` on boxed values
             // (`spec/29 §16`).

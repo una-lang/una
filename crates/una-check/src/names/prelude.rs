@@ -166,6 +166,23 @@ pub(crate) const FLOAT_0_3: [&str; 6] = [
     "json_number",
 ];
 
+/// The constructors of dense values that edition 0.4 adds to the prelude (`spec/29 §17`, ADR
+/// 0120 rule 32). The methods of dense values are resolved by their receiver, through
+/// functions of the prelude whose names start with [`DENSE_HIDDEN`], which no name in a program
+/// reaches.
+pub(crate) const DENSE_0_4: [&str; 5] = [
+    "array",
+    "array_filled",
+    "matrix",
+    "matrix_filled",
+    "matrix_diagonal",
+];
+
+/// The prefix of the prelude functions that implement the methods and operators of dense
+/// values (`spec/29 §17`): only the checker's resolution by receiver reaches them, never a name
+/// written in a program.
+pub(crate) const DENSE_HIDDEN: &str = "dense_";
+
 /// The functions of `Decimal` that edition 0.4 adds to the prelude (`spec/29 §16`, ADR 0120
 /// rules 16 and 17).
 pub(crate) const DECIMAL_0_4: [&str; 3] = ["parse_decimal", "as_decimal", "json_decimal"];

@@ -49,7 +49,9 @@ fn violation(
         return Some((from, to));
     }
     match (found.unlabeled(), expected.unlabeled()) {
-        (Ty::List(x), Ty::List(y)) => violation(x, y, covariant, top, kinds),
+        (Ty::List(x), Ty::List(y)) | (Ty::Dense(_, x), Ty::Dense(_, y)) => {
+            violation(x, y, covariant, top, kinds)
+        }
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => violation(xk, yk, covariant, top, kinds)
             .or_else(|| violation(xv, yv, covariant, top, kinds)),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => {

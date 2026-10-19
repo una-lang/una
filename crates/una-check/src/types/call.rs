@@ -46,6 +46,10 @@ impl<'a> Checker<'_, 'a, '_> {
             let kinds = self.env.kind_labels.clone();
             return Ty::Int.with_label(&top.join(&key.every_label(&kinds)));
         }
+        // `a.len`, `m.rows` and `m.columns` of a dense value (`spec/29 §17`).
+        if let Some(ty) = self.dense_field(&target_ty, field, span) {
+            return ty;
+        }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
                 self.resolved(span, Res::Field { kind, index });
@@ -190,6 +194,9 @@ impl<'a> Checker<'_, 'a, '_> {
             return ty;
         }
         if let Some(ty) = self.float_method(&target_ty, method, args, span) {
+            return ty;
+        }
+        if let Some(ty) = self.dense_method(target, &target_ty, marker, method, args, span, site) {
             return ty;
         }
         if let Some(ty) = self.int_method(&target_ty, method, args, span, expected) {
@@ -556,6 +563,13 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::error();
         };
         let callee = match def.kind {
+            // A method of a dense value is named as the method (`spec/29 §17`).
+            FnKind::Function if def.module == self.env.prelude => {
+                format!(
+                    "`{}`",
+                    super::dense::dense_display(def.name).unwrap_or(def.name)
+                )
+            }
             FnKind::Function => format!("`{}`", def.name),
             FnKind::Predicate { .. } => format!("predicate `{}`", def.name),
             FnKind::Policy => format!("policy `{}`", def.name),
@@ -836,7 +850,12 @@ impl<'a> Checker<'_, 'a, '_> {
         // ADR 0103 rule 5: a type argument at a position of the result that is not covariant,
         // inside a function type or under a user kind's argument, keeps no refinement, so an
         // inferred refinement never meets a contravariant or invariant flow.
-        let result = if subst.is_empty() || covariant_in(&def.result.base, &self.env.kind_labels) {
+        // ADR 0120: a trusted function that computes new elements keeps no refinement of its
+        // type arguments in its result (`super::dense::SYNTHESIZING`).
+        let synthesizes = super::dense::synthesizes(self.env.prelude, def.module, def.name);
+        let result = if subst.is_empty()
+            || (covariant_in(&def.result.base, &self.env.kind_labels) && !synthesizes)
+        {
             result
         } else {
             self.refined_vars_at_base(&result)
@@ -858,6 +877,9 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
+        }
+        if def.module == self.env.prelude {
+            self.dense_result(&result, span);
         }
         if let Some(fails) = &call_fails {
             self.call_fails.insert(span, fails.clone());
@@ -971,7 +993,16 @@ impl<'a> Checker<'_, 'a, '_> {
         // Where an element of `sort` ends up depends on every element, so every position of
         // its result carries the labels of the list and of all its elements (`spec/20 §4`
         // rule 2).
-        if name == "sort" {
+        // Likewise for the kernels whose result is a dense value: each of its elements depends
+        // on many input elements and on the inputs' shapes (ADR 0120 IF6).
+        if matches!(
+            name,
+            "sort"
+                | "dense_matrix_multiply"
+                | "dense_matrix_multiply_array"
+                | "dense_matrix_row_sums"
+                | "dense_matrix_column_sums"
+        ) {
             return result.raise_deep(&label);
         }
         result.with_label(&label)
@@ -1127,7 +1158,9 @@ impl<'a> Checker<'_, 'a, '_> {
     ) {
         match ty.unlabeled() {
             Ty::Fn(function) => out.push(((**function).clone(), field)),
-            Ty::List(element) => self.function_types_in(element, field, out, seen),
+            Ty::List(element) | Ty::Dense(_, element) => {
+                self.function_types_in(element, field, out, seen);
+            }
             Ty::Kind(id, args) => {
                 for arg in args {
                     self.function_types_in(&self.labeled(arg), field, out, seen);
@@ -1535,7 +1568,18 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Vec<Checked<'a>> {
         let mut checked: Vec<Checked<'a>> = Vec::new();
         let of_callee = self.of_callee.take();
-        let names: Vec<&str> = params.iter().map(|p| p.name).collect();
+        // A parameter of the prelude written `with_`, `and_` or `from_` takes the label without
+        // the underscore: the keywords `with`, `and` and `from` label the arguments of the dense
+        // methods (`spec/29 §17`, ADR 0120), and cannot name a parameter.
+        let names: Vec<&str> = params
+            .iter()
+            .map(|p| match p.name {
+                "with_" if module == self.env.prelude => "with",
+                "and_" if module == self.env.prelude => "and",
+                "from_" if module == self.env.prelude => "from",
+                name => name,
+            })
+            .collect();
         let offset = usize::from(receiver.is_some());
         let given_count = args.len() + offset;
         if given_count > params.len() {
@@ -1707,7 +1751,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 expected
             };
             let role = Role::Argument {
-                param: param.name,
+                param: names
+                    .get(target.unwrap_or(0))
+                    .copied()
+                    .unwrap_or(param.name),
                 callee,
             };
             self.ctx.argument = true;
@@ -1886,6 +1933,18 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let name = self.name(ident);
         self.outside_rl(span, || format!("constructor `{name}`"));
+        // ADR 0120 rule 3: `Array(...)` where an array is expected is the variant of `Json`.
+        if let Some(repair) = self.json_array_repair(expected, name) {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                "`Array(...)` makes the variant `Json.Array`, and an `Array[T]` is expected here",
+            );
+            diagnostic.repairs.push(super::Report::advice(repair));
+            self.report.push(diagnostic);
+            self.unchecked(args);
+            return Ty::error();
+        }
         if self.type_params.contains(&name) {
             self.report.error(
                 Code::U2001,
@@ -1993,6 +2052,9 @@ impl<'a> Checker<'_, 'a, '_> {
             Ty::Refined(_, inner) => self.refined_vars_at_base(inner),
             Ty::Labeled(label, inner) => self.refined_vars_at_base(inner).with_label(label),
             Ty::List(element) => Ty::List(Shared::new(self.refined_vars_at_base(element))),
+            Ty::Dense(dense, element) => {
+                Ty::Dense(*dense, Shared::new(self.refined_vars_at_base(element)))
+            }
             Ty::Map(key, value) => Ty::Map(
                 Shared::new(self.refined_vars_at_base(key)),
                 Shared::new(self.refined_vars_at_base(value)),
@@ -2325,7 +2387,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 45] = [
+const PRELUDE_LABELED: [&str; 85] = [
     "abs",
     "append",
     "at",
@@ -2377,6 +2439,49 @@ const PRELUDE_LABELED: [&str; 45] = [
     "parse_decimal",
     "as_decimal",
     "json_decimal",
+    // Dense values (`spec/29 §17`, ADR 0120, IF2 to IF6): the constructors and the methods
+    // that read, give a view of or compute from a dense value. The methods that update their
+    // receiver are not here: their arguments keep their parameters' labels.
+    "array",
+    "array_filled",
+    "matrix",
+    "matrix_filled",
+    "matrix_diagonal",
+    "dense_array_get",
+    "dense_array_at",
+    "dense_array_slice",
+    "dense_array_compact",
+    "dense_array_to_list",
+    "dense_array_map",
+    "dense_array_zip_map",
+    "dense_array_fold",
+    "dense_array_multiply_elements",
+    "dense_array_divide_elements",
+    "dense_array_sum",
+    "dense_array_dot",
+    "dense_array_norm2",
+    "dense_array_all_finite",
+    "dense_array_sum_exact",
+    "dense_array_dot_exact",
+    "dense_matrix_get",
+    "dense_matrix_at",
+    "dense_matrix_row",
+    "dense_matrix_column",
+    "dense_matrix_block",
+    "dense_matrix_transpose",
+    "dense_matrix_compact",
+    "dense_matrix_map",
+    "dense_matrix_zip_map",
+    "dense_matrix_fold",
+    "dense_matrix_multiply_elements",
+    "dense_matrix_divide_elements",
+    "dense_matrix_sum",
+    "dense_matrix_row_sums",
+    "dense_matrix_column_sums",
+    "dense_matrix_all_finite",
+    "dense_matrix_sum_exact",
+    "dense_matrix_multiply",
+    "dense_matrix_multiply_array",
 ];
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the
@@ -2391,6 +2496,39 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         "map" => &[("xs", false), ("each", false)],
         "fold" => &[("xs", false), ("step", false)],
         "filter" | "first_where" => &[("xs", false), ("keep", false)],
+        // Dense values (`spec/29 §17`, IF3, IF5): the top label is the label of what decides
+        // the shape, and of the indices a read or a view takes; each element position carries
+        // the labels of its type variable.
+        "array" => &[("xs", false)],
+        "array_filled" => &[("length", true)],
+        "matrix" => &[("rows", true), ("columns", true), ("elements", false)],
+        "matrix_filled" => &[("rows", true), ("columns", true)],
+        "matrix_diagonal" => &[("values", false)],
+        "dense_array_get" | "dense_array_at" => &[("a", false), ("index", true)],
+        "dense_matrix_get" | "dense_matrix_at" => &[("m", false), ("row", true), ("column", true)],
+        "dense_array_slice" => &[("a", false), ("from_", true), ("until", true)],
+        "dense_matrix_row" | "dense_matrix_column" => &[("m", false), ("index", true)],
+        "dense_matrix_block" => &[
+            ("m", false),
+            ("row_from", true),
+            ("row_until", true),
+            ("column_from", true),
+            ("column_until", true),
+        ],
+        "dense_array_compact" | "dense_array_to_list" => &[("a", false)],
+        "dense_matrix_transpose" | "dense_matrix_compact" => &[("m", false)],
+        "dense_array_map" => &[("a", false), ("each", false)],
+        "dense_matrix_map" => &[("m", false), ("each", false)],
+        "dense_array_zip_map" => &[("a", false), ("with_", false), ("each", false)],
+        "dense_matrix_zip_map" => &[("m", false), ("with_", false), ("each", false)],
+        "dense_array_fold" => &[("a", false), ("step", false)],
+        "dense_matrix_fold" => &[("m", false), ("step", false)],
+        "dense_array_multiply_elements" | "dense_array_divide_elements" => {
+            &[("a", false), ("by", false)]
+        }
+        "dense_matrix_multiply_elements" | "dense_matrix_divide_elements" => {
+            &[("m", false), ("by", false)]
+        }
         _ => return None,
     })
 }
@@ -2427,7 +2565,7 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
         params.is_empty()
     };
     match ty {
-        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => {
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
             covariant_in(inner, kinds)
         }
         Ty::Map(key, value) => covariant_in(key, kinds) && covariant_in(value, kinds),
@@ -2447,7 +2585,9 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
 fn holds_var(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) => true,
-        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => holds_var(inner),
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
+            holds_var(inner)
+        }
         Ty::Map(key, value) => holds_var(key) || holds_var(value),
         Ty::Kind(_, args) => args.iter().any(holds_var),
         Ty::Fn(function) => {
@@ -2512,7 +2652,9 @@ fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bo
                 .find_map(|(e, f)| fn_problem(f, e, !flipped))
                 .or_else(|| fn_problem(&e.result, &f.result, flipped))
         }
-        (Ty::List(e), Ty::List(f)) => fn_problem(e, f, flipped),
+        (Ty::List(e), Ty::List(f)) | (Ty::Dense(_, e), Ty::Dense(_, f)) => {
+            fn_problem(e, f, flipped)
+        }
         (Ty::Map(ek, ev), Ty::Map(fk, fv)) => {
             fn_problem(ek, fk, flipped).or_else(|| fn_problem(ev, fv, flipped))
         }
@@ -2545,7 +2687,7 @@ pub(crate) fn refinement_flow(expected: &Ty, found: &Ty) -> bool {
                 || lacks(&f.refinements.result, &e.refinements.result)
                 || refinement_flow(&e.result, &f.result)
         }
-        (Ty::List(e), Ty::List(f)) => refinement_flow(e, f),
+        (Ty::List(e), Ty::List(f)) | (Ty::Dense(_, e), Ty::Dense(_, f)) => refinement_flow(e, f),
         (Ty::Map(ek, ev), Ty::Map(fk, fv)) => refinement_flow(ek, fk) || refinement_flow(ev, fv),
         (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j && es.len() == fs.len() => {
             es.iter().zip(fs).any(|(e, f)| refinement_flow(e, f))

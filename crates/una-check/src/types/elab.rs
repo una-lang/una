@@ -21,7 +21,7 @@ use una_syntax::{SourceDb, Span};
 
 use super::Findings;
 use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, Need};
-use super::records::{Records, Res};
+use super::records::{DenseOp, Records, Res};
 use super::ty::{Declared, FnUse, Refinement, Ty};
 
 /// One binding of a `let` chain being built.
@@ -718,6 +718,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                 name: "List".to_owned(),
                 args: vec![self.convert(element)],
             },
+            // ADR 0120: `Array[T]` and `Matrix[T]` are kinds of the prelude in Core, whose sorts
+            // the verifier names `i!Array_<T>` and `i!Matrix_<T>`.
+            Ty::Dense(dense, element) => Base::Named {
+                module: "prelude".to_owned(),
+                name: dense.as_str().to_owned(),
+                args: vec![self.convert(element)],
+            },
             Ty::Map(key, value) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "Map".to_owned(),
@@ -1307,6 +1314,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             },
             ExprKind::Field { target, .. } => match self.res(expr.span) {
                 Some(Res::Len) => Term::Len(Box::new(self.term(target))),
+                // `m.rows` and `m.columns` (`spec/29 §17`).
+                Some(Res::Shape(fun)) => Term::Shape {
+                    fun,
+                    value: Box::new(self.term(target)),
+                },
                 Some(Res::Field { kind, index }) => {
                     let (kind, field) = self.field(kind, index);
                     Term::Field {
@@ -1354,6 +1366,18 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let mut terms = vec![self.term(target)];
                     terms.extend(args.iter().map(|arg| self.term(&arg.value)));
                     Term::Float { op, args: terms }
+                }
+                // The element of a dense value at its indices (`spec/29 §17`).
+                Some(Res::DenseElement(order)) => {
+                    let value = Box::new(self.term(target));
+                    let mut indices = Vec::new();
+                    for position in order {
+                        match args.get(position) {
+                            Some(arg) => indices.push(self.term(&arg.value)),
+                            None => return self.outside(),
+                        }
+                    }
+                    Term::Element { value, indices }
                 }
                 // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
                 Some(Res::MapMethod(MapOp::Has)) => match args.first() {
@@ -3439,6 +3463,160 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// An operator of dense values at `span`, over `operands` in source order (ADR 0120 rule
+    /// 34): the `map` or `zip_map` that its [`Res::DenseOp`] names, with a lambda that applies
+    /// the element type's operator. Its parameters have the operands' element types,
+    /// refinements included, and its result the result's element type, so a fixed-width
+    /// element type carries the lambda's `overflow` obligation, over two values of the element
+    /// type, and a division by a scalar its `division` obligation, once. A scalar operand is
+    /// evaluated in its place and captured.
+    fn dense_op(&mut self, lets: &mut Vec<Let>, span: Span, operands: &[&Expr]) -> Atom {
+        let Some(Res::DenseOp { id, op }) = self.res(span) else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        let element = |ty: &Type| match ty {
+            Type::Base {
+                base: Base::Named { module, name, args },
+                ..
+            } if module == "prelude" && (name == "Array" || name == "Matrix") => {
+                args.first().cloned()
+            }
+            _ => None,
+        };
+        let mut dense = Vec::new();
+        let mut scalar = None;
+        let mut scalar_span = span;
+        let mut arg_spans = Vec::new();
+        for operand in operands {
+            let ty = self.type_at(operand.span);
+            let atom = self.atom(lets, operand);
+            match element(&ty) {
+                Some(element) => {
+                    dense.push((atom, element));
+                    arg_spans.push(operand.span);
+                }
+                None => {
+                    scalar = Some(atom);
+                    scalar_span = operand.span;
+                }
+            }
+        }
+        let Some(out) = element(&self.type_at(span)) else {
+            self.broken.set(true);
+            return Atom::Unit;
+        };
+        let float = matches!(
+            dense.first(),
+            Some((
+                _,
+                Type::Base {
+                    base: Base::F64,
+                    ..
+                }
+            ))
+        );
+        let params: Vec<(Name, Type)> = dense
+            .iter()
+            .map(|(_, element)| (self.temp(), element.clone()))
+            .collect();
+        let p = |index: usize| {
+            params
+                .get(index)
+                .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
+        };
+        let k = scalar.clone().unwrap_or(Atom::Unit);
+        let (prim, args) = match (op, float) {
+            (DenseOp::Add, true) => (Prim::Float(una_core::FloatOp::Add), vec![p(0), p(1)]),
+            (DenseOp::Add, false) => (Prim::Add, vec![p(0), p(1)]),
+            (DenseOp::Sub, true) => (Prim::Float(una_core::FloatOp::Sub), vec![p(0), p(1)]),
+            (DenseOp::Sub, false) => (Prim::Sub, vec![p(0), p(1)]),
+            (DenseOp::Neg, true) => (Prim::Float(una_core::FloatOp::Neg), vec![p(0)]),
+            (DenseOp::Neg, false) => (Prim::Neg, vec![p(0)]),
+            (DenseOp::Scale { scalar_first }, float) => {
+                let prim = if float {
+                    Prim::Float(una_core::FloatOp::Mul)
+                } else {
+                    Prim::Mul
+                };
+                let args = if scalar_first {
+                    vec![k, p(0)]
+                } else {
+                    vec![p(0), k]
+                };
+                (prim, args)
+            }
+            (DenseOp::Divide, true) => (Prim::Float(una_core::FloatOp::Div), vec![p(0), k]),
+            (DenseOp::Divide, false) => (Prim::Div, vec![p(0), k]),
+        };
+        // An element carries the operator's span, and the scalar its own (the verifier's
+        // obligations name the divisor by it).
+        let element_spans: Vec<Span> = args
+            .iter()
+            .map(|arg| {
+                if scalar.as_ref() == Some(arg)
+                    && !params.iter().any(|(n, _)| *arg == Atom::Var(n.clone()))
+                {
+                    scalar_span
+                } else {
+                    span
+                }
+            })
+            .collect();
+        let r = self.temp();
+        let body = CoreExpr::Let {
+            name: r.clone(),
+            ty: out.clone(),
+            value: Box::new(Bound::Rhs(Rhs::Prim {
+                prim,
+                args,
+                arg_spans: element_spans,
+                span,
+            })),
+            body: Box::new(CoreExpr::Atom {
+                atom: Atom::Var(r),
+                span,
+            }),
+            span,
+            written: false,
+        };
+        let lambda_ty = Type::Fn {
+            params: params.iter().map(|(_, ty)| ty.clone()).collect(),
+            result: Box::new(out.clone()),
+            uses: Vec::new(),
+            fails: None,
+            label: Label::public(),
+        };
+        let f = self.temp();
+        lets.push(Let::inferred(
+            f.clone(),
+            lambda_ty,
+            Bound::Rhs(Rhs::Lambda {
+                params,
+                body: Box::new(body),
+                function: None,
+            }),
+            span,
+        ));
+        let mut type_args: Vec<Type> = dense.iter().map(|(_, element)| element.clone()).collect();
+        type_args.push(out);
+        let mut args: Vec<Atom> = dense.into_iter().map(|(atom, _)| atom).collect();
+        args.push(Atom::Var(f));
+        arg_spans.push(span);
+        let function = self.function_path(id);
+        self.push(
+            lets,
+            span,
+            Rhs::Call {
+                function,
+                type_args,
+                args,
+                arg_spans,
+                span,
+            },
+        )
+    }
+
     /// Binds `rhs` to a fresh temporary of the type recorded at `span`.
     fn push(&mut self, lets: &mut Vec<Let>, span: Span, rhs: Rhs) -> Atom {
         let t = self.temp();
@@ -3499,6 +3677,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                 self.push(lets, span, Rhs::List(items))
             }
             ExprKind::Binary { op, left, right } => self.binary(lets, *op, left, right, span),
+            ExprKind::Unary { operand, .. }
+                if matches!(self.records.res.get(&span), Some(Res::DenseOp { .. })) =>
+            {
+                self.dense_op(lets, span, &[operand])
+            }
             ExprKind::Unary { op, operand } => {
                 let operand_span = operand.span;
                 let float = self.is_f64_at(operand_span);
@@ -3658,6 +3841,21 @@ impl<'e, 'a> Fx<'e, 'a> {
                             value,
                             field,
                             index,
+                        },
+                    )
+                }
+                // `m.rows` and `m.columns` of a matrix (`spec/29 §17`).
+                Some(Res::Shape(fun)) => {
+                    let target_span = target.span;
+                    let value = self.atom(lets, target);
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim: Prim::Shape(fun),
+                            args: vec![value],
+                            arg_spans: vec![target_span],
+                            span,
                         },
                     )
                 }
@@ -3941,6 +4139,12 @@ impl<'e, 'a> Fx<'e, 'a> {
             BinaryOp::Implies => Some((true, Some(true))),
             _ => None,
         };
+        // An operator of dense values: its `map` or `zip_map` (`spec/29 §17`).
+        // A plain operator records nothing, so the lookup is not `res`, which would mark the
+        // declaration broken.
+        if matches!(self.records.res.get(&span), Some(Res::DenseOp { .. })) {
+            return self.dense_op(lets, span, &[left, right]);
+        }
         if let Some((then_right, constant)) = short {
             let cond = self.atom(lets, left);
             let right = self.expr(right);
@@ -4068,7 +4272,22 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             );
         }
-        let type_args: Vec<Type> = type_args.iter().map(|t| self.ty(t)).collect();
+        // ADR 0120: the type arguments of a call of a function that computes new elements keep
+        // no refinement (`super::dense::SYNTHESIZING`), so the verifier derives its result, and
+        // the new values of its `edit` places, without the element type's refinement: a
+        // binding or a place whose declared type claims it gets an obligation that the call's
+        // facts cannot prove, and the program is refused, never accepted on a false fact.
+        let synthesizes = super::dense::synthesizes(self.env.prelude, def.module, def.name);
+        let type_args: Vec<Type> = type_args
+            .iter()
+            .map(|t| {
+                if synthesizes {
+                    self.ty(&t.without_refinements())
+                } else {
+                    self.ty(t)
+                }
+            })
+            .collect();
         let function = self.function_path(id);
         let call = Rhs::Call {
             function,
@@ -4149,6 +4368,15 @@ impl<'e, 'a> Fx<'e, 'a> {
         let Some(def) = self.env.functions.get(id) else {
             self.broken.set(true);
             return Rhs::Atom(Atom::Unit);
+        };
+        // A function that computes new elements is U2001 as a value; should that ever change,
+        // its call here keeps no refinement of the element type either, as every call does.
+        let stripped: Vec<Ty>;
+        let type_args = if super::dense::synthesizes(self.env.prelude, def.module, def.name) {
+            stripped = type_args.iter().map(Ty::without_refinements).collect();
+            stripped.as_slice()
+        } else {
+            type_args
         };
         let mark = self.scope.len();
         let params: Vec<(Name, Type)> = def
@@ -4457,7 +4685,7 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
         }
         (Ty::Fn(_), Type::Base { .. }) => Some("a function type".to_owned()),
         (
-            Ty::List(element),
+            Ty::List(element) | Ty::Dense(_, element),
             Type::Base {
                 base: Base::Named { args, .. },
                 ..

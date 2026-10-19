@@ -287,6 +287,23 @@ pub enum Term {
     },
     /// `a.len`.
     Len(Box<Term>),
+    /// A shape function of a dense value other than `len`: `m.rows`, `m.columns`
+    /// (`spec/29 §17`, ADR 0120 rule 33).
+    Shape {
+        /// Which function.
+        fun: ShapeFun,
+        /// The dense value.
+        value: Box<Term>,
+    },
+    /// `a.get(index: i)` or `m.get(row: i, column: j)` of a dense value, in the refinement
+    /// language (`spec/29 §17`, ADR 0120 rule 33): the element at the indices, which a
+    /// precondition keeps in range wherever code reads it.
+    Element {
+        /// The dense value.
+        value: Box<Term>,
+        /// The indices, one per axis.
+        indices: Vec<Term>,
+    },
     /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
     Has {
         /// The map.
@@ -505,6 +522,8 @@ pub enum Prim {
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
+    /// A shape function of a dense value other than `len` (`spec/29 §17`, ADR 0120 rule 33).
+    Shape(ShapeFun),
     /// An operator, method or conversion of `Decimal[s]` (`spec/29 §16`, ADR 0120 rules 13 to
     /// 17), with the static scales of its operands.
     Decimal(DecimalOp),
@@ -699,6 +718,26 @@ impl DecimalOp {
             | DecimalOp::Abs
             | DecimalOp::Coefficient
             | DecimalOp::FromInt => Vec::new(),
+        }
+    }
+}
+
+/// The shape functions of a dense value beside `len`, which `Array` has as a list does
+/// (`spec/29 §17`, ADR 0120 rule 33). Each is an `Int` of at least 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShapeFun {
+    /// `m.rows`.
+    Rows,
+    /// `m.columns`.
+    Columns,
+}
+
+impl ShapeFun {
+    /// The name of the function, as source writes it after the point.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShapeFun::Rows => "rows",
+            ShapeFun::Columns => "columns",
         }
     }
 }
@@ -1201,6 +1240,7 @@ impl Prim {
             Prim::Fixed(op, _) => op.as_str(),
             Prim::Map(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
+            Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),
         }
     }
@@ -1879,12 +1919,14 @@ pub const PRELUDE_MODULE: &str = "prelude";
 
 /// The kinds of the prelude that Core IR does not declare, which each engine knows itself: the
 /// collections and a map's `Entry`, `Option` and `Result`, the failure kinds of `Files` and
-/// `Keys`, and `ParseError`. Every other kind of the prelude is a [`Decl::Data`] of the module
+/// `Keys`, `ParseError`, and the dense types of edition 0.4 (`spec/29 §17`). Every other kind of the prelude is a [`Decl::Data`] of the module
 /// [`PRELUDE_MODULE`]. A `Named` kind that is neither, nor declared by the package, is a bug of
 /// elaboration, and the verifier and the native backend stop on it (#407).
-pub const PRELUDE_ENGINE_KINDS: [&str; 8] = [
+pub const PRELUDE_ENGINE_KINDS: [&str; 10] = [
     "List",
     "Map",
+    "Array",
+    "Matrix",
     "Entry",
     "Option",
     "Result",

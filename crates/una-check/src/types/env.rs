@@ -17,10 +17,11 @@ use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
+use super::dense::dense_numeric;
 use super::label::{Accepts, Label};
 use super::ty::{
-    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
-    Shared, Show, Ty,
+    AliasId, CapId, Declared, Dense, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names,
+    Refinement, Shared, Show, Ty,
 };
 use crate::names::prelude;
 
@@ -884,6 +885,19 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`
+    /// and `Matrix` are built in, ahead of any declaration and of the variant `Json.Array`.
+    pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
+        if self.edition < Edition::V0_4 {
+            return None;
+        }
+        match name {
+            "Array" => Some(Dense::Array),
+            "Matrix" => Some(Dense::Matrix),
+            _ => None,
+        }
+    }
+
     /// The candidates for an upper-case name in `module`, from the innermost scope that holds
     /// any (ADR 0023 rule 2). Several candidates are variants of imported kinds.
     pub(crate) fn upper(&self, module: usize, name: &str) -> Vec<Entity> {
@@ -914,11 +928,25 @@ impl<'a> Env<'a> {
             .get(name)
             .or_else(|| scope.imports.get(name))
             .or_else(|| {
+                // The prelude functions of dense methods are reached by their receiver only
+                // (`spec/29 §17`): no name in a program finds them.
+                if name.starts_with(prelude::DENSE_HIDDEN) {
+                    return None;
+                }
                 self.modules
                     .get(self.prelude)
                     .and_then(|p| p.lower.get(name))
             })
             .copied()
+    }
+
+    /// The prelude function `name`, whatever scopes a program declares: the functions that the
+    /// methods of dense values resolve to (`spec/29 §17`).
+    pub(crate) fn prelude_function(&self, name: &str) -> Option<usize> {
+        match self.modules.get(self.prelude)?.lower.get(name)? {
+            Entity::Function(id) => Some(*id),
+            _ => None,
+        }
     }
 
     /// The kind `name` of the prelude, such as `Option` or `Result`.
@@ -2193,6 +2221,39 @@ impl<'a> Env<'a> {
             return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
+        // Edition 0.4 (ADR 0120 rule 3): `Array` and `Matrix` are built-in types, which no
+        // declaration can hide; the prelude's variant `Json.Array` is a constructor, written
+        // with parentheses, so it never meets the type, written with brackets.
+        if let Some(dense) = self.dense_name(name) {
+            if bases.len() != 1 {
+                return arity(1, bases.len());
+            }
+            let element = bases.into_iter().next().unwrap_or(Ty::error());
+            // The prelude declares the methods of `Matrix[T]` over a type parameter, whose element types
+            // its callers' receivers decide.
+            if dense == Dense::Matrix
+                && reports
+                && module != self.prelude
+                && !dense_numeric(&element)
+            {
+                report.error(
+                    Code::U2002,
+                    span,
+                    format!(
+                        "`Matrix` takes a numeric element type, `F64` or one of `I8` to `U64`, and `{}` is not one",
+                        Show(
+                            &element,
+                            &LowerNames {
+                                env: self,
+                                type_params,
+                            }
+                        )
+                    ),
+                );
+                return Declared::error();
+            }
+            return Declared::plain(Ty::Dense(dense, Shared::new(element)));
+        }
         let problem = match self.upper(module, name).first().copied() {
             Some(Entity::Builtin(builtin)) => {
                 let expected = match builtin {

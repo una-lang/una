@@ -8,16 +8,16 @@ use sha2::{Digest, Sha256};
 use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
-    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source,
-    Term, Type, Use, print_term_with,
+    FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, ShapeFun,
+    Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
 
 use crate::run::Problem;
 use crate::smt::{
-    Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query,
-    Sort, TEXT, UNIT, kind_sort, path_selector,
+    ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, MAP,
+    MATRIX, Query, Sort, TEXT, UNIT, kind_sort, path_selector,
 };
 
 /// A proof obligation of `spec/12 §3`, with its query.
@@ -1669,8 +1669,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                         }
                         let x = own(&body_ctx, name);
                         let entry = self.atom(atom, &ctx);
-                        if let (Some(now), Some(then)) = (self.len(&x), self.len(&entry)) {
-                            body_ctx.assume(F::eq(now, then));
+                        // The shape frame of ADR 0120 V4: a matrix's rows and columns too.
+                        let (now, then) = (self.shape_terms(&x), self.shape_terms(&entry));
+                        if now.len() == then.len() {
+                            for (now, then) in now.into_iter().zip(then) {
+                                body_ctx.assume(F::eq(now, then));
+                            }
                         }
                     }
                     let mut body_leaves = Vec::new();
@@ -1911,10 +1915,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                                         continue;
                                     }
                                     let entry = self.atom(atom, &ctx);
-                                    if let (Some(now), Some(then)) =
-                                        (self.len(&component), self.len(&entry))
-                                    {
-                                        ctx.define(F::eq(now, then));
+                                    let (now, then) =
+                                        (self.shape_terms(&component), self.shape_terms(&entry));
+                                    if now.len() == then.len() {
+                                        for (now, then) in now.into_iter().zip(then) {
+                                            ctx.define(F::eq(now, then));
+                                        }
                                     }
                                 }
                             }
@@ -2947,6 +2953,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Convert(_)
                 | Prim::Fixed(..)
                 | Prim::Float(_)
+                | Prim::Shape(_)
                 // A decimal's `Option` results have no fact behind their nested positions.
                 | Prim::Decimal(_) => unknown(),
             }),
@@ -3589,8 +3596,34 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// `.len` of a text, list or map, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
-        let has_len = sort == TEXT || sort.starts_with(LIST) || sort.starts_with(MAP);
+        let has_len = sort == TEXT
+            || sort.starts_with(LIST)
+            || sort.starts_with(MAP)
+            || sort.starts_with(ARRAY);
         has_len.then(|| len_of(&value.f))
+    }
+
+    /// `m.rows` or `m.columns` of a matrix, `i!rows!<Sort>` or `i!columns!<Sort>` (ADR 0120
+    /// V4).
+    fn shape(&self, value: &Tv, fun: ShapeFun) -> Option<F> {
+        value
+            .f
+            .sort()
+            .starts_with(MATRIX)
+            .then(|| shape_of(&value.f, fun))
+    }
+
+    /// The shape of a value as the terms that the frame of a loop keeps (ADR 0071, ADR 0120
+    /// V4): its length, or its rows and its columns.
+    fn shape_terms(&self, value: &Tv) -> Vec<F> {
+        if value.f.sort().starts_with(MATRIX) {
+            vec![
+                shape_of(&value.f, ShapeFun::Rows),
+                shape_of(&value.f, ShapeFun::Columns),
+            ]
+        } else {
+            self.len(value).into_iter().collect()
+        }
     }
 
     /// The contract of a map's operation as facts of its result `x` (`spec/21 §4`): `has` and
@@ -3853,7 +3886,12 @@ impl<'p, 'i> Walker<'p, 'i> {
                 format!("{written}.to_int()")
             }
         };
+        // An element-wise operator of dense values (ADR 0120 rule 34) applies the operation to
+        // the elements its lambda receives, whose operands carry the operator's own span: no
+        // guard written on the operands' text would test them.
+        let element_wise = arg_spans.contains(&span);
         let guard = match prim {
+            _ if element_wise => None,
             Prim::Convert(_) => {
                 let written = arg_spans
                     .first()
@@ -4004,6 +4042,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 self.order(op, &a, &b)?
             }
             Prim::Len => self.len(&arg(0)?)?,
+            // `m.rows` and `m.columns` (ADR 0120 V4).
+            Prim::Shape(fun) => self.shape(&arg(0)?, fun)?,
             // `to_int()` on a type parameter under `Integer` is uninterpreted (`spec/20 §5`).
             Prim::Convert(None) if is_param_sort(&arg(0)?.f.sort()) => {
                 let value = arg(0)?.f;
@@ -4327,6 +4367,37 @@ impl<'p, 'i> Walker<'p, 'i> {
                 Tv {
                     f: self.len(&value)?,
                     ty: int(),
+                }
+            }
+            Term::Shape { fun, value } => {
+                let value = self.term(value, env)?;
+                Tv {
+                    f: self.shape(&value, *fun)?,
+                    ty: int(),
+                }
+            }
+            // The element of a dense value, uninterpreted, of its element type's sort (ADR
+            // 0120 V4): no fact relates it to other elements, which would need a quantifier.
+            Term::Element { value, indices } => {
+                let value = self.term(value, env)?;
+                let sort = value.f.sort();
+                if !(sort.starts_with(ARRAY) || sort.starts_with(MATRIX)) {
+                    return None;
+                }
+                let element = match &value.ty {
+                    Type::Base {
+                        base: Base::Named { args, .. },
+                        ..
+                    } => args.first()?.clone(),
+                    _ => return None,
+                };
+                let mut args = vec![value.f.clone()];
+                for index in indices {
+                    args.push(self.term(index, env)?.f);
+                }
+                Tv {
+                    f: element_of(&args, &self::sort(&element)),
+                    ty: element,
                 }
             }
             Term::Has { map, key } => {
@@ -5121,7 +5192,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let mut new = Vec::new();
                 match &term {
                     F::App { fun, args } => match &fun.role {
-                        FunRole::Len => {
+                        FunRole::Len | FunRole::Shape => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
                         }
                         // A map that has a key is not empty, so an empty one has none.
@@ -5190,7 +5261,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 }
                             }
                         }
-                        FunRole::Predicate | FunRole::Get | FunRole::Other => {}
+                        FunRole::Predicate | FunRole::Get | FunRole::Element | FunRole::Other => {}
                     },
                     F::Const(Const {
                         role: ConstRole::Text(text),
@@ -5493,6 +5564,21 @@ impl<'p, 'i> Walker<'p, 'i> {
                 match &fun.role {
                     FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
                     FunRole::Len => (format!("{}.len", first()), 1),
+                    FunRole::Shape => (format!("{}.{base}", first()), 1),
+                    FunRole::Element => {
+                        let labels: &[&str] = if args.len() == 2 {
+                            &["index"]
+                        } else {
+                            &["row", "column"]
+                        };
+                        let shown: Vec<String> = args
+                            .iter()
+                            .skip(1)
+                            .zip(labels)
+                            .map(|(a, label)| format!("{label}: {}", operand(a, 10)))
+                            .collect();
+                        (format!("{}.get({})", first(), shown.join(", ")), 1)
+                    }
                     FunRole::Tag { .. } => (format!("tag({})", first()), 1),
                     FunRole::Has | FunRole::Get => {
                         let key = args.get(1).map_or_else(String::new, |a| operand(a, 10));
@@ -5829,6 +5915,35 @@ fn get_of(map: &F, key: &F, option: &Sort) -> F {
             role: FunRole::Get,
         },
         args: vec![map.clone(), key.clone()],
+    }
+}
+
+/// `m.rows` or `m.columns`, `i!rows!<Sort>` or `i!columns!<Sort>` (ADR 0120 V4).
+fn shape_of(value: &F, fun: ShapeFun) -> F {
+    let sort = value.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!{}!{sort}", fun.as_str()),
+            args: vec![sort],
+            result: "Int".to_owned(),
+            role: FunRole::Shape,
+        },
+        args: vec![value.clone()],
+    }
+}
+
+/// The element of a dense value at its indices, `i!get!<Sort>` with the value first, then one
+/// `Int` per axis, of the element's sort (ADR 0120 V4).
+fn element_of(args: &[F], element: &Sort) -> F {
+    let sort = args.first().map_or_else(String::new, F::sort);
+    F::App {
+        fun: SmtFun {
+            name: format!("i!get!{sort}"),
+            args: args.iter().map(F::sort).collect(),
+            result: element.clone(),
+            role: FunRole::Element,
+        },
+        args: args.to_vec(),
     }
 }
 
