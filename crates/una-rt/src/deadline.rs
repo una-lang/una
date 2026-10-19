@@ -55,6 +55,8 @@ pub(crate) struct Deadline {
 pub(crate) struct Inherited {
     ever: Option<Deadline>,
     within: Option<u64>,
+    /// The cancellation entries of those `within`s, to tell a cut from another cancellation.
+    flags: Vec<Arc<AtomicUsize>>,
 }
 
 /// A `within` in progress on the task (ADR 0117 rule 5).
@@ -82,6 +84,8 @@ struct Local {
     withins: Vec<Frame>,
     /// The earliest deadline of the `within`s of the task's ancestors that cover it.
     inherited: Option<u64>,
+    /// Their cancellation entries.
+    inherited_flags: Vec<Arc<AtomicUsize>>,
     /// The id of the next frame.
     next: i64,
 }
@@ -178,6 +182,12 @@ pub(crate) fn current() -> Inherited {
         Inherited {
             ever: local.ever.clone(),
             within: earliest(&local),
+            flags: local
+                .withins
+                .iter()
+                .map(|frame| Arc::clone(&frame.flag))
+                .chain(local.inherited_flags.iter().cloned())
+                .collect(),
         }
     })
 }
@@ -202,9 +212,49 @@ pub(crate) fn adopt(inherited: Inherited) {
             ever: inherited.ever,
             withins: Vec::new(),
             inherited: inherited.within,
+            inherited_flags: inherited.flags,
             next: 0,
         };
     });
+}
+
+/// Whether a `within` that covers the task's code has passed its deadline, its own or one of
+/// the tasks above it: a cancellation of the task, or of the tasks it started, is then a cut
+/// (`spec/27 §5`), whose stopped tasks all end with their `cancelled` events.
+pub(crate) fn cut() -> bool {
+    if !USED.with(Cell::get) {
+        return false;
+    }
+    LOCAL.with(|cell| {
+        let local = cell.borrow();
+        // Only the `within`s that the operation in progress does not shield, those whose
+        // cancellation entries come at or after the ones it began with, as the interpreter
+        // reads its own (`Machine::within_shield`, `spec/19 §6` rule 4).
+        crate::runtime::unshielded_entries(|entries| {
+            entries.iter().any(|(count, _)| {
+                count.load(Ordering::SeqCst) == 0
+                    && local
+                        .withins
+                        .iter()
+                        .map(|frame| &frame.flag)
+                        .chain(&local.inherited_flags)
+                        .any(|flag| Arc::ptr_eq(flag, count))
+            })
+        })
+        .unwrap_or(false)
+    })
+}
+
+impl Inherited {
+    /// The bytes it owns beyond itself, for the reservation of a task's start (ADR 0113 rule
+    /// 2): the entries of the `within`s that cover the task, and the path of the task that runs
+    /// a `for ever within`.
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.flags
+            .len()
+            .saturating_mul(size_of::<Arc<AtomicUsize>>())
+            .saturating_add(self.ever.as_ref().map_or(0, |ever| ever.owner.len()))
+    }
 }
 
 /// Which deadline bounds an interruptible operation that starts now.
@@ -454,6 +504,7 @@ mod tests {
             adopt(Inherited {
                 ever: Some(deadline(50)),
                 within: Some(70),
+                flags: Vec::new(),
             });
             let mut a = Slots::default();
             // A parks: the worker's own (empty) state comes back, and A's is kept.

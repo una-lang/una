@@ -1080,6 +1080,45 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
+    /// The `cancelled` events of the tasks `from..to` of the block in progress, which a cut
+    /// stopped or kept from starting (`spec/27 §5`), in task order: each task the cut stops ends
+    /// with one, as natively, whatever had started.
+    fn cut_events(&mut self, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+            path.push((index + 1).to_string());
+            self.trace.push(Event {
+                seq: self.trace.len() + 1,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
+    /// The `cancelled` events of the branches `from..to` of the `race`-th `first of` of the task
+    /// in progress, which a cut stopped or kept from starting (`spec/27 §5`, `§6`), in index
+    /// order, as for the tasks of a block ([`Self::cut_events`]).
+    fn race_cut_events(&mut self, race: usize, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.clone();
+            path.push(format!("f{race}"));
+            path.push((index + 1).to_string());
+            self.trace.push(Event {
+                seq: self.trace.len() + 1,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
     /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
     fn within_timeout_event(&mut self) {
         let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
@@ -1427,12 +1466,19 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.later.push((expr, rebound));
                     let mut results = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
-                        match self.task(env, &caps, index, task) {
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => self.task(env, &caps, index, task),
+                        };
+                        match result {
                             Ok(result) => results.push(result),
                             Err(stop) => {
                                 self.later.pop();
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, tasks.len());
                                 }
                                 return Err(stop);
                             }
@@ -1466,10 +1512,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     // As for `together`, and the element too, which each task binds anew (#263).
                     let rebound = self.binders(expr).iter().copied().collect();
                     self.later.push((expr, rebound));
+                    let count = items.len();
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));
-                        let result = self.task(env, &caps, index, task);
+                        let result = match self.passed_within(self.within_shield) {
+                            Some(id) => Err(Stop::Cut(id)),
+                            None => self.task(env, &caps, index, task),
+                        };
                         env.truncate(mark);
                         match result {
                             Ok(result) => results.push(result),
@@ -1477,6 +1527,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 self.later.pop();
                                 if matches!(stop, Stop::Fail(_)) {
                                     self.joined();
+                                }
+                                if matches!(stop, Stop::Cut(_)) {
+                                    self.cut_events(index, count);
                                 }
                                 return Err(stop);
                             }
@@ -1949,7 +2002,15 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut failure = None;
         for (index, task) in tasks.iter().enumerate() {
             parts.push((self.trace.len(), self.installs.clone()));
-            match self.branch(env, caps, (race, index), task) {
+            // The start of each branch is a check point for a cut (`spec/27 §5`).
+            let result = match self.passed_within(self.within_shield) {
+                Some(id) => Err(Stop::Cut(id)),
+                None => self.branch(env, caps, (race, index), task),
+            };
+            if matches!(result, Err(Stop::Cut(_))) {
+                self.race_cut_events(race, index, tasks.len());
+            }
+            match result {
                 Ok(value) => {
                     self.winner_first(start, &parts);
                     return Ok(value);

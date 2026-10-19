@@ -535,6 +535,12 @@ fn run(tasks: Tasks, shape: Shape, site: usize, invoke: Invoke) -> (i64, i64) {
         // and the block stops as a cancelled task.
         if template.cancelled() {
             values::release(block);
+            // A cut (`spec/27 §5`): every task of the block that has not returned ends with its
+            // `cancelled` event, started or not, in task order, so the trace does not depend on
+            // how many tasks the workers had started.
+            if crate::deadline::cut() {
+                cut_events(&template, first, total, site);
+            }
             return (0, 2);
         }
         // A race is one batch: its branches all run at once.
@@ -895,6 +901,8 @@ impl Block<'_> {
             }),
         };
         let aborts = matches!(decided, Some((_, Decision::Abort)));
+        // Whether the block's tasks were stopped by a cut (`spec/27 §5`).
+        let cut = crate::deadline::cut();
         // With no failure, win or abort, a task stops only when the task that runs the block was
         // cancelled: the block stops in turn, after recording what its tasks did.
         let stopped = decided.is_none()
@@ -1014,12 +1022,18 @@ impl Block<'_> {
                     {
                         state.failed_write = Some(error);
                     }
-                    if let Ended::Stopped = outcome.ended {
-                        if decided == Some((offset, Decision::Abort)) {
-                            abort = outcome.abort;
-                        } else if outcome.abort.is_none() {
-                            state.cancelled_event(path);
+                    match outcome.ended {
+                        Ended::Stopped => {
+                            if decided == Some((offset, Decision::Abort)) {
+                                abort = outcome.abort;
+                            } else if outcome.abort.is_none() {
+                                state.cancelled_event(path);
+                            }
                         }
+                        // A task that a cut kept from starting ends with its `cancelled` event
+                        // too (`spec/27 §5`); the bound above counts one event for it.
+                        Ended::NotStarted if cut => state.cancelled_event(path),
+                        _ => {}
                     }
                 }
             });
@@ -1568,6 +1582,40 @@ thread_local! {
     static TEST_REFUSE_START: Cell<bool> = const { Cell::new(false) };
     /// Refuses the adoption of every batch of the blocks this thread runs, in tests.
     static TEST_REFUSE_ADOPTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The `cancelled` events of the tasks `first..total` of a block that a cut stops before they
+/// were forked (`spec/27 §5`), in task order, their bytes reserved first: a refusal stops the
+/// block over the budget (U6003), as any adoption does (ADR 0113 rule 3).
+fn cut_events(template: &TaskTemplate, first: usize, total: usize, site: usize) {
+    let tracing = with_state(|state| state.trace.is_some()).unwrap_or(false);
+    if !tracing || first >= total {
+        return;
+    }
+    let mut bytes: usize = 0;
+    for index in first..total {
+        bytes = bytes.saturating_add(path_len(template, index).saturating_mul(2) + 3);
+    }
+    let events = total - first;
+    let growth = with_state(|state| state.trace_growth(events)).flatten();
+    let trace_bytes = growth.map_or(0, |(capacity, _, exact)| {
+        exact
+            .saturating_sub(capacity)
+            .saturating_mul(size_of::<Event>())
+    });
+    let Some(step) = runtime::try_reserve(bytes.saturating_add(trace_bytes)) else {
+        runtime::refuse(site, None);
+        return;
+    };
+    with_state(|state| {
+        if let Some((_, _, exact)) = growth {
+            state.grow_trace(exact);
+        }
+        for index in first..total {
+            state.cancelled_event(task_path(template, index));
+        }
+    });
+    drop(step);
 }
 
 /// The bound on what adopting the batch whose first task is `first` allocates (ADR 0113 rule 3),

@@ -3587,19 +3587,50 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
 
 #[test]
 fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
-    // ADR 0117 rule 5: tasks started inside `e` are cancelled with it, and `e` ends once they
-    // have stopped; the `within` then fails with its time-out. Natively each task sees the
-    // `within`'s cancellation at its own check points, with one worker and with several.
-    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    // ADR 0117 rule 5 and `spec/27 §5` rule 7: tasks started inside `e` are cancelled with it,
+    // and `e` ends once they have stopped; the `within` then fails with its time-out. Every task
+    // of the block that had not returned ends with its `cancelled` event, started or not, in
+    // task order, so the trace is the interpreter's whatever the number of workers.
+    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n    let c = spin(n)\n  a + b + c\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("tasks", "tasks", program);
     let started = std::time::Instant::now();
-    let interpreted = una(&dir, &["run", "."]);
+    let interpreted = una(&dir, &["--json", "run", "."]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "total -1\n");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    let kinds: Vec<String> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            format!(
+                "{}:{}",
+                event["task"].as_str().unwrap_or(""),
+                event["outcome"]["kind"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "1:cancelled",
+            "2:cancelled",
+            "3:cancelled",
+            ":timeout",
+            ":ok"
+        ],
+        "{document}"
+    );
     let exe = dir.join("target/una/tasks");
-    for workers in ["1", "2"] {
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
         let native = Command::new(&exe)
-            .args(["--workers", workers])
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
             .current_dir(&dir)
             .output()
             .unwrap();
@@ -3609,11 +3640,56 @@ fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
             "--workers {workers}: {native:?}"
         );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
     }
     assert!(
         started.elapsed() < std::time::Duration::from_secs(60),
         "the deadline cut nothing"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tasks_inside_a_within_have_one_trace_under_virtual_time() {
+    // `spec/27 §5` rule 7 and `spec/26 §8`: under `--virtual-time` no deadline passes inside
+    // `e`, so a `within` over a block of tasks that print has the same output and trace in both
+    // engines, with one worker and with several.
+    let program = "module vt\n\nimport std.time (second)\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\npair(n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let a = leaf(\"a\", n: n)\n    let b = leaf(\"b\", n: n + 1)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(20) within 1 * second\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("vt", "vt", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["a", "b", "total 41"]),
+        "{document}"
+    );
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(dir.join("target/una/vt"))
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let mut lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.pop().as_deref(), Some("total 41"));
+        lines.sort();
+        assert_eq!(lines, ["a", "b"], "--workers {workers}");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3672,7 +3748,11 @@ fn ten_thousand_cuts_release_what_they_cut_in_both_engines() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);

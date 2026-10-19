@@ -2109,6 +2109,18 @@ impl<'e, 'a> Fx<'e, 'a> {
         handled: &Handled,
         tuple: Option<(Vec<Atom>, Vec<Type>)>,
     ) -> (CoreExpr, Vec<Type>) {
+        self.handled_body(handled, tuple, None)
+    }
+
+    /// [`Self::handled_in`], with `body` in place of the elaboration of `handled.expr` when it
+    /// is given: the in-place update of a map, a set or a sequence under a deadline, whose
+    /// tuple is `(new value, result)`.
+    fn handled_body(
+        &mut self,
+        handled: &Handled,
+        tuple: Option<(Vec<Atom>, Vec<Type>)>,
+        body: Option<CoreExpr>,
+    ) -> (CoreExpr, Vec<Type>) {
         let (places, mut components) = tuple.unwrap_or_default();
         let mut lets: Vec<Let> = Vec::new();
         let mut bindings = Vec::new();
@@ -2157,7 +2169,10 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
             bindings.push((cap, source));
         }
-        let mut current = self.expr(&handled.expr);
+        let mut current = match body {
+            Some(body) => body,
+            None => self.expr(&handled.expr),
+        };
         if let Some((atom, deadline_span)) = deadline {
             let passing = handled
                 .handlings
@@ -3238,6 +3253,11 @@ impl<'e, 'a> Fx<'e, 'a> {
             Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
             _ => None,
         };
+        if handled.within.is_some()
+            && let Some(atom) = self.update_within(lets, handled)
+        {
+            return atom;
+        }
         if let Some(prim) = update {
             let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
                 self.broken.set(true);
@@ -3327,6 +3347,110 @@ impl<'e, 'a> Fx<'e, 'a> {
         binders
             .last()
             .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
+    }
+
+    /// The in-place update of a map, a set or a sequence bounded by `within` (`spec/27 §5`):
+    /// the update, and the read of a removal, run inside the `within`, as `(new value, result)`;
+    /// the target takes the new value only when the `within` succeeds, and keeps its value from
+    /// before otherwise, as a call's `edit` places do (`spec/17 §7` rule 1). `None` when
+    /// `handled` is no such update.
+    fn update_within(&mut self, lets: &mut Vec<Let>, handled: &Handled) -> Option<Atom> {
+        let expr = &handled.expr;
+        let span = expr.span;
+        let (prim, read) = match self.res(span) {
+            Some(Res::MapUpdate(op)) => (Prim::Map(op), None),
+            Some(Res::SetUpdate(op)) => (Prim::Set(op), None),
+            Some(Res::SeqUpdate(op)) => (Prim::Seq(op), op.removed().map(Prim::Seq)),
+            _ => return None,
+        };
+        let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
+            self.broken.set(true);
+            return Some(Atom::Unit);
+        };
+        // Only the place's current value is read before the `within`; the arguments are
+        // computed inside it, so its deadline bounds them, after `d` (`spec/27 §5` rules 2
+        // and 5), as for a call with `edit` arguments.
+        let mut arg_spans = vec![target.span];
+        let old = self.atom(lets, target);
+        let mut values = vec![old.clone()];
+        let mut inner = Vec::new();
+        for arg in args {
+            arg_spans.push(arg.value.span);
+            values.push(self.atom(&mut inner, &arg.value));
+        }
+        let target_ty = self.type_at(target.span);
+        let result_ty = self.type_at(span);
+        let result = match read {
+            Some(read) => {
+                let r = self.temp();
+                inner.push(Let::inferred(
+                    r.clone(),
+                    result_ty.clone(),
+                    Bound::Rhs(Rhs::Prim {
+                        prim: read,
+                        args: values.clone(),
+                        arg_spans: arg_spans.clone(),
+                        span,
+                    }),
+                    span,
+                ));
+                Atom::Var(r)
+            }
+            None => Atom::Unit,
+        };
+        let t = self.temp();
+        inner.push(Let::inferred(
+            t.clone(),
+            target_ty.clone(),
+            Bound::Rhs(Rhs::Prim {
+                prim,
+                args: values,
+                arg_spans,
+                span,
+            }),
+            span,
+        ));
+        let components = vec![target_ty, result_ty];
+        let pair = self.temp();
+        inner.push(Let::inferred(
+            pair.clone(),
+            tuple_type(components.clone()),
+            Bound::Rhs(Rhs::Tuple(vec![Atom::Var(t), result])),
+            span,
+        ));
+        let body = close(
+            inner,
+            CoreExpr::Atom {
+                atom: Atom::Var(pair),
+                span,
+            },
+        );
+        let (value, components) =
+            self.handled_body(handled, Some((vec![old], components)), Some(body));
+        let whole = self.temp();
+        bind_expr(
+            lets,
+            whole.clone(),
+            tuple_type(components.clone()),
+            value,
+            span,
+            false,
+        );
+        let binders: Vec<(Name, Type)> = components
+            .iter()
+            .map(|ty| (self.temp(), ty.clone()))
+            .collect();
+        lets.push(Let::destructure(binders.clone(), Atom::Var(whole), span));
+        let (Some((updated, _)), Some((result, _))) = (binders.first(), binders.get(1)) else {
+            self.broken.set(true);
+            return Some(Atom::Unit);
+        };
+        let value = CoreExpr::Atom {
+            atom: Atom::Var(updated.clone()),
+            span: target.span,
+        };
+        self.assign(lets, target, value, span);
+        Some(Atom::Var(result.clone()))
     }
 
     /// `edit q.push(item: x)`, `edit q.pop()` and the other updates of a `Stack` or a `Queue`
