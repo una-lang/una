@@ -1,0 +1,13 @@
+-- test: `remainder` needs one unit on both operands, so a remainder of dollars by euros is U2028 at `by` (ADR 0120 rule 63)
+-- spec: spec/25 §9, spec/29 §16
+-- expect: error U2028 at src/m.una:13:19
+module m
+
+pub measure Usd
+
+pub measure Eur
+
+pub bad(a: Decimal[2] of Usd, b: Decimal[2] of Eur) -> Decimal[2] of Usd
+  requires b != 0.00
+=
+  a.remainder(by: b, scale: 0)

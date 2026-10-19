@@ -1,0 +1,70 @@
+-- test: a dense value's element type carries its unit in edition 0.4 (ADR 0120 rule 64): element-wise operators by the scalar rules, a scalar's unit multiplying the elements', `multiply_elements` and `divide_elements`, `dot`, `multiply` and `multiply_array` multiplying the units, `add_product` adding a product in the receiver's unit, `sum`, `norm2` and `get` keeping it, `scale` by a unitless factor, and `measured()` and `magnitude()`, all accepted
+-- spec: spec/25 §9, spec/29 §17
+-- expect: ok
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Newton
+
+pub sum(a: Array[F64 of Meter], b: Array[F64 of Meter]) -> Array[F64 of Meter]
+  requires a.len == b.len
+=
+  a + b - -a
+
+pub scaled(a: Array[F64 of Meter], t: F64 of Second) -> Array[F64 of Meter * Second] = t * a
+
+pub halved(a: Array[F64 of Meter]) -> Array[F64 of Meter] = 2.0 * a / 4.0
+
+pub per_second(a: Array[F64 of Meter], t: F64 of Second) -> Array[F64 of Meter / Second] = a / t
+
+pub velocity(d: Array[F64 of Meter], t: Array[F64 of Second]) -> Array[F64 of Meter / Second]
+  requires d.len == t.len
+=
+  d.divide_elements(by: t)
+
+pub areas(a: Array[F64 of Meter], b: Array[F64 of Meter]) -> Array[F64 of Meter * Meter]
+  requires a.len == b.len
+=
+  a.multiply_elements(by: b)
+
+pub work(f: Array[F64 of Newton], d: Array[F64 of Meter]) -> F64 of Newton * Meter
+  requires f.len == d.len
+=
+  f.dot(with: d)
+
+pub moved(m: Matrix[F64 of Meter], k: Matrix[F64 of Second]) -> Matrix[F64 of Meter * Second]
+  requires m.columns == k.rows
+=
+  m.multiply(by: k)
+
+pub applied(m: Matrix[F64 of Newton], v: Array[F64 of Meter]) -> Array[F64 of Newton * Meter]
+  requires m.columns == v.len
+=
+  m.multiply_array(by: v)
+
+pub accumulated(c: Matrix[F64 of Meter * Second], a: Matrix[F64 of Meter], b: Matrix[F64 of Second]) -> Matrix[F64 of Meter * Second]
+  requires c.rows == a.rows and a.columns == b.rows and b.columns == c.columns
+=
+  let edit d = c
+  edit d.add_product(of: a, and: b)
+  d
+
+pub stretched(a: Array[F64 of Meter], k: F64) -> Array[F64 of Meter]
+=
+  let edit b = a
+  edit b.scale(by: k)
+  b
+
+pub totals(a: Array[F64 of Meter]) -> F64 of Meter = a.sum() + a.norm2()
+
+pub first(a: Array[F64 of Meter]) -> F64 of Meter
+  requires a.len > 0
+=
+  a.get(index: 0)
+
+pub raw(a: Array[F64 of Meter]) -> Array[F64] = a.magnitude()
+
+pub tagged(a: Array[F64]) -> Array[F64 of Meter] = a.measured()
