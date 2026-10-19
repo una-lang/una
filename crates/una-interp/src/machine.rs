@@ -811,7 +811,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         };
         let mut run = Run::new(world, clock, index.tasks);
         run.stop_after.set(limits.stop_after);
-        run.http_limits = una_http::limit::Governor::new(
+        // The run's limits refill on the run's clock (ADR 0116 rule 19).
+        run.http_limits = una_http::limit::Governor::with_clock(
             grants
                 .iter()
                 .filter_map(|grant| match grant {
@@ -819,6 +820,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     _ => None,
                 })
                 .collect(),
+            Arc::new(run.clock.clone()),
         );
         Machine {
             index,
@@ -3009,6 +3011,14 @@ impl<'p, 'w> Machine<'p, 'w> {
             settings.timeout = left;
             cut = true;
         }
+        // The covering deadline on the run's clock, which a wait at a limit reaches at most: under
+        // virtual time, a wait for a refill moves the clock to it (ADR 0116 rule 19).
+        let cover = left.map(|left| {
+            self.run
+                .clock
+                .now()
+                .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+        });
         let sent = if cut && settings.timeout.is_zero() {
             Err(Error::TimedOut)
         } else if self.in_ever {
@@ -3021,6 +3031,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 &settings,
                 &self.stop.interrupt(),
                 &Abandon::new(),
+                cover,
             )
         } else {
             send_governed(
@@ -3029,8 +3040,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                 &settings,
                 &una_http::client::Uninterrupted,
                 &Abandon::new(),
+                cover,
             )
         };
+        // Under virtual time, a wait at a limit that moved the clock to the covering deadline
+        // was cut by it, as a request is under the real clock.
+        if !cut
+            && sent == Err(Error::TimedOut)
+            && self.run.clock.is_virtual()
+            && cover.is_some_and(|at| self.run.clock.now() >= at)
+        {
+            cut = true;
+        }
         if cut && by_ever && sent == Err(Error::TimedOut) {
             self.timeout_event();
         }

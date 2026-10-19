@@ -1827,7 +1827,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         max_depth: options.max_depth,
         sites: Arc::new(meta.sites),
         failure: meta.failure.map(Arc::new),
-        http_limits: Arc::new(una_http::limit::Governor::new(http_grants(&grants))),
+        // The run's limits refill on the run's clock, set just before (ADR 0116 rule 19).
+        http_limits: Arc::new(una_http::limit::Governor::with_clock(
+            http_grants(&grants),
+            Arc::new(clock().clone()),
+        )),
         grants: Arc::new(grants),
         keys: Arc::new(keys),
         http: options.http,

@@ -103,7 +103,7 @@ fn get(governor: &Governor, url: &str, timeout: Duration, abandon: &Abandon) -> 
         timeout,
         ..Settings::default()
     };
-    send_governed(&request, governor, &settings, &Uninterrupted, abandon)
+    send_governed(&request, governor, &settings, &Uninterrupted, abandon, None)
         .map(|response| response.status)
 }
 

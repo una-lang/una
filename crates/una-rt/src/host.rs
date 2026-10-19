@@ -546,7 +546,17 @@ fn http(
     // deadline the virtual clock has already reached cuts the request, at once.
     let mut settings = settings;
     let mut cut = None;
-    if let Some((left, bound)) = crate::deadline::left()
+    let covering = crate::deadline::left();
+    // The covering deadline on the run's clock, which a wait at a limit reaches at most: under
+    // virtual time, a wait for a refill moves the clock to it (ADR 0116 rule 19).
+    let cover = covering.map(|(left, bound)| {
+        let at = crate::runtime::clock()
+            .now()
+            .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
+        (at, bound)
+    });
+    let cover_at = cover.map(|(at, _)| at);
+    if let Some((left, bound)) = covering
         && left < settings.timeout
         && (left.is_zero() || !crate::runtime::clock().is_virtual())
     {
@@ -577,6 +587,7 @@ fn http(
                     &settings,
                     &stop.interrupt(),
                     &waiting,
+                    cover_at,
                 ),
                 None => send_governed(
                     &request,
@@ -584,6 +595,7 @@ fn http(
                     &settings,
                     &una_http::client::Uninterrupted,
                     &waiting,
+                    cover_at,
                 ),
             }
         };
@@ -601,6 +613,16 @@ fn http(
             }
         }
     };
+    // Under virtual time, a wait at a limit that moved the clock to the covering deadline was cut
+    // by it, as a request is under the real clock.
+    if cut.is_none()
+        && sent == Err(Error::TimedOut)
+        && crate::runtime::clock().is_virtual()
+        && let Some((at, bound)) = cover
+        && crate::runtime::clock().now() >= at
+    {
+        cut = Some(bound);
+    }
     // A `for ever within` iteration observes its deadline at the operation; a `within` at its
     // next check point, or when its expression returns (`spec/27 §5`).
     if cut == Some(crate::deadline::Bound::Ever) && sent == Err(Error::TimedOut) {

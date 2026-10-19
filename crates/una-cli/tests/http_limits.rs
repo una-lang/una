@@ -349,6 +349,70 @@ pub main() -> Unit
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
+    // ADR 0116 rule 19: a wait for a refill is a wait on time. Two per second, five requests:
+    // the clock reads 0, 0, 500, 1000 and 1500 after them in both engines, with the same trace,
+    // and the run takes no wall time to wait.
+    let server = Server::start();
+    let port = server.port;
+    let mut body = String::new();
+    for k in 1..=5 {
+        body.push_str(&format!(
+            "  let r{k} = attempt @http.get(\"http://127.0.0.1:{port}/{k}\", headers: [], key_name: None)\n  let t{k} = @clock.now()\n  @console.print(\"{{t{k}}}\")\n"
+        ));
+    }
+    let program = format!(
+        "module refills\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @http: Http[get]\n=\n{body}"
+    );
+    let dir = package(
+        "refills",
+        &format!(
+            "    console\n    clock\n    http \"http://127.0.0.1:{port}\" get\n      at most 2 per second\n"
+        ),
+        &program,
+    );
+    let readings = ["0", "0", "500", "1000", "1500"];
+    // The run checks the package first: its time is what the run may take beyond the check.
+    let started = Instant::now();
+    let checked = una(&dir, &["check", "."]);
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+    let check_time = started.elapsed();
+    let started = Instant::now();
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    let interpreted_time = started.elapsed();
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(document["output"], serde_json::json!(readings), "{document}");
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let trace_file = dir.join("trace.json");
+    let native_started = Instant::now();
+    let native = Command::new(dir.join("target/una/refills"))
+        .args(["--virtual-time", "--trace"])
+        .arg(&trace_file)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let native_time = native_started.elapsed();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        format!("{}\n", readings.join("\n"))
+    );
+    let native_trace: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+    assert_eq!(document["trace"], native_trace);
+    // A second and a half of waits, in no wall time.
+    assert!(native_time < Duration::from_millis(1000), "{native_time:?}");
+    assert!(
+        interpreted_time < check_time + Duration::from_millis(1000),
+        "{interpreted_time:?} after a check of {check_time:?}"
+    );
+    assert_eq!(server.take(), 10);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A program whose request is made after work on a `secret` parameter when `secretly`, so its
 /// `L_lim` is `secret`; `internal` otherwise.
 fn startup_program(port: u16, secretly: bool) -> String {

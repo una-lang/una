@@ -163,7 +163,7 @@ pub fn send_interruptible(
     interrupt: &dyn Interrupt,
 ) -> Result<Response, Error> {
     let governor = Governor::new(grants.to_vec());
-    send_governed(request, &governor, settings, interrupt, &Abandon::new())
+    send_governed(request, &governor, settings, interrupt, &Abandon::new(), None)
 }
 
 /// Sends `request` where the grants of `governor` allow, within `settings` and their limits
@@ -175,6 +175,10 @@ pub fn send_interruptible(
 /// its target before its exchange, waiting in their queues when it must, and releases its slots
 /// once its response is read, before the next hop asks for its own (ADR 0117 rule 8). The wait
 /// counts toward the request's deadline; `abandon` ends it when the engine cancels the task.
+/// On the run's clock, the governor's, the request's deadline is its time-out from its start,
+/// or `cover`, the moment of a deadline of `within` or `for ever within` that covers it, when
+/// that comes first: under virtual time a wait for a refill moves the clock to it, at most
+/// (ADR 0116 rule 19).
 /// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
 /// write and step of the TLS handshake that would block waits through `interrupt` instead, and
 /// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
@@ -187,11 +191,18 @@ pub fn send_governed(
     settings: &Settings,
     interrupt: &dyn Interrupt,
     abandon: &Abandon,
+    cover: Option<u64>,
 ) -> Result<Response, Error> {
     let grants = governor.grants();
     // Capped at a day, as the flags are, so the deadline never overflows the clock.
     let timeout = settings.timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
     let deadline = Instant::now().checked_add(timeout).ok_or(Error::TimedOut)?;
+    // The same deadline on the run's clock, for the waits at limits (ADR 0116 rule 19).
+    let millis = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let until = governor
+        .now_millis()
+        .saturating_add(millis)
+        .min(cover.unwrap_or(u64::MAX));
     // First, so that the abort it leads to depends on the header values alone.
     if request
         .headers
@@ -232,7 +243,7 @@ pub fn send_governed(
             elsewhere.as_slice()
         };
         // The hop's tokens and slots, held until its response is read (ADR 0117 rule 8).
-        let permit = governor.acquire(&url, method, deadline, interrupt, abandon)?;
+        let permit = governor.acquire_until(&url, method, (deadline, until), interrupt, abandon)?;
         let response = exchange(
             method,
             &url,

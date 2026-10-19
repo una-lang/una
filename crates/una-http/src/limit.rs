@@ -13,8 +13,15 @@
 //! - **GCRA.** A rate of `n` per period `T` lets a hop through at time `t` when
 //!   `t ≥ TAT − (T − T/n)`, and then sets `TAT = max(TAT, t) + T/n`: a burst of `n`, then one
 //!   every `T/n`. Times are counted in units of `1/n` nanoseconds, in 128-bit integers, so `T/n`
-//!   is exact for every `n`. The clock is the monotonic clock of the process, never a virtual
-//!   one.
+//!   is exact for every `n`. The clock is the run's ([`RunClock`]): the monotonic clock from the
+//!   run's start, or the virtual clock of `--virtual-time` (ADR 0116 rule 19), read in
+//!   milliseconds.
+//! - **Virtual time.** A wait for a refill is a wait on time. Under virtual time a host operation
+//!   runs on its task's thread without parking, in both engines (ADR 0117, amendment on S4, point
+//!   4), so while it waits nothing else of the run can run: the wait moves the virtual clock to
+//!   the refill at once, or to the request's deadline on the run's clock when that comes first,
+//!   as the wait for a deadline does. So limits give the same outcomes and readings of
+//!   `Clock.now` in both engines, and take no wall time.
 //! - **Waiting.** A hop that cannot be charged at once, or that would pass a waiter, takes the next
 //!   ticket and joins the queue of each limited grant it needs; a full queue fails it with
 //!   [`Error::RateLimited`]. It is served when it is the first live waiter of each of those
@@ -38,8 +45,56 @@ use std::time::{Duration, Instant};
 use crate::client::{Error, Interrupt};
 use crate::grant::{Grant, Limits, Method, Url};
 
-/// The longest a waiter sleeps before it looks for a host stop again.
+/// The longest a waiter sleeps before it looks for a host stop again, on the wall clock: a host
+/// stop is the host's time, never the run's.
 pub const STOP_SLICE: Duration = Duration::from_millis(20);
+
+/// The clock of a run, as the limits read it (ADR 0116 rule 19): the engines give theirs, the
+/// interpreter's `Clock` and the executable's, so that a bucket refills on the run's time.
+pub trait RunClock: Send + Sync {
+    /// The milliseconds since the run started.
+    fn now_millis(&self) -> u64;
+
+    /// Whether the clock is virtual: only the run's own waits move it.
+    fn is_virtual(&self) -> bool;
+
+    /// Moves a virtual clock to `at` milliseconds when that is later; the real clock ignores it.
+    fn advance_to(&self, at: u64);
+}
+
+/// The monotonic clock from the moment it was made: the run's clock of a caller that has none,
+/// as [`crate::client::send`] has.
+#[derive(Clone, Copy, Debug)]
+pub struct Monotonic {
+    start: Instant,
+}
+
+impl Monotonic {
+    /// The clock, started now.
+    pub fn new() -> Monotonic {
+        Monotonic {
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Default for Monotonic {
+    fn default() -> Monotonic {
+        Monotonic::new()
+    }
+}
+
+impl RunClock for Monotonic {
+    fn now_millis(&self) -> u64 {
+        u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn is_virtual(&self) -> bool {
+        false
+    }
+
+    fn advance_to(&self, _at: u64) {}
+}
 
 /// A thread's parking spot: a flag and a condition variable, so a wake that comes before the
 /// sleep is never lost.
@@ -235,18 +290,33 @@ impl Inner {
 
 /// The limits of a run's `Http` grants and their state (ADR 0117 rule 8), shared by every task
 /// of the run.
-#[derive(Debug)]
 pub struct Governor {
     grants: Vec<Grant>,
     /// Whether some grant carries a rate or a count in flight; otherwise nothing is charged.
     limited: bool,
-    epoch: Instant,
+    clock: Arc<dyn RunClock>,
     inner: Mutex<Inner>,
 }
 
+impl std::fmt::Debug for Governor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Governor")
+            .field("grants", &self.grants)
+            .field("limited", &self.limited)
+            .field("virtual", &self.clock.is_virtual())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Governor {
-    /// The governor of `grants`, the run's `Http` grants in order.
+    /// The governor of `grants`, the run's `Http` grants in order, on a monotonic clock of its
+    /// own.
     pub fn new(grants: Vec<Grant>) -> Governor {
+        Governor::with_clock(grants, Arc::new(Monotonic::new()))
+    }
+
+    /// The governor of `grants` on the run's `clock` (ADR 0116 rule 19).
+    pub fn with_clock(grants: Vec<Grant>, clock: Arc<dyn RunClock>) -> Governor {
         let slots = grants
             .iter()
             .map(|grant| {
@@ -262,7 +332,7 @@ impl Governor {
         Governor {
             limited: slots.iter().any(Option::is_some),
             grants,
-            epoch: Instant::now(),
+            clock,
             inner: Mutex::new(Inner {
                 next: 0,
                 slots,
@@ -282,9 +352,14 @@ impl Governor {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Nanoseconds since the governor was made, on the monotonic clock.
+    /// The milliseconds since the run started, on its clock.
+    pub fn now_millis(&self) -> u64 {
+        self.clock.now_millis()
+    }
+
+    /// Nanoseconds since the run started, on its clock.
     fn now(&self) -> u128 {
-        Instant::now().saturating_duration_since(self.epoch).as_nanos()
+        u128::from(self.clock.now_millis()).saturating_mul(1_000_000)
     }
 
     /// A permit for one hop to `url` with `method`, once every limited grant that allows it has
@@ -296,6 +371,22 @@ impl Governor {
         url: &Url,
         method: Method,
         deadline: Instant,
+        interrupt: &dyn Interrupt,
+        abandon: &Abandon,
+    ) -> Result<Permit<'_>, Error> {
+        self.acquire_until(url, method, (deadline, u64::MAX), interrupt, abandon)
+    }
+
+    /// [`Governor::acquire`] with two deadlines: `deadline` on the wall clock, and `until`, in
+    /// milliseconds on the run's clock, the request's deadline there (its `--http-timeout` from
+    /// its start, or a deadline of `within` or `for ever within` that covers it). Under virtual
+    /// time a wait for a refill moves the clock to the refill, or to `until` when that comes
+    /// first, and the request then fails with `TimedOut`.
+    pub fn acquire_until(
+        &self,
+        url: &Url,
+        method: Method,
+        (deadline, until): (Instant, u64),
         interrupt: &dyn Interrupt,
         abandon: &Abandon,
     ) -> Result<Permit<'_>, Error> {
@@ -348,7 +439,8 @@ impl Governor {
                 return Err(Error::Interrupted);
             }
             let instant = Instant::now();
-            if instant >= deadline {
+            let millis = self.clock.now_millis();
+            if instant >= deadline || millis >= until {
                 inner.leave(ticket, &grants);
                 return Err(Error::TimedOut);
             }
@@ -369,7 +461,21 @@ impl Governor {
                     _ => None,
                 })
                 .max();
+            // Under virtual time, nothing else of the run runs while a host operation waits:
+            // the wait for a refill moves the clock, to the refill or to the deadline.
+            if let Some(token) = token
+                && self.clock.is_virtual()
+            {
+                let refill = u64::try_from(token.as_nanos().div_ceil(1_000_000))
+                    .unwrap_or(u64::MAX)
+                    .max(1);
+                self.clock
+                    .advance_to(millis.saturating_add(refill).min(until));
+                continue;
+            }
+            let run_left = Duration::from_millis(until.saturating_sub(millis));
             let sleep = (deadline - instant)
+                .min(run_left)
                 .min(STOP_SLICE)
                 .min(token.unwrap_or(STOP_SLICE));
             drop(inner);
@@ -407,7 +513,7 @@ impl Drop for Permit<'_> {
 #[cfg(test)]
 mod tests {
     use std::os::fd::RawFd;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
 
     use super::*;
     use crate::client::Waited;
@@ -638,6 +744,72 @@ mod tests {
             })
             .collect();
         assert_eq!(permits.len(), 100);
+    }
+
+    /// A virtual clock, as `--virtual-time` gives: only `advance_to` moves it.
+    #[derive(Default)]
+    struct Virtual(AtomicU64);
+
+    impl RunClock for Virtual {
+        fn now_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+        fn is_virtual(&self) -> bool {
+            true
+        }
+        fn advance_to(&self, at: u64) {
+            self.0.fetch_max(at, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn under_virtual_time_a_refill_moves_the_clock_and_takes_no_wall_time() {
+        // Two per second, five requests: at 0, 0, 500, 1000 and 1500 virtual milliseconds.
+        let clock = Arc::new(Virtual::default());
+        let g = Governor::with_clock(
+            vec![Grant::parse_limited("http:http://h;2/second").unwrap().unwrap()],
+            Arc::clone(&clock) as Arc<dyn RunClock>,
+        );
+        let target = url("http://h/");
+        let started = Instant::now();
+        let mut readings = Vec::new();
+        for _ in 0..5 {
+            drop(
+                g.acquire_until(
+                    &target,
+                    Method::Get,
+                    (soon(60_000), u64::MAX),
+                    &Never,
+                    &Abandon::new(),
+                )
+                .unwrap(),
+            );
+            readings.push(clock.now_millis());
+        }
+        assert_eq!(readings, [0, 0, 500, 1000, 1500]);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // A refill past the request's deadline on the run's clock: the clock moves to the
+        // deadline, and the request fails there.
+        let hourly = Governor::with_clock(
+            vec![Grant::parse_limited("http:http://h;1/hour").unwrap().unwrap()],
+            Arc::clone(&clock) as Arc<dyn RunClock>,
+        );
+        let at = clock.now_millis();
+        drop(
+            hourly
+                .acquire_until(&target, Method::Get, (soon(60_000), u64::MAX), &Never, &Abandon::new())
+                .unwrap(),
+        );
+        let late = hourly.acquire_until(
+            &target,
+            Method::Get,
+            (soon(60_000), at + 700),
+            &Never,
+            &Abandon::new(),
+        );
+        assert_eq!(late.err(), Some(Error::TimedOut));
+        assert_eq!(clock.now_millis(), at + 700);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
