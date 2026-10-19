@@ -26,34 +26,37 @@ impl Stack {
     pub fn top(&self) -> usize;      // the address the stack grows down from
 }
 
-pub struct Coroutine<'a> { /* owns its stack and its body */ }
-impl<'a> Coroutine<'a> {
-    pub fn new(stack: Stack, body: impl FnOnce() + 'a) -> Coroutine<'a>;
+pub struct Coroutine { /* owns its stack and its body */ }
+impl Coroutine {
+    pub fn new(stack: Stack, body: impl FnOnce() + 'static) -> Coroutine;
     pub fn resume(&mut self) -> Resumed;               // Suspended or Finished
-    pub fn into_stack(self) -> Result<Stack, Coroutine<'a>>;  // Err while suspended
+    pub fn into_stack(self) -> Result<Stack, Coroutine>;  // Err while suspended
+}
+impl Stack {
+    pub fn discard(&mut self) -> Result<(), StackError>; // pages back to the system, zeroed
 }
 
 pub fn suspend() -> bool;   // false, and no switch, outside a coroutine
 pub fn inside() -> bool;
 ```
 
-- **Ownership.** A coroutine owns its stack and its body (a boxed `FnOnce() + 'a`). The lifetime `'a` keeps the coroutine from outliving data its body borrows. `Coroutine` is neither `Send` nor `Sync`: it is resumed only on the thread that made it, which is the pinning of ADR 0117 rule 2, and so thread-local storage read on its stack is always its worker's.
+- **Ownership.** A coroutine owns its stack and its body, a boxed `FnOnce() + 'static`. A body borrows nothing. A first version took a lifetime `'a` and erased it; the security review showed that leaking a suspended coroutine (`mem::forget`, an `Rc` cycle) then let a scoped thread opened in the body read data freed after `'a`, from safe code. With `'static` bodies a leak leaves no borrow behind. **Future work:** if S3 or S4 need bodies that borrow (the interpreter's split `Machine`), they get a scoped constructor in the style of `std::thread::scope`, where the library owns the coroutine, lends only `&mut` to the caller, and aborts at the end of the scope if it is still suspended, so it can never be leaked. `Coroutine` is neither `Send` nor `Sync`: it is resumed only on the thread that made it, which is the pinning of ADR 0117 rule 2, and so thread-local storage read on its stack is always its worker's.
 - **Suspending.** `suspend()` switches from the innermost running coroutine of the calling thread back to its resumer. The thread keeps a pointer to that coroutine, set by `resume` for exactly the time the coroutine's stack is the running one and restored afterwards, so `suspend` can be called at any depth of the body, from the runtime's park, without passing a handle down. Outside a coroutine it returns `false` and does nothing, and the caller blocks its thread instead.
 - **No unwinding across a switch.** The entry function on the new stack calls the body inside `catch_unwind`. A panic that escapes the body aborts the process (`std::process::abort`): no unwinder ever walks from a coroutine's stack into its resumer's. The first frame of each stack ends the frame chain with a zero frame pointer, so a backtrace that walks frame pointers stops there; the trampoline has no unwind table entry, so a DWARF unwinder stops there too, and a panic never reaches it, being caught in the entry function. The runtime catches its own panics inside the body, as it does today on task threads, so a defect of the runtime is still U8001 at the block, not an abort.
 - **Dropping.**
   - A coroutine that has finished, or never started, releases its stack (its body, if it never ran, is dropped on the caller's stack, where it was made).
-  - **Decision D1: dropping a suspended coroutine aborts the process.** The security review asks that a dropped suspended coroutine release its stack without running code on it. Releasing the memory of a suspended stack without running its destructors is not sound for a safe interface: a frame on that stack may hold data that something else still points to, such as a pinned value (the drop guarantee of `Pin`) or the locals that `std::thread::scope` lends to other threads. Running its destructors would mean unwinding it, which rule 1 excludes. So the safe interface never frees a suspended stack: dropping one aborts, running no code on it, and the operating system takes the stack back with the process. `mem::forget` of a suspended coroutine leaks its stack, still mapped, which is sound. The runtime never drops a suspended coroutine: every task runs to its end, since cancellation is cooperative, and a hard stop exits the process. A drop there would be a defect, which fails closed.
+  - **Decision D1: dropping a suspended coroutine aborts the process.** The security review asks that a dropped suspended coroutine release its stack without running code on it. Releasing the memory of a suspended stack without running its destructors is not sound for a safe interface: a frame on that stack may hold data that something else still points to, such as a pinned value (the drop guarantee of `Pin`) or the locals that `std::thread::scope` lends to other threads. Running its destructors would mean unwinding it, which rule 1 excludes. So the safe interface never frees a suspended stack: dropping one aborts, running no code on it, and the operating system takes the stack back with the process. `mem::forget` of a suspended coroutine leaks its stack, still mapped, which is sound only because bodies are `'static`. The runtime never drops a suspended coroutine: every task runs to its end, since cancellation is cooperative, and a hard stop exits the process. A drop there would be a defect, which fails closed.
 - **Re-entrancy.** `resume` of a coroutine that is running (reachable only through a defect, since it takes `&mut self`) aborts.
 
 ## 3. The stack switch
 
-**Decision D2: hand-written switches in `#[unsafe(naked)]` functions with `naked_asm!`** (stable since Rust 1.88; the toolchain is 1.98.1), one per target, about 25 instructions each:
+**Decision D2: hand-written switches in `#[unsafe(naked)]` functions with `naked_asm!`** (stable since Rust 1.88; the toolchain is 1.98.1), one per target, about 25 instructions each. This is Rust `naked_asm!` only, assembled by the toolchain itself: no `.s` or `.S` file, no build script, and no C compiled (ADR 0117 amendment of 2026-10-19).
 
 - `aarch64-apple-darwin` and `aarch64-unknown-linux-gnu` (one body, AAPCS64): store `x19`-`x30` and `d8`-`d15` below the stack pointer (160 bytes), store `sp` through the first argument, load `sp` from the second, load the same registers, `ret`. `x18`, the platform register on macOS, is never touched.
 - `x86_64-unknown-linux-gnu` (System V): push `rbp`, `rbx`, `r12`-`r15`, and the MXCSR and x87 control words, which System V makes callee-saved; store `rsp`; load the other `rsp`; pop them; `ret`.
 - **A new stack** is prepared as if the switch had saved it: the saved callee-saved registers hold the address of the coroutine's shared record and of its entry function, the saved return address is a trampoline, and the saved frame pointer is zero. The trampoline moves the record's address into the first argument register and calls the entry function, which never returns: it ends with a last switch back to the resumer.
 - **Why not `ucontext`.** `makecontext`/`swapcontext` are deprecated on macOS, save the signal mask with a system call at each switch, and would be more `unsafe` surface through `libc`. **Why not `corosensei`:** ADR 0117 Alternatives.
-- **Shadow stacks** (x86 CET) and branch targets (aarch64 BTI) are not enabled for Rust binaries on these targets; a switch through `ret` is valid with either. If the toolchain turns them on, the switch must be revisited, which the note on the targets in `lib.rs` says.
+- **Shadow stacks** (x86 CET) and branch targets (aarch64 BTI) are not enabled for Rust binaries on these targets; a switch through `ret` is valid with either. If the toolchain turns them on, the switch must be revisited, which the crate documentation of `una-sys` (`lib.rs`) says.
 
 ## 4. Stacks and guard pages
 
@@ -73,6 +76,7 @@ All of it is safe code in `crates/una-rt/src/sched.rs`. `una-rt` stays free of `
 - **Parking.** `sched::Mailbox<T>`, a one-value channel behind a mutex, replaces each channel and thread join of `tasks.rs`. A receiver that finds it empty records how to wake itself (its worker and task id, or its thread when it is not a coroutine) and parks: `una_sys::coroutine::suspend()` inside a coroutine, `std::thread::park()` outside. A sender stores the value and wakes the receiver: it pushes a resume job to the receiver's worker, or unparks its thread. A receiver checks again after each wake, so a spurious or stale wake costs one check. A resume job for a task that ended is ignored, by a generation number in the task id.
 - **Joins park.** The block's task waits for its tasks' answers, reports and values through mailboxes, so with one worker the children run while the parent is parked. A batch of 64 (ADR 0113, `WAVE`) is unchanged, and so is the order of every copy of ADR 0113 rules 1 to 4: the protocol of `tasks.rs` keeps its messages and their order, only their transport changes.
 - **The end of a task.** The body of a task's coroutine runs `tasks::task` inside `catch_unwind`; `task` tears its heap down before it returns. Once the coroutine has finished, the worker drops the task's slots, returns its stack to the pool, and only then sends `done`, as a thread's join returned only once its thread-locals were gone. The block's wait for `done` replaces `JoinHandle::join`, and a caught panic is the same U8001 as a thread that panicked today.
+- **Stacks given back.** When a stack returns to the pool, `Stack::discard` gives its pages back to the system first (`madvise(MADV_DONTNEED)` on Linux; on macOS a fresh `MAP_FIXED` anonymous mapping over the usable range, since `MADV_FREE` there neither frees at once nor zeroes). So a pooled stack holds no memory outside `--max-memory`, whose charge ends with its task, and no data of the task that used it. A stack that cannot be cleared is unmapped instead of pooled. Cost: one system call per task end, O(pages touched).
 - **The stack pool.** The scheduler keeps its free stacks by usable size in a `BTreeMap<usize, Vec<Stack>>` behind a mutex, at most 64 stacks, and a start takes the smallest one at least as large as it needs, in O(log k). Sibling tasks of a block have one size (`stack_bytes(left)`), so a batch reuses the stacks of the batch before it. A stack beyond the pool's bound is unmapped. A stack that cannot be mapped is U6003 at the block, as a thread that cannot start is today. `Stack` is `Send` (plain memory), so the forking task takes it from the pool and a failure is known at the fork.
 - **Fairness and time slices.** Tasks of `together` run to a park or to their end in S1. The time slice that ends a turn through the attention word needs the timers of S2, and only matters once tasks run long beside each other with fewer workers than tasks; S1 runs each together task until it parks, which ADR 0113's batches already bound.
 
@@ -117,9 +121,17 @@ The crate had 363 lines of source before S1. `coroutine.rs` (the stack, the swit
 - Conformance (native suite and `una run`): nested `together` three levels deep, and a `together` whose parent and children print, both edition 0.4. The conformance format has no directive for run flags, so the cases with `--workers 1` live in `crates/una-cli/tests/native.rs`.
 - AddressSanitizer stress runs on Linux (rule 2) need a nightly toolchain and the Linux container, and are listed as a heavy run in the slice's report.
 
-## 12. Open decisions
+## 12. Known limits
 
-- D1 (drop of a suspended coroutine aborts rather than freeing the stack) reads the security review's "release its stack without running code on it" in the only sound way for a safe interface. It needs confirmation in the security review.
+- **Float control state.** The switch saves MXCSR and the x87 control word on x86-64, but not FPCR on AArch64, which stays the thread's. Every task writes the one environment of ADR 0114 rule 6.4 when it starts, so the state never differs between coroutines. A runtime that sets a per-task environment, or reads the sticky exception flags, must switch FPCR (and FPSR) as well.
+- **`MAP_NORESERVE`.** Stacks on Linux are mapped without a reservation, as thread stacks are: under overcommit, touching a page when the system is out of memory ends in its OOM killer rather than in an error at the fork. The stack charge against `--max-memory` keeps a run within its budget.
+- **The stdout lock.** A task's worker writes a line itself when `poll` says stdout can take it. If a helper is meanwhile writing a long line to a full pipe, it holds the process's stdout lock, and the worker waits on that lock until the helper's write ends: a liveness limit, not a safety one. The reactor of step 6 removes it.
+- **A worker thread that cannot start.** A worker's thread starts and its first job is queued under one hold of the worker's queue lock, so a failed start fails that fork (U6003 at the block) and no job waits on a worker without a thread.
+- **The stack charge** is one process-wide counter; a task whose runtime panicked gives its charge back when the worker drops its slots.
+
+## 13. Open decisions
+
+- D1 (drop of a suspended coroutine aborts rather than freeing the stack) is recorded in the ADR 0117 amendment of 2026-10-19, with the security review's agreement.
 - D3 (the root keeps its own thread until S4) departs from the letter of rule 1 ("every task is a coroutine ... the root task") with no observable difference in S1.
 - D4 (the root's stack is charged too) can move U6003 by up to 16 KiB per live task for programs at their memory budget.
 - D5: the interpreter does not charge its evaluator's stack in S1. Its stack per call (about 13 KiB unoptimized) is far from native code's, so a charge would move its U6003 points by much more than the native one; the charge in the interpreter comes with its coroutines (S4), or by a decision to leave it native only.

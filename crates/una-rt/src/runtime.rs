@@ -1226,6 +1226,16 @@ impl Default for Slots {
     }
 }
 
+impl Drop for Slots {
+    /// A task's slots dropped with a stack charge still held, after a panic of its runtime that
+    /// skipped its end, give the charge back, so later checks count no phantom stack.
+    fn drop(&mut self) {
+        if let Some(&charged) = self.hot.get(4) {
+            STACK_CHARGE.fetch_sub(charged, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Exchanges the thread's state and its mirror with `slots`. The state is never borrowed when a
 /// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
 /// tasks' states.

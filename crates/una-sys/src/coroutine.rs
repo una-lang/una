@@ -3,13 +3,20 @@
 //!
 //! - A [`Coroutine`] owns its [`Stack`] and its body, and is neither `Send` nor `Sync`: it runs
 //!   only on the thread that made it, so thread-local storage read on its stack is its thread's.
-//! - The lifetime `'a` keeps a coroutine from outliving what its body borrows.
+//! - A body is `'static`: it borrows nothing, so a coroutine leaked while suspended leaves no
+//!   borrow that could outlive its data, whatever its frames lend to other threads.
 //! - A panic that escapes a body aborts the process: nothing unwinds across a switch.
-//! - Dropping a suspended coroutine aborts the process, running no code on its stack. Freeing
-//!   that stack could leave dangling whatever still points into it (a pinned value, or locals
-//!   lent to scoped threads), and running its destructors would mean unwinding it
-//!   (`docs/plan/0117-s1-design.md`, decision D1). A finished coroutine, or one never started,
-//!   gives its stack back.
+//! - Dropping a suspended coroutine aborts the process, running no code on its stack: freeing it
+//!   could leave dangling what still points into it, and running its destructors would mean
+//!   unwinding it (decision D1, ADR 0117 amendment of 2026-10-19).
+//! - The float control state is switched on x86-64 (MXCSR, x87) but not on AArch64 (FPCR): every
+//!   task writes the one environment of ADR 0114 rule 6.4; a per-task one must switch FPCR.
+//!
+//! ```compile_fail
+//! let local = vec![1];
+//! let stack = una_sys::coroutine::Stack::new(65536).unwrap();
+//! let _ = una_sys::coroutine::Coroutine::new(stack, || drop(local.len())); // borrows `local`
+//! ```
 #![allow(unsafe_code)]
 
 use std::cell::Cell;
@@ -67,6 +74,8 @@ impl Stack {
             return Err(StackError);
         };
         let stack = Stack { base, len, guard };
+        // Stacks are `MAP_NORESERVE` on Linux, as thread stacks are: under overcommit, a touch
+        // of a page past the system's memory ends in its OOM killer, not in an error here.
         // SAFETY: the first `guard` bytes lie inside the mapping just made, which nothing else
         // uses yet; on failure `stack`'s drop unmaps it.
         if unsafe { libc::mprotect(base.as_ptr().cast(), guard, libc::PROT_NONE) } != 0 {
@@ -83,6 +92,31 @@ impl Stack {
     /// The address the stack grows down from: the end of the mapping.
     pub fn top(&self) -> usize {
         self.base.as_ptr().addr() + self.len
+    }
+
+    /// Gives the usable pages back to the system, which reads them as zeros next time, so a
+    /// pooled stack holds no memory and no data of the task that used it. On failure, the
+    /// caller drops the stack instead of pooling it.
+    pub fn discard(&mut self) -> Result<(), StackError> {
+        let usable = self
+            .base
+            .as_ptr()
+            .wrapping_add(self.guard)
+            .cast::<libc::c_void>();
+        // SAFETY: `usable` is the mapping past its guard, owned by `self`, on which nothing runs
+        // (a coroutine gives its stack back only once it finished or never started); `madvise`
+        // drops the pages of an anonymous private mapping, which then read as zeros.
+        #[cfg(target_os = "linux")]
+        let done = unsafe { libc::madvise(usable, self.usable(), libc::MADV_DONTNEED) } == 0;
+        // SAFETY: as above; a fixed anonymous mapping replaces exactly that range with zero
+        // pages (`MADV_FREE` on macOS neither frees at once nor zeroes).
+        #[cfg(not(target_os = "linux"))]
+        let done = unsafe {
+            let (protection, flags) = (libc::PROT_READ | libc::PROT_WRITE, libc::MAP_FIXED);
+            let flags = flags | libc::MAP_PRIVATE | libc::MAP_ANON;
+            libc::mmap(usable, self.usable(), protection, flags, -1, 0) == usable
+        };
+        done.then_some(()).ok_or(StackError)
     }
 }
 
@@ -131,24 +165,20 @@ pub enum Resumed {
 }
 
 /// A body that runs on its own stack, and that can suspend itself with [`suspend`] at any depth
-/// and be resumed later on the same thread.
-pub struct Coroutine<'a> {
+/// and be resumed later on the same thread. Borrowing bodies would need a scoped constructor
+/// that never lets a suspended coroutine leak (future work, design note §2).
+pub struct Coroutine {
     shared: NonNull<Shared>,
     stack: Option<Stack>,
     run: Run,
-    /// Bound by `'a`, and neither `Send` nor `Sync`.
-    _marker: PhantomData<(&'a (), *mut ())>,
+    /// Neither `Send` nor `Sync`.
+    _marker: PhantomData<*mut ()>,
 }
 
-impl<'a> Coroutine<'a> {
+impl Coroutine {
     /// A coroutine that will run `body` on `stack` when first resumed.
-    pub fn new(stack: Stack, body: impl FnOnce() + 'a) -> Coroutine<'a> {
-        let body: Box<dyn FnOnce() + 'a> = Box::new(body);
-        // SAFETY: only the lifetime bound changes. The body runs only inside `resume`, which
-        // borrows the coroutine, itself bound by `'a`; a body that never ran is dropped by the
-        // coroutine's drop, within `'a`; and a suspended coroutine is never resumed after its
-        // drop (which aborts) or its `mem::forget`.
-        let body: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(body) };
+    pub fn new(stack: Stack, body: impl FnOnce() + 'static) -> Coroutine {
+        let body: Box<dyn FnOnce()> = Box::new(body);
         let shared = Box::new(Shared {
             resumer: Cell::new(0),
             coroutine: Cell::new(0),
@@ -166,9 +196,8 @@ impl<'a> Coroutine<'a> {
         coroutine
     }
 
-    /// Writes the first frame on the stack, as a switch away from it would have saved it: the
-    /// shared record and the entry function in callee-saved registers, a zero frame pointer,
-    /// and the trampoline as the return address.
+    /// Writes the first frame on the stack, as a switch away from it would have saved it
+    /// (`arch::initial_frame`).
     fn prepare(&mut self) {
         let Some(stack) = &self.stack else {
             return;
@@ -224,9 +253,8 @@ impl<'a> Coroutine<'a> {
         }
     }
 
-    /// The stack back, for a coroutine that finished or never started; the coroutine itself
-    /// otherwise.
-    pub fn into_stack(mut self) -> Result<Stack, Coroutine<'a>> {
+    /// The stack of a coroutine that finished or never started; else the coroutine back.
+    pub fn into_stack(mut self) -> Result<Stack, Coroutine> {
         if matches!(self.run, Run::Finished | Run::NotStarted)
             && let Some(stack) = self.stack.take()
         {
@@ -236,15 +264,7 @@ impl<'a> Coroutine<'a> {
     }
 }
 
-impl std::fmt::Debug for Coroutine<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Coroutine")
-            .field("run", &self.run)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for Coroutine<'_> {
+impl Drop for Coroutine {
     fn drop(&mut self) {
         if matches!(self.run, Run::Suspended | Run::Running) {
             // Decision D1: no code runs on a suspended stack, and it is not freed.
@@ -256,9 +276,8 @@ impl Drop for Coroutine<'_> {
     }
 }
 
-/// Switches from the innermost coroutine the thread runs back to its resumer, whose `resume`
-/// returns [`Resumed::Suspended`]; returns `true` once the coroutine is resumed again. Outside
-/// a coroutine, does nothing and returns `false`.
+/// Switches from the innermost coroutine the thread runs back to its resumer, and returns `true`
+/// once resumed again; outside a coroutine, does nothing and returns `false`.
 pub fn suspend() -> bool {
     let current = CURRENT.with(Cell::get);
     if current.is_null() {
@@ -315,39 +334,35 @@ mod arch {
     /// Saves the callee-saved registers on the current stack and its pointer through `save`,
     /// then loads the stack pointer `load` and the registers saved there, and returns on it.
     /// x18, the platform register of macOS, is not touched.
+    ///
+    /// # Safety
+    ///
+    /// `save` is writable; `load` was saved by `switch`, or written by `initial_frame`, on a
+    /// stack still mapped, which only this thread runs.
     #[unsafe(naked)]
     pub(super) unsafe extern "C" fn switch(save: *mut usize, load: usize) {
         core::arch::naked_asm!(
-            "sub sp, sp, #160",
-            "stp x19, x20, [sp, #0]",
-            "stp x21, x22, [sp, #16]",
-            "stp x23, x24, [sp, #32]",
-            "stp x25, x26, [sp, #48]",
-            "stp x27, x28, [sp, #64]",
-            "stp x29, x30, [sp, #80]",
-            "stp d8, d9, [sp, #96]",
-            "stp d10, d11, [sp, #112]",
-            "stp d12, d13, [sp, #128]",
-            "stp d14, d15, [sp, #144]",
-            "mov x2, sp",
-            "str x2, [x0]",
-            "mov sp, x1",
-            "ldp x19, x20, [sp, #0]",
-            "ldp x21, x22, [sp, #16]",
-            "ldp x23, x24, [sp, #32]",
-            "ldp x25, x26, [sp, #48]",
-            "ldp x27, x28, [sp, #64]",
-            "ldp x29, x30, [sp, #80]",
-            "ldp d8, d9, [sp, #96]",
-            "ldp d10, d11, [sp, #112]",
-            "ldp d12, d13, [sp, #128]",
-            "ldp d14, d15, [sp, #144]",
-            "add sp, sp, #160",
-            "ret",
+            "sub sp, sp, #160\nstp x19, x20, [sp, #0]",
+            "stp x21, x22, [sp, #16]\nstp x23, x24, [sp, #32]",
+            "stp x25, x26, [sp, #48]\nstp x27, x28, [sp, #64]",
+            "stp x29, x30, [sp, #80]\nstp d8, d9, [sp, #96]",
+            "stp d10, d11, [sp, #112]\nstp d12, d13, [sp, #128]",
+            "stp d14, d15, [sp, #144]\nmov x2, sp",
+            "str x2, [x0]\nmov sp, x1",
+            "ldp x19, x20, [sp, #0]\nldp x21, x22, [sp, #16]",
+            "ldp x23, x24, [sp, #32]\nldp x25, x26, [sp, #48]",
+            "ldp x27, x28, [sp, #64]\nldp x29, x30, [sp, #80]",
+            "ldp d8, d9, [sp, #96]\nldp d10, d11, [sp, #112]",
+            "ldp d12, d13, [sp, #128]\nldp d14, d15, [sp, #144]",
+            "add sp, sp, #160\nret",
         )
     }
 
     /// Calls the entry with the shared record; the entry never returns here.
+    ///
+    /// # Safety
+    ///
+    /// Reached only by `switch`'s `ret` on a frame from `initial_frame`.
     #[unsafe(naked)]
     unsafe extern "C" fn trampoline() {
         core::arch::naked_asm!("mov x0, x19", "blr x20", "brk #1")
@@ -359,48 +374,38 @@ mod arch {
     /// The first frame, as `switch` loads it: MXCSR and the x87 control word, r15, r14, r13,
     /// r12 (the shared record), rbx (the entry), rbp (zero), then the trampoline.
     pub(super) fn initial_frame(shared: usize, entry: usize) -> [usize; 8] {
-        [
-            0x037F_0000_1F80,
-            0,
-            0,
-            0,
-            shared,
-            entry,
-            0,
-            trampoline as unsafe extern "C" fn() as usize,
-        ]
+        let trampoline = trampoline as unsafe extern "C" fn() as usize;
+        [0x037F_0000_1F80, 0, 0, 0, shared, entry, 0, trampoline]
     }
 
     /// Saves the callee-saved registers and control words of System V on the current stack and
     /// its pointer through `save`, then loads the stack pointer `load` and what is saved there.
+    ///
+    /// # Safety
+    ///
+    /// As on AArch64: `save` is writable; `load` comes from `switch` or `initial_frame`.
     #[unsafe(naked)]
     pub(super) unsafe extern "C" fn switch(save: *mut usize, load: usize) {
         core::arch::naked_asm!(
-            "push rbp",
-            "push rbx",
-            "push r12",
-            "push r13",
-            "push r14",
-            "push r15",
-            "sub rsp, 8",
-            "stmxcsr dword ptr [rsp]",
-            "fnstcw word ptr [rsp + 4]",
-            "mov qword ptr [rdi], rsp",
-            "mov rsp, rsi",
-            "ldmxcsr dword ptr [rsp]",
-            "fldcw word ptr [rsp + 4]",
-            "add rsp, 8",
-            "pop r15",
-            "pop r14",
-            "pop r13",
-            "pop r12",
-            "pop rbx",
-            "pop rbp",
+            "push rbp\npush rbx",
+            "push r12\npush r13",
+            "push r14\npush r15",
+            "sub rsp, 8\nstmxcsr dword ptr [rsp]",
+            "fnstcw word ptr [rsp + 4]\nmov qword ptr [rdi], rsp",
+            "mov rsp, rsi\nldmxcsr dword ptr [rsp]",
+            "fldcw word ptr [rsp + 4]\nadd rsp, 8",
+            "pop r15\npop r14",
+            "pop r13\npop r12",
+            "pop rbx\npop rbp",
             "ret",
         )
     }
 
     /// Calls the entry with the shared record, the stack aligned; the entry never returns here.
+    ///
+    /// # Safety
+    ///
+    /// Reached only by `switch`'s `ret` on a frame from `initial_frame`.
     #[unsafe(naked)]
     unsafe extern "C" fn trampoline() {
         core::arch::naked_asm!("mov rdi, r12", "call rbx", "ud2")

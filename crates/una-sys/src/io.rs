@@ -1,5 +1,5 @@
-//! A check of an output descriptor before a write (ADR 0117 rule 3): a worker writes a line
-//! itself only when the write will not wait, and hands it to a helper otherwise.
+//! A zero-timeout readiness check of an output descriptor (ADR 0117 rule 3, amendment of
+//! 2026-10-19): a worker writes a line itself only when the write will not wait.
 #![allow(unsafe_code)]
 
 /// Whether `fd` can take a write without waiting, by `poll` with a zero timeout; `false` on an
