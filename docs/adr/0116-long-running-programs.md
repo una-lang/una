@@ -663,7 +663,6 @@ Rule 0 says that `std.time` declares the constants `millisecond`, `second` and `
 **ADR 0058, Amendment (2026-10-18).** A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks (ADR 0117 rule 2). It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.
 
 **ADR 0102, Amendment (2026-10-18).** Each check point (`enter`, `budget`, `poll`, and a loop iteration) also performs one relaxed atomic load of its thread's attention word (ADR 0116 rule 18), and compares it with a copy kept in `Hot`. When they differ, the slow path runs, and finds the stop request, the expired deadline, the time slice or the cancellation that changed it. Its cost is measured on the performance gate programs before the implementation merges. The other conditions of rule 2 are unchanged.
-<<<<<<< HEAD
 
 ## Amendment (2026-10-19): the `libc` crate in `una-sys`
 
@@ -671,9 +670,3 @@ Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`
 - **Bindings only.** `libc` is Rust declarations of the operating system's interface, as the standard library itself uses. No C source is built, and nothing is compiled from anything but Rust.
 - **No new supply chain.** `libc` is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`). Its build script only queries `rustc`.
 - **The other option,** writing the declarations in `una-sys`, would mean writing the layout of `struct sigaction` for each platform by hand, more `unsafe` code that a review would have to check against each system's headers.
-
-## Amendment (2026-10-19): the constants of `std.time`
-
-Rule 0 says that `std.time` declares the constants `millisecond`, `second` and `minute`. Una has no module-level value declaration (`spec/02 §1`), so no Una source can declare them. They are built-in names of `std.time`: a module that imports one of them from `std.time` sees a name of type `Int of Millisecond`, whose value is 1, 1000 or 60000, and both engines lower it to that integer literal. The source of `std.time` declares only its measures. ADR 0117's `import std.time (second)` resolves the same way. A general module-level constant is left to a later record.
-=======
->>>>>>> a345c5df (S2: the amendment on std.time's constants sits before Appendix A, apart from other appended amendments)

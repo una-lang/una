@@ -278,11 +278,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-<<<<<<< HEAD
-    pub const ALL: [Code; 103] = [
-=======
-    pub const ALL: [Code; 102] = [
->>>>>>> 561abfc1 (S2: Code::ALL counts U3029 beside the codes of main)
+    pub const ALL: [Code; 104] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
