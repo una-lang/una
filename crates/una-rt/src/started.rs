@@ -284,6 +284,9 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
         },
     );
     if spawned.is_err() {
+        // The task never starts: its statement counts it ended.
+        shared.live.fetch_sub(1, Ordering::SeqCst);
+        scope.running.release();
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
         runtime::abort_from_task(
             Code::U6003,
