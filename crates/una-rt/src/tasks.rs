@@ -1708,7 +1708,7 @@ mod tests {
             values::push(items, (number << 1) | 1);
         }
         let closure = values::closure(crate::ffi::Code::NONE, 1);
-        let result = run(Tasks::Over { closure, items }, false, 0, code);
+        let result = run(Tasks::Over { closure, items }, Shape::List, 0, code);
         values::release(closure);
         values::release(items);
         result
@@ -1778,6 +1778,107 @@ mod tests {
         let (texts, status, stopped) = texts_block(vec![0, 2, 3, 4]);
         assert_eq!((texts, status), (Vec::<String>::new(), 2));
         assert_eq!(stopped.map(|(code, _)| code), Some(Code::U6004));
+    }
+
+    /// A race of `code` over the integers `numbers`, on a thread of its own with the state of a
+    /// task `1`: the text of its value when it has one, its status, and the abort that stopped
+    /// it.
+    fn in_race(numbers: Vec<i64>, code: Invoke) -> (Option<String>, i64, Option<(Code, String)>) {
+        std::thread::spawn(move || {
+            runtime::install_panic_hook();
+            runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let items = values::list();
+            for &number in &numbers {
+                values::push(items, (number << 1) | 1);
+            }
+            let closure = values::closure(crate::ffi::Code::NONE, 1);
+            let (value, status) = run(Tasks::Over { closure, items }, Shape::Race, 0, code);
+            values::release(closure);
+            values::release(items);
+            let text = (status != 2).then(|| values::text_value(value));
+            values::release(value);
+            let stopped = runtime::test_stopped();
+            let _ = runtime::leave_task();
+            (text, status, stopped)
+        })
+        .join()
+        .unwrap()
+    }
+
+    /// Whether [`racing`]'s waiting branch runs, and whether it saw its cancellation.
+    static RACE_WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static RACE_SAW_CANCEL: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// A branch's code for the race test: the element 0 waits, at most about 10 s, until its
+    /// branch is cancelled; any other element waits until the element 0 runs, then is
+    /// [`texts`].
+    fn racing(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64) {
+        let number = arg.map_or(0, |word| word >> 1);
+        if number == 0 {
+            if let Some(arg) = arg {
+                values::release(arg);
+            }
+            RACE_WAITING.store(true, Ordering::SeqCst);
+            for _ in 0..10_000 {
+                if runtime::poll() == 1 {
+                    RACE_SAW_CANCEL.store(true, Ordering::SeqCst);
+                    return (0, 2);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            return (values::text_word("never cancelled".to_owned()), 0);
+        }
+        for _ in 0..10_000 {
+            if RACE_WAITING.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        texts(closure, arg, site)
+    }
+
+    #[test]
+    fn a_race_gives_its_winner_and_fails_only_when_every_branch_fails() {
+        // `spec/27 §6`: the branch that returns wins, and a failure cancels nothing; when every
+        // branch fails, the race fails with the lowest-indexed failure; an abort decides the
+        // race and aborts it.
+        let (text, status, stopped) = in_race(vec![1, 5], texts);
+        assert_eq!((text.as_deref(), status, stopped), (Some("5"), 0, None));
+        let (text, status, stopped) = in_race(vec![1, 1, 1], texts);
+        assert_eq!((text.as_deref(), status, stopped), (Some("fails"), 1, None));
+        let (_, status, stopped) = in_race(vec![3, 3], texts);
+        assert_eq!(status, 2);
+        assert_eq!(stopped.map(|(code, _)| code), Some(Code::U6004));
+    }
+
+    #[test]
+    fn a_race_cancels_its_losers_once_a_branch_wins() {
+        // `spec/27 §6`, ADR 0117 rule 6: the winner lowers the race's count to 0, so a loser
+        // that runs sees its cancellation at its next check, and the race gives the winner's
+        // value.
+        RACE_WAITING.store(false, Ordering::SeqCst);
+        RACE_SAW_CANCEL.store(false, Ordering::SeqCst);
+        let (text, status, stopped) = in_race(vec![0, 6], racing);
+        assert_eq!((text.as_deref(), status, stopped), (Some("6"), 0, None));
+        assert!(RACE_SAW_CANCEL.load(Ordering::SeqCst), "the loser was cancelled");
+    }
+
+    #[test]
+    fn race_paths_count_the_races_of_their_task() {
+        // `spec/27 §6` rule 5: the `i`-th branch of the `c`-th race of the task `p` is
+        // `p.f<c>.<i>`, at its exact length.
+        std::thread::spawn(|| {
+            runtime::install_test_state_as("1".to_owned(), false, String::new());
+            let first = with_state(|state| state.for_race(0)).unwrap();
+            let second = with_state(|state| state.for_race(0)).unwrap();
+            assert_eq!(task_path(&first, 0), "1.f1.1");
+            assert_eq!(task_path(&second, 2), "1.f2.3");
+            assert_eq!(path_len(&second, 2), "1.f2.3".len());
+            let _ = runtime::leave_task();
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
@@ -1924,6 +2025,8 @@ mod tests {
                 tasks: Tasks::Closures(0),
                 template: &template,
                 count: &count,
+                winner: None,
+                sequential: false,
                 counters: &counters,
                 site: 0,
                 invoke: texts,
@@ -1968,7 +2071,7 @@ mod tests {
         }
         let items = values::list();
         values::push(items, ((depth - 1) << 1) | 1);
-        let (value, status) = run(Tasks::Over { closure, items }, false, site, nested);
+        let (value, status) = run(Tasks::Over { closure, items }, Shape::List, site, nested);
         values::release(items);
         (value, status)
     }
@@ -2001,7 +2104,7 @@ mod tests {
         for _ in 0..if depth == 1 { 2 } else { 1 } {
             values::push(items, ((depth - 1) << 1) | 1);
         }
-        let (value, status) = run(Tasks::Over { closure, items }, false, site, nested_installs);
+        let (value, status) = run(Tasks::Over { closure, items }, Shape::List, site, nested_installs);
         values::release(items);
         (value, status)
     }
