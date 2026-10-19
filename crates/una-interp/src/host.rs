@@ -100,6 +100,15 @@ pub enum Grant {
     },
     /// `http:<origin>[:<methods>]` (`spec/24 §2`).
     Http(una_core::http::Grant),
+    /// `serve:<scheme>://<address>:<port>` and its items (`spec/31 §2`), edition 0.4.
+    Serve {
+        /// The grant, as written.
+        grant: una_core::http::serve::ServeGrant,
+        /// The certificate chain's path, resolved, on an `https` grant.
+        certificate: Option<PathBuf>,
+        /// The private key's path, resolved, on an `https` grant.
+        key: Option<PathBuf>,
+    },
 }
 
 impl Grant {
@@ -112,6 +121,7 @@ impl Grant {
             Grant::Files { .. } => "Files",
             Grant::Keys { .. } => "Keys",
             Grant::Http(_) => "Http",
+            Grant::Serve { .. } => "HttpServer",
         }
     }
 
@@ -124,6 +134,21 @@ impl Grant {
             _ => {
                 if spec.starts_with("http:") {
                     return una_core::http::Grant::parse(spec).map(Grant::Http);
+                }
+                if spec.starts_with(una_core::http::serve::PREFIX) {
+                    let grant = una_core::http::serve::ServeGrant::parse(spec).ok()?;
+                    let (certificate, key) = match &grant.files {
+                        Some(files) => (
+                            Some(base.join(&files.certificate)),
+                            Some(base.join(&files.key)),
+                        ),
+                        None => (None, None),
+                    };
+                    return Some(Grant::Serve {
+                        grant,
+                        certificate,
+                        key,
+                    });
                 }
                 if let Some(file) = spec.strip_prefix("keys:") {
                     return (!file.is_empty()).then(|| Grant::Keys {
@@ -146,6 +171,20 @@ impl Grant {
             }
         }
     }
+}
+
+/// Why `spec` is not a grant, for the usage error of `--grant` (`spec/13 §5`): every problem
+/// of a `serve:` spec (`spec/31 §2`), or the list of the grant specs.
+pub fn invalid_grant(spec: &str) -> String {
+    if spec.starts_with(una_core::http::serve::PREFIX)
+        && let Err(problems) = una_core::http::serve::ServeGrant::parse(spec)
+    {
+        let messages: Vec<String> = problems.into_iter().map(|p| p.message).collect();
+        return format!("`{spec}` is not a valid serve grant: {}", messages.join("; "));
+    }
+    format!(
+        "`{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
+    )
 }
 
 /// `path` with `.` removed and `..` applied, lexically.
@@ -347,6 +386,36 @@ mod tests {
         assert!(parse_keys("phone_pepper = 3\n").is_err());
         assert!(parse_keys("phone_pepper = \"*\"\n").is_err());
         assert!(parse_keys("= broken").is_err());
+    }
+
+    #[test]
+    fn serve_grants_resolve_their_tls_files() {
+        let base = Path::new("/work/app");
+        let Some(Grant::Serve {
+            grant,
+            certificate,
+            key,
+        }) = Grant::parse(
+            "serve:https://127.0.0.1:8443;certificate=tls/c.pem;key=/etc/k.pem",
+            base,
+        )
+        else {
+            panic!("a serve grant")
+        };
+        assert_eq!(grant.port, 8443);
+        assert_eq!(certificate, Some(PathBuf::from("/work/app/tls/c.pem")));
+        assert_eq!(key, Some(PathBuf::from("/etc/k.pem")));
+        let plain = Grant::parse("serve:http://[::1]:8080", base).unwrap();
+        assert_eq!(plain.capability(), "HttpServer");
+        assert_eq!(Grant::parse("serve:http://[::1]:8080;peer=0", base), None);
+        assert_eq!(
+            invalid_grant("serve:http://localhost:80;peer=0"),
+            "`serve:http://localhost:80;peer=0` is not a valid serve grant: `localhost` is not an IPv4 address; a serve grant names an IP address, never a host name, and IPv6 goes in brackets; `peer` is a number from 1 to 1048576, or `none`, not `0`"
+        );
+        assert_eq!(
+            invalid_grant("network"),
+            "`network` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
+        );
     }
 
     #[test]
