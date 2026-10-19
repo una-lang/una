@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod complex;
 pub mod decimal;
 pub mod dense;
 mod descriptor;

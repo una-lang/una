@@ -350,6 +350,12 @@ impl Writer<'_> {
                 "value" => self.term(value),
                 "from" => opt(from.as_ref(), |i| self.int_type(*i)),
             ),
+            // ADR 0120 V3: `complex(re:, im:)` with the record constructor of its kind.
+            Term::Complex { ctor, re, im } => node!(Complex,
+                "ctor" => self.ctor(ctor),
+                "re" => self.term(re),
+                "im" => self.term(im),
+            ),
         }
     }
 

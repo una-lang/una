@@ -3745,7 +3745,10 @@ impl<'p, 'i> Walker<'p, 'i> {
             let kind = self.index.kinds.get(&(module.as_str(), name.as_str()))?;
             let declared = kind.variants.get(variant)?;
             let (field, _) = declared.fields.get(index)?;
-            if kind.record {
+            if una_core::complex::is_kind(module, name) {
+                // `i!f!re!` and `i!f!im!` into the float sort (ADR 0120 V3).
+                format!("i!f!{field}!{sort}")
+            } else if kind.record {
                 format!("u!f!{field}!{sort}")
             } else {
                 format!("u!f!{field}!{}!{sort}", declared.name)
@@ -4479,6 +4482,21 @@ impl<'p, 'i> Walker<'p, 'i> {
         if a.f.sort() != b.f.sort() {
             return None;
         }
+        // `Complex[F64]` and `Complex[F32]` are equal when both components are, by identity
+        // (ADR 0120 rule 23, V3), whichever elements of the sort they are.
+        if let Type::Base {
+            base: Base::Named { module, name, .. },
+            ..
+        } = &a.ty
+            && una_core::complex::is_kind(module, name)
+        {
+            let mut parts = Vec::new();
+            for index in 0..2 {
+                let (x, y) = (self.field(a, 0, index)?, self.field(b, 0, index)?);
+                parts.push(F::eq(x.f, y.f));
+            }
+            return Some(F::and(parts));
+        }
         if let Type::Base {
             base: Base::Named { module, name, .. },
             ..
@@ -4488,6 +4506,34 @@ impl<'p, 'i> Walker<'p, 'i> {
             return Some(F::eq(self.tag(a)?, self.tag(b)?));
         }
         Some(F::eq(a.f.clone(), b.f.clone()))
+    }
+
+    /// `left == right` where one side is `complex(re: a, im: b)` (ADR 0120 V3): each component
+    /// of one side equals the same component of the other by identity, a component of a
+    /// construction being its argument and any other a field of its value.
+    fn complex_equal(&mut self, left: &Term, right: &Term, env: &Env<'_>) -> Option<F> {
+        let ((Term::Complex { ctor, .. }, _) | (_, Term::Complex { ctor, .. })) = (left, right)
+        else {
+            return None;
+        };
+        let mut parts = Vec::new();
+        for (index, field) in ["re", "im"].into_iter().enumerate() {
+            let component = |side: &Term| Term::Field {
+                value: Box::new(side.clone()),
+                kind: ctor.kind.clone(),
+                field: field.to_owned(),
+                index,
+            };
+            let (l, r) = (
+                self.term(&component(left), env)?,
+                self.term(&component(right), env)?,
+            );
+            if l.f.sort() != r.f.sort() {
+                return None;
+            }
+            parts.push(F::eq(l.f, r.f));
+        }
+        Some(F::and(parts))
     }
 
     /// Order of two values: `Int` natively, a sum without payloads by its tags, `Text` and a
@@ -4668,10 +4714,24 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             Term::Unit => return None,
             Term::Ctor(_) => return None,
+            // A component of `complex(re: a, im: b)` is that component (ADR 0120 V3).
+            Term::Field { value, index, .. } if matches!(value.as_ref(), Term::Complex { .. }) => {
+                let Term::Complex { re, im, .. } = value.as_ref() else {
+                    return None;
+                };
+                match *index {
+                    0 => self.term(re, env)?,
+                    1 => self.term(im, env)?,
+                    _ => return None,
+                }
+            }
             Term::Field { value, index, .. } => {
                 let value = self.term(value, env)?;
                 self.field(&value, 0, *index)?
             }
+            // A construction has no term of its own: `==` and `!=` and the fields read its
+            // components (`binary`, above), and any other use is outside the encoding.
+            Term::Complex { .. } => return None,
             Term::Len(value) => {
                 let value = self.term(value, env)?;
                 Tv {
@@ -4770,6 +4830,15 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     fn binary(&mut self, op: BinOp, left: &Term, right: &Term, env: &Env<'_>) -> Option<Tv> {
         let boolean = base_type(Base::Bool);
+        // `==` and `!=` with `complex(re: a, im: b)` compare the components by identity (ADR
+        // 0120 V3): the construction is never a term of its own.
+        if matches!(op, BinOp::Eq | BinOp::Ne)
+            && (matches!(left, Term::Complex { .. }) || matches!(right, Term::Complex { .. }))
+        {
+            let eq = self.complex_equal(left, right, env)?;
+            let f = if op == BinOp::Eq { eq } else { F::not(eq) };
+            return Some(Tv { f, ty: boolean });
+        }
         // A variant without fields compares by its tag.
         if let (Term::Ctor(ctor), other) | (other, Term::Ctor(ctor)) = (left, right)
             && matches!(op, BinOp::Eq | BinOp::Ne)

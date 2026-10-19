@@ -416,11 +416,13 @@ impl<'p> Index<'p> {
                 }
                 Value::Data(data) => {
                     let names = self.fields(&data.ctor);
+                    // A complex value is written `complex(re: ..., im: ...)` (ADR 0120 rule 24).
+                    let constructor = una_core::complex::constructor_name(&data.ctor);
                     if data.fields.is_empty() {
-                        out.push_str(&data.ctor.name);
+                        out.push_str(constructor);
                         continue;
                     }
-                    parts.push(Task::Text(format!("{}(", data.ctor.name)));
+                    parts.push(Task::Text(format!("{constructor}(")));
                     let named = data.fields.len() > 1;
                     for (i, field) in data.fields.iter().enumerate() {
                         let (name, ty) = names.get(i).copied().unwrap_or(("?", None));

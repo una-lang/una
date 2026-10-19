@@ -518,7 +518,10 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
             written(env, kind, key),
             written(env, kind, value)
         ),
-        Ty::Kind(other, args) if args.is_empty() => env.kind_name(*other).to_owned(),
+        // A complex kind is written as its type, `Complex[F64]` (ADR 0120 rule 22).
+        Ty::Kind(other, args) if args.is_empty() => env
+            .complex_written(*other)
+            .map_or_else(|| env.kind_name(*other).to_owned(), ToOwned::to_owned),
         Ty::Kind(other, args) => format!("{}[{}]", env.kind_name(*other), list(args)),
         Ty::Coll(coll, args) if args.is_empty() => coll.as_str().to_owned(),
         Ty::Coll(coll, args) => format!("{}[{}]", coll.as_str(), list(args)),

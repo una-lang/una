@@ -175,9 +175,11 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.3: the functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
                     || (prelude::FLOAT_0_3.contains(&name)
                         && self.checker.package.settings.edition >= Edition::V0_3)
-                    // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120) and of
-                    // `F32` (ADR 0120 rule 5).
-                    || ((prelude::DECIMAL_0_4.contains(&name) || prelude::FLOAT_0_4.contains(&name))
+                    // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120), of
+                    // `F32` (ADR 0120 rule 5) and of `Complex` (ADR 0120 rule 22).
+                    || ((prelude::DECIMAL_0_4.contains(&name)
+                        || prelude::FLOAT_0_4.contains(&name)
+                        || prelude::COMPLEX_0_4.contains(&name))
                         && self.checker.package.settings.edition >= Edition::V0_4)
                     // Edition 0.4: the constructors of dense values (`spec/29 §17`, ADR 0120
                     // rule 32).
@@ -214,7 +216,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
                     || (self.checker.package.settings.edition >= Edition::V0_4
                         && matches!(name, "Array" | "Matrix"))
-                    // Edition 0.4: `F32` and the finite kinds (ADR 0120 rules 5 and 11).
+                    // Edition 0.4: `F32`, the finite kinds and `Complex` (ADR 0120 rules 5, 11
+                    // and 22).
                     || (self.checker.package.settings.edition >= Edition::V0_4
                         && prelude::UPPER_0_4.contains(&name))
             }
@@ -295,6 +298,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                     names.extend(prelude::DECIMAL_0_4);
                     names.extend(prelude::DENSE_0_4);
                     names.extend(prelude::FLOAT_0_4);
+                    names.extend(prelude::COMPLEX_0_4);
                 }
             }
             Space::Upper => {

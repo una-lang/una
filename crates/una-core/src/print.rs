@@ -267,6 +267,13 @@ fn write_term(
             write_term(out, value, 9, replace);
             out.push_str(".to_f32()");
         }
+        Term::Complex { re, im, .. } => {
+            out.push_str("complex(re: ");
+            write_term(out, re, 1, replace);
+            out.push_str(", im: ");
+            write_term(out, im, 1, replace);
+            out.push(')');
+        }
     }
     if parens {
         out.push(')');
@@ -391,6 +398,10 @@ fn write_base(out: &mut String, base: &Base) {
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),
         Base::Hashed => out.push_str("Hashed"),
+        // A complex kind of the prelude is written as its type (ADR 0120 rule 22).
+        Base::Named { module, name, .. } if crate::complex::is_kind(module, name) => {
+            out.push_str(crate::complex::written(name).unwrap_or("Complex"));
+        }
         Base::Named { name, args, .. } => {
             out.push_str(name);
             if !args.is_empty() {
