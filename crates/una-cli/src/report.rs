@@ -709,7 +709,10 @@ impl Sites {
                 self.expr(handler);
             }
             Expr::Attempt { body, .. } | Expr::With { body, .. } => self.expr(body),
-            Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+            Expr::Atom { .. }
+            | Expr::Fail { .. }
+            | Expr::Exit { .. }
+            | Expr::Unreachable { .. } => {}
         }
     }
 

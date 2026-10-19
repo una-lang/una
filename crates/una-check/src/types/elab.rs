@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
-    DataVariant, Decl, Example, Expectation, Expr as CoreExpr, Fun, HandlerOp as CoreHandlerOp,
-    Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim, Program,
-    Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
+    DataVariant, Decl, Example, ExitTag, Expectation, Expr as CoreExpr, Fun,
+    HandlerOp as CoreHandlerOp, Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim,
+    Program, Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
@@ -585,6 +585,9 @@ struct Fx<'e, 'a> {
     current_join: Option<Wrap>,
     /// The tuple type of the call at a span, for a call with `edit` arguments.
     call_tuple: Option<(Span, Type)>,
+    /// The names of the state of the innermost loop whose body is elaborated, outside any
+    /// task in it: what its `skip` and `stop` exit with (`spec/26 §3`).
+    loop_names: Option<Vec<String>>,
 }
 
 /// How a tail value is wrapped into a tuple (`spec/17 §4`).
@@ -620,6 +623,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             in_ensures: false,
             tail_wrap: None,
             current_join: None,
+            loop_names: None,
             call_tuple: None,
         }
     }
@@ -1797,6 +1801,41 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut wrapped = false;
         for (index, stmt) in block.stmts.iter().enumerate() {
             match stmt {
+                // `stop` and `skip` end the block's path with the loop's state; nothing after
+                // them in the block runs (`spec/26 §3`).
+                Stmt::Stop(stmt) if stmt.condition.is_none() => {
+                    tail = self.exit(ExitTag::Stop, stmt.span);
+                    wrapped = true;
+                    break;
+                }
+                Stmt::Skip(span) => {
+                    tail = self.exit(ExitTag::Next, *span);
+                    wrapped = true;
+                    break;
+                }
+                // `stop when c` is `if c` around `stop`.
+                Stmt::Stop(stmt) => {
+                    let cond = match &stmt.condition {
+                        Some(condition) => self.atom(&mut lets, condition),
+                        None => Atom::Bool(true),
+                    };
+                    let expr = CoreExpr::If {
+                        cond,
+                        then: Box::new(self.exit(ExitTag::Stop, stmt.span)),
+                        otherwise: Box::new(CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        }),
+                    };
+                    bind_expr(&mut lets, "_".to_owned(), unit(), expr, stmt.span, false);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 // A `together for` is wrapped as a whole, after its tasks (`spec/19 §5`).
                 Stmt::BlockExpr(expr)
                     if index == last && returning && !matches!(expr, BlockExpr::TogetherFor(_)) =>
@@ -2490,6 +2529,26 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// `exit_k(b, ...)` with the current values of the innermost loop's state (`spec/26 §3`).
+    fn exit(&mut self, tag: ExitTag, span: Span) -> CoreExpr {
+        let Some(names) = self.loop_names.clone() else {
+            // Outside a loop body: U2034, already reported.
+            self.broken = true;
+            return CoreExpr::Atom {
+                atom: Atom::Unit,
+                span,
+            };
+        };
+        let mut state = Vec::new();
+        for name in &names {
+            match self.local(name) {
+                Some(binder) => state.push(Atom::Var(binder)),
+                None => self.broken = true,
+            }
+        }
+        CoreExpr::Exit { tag, state, span }
+    }
+
     /// `for x in source` (`spec/17 §4`): a Core loop over the bindings its body updates, whose
     /// final values are bound afresh after it (ADR 0056, amendment of 2026-10-02).
     fn for_loop(&mut self, lets: &mut Vec<Let>, stmt: &ForStmt) {
@@ -2528,7 +2587,9 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.tail_wrap = Some(Wrap::State {
             names: names.clone(),
         });
+        let outer = self.loop_names.replace(names.clone());
         let body = self.block(&stmt.block);
+        self.loop_names = outer;
         self.scope.truncate(mark);
         let looped = CoreExpr::Loop {
             source: Box::new(source),
@@ -2563,6 +2624,13 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// `eᵢ` binds its branch's value as its `let` would, the refinement of a written type an
     /// obligation there, and returns it (`spec/19 §5`).
     fn together(&mut self, lets: &mut Vec<Let>, stmt: &TogetherStmt) {
+        // A task is not a loop body for `skip` and `stop` (U2034).
+        let outer = self.loop_names.take();
+        self.together_tasks(lets, stmt);
+        self.loop_names = outer;
+    }
+
+    fn together_tasks(&mut self, lets: &mut Vec<Let>, stmt: &TogetherStmt) {
         let mut tasks = Vec::new();
         let mut types = Vec::new();
         let mut names = Vec::new();
@@ -2627,6 +2695,13 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// `together for x in s` with its block: `together_for x in s. e`, whose task is the
     /// block, with no wrapping of its tail (`spec/19 §5`).
     fn together_for(&mut self, together: &TogetherFor) -> CoreExpr {
+        let outer = self.loop_names.take();
+        let expr = self.together_for_tasks(together);
+        self.loop_names = outer;
+        expr
+    }
+
+    fn together_for_tasks(&mut self, together: &TogetherFor) -> CoreExpr {
         let mut lets = Vec::new();
         let source = match &together.source {
             ForSource::List(list) => LoopSource::List(self.atom(&mut lets, list)),
@@ -2892,6 +2967,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                 }
                 Stmt::BlockExpr(expr) => self.scan_block_expr(expr, &local, found),
+                Stmt::Stop(_) | Stmt::Skip(_) => {}
             }
         }
     }

@@ -1,0 +1,91 @@
+-- test: `skip` ends the iteration and `stop` the innermost loop, with the state as it stands there, over lists and ranges, from an `if`, a `when` arm and a nested block, and in both engines (spec/26 §3, ADR 0116 rule 6)
+-- spec: spec/26 §3
+-- grant: console
+-- expect: run-output "total 40"
+-- expect: run-output "first square over 20: 5"
+-- expect: run-output "pairs 6"
+-- expect: run-output "found 3 after 4"
+-- expect: run-output "kinds 2 1"
+-- expect: run-output "added 0"
+module exits
+
+pub kind Order
+  amount: Int
+  cancelled: Bool
+
+--- The total of the orders up to `limit`, the cancelled ones skipped.
+total(orders: List[Order], limit: Int) -> Int
+=
+  let edit total = 0
+  for order in orders
+    if order.cancelled
+      skip
+    stop when total > limit
+    total = total + order.amount
+  total
+
+--- The first `i` whose square is over 20.
+first_square() -> Int
+=
+  let edit found = 0
+  for i in 1..100
+    if i * i > 20
+      found = i
+      stop
+  found
+
+--- The pairs `(i, j)` with `j < i`, counted by an inner loop that stops alone.
+pairs() -> Int
+=
+  let edit count = 0
+  for i in 0..<4
+    for j in 0..<4
+      stop when j >= i
+      count = count + 1
+  count
+
+--- The index of `target` in `xs`, and how many iterations started.
+find(xs: List[Int], target: Int) -> Text
+=
+  let edit at = -1
+  let edit started = 0
+  for i in 0..<10
+    started = started + 1
+    when xs.at(index: i)
+      is None ->
+        stop
+      is Some(x) ->
+        if x == target
+          at = i
+          stop
+  "found {at} after {started}"
+
+--- Counts the even and odd numbers, skipping zero from a nested block.
+kinds(xs: List[Int]) -> Text
+=
+  let edit even = 0
+  let edit odd = 0
+  for x in xs
+    if x mod 2 == 0
+      if x == 0
+        skip
+      even = even + 1
+      skip
+    odd = odd + 1
+  "kinds {even} {odd}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let orders = [Order(amount: 10, cancelled: false), Order(amount: 99, cancelled: true), Order(amount: 30, cancelled: false), Order(amount: 5, cancelled: false)]
+  @console.print("total {total(orders: orders, limit: 35)}")
+  @console.print("first square over 20: {first_square()}")
+  @console.print("pairs {pairs()}")
+  @console.print(find(xs: [7, 8, 9, 10], target: 10))
+  @console.print(kinds(xs: [0, 2, 3, 4]))
+  let edit added = 0
+  for x in [1, 2, 3]
+    if x > 0
+      skip
+    added = added + x
+  @console.print("added {added}")

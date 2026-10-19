@@ -661,6 +661,9 @@ impl Printer {
             Expr::Fail { ctor: c, args, .. } => {
                 self.line(indent, &format!("fail {}", ctor(c, args)));
             }
+            Expr::Exit { tag, state, .. } => {
+                self.line(indent, &format!("exit {}({})", tag.as_str(), atoms(state)));
+            }
             Expr::Handle {
                 body,
                 error,

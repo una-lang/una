@@ -536,7 +536,7 @@ Deadlines are not inputs: when one passes depends on the program's own speed. Ev
 
 ## Diagnostics
 
-New codes, which join `spec/13 §4` with their implementation. U2031 to U2033 and U6006 are reserved by ADR 0114, and U3022 by ADR 0094. ADR 0117 takes U2035.
+New codes, which join `spec/13 §4` with their implementation. U2031 to U2033 and U6006 are reserved by ADR 0114, and U3022 by ADR 0094. ADR 0117 takes U2040.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -670,3 +670,7 @@ Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`
 - **Bindings only.** `libc` is Rust declarations of the operating system's interface, as the standard library itself uses. No C source is built, and nothing is compiled from anything but Rust.
 - **No new supply chain.** `libc` is already a dependency of crates in the lockfile (`getrandom`, `cpufeatures`, `ring`, `rustix`). Its build script only queries `rustc`.
 - **The other option,** writing the declarations in `una-sys`, would mean writing the layout of `struct sigaction` for each platform by hand, more `unsafe` code that a review would have to check against each system's headers.
+
+## Amendment (2026-10-19): statements after `stop` or `skip`
+
+Rule 6 does not say what a statement after an unconditional `stop` or `skip` in the same block means. Such a statement never runs, and code that never runs is almost always a mistake. It is an error: U2040, "a statement after `stop` or `skip` in the same block, which never runs", at the first such statement, with a repair that removes the statements after the exit. `stop when c` is conditional, so the statements after it stay legal, and so do the statements after the block that holds the exit, which run on the paths that do not take it.

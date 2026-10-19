@@ -283,6 +283,12 @@ impl Normalizer<'_> {
                 self.handlings(handled);
             }
             Stmt::BlockExpr(expr) => self.block_expr(expr),
+            Stmt::Stop(stmt) => {
+                if let Some(condition) = &mut stmt.condition {
+                    self.expr(condition);
+                }
+            }
+            Stmt::Skip(_) => {}
         }
     }
 

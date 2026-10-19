@@ -7,12 +7,12 @@ use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind,
     ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal,
-    PatternKind, Stmt, TextPart, TogetherFor, TogetherStmt, WhenExpr,
+    PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, WhenExpr,
 };
 
 use super::Report;
 use super::authority::{Bound, Frame};
-use super::check::{Checker, Ctx, Rl, Role};
+use super::check::{Checker, Ctx, LoopFrame, Rl, Role};
 use super::closest;
 use super::env::KindDef;
 use super::label::Label;
@@ -60,6 +60,15 @@ impl<'a> Checker<'_, 'a, '_> {
         for (index, stmt) in block.stmts.iter().enumerate() {
             self.ctx.rl = rl;
             let is_last = index == last;
+            // IF3: after a `skip` under a branch, the rest of the body runs under it.
+            if let Some((label, from)) = self
+                .innermost_loop()
+                .and_then(|frame| frame.skipped.clone())
+                && !label.flows_to(&self.ctx.pc)
+            {
+                self.ctx.pc = self.ctx.pc.join(&label);
+                self.ctx.pc_from = from.or(self.ctx.pc_from);
+            }
             let handled = match stmt {
                 Stmt::Handled(handled) => Some(handled),
                 Stmt::Let(stmt) => match &stmt.value {
@@ -127,11 +136,78 @@ impl<'a> Checker<'_, 'a, '_> {
                     let value = self.block_expr(expr, None, Role::Plain, false);
                     self.discarded(block_expr_span(expr), &value);
                 }
+                // A block that ends in `stop` or `skip` has `unit` as its value (ADR 0116 rule
+                // 5).
+                Stmt::Stop(stmt) => {
+                    self.outside_rl(stmt.span, || "`stop`".to_owned());
+                    self.stop_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::Skip(span) => {
+                    self.outside_rl(*span, || "`skip`".to_owned());
+                    self.skip_stmt(*span);
+                    if is_last && tail {
+                        self.returned_value(*span, &Ty::Unit, expected, role);
+                    }
+                }
             }
         }
         self.ctx.rl = rl;
         self.locals.truncate(mark);
+        self.unreachable_after_exit(block);
         ty
+    }
+
+    /// U2040: statements after an unconditional `stop` or `skip` in the same block never run
+    /// (ADR 0116, amendment of 2026-10-19). The repair removes them. `stop when c` is
+    /// conditional, so the statements after it stay.
+    fn unreachable_after_exit(&mut self, block: &Block) {
+        let Some(position) = block.stmts.iter().position(|stmt| {
+            matches!(stmt, Stmt::Skip(_))
+                || matches!(stmt, Stmt::Stop(stop) if stop.condition.is_none())
+        }) else {
+            return;
+        };
+        let (Some(exit), Some(first), Some(last)) = (
+            block.stmts.get(position),
+            block.stmts.get(position + 1),
+            block.stmts.last(),
+        ) else {
+            return;
+        };
+        let (word, ends) = if matches!(exit, Stmt::Skip(_)) {
+            ("skip", "the iteration")
+        } else {
+            ("stop", "the loop")
+        };
+        let exit_span = stmt_span(exit);
+        // A misplaced exit is U2034 alone.
+        if self
+            .misplaced_exits
+            .iter()
+            .any(|span| span.start == exit_span.start)
+        {
+            return;
+        }
+        let mut diagnostic = self.report.make(
+            Code::U2040,
+            stmt_span(first),
+            format!(
+                "this statement never runs: `{word}` before it in the same block always ends {ends}"
+            ),
+        );
+        diagnostic
+            .related
+            .push(self.report.related(exit_span, format!("the `{word}`")));
+        let dead = Span::new(exit_span.file, exit_span.end, stmt_span(last).end);
+        diagnostic.repairs.push(self.report.edit(
+            format!("remove the statements after `{word}`, which never run"),
+            dead,
+            "",
+        ));
+        self.report.push(diagnostic);
     }
 
     /// U2011: a statement whose value is discarded must be `Unit` (`spec/02 §6`).
@@ -301,7 +377,13 @@ impl<'a> Checker<'_, 'a, '_> {
         let saved = self.raise_pc(&label, from);
         let mark = self.locals.len();
         self.bind(self.name(&stmt.var), var_ty);
+        self.loops.push(LoopFrame {
+            pc: self.ctx.pc.clone(),
+            depth: (self.task_depth, self.lambda_depth),
+            skipped: None,
+        });
         let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.loops.pop();
         self.locals.truncate(mark);
         self.restore_pc(saved);
         self.discarded(value_span(&stmt.block), &ty);
@@ -326,6 +408,87 @@ impl<'a> Checker<'_, 'a, '_> {
         // A loop may run zero times, so the state after it joins the state before it: a
         // binding taken before and revived only in the body stays taken (`spec/17 §3` rule 3).
         self.join_skipped(&before);
+    }
+
+    /// The loop whose body encloses the statement checked, when no task or lambda lies between
+    /// them (`spec/26 §3`).
+    fn innermost_loop(&self) -> Option<&LoopFrame> {
+        self.loops
+            .last()
+            .filter(|frame| frame.depth == (self.task_depth, self.lambda_depth))
+    }
+
+    /// U2034 for `word` at `span` when no loop body encloses it at its own task and lambda
+    /// depth (`spec/26 §3`, ADR 0116 rule 6); whether it has a loop.
+    fn exit_in_loop(&mut self, word: &str, span: Span) -> bool {
+        if self.innermost_loop().is_some() {
+            return true;
+        }
+        let message = if self.loops.is_empty() {
+            format!("`{word}` is outside a loop body; it belongs to the body of a `for` loop")
+        } else {
+            format!(
+                "`{word}` cannot leave the task or the lambda it is in; its loop is outside them, so end the task's own work another way"
+            )
+        };
+        self.report.error(Code::U2034, span, message);
+        self.misplaced_exits.push(span);
+        false
+    }
+
+    /// `stop` or `stop when c` (`spec/26 §3`, ADR 0116 rule 6, IF2): `c` is a `Bool`, and
+    /// whether the loop stops may depend on nothing the body did not start with: the program
+    /// counter joined with the label of `c` is the body's own, or the statement is U4002.
+    fn stop_stmt(&mut self, stmt: &StopStmt) {
+        let label = match &stmt.condition {
+            Some(condition) => self.condition_label(condition, "the condition of `stop when`"),
+            None => Label::public(),
+        };
+        if !self.exit_in_loop("stop", stmt.keyword) || !self.labels() {
+            return;
+        }
+        let Some(start) = self.innermost_loop().map(|frame| frame.pc.clone()) else {
+            return;
+        };
+        let decided = self.ctx.pc.join(&label);
+        if decided.flows_to(&start) {
+            return;
+        }
+        let mut diagnostic = self.report.make(
+            Code::U4002,
+            stmt.keyword,
+            format!(
+                "whether this loop stops depends on `{decided}` data, so the iterations that run would reveal it; stop on a condition the body starts with, or label what the loop computes"
+            ),
+        );
+        let from = match &stmt.condition {
+            Some(condition) if !label.flows_to(&start) => Some(condition.span),
+            _ => self.ctx.pc_from,
+        };
+        if let Some(from) = from {
+            diagnostic
+                .related
+                .push(self.report.related(from, "the labeled condition"));
+        }
+        self.report.push(diagnostic);
+    }
+
+    /// `skip` (`spec/26 §3`, ADR 0116 rule 6, IF3): under a branch, the rest of the body runs
+    /// only when the branch was not taken, so it is checked under the branch's condition.
+    fn skip_stmt(&mut self, span: Span) {
+        if !self.exit_in_loop("skip", span) {
+            return;
+        }
+        let pc = self.ctx.pc.clone();
+        let from = self.ctx.pc_from;
+        if let Some(frame) = self.loops.last_mut()
+            && !pc.flows_to(&frame.pc)
+        {
+            frame.skipped = Some(match frame.skipped.take() {
+                Some((label, at)) => (label.join(&pc), at.or(from)),
+                None => (pc, from),
+            });
+        }
     }
 
     /// `together` with its branches (`spec/19 §1`, `§2`): each branch is checked as its `let`,
@@ -361,6 +524,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mark = self.locals.len();
         let saved = self.task_mark.replace(mark);
+        self.task_depth += 1;
         let mut bound = Vec::new();
         for branch in &stmt.body {
             let Stmt::Let(branch) = branch else {
@@ -379,6 +543,7 @@ impl<'a> Checker<'_, 'a, '_> {
             bound.extend(self.locals.drain_from(mark));
         }
         self.task_mark = saved;
+        self.task_depth -= 1;
         self.locals.extend(bound);
     }
 
@@ -406,6 +571,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let saved_pc = self.raise_pc(&label, from);
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
+        self.task_depth += 1;
         self.bind(self.name(&together.var), var_ty);
         let element = self.block(
             &together.block,
@@ -414,6 +580,7 @@ impl<'a> Checker<'_, 'a, '_> {
             false,
         );
         self.locals.truncate(mark);
+        self.task_depth -= 1;
         self.task_mark = saved_mark;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
@@ -1335,6 +1502,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::Together(stmt) => stmt.span,
         Stmt::Handled(handled) => handled.span,
         Stmt::BlockExpr(expr) => block_expr_span(expr),
+        Stmt::Stop(stmt) => stmt.span,
+        Stmt::Skip(span) => *span,
     }
 }
 

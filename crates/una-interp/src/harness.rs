@@ -110,6 +110,11 @@ fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
             public: index.public_fields(&failure),
         },
         Err(Stop::Abort(abort)) => Completion::Aborted(abort),
+        // Core puts an exit only in a loop's body, which catches it.
+        Err(Stop::Exit(..)) => Completion::Aborted(Abort::Fault {
+            message: "an exit outside a loop".to_owned(),
+            span: None,
+        }),
     }
 }
 
@@ -172,7 +177,7 @@ fn run_example<'p>(
     let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
     let result = machine.eval_closed(&mut Env::new(), &example.body);
     let failure = match &result {
-        Err(Stop::Abort(_)) => Some(ExampleFailure {
+        Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
             expectation: None,
             reason: "the `do` line aborted".to_owned(),
         }),
@@ -267,7 +272,7 @@ where
                 Err(Stop::Fail(failure)) => {
                     format!("it failed with `{}`", index.shown(&failure, form))
                 }
-                Err(Stop::Abort(_)) => "it aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..)) => "it aborted".to_owned(),
             };
             Some((*line, text, reason))
         }
@@ -285,7 +290,7 @@ where
                     "the `do` line completed with `{}`",
                     index.shown(value, form)
                 ),
-                Err(Stop::Abort(_)) => "the `do` line aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..)) => "the `do` line aborted".to_owned(),
             };
             Some((*line, text, reason))
         }
@@ -358,6 +363,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
                 || otherwise.as_deref().is_some_and(|e| mentions(e, name))
         }
         Expr::Fail { args, .. } => args.iter().any(atom),
+        Expr::Exit { state, .. } => state.iter().any(atom),
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
         Expr::Attempt { body, .. } => mentions(body, name),
         Expr::With { source, body, .. } => {

@@ -12,7 +12,7 @@ use crate::ast::{
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
     OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
-    RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
+    RequirementDecl, RequirementSource, SignedInt, Stmt, StopStmt, TextLit, TextPart, TogetherFor,
     TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
@@ -2210,6 +2210,11 @@ impl<'a> Parser<'a> {
                 IfForm::Block(block) => Ok(Stmt::BlockExpr(BlockExpr::If(block))),
                 IfForm::Then(stmt) => Ok(Stmt::IfThen(Box::new(stmt))),
             },
+            // Edition 0.4: `stop [when c]` and `skip` (`spec/26 §3`). Elsewhere the words are
+            // identifiers.
+            TokenKind::LowerIdent(word) if self.v0_4 && self.exit_word(*word).is_some() => {
+                self.exit_stmt()
+            }
             _ => {
                 let expr = self.line_expr()?;
                 // Edition 0.2: `place = value` (`spec/17 §1`).
@@ -2226,6 +2231,54 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Handled(self.handled_rest(expr)?))
             }
         }
+    }
+
+    /// Whether `word`, the first word of a statement, starts `stop` (`Some(true)`) or `skip`
+    /// (`Some(false)`): the word alone on its line, or followed by `when`.
+    fn exit_word(&self, word: Symbol) -> Option<bool> {
+        let stop = match self.interner.resolve(word) {
+            "stop" => true,
+            "skip" => false,
+            _ => return None,
+        };
+        matches!(
+            self.peek_at(1),
+            TokenKind::Newline
+                | TokenKind::Dedent
+                | TokenKind::Eof
+                | TokenKind::Keyword(Keyword::When)
+        )
+        .then_some(stop)
+    }
+
+    /// `"stop" [ "when" line_expr ] NEWLINE` or `"skip" NEWLINE`, in edition 0.4 (`spec/26 §3`,
+    /// ADR 0116 rules 5 and 6). `skip` takes no `when` (U0101).
+    fn exit_stmt(&mut self) -> Parse<Stmt> {
+        let stop = match self.peek() {
+            TokenKind::LowerIdent(word) => self.exit_word(*word) == Some(true),
+            _ => false,
+        };
+        let keyword = self.advance();
+        if !stop {
+            if self.at_keyword(Keyword::When) {
+                let span = self.span();
+                return self.fail(span, "`skip` takes no `when`; write `if c` around `skip`");
+            }
+            self.expect_line_end()?;
+            return Ok(Stmt::Skip(keyword));
+        }
+        let condition = if self.eat_keyword(Keyword::When) {
+            Some(self.line_expr()?)
+        } else {
+            None
+        };
+        let span = self.since(keyword);
+        self.expect_line_end()?;
+        Ok(Stmt::Stop(Box::new(StopStmt {
+            condition,
+            keyword,
+            span,
+        })))
     }
 
     /// The value of a `let` or an assignment: a `when`, an `if`, a `together for`, or a

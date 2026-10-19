@@ -277,7 +277,12 @@ mod tests {
         let stmt = match stmt {
             // A `with` clause of the handled line: counted by `words`.
             Stmt::Handled(_) | Stmt::Let(_) | Stmt::Assign(_) => true,
-            Stmt::IfThen(_) | Stmt::For(_) | Stmt::Together(_) | Stmt::BlockExpr(_) => false,
+            Stmt::IfThen(_)
+            | Stmt::For(_)
+            | Stmt::Together(_)
+            | Stmt::BlockExpr(_)
+            | Stmt::Stop(_)
+            | Stmt::Skip(_) => false,
         };
         let expr = match expr {
             ExprKind::IfLine { .. }

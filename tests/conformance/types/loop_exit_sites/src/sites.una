@@ -1,0 +1,41 @@
+-- test: `stop` and `skip` outside a loop body, or whose innermost loop lies outside the nearest task, are U2034; inside a nested loop they belong to it (spec/26 §3, ADR 0116 rule 6)
+-- spec: spec/26 §3
+-- expect: error U2034 at src/sites.una:11:5
+-- expect: error U2034 at src/sites.una:18:5
+-- expect: error U2034 at src/sites.una:28:9
+module sites
+
+pub outside(n: Int) -> Int
+=
+  if n > 0
+    stop
+  n
+
+--- A `together for` is not a loop for them.
+pub tasks(xs: List[Int]) -> List[Int]
+=
+  together for x in xs
+    skip
+    x
+
+--- Nor is the loop outside the task of a `together for` inside it.
+pub nested(xs: List[Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    let doubled = together for y in xs
+      if y > x
+        stop
+      y + y
+    n = n + doubled.len
+  n
+
+--- A loop inside the task is one.
+pub inner(xs: List[Int]) -> List[Int]
+=
+  together for x in xs
+    let edit n = 0
+    for y in xs
+      stop when y > x
+      n = n + y
+    n

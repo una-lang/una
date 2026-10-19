@@ -177,7 +177,9 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2031 | types | A float literal rounds to an infinity, or is not zero and rounds to zero |
 | U2032 | types | A float literal other than zero, or a float range, as a pattern |
 | U2033 | types | A comparison of an `F64` with a float literal zero |
+| U2034 | types | `stop` or `skip` outside a loop body, or across a task boundary (edition 0.4, `spec/26 §3`) |
 | U2037 | types | A decimal scale out of place |
+| U2040 | types | A statement after `stop` or `skip` in the same block, which never runs (edition 0.4, `spec/26 §3`) |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |
@@ -442,7 +444,8 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `DecimalOp` | `add`, `sub`, `mul`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `widen`, `rescale`, `rescale_exact`, `divide`, `remainder`, `to_int`, `abs`, `coefficient`, `from_int`, `from_f64`, `to_f64`, `to_text`, `parse`, `from_json`, `to_json` |
 | `Decl` | `alias`, `data`, `pred`, `cap`, `handler`, `fun`, `policy` |
 | `Expectation` | `holds`, `fails`, `performed` |
-| `Expr` | `atom`, `let`, `let_tuple`, `loop`, `together`, `together_for`, `if`, `case`, `fail`, `handle`, `attempt`, `with`, `unreachable` |
+| `ExitTag` | `next`, `stop` |
+| `Expr` | `atom`, `let`, `let_tuple`, `loop`, `exit`, `together`, `together_for`, `if`, `case`, `fail`, `handle`, `attempt`, `with`, `unreachable` |
 | `FixedOp` | `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `saturating_add`, `saturating_sub`, `saturating_mul`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shift_right`, `wrapping_shift_left` |
 | `FloatOp` | `add`, `sub`, `mul`, `div`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `abs`, `sqrt`, `fma`, `rem`, `floor`, `ceil`, `trunc`, `round_half_even`, `round_half_away`, `copy_sign`, `ieee_min`, `ieee_max`, `clamp`, `ieee_eq`, `ieee_ne`, `ieee_lt`, `ieee_le`, `ieee_gt`, `ieee_ge`, `is_nan`, `is_finite`, `is_infinite`, `is_sign_negative`, `is_zero`, `is_positive_zero`, `is_negative_zero`, `to_bits`, `to_int_exact`, `from_int`, `to_text` |
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |

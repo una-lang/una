@@ -7,8 +7,8 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::json::Halt;
 use una_core::{
-    Atom, Bound, CapOp, Ctor, DecimalOp, Decl, Expr, FixedOp, FloatOp, Fun, HandlerOp, IntType,
-    Label, Level, LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
+    Atom, Bound, CapOp, Ctor, DecimalOp, Decl, ExitTag, Expr, FixedOp, FloatOp, Fun, HandlerOp,
+    IntType, Label, Level, LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
@@ -145,6 +145,9 @@ pub(crate) enum Stop<'p> {
     Fail(Value<'p>),
     /// An abort.
     Abort(Abort),
+    /// `exit_k(b, ...)`: the end of an iteration of the innermost loop, by `skip` or `stop`,
+    /// with the loop's state (`spec/26 §3`); the loop catches it.
+    Exit(ExitTag, Vec<Value<'p>>),
 }
 
 /// The result of evaluating an expression.
@@ -1160,6 +1163,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let fields = self.atoms(env, args)?;
                     return Err(Stop::Fail(Value::data(ctor.clone(), fields)));
                 }
+                Expr::Exit { tag, state, .. } => {
+                    let values = self.atoms(env, state)?;
+                    return Err(Stop::Exit(*tag, values));
+                }
                 Expr::Handle {
                     body,
                     error,
@@ -1281,7 +1288,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 };
                 for item in items.iter() {
                     self.within_budget(span)?;
-                    current = self.iteration(env, caps, var, state, current, item, body)?;
+                    let stopped;
+                    (current, stopped) =
+                        self.iteration(env, caps, var, state, current, item, body)?;
+                    if stopped {
+                        break;
+                    }
                 }
             }
             LoopSource::Range {
@@ -1306,7 +1318,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                     }
                     let item = Value::Int(index.clone());
                     self.within_budget(span)?;
-                    current = self.iteration(env, caps, var, state, current, &item, body)?;
+                    let stopped;
+                    (current, stopped) =
+                        self.iteration(env, caps, var, state, current, &item, body)?;
+                    if stopped {
+                        break;
+                    }
                     // The successor of the upper bound is never computed, so a
                     // range up to the greatest value of a type stops there.
                     if index == high {
@@ -1320,7 +1337,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// One iteration of a loop: the body with the loop variable and the current state bound;
-    /// returns the new state.
+    /// returns the new state, and whether a `stop` ended the loop (`spec/26 §3`).
     #[allow(clippy::too_many_arguments)]
     fn iteration(
         &mut self,
@@ -1331,7 +1348,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         current: Vec<Value<'p>>,
         item: &Value<'p>,
         body: &'p Expr,
-    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+    ) -> Result<(Vec<Value<'p>>, bool), Stop<'p>> {
         let mark = env.len();
         env.push((var.0.as_str(), item.clone()));
         for ((name, _), value) in state.iter().zip(current) {
@@ -1339,9 +1356,15 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
         let result = self.eval(env, caps, body);
         env.truncate(mark);
-        match result? {
-            Value::Tuple(items) if items.len() == state.len() => Ok(items.as_ref().clone()),
-            _ => Err(fault("a loop body whose value is not its state")),
+        match result {
+            Ok(Value::Tuple(items)) if items.len() == state.len() => {
+                Ok((items.as_ref().clone(), false))
+            }
+            Err(Stop::Exit(tag, values)) if values.len() == state.len() => {
+                Ok((values, tag == ExitTag::Stop))
+            }
+            Err(Stop::Exit(..)) | Ok(_) => Err(fault("a loop body whose value is not its state")),
+            Err(stop) => Err(stop),
         }
     }
 
@@ -1657,7 +1680,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 variant: variant(failure),
                 value: self.index.render(failure),
             },
-            Err(Stop::Abort(_)) => EventOutcome::Aborted,
+            Err(Stop::Abort(_) | Stop::Exit(..)) => EventOutcome::Aborted,
         };
         if let Some(event) = self.trace.get_mut(slot) {
             event.outcome = outcome;

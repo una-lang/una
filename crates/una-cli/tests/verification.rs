@@ -419,7 +419,7 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
             }
         }
         Expr::TogetherFor { task, .. } => collect_op_paths(task, out),
-        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
     }
 }
 
