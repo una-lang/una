@@ -1,5 +1,5 @@
 -- test: Complex[F64] and Complex[F32] take units in edition 0.4 (ADR 0120 rule 64): one unit for both components, which `complex(re:, im:)` takes from its arguments or the expected type, `+` and `-` in one unit, `*` and `/` multiplying and dividing, `conj` keeping, `scale(by:)` multiplying by the scalar's unit, `norm_sqr()` squaring, `re` and `im` with the unit, `==`, `measured()` and `magnitude()`, all accepted
--- spec: spec/25 §9, spec/29 §19
+-- spec: spec/25 §9
 -- expect: ok
 module m
 

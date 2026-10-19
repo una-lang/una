@@ -1,5 +1,5 @@
 -- test: `add_product` adds a product to its receiver's elements, so a product in meters times meters added to meters times seconds is U2028 at `and` (ADR 0120 rule 64)
--- spec: spec/25 §9, spec/29 §17
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:14:34
 module m
 

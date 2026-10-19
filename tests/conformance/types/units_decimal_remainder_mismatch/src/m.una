@@ -1,5 +1,5 @@
 -- test: `remainder` needs one unit on both operands, so a remainder of dollars by euros is U2028 at `by` (ADR 0120 rule 63)
--- spec: spec/25 §9, spec/29 §16
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:13:19
 module m
 

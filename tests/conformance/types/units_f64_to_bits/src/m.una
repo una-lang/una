@@ -1,5 +1,5 @@
 -- test: `to_bits()` needs a unitless F64, so on an F64 of meters it is U2028 (ADR 0114 rule 12.2)
--- spec: spec/25 §9, spec/29 §12
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:8:35
 module m
 

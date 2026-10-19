@@ -1,5 +1,5 @@
 -- test: a ratio of 2^25 is beyond the integers an F32 holds exactly, so the conversion is U2030 (ADR 0120 rule 62)
--- spec: spec/25 §9, spec/29 §18
+-- spec: spec/25 §9
 -- expect: error U2030 at src/m.una:10:42
 module m
 

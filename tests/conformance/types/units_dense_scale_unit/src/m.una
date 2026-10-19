@@ -1,5 +1,5 @@
 -- test: `scale` changes its receiver in place, so a factor in seconds is U2028 at `by` (ADR 0120 rule 64)
--- spec: spec/25 §9, spec/29 §17
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:13:20
 module m
 

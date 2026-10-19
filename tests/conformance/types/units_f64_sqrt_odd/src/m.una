@@ -1,5 +1,5 @@
 -- test: `sqrt()` of an F64 of meters has no unit with half of each exponent, so it is U2028 (ADR 0114 rule 12.3)
--- spec: spec/25 §9, spec/29 §12
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:8:44
 module m
 

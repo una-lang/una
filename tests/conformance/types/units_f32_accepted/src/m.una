@@ -1,5 +1,5 @@
 -- test: F32 takes units in edition 0.4 as F64 does (ADR 0120 rules 61 and 62): literals typed by an expected measured F32, arithmetic, products and square roots, `convert()` by a ratio k or 1/k of at most 2^24, conversions between the float types and from integers keeping the unit, comparisons and methods, all accepted
--- spec: spec/25 §9, spec/29 §18
+-- spec: spec/25 §9
 -- expect: ok
 module m
 

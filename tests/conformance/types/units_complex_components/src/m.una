@@ -1,5 +1,5 @@
 -- test: both components of a complex value have one unit, so `complex(re:, im:)` of volts and amperes is U2028 at the second (ADR 0120 rule 64)
--- spec: spec/25 §9, spec/29 §19
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:10:88
 module m
 

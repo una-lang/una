@@ -1,5 +1,5 @@
 -- test: decimals compare across scales but in one unit, so dollars below euros is U2028 at the comparison (ADR 0120 rule 63)
--- spec: spec/25 §9, spec/29 §16
+-- spec: spec/25 §9
 -- expect: error U2028 at src/m.una:10:63
 module m
 

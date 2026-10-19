@@ -1,5 +1,5 @@
 -- test: Decimal[s] takes units in edition 0.4 (ADR 0120 rule 63): a currency is a unit, `+`, `-` and comparisons in one unit across scales, an exchange rate of a quotient unit, `divide` dividing the units, `remainder` and the methods that keep the unit, `convert()` by an integer ratio, conversions keeping the unit, `measured()` and `magnitude()`, all accepted
--- spec: spec/25 §9, spec/29 §16
+-- spec: spec/25 §9
 -- expect: ok
 module m
 

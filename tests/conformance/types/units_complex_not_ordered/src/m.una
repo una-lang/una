@@ -1,5 +1,5 @@
 -- test: a measured complex value is not ordered, as its magnitude is not, so `<` on two of them is U2001 (ADR 0120 rule 64)
--- spec: spec/25 §9, spec/29 §19
+-- spec: spec/25 §9
 -- expect: error U2001 at src/m.una:8:69
 module m
 
