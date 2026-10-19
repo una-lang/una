@@ -2804,3 +2804,134 @@ fn records_made_anew_grow_with_the_loop_and_copies_do_not_292() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// A package of edition 0.4, with `ita.una` holding `sections` after its head, and the lock of
+/// the conformance cases.
+fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n{sections}"),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/types/float_edition_0_4/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(dir.join(path), text).unwrap();
+    }
+    dir
+}
+
+const COUNTER: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  count = count + 1
+  @console.print(\"step {count}\")
+
+pub on_stop(count: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"stopped after {count}\")
+";
+
+const DRIVE: &str = "\nrun\n  grants\n    console\n\ndrive\n  module counter\n  ticks 1\n";
+
+#[test]
+fn a_driven_counter_runs_alike_in_both_engines() {
+    // ADR 0116 rule 3, `spec/26 §2`: `init`, `step` per tick, the stop at the start of the
+    // fourth iteration, then `on_stop`, with the same output and trace in both engines.
+    runtime();
+    let dir = ita_package("counter", DRIVE, &[("src/counter.una", COUNTER)]);
+    let run = una(&dir, &["--json", "run", "--stop-after-iterations", "3"]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["step 1", "step 2", "step 3", "stopped after 3"])
+    );
+    assert_eq!(document["trace"][3]["outcome"]["kind"], "stop");
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/counter"))
+        .current_dir(&dir)
+        .args(["--stop-after-iterations", "3", "--trace"])
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "step 1\nstep 2\nstep 3\nstopped after 3\n"
+    );
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    assert_eq!(timeless(native_trace), timeless(document["trace"].clone()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_driven_module_without_its_shapes_or_a_bad_stop_count_is_a_usage_error() {
+    // ADR 0116 rules 2 and 19: a usage error, exit code 2, in `una run` and `una build`, and
+    // `--stop-after-iterations` from 1 to 2^63 - 1, in `una run` and the executable.
+    runtime();
+    let dir = ita_package(
+        "shapeless",
+        "\ndrive\n  module counter\n  ticks 1\n",
+        &[(
+            "src/counter.una",
+            "module counter\n\npub init() -> Int = 0\n",
+        )],
+    );
+    for args in [&["run", "--stop-after-iterations", "1"][..], &["build"][..]] {
+        let output = una(&dir, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("has no `pub step("),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ita_package("bounds", DRIVE, &[("src/counter.una", COUNTER)]);
+    for count in ["0", "9223372036854775808", "many"] {
+        let output = una(&dir, &["run", "--stop-after-iterations", count]);
+        assert_eq!(output.status.code(), Some(2), "{count}");
+    }
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0));
+    for count in ["0", "9223372036854775808", "many"] {
+        let output = Command::new(dir.join("target/una/bounds"))
+            .current_dir(&dir)
+            .args(["--stop-after-iterations", count])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{count}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
