@@ -116,6 +116,7 @@ pub(crate) fn build_command(
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let clauses: Vec<(String, una_syntax::Span)> = modules
         .function(&format!("{entry}.main"))

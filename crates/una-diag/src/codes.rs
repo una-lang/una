@@ -102,6 +102,8 @@ pub enum Code {
     U1008,
     /// Reserved module name.
     U1009,
+    /// A module whose first path segment is a dependency's local name.
+    U1010,
     /// Type mismatch.
     U2001,
     /// Unknown or ill-formed type.
@@ -265,13 +267,15 @@ pub enum Code {
     U7008,
     /// Missing, invalid or inconsistent `ita.lock`.
     U7009,
+    /// A dependency the root may not use as written.
+    U7012,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 101] = [
+    pub const ALL: [Code; 103] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -291,6 +295,7 @@ impl Code {
         Code::U1007,
         Code::U1008,
         Code::U1009,
+        Code::U1010,
         Code::U2001,
         Code::U2002,
         Code::U2003,
@@ -372,6 +377,7 @@ impl Code {
         Code::U7005,
         Code::U7008,
         Code::U7009,
+        Code::U7012,
         Code::U8001,
     ];
 
@@ -486,6 +492,11 @@ impl Code {
                 code: "U1009",
                 domain: Domain::Names,
                 meaning: "Reserved module name",
+            },
+            Code::U1010 => &Entry {
+                code: "U1010",
+                domain: Domain::Names,
+                meaning: "A module whose first path segment is a dependency's local name",
             },
             Code::U2001 => &Entry {
                 code: "U2001",
@@ -891,6 +902,11 @@ impl Code {
                 code: "U7009",
                 domain: Domain::Project,
                 meaning: "Missing, invalid or inconsistent `ita.lock`",
+            },
+            Code::U7012 => &Entry {
+                code: "U7012",
+                domain: Domain::Project,
+                meaning: "A dependency the root may not use as written",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

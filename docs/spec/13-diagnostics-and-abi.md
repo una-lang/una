@@ -143,6 +143,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U1007 | names | Generated requirement marked active |
 | U1008 | names | Module path does not match file path |
 | U1009 | names | Reserved module name |
+| U1010 | names | A module whose first path segment is a dependency's local name |
 | U2001 | types | Type mismatch |
 | U2002 | types | Unknown or ill-formed type |
 | U2003 | types | Wrong number of type arguments |
@@ -224,6 +225,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U7005 | project | Trusted module not declared in both header and `una.toml` |
 | U7008 | project | Invalid `ita.una` or `itaty.una` |
 | U7009 | project | Missing, invalid or inconsistent `ita.lock` |
+| U7012 | project | A dependency the root may not use as written |
 | U8001 | internal | Internal compiler error (always a bug) |
 
 Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code, but three. U8001 is an internal error, a bug of the compiler, so its text has no example and says how to report it (ADR 0034). U6005 comes from the host's data, which no program text causes, so its text has no example and says how to fix the data (ADR 0086). U6006 comes from the platform's floating-point environment, which no program text causes either (ADR 0114).

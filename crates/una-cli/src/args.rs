@@ -244,6 +244,10 @@ pub(crate) enum ItaCommand {
         /// nothing
         #[arg(long)]
         check: bool,
+
+        /// Record a ceiling wider than the one the lock records: an authority change
+        #[arg(long)]
+        accept_authority: bool,
     },
 }
 

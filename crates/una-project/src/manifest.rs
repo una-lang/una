@@ -33,10 +33,33 @@ pub struct Manifest {
     pub boundaries: Vec<Boundary>,
     /// The file the settings were read from: `una.toml`, or `ita.una` from edition `0.4`.
     pub format: Format,
+    /// The path dependencies mounted into the program (ADR 0122 rule 47): each one's local
+    /// name, under which its modules are named, and where its files are. Filled when the
+    /// dependencies are loaded, empty otherwise.
+    pub mounts: Vec<Mount>,
     /// For `ita.una`, the file as read, with what only it writes: the head's `about`,
     /// `license`, `home` and `publish to`, and the sections `sources`, `needs`, `replace` and
     /// `trust` (ADR 0122).
     pub ita: Option<Box<una_syntax::ita::Manifest>>,
+}
+
+/// A dependency mounted into the program: its modules `m` are the program's modules
+/// `<local>.m` (ADR 0122 rule 47).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mount {
+    /// The local name, the first segment of its modules' paths in the program.
+    pub local: String,
+    /// The prefix of its module files' paths in the source database, ending with `src/`, such
+    /// as `../util/src/`.
+    pub src: String,
+}
+
+impl Manifest {
+    /// The mount whose module files include the file at `path`, if any: the file is a module
+    /// of that dependency. O(mounts).
+    pub fn mount_of(&self, path: &str) -> Option<&Mount> {
+        self.mounts.iter().find(|mount| path.starts_with(&mount.src))
+    }
 }
 
 /// The file a package's settings are read from.
@@ -104,6 +127,10 @@ pub struct Boundary {
     pub module: Located,
     /// The ceiling: the most authority a call into the boundary may grant.
     pub ceiling: Vec<Ceiling>,
+    /// Whether the boundary is a dependency's package extent (ADR 0122 rule 51): its key is a
+    /// local name, the prefix of the dependency's modules, not a module, and its ceiling, the
+    /// root's `may` lines, names host capabilities.
+    pub package: bool,
 }
 
 /// One `C[ops]` of a ceiling: a capability's name and the operations it allows, names only.
@@ -516,7 +543,11 @@ fn boundaries(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<P
                 )),
             }
         }
-        manifest.boundaries.push(Boundary { module, ceiling });
+        manifest.boundaries.push(Boundary {
+            module,
+            ceiling,
+            package: false,
+        });
     }
 }
 

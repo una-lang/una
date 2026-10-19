@@ -338,6 +338,7 @@ fn build(
         sources: &package.sources,
         interner: &analysis.interner,
         trees: &analysis.trees,
+        mounts: &analysis.mounts,
     };
     let program = &analysis.program;
     let (lock_text, lock) = lock_of(package);

@@ -97,6 +97,8 @@ pub(crate) struct Modules<'p> {
     pub(crate) sources: &'p SourceDb,
     pub(crate) interner: &'p Interner,
     pub(crate) trees: &'p [(una_syntax::FileId, File)],
+    /// The mounted dependencies, whose modules are named `<local>.m` (ADR 0122 rule 47).
+    pub(crate) mounts: &'p [una_project::Mount],
 }
 
 impl Modules<'_> {
@@ -114,7 +116,7 @@ impl Modules<'_> {
         self.interner.resolve(symbol)
     }
 
-    /// The module path of `tree`.
+    /// The module path of `tree` in the program: a dependency's module `m` is `<local>.m`.
     pub(crate) fn path(&self, tree: &File) -> Option<String> {
         let header = tree.module.as_ref()?;
         let segments: Vec<&str> = header
@@ -123,7 +125,17 @@ impl Modules<'_> {
             .iter()
             .map(|segment| self.name(segment.name))
             .collect();
-        Some(segments.join("."))
+        let file = self.sources.file(header.span.file).path();
+        Some(
+            match self
+                .mounts
+                .iter()
+                .find(|mount| file.starts_with(&mount.src))
+            {
+                Some(mount) => format!("{}.{}", mount.local, segments.join(".")),
+                None => segments.join("."),
+            },
+        )
     }
 
     /// The function `qualified`, a module path followed by the function's name.

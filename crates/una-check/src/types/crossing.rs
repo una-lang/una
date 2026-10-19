@@ -840,6 +840,17 @@ impl Checker<'_, '_, '_> {
         let Some(boundary) = self.env.boundaries.extent(self.module) else {
             return;
         };
+        // A dependency's examples are checked as its own, with no consumer ceiling on their
+        // `given` lines, since they never run with the root's authority (ADR 0122 rule 52).
+        if self
+            .env
+            .boundaries
+            .list
+            .get(boundary)
+            .is_some_and(|resolved| resolved.package)
+        {
+            return;
+        }
         let grants = self.handler_uses(handler);
         self.ceiling_site(
             boundary,

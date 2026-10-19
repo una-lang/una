@@ -143,6 +143,7 @@ fn check_names_with(
         .map(|module| checker.declarations(module))
         .collect();
     let paths = checker.module_paths(&tables);
+    checker.local_name_clashes(&tables);
     checker.requirements();
     for index in 0..tables.len() {
         checker.imports(&mut tables, index, &paths);
@@ -246,6 +247,14 @@ impl<'p, 'a> Checker<'p, 'a> {
         self.poison
             .and_then(|poison| poison.get(&file))
             .is_some_and(|poison| poison.unnamed || poison.names.contains(name))
+    }
+
+    /// The local name of the dependency whose module is the file `id`, if it is one.
+    fn mount(&self, id: FileId) -> Option<&'a str> {
+        let settings: &'a Manifest = self.package.settings;
+        settings
+            .mount_of(self.package.sources.file(id).path())
+            .map(|mount| mount.local.as_str())
     }
 
     fn name(&self, ident: &Ident) -> &'a str {
@@ -397,7 +406,11 @@ impl<'p, 'a> Checker<'p, 'a> {
                     .iter()
                     .map(|segment| self.name(segment))
                     .collect();
-                names.join(".")
+                // A dependency's module `m` is `<local>.m` in the program (ADR 0122 rule 47).
+                match self.mount(module.id) {
+                    Some(local) => format!("{local}.{}", names.join(".")),
+                    None => names.join("."),
+                }
             }),
             upper: BTreeMap::new(),
             lower: BTreeMap::new(),
@@ -723,8 +736,13 @@ impl<'p, 'a> Checker<'p, 'a> {
             return;
         }
         let file = self.package.sources.file(module.id).path();
+        // A dependency's modules are under its own `src/` (ADR 0122 rule 47).
+        let settings: &'a Manifest = self.package.settings;
+        let src = settings
+            .mount_of(file)
+            .map_or("src/", |mount| mount.src.as_str());
         let expected = file
-            .strip_prefix("src/")
+            .strip_prefix(src)
             .and_then(|rest| rest.strip_suffix(".una"))
             .map(|rest| rest.replace('/', "."))
             .unwrap_or_default();
@@ -755,6 +773,33 @@ impl<'p, 'a> Checker<'p, 'a> {
             ));
         }
         self.diagnostics.push(diagnostic);
+    }
+
+    /// U1010: a module of the root whose first path segment is a dependency's local name, so
+    /// its path could be a dependency's (ADR 0122 rule 47). O(m) for m modules.
+    fn local_name_clashes(&mut self, tables: &[Table<'a>]) {
+        let settings: &'a Manifest = self.package.settings;
+        if settings.mounts.is_empty() {
+            return;
+        }
+        for table in tables {
+            let (Some(path), Some(header)) = (&table.path, &table.module.tree.module) else {
+                continue;
+            };
+            if self.mount(table.module.id).is_some() {
+                continue;
+            }
+            let first = path.split('.').next().unwrap_or("");
+            if settings.mounts.iter().any(|mount| mount.local == first) {
+                self.error(
+                    Code::U1010,
+                    header.path.span,
+                    format!(
+                        "module `{path}` starts with `{first}`, the local name of a dependency; give the need another local name with `as`"
+                    ),
+                );
+            }
+        }
     }
 
     /// The modules by path; a path declared by two modules is U1002.
@@ -882,7 +927,14 @@ impl<'p, 'a> Checker<'p, 'a> {
                 .map(|segment| self.name(segment))
                 .collect();
             let path = names.join(".");
-            let target = paths.get(&path).copied();
+            // A dependency's module imports its own modules by their own paths, and the
+            // standard modules; never a module of the root (ADR 0122 rule 47).
+            let mount = tables.get(index).and_then(|table| self.mount(table.module.id));
+            let is_standard = path == prelude::STD_TESTING || path == prelude::STD_HOST;
+            let target = match mount {
+                Some(local) if !is_standard => paths.get(&format!("{local}.{path}")).copied(),
+                _ => paths.get(&path).copied(),
+            };
             if let Some(target) = target
                 && let Some(table) = tables.get_mut(index)
             {

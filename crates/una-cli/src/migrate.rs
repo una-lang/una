@@ -262,5 +262,6 @@ fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
         lock: Some(lock_id),
         modules,
         disk_paths,
+        dependencies: Vec::new(),
     }
 }

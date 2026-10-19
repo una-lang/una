@@ -156,6 +156,89 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     })
 }
 
+/// Loads the path dependency at `dir` (ADR 0122 rules 7 and 30): a directory with `ita.una`
+/// and `src/`, its files named `<written>/ita.una` and `<written>/src/...` after the path the
+/// root writes. No symbolic link is followed, in the directory or below it: an entry that is
+/// one refuses the dependency, so a package never reads a file outside it through a link.
+/// Its lock is not read (rule 23).
+pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadError> {
+    let not_followed = |path: &Path| -> Result<(), LoadError> {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => Err(LoadError::Unreadable {
+                path: path.to_path_buf(),
+                reason: "it is a symbolic link, which a dependency may not hold".to_owned(),
+            }),
+            Ok(_) => Ok(()),
+            Err(error) => Err(unreadable(path, &error)),
+        }
+    };
+    not_followed(dir)?;
+    let manifest = dir.join("ita.una");
+    if !manifest.is_file() {
+        return Err(LoadError::NotAPackage(dir.to_path_buf()));
+    }
+    not_followed(&manifest)?;
+    let src = dir.join("src");
+    if !src.is_dir() {
+        return Err(LoadError::NoSourceDirectory(dir.to_path_buf()));
+    }
+    not_followed(&src)?;
+    let mut files = vec![LoadedFile {
+        name: format!("{written}/ita.una"),
+        bytes: read(&manifest)?,
+        path: manifest,
+        role: Role::Manifest,
+    }];
+    let mut modules = Vec::new();
+    collect_no_links(&src, &format!("{written}/src"), &mut modules)?;
+    modules.sort();
+    for (name, file) in modules {
+        files.push(LoadedFile {
+            name,
+            bytes: read(&file)?,
+            path: file,
+            role: Role::Module,
+        });
+    }
+    Ok(Loaded {
+        single: false,
+        format: Format::Ita,
+        both_manifests: false,
+        files,
+    })
+}
+
+/// [`collect`], refusing every symbolic link instead of following it.
+fn collect_no_links(
+    dir: &Path,
+    prefix: &str,
+    files: &mut Vec<(String, PathBuf)>,
+) -> Result<(), LoadError> {
+    let entries = std::fs::read_dir(dir).map_err(|error| unreadable(dir, &error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| unreadable(dir, &error))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_hidden(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|error| unreadable(&path, &error))?;
+        if kind.is_symlink() {
+            return Err(LoadError::Unreadable {
+                path,
+                reason: "it is a symbolic link, which a dependency may not hold".to_owned(),
+            });
+        }
+        let relative = format!("{prefix}/{name}");
+        if kind.is_dir() {
+            collect_no_links(&path, &relative, files)?;
+        } else if kind.is_file() && name.ends_with(".una") {
+            files.push((relative, path));
+        }
+    }
+    Ok(())
+}
+
 /// Collects the `.una` files under `dir`, named `prefix/...`.
 fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>) -> Result<(), LoadError> {
     let entries = std::fs::read_dir(dir).map_err(|error| unreadable(dir, &error))?;

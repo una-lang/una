@@ -322,7 +322,7 @@ fn the_lock_reads_and_meets_the_manifest() {
     let (lock, errors) = parse_ita_lock(&lock_text);
     assert_eq!(render(&errors), Vec::<String>::new());
     assert_eq!(lock.solver.step_budget, 5_000_000);
-    let consistency = check_lock_consistency(&manifest, &lock);
+    let consistency = check_lock_consistency(&manifest, &lock, &std::collections::BTreeMap::new());
     assert_eq!(render(&consistency.in_manifest), Vec::<String>::new());
     // `http` is locked and reached by nothing.
     assert_eq!(

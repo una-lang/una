@@ -5,8 +5,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
-use una_project::ita::{check_lock_consistency, parse_ita_lock, parse_ita_manifest};
-use una_project::{Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest};
+use una_project::ita::{check_consent, check_lock_consistency, parse_ita_lock, parse_ita_manifest};
+use una_project::{
+    Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest,
+};
+use una_syntax::ita;
 use una_syntax::{FileId, SourceDb, Span};
 
 pub use una_project::LoadError;
@@ -30,6 +33,26 @@ pub struct Package {
     pub modules: Vec<FileId>,
     /// Where each file is on disk, for `una fmt`.
     pub disk_paths: BTreeMap<FileId, PathBuf>,
+    /// The path dependencies of `ita.una`, loaded or not (ADR 0122 rule 7). Their modules are
+    /// checked with the root's only once [`project`] mounts them.
+    pub dependencies: Vec<Dependency>,
+}
+
+/// A path dependency of the root: the need that names it, and its files, or why they could not
+/// be read.
+#[derive(Debug)]
+pub struct Dependency {
+    /// The need's index in the root's `needs`.
+    pub need: usize,
+    /// The directory as `ita.una` writes it, without a trailing `/`: the prefix of its files'
+    /// names in the source database.
+    pub dir: String,
+    /// Its `ita.una`.
+    pub manifest: Option<FileId>,
+    /// Its modules, in path order.
+    pub modules: Vec<FileId>,
+    /// Why it could not be loaded.
+    pub error: Option<String>,
 }
 
 /// Loads the package at `path` (ADR 0021 rule 1).
@@ -55,6 +78,7 @@ pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Pac
         lock: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
+        dependencies: Vec::new(),
     };
     for file in loaded.files {
         let id = package.sources.add(file.name, &file.bytes);
@@ -65,7 +89,85 @@ pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Pac
             Role::Module => package.modules.push(id),
         }
     }
+    if package.format == Format::Ita
+        && let Some(id) = package.manifest
+    {
+        let text = package.sources.file(id).text().to_owned();
+        load_dependencies(path, &text, overlay, &mut package);
+    }
     Ok(package)
+}
+
+/// Loads the path dependencies that the root's `ita.una` names (ADR 0122 rule 7). A directory
+/// that is not relative, that is the root, lies under the root's `src/`, or is named by two
+/// needs is not read; nor is one that does not load. Each keeps the reason, which [`project`]
+/// reports at its need. O(files of the dependencies).
+fn load_dependencies(
+    root: &Path,
+    manifest: &str,
+    overlay: &BTreeMap<PathBuf, String>,
+    package: &mut Package,
+) {
+    let (read, _) = una_syntax::ita::parse_manifest(manifest);
+    let canonical_root = std::fs::canonicalize(root).ok();
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for (index, need) in read.needs.iter().enumerate() {
+        let Some(una_syntax::ita::At {
+            value: una_syntax::ita::Origin::Path(dir),
+            ..
+        }) = &need.origin
+        else {
+            continue;
+        };
+        let written = dir.trim_end_matches('/').to_owned();
+        let mut dependency = Dependency {
+            need: index,
+            dir: written.clone(),
+            manifest: None,
+            modules: Vec::new(),
+            error: None,
+        };
+        let refusal = (|| {
+            if !una_project::ita::is_relative_dir(&written) || written == "." {
+                return Some("its directory is not a relative path to another directory".to_owned());
+            }
+            let place = root.join(&written);
+            let canonical = std::fs::canonicalize(&place).ok()?;
+            if let Some(root) = &canonical_root
+                && (canonical == *root || canonical.starts_with(root.join("src")))
+            {
+                return Some("its directory is the package itself, or inside its `src/`".to_owned());
+            }
+            if seen.contains(&canonical) {
+                return Some("another need names the same directory".to_owned());
+            }
+            seen.push(canonical);
+            None
+        })();
+        if let Some(reason) = refusal {
+            dependency.error = Some(reason);
+            package.dependencies.push(dependency);
+            continue;
+        }
+        match una_project::discover_dependency(&root.join(&written), &written) {
+            Ok(loaded) => {
+                for mut file in loaded.files {
+                    if let Some(text) = overlay.get(&file.path) {
+                        file.bytes = text.as_bytes().to_vec();
+                    }
+                    let id = package.sources.add(file.name, &file.bytes);
+                    package.disk_paths.insert(id, file.path);
+                    match file.role {
+                        Role::Manifest => dependency.manifest = Some(id),
+                        Role::Module => dependency.modules.push(id),
+                        Role::Lock => {}
+                    }
+                }
+            }
+            Err(error) => dependency.error = Some(error.to_string()),
+        }
+        package.dependencies.push(dependency);
+    }
 }
 
 /// The settings of the package and the diagnostics of its project files. A single file has
@@ -84,7 +186,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
         }
     };
     if package.format == Format::Ita {
-        let manifest = match package.manifest {
+        let mut manifest = match package.manifest {
             Some(id) => {
                 let (manifest, errors) = parse_ita_manifest(package.sources.file(id).text());
                 located(id, errors);
@@ -102,45 +204,120 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             }
             None => Manifest::default(),
         };
-        let read = manifest.ita.as_deref();
-        match (package.lock, package.manifest) {
-            (Some(id), _) => {
+        let Some(manifest_id) = package.manifest else {
+            return (manifest, diagnostics);
+        };
+        let read = manifest.ita.clone();
+        let needs: &[ita::Need] = read.as_deref().map_or(&[], |read| read.needs.as_slice());
+        let root_name = read
+            .as_deref()
+            .and_then(|read| read.name.as_ref())
+            .map(|name| name.value.to_string())
+            .unwrap_or_default();
+        // The path dependencies: checked, then mounted with their package extents.
+        let mut versions: BTreeMap<String, String> = BTreeMap::new();
+        for (index, need) in needs.iter().enumerate() {
+            let refuse = |message: String| ProjectError {
+                code: Code::U7008,
+                range: need.range.clone(),
+                message,
+            };
+            let Some(ita::At {
+                value: ita::Origin::Path(_),
+                ..
+            }) = &need.origin
+            else {
+                // Registry and workspace sources are not loaded by this release: a need of one
+                // is refused, so no import reaches a package that is not checked.
+                located(
+                    manifest_id,
+                    vec![refuse(format!(
+                        "this release loads only path dependencies, so `{}` cannot be needed",
+                        need.name.value
+                    ))],
+                );
+                continue;
+            };
+            let Some(dependency) = package.dependencies.iter().find(|d| d.need == index) else {
+                continue;
+            };
+            if let Some(reason) = &dependency.error {
+                located(
+                    manifest_id,
+                    vec![refuse(format!(
+                        "the path dependency `{}` cannot be loaded: {reason}",
+                        dependency.dir
+                    ))],
+                );
+                continue;
+            }
+            let Some(dependency_manifest) = dependency.manifest else {
+                continue;
+            };
+            let (settings, errors) =
+                parse_ita_manifest(package.sources.file(dependency_manifest).text());
+            let invalid = !errors.is_empty();
+            located(dependency_manifest, errors);
+            let mut problems = dependency_problems(need, &settings, &manifest);
+            if invalid {
+                problems.push(refuse(format!(
+                    "the path dependency `{}` has an invalid ita.una",
+                    dependency.dir
+                )));
+            }
+            if !problems.is_empty() {
+                located(manifest_id, problems);
+                continue;
+            }
+            if let Some(version) = &settings.version {
+                versions.insert(dependency.dir.clone(), version.value.clone());
+            }
+            let local = una_project::ita::local_name(need);
+            manifest.mounts.push(una_project::Mount {
+                local: local.value.clone(),
+                src: format!("{}/src/", dependency.dir),
+            });
+            let manifest_text = package.sources.file(manifest_id).text();
+            manifest.boundaries.push(una_project::Boundary {
+                module: una_project::Located {
+                    value: local.value.clone(),
+                    range: need.name.range.clone(),
+                },
+                ceiling: need
+                    .may
+                    .iter()
+                    .map(|cap| una_project::Ceiling {
+                        capability: cap.capability.clone(),
+                        ops: cap.ops.iter().map(|op| op.value.clone()).collect(),
+                        at: una_project::Located {
+                            value: manifest_text.get(cap.range.clone()).unwrap_or("").to_owned(),
+                            range: cap.range.clone(),
+                        },
+                    })
+                    .collect(),
+                package: true,
+            });
+        }
+        match package.lock {
+            Some(id) => {
                 let (lock, errors) = parse_ita_lock(package.sources.file(id).text());
                 let invalid = !errors.is_empty();
                 located(id, errors);
-                if !invalid && let (Some(read), Some(manifest_id)) = (read, package.manifest) {
-                    let consistency = check_lock_consistency(read, &lock);
+                if !invalid && let Some(read) = read.as_deref() {
+                    let consistency = check_lock_consistency(read, &lock, &versions);
                     located(manifest_id, consistency.in_manifest);
                     located(id, consistency.in_lock);
+                    located(manifest_id, check_consent(read, &lock, &root_name));
                 }
             }
-            (None, Some(id)) => located(
-                id,
+            None => located(
+                manifest_id,
                 vec![ProjectError {
                     code: Code::U7009,
                     range: 0..0,
                     message: "the package has no ita.lock; run `una ita lock`".to_owned(),
                 }],
             ),
-            (None, None) => {}
-        }
-        // Dependencies are read and checked, but this release loads none: a need is refused
-        // rather than left unresolved, so no import can reach a package that is not checked.
-        if let (Some(read), Some(id)) = (read, package.manifest) {
-            located(
-                id,
-                read.needs
-                    .iter()
-                    .map(|need| ProjectError {
-                        code: Code::U7008,
-                        range: need.range.clone(),
-                        message: format!(
-                            "this release does not load dependencies yet, so `{}` cannot be needed",
-                            need.name.value
-                        ),
-                    })
-                    .collect(),
-            );
         }
         return (manifest, diagnostics);
     }
@@ -163,4 +340,89 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
         (None, None) => {}
     }
     (manifest, diagnostics)
+}
+
+/// Why a loaded path dependency may not be used as the root writes it (ADR 0122 rules 42, 49
+/// and 53, and what this release does not load yet), each at the root's need.
+pub(crate) fn dependency_problems(
+    need: &ita::Need,
+    dependency: &Manifest,
+    root: &Manifest,
+) -> Vec<ProjectError> {
+    let mut problems = Vec::new();
+    let mut problem = |code: Code, message: String| {
+        problems.push(ProjectError {
+            code,
+            range: need.range.clone(),
+            message,
+        });
+    };
+    let Some(read) = dependency.ita.as_deref() else {
+        return problems;
+    };
+    if let Some(name) = &read.name
+        && name.value != need.name.value
+    {
+        problem(
+            Code::U7008,
+            format!(
+                "the package at this path is `{}`, not `{}`",
+                name.value, need.name.value
+            ),
+        );
+    }
+    // Rule 42: a local package carries a name that a registry may hold (an unscoped name is
+    // Itaúna's, and an owner may be any registry's, which no client can tell offline), so the
+    // root accepts it by name.
+    if need.accept_name.is_none() {
+        problem(
+            Code::U7012,
+            format!(
+                "`{}` is a local package with a name a registry may hold; write `accept name` under the need to use it",
+                need.name.value
+            ),
+        );
+    }
+    // Rule 49: a dependency's edition is its dependent's or earlier.
+    if dependency.edition > root.edition {
+        problem(
+            Code::U7012,
+            format!(
+                "`{}` is of edition {}, later than this package's {}",
+                need.name.value,
+                dependency.edition.name(),
+                root.edition.name()
+            ),
+        );
+    }
+    let unsupported = [
+        (!read.needs.is_empty(), "needs of its own"),
+        (!read.labels.is_empty(), "label categories"),
+        (!read.trusted.is_empty(), "trusted modules"),
+        (!read.boundaries.is_empty(), "boundaries"),
+        (!read.contracts.is_empty(), "contracts"),
+    ];
+    for (present, what) in unsupported {
+        if present {
+            problem(
+                Code::U7008,
+                format!(
+                    "`{}` has {what}, which this release does not load for a dependency yet",
+                    need.name.value
+                ),
+            );
+        }
+    }
+    for cap in &need.may {
+        if cap.capability.contains('.') {
+            problem(
+                Code::U7008,
+                format!(
+                    "the ceiling `{}` names a dependency's own capability, which this release does not load yet; a ceiling names host capabilities",
+                    cap.capability
+                ),
+            );
+        }
+    }
+    problems
 }
