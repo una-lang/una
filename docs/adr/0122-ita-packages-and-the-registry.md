@@ -1,8 +1,8 @@
 # 0122. Itá: packages and dependencies, the project files `ita.una` and `ita.lock`, and the Itaty registry
 
-- Status: Proposed
-- Date: 2026-10-18
-- Deciders:
+- Status: Accepted
+- Date: 2026-10-19
+- Deciders: Una project (accepted on 2026-10-19)
 - Resolves: issue #893 (a sub-issue of epic #840: steps 1 and 3 of the epic, the record for its phase 1 and its phase 2, in one record)
 - Related:
   - ADR 0021 (packages and project files: `una.toml`, `verification.lock`), which this record replaces for edition `0.4`;
@@ -11,7 +11,6 @@
   - ADR 0109 (profiles), which deferred "profiles across package dependencies";
   - ADR 0116 (the `[drive]` table) and ADR 0117 (limits on grants), which name `ita.una` (#893) for their forms;
   - ADR 0121 (draft, PR #915: the terms of edition `0.4`), whose rule 2 (a) governs the trust a package adds, and whose rule 10 asks for this record's section "Edition `0.4`";
-  - ADR 0118 (draft, PR #910: foreign code), whose `[foreign]` archives a dependency may carry;
   - issue #891 (one binary), inside which Itá ships;
   - ADR 0064 (the authenticated proof cache), `docs/security/tcb.md` (the risk profile of the trusted base), and `docs/plan/formal-track-m5.md` (the document-level flag that assumes one package).
 - Target: edition `0.4`, under the terms of ADR 0121 (draft). Editions `0.1` to `0.3` keep `una.toml` and `verification.lock`, with no change. A single file keeps edition `0.1` and has no dependencies. The benchmark baseline, pinned to edition `0.1`, does not move.
@@ -22,21 +21,22 @@
   - **Diagnostics and project files:** `spec/13 §4` (codes), `§5` (`una ita`, `una migrate`, `una fix`), `§6` (report), `§7` (the project files of edition `0.4`, and the exception to its U7002 for a trusted module inside a boundary, rule 53.1), `§8` (Core export, `una.core/2`);
   - **Charter:** `docs/00-charter.md §3`, the Trusted zone's row;
   - **Accepted records:** ADRs 0021, 0085, 0093, 0109, 0116 and 0117, by the dated amendments of Appendix A;
-  - **Draft records:** ADR 0121, by a note appended on its acceptance, and ADR 0118, by a note if it is accepted (Appendix B).
+  - **Draft records:** ADR 0121, by a note appended on its acceptance (Appendix B).
 
-  The rules would live in a new chapter, `spec/NN-packages.md`, numbered by ADR 0121 rule 20 when this record is accepted.
+  The rules live in a new chapter, `spec/30-packages.md`.
 
 > **In plain words.**
 > - **What changes for a programmer.** A package of edition `0.4` describes itself in `ita.una`, a short file in Una's own syntax, and may name other packages it needs. `una ita add json` adds one. `ita.lock`, written by the tool, pins the exact content of every package the program uses.
-> - **What a dependency can do.** Nothing it is not given. It runs no code when it is fetched. It holds no capability unless the program passes one at a call, within a limit that `ita.una` writes per dependency. It may declassify data or link C code only if the program says so by name. The build report lists, for each dependency, what it may do and what it does.
+> - **What a dependency can do.** Nothing it is not given. It runs no code when it is fetched. It holds no capability unless the program passes one at a call, within a limit that `ita.una` writes per dependency. It may declassify data only if the program says so by name. It carries no foreign code: a package holds Una sources only. The build report lists, for each dependency, what it may do and what it does.
 > - **What is checked again.** The program re-checks and re-proves its dependencies' code itself. Nothing a publisher claims about its own package is trusted.
-> - **What is trusted.** That the bytes in the lock are the bytes the publisher signed and logged. A dependency that the program marks as trusted (its policies, its C code) is trusted as the program's own trusted code is.
+> - **What is trusted.** That the bytes in the lock are the bytes the publisher signed and logged. A dependency's module that the program marks as trusted (its policies) is trusted as the program's own trusted code is.
 
 ## Questions for acceptance
 
-Questions 1 to 7 change what a programmer can rely on or must write. Question 8 asks the project to confirm three assumptions on edition terms. The text below follows each recommendation.
+Questions 1 to 7 change what a programmer can rely on or must write. Question 8 asks the project to confirm three assumptions on edition terms. Questions 1 to 6 were accepted as recommended, Question 7 was rejected, and the three assumptions of Question 8 were confirmed (2026-10-19). The text below follows each decision.
 
 1. **Who may publish a package under a short name, such as `http`?**
+   - **Decided:** accepted as recommended. Unscoped names are Itaúna's; every other package is `owner/name`.
    - **This record:** only Itaúna, the official set the project maintains. Every other package is named `owner/name`, as `acme/ledger`, and an owner name is registered once (rules 44 to 46).
    - **Owners belong to their source.** A private source declares the owners it serves (`owners acme`). A need of an `acme/…` name must then name that source, and `una ita add` picks it (rule 42), so `acme/ledger` never resolves at Itaty by default.
    - **Itaúna's keys** are named in the registry's root metadata, and change only by a new root version, signed by the offline root threshold. The registry cannot recover them (rule 38.1).
@@ -55,6 +55,7 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
    ```
 
 2. **May a dependency ever receive the program's capabilities by name?**
+   - **Decided:** accepted as recommended. No inheritance by name; a dependency receives a capability only at a call, with `with`, within its caller's ceiling.
    - **Today:** ADR 0093 rule 2 makes every module of a dependency a boundary with an empty ceiling, "unless the consumer's `una.toml` lists the dependency under a table `[inherit]`".
    - **This record:** no. `[inherit]` is not created. A dependency receives a capability only at a call, with `with` (rule 51, and the amendment of ADR 0093 in Appendix A).
    - **Which ceiling applies.** The ceiling at a call is the one the *calling* package writes, with `may`, for the package it calls. A call that reaches a package its caller does not need, such as a function value of a transitive dependency handed back to the root, has the empty ceiling. So a dependency's own `ita.una` never sets the ceiling of a grant the root makes.
@@ -70,6 +71,7 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
    ```
 
 3. **Does the program prove its dependencies again?**
+   - **Decided:** accepted as recommended. The root checks and proves every package of the program.
    - **This record:** yes. `una check` of a package type-checks, flow-checks and verifies every module of every dependency, under the package's own solver pin, as one program (rule 48). Nothing a publisher claims is used.
    - **The cache.** Obligations are cached by query across packages, under a domain-tagged key that cannot collide with the key of editions `0.1` to `0.3`, so a dependency is proven once per machine and solver version.
    - **Cost to the programmer:** the first check after adding or updating a large dependency takes longer. Its time is bounded by the dependencies' obligations, each under the step budget of the lock (`spec/12 §9`); there is no other limit.
@@ -83,6 +85,7 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
    ```
 
 4. **Is a version that needs more authority a breaking change?**
+   - **Decided:** accepted as recommended. Authority growth needs a new major version, enforced by the registry and by clients.
    - **This record:** yes. Within a major version, a release MUST NOT need a capability, an operation or a trust that the previous release did not (rule 26).
    - **Who enforces it.** The registry refuses to log a release statement whose `authority` or `trust` is not within the previous release's of the same identity, and every client verifies the same thing from the two statements when it locks or updates (U7010). The statements' authority is checked against the archives (rule 37), so a publisher with a modified client cannot get around it. A consumer's ceiling refuses it anyway (U3021).
    - **Not enforced:** the compatibility of headers. `una ita publish` checks it, as advice to an honest publisher.
@@ -97,6 +100,7 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
    ```
 
 5. **How are publishers' keys held?**
+   - **Decided:** accepted as recommended, option (a): owner-held Ed25519 keys under a witnessed transparency log.
    - **(a) Recommended:** each owner holds Ed25519 keys of its own, encrypted on disk by default. Every key event and every release is an entry of a public, append-only transparency log that independent witnesses co-sign (rules 36 to 38). No identity provider is in the trust base. With it:
      - **Recovery** of an owner that lost its keys is pending for seven days of witness time, which clients check themselves, and any current key can cancel it (rule 38.1).
      - **Itaúna's keys** are recoverable only by the root threshold.
@@ -115,6 +119,7 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
    ```
 
 6. **Should Itá wait before taking a new release?**
+   - **Decided:** accepted as recommended. Every selection waits a 72-hour cooldown in witness time.
    - **This record:** yes. No resolution selects a release logged less than 72 hours earlier, measured in witness time (rules 24, 25, 36.4). That is a window in which many malicious releases have been found and removed.
    - **It covers every way in.** `una ita update`, `una ita add`, and a raise past a yanked or advised release (rule 24) all wait. A stolen key cannot shorten the wait by publishing a release and then yanking the one before it.
    - **The one exception:** a fix that an advisory names by its digest, when the advisory is signed by two security keys of the root metadata, or by the security key and the owner's threshold (rule 41).
@@ -130,21 +135,25 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
    ```
 
 7. **May a package depend on a git repository?**
-   - **This record:** yes, for phase 1 of epic #840, with restrictions (rules 7 and 61):
-     - only the root, or a workspace member, writes a git need; a git package's own needs may name only registry sources that the root lists;
-     - a package published to a registry never has a git need (rule 43);
-     - each is pinned by commit and by content digest.
-   - **The invocation.** The system `git` fetches the one commit, over `https` only, with no working tree, a scrubbed environment, no hooks, no redirects, bounded time and bytes, and credentials only for URLs the root's own `ita.una` names. `git` is not trusted for integrity, since the digest is checked after the fetch. It is trusted not to be exploited by a hostile server: it runs unconfined, with the user's privileges.
-   - **Cost to the programmer:** fetching a git source needs `git` installed. Every other command, and every registry source, needs nothing but `una` (#891).
-   - **Recommendation:** accept. A later record MAY drop git sources once Itaty exists.
+   - **Decided:** rejected. There are no git dependencies, in any phase: no `from git` origin, no git origin in the lock, and Itá never runs the system `git` or any other external program (rules 7 and 61).
+   - **Why:** fetching a git source would run the system `git` unconfined, with the user's privileges, against a server that may be hostile, and would add a tool besides `una` (#891).
+   - **What covers the need instead:**
+     - **local development:** path dependencies, written only by the root and workspace members (rules 7 and 42), and workspaces (rule 19);
+     - **organizations:** a private Itá source, declared in the root's `sources` with the owners it serves (rules 8 and 42), or packages vendored into the repository (rule 32).
+   - **Cost to the programmer:** code shared before it is published is shared by path, by workspace, or through a private source.
 
    ```una
+   sources
+     acme "https://ita.acme.example"
+       root "sha256:5e0d1b7a…"
+       owners acme
    needs
-     acme/ledger 0.3 from git "https://git.acme.example/ledger" commit "9c41d0e2b7f1a6c35e8d4f0b2a7c9e1d3f5b6a80"
-       accept name
+     acme/ledger 0.3 from acme
+     util from path "../util"
    ```
 
 8. **Edition terms: the project is asked to confirm three assumptions** (ADR 0121, draft, and `spec/13 §7`). This record does not decide edition terms; it is written against the assumption stated in each item.
+   - **Decided:** the three assumptions below are confirmed.
    - **8.1. `una.toml` in edition `0.4`.** ADRs 0116 and 0117 put `[drive]` and limits in `una.toml` for edition `0.4`. **Assumed:** edition `0.4` reads only `ita.una`, so it has one manifest format and one parser.
      - **If no released `una` has accepted edition `0.4` in `una.toml`** when this record's files land, `una.toml` naming edition `0.4` is a plain rejection, U7002, with `una migrate` as its repair. No form of a released edition changes.
      - **Otherwise** it is U7007 (ADR 0121 rule 5), an entry of the edition ledger, with the same repair.
@@ -170,7 +179,7 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
 - **Resolution point.** The checkpoint at which a lock was resolved; yanks, advisories, cooldowns and keys are evaluated as of it (rule 15).
 - **Name map and chain.** The entries about one name, linked by hash, and a map from each name to its latest entry committed in every checkpoint, so a client can tell that it sees all of a name's entries (rule 36.1).
 - **Witness time.** The timestamp of a witness's co-signature, the only clock the rules use for durations (rule 36.4).
-- **Trust line.** A line of the root's `trust` section that consents to a dependency's trusted modules or foreign libraries (rule 53).
+- **Trust line.** A line of the root's `trust` section that consents to a dependency's trusted modules (rule 53).
 - **Transparency log.** An append-only Merkle tree of every release and key event, whose signed checkpoints let a client prove that an entry is in the log and that the log was only appended to (rule 36).
 - **Checkpoint.** A signed statement of the log's size and root hash (C2SP `tlog-checkpoint`).
 - **Witness.** An independent party that co-signs a checkpoint after checking that it extends the last one it saw, so the registry cannot show two different logs to two clients.
@@ -205,11 +214,12 @@ Questions 1 to 7 change what a programmer can rely on or must write. Question 8 
 - **Ceilings.** The issue's example writes `http 1.4` with no ceiling. Under ADR 0093 rule 2, `http` would then receive no capability at all, so a `may` line is added wherever a dependency needs one (rule 7).
 - **Owner names.** The issue writes unscoped names; here unscoped names belong to Itaúna, and `http` and `json` in the example are read as Itaúna packages (Question 1).
 - **The epic's `una add` and `una.lock`** are `una ita add` and `ita.lock`, as #893 decided. The epic's grants "in `una.toml`" are the `may` ceilings of `ita.una`.
+- **No git sources.** The epic's phase 1 has git and path sources. This record has path and workspace sources only (Question 7): local development uses path dependencies, and organizations use a private Itá source.
 - **One record for both phases.** The epic asks for two records. Rules 34 to 46 (the registry) are this record's phase 2, implemented after phase 1, and the lock of rule 16 serves both, so the move to the registry breaks no lock.
 
 ## Decision
 
-In one paragraph: in edition `0.4`, a package is described by `ita.una`, a declarative file in Una's lexical syntax with a closed grammar, and pinned by `ita.lock`, written only by `una ita`, which holds the solver pin and, for every package of the program, its version, source and content digest. Versions are a subset of semantic versioning, and resolution is minimal version selection, linear in the size of the dependency graph and reproducible without a lock. A package is fetched as a canonical archive whose digest is its identity, into Itaoca, and no code of it runs. The root checks and proves every package of the program as one program. Every dependency is a boundary of ADR 0093 with the ceiling its `need` writes; it receives capabilities only through `with`; its trusted modules and foreign code need a trust line in the root. The registry, Itaty, is a set of static files: a transparency log of signed releases and key events, with a hash chain per name and a name map in every checkpoint, co-signed by witnesses, under a root of offline keys embedded in `una`; every selection waits a cooldown measured in witness time; mirrors are untrusted transport. Names outside Itaúna are scoped by owner, and owners are bound to the source that serves them; only the root names sources, git URLs and paths. Trust lines bind identities, and the lock records every ceiling and trust it was written under. The build report lists each dependency, its ceiling, its authority and its trust. `una migrate` moves a package from `una.toml` to `ita.una`.
+In one paragraph: in edition `0.4`, a package is described by `ita.una`, a declarative file in Una's lexical syntax with a closed grammar, and pinned by `ita.lock`, written only by `una ita`, which holds the solver pin and, for every package of the program, its version, source and content digest. Versions are a subset of semantic versioning, and resolution is minimal version selection, linear in the size of the dependency graph and reproducible without a lock. A package is fetched as a canonical archive whose digest is its identity, into Itaoca, and no code of it runs. The root checks and proves every package of the program as one program. Every dependency is a boundary of ADR 0093 with the ceiling its `need` writes; it receives capabilities only through `with`; its trusted modules need a trust line in the root, and it carries no foreign code. The registry, Itaty, is a set of static files: a transparency log of signed releases and key events, with a hash chain per name and a name map in every checkpoint, co-signed by witnesses, under a root of offline keys embedded in `una`; every selection waits a cooldown measured in witness time; mirrors are untrusted transport. Names outside Itaúna are scoped by owner, and owners are bound to the source that serves them; only the root names sources and paths. Trust lines bind identities, and the lock records every ceiling and trust it was written under. The build report lists each dependency, its ceiling, its authority and its trust. `una migrate` moves a package from `una.toml` to `ita.una`.
 
 ### A. Names and files
 
@@ -222,7 +232,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
    - **A single file** keeps edition `0.1`, the default lock and no dependencies.
 
 3. **Read by Una's parser, and no code.** `ita.una`, `ita.lock` and `itaty.una` are read by Una's lexer (`spec/01`), with the one token of rule 4, and by the grammar of rules 5, 16 and 19, which is part of the syntax crate.
-   - **Declarative.** There are no expressions, no interpolation, no conditions, no includes and no environment variables. Nothing in these files runs, and nothing else runs when a package is fetched, resolved, checked or built: there are no install scripts, build scripts or hooks of any kind. (Building a package whose root trusts a dependency's foreign library runs that library once, confined, as ADR 0118 rule 33 states for any foreign library; rule 60.)
+   - **Declarative.** There are no expressions, no interpolation, no conditions, no includes and no environment variables. Nothing in these files runs, and nothing else runs when a package is fetched, resolved, checked or built: there are no install scripts, build scripts or hooks of any kind, and no foreign code (rule 60).
    - **Closed.** Every section and every line has one of the forms below. Anything else is U7008, at the line.
    - **Bounded.** `ita.una` and `itaty.una` hold at most 1 MiB and `ita.lock` at most 16 MiB; past that, U7008 or U7009 at the start of the file.
 
@@ -248,7 +258,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
                 | "publish" "to" lower_ident NEWLINE ;
 
    section      = sources | needs | replace | trust | labels | trusted | escapes
-                | boundaries | contracts | run | drive | foreign ;
+                | boundaries | contracts | run | drive ;
 
    sources      = "sources" NEWLINE INDENT source { source } DEDENT ;
    source       = lower_ident text_lit NEWLINE INDENT "root" text_lit NEWLINE
@@ -260,7 +270,6 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
    pkg_name     = lower_ident [ "/" lower_ident ] ;
    origin       = "from" ( lower_ident
                          | "path" text_lit
-                         | "git" text_lit "commit" text_lit
                          | "workspace" ) ;
    need_line    = "may" cap_type { "," cap_type } NEWLINE
                 | "avoid" version_lit NEWLINE
@@ -273,11 +282,9 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
    trust        = "trust" NEWLINE INDENT { trust_line } DEDENT ;
    trust_line   = pkg_name [ major ] [ "from" lower_ident ]
-                  ( "modules" module_path { "," module_path }
-                  | "foreign" library { "," library } ) NEWLINE
+                  "modules" module_path { "," module_path } NEWLINE
                   [ INDENT { "may" cap_type { "," cap_type } NEWLINE } DEDENT ] ;
    major        = int_lit | version_lit ;          (* 2, or 0.3 for the line 0.3 *)
-   library      = lower_ident | text_lit ;         (* ADR 0118's [a-z][a-z0-9-]{0,63} *)
 
    labels       = "labels" NEWLINE INDENT { upper_ident NEWLINE } DEDENT ;
    trusted      = "trusted" NEWLINE INDENT { module_path NEWLINE } DEDENT ;
@@ -294,24 +301,17 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
    grant        = ( "console" | "clock" | "env"
                   | "keys" text_lit
                   | "files" text_lit file_mode { "," file_mode }
-                  | "http" text_lit [ http_method { "," http_method } ]
-                  | "foreign" foreign_ref ) NEWLINE
+                  | "http" text_lit [ http_method { "," http_method } ] ) NEWLINE
                   [ INDENT limit_line { limit_line } DEDENT ] ;
    file_mode    = "read" | "write" ;
    http_method  = "get" | "post" | "put" | "delete" ;
-   foreign_ref  = library [ "of" pkg_name [ major ] [ "from" lower_ident ] ] ;
    limit_line   = (* ADR 0117 rule 8 *) ;
 
    drive        = "drive" NEWLINE INDENT "module" module_path NEWLINE
                   "ticks" int_lit NEWLINE [ "budget" int_lit NEWLINE ] DEDENT ;
-
-   foreign      = "foreign" library NEWLINE INDENT
-                  "module" module_path NEWLINE "model" module_path NEWLINE
-                  "source" text_lit NEWLINE "stack" int_lit NEWLINE
-                  { "archive" text_lit text_lit "sha256" text_lit NEWLINE } DEDENT ;
    ```
 
-   - **Order and repetition.** The head's lines appear at most once each, `version` and `edition` required. Each section appears at most once, except `foreign`, once per library, in the canonical order of the production `section`. A repeated or misplaced line is U7008. `una fmt` writes the canonical order and spacing, and `una fmt --check` reports U7001, as for a module.
+   - **Order and repetition.** The head's lines appear at most once each, `version` and `edition` required. Each section appears at most once, in the canonical order of the production `section`. A repeated or misplaced line is U7008. There is no `foreign` section and no `git` origin: either is an unknown line, U7008. `una fmt` writes the canonical order and spacing, and `una fmt --check` reports U7001, as for a module.
    - **`module_path`, `cap_ref`, `lower_ident`, `upper_ident`, `int_lit`, `text_lit`** are those of `spec/01` and `spec/02`. `cap_type_with_conditions` is the type of a `uses` clause with ADR 0092's conditions (`spec/05 §3` rule 4), parsed by the same production as in a function header.
 
 6. **The head.**
@@ -339,11 +339,10 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
      - `itaty`, the default when `from` is absent and the name's owner is not one a `sources` entry serves (rule 42), and predeclared;
      - a source of the root's `sources` section;
      - `path`, a directory relative to the package. Only the root and workspace members write it. In a workspace member, the path stays inside the workspace root; in a root outside a workspace, it is the root author's own layout (`"../util"` is allowed). A path dependency's own path needs are U7013 (rule 42);
-     - `git`, a URL (`https` only) and a full 40-hex commit. Only the root and workspace members write it (rule 42, Question 7);
      - `workspace` (rule 19).
    - **`may`** lines write the ceiling that this package grants the dependency at its calls (rule 51), in the form of a `uses` type: a capability of the prelude, or one the dependency declares, written with its local name and module path, as `ledger.store.Store[put]`. No `may` line: the empty ceiling. A capability or operation that does not resolve is U7008.
    - **`avoid`** lines exclude versions from selection (rule 24). They are honored only in the root.
-   - **`accept name`** (root and workspace members only): the root accepts that a `path` or `git` package carries an unscoped name, or a name whose owner is served by a source (rule 42). Without it, such a package is U7012.
+   - **`accept name`** (root and workspace members only): the root accepts that a `path` package carries an unscoped name, or a name whose owner is served by a source (rule 42). Without it, such a package is U7012.
 
    ```una
    needs
@@ -375,9 +374,9 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
      json 2.1.0 with path "patches/json"
    ```
 
-10. **`trust`** (root only; rule 53): consent to a dependency's trusted modules, listed by module path, and to its foreign libraries, listed by name.
+10. **`trust`** (root only; rule 53): consent to a dependency's trusted modules, listed by module path.
     - **A trust line names an identity:** the package's name, its major line and its source, as `acme/privacy 1 from itaty`. The major and the source may be left out only for a package that the root needs directly; they are then those of that need. A transitive package needs a full trust line of its own.
-    - **The lock records the consent, pinned to the whole package:** for each package with a consented trusted module or foreign library, the lock records the package's whole content digest as consented (rule 16). A policy's `via` may call any function of its package (`spec/07 §5`), so pinning the trusted module's own file would not pin the code it runs. Any change of such a package, a new version included, and any trusted module or archive that no recorded consent covers, whether of a new package, a new major or another source, is a trust change: U7012 until `una ita lock --accept-trust <package>` records it (rule 25).
+    - **The lock records the consent, pinned to the whole package:** for each package with a consented trusted module, the lock records the package's whole content digest as consented (rule 16). A policy's `via` may call any function of its package (`spec/07 §5`), so pinning the trusted module's own file would not pin the code it runs. Any change of such a package, a new version included, and any trusted module that no recorded consent covers, whether of a new package, a new major or another source, is a trust change: U7012 until `una ita lock --accept-trust <package>` records it (rule 25).
     - **`may` lines under a `modules` trust line** write the ceiling of the trusted modules it names, as an extent of their own (rule 53.1). None: the empty ceiling.
     - A trust line in a dependency's own `ita.una` binds nothing for the root.
 
@@ -385,7 +384,6 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     trust
       acme/privacy 1 from itaty modules privacy.keys
         may Keys[hmac]
-      zstd foreign zstd
     ```
 
 11. **The sections that `una.toml` had.** Same meaning and the same checks as in `spec/13 §7` and the records named, in this form:
@@ -396,7 +394,6 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     - `contracts` (ADR 0092 rule 8): a function's qualified name, then its locked `uses` clauses, one per line, parsed as a header's.
     - `run`: `entry`, and `grants`, one grant per line (rule 12).
     - `drive` (ADR 0116 rule 1): `module`, `ticks`, `budget`, with that rule's ranges and errors.
-    - `foreign <library>` (ADR 0118 rule 7, draft): `module`, `model`, `source`, `stack` (KiB, `stack_kib`), and one `archive <target> <path> sha256 <hex>` line per target.
 
     ```una
     labels
@@ -418,7 +415,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
         @catalog: Catalog[price, set_price where not dry_run]
     ```
 
-12. **Grants.** One per line under `run grants`, each with the meaning of the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, `http "<origin>" get, post` with ADR 0117's limit lines below it, and `foreign <library>` (ADR 0118), where a library of a dependency, direct or transitive, is written with its package's identity, as `foreign zstd of zstd` or `foreign zstd of acme/zstd 2 from itaty` (the major and source may be left out when only one identity of that name is in the program), and a library whose name holds `-` as a text, `foreign "zstd-fast" of zstd`. Paths resolve against the package root. The `--grant` flag keeps the text form of `spec/13 §5`. A dependency's `run` and `drive` sections are not read: only the root is run.
+12. **Grants.** One per line under `run grants`, each with the meaning of the grant spec of `spec/13 §5` it corresponds to: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, and `http "<origin>" get, post` with ADR 0117's limit lines below it. There is no foreign grant. Paths resolve against the package root. The `--grant` flag keeps the text form of `spec/13 §5`. A dependency's `run` and `drive` sections are not read: only the root is run.
 
     ```una
     run
@@ -441,7 +438,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     - The solver pin of `spec/12 §9`.
     - For each registry source the program uses: its root digest, and the checkpoint the lock was resolved at. That checkpoint is the lock's **resolution point**: yanks, advisories, cooldowns and key states are evaluated as of it (rules 23 and 24), and it is a floor no client goes below (rule 39).
     - For every package of the program except the root: its name, version, origin, content digest and its own resolved needs, with their sources; for a registry package, the publisher's key and the log index of its release statement.
-    - **The consent it was written under:** for each package, the ceiling each dependent wrote for it (its `may` lines), and for each trust line, the digests of the trusted modules and archives it consented to (rules 10 and 51).
+    - **The consent it was written under:** for each package, the ceiling each dependent wrote for it (its `may` lines), and for each trust line, the content digest of the package whose trusted modules it consented to (rules 10 and 51).
 
 16. **Grammar.** The lexical rules of rule 4.
 
@@ -461,10 +458,9 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
                   { "needs" lower_ident pkg_name version_lit NEWLINE }     (* source, name, version *)
                   { "granted" "by" pkg_name [ major "from" lower_ident ] "may" cap_type { "," cap_type } NEWLINE }
                   [ "consented" text_lit NEWLINE ]                          (* the package digest consented *)
-                  { "trusted" ( "modules" module_path { "," module_path }
-                              | "foreign" library { "," library } ) NEWLINE }
+                  { "trusted" "modules" module_path { "," module_path } NEWLINE }
                   DEDENT ;
-    lock_origin = lower_ident | "path" text_lit | "git" text_lit "commit" text_lit | "workspace" text_lit ;
+    lock_origin = lower_ident | "path" text_lit | "workspace" text_lit ;
     ```
 
     - `lock` is the format's version, `1`. A release reads every format version it ever wrote.
@@ -506,7 +502,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 17. **What reading checks, offline.** Every command that loads the package checks, with no network:
     - **the lock** exists and parses (U7009 otherwise, as a missing `verification.lock` is U7004 today; `una ita lock` writes it, with the solver section of the release's default lock when there is none yet);
     - **consistency:** every need of `ita.una` and every `needs` line of every locked package is met by a locked package of the same identity at a version at least the one required; every locked package is reachable from the root; each identity is locked once; `replace` entries match (U7009 at the need, with the repair `una ita lock`);
-    - **consent:** every `may` line of every package of the program is within the ceiling the lock records for it, and every trusted module and archive is covered by a recorded consent. A wider ceiling is U7009 at the `may` line, with the repair `una ita lock --accept-authority`, marked as an authority change and never applied by `una fix`; an uncovered trust is U7012 (rule 10). So a widening is visible in the lock's diff. The lock is a control of visibility, not of protection: an agent can write it as easily as `ita.una`. Like the `may` and `trust` lines, it is protected by a repository's review rules, as ADR 0093 rule 1 says of `una.toml`;
+    - **consent:** every `may` line of every package of the program is within the ceiling the lock records for it, and every trusted module is covered by a recorded consent. A wider ceiling is U7009 at the `may` line, with the repair `una ita lock --accept-authority`, marked as an authority change and never applied by `una fix`; an uncovered trust is U7012 (rule 10). So a widening is visible in the lock's diff. The lock is a control of visibility, not of protection: an agent can write it as easily as `ita.una`. Like the `may` and `trust` lines, it is protected by a repository's review rules, as ADR 0093 rule 1 says of `una.toml`;
     - **integrity:** each package, read from the vendor directory or from Itaoca (rule 30), has the locked digest, computed from the bytes read (U7010 otherwise; never repaired automatically);
     - **provenance, for registry packages,** from what is stored beside the package (rules 30, 32), with nothing taken on the lock's word (U7010 for any failure):
       - the root: the lock's `registry … root` equals the `sources` pin, or for Itaty is reached by the root chain built into `una`, walked from the built-in version;
@@ -538,7 +534,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
         "tools/report"
 
     trust
-      zstd foreign zstd
+      acme/privacy 1 from itaty modules privacy.keys
     ```
 
     - Each member is a directory, relative and without `..`, with its own `ita.una` and `src/`, of edition `0.4` or later. A member has no `ita.lock`; the workspace has one, at its root, resolved for every member together (U7009 if a member has its own).
@@ -572,7 +568,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
     - **What it gives.** For each identity, the highest of the minimum versions that any reached release asks for, never a newer one, except where rule 24 raises past a yanked, advised or avoided release.
     - **Reproducible.** The result is a function of the needs and of the per-name state (yanks, advisories, logged times) at one checkpoint, the lock's resolution point (rule 15). It does not depend on the order of the work list, and a release published later changes nothing until a need asks for it or a later resolution point is chosen.
-    - **Where needs come from.** For a registry release, from the release statement's `needs`, each with its source (rule 37), so resolution downloads no archive. For a path, git or workspace origin, from the `ita.una` read at that origin.
+    - **Where needs come from.** For a registry release, from the release statement's `needs`, each with its source (rule 37), so resolution downloads no archive. For a path or workspace origin, from the `ita.una` read at that origin.
     - **Complexity.** O(N + R) time and space, for N releases reached and R need edges among them, with hash maps for `sel` and `seen`, and O(N) fetches of release statements, done concurrently. There is no backtracking and no search: version solving with ranges and upper bounds is NP-complete, and MVS avoids it.
     - **Bounds** (U7013 past any): 100,000 releases visited; 10,000 packages in the list; 1,000 needs per release; 10,000 releases read per name; 64 KiB per release statement and 16 MiB per other registry document; 4 GiB of archives per program; 60 seconds per fetch without progress. A need on the package's own identity is U7013, so a chain of releases that each need the next one of their own identity cannot drive N.
 
@@ -587,11 +583,11 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     - `una ita lock` resolves `ita.una` at a fresh resolution point and writes the lock. It never raises a need written in `ita.una`; it may raise a selection by rule 24.
     - `una ita add <name> [<version>]` adds a need at the given version, or at the newest release of the newest major past the cooldown, then locks. An explicit version logged within the cooldown is held like any other (U7013), and taken only with `--now`: naming a version is not consent to skip the wait. It writes no `may` and no `trust` line: a dependency that needs authority or trust is then rejected by `una check` (U3021, U7012) until the programmer writes them.
     - `una ita update [<name>…]` raises the named needs, or all, to the newest release of their identity that is not a pre-release (unless the need names one), is not yanked, avoided or under advisory, and was logged at least the **cooldown** before the resolution point: 72 hours by default, `--cooldown <hours>`, `--now` for none. Only rule 24's advisory exception takes a younger release. It never changes a major version.
-    - **Every change prints a review** before writing: per package, its source, the old and new version, digest and publisher key; and, by checking the new graph at tier 0, the change in its authority (the union of its `uses`), in its trusted modules and foreign libraries, and in its ceiling violations.
+    - **Every change prints a review** before writing: per package, its source, the old and new version, digest and publisher key; and, by checking the new graph at tier 0, the change in its authority (the union of its `uses`), in its trusted modules, and in its ceiling violations.
     - **Refused without a flag:** a widened ceiling (`--accept-authority`), a trust change of rule 10 (`--accept-trust <package>`), and a key change, transfer or recovery of a locked package's owner (`--accept-key <package>`). Each flag names what it accepts, and the lock records it.
     - `--dry-run` writes nothing. `--offline` resolves from Itaoca's stored per-name state only, at its stored resolution point.
 
-26. **Authority is part of the interface.** Within one identity, a release needs no authority the highest earlier release did not: no new capability or operation in the `uses` of a public function or handler, no new host capability, no new trusted module, no new foreign library.
+26. **Authority is part of the interface.** Within one identity, a release needs no authority the highest earlier release did not: no new capability or operation in the `uses` of a public function or handler, no new host capability, no new trusted module.
     - **The registry enforces it.** It refuses to log a release statement whose `authority` or `trust` (rule 37) is not within those of the highest earlier release of its identity (U7013 to the publisher, with the repair "publish it as the next major version").
     - **Clients verify it** from the two statements when they lock or update (U7010 for a logged statement that breaks it), and every statement's `authority` and `trust` are checked against the archive (rule 37). So neither a modified publishing client nor the registry alone can slip authority into a minor release.
     - **Header compatibility** (every public function and kind of the earlier release exists with a header that accepts what it accepted) is checked by `una ita publish` as advice to an honest publisher, and is not enforced.
@@ -599,7 +595,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
 ### F. Package content and digest
 
-27. **What a package holds.** Exactly: `ita.una`; every `src/**/*.una`; `README.md`, `CHANGELOG.md`, and files named `LICENSE` or starting with `LICENSE-` or `LICENSE.`; and, for each `foreign` section, the files under its `source` directory and its `archive` paths (ADR 0118). Not `ita.lock`: a dependency's lock is not read (rule 23 uses its `ita.una`). Every path:
+27. **What a package holds.** Exactly: `ita.una`; every `src/**/*.una`; `README.md`, `CHANGELOG.md`, and files named `LICENSE` or starting with `LICENSE-` or `LICENSE.`. Nothing else: no library, archive or source file of another language, since Una admits no foreign code (rule 60). Not `ita.lock`: a dependency's lock is not read (rule 23 uses its `ita.una`). Every path:
     - is relative, of segments `[A-Za-z0-9_.-]+`, none `.` or `..`, none starting with `.` (hidden entries, as `spec/13 §7` excludes them), none ending with `.`, at most 32 segments and 255 bytes;
     - has no segment that is a reserved device name of Windows, with or without an extension, compared ignoring case: `CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`;
     - is unique ignoring ASCII case, and is not, ignoring case, a directory prefix of another path (`a` beside `a/b`), so no file system can merge two entries or make a file a directory;
@@ -607,7 +603,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
     At most 10,000 files and 256 MiB. A violation is U7010 when reading and refuses `una ita publish`.
 
-28. **The content digest.** The listing of a package is, for each file in ascending byte order of its path: the path's bytes, a NUL byte, the file's length in decimal ASCII, a NUL byte, the lowercase hex SHA-256 of its contents, and a line feed. The digest is `sha256:` followed by the hex SHA-256 of the listing. It depends only on the files' paths and bytes: not on timestamps, owners, modes, order of creation or the archive that carried them. ADR 0118's digest of a `source` directory is defined by the same listing (Appendix B).
+28. **The content digest.** The listing of a package is, for each file in ascending byte order of its path: the path's bytes, a NUL byte, the file's length in decimal ASCII, a NUL byte, the lowercase hex SHA-256 of its contents, and a line feed. The digest is `sha256:` followed by the hex SHA-256 of the listing. It depends only on the files' paths and bytes: not on timestamps, owners, modes, order of creation or the archive that carried them.
 
 29. **The archive.** A package travels as one file: the ASCII line `ita-archive/1`, a line feed, the listing's length in decimal and a line feed, the listing, then each file's bytes in listing order, and nothing after. It has no compression, so there is no decompressor in the trust base and no decompression bomb. The reader:
     - reads the archive once into memory, and parses and hashes those same bytes;
@@ -695,7 +691,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
     with one Ed25519 signature line per signing publisher key.
     - `needs` repeats the release's needs, each with its source, which is always the release's own source (rule 42).
-    - `authority` is the union of its public functions' and handlers' `uses` and host capabilities; `trust` its trusted modules and foreign libraries.
+    - `authority` is the union of its public functions' and handlers' `uses` and host capabilities; `trust` its trusted modules.
     - **A client verifies that the archive's `ita.una` and computed authority and trust agree with the statement** when it fetches the archive (U7010 otherwise), so the statement cannot advertise less than the code needs.
     - **The registry logs a statement** only if it is signed by keys of the name's owner valid at that point of the log, by the owner's threshold (rule 38); its needs name releases already logged at its source; and it meets rule 26.
 
@@ -741,17 +737,16 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     - **One source per need.** Every need resolves at exactly one source, and resolution never asks two sources for one name and never falls back from one to another. The lock records each package's source, and a package changes source only by an edit of `ita.una` or `itaty.una`.
     - **Owners are bound to their source.** A need of a name whose owner a root's source lists (rule 8, `owners`) resolves only there, and must say so; `una ita add` picks it. So `una ita add acme/ledger` never goes to Itaty when the root serves `acme` from its own registry.
     - **Only the root names sources.** Only the root and `itaty.una` declare sources (rule 8). A package that is not the root:
-      - if it comes from a registry, may need only packages of that same registry, and its statement says so (rule 37), which the registry and the client verify; it has no `path`, `git` or `workspace` need;
-      - if it comes from `git`, may need only packages of registries that the root lists (Itaty included), never `path`, `git` or `workspace`;
+      - if it comes from a registry, may need only packages of that same registry, and its statement says so (rule 37), which the registry and the client verify; it has no `path` or `workspace` need;
       - if it comes from `path`, may need only registry packages that the root lists and `workspace` members;
-      - a need of a transitive registry package that omits `from` resolves at that package's own source, never at Itaty by default; a need of a git or path package that omits `from` resolves at Itaty, and one that names a source names it by the root's source names, so a third-party git package's `from internal` binds to whatever the root calls `internal`, which `una ita add` and every review print.
+      - a need of a transitive registry package that omits `from` resolves at that package's own source, never at Itaty by default; a need of a path package that omits `from` resolves at Itaty, and one that names a source names it by the root's source names, so a path package's `from internal` binds to whatever the root calls `internal`, which `una ita add` and every review print.
 
-      A need that breaks this is U7013. So no dependency makes a program contact a host or trust a root that the root did not name, read a local directory, or fetch a git URL.
-    - **Names of local packages.** A `path` or `git` package whose name is unscoped, or whose owner a source of the root serves (Itaty's owners included), is U7012 unless the root's need says `accept name` (rule 7). A transitive one cannot be accepted, since it cannot exist (above).
+      A need that breaks this is U7013. So no dependency makes a program contact a host or trust a root that the root did not name, or read a local directory.
+    - **Names of local packages.** A `path` package whose name is unscoped, or whose owner a source of the root serves (Itaty's owners included), is U7012 unless the root's need says `accept name` (rule 7). A transitive one cannot be accepted, since it cannot exist (above).
     - **The report, `una ita tree` and every review** print each package's source beside its name. A package of an owner name that the root binds to another source, such as an Itaty `acme/util` needed by a public dependency while the root serves `acme` from its own registry, is a distinct identity and harmless to imports, but is marked "same owner name as source acme" in every review, in the tree, and in the report (`"owner_elsewhere": "acme"`).
 
 43. **Publishing.** `una ita publish`:
-    - refuses without `publish to` in the head, without `about` and `license`, with a `sources`, `replace` or `trust` section, with a need of another source or of a `path`, `git` or `workspace` origin (rule 42), from a workspace member with uncommitted changes (when the package is in a git repository), or when `una check` of the package at tier 1 reports any diagnostic or any obligation not proven;
+    - refuses without `publish to` in the head, without `about` and `license`, with a `sources`, `replace` or `trust` section, with a need of another source or of a `path` or `workspace` origin (rule 42), from a workspace member with uncommitted changes (when the package is in a git repository), or when `una check` of the package at tier 1 reports any diagnostic or any obligation not proven;
     - builds the archive, checks rule 27, and checks header compatibility against the previous release of the identity (rule 26, advice);
     - writes the release statement, signs it with the owner's keys, and uploads both.
 
@@ -787,7 +782,7 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
 49. **Editions across packages.** Each package is checked under its own edition. A package MAY depend only on packages whose edition is its own or earlier (U7012 at the need otherwise), so no dependency opts a package into a preview it did not name (Question 8.2). The cumulative rule of ADR 0056 makes a declaration of an earlier edition usable from a later one.
 
-50. **Profiles across packages.** Each package is checked under its own profile (ADR 0109). A dependency whose profile is `systems` used by an `app` root is checked as `systems`, which only adds obligations (ADR 0109 rule 2). What a dependency's profile cannot change is the trust it adds: a dependency whose foreign code the root trusts needs the root to be `systems` (U7012) and a trust line (rule 53). Other constructs gated on `systems` that add no trust, such as SIMD in draft ADR 0120, need nothing of the root.
+50. **Profiles across packages.** Each package is checked under its own profile (ADR 0109). A dependency whose profile is `systems` used by an `app` root is checked as `systems`, which only adds obligations (ADR 0109 rule 2). What a dependency's profile cannot change is the trust it adds: its trusted modules need the root's trust line (rule 53), whatever either profile is. Constructs gated on `systems` that add no trust, such as SIMD in draft ADR 0120, need nothing of the root.
 
 51. **Authority: every dependency is a boundary.**
     - Every module of every dependency is in a boundary of ADR 0093, one extent per package (rule 9 of that record), except the trusted modules of rule 53.1, which are extents of their own.
@@ -802,15 +797,13 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
 
 53. **Trust a dependency adds needs the root's consent** (ADR 0121 rule 2 (a), draft).
     - **Trusted modules.** A dependency's trusted module, one that its own `trusted` section and header declare (`spec/07 §6`), is trusted in the program only if a trust line of the root names it, by identity and module path (rule 10). Otherwise U7012 at the root's need, or at the package's line in the lock for a transitive dependency.
-    - **Foreign libraries.** A dependency's `foreign` section is admitted only if a trust line of the root names the library, by identity and name, and the root's profile is `systems` (U7012).
-    - **Consent is by identity and pinned to the whole package.** The lock records the content digest of each package whose trust was consented (rules 10 and 16), so no byte of it can change, and no new trusted module or library can appear in the program, without `--accept-trust` (rule 25).
+    - **Consent is by identity and pinned to the whole package.** The lock records the content digest of each package whose trust was consented (rules 10 and 16), so no byte of it can change, and no new trusted module can appear in the program, without `--accept-trust` (rule 25).
     - **The registry and the packages themselves** are trust the package adds by writing `needs`: the root's `needs` section is that opt-in, and the report names each registry root and each package's digest and publisher key in `tcb` (rule 58).
 
     53.1. **A trusted module of a dependency is an extent of its own.** ADR 0093 makes a boundary module never trusted (its amendment rule 8), and `spec/13 §7` makes a trusted module inside a boundary U7002. For a module that a trust line of the root names, and for it alone:
     - it is its own extent, inside its package's boundary: calls into it from outside it, its package's other modules included, are boundary crossings, granted with `with` (U3020). Their ceiling (U3021) is the one written under the trust line (rule 10), and for a call from another package also within that caller's ceiling for the package (rule 51). The root alone sets what a trusted module of a dependency may receive;
     - U3024 does not apply to a release whose policy is declared in it, whoever reaches it. It still applies to every other release the package can reach, the root's own policies included, as ADR 0093 states;
     - **calls from it into the rest of its package** are crossings out of the trusted extent: every capability they need is granted with `with` (U3020), within the ceiling written under the trust line (U3021), empty without `may` lines, so the trusted module passes on nothing it was not given. The code those calls run is pinned with the rest of the package (rule 10);
-    - a foreign capability it declares (ADR 0118) is reached only through it;
     - every other module of the package stays in the package's boundary, untrusted, with ADR 0093 intact.
 
     The amendment of ADR 0093 (Appendix A) and of `spec/13 §7` (its U7002 for "a module of `[trusted] modules` inside a boundary" excepts a dependency's module that the root trusts by name) state the same.
@@ -860,11 +853,11 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
           "edition": "0.4", "profile": "app",
           "granted_by": [ { "package": "store", "source": null, "may": ["Http[get]"] } ],
           "effective_ceiling": ["Http[get]"],
-          "authority": ["Http[get]"], "trust": { "modules": [], "foreign": [] } } ]
+          "authority": ["Http[get]"], "trust": { "modules": [] } } ]
       ```
 
       `granted_by` lists, per dependent, the ceiling it writes, which is the ceiling of that dependent's calls (rule 51); `source` is `null` for the root. `effective_ceiling` is rule 51's fixpoint, and `authority` the union of the `uses` of its functions and handlers, always within the effective ceiling. The human form is one line per package, with its source beside its name: `http 1.4.2 (itaty, signed itauna): may Http[get] (by store); uses Http[get]; trust none`.
-    - `tcb` gains `registries`, each source's name and root digest, and `dependency_trust`, the trusted modules (with line counts) and foreign libraries of dependencies, by package. `trusted_modules` keeps the root's own.
+    - `tcb` gains `registries`, each source's name and root digest, and `dependency_trust`, the trusted modules of dependencies, with line counts, by package. `trusted_modules` keeps the root's own.
     - Every key is additive, and the schema stays `una.report/2`. A package with no dependencies has `"dependencies": []`.
 
 59. **The Core export** of a root is one document for the whole program.
@@ -872,28 +865,17 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     - A document of a package with no dependencies stays `una.core/1`, unchanged, so a consumer of `una.core/1` never meets two modules with one path.
     - The formal re-check reads `una.core/2` from the release that writes it (`spec/13 §8`).
 
-### M. Foreign archives (ADR 0118, draft)
+### M. No foreign code
 
-60. **A dependency with foreign code.**
-    - Its archives and their source directory are files of the package (rule 27), so the content digest covers them, besides each archive's own `sha256` in its `foreign` section.
-    - It is admitted only with the root's trust line and the `systems` profile (rule 53), and its library is granted at run by `foreign <library> of <package>` (rule 12).
-    - ADR 0118's audit runs on it as on the root's own archives, on every command that checks the program.
-    - **Fetching never runs it. Building does**, once, in ADR 0118's confined harness (its rule 33), as for any foreign library: the root's trust line is the consent to that too, and `una ita add` prints it for a package whose statement lists foreign libraries.
-    - **The model comparison** of ADR 0118 rule 33 for a dependency's library uses the dependency's own recorded calls: `una build` of the root runs that dependency's tests and examples in the interpreter, in the dependency's own context (rule 52), to record the calls of its library, then replays them against the archive in the harness. An operation that none of them calls fails the comparison, as for the root's own library. These runs are bounded as the root's own model check is, by `--model-check-timeout` (ADR 0118) and `--max-memory` (`spec/11 §7`), per dependency, so a dependency's tests cannot make the root's build arbitrarily slow.
-    - Two packages may each have a library named `zstd`: libraries are identified by package and name.
+60. **A package is Una code only.** Una admits no foreign code in any form, and a dependency is no exception.
+    - A package holds only the files of rule 27: no library, archive, object file or source of another language is part of it, and none is covered by its digest.
+    - `ita.una` has no `foreign` section and `run grants` has no foreign grant (rule 5): either is U7008.
+    - Nothing of a package is compiled or run by anything but the checker, the interpreter and the compiler of `una`.
 
 ### N. One binary (#891)
 
 61. **Nothing else to install.** Itá is code of `una`: the manifest and lock parsers, the resolver, the archive reader, the verification of signatures and proofs (Ed25519 through `ring`, SHA-256 through `sha2`, both already dependencies), and the HTTPS client of `una-http`. Itaty's first root metadata is compiled in. The solver pin names the solver built into `una`.
-
-    61.1. **`git`,** the only external program Itá may run, and only to fetch a git need that the root or a workspace member writes (rules 7 and 42, Question 7):
-    - **Environment:** scrubbed, keeping only `PATH`, `HOME` and the proxy variables; every `GIT_*` variable removed, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EXEC_PATH` and `GIT_DIR` included; then `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to an empty file, and `GIT_TERMINAL_PROMPT=0`.
-    - **Configuration, by allow-list:** `protocol.allow=never` and `protocol.https.allow=always`; `http.followRedirects=false`; `core.hooksPath` an empty directory; `core.fsmonitor=false`; `core.symlinks=false`; `transfer.fsckObjects=true`; no submodules.
-    - **No working tree:** `git init --bare` in a fresh temporary directory, `git fetch --depth 1 -- <url> <commit>`, then the files of rule 27 are read from the commit's tree with `git ls-tree` and `git cat-file`. No checkout runs, so no filter, smudge or checkout path applies. A tree entry of mode `120000` (a symbolic link) or `160000` (a submodule) is U7010; `100755` is read as a regular file, with no mode kept.
-    - **The server** must allow fetching a commit by its hash (protocol version 2, or `uploadpack.allowReachableSHA1InWant`); otherwise the fetch fails with U7013, naming that requirement.
-    - **Credentials:** only for a URL the root's own `ita.una` or `itaty.una` names, through `credential.helper` set explicitly to the user's helper for that one invocation. No other git URL can exist in the program (rule 42).
-    - **Bounds:** 10 minutes and 1 GiB per fetch, then U7013.
-    - **What it trusts:** `git` is outside the integrity trust base, since the files read are hashed against the lock (U7010). Its parsing of the server's responses runs unconfined, with the user's privileges: a vulnerability there is code execution, not only a wrong fetch.
+    - **No external program.** Itá runs no other program, `git` included: there are no git sources (Question 7). Every source is a registry, a path or a workspace member.
 
 ### O. Edition `0.4` and migration
 
@@ -912,7 +894,6 @@ In one paragraph: in edition `0.4`, a package is described by `ita.una`, a decla
     | `[contracts]` | `contracts`, the clause strings as lines |
     | `[run] entry`, `grants` | `run`, `entry`, `grants` with one line per spec, limit suffixes as limit lines |
     | `[drive]` | `drive` |
-    | `[foreign.<lib>]` | `foreign <lib>` |
     | `verification.lock` | the `solver` section of `ita.lock` |
 
 64. **`una migrate [path]`.**
@@ -984,7 +965,7 @@ As ADR 0121 rule 10 (draft) asks:
 - **Migration.** `una migrate` (rule 64). Its edits are not `una fix` repairs, since they rewrite project files, which `una fix` never touches.
 - **Unsettled points:** none. The formats carry their own versions (rules 16, 29, 37), so a later format is read beside the old one.
 - **Trust.**
-  - **Rule 2 (a):** the registry and the packages a root names are trust the package adds itself, and its `needs` section and `sources` section are the opt-in; no dependency can add a source (rule 42). A dependency's trusted modules and foreign libraries need a second, named opt-in, the root's `trust` lines, bound to an identity and pinned by digest in the lock (rules 10 and 53). The report names each (rule 58).
+  - **Rule 2 (a):** the registry and the packages a root names are trust the package adds itself, and its `needs` section and `sources` section are the opt-in; no dependency can add a source (rule 42). A dependency's trusted modules need a second, named opt-in, the root's `trust` lines, bound to an identity and pinned by digest in the lock (rules 10 and 53). The report names each (rule 58).
   - **Rule 2 (b):** the toolchain grows for every package of edition `0.4` by the parser of the three files. It grows for packages with dependencies by the archive reader, the resolver, the verification of signatures, roots, checkpoints and proofs, Itaty's built-in root metadata, and the use of `una-http` by `una ita`. Each needs the security review of ADR 0121 rule 2 (b) and a listing in the ledger's `trust` field. No `out_of_model` entry is added.
 - **Security.** The information-flow rules of this record are in "Information flow" below.
 
@@ -994,16 +975,16 @@ As ADR 0121 rule 10 (draft) asks:
 
 | Threat | Control |
 | --- | --- |
-| Code that runs at install or build | None exists: no scripts, hooks, build programs or macros (rule 3). The one exception, a trusted foreign library's model check, runs confined and needs a named trust line (rule 60). |
+| Code that runs at install or build | None exists: no scripts, hooks, build programs or macros (rule 3). |
 | A dependency that reaches the network, files or keys | It holds no capability unless a call grants it with `with`, within the ceiling the *calling* package writes (rule 51, U3020, U3021); a dependency never sets the ceiling of the root's grants. Only the root is granted host capabilities (rule 52). |
 | An agent that widens a ceiling to make a check pass | The lock records the consented ceilings; a wider `may` line is U7009 until `--accept-authority` records it, visible in the lock's diff (rule 17). |
 | A dependency that declassifies the program's data | Its policies are in trusted modules, which need a trust line naming its identity and module (rules 10, 53, U7012); only that module is exempt from U3024 (rule 53.1), never its siblings. |
-| A dependency that links C code | Needs `systems`, a named trust line and a grant at run (rules 53, 60); audited as ADR 0118 states. |
-| Trust consented for one package used by another | Trust lines bind source, name and major, and the lock pins each trusted module's and archive's digest; any new one is a trust change (rules 10, 25). |
+| A dependency that brings foreign code | None is admitted: a package holds only Una sources, and `ita.una` has no foreign section or grant (rules 5, 27, 60). |
+| Trust consented for one package used by another | Trust lines bind source, name and major, and the lock pins the content digest of each package whose trust was consented; any change is a trust change (rules 10, 25). |
 | Proofs the publisher fakes | None is read: the root proves everything (rule 48). |
 | Typosquatting, including names an agent invents | Unscoped names are Itaúna's; owner names are unique by skeleton and reviewed near popular owners (rules 44, 45); reserved names are refused as local names too (rule 7). A wrong package has no capability or trust without lines the programmer writes, and `una ita add` prints the source, owner, age, dependents and authority of what it adds. |
 | Dependency confusion | One source per need, no fallback; owners bound to the source that serves them, with `from` required (rule 42); a local package with a registered name only with `accept name`; workspace members only by `from workspace` (rule 19). |
-| A dependency that adds a source, a git URL or a local path | Only the root and `itaty.una` name sources, git URLs and paths; published packages need only their own registry (rules 8, 42, 43). |
+| A dependency that adds a source or a local path | Only the root and `itaty.una` name sources and paths; published packages need only their own registry (rules 8, 42, 43). |
 | A compromised account | Publishing needs the owner's keys, not the account (rule 38); a recovery is pending seven days of witness time, checked by each client, and any current key cancels it; Itaúna has no registry recovery (rule 38.1). |
 | A stolen publisher key | Every release is public in the log and in the name's chain (rules 36, 36.1); MVS never takes a release no need asks for (rule 23); every selection, the raises past yanks included, waits out the cooldown in witness time (rules 24, 25, 36.4); authority growth in a minor release is refused by the registry and by clients (rule 26); a revocation can mark releases since the compromise (rule 38). |
 | A malicious update of an honest package | Same as above; `una ita update` prints the source, authority and trust change and refuses a ceiling, trust or key change without an explicit flag (rule 25). |
@@ -1015,18 +996,17 @@ As ADR 0121 rule 10 (draft) asks:
 | Denial of service through the graph | Bounds on releases visited, needs, documents, bytes and time; no self-need (rule 23). |
 | A malformed archive (path traversal, links, case collisions, device names, bombs) | The closed layout and the reader of rules 27 and 29: no links, no modes, no compression, sorted listing, exact lengths, read once; descriptors with `O_NOFOLLOW` (rule 30). The parsers get fuzz targets (Implementation plan). |
 | A store or vendor directory tampered with | Every load re-hashes, and registry packages are re-verified against their stored statements and proofs (rule 17, U7010). |
-| A hostile git server | Allow-listed `https`, no redirects, no working tree, a scrubbed environment, no credentials for URLs the root did not write, bounded time and bytes (rule 61.1); `git` itself runs unconfined. |
 | A poisoned proof cache | Entries are authenticated with the user's own key (ADR 0064), under a domain-tagged key (rule 48). |
 
 **What Itá cannot do.**
 - **Pure code can be wrong.** A dependency with no capability can still compute a wrong value, loop, or exhaust memory. Its contracts, proven by the root, are what a programmer relies on; termination and resource consumption stay outside the model (`spec/07 §1`).
-- **A trusted dependency is trusted.** A trust line gives that module or library the standing of the root's own trusted code.
+- **A trusted dependency is trusted.** A trust line gives that module the standing of the root's own trusted code.
 - **A colluding registry and threshold of witnesses** could show one client a forked log or a map that hides an entry. Monitors outside both see it.
 - **Withholding.** A registry can delay logging only by breaking a promise it signed (rule 36.2); it can refuse service entirely, and serve a client a checkpoint up to the freshness window old.
 - **The registry learns what is fetched.** Fetches reveal a program's dependencies to the registry or mirror, though no program data. Vendoring, bundles and an internal mirror avoid it.
-- **`git` and the HTTP client** run with the user's privileges; a vulnerability in them is code execution outside these rules, though not a loss of integrity.
+- **The HTTP client** runs with the user's privileges; a vulnerability in it is code execution outside these rules, though not a loss of integrity. Itá runs no external program (rule 61).
 
-**Trusted computing base.** See "Edition `0.4`", Trust. Before acceptance, `docs/security/tcb.md` gains a component "Package integrity and the registry client", with this table, and its gap 9 ("no provenance for archives") gains the release statements as the pattern a later record can reuse for `una`'s own releases.
+**Trusted computing base.** See "Edition `0.4`", Trust. Before the first implementation step, `docs/security/tcb.md` gains a component "Package integrity and the registry client", with this table, and its gap 9 ("no provenance for archives") gains the release statements as the pattern a later record can reuse for `una`'s own releases.
 
 ## Verification
 
@@ -1062,7 +1042,7 @@ As ADR 0121 rule 10 (draft) asks:
 
 ## Diagnostics
 
-New codes, which join `spec/13 §4` with their implementation. ADR 0118 (draft) takes U7006, and ADR 0121 (draft) U7007. U1010 and U7008 to U7014 are free on main, in the open pull requests and in the local worktrees, at this writing.
+New codes, which join `spec/13 §4` with their implementation. ADR 0121 (draft) takes U7007. U1010 and U7008 to U7014 are free on main, in the open pull requests and in the local worktrees, at this writing.
 
 | Code | Domain | Meaning | Repairs, ranked |
 | --- | --- | --- | --- |
@@ -1071,8 +1051,8 @@ New codes, which join `spec/13 §4` with their implementation. ADR 0118 (draft) 
 | U7009 | project | Missing, invalid or inconsistent `ita.lock`, or a ceiling wider than the one it records | run `una ita lock`; for a wider ceiling, `una ita lock --accept-authority` (an authority change, never applied by `una fix`) |
 | U7010 | project | A package, archive, statement, root, checkpoint, name chain or map, or log proof that fails verification; a statement against its archive; a breach of rule 26 in the log; an expired root; clock skew | none mechanical: the text names what failed and where it came from |
 | U7011 | project | A locked package that is neither in the vendor directory nor in Itaoca | run `una ita fetch` |
-| U7012 | project | A dependency the root may not use as written: trust that no recorded consent covers, foreign code in an `app` root, an edition later than the dependent's, a local package with a registered name without `accept name`, a reserved name of a transitive package | add the trust line and accept it (an authority change, never applied by `una fix`); change the profile; use an earlier version |
-| U7013 | project | No resolution: no release meets a need, a raise held back by the cooldown, a source or name that does not exist, a need on its own identity, an origin rule 42 forbids, a bound of rule 23 or 61.1 exceeded, or a publication that rule 26 or 43 refuses | name the release that would do; `--now` for the cooldown |
+| U7012 | project | A dependency the root may not use as written: trust that no recorded consent covers, an edition later than the dependent's, a local package with a registered name without `accept name`, a reserved name of a transitive package | add the trust line and accept it (an authority change, never applied by `una fix`); use an earlier version |
+| U7013 | project | No resolution: no release meets a need, a raise held back by the cooldown, a source or name that does not exist, a need on its own identity, an origin rule 42 forbids, a bound of rule 23 exceeded, or a publication that rule 26 or 43 refuses | name the release that would do; `--now` for the cooldown |
 | U7014 | project | A locked release that is yanked, under an advisory, or signed after a stated compromise; a pending recovery, a key change or a transfer of its owner (`una ita audit`) | run `una ita update <name>` |
 
 Existing codes cover the rest:
@@ -1086,7 +1066,7 @@ Existing codes cover the rest:
 ## Consequences
 
 - **Packages can depend on packages**, from edition `0.4`, with no change to earlier editions or to single files.
-- **A dependency is safe to add in a precise sense:** it runs nothing, receives nothing it is not given at a call within a written ceiling, releases nothing and links nothing unless the root names it, and its code is proven by the root. What remains is the correctness of pure code, which its proven contracts address.
+- **A dependency is safe to add in a precise sense:** it runs nothing, receives nothing it is not given at a call within a written ceiling, releases nothing unless the root names it, carries no foreign code, and its code is proven by the root. What remains is the correctness of pure code, which its proven contracts address.
 - **Calls into a capability-using dependency are written with `with`,** and a wider ceiling is accepted in the lock. This is the price of Question 2.
 - **The first check after an update is slower**, then cached per machine (Question 3).
 - **Labels are whole-program**, so a dependency can fail to check in one program and not in another (rule 55).
@@ -1114,57 +1094,56 @@ Existing codes cover the rest:
 - **K. Install scripts in a sandbox.** Not chosen: a sandbox is a large addition to the base, and the scripts are not needed.
 - **L. Compressed archives.** Not chosen: a decompressor in the base and the bomb it allows, for sources that are small text.
 - **M. Reading a dependency's lock.** Not chosen: the root's resolution would depend on files it does not control; MVS needs only `ita.una`.
-- **N. Phase 1 without git sources.** Possible (Question 7); kept, restricted to needs the root writes, so that packages can be shared before Itaty exists.
+- **N. Git sources in phase 1.** Rejected (Question 7): fetching would run the system `git` unconfined against a possibly hostile server, and add a tool besides `una`. Path dependencies cover local development, and a private Itá source covers organizations.
 - **O. Registry recovery for every owner, Itaúna included.** Not chosen: whoever controls the registry or an account's email could take the most-depended-on names (rule 38.1).
 - **P. The union of dependents' ceilings at every call.** Not chosen: a dependency's own `ita.una` would set the ceiling of the root's grants (rule 51).
 
 ## Implementation plan
 
-0. **The risk profile.** `docs/security/tcb.md` gains the component and gaps of Security, before acceptance.
+0. **The risk profile.** `docs/security/tcb.md` gains the component and gaps of Security, before the first implementation step.
 1. **Phase 1, files.** The lexer's version token and the grammar of `ita.una`, `ita.lock` and `itaty.una` in the syntax crate, with fuzz targets; U7008, U7009; `una fmt` for `ita.una`; the reading of every section that `una.toml` has, and a test that every check of `una.toml` has its `ita.una` twin; `una migrate`. The crate `una-project` reads both formats behind one `Manifest`.
 2. **Phase 1, packages in the checker.** Path and workspace sources and the origin rules of rule 42; module identity with packages; U1010 and reserved local names; whole-program checking with each package's edition and profile; boundaries per dependency with per-caller ceilings and the effective-ceiling fixpoint; trusted modules of dependencies as extents of their own (rule 53.1), with the U7002 exception of `spec/13 §7`; trust lines by identity, consents in the lock, and U7012; dependencies' examples in their own context; labels; the whole-program analyses of rule 55; the report's `dependencies` and `tcb` keys; `una.core/2`; the shared proof cache and its tagged key.
-3. **Phase 1, content.** The listing, digest and archive (rules 27 to 29); Itaoca with verified loads through descriptors; vendoring with stored provenance; git sources with the invocation of rule 61.1; U7010, U7011.
+3. **Phase 1, content.** The listing, digest and archive (rules 27 to 29); Itaoca with verified loads through descriptors; vendoring with stored provenance; U7010, U7011.
 4. **Phase 1, resolution.** MVS with its bounds and scaling test; the consent check and `--accept-…` flags; `una ita add`, `remove`, `lock` (and `--check`), `update` (offline sources), `fetch`, `vendor`, `tree`, `verify`.
 5. **Phase 2, the registry client.** Root metadata, its chain and expiry; tiles, co-signed checkpoints kept by size, witness time, freshness and floors; the name map and per-name chains; inclusion and consistency proofs; release statements and their check against archives, rule 26 from statements; strict Ed25519; keys, pending recoveries and cancellations; publishing and its promises; yanks, advisories with their thresholds, the cooldown in witness time, `audit`, `watch`, mirrors, private sources with `owners`, bundles. Each parser of a signed or fetched document has a fuzz target.
 6. **Phase 2, the service.** Itaty itself, in a repository of its own: static storage, the log and the name map, the name rules of rules 44 to 46, rule 26, the logging promises, notifications; at least five witnesses that recompute the map; the offline root ceremony and the security keys. Its own security review.
 7. **Security.** The review of ADR 0121 rule 2 (b) for each step; a hunt family with programs of several packages (`docs/plan/security-hunt.md`); the `deps` gate for any new crate.
-8. **Documentation.** The new chapter of the specification; `spec/13 §4` to `§8`; the guide's pages on packages, dependencies, publishing and offline builds; "Migrating to edition 0.4" in `docs/guide/una-for-agents.md`; the Learn chapter on editions.
+8. **Documentation.** The new chapter of the specification, `spec/30-packages.md`; `spec/13 §4` to `§8`; the guide's pages on packages, dependencies, publishing and offline builds; "Migrating to edition 0.4" in `docs/guide/una-for-agents.md`; the Learn chapter on editions.
 
 ## Conformance
 
-- **`ita.una`:** each section and line in canonical form; each U7008 (unknown line, repeated section, version `1.4` where a full version is required, interpolation in a text, edition `0.3`, both manifests, a `may` capability that does not resolve, a member's `path` leaving the workspace, `as std`, `as s7d`, a need of `acme/x` without `from acme` when a source lists `acme`, two sources listing one owner); `una fmt --check` on a misordered file (U7001).
+- **`ita.una`:** each section and line in canonical form; each U7008 (unknown line, repeated section, version `1.4` where a full version is required, interpolation in a text, edition `0.3`, both manifests, a `may` capability that does not resolve, a member's `path` leaving the workspace, `as std`, `as s7d`, a need of `acme/x` without `from acme` when a source lists `acme`, two sources listing one owner, a `from git` need, a `foreign` section, a `foreign` grant); `una fmt --check` on a misordered file (U7001).
 - **`ita.lock`:** a lock that parses; U7009 for a missing lock, a need not met, an unreachable package, an identity locked twice, and a `may` line wider than the recorded ceiling, accepted after `--accept-authority`; U7010 for a changed byte in a stored package, for a vendored package and its digest edited together (its stored statement fails), and for a lock whose registry root differs from the `sources` pin; U7011 for an absent one; `una ita lock` on a package with no lock writes the default solver section; `una ita lock --check` offline, at the lock's resolution point.
 - **Digest and archive:** the same files give the same digest whatever their order of creation, timestamps and modes; a file renamed changes it; U7010 for trailing bytes, a length past the end or with a leading zero, a listing out of order, a link, a `..`, a hidden entry, a segment ending in `.`, `CON` or `nul.txt`, two paths equal ignoring case, and `a` beside `a/b`.
 - **MVS:** the classic examples (a diamond, a cycle, two majors of one package side by side), an `avoid` and a yank raising a selection, a `replace`, and a lock unchanged by a later release; a raise held back by the cooldown (U7013) and taken with `--now`; a raise that skips a pre-release; a threshold advisory naming its fix by digest lifting the cooldown, and a single-key advisory not lifting it; a need on its own identity (U7013); each bound of rule 23; the scaling test.
-- **Origins:** a registry package with a `sources` section or a git need, refused at publish and, when crafted, U7013 at resolution; a git package's path need (U7013); a transitive need without `from` resolved at its package's own source; a path package named `json` (U7012), accepted with `accept name` in the root; the hardened `git` invocation against a server that redirects, offers `file://` or `ext::`, and serves a repository with hooks, a filter and a symlink, none of which runs or is followed.
+- **Origins:** a registry package with a `sources` section or a path need, refused at publish and, when crafted, U7013 at resolution; a path package's own path need (U7013); a transitive need without `from` resolved at its package's own source; a path package named `json` (U7012), accepted with `accept name` in the root; a lock with a `git` origin, U7009; no command of `una ita` starts an external program.
 - **Modules:** `import http.client (get)` resolves; an import of a transitive dependency is U1001; a root module `http` beside the need `http` is U1010; two majors of `json` give two kinds, and mixing them is a type error.
 - **Authority:** a call into a dependency without `with` (U3020); a grant beyond the caller's `may` (U3021); a function value of a transitive dependency handed back to the root, with the empty ceiling even though the direct dependency's `may` for it is wide; a dependency's handler installed by the root; the effective ceiling over a cycle of two packages; a dependency's example whose `given` exceeds the root's ceiling, accepted; the report's `granted_by`, `effective_ceiling` and `authority`.
-- **Trust:** a dependency with a trusted module, rejected without the trust line (U7012) and accepted with it; a release in that trusted module, reached from the root, accepted; a release in a sibling module of the same package, still U3024 (and U7012 for the unconsented module); a sibling's call into the trusted module without `with` (U3020); a trust line that does not cover the same name from another source or another major; a new transitive package matching an existing trust line by name, refused until `--accept-trust`; a foreign library rejected in an `app` root, and accepted in a `systems` root with the trust line, its model comparison run from the dependency's own tests; a trusted package of which only a sibling module changes (a `via` whose helper in `privacy.util` changes), refused by `una ita update` without `--accept-trust`; a call from the trusted module into a sibling without `with`, and beyond the trust line's `may` (U3020, U3021).
+- **Trust:** a dependency with a trusted module, rejected without the trust line (U7012) and accepted with it; a release in that trusted module, reached from the root, accepted; a release in a sibling module of the same package, still U3024 (and U7012 for the unconsented module); a sibling's call into the trusted module without `with` (U3020); a trust line that does not cover the same name from another source or another major; a new transitive package matching an existing trust line by name, refused until `--accept-trust`; a trusted package of which only a sibling module changes (a `via` whose helper in `privacy.util` changes), refused by `una ita update` without `--accept-trust`; a call from the trusted module into a sibling without `with`, and beyond the trust line's `may` (U3020, U3021); an archive with a file outside rule 27's list, such as a `.c` or `.a` file, U7010.
 - **Labels:** a dependency's read whose failure is raised by a root's `Files.write` under a secret program counter, rejected only in the program that writes it.
 - **Editions:** a dependency of a later edition than its dependent (U7012); `una.toml` with edition `0.4` (U7002 or U7007 by the landing order) and its `una migrate`; a U7007 inside a dependency, reported at the root's line with "update the dependency".
 - **Offline:** `una check`, `una build` and `una run` with the network disabled succeed on a fetched lock, and fail with U7011, never a network attempt, when a package is absent.
 - **Registry,** against a test registry with its own root: a valid release; each failure of rule 39 (a bad signature, a non-canonical `S`, a small-order key, a key revoked before the release, a missing co-signature, a stale checkpoint for `update`, a checkpoint below the lock's resolution point, a fork between two checkpoints, an inclusion proof for another leaf, a statement whose authority understates the archive's, a second statement for one version, a statement that breaks rule 26); a map or chain that omits a yank, an advisory, a revocation, a recovery or a transfer, and a chain whose `previous` skips an entry, caught by the count (each U7010); one back-dating witness and one forward-dating witness, each with no effect on the cooldown, the recovery delay or freshness; a witness whose timestamps decrease (U7010); offline, a vendored package with its digest, key and checkpoint edited together, rejected for its co-signatures and its owner chain; a root rotation, an expired last root, and clock skew; a recovery cancelled by a current key, one not yet effective after six days of witness time, one effective after seven, and none for Itaúna; a revocation "compromised since" flagging later releases; a mirror serving a bad proof, skipped.
-- **Publishing:** refusal without `publish to`, with an unproven obligation, with a foreign-source or `path` need, and with authority growth in a minor version (U7013), by the client and by the registry.
+- **Publishing:** refusal without `publish to`, with an unproven obligation, with a need of another source or a `path` need, and with authority growth in a minor version (U7013), by the client and by the registry.
 - **`una migrate`:** each row of rule 63; a name with `-`; comments carried; the clash list of a package raised from `0.3`.
 
 ## Appendix A. Amendments to accepted records, appended on acceptance
 
-**ADR 0021, Amendment (date of acceptance): edition `0.4` (ADR 0122).** A package of edition `0.4` or later is described by `ita.una` and pinned by `ita.lock`, as ADR 0122 states; this record's rules stay those of editions `0.1` to `0.3`.
+**ADR 0021, Amendment (2026-10-19): edition `0.4` (ADR 0122).** A package of edition `0.4` or later is described by `ita.una` and pinned by `ita.lock`, as ADR 0122 states; this record's rules stay those of editions `0.1` to `0.3`.
 
-**ADR 0085, Amendment (date of acceptance): dependencies (ADR 0122).** Decision 5's condition holds: the call graph is that of the whole program, every package of the root's lock included, known when the label is computed (ADR 0122 rule 55). `pub` functions of any package keep the label their callers give them.
+**ADR 0085, Amendment (2026-10-19): dependencies (ADR 0122).** Decision 5's condition holds: the call graph is that of the whole program, every package of the root's lock included, known when the label is computed (ADR 0122 rule 55). `pub` functions of any package keep the label their callers give them.
 
-**ADR 0093, Amendment (date of acceptance): dependencies (ADR 0122).**
+**ADR 0093, Amendment (2026-10-19): dependencies (ADR 0122).**
 - **Rule 2.** Every module of a dependency is in a boundary, one extent per package. The ceiling at a call into it is the one the calling package writes with `may` lines in its `ita.una`, empty by default, and empty for a package the caller does not need. The table `[inherit]` is not created: no dependency receives authority by name (ADR 0122 rule 51, Question 2).
 - **Rule 8 and the U7002 of `spec/13 §7`.** A module of a dependency that the root names in a trust line is not a boundary module of its package's extent: it is an extent of its own, called into across a boundary, and a release whose policy it declares is not U3024. Every other release reachable from a call into the package stays U3024, and every other module of a dependency stays never trusted (ADR 0122 rule 53.1). `spec/13 §7`'s "a module of `[trusted] modules` inside a boundary" is U7002 except for such a module.
 
-**ADR 0109, Amendment (date of acceptance): profiles across dependencies (ADR 0122).** Each package is checked under its own profile; a dependency's foreign code, the trust a gated construct adds, needs a `systems` root and the root's trust line (ADR 0122 rules 50 and 53). A gated construct that adds no trust needs nothing of the root.
+**ADR 0109, Amendment (2026-10-19): profiles across dependencies (ADR 0122).** Each package is checked under its own profile (ADR 0122 rule 50). A gated construct that adds no trust needs nothing of the root; a dependency's trusted modules need the root's trust line whatever the profiles (ADR 0122 rule 53).
 
-**ADR 0116, Amendment (date of acceptance).** The `[drive]` table's form in `ita.una` is the `drive` section of ADR 0122 rule 11, with the same keys, ranges and errors, reported as U7008.
+**ADR 0116, Amendment (2026-10-19).** The `[drive]` table's form in `ita.una` is the `drive` section of ADR 0122 rule 11, with the same keys, ranges and errors, reported as U7008.
 
-**ADR 0117, Amendment (date of acceptance).** "The code of #893" for invalid limits in `ita.una` is U7008, and the limit lines sit under an `http` grant line (ADR 0122 rule 12).
+**ADR 0117, Amendment (2026-10-19).** "The code of #893" for invalid limits in `ita.una` is U7008, and the limit lines sit under an `http` grant line (ADR 0122 rule 12).
 
 ## Appendix B. Notes for draft records
 
 **ADR 0121, Note, appended on its acceptance, coordinated with Question 8.1.** In edition `0.4`, the edition switch of rule 2 and its opt-ins are read from `ita.una` (ADR 0122), where rule 2 says `una.toml`. The `0.3`-to-`0.4` pair of the edition test (rule 11) runs `una migrate` on each `0.3` package of the suite, then compares; a difference that the migration alone causes is not a clash. `una.toml` naming edition `0.4` is U7002 if no released `una` accepted that form when ADR 0122's files land, and a U7007 ledger entry otherwise.
 
-**ADR 0118, Note, if it is accepted.** Its `[foreign.<library>]` table has the form `foreign <library>` in `ita.una` (rule 11), a library name with `-` written as a text; its source digest is the listing of ADR 0122 rule 28; a library of a dependency is admitted by the root's trust line, bound to the package's identity, and granted as `foreign <library> of <package>` (rules 10, 12, 53 and 60); its model comparison uses the dependency's own recorded calls (rule 60); its trusted module is an extent of its own (rule 53.1).
