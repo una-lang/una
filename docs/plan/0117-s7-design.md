@@ -137,7 +137,7 @@ Each request parked on the reactor holds one socket, where the pool held at most
 - `una-sys` (`tests/poll.rs`): a socket pair, readable and writable events with their tokens; one-shot (a second wait sees no event while the socket stays ready); `delete` of a registration that fired; a peer that closes; the poller's descriptor is close-on-exec; add and delete at 1,000 and 10,000 in linear time.
 - `una-rt`:
   - `reactor.rs`: a stale token ignored; a host stop that wakes the waits of its run only; register, wake and remove at 1,000, 10,000 and 100,000 waits in linear time; a parked task woken by readiness, by its time and by a cancellation; a wait of a run that stops woken with no pipe event; a wait without a descriptor woken by its party; a parked task leaving its worker to the others.
-  - `reactor.rs`, with the handlers installed: a run's own stop wakes a wait listed with its run at once, through the pipe.
+  - `reactor.rs`, with the handlers installed, in a process of its own (the test runs its scenario through `current_exe`, so the handlers of the shared test process stay untouched): the pipe is watched, and a run's own stop wakes a wait listed with its run at once, through the pipe.
   - `sockets.rs`: the cap for several limits; places given first come, first served and never lost; a place given back while a waiter leaves is never stranded (the interleaving driven by a test hook); waiters that leave in O(1) each, at 10,000 and 100,000.
 - `una-http` (`resolve.rs`): concurrent callers of a name share one lookup; a stalled name holds one place and another name still resolves beside it under a bound of 2; a failed name is remembered without a new lookup; the line skips callers that left.
 - `una-cli` (`tests/http.rs`):
@@ -169,6 +169,6 @@ Each request parked on the reactor holds one socket, where the pool held at most
 | R7-7 (`client::open` checks no grant) | its documentation says a caller must have checked the grants |
 | R7-9 (a place stranded while a waiter leaves) | §7, No stranded place: `settle` takes the lock before its compare-and-swap; a test drives the interleaving |
 | R7-10 (a stalled name fills the resolver places) | §5, Name resolution: one lookup per name at a time, so at most one place per name; failed names remembered for 5 seconds; tests in `resolve.rs` |
-| R7-11 (a run's own stop does not write the pipe) | §3, Host stops: `RunStop::request_local` wakes the pipe; a test with the handlers installed |
+| R7-11 (a run's own stop does not write the pipe) | §3, Host stops: `RunStop::request_local` wakes the pipe; a test with the handlers installed, in a process of its own |
 | R7-12 (the look at every pass) | §3, Host stops: the reactor keeps the time of its last look, and looks every 100 ms or at a pipe event |
 | R7-8 (count of `unsafe` blocks) | `poll.rs` has eight `unsafe` blocks, `io.rs` two, and `signals.rs` one more, each with its `// SAFETY:` comment |

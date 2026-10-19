@@ -954,12 +954,49 @@ mod tests {
         assert_eq!(woken, Woken::Stopped);
     }
 
+    /// The environment variable that marks the process a scenario runs in: a scenario does
+    /// nothing in a process that did not start it for that purpose, the shared one included.
+    const SCENARIO: &str = "UNA_RT_REACTOR_SCENARIO";
+
+    /// Whether this process was started to run the scenario `name`.
+    #[allow(clippy::disallowed_methods)]
+    fn running_scenario(name: &str) -> bool {
+        std::env::var_os(SCENARIO).is_some_and(|value| value == name)
+    }
+
     #[test]
     fn a_run_s_own_stop_wakes_its_parked_waits_with_the_handlers_installed() {
         // Review R7-11: with the handlers installed the pipe is watched, and the reactor does
         // not look at the runs of listed waits; the run's own stop, as at
-        // `--stop-after-iterations`, writes the pipe, so the wait wakes at once, long before
-        // its 30 s.
+        // `--stop-after-iterations`, writes the pipe, so the wait wakes at once. The scenario
+        // installs the handlers of SIGINT and SIGTERM, so it runs in a process of its own,
+        // and the handlers of this process stay as they are.
+        let name = "own_stop_with_the_handlers_installed";
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                &format!("reactor::tests::{name}"),
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(SCENARIO, name)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{output:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "a scenario run in a process of its own by the test above"]
+    fn own_stop_with_the_handlers_installed() {
+        if !running_scenario("own_stop_with_the_handlers_installed") {
+            return;
+        }
         una_sys::signals::install().unwrap();
         let reactor = get().unwrap();
         let sched = sched::Scheduler::new(settings(1));
@@ -977,6 +1014,8 @@ mod tests {
             (woken, started.elapsed())
         });
         std::thread::sleep(Duration::from_millis(50));
+        // The pipe is watched: the wait is listed, and only the pipe's event looks at it.
+        assert_eq!(reactor.lock().pipe, Pipe::Watched);
         stop.request_local();
         let (woken, took) = waited.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(woken, Woken::Stopped);
