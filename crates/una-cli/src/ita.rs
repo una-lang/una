@@ -1,10 +1,12 @@
 //! `una ita` (ADR 0122 rule 57), the package manager of edition `0.4`, and `una fmt` of its
 //! project files (rule 5).
 //!
-//! This release resolves path dependencies only: `una ita lock` writes the solver section, kept
-//! from the lock it replaces or the default one, and each path dependency; a need of a registry
-//! or a workspace is refused (U7008), never left unresolved. No command here opens a connection
-//! or starts a program.
+//! This release resolves path dependencies only: `una ita lock`, `update` and `add` write the
+//! solver section, kept from the lock it replaces or the default one, and each path dependency,
+//! resolved by minimal version selection over what is held offline. A need of a registry is
+//! refused (U7013), since no registry's per-name state is held, and one of a workspace member is
+//! refused (U7008): never left unresolved, and never resolved from a partial view. No command
+//! here opens a connection or starts a program.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
