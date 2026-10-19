@@ -1421,7 +1421,7 @@ pub enum LoopSource {
     Ever {
         /// `within d`: the deadline of each iteration, in milliseconds, evaluated once before
         /// the first iteration, and the span of `d`, where its obligation `d >= 1` is reported
-        /// (`spec/26 §6`, ADR 0116 rule 11).
+        /// (`spec/26 §7`, ADR 0116 rule 11).
         within: Option<(Atom, Span)>,
     },
 }

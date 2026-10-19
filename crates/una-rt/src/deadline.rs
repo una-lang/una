@@ -1,4 +1,4 @@
-//! The deadline of a `for ever within d` loop (`spec/26 §6`, ADR 0116 rule 11), as native code
+//! The deadline of a `for ever within d` loop (`spec/26 §7`, ADR 0116 rule 11), as native code
 //! runs it: each iteration has the deadline `d` after its start, and every interruptible
 //! operation it waits on, or starts later, fails at once with its time-out failure once the
 //! deadline has passed. The iteration's one `timeout` event is appended, with the path of the

@@ -100,7 +100,7 @@ impl Scan<'_, '_> {
                 self.block(&stmt.block);
             }
             Stmt::Ever(stmt) => {
-                // The deadline is evaluated once, before the first iteration (`spec/26 §6`).
+                // The deadline is evaluated once, before the first iteration (`spec/26 §7`).
                 if let Some(within) = &stmt.within {
                     self.expr(within);
                 }

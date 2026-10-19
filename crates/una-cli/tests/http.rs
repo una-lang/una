@@ -567,7 +567,7 @@ fn silent_server() -> u16 {
 
 #[test]
 fn a_for_ever_within_deadline_cuts_http_waits_in_both_engines() {
-    // `spec/26 §6`, ADR 0116 rule 11: each iteration has the deadline `d` after its start.
+    // `spec/26 §7`, ADR 0116 rule 11: each iteration has the deadline `d` after its start.
     // The first request waits on a server that never answers, and fails with `TimedOut` at the
     // deadline, long before the run's own `--http-timeout`; the second starts after the
     // deadline and fails at once. One `timeout` event follows the first failure of each
@@ -687,7 +687,7 @@ pub main() -> Unit
 
 #[test]
 fn the_timeout_event_of_tasks_is_the_same_in_every_run_and_both_engines() {
-    // `spec/26 §6`: two tasks of a `together` block in the body both wait on a server that
+    // `spec/26 §7`: two tasks of a `together` block in the body both wait on a server that
     // never answers and meet the deadline at about the same time, natively on two threads.
     // The iteration's one `timeout` event carries the loop's own task and comes at the block's
     // join, after the block's events, so the trace does not depend on which task met the

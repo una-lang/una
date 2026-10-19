@@ -1,5 +1,5 @@
--- test: the deadline of `for ever within` is an `Int of Millisecond`: a unitless `Int` or another unit is U2028, a type that is not an integer is U2001 (spec/26 §6, ADR 0116 rule 11)
--- spec: spec/26 §6
+-- test: the deadline of `for ever within` is an `Int of Millisecond`: a unitless `Int` or another unit is U2028, a type that is not an integer is U2001 (spec/26 §7, ADR 0116 rule 11)
+-- spec: spec/26 §7
 -- expect: error U2028 at src/units.una:13:19
 -- expect: error U2028 at src/units.una:20:19
 -- expect: error U2001 at src/units.una:27:19

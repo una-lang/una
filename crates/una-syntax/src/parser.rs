@@ -2285,11 +2285,11 @@ impl<'a> Parser<'a> {
     }
 
     /// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ "on" "stop" NEWLINE
-    /// INDENT block DEDENT ]` (`spec/26 §5`, §6, ADR 0116 rules 5, 10 and 11).
+    /// INDENT block DEDENT ]` (`spec/26 §5`, §7, ADR 0116 rules 5, 10 and 11).
     fn ever_stmt(&mut self) -> Parse<Stmt> {
         let start = self.advance();
         self.advance();
-        // Edition 0.4: `within d`, the deadline of each iteration (`spec/26 §6`).
+        // Edition 0.4: `within d`, the deadline of each iteration (`spec/26 §7`).
         let within = match self.peek() {
             TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within" => {
                 self.advance();

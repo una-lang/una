@@ -1388,10 +1388,18 @@
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol",
+          "docs": [
+            "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted",
           "docs": [
             "Why an HTTP request got no response it may return (`spec/24 §1` rule 3)."
           ]

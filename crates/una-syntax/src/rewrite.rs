@@ -987,11 +987,13 @@ fn declared(body: &str) -> (DeclarationKind, Vec<String>) {
     }
 }
 
-/// The prelude and `std.testing`, whose names a rename never takes (ADR 0096 rule 3a).
-const PRELUDES: [&str; 3] = [
+/// The prelude and `std.testing`, whose names a rename never takes (ADR 0096 rule 3a), with
+/// the variant that edition 0.4 adds to `HttpError` (ADR 0116 rule 12).
+const PRELUDES: [&str; 4] = [
     include_str!("../../una-check/src/std/prelude.una"),
     include_str!("../../una-check/src/std/prelude_0_2.una"),
     include_str!("../../una-check/src/std/testing.una"),
+    "Interrupted",
 ];
 
 fn words(text: &str) -> impl Iterator<Item = &str> {

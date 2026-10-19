@@ -1045,6 +1045,8 @@ fn run_command(
                 http_timeout,
                 solver_wallclock,
                 stop_after_iterations,
+                deadline,
+                stop_grace,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1057,6 +1059,8 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock),
                     stop_after: stop_after_iterations,
+                    deadline,
+                    stop_grace,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1091,6 +1095,8 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock),
                     stop_after: None,
+                    deadline: None,
+                    stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }

@@ -28,8 +28,9 @@ const PROOF_CACHE: &str = ".una/cache/";
 /// What the verification model does not cover: the one list of `spec/07 §1` and `spec/13 §6`,
 /// in their order (R-041; the last entry is ADR 0038 D9 rule 4). `una.report/2` says "stack
 /// exhaustion", since native executables exhaust their stack too (ADR 0055), and ends with the
-/// order of effects across `together` tasks (ADR 0065, `spec/19 §3`).
-const OUT_OF_MODEL: [&str; 8] = [
+/// order of effects across `together` tasks (ADR 0065, `spec/19 §3`), then the three entries of
+/// long-running programs (ADR 0116 rule 21).
+const OUT_OF_MODEL: [&str; 11] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
@@ -38,12 +39,6 @@ const OUT_OF_MODEL: [&str; 8] = [
     "races between the check and the use of a file path",
     "hard links",
     "order of effects across concurrent tasks",
-];
-
-/// What edition 0.4 adds at the end of [`OUT_OF_MODEL`] (ADR 0116 rule 21): the host decides
-/// when it stops a run, its load can slow any expression down, and no program can clean up
-/// after SIGKILL.
-const OUT_OF_MODEL_0_4: [&str; 3] = [
     "the time of a host stop",
     "interference of the host's load with the timing of an expression",
     "uncatchable termination",
@@ -70,7 +65,7 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: Vec<&'static str>,
+    out_of_model: [&'static str; 11],
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
@@ -650,13 +645,7 @@ fn build(
             arbitrary_precision: arbitrary_precision(program),
         },
         generic_results,
-        out_of_model: {
-            let mut channels = OUT_OF_MODEL.to_vec();
-            if manifest.edition >= una_project::Edition::V0_4 {
-                channels.extend(OUT_OF_MODEL_0_4);
-            }
-            channels
-        },
+        out_of_model: OUT_OF_MODEL,
     }
 }
 

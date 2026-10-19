@@ -1,5 +1,5 @@
--- test: the deadline of `for ever within` is at least 1, a `refinement` obligation: `within 0` is refuted, and a deadline from a parameter refined to `1..` is proven (spec/26 §6, ADR 0116 rule 11)
--- spec: spec/26 §6
+-- test: the deadline of `for ever within` is at least 1, a `refinement` obligation: `within 0` is refuted, and a deadline from a parameter refined to `1..` is proven (spec/26 §7, ADR 0116 rule 11)
+-- spec: spec/26 §7
 -- expect: error U5001 at src/zero.una:11:19
 module zero
 

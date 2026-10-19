@@ -669,10 +669,10 @@ pub enum Stmt {
 }
 
 /// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`,
-/// §6, ADR 0116 rules 10 and 11).
+/// §7, ADR 0116 rules 10 and 11).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EverStmt {
-    /// The deadline of each iteration, after `within`, when there is one (`spec/26 §6`).
+    /// The deadline of each iteration, after `within`, when there is one (`spec/26 §7`).
     pub within: Option<Expr>,
     /// The body.
     pub block: Block,

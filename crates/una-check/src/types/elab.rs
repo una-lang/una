@@ -2794,7 +2794,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// its body and its `on stop` update, whose `on stop` block binds the state afresh and
     /// returns it (ADR 0116 rules 10 and 20).
     fn ever_loop(&mut self, lets: &mut Vec<Let>, stmt: &EverStmt) {
-        // `within d`: evaluated once, before the first iteration (`spec/26 §6`).
+        // `within d`: evaluated once, before the first iteration (`spec/26 §7`).
         let within = stmt
             .within
             .as_ref()

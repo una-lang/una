@@ -1664,7 +1664,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let mut stop_leaves = Vec::new();
                         self.walk(&on_stop.body, &stop_ctx, &mut stop_leaves);
                     }
-                    // `for ever within d` (`spec/26 §6`, ADR 0116 rule 11): `d >= 1`, a
+                    // `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): `d >= 1`, a
                     // `refinement` obligation at `d`, in the context before the loop.
                     if let LoopSource::Ever {
                         within: Some((deadline, deadline_span)),

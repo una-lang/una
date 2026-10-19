@@ -9,7 +9,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 ## 1. Edition and words
 
 1. **Edition.** A package of edition `0.4` names it in `ita.una` (`edition 0.4`, `spec/30`); `una.toml` naming it is U7002, with `una migrate` as its repair (ADR 0122 Question 8.1). Edition `0.4` is cumulative over edition `0.3`, as `0.3` is over `0.2`: it has every construct, keyword and rule of edition `0.3`. It is a preview under the terms of edition `0.3` (`spec/13 §7`) until the rules that target it have landed.
-2. **Reserved words.** In edition `0.4`, `diverges` and `within` are reserved: used as an identifier, each is U0103, `` `<word>` is reserved for edition 0.4 (long-running programs) ``. `diverges` is a word of a header (§5), and `within` one right after `for ever` (§6); elsewhere both stay reserved. In earlier editions they are identifiers.
+2. **Reserved words.** In edition `0.4`, `diverges` and `within` are reserved: used as an identifier, each is U0103, `` `<word>` is reserved for edition 0.4 (long-running programs) ``. `diverges` is a word of a header (§5), and `within` one right after `for ever` (§7); elsewhere both stay reserved. In earlier editions they are identifiers.
 
 ## 2. The host-driven step
 
@@ -35,7 +35,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    - It calls `step(edit state, input: tick)` with each tick, and the state `step` leaves is the state of the next one.
    - When the loop stops, it calls `on_stop(state)` when the module declares it, and the run ends with exit code 0.
    - Both engines run the same driver, and their outputs and traces compare under `spec/16 §5`.
-4. **Stopping, in the preview.** Until the host stops of ADR 0116 rule 14 land, the driver stops in one way only: `una run` and executables take `--stop-after-iterations <n>`, an integer from 1 to 2^63 − 1 (anything else is a usage error, exit code 2). The loop stops at the start of the iteration after `n` steps have started; the trace then ends with an event whose `outcome` is `{"kind":"stop"}`, which names no operation, and `on_stop` runs. A driver run without the flag runs until the process is ended, and an interrupt (Ctrl-C, SIGINT) or SIGTERM ends it by the default action of the signal, without `on_stop` and without a trace file. The budget is read and kept, and it bounds no step yet: the deadlines of `for ever within` (§6) do not apply to it.
+4. **Stopping.** The driver's loop is a `for ever` (§5): a host stop request (§6) interrupts its wait for a tick, or the waiting `Http` operations of the step that runs, and the loop stops at its next iteration start. The trace then gets an event whose `outcome` is `{"kind":"stop"}`, which names no operation, `on_stop` runs, and the run ends with exit code 0, unless the hard stop of §6 comes first. The budget is read and kept, and it bounds no step yet: the deadlines of `for ever within` (§7) do not apply to it.
 5. **The timing label of a tick (IF7).** `at` and `missed` depend on how long earlier steps took. So the `input` parameter of `step` MUST be labeled at least `τ`, the timing label of the step, or the package is rejected with U4001 at the parameter. The message names the largest source of `τ` and the label `input` needs. `τ` is the join of:
    1. the deep label (`spec/07 §7` rule 3) of each parameter's declared type of `step`;
    2. for each operation in the effects of `step` and of every function `step` can reach, its result type's deep label, its `accepts` label and its failure kind's deep label;
@@ -136,9 +136,46 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 
 5. **Verification** (ADR 0116 V3, V4). After a `for ever`, the bindings it updates are fresh at their declared types, and `on stop` is verified with them fresh. A function that says `diverges` keeps partial correctness: its `ensures` holds whenever it returns.
 6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `ever`, with its `on stop` block, which binds the state afresh and returns it as the loop's value.
-7. **Preview.** Until host stops land (ADR 0116 rule 14), a `for ever` without `stop` ends only by a failure of its body or by the process ending.
+7. **Host stops.** A `for ever` without `stop` ends by a failure of its body, or at the first iteration start after a host stop request (§6).
 
-## 6. `for ever within d`
+## 6. Host stops
+
+1. **Requests** (ADR 0116 rule 14). These are host stop requests of a run of `una run` or of an executable:
+   - SIGINT or SIGTERM, delivered to the process;
+   - the end of `--deadline <seconds>`, counted from the start of the run;
+   - the run's own stop, once `--stop-after-iterations <n>` iterations of `for ever` loops, the driver's included, have started, counted in the order the run starts them (ADR 0116 rule 19). It arrives at the start of iteration `n + 1`, and it is local to the run.
+
+   A request is **sticky**: once one has arrived, it stays for the rest of the run.
+2. **Flags** (`spec/13 §5`, `spec/16 §3`). `--deadline` takes whole seconds from 1 to 31,536,000; `--stop-grace` takes whole seconds from 1 to 86,400, and is 10 when not given; `--stop-after-iterations` takes an integer from 1 to 2^63 − 1. Any other value, or one that is not a number, is a usage error, exit code 2.
+3. **Signal handlers** (ADR 0116 rule 18). A run installs handlers of SIGINT and SIGTERM only when it runs a driver or its `main` says `diverges`, the only ways a run reaches a `for ever` (§5 rule 2). Any other run keeps their default actions, so a signal ends it as before. A handler only records the request and wakes the waiting operations.
+4. **After a request** (ADR 0116 rules 12 to 14):
+   1. **Interruption.** An `Http` operation in the body of a `for ever`, in that body's own task, callees included, fails with `HttpError.Interrupted` when it is waiting at the request, or when it starts after it. A request that has started may or may not have reached its server: it was performed at most once. The trace records the failure as any failure of an operation. Operations outside every `for ever` body, `on stop` blocks included, and in the tasks a `together` block starts, are not interrupted. In this release, name resolution and the connection of a request are not interrupted: a request that waits there fails with `Interrupted` when they return, within the request's own deadline (`spec/24 §4`).
+   2. **Stop.** Every `for ever` that reaches an iteration start ends there, as by `stop`, keeping its bindings, a loop entered after the request included. It appends `{"seq": n, "outcome": {"kind": "stop"}}` to the trace, and then its `on stop` runs.
+   3. **Draining.** Code outside every `for ever` runs on.
+5. **`HttpError.Interrupted`.** In edition `0.4`, `HttpError` (`spec/24 §1`) has a ninth variant, `Interrupted`, after `Protocol`. Earlier editions keep eight, since a new variant changes which `when` arms are exhaustive.
+6. **Grace and the hard stop** (ADR 0116 rule 16). The hard stop comes at the end of the grace period, `--stop-grace` seconds after the first request, or at a second request, whichever comes first. It cancels the run at its next check point, a call or a loop iteration, `on stop` blocks included; in a `together` block, it cancels each task at its next check point, and each started task's `cancelled` event is appended (`spec/19 §7` rule 3).
+   - A run that ends before the hard stop ends normally: exit code 0 when `main`, or the driver, returns.
+   - A run that the hard stop cancels ends with **U6007**, "the host stopped the run before it finished", exit code 1, at the check point, with the trace of an abort (`spec/11 §7`). The message says why: "the host stopped the run before it finished, after the grace period of 10 seconds", or "..., at a second host stop request".
+7. **Out of reach** (ADR 0116 rule 17). A third request, or the end of a second grace period after the hard stop, restores the default actions of SIGINT and SIGTERM and ends the process with the signal SIGTERM, so a run stuck in an operation that is not interruptible still ends. SIGKILL, the end of the machine and the kernel's out-of-memory killer end a process without any check point, and no program can clean up after them.
+8. **Both engines.** `una run` and executables follow this section alike; for a fixed stop schedule, such as `--stop-after-iterations`, their outputs and traces compare under `spec/16 §5`.
+
+   ```una
+   serve() -> Unit
+     uses @http: Http[get]
+     diverges
+   =
+     let edit polls: internal Int = 0
+     for ever
+       let reply = attempt @http.get("http://127.0.0.1:8080/", headers: [], key_name: None)
+       when reply
+         is Ok(response) ->
+           polls = polls + 1
+         is Err -> unit -- Interrupted after a SIGTERM
+   ```
+
+   The failure of a request is `internal` (`spec/24 §5`), so the count it changes is too.
+
+## 7. `for ever within d`
 
 1. **Grammar** (ADR 0116 rule 5). In edition `0.4`, a `for ever` loop MAY take a deadline:
 
@@ -148,7 +185,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 
    `within` right after `for ever` starts the deadline. Anywhere else it stays reserved (§1 rule 2).
 2. **The deadline** (ADR 0116 rule 11). `d` is an `Int of Millisecond`, with `Millisecond` of `std.time` (§2 rule 2): a unitless `Int` or another unit is U2028, and a type that is not an integer is U2001. It is evaluated once, before the first iteration. It MUST be at least 1, a `refinement` obligation at `d` (`spec/12 §3`): `within 0 * millisecond` is U5001.
-3. **Past the deadline.** Each iteration has the deadline `d` after its start. Once an iteration has passed it, every interruptible operation it waits on, and every one it starts later in that iteration, fails at once with its time-out failure: for `Http`, `HttpError.TimedOut` (`spec/24 §1`). The tasks the iteration starts (`spec/19`) share its deadline. Nothing else changes: the iteration runs on to its end with the values its code gives the bindings, effects already performed stay (`spec/17 §7` rule 2), and the next iteration has a new deadline. In this edition the interruptible operations are those of `Http` (ADR 0116 rule 12); the operations of a handler are Una code, which a deadline does not cut.
+3. **Past the deadline.** Each iteration has the deadline `d` after its start. Once an iteration has passed it, every interruptible operation it waits on, and every one it starts later in that iteration, fails at once with its time-out failure: for `Http`, `HttpError.TimedOut` (`spec/24 §1`). The tasks the iteration starts (`spec/19`) share its deadline. Nothing else changes: the iteration runs on to its end with the values its code gives the bindings, effects already performed stay (`spec/17 §7` rule 2), and the next iteration has a new deadline. In this edition the interruptible operations are those of `Http` (ADR 0116 rule 12); the operations of a handler are Una code, which a deadline does not cut. A host stop request (§6) cuts the same waits: an `Http` wait in the body ends at the deadline or at the request, whichever comes first, with `TimedOut` or `Interrupted`.
 4. **Trace.** Each iteration that meets its deadline gets one event `{"seq": n, "outcome": {"kind": "timeout"}}`, which names no operation (`spec/11 §5`). It carries the `task` field of the task that runs the loop, and it is written where the iteration's own control flow first observes a failure the deadline caused: right after the event of an operation of that task that the deadline made fail, or, when a task of a `together` or `together for` block the iteration runs met the deadline, at the block's join, after the block's events, whether the block ends normally or fails. A trace therefore never depends on which task met the deadline first: its events and their order are the same in every run that meets the deadline at the same operations, and in both engines (`spec/16 §5`).
 
    ```una

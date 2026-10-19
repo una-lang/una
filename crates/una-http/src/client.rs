@@ -3,6 +3,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,9 @@ pub enum Error {
     Tls,
     /// The response is not valid HTTP/1.1, or its body is not UTF-8.
     Protocol,
+    /// A host stop request came before the request started, or while it waited on its
+    /// connection (ADR 0116 rule 12): it may or may not have reached its server.
+    Interrupted,
     /// A header value has a control character other than a tab. It is not an `HttpError`: the
     /// value may be `internal`, so the engines abort the run with U6004 instead.
     HeaderValue,
@@ -77,6 +81,42 @@ impl Default for Settings {
     }
 }
 
+/// What a wait on a request's socket saw (ADR 0116 rule 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    /// The socket is ready.
+    Ready,
+    /// A host stop request has come.
+    Stopped,
+    /// The time given passed.
+    TimedOut,
+}
+
+/// What can interrupt a request (ADR 0116 rule 12): an engine gives one for an operation in
+/// the body of a `for ever`, which a host stop request interrupts.
+pub trait Interrupt {
+    /// Whether a host stop request has come: a request then fails with `Interrupted` before it
+    /// starts, and between the steps that do not wait on the socket.
+    fn stopped(&self) -> bool;
+
+    /// Waits until `socket` is ready to read, or to write when `write`, until a host stop
+    /// request comes, or until `timeout` passes.
+    fn wait(&self, socket: RawFd, write: bool, timeout: Duration) -> Waited;
+}
+
+/// No interruption: every wait is left to the socket's own timeouts.
+struct Uninterrupted;
+
+impl Interrupt for Uninterrupted {
+    fn stopped(&self) -> bool {
+        false
+    }
+
+    fn wait(&self, _socket: RawFd, _write: bool, _timeout: Duration) -> Waited {
+        Waited::Ready
+    }
+}
+
 /// The longest `--http-timeout`, a day, in seconds (`spec/24 §4`).
 pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 
@@ -89,6 +129,21 @@ pub fn send(
     grants: &[Grant],
     settings: &Settings,
 ) -> Result<Response, Error> {
+    send_interruptible(request, grants, settings, &Uninterrupted)
+}
+
+/// [`send`], which `interrupt` interrupts (ADR 0116 rule 12): after the header values are
+/// checked, a request whose stop has come fails with `Interrupted` before anything is sent; and
+/// each wait on the socket to read or write, the TLS handshake's included, also ends with
+/// `Interrupted` when the stop comes. Name resolution and the TCP connection are not waited on
+/// with `interrupt`: a stop that comes during them takes effect when they return, within the
+/// request's deadline (ADR 0116, implementation plan, item 6).
+pub fn send_interruptible(
+    request: &Request<'_>,
+    grants: &[Grant],
+    settings: &Settings,
+    interrupt: &dyn Interrupt,
+) -> Result<Response, Error> {
     // Capped at a day, as the flags are, so the deadline never overflows the clock.
     let timeout = settings.timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
     let deadline = Instant::now().checked_add(timeout).ok_or(Error::TimedOut)?;
@@ -99,6 +154,9 @@ pub fn send(
         .any(|(_, value)| value.as_bytes().iter().any(control))
     {
         return Err(Error::HeaderValue);
+    }
+    if interrupt.stopped() {
+        return Err(Error::Interrupted);
     }
     let mut url = Url::parse(request.url).ok_or(Error::BadUrl)?;
     check_headers(request.headers, request.bearer)?;
@@ -128,7 +186,15 @@ pub fn send(
         } else {
             elsewhere.as_slice()
         };
-        let response = exchange(method, &url, headers, body, bearer, deadline, settings)?;
+        let response = exchange(
+            method,
+            &url,
+            headers,
+            body,
+            bearer,
+            settings,
+            (deadline, interrupt),
+        )?;
         let next = matches!(response.status, 301 | 302 | 303 | 307 | 308)
             .then(|| location(&response, &url))
             .flatten();
@@ -256,9 +322,37 @@ impl Connection {
             .map_err(|_| Error::Unreachable)
     }
 
-    fn write_all(&mut self, bytes: &[u8], deadline: Instant) -> Result<(), Error> {
+    /// Waits until the socket is ready to read, or to write when `write`, within the deadline,
+    /// unless `interrupt` ends the wait. A TLS stream with plaintext already decrypted reads
+    /// without waiting.
+    fn ready(
+        &self,
+        write: bool,
+        deadline: Instant,
+        interrupt: &dyn Interrupt,
+    ) -> Result<(), Error> {
+        if !write
+            && let Connection::Tls(stream) = self
+            && !stream.conn.wants_read()
+        {
+            return Ok(());
+        }
+        match interrupt.wait(self.socket().as_raw_fd(), write, left(deadline)?) {
+            Waited::Ready => Ok(()),
+            Waited::Stopped => Err(Error::Interrupted),
+            Waited::TimedOut => Err(Error::TimedOut),
+        }
+    }
+
+    fn write_all(
+        &mut self,
+        bytes: &[u8],
+        deadline: Instant,
+        interrupt: &dyn Interrupt,
+    ) -> Result<(), Error> {
         let mut rest = bytes;
         while !rest.is_empty() {
+            self.ready(true, deadline, interrupt)?;
             self.bound(deadline)?;
             let written = match self {
                 Connection::Plain(stream) => stream.write(rest),
@@ -277,7 +371,13 @@ impl Connection {
         .map_err(|error| io_error(&error, deadline))
     }
 
-    fn read(&mut self, buffer: &mut [u8], deadline: Instant) -> Result<usize, Error> {
+    fn read(
+        &mut self,
+        buffer: &mut [u8],
+        deadline: Instant,
+        interrupt: &dyn Interrupt,
+    ) -> Result<usize, Error> {
+        self.ready(false, deadline, interrupt)?;
         self.bound(deadline)?;
         let read = match self {
             Connection::Plain(stream) => stream.read(buffer),
@@ -377,10 +477,13 @@ fn test_roots(roots: &mut rustls::RootCertStore) {
 }
 
 /// Connects to the URL's origin within the deadline, with TLS for `https`.
-fn connect(url: &Url, deadline: Instant) -> Result<Connection, Error> {
+fn connect(url: &Url, deadline: Instant, interrupt: &dyn Interrupt) -> Result<Connection, Error> {
     let addrs = resolve(&url.host, url.port, deadline)?;
     let mut stream = None;
     for addr in addrs {
+        if interrupt.stopped() {
+            return Err(Error::Interrupted);
+        }
         match TcpStream::connect_timeout(&addr, left(deadline)?) {
             Ok(connected) => {
                 stream = Some(connected);
@@ -393,6 +496,9 @@ fn connect(url: &Url, deadline: Instant) -> Result<Connection, Error> {
         }
     }
     let stream = stream.ok_or(Error::Unreachable)?;
+    if interrupt.stopped() {
+        return Err(Error::Interrupted);
+    }
     let _ = stream.set_nodelay(true);
     if !url.tls {
         return Ok(Connection::Plain(stream));
@@ -410,6 +516,12 @@ fn connect(url: &Url, deadline: Instant) -> Result<Connection, Error> {
         loop {
             if !tls.conn.is_handshaking() {
                 break;
+            }
+            let write = !tls.conn.wants_read() && tls.conn.wants_write();
+            match interrupt.wait(tls.sock.as_raw_fd(), write, left(deadline)?) {
+                Waited::Ready => {}
+                Waited::Stopped => return Err(Error::Interrupted),
+                Waited::TimedOut => return Err(Error::TimedOut),
             }
             let left = left(deadline)?;
             let _ = tls.sock.set_read_timeout(Some(left));
@@ -460,23 +572,28 @@ fn request_bytes(
     out
 }
 
-/// One request and its response, on a connection of its own.
+/// One request and its response, on a connection of its own, by `deadline` unless `interrupt`
+/// ends it first.
 fn exchange(
     method: Method,
     url: &Url,
     headers: &[(String, String)],
     body: &[u8],
     bearer: Option<&[u8]>,
-    deadline: Instant,
     settings: &Settings,
+    (deadline, interrupt): (Instant, &dyn Interrupt),
 ) -> Result<Response, Error> {
-    let mut connection = connect(url, deadline)?;
-    connection.write_all(&request_bytes(method, url, headers, body, bearer), deadline)?;
+    let mut connection = connect(url, deadline, interrupt)?;
+    connection.write_all(
+        &request_bytes(method, url, headers, body, bearer),
+        deadline,
+        interrupt,
+    )?;
     let mut parser = Parser::new(settings.limits);
     let mut buffer = vec![0u8; 16 * 1024];
     let mut received = false;
     while !parser.done() {
-        let n = match connection.read(&mut buffer, deadline) {
+        let n = match connection.read(&mut buffer, deadline, interrupt) {
             Ok(n) => n,
             Err(Error::Unreachable) if received => return Err(Error::Protocol),
             Err(error) => return Err(error),

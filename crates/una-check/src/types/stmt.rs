@@ -226,7 +226,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 format!("`for ever` may run forever here: {reason}"),
             );
         }
-        // `within d` (`spec/26 §6`, ADR 0116 rule 11): evaluated once, before the loop.
+        // `within d` (`spec/26 §7`, ADR 0116 rule 11): evaluated once, before the loop.
         let deadline = stmt.within.as_ref().map(|within| self.deadline(within));
         let before = self.taken_state();
         let before_len = self.locals.len();
@@ -276,7 +276,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.join_skipped(&before);
     }
 
-    /// The deadline `d` of `for ever within d` (`spec/26 §6`, ADR 0116 rule 11): an `Int of
+    /// The deadline `d` of `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): an `Int of
     /// Millisecond` (U2028 for another unit or none, U2001 for a type that is not an integer)
     /// of at least 1, a `refinement` obligation (U5001 for `within 0`). Returns its label,
     /// which the timing label of the body joins (IF5 item 5).

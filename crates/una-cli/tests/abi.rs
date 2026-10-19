@@ -157,6 +157,9 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "races between the check and the use of a file path",
             "hard links",
             "order of effects across concurrent tasks",
+            "the time of a host stop",
+            "interference of the host's load with the timing of an expression",
+            "uncatchable termination",
         ]
     );
     let (last, first) = channels.split_last().unwrap();

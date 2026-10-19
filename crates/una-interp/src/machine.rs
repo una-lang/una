@@ -1,8 +1,10 @@
 //! The evaluation of Core IR: the rules of `spec/11 §4`, big-step, call-by-value, left to
 //! right, with the capability environment, the world and the trace.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::json::Halt;
@@ -13,6 +15,7 @@ use una_core::{
 use una_syntax::Span;
 
 use crate::host::{self, FileFault, Grant, World};
+use crate::stopping::{HardStop, RunStop};
 use crate::value::{Closure, EQUALITY_PAIR_BYTES, Key, Value, compare, equal_within};
 
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
@@ -107,7 +110,7 @@ pub(crate) struct Deadline {
     /// When it passes; `None` when it is beyond what the clock can hold.
     pub(crate) at: Option<std::time::Instant>,
     /// The path of the task that runs the loop, whose control flow observes the deadline's
-    /// failures (`spec/26 §6`).
+    /// failures (`spec/26 §7`).
     pub(crate) owner: Vec<usize>,
     /// Whether a task the iteration started met the deadline, for the join of its block.
     pub(crate) hit: bool,
@@ -165,6 +168,14 @@ pub enum Abort {
         span: Span,
         /// The message, which names what the bytes were.
         message: &'static str,
+    },
+    /// The hard stop of the host came at the check point at this span: a call or a loop
+    /// iteration (U6007, ADR 0116 rule 16).
+    HostStop {
+        /// The check point.
+        span: Span,
+        /// Why the hard stop came.
+        hard: HardStop,
     },
     /// A fault that a checked and verified program cannot reach, such as a division by zero
     /// while proof obligations are not verified yet (ADR 0027).
@@ -518,15 +529,13 @@ pub(crate) enum Form {
 }
 
 /// The host-driven step's settings (ADR 0116 rules 1 and 3, `spec/26 §2`): the tick period and
-/// the step budget in milliseconds, and the count of iterations after which the run stops.
+/// the step budget in milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drive {
     /// The tick period, from 1 millisecond.
     pub ticks: u64,
     /// The step budget, when one is set.
     pub budget: Option<u64>,
-    /// `--stop-after-iterations`: the run stops when this many steps have started.
-    pub stop_after: Option<u64>,
 }
 
 /// The limits of a run (`spec/11 §7`): its maximum call depth, and its memory budget, in MiB,
@@ -542,6 +551,12 @@ pub struct Limits<'a> {
     pub held: &'a (dyn Fn() -> usize + Sync),
     /// The limits and deadline of each HTTP request (`spec/24 §4`).
     pub http: una_http::client::Settings,
+    /// `--stop-after-iterations`: the run's own host stop request, once this many iterations
+    /// of `for ever` loops, the driver's included, have started (ADR 0116 rule 19).
+    pub stop_after: Option<u64>,
+    /// The run's host stop state, which its watcher shares (ADR 0116 rules 14 and 16); a run
+    /// without one makes its own, which only its own stop reaches.
+    pub stop: Option<&'a Arc<RunStop>>,
 }
 
 impl Limits<'_> {
@@ -553,6 +568,8 @@ impl Limits<'_> {
             max_memory: usize::MAX,
             held: &unmeasured,
             http: una_http::client::Settings::default(),
+            stop_after: None,
+            stop: None,
         }
     }
 }
@@ -582,6 +599,19 @@ pub(crate) struct Machine<'p, 'w> {
     pub(crate) trace: Vec<Event>,
     depth: usize,
     max_depth: usize,
+    /// The run's host stop state (ADR 0116 rules 14 and 16).
+    stop: Arc<RunStop>,
+    /// `--stop-after-iterations`, and the iterations of `for ever` loops started so far, the
+    /// driver's included (rule 19).
+    stop_after: Option<u64>,
+    iterations: u64,
+    /// Whether evaluation is in the body of a `for ever`, in that body's own task, callees
+    /// included: its `Http` operations are interruptible there (rule 14). No `for ever` holds
+    /// another one, so a flag suffices.
+    in_ever: bool,
+    /// The thread's attention word, and its value at the last check point (rule 18).
+    word: una_sys::attention::Word,
+    seen: Cell<u64>,
     /// The memory budget in MiB, the probe of the heap, and what the heap held when the run
     /// started, which does not count.
     max_memory: usize,
@@ -621,6 +651,20 @@ impl<'p, 'w> Machine<'p, 'w> {
         limits: Limits<'w>,
     ) -> Machine<'p, 'w> {
         let max_depth = limits.max_depth;
+        let stop = limits.stop.map_or_else(
+            || RunStop::new(crate::stopping::DEFAULT_GRACE_SECS),
+            Arc::clone,
+        );
+        // The thread's attention word as it stands, read before the hard stop is: a hard stop
+        // after the read raises the word, and one before it is seen here, with a value no word
+        // holds, so the first check point takes the slow path.
+        let word = una_sys::attention::register();
+        let seen = word.load();
+        let seen = if stop.hard().is_some() {
+            u64::MAX
+        } else {
+            seen
+        };
         Machine {
             index,
             world,
@@ -629,6 +673,12 @@ impl<'p, 'w> Machine<'p, 'w> {
             trace: Vec::new(),
             depth: 0,
             max_depth,
+            stop,
+            stop_after: limits.stop_after,
+            iterations: 0,
+            in_ever: false,
+            word,
+            seen: Cell::new(seen),
             max_memory: limits.max_memory,
             http: limits.http,
             held: limits.held,
@@ -706,9 +756,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         let period = std::time::Duration::from_millis(drive.ticks);
         let start = std::time::Instant::now();
         let mut next: u64 = 0;
-        let mut iterations: u64 = 0;
         let ended = loop {
-            if drive.stop_after.is_some_and(|limit| iterations >= limit) {
+            if self.ever_start() {
                 let slot = self.trace.len();
                 self.trace.push(Event {
                     seq: slot + 1,
@@ -721,13 +770,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                 });
                 break Ok(());
             }
-            iterations += 1;
             // Tick `k` is due `k * ticks` after the first: wait for the next one, or deliver the
-            // latest one due, with the count of those skipped.
+            // latest one due, with the count of those skipped. A host stop interrupts the wait,
+            // and the next iteration start stops (rule 3).
             let due = |k: u64| start + period.saturating_mul(u32::try_from(k).unwrap_or(u32::MAX));
             let now = std::time::Instant::now();
-            if now < due(next) {
-                std::thread::sleep(due(next) - now);
+            if now < due(next) && !crate::stopping::wait_tick(&self.stop, due(next) - now) {
+                continue;
             }
             let elapsed = start.elapsed().as_millis();
             let latest =
@@ -750,8 +799,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                     Value::int(i64::try_from(missed).unwrap_or(i64::MAX)),
                 ],
             );
-            // `step(edit state, input)` returns `(state', unit)` in Core (`spec/17 §3`).
-            match self.call_hosted(step, vec![state.clone(), tick]) {
+            // `step(edit state, input)` returns `(state', unit)` in Core (`spec/17 §3`). It is
+            // the body of the host's `for ever`, so a host stop interrupts its `Http` waits.
+            self.in_ever = true;
+            let stepped = self.call_hosted(step, vec![state.clone(), tick]);
+            self.in_ever = false;
+            match stepped {
                 Ok(Value::Tuple(parts)) => match parts.first() {
                     Some(updated) => state = updated.clone(),
                     None => {
@@ -822,6 +875,14 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// Whether the heap the run holds is within its budget (ADR 0061): checked at each call
     /// and at each iteration of a `for` loop, at `span`, else the run aborts with U6003.
     fn within_budget(&self, span: Span) -> Result<(), Stop<'p>> {
+        // ADR 0116 rule 16: the hard stop cancels the run at its next check point, found on
+        // the slow path when the thread's attention word changed (rule 18).
+        if let Some(now) = self.word.changed_since(self.seen.get()) {
+            self.seen.set(now);
+            if let Some(hard) = self.stop.hard() {
+                return Err(Stop::Abort(Abort::HostStop { span, hard }));
+            }
+        }
         let budget = self.max_memory.saturating_mul(1024 * 1024);
         if (self.held)().saturating_sub(self.baseline) > budget {
             return Err(Stop::Abort(Abort::Memory {
@@ -1353,9 +1414,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         mut current: Vec<Value<'p>>,
     ) -> Result<Vec<Value<'p>>, Stop<'p>> {
         match source {
-            // `ever`: until `stop` or a failure (`spec/26 §5`).
-            // With `within d`, each iteration has the deadline `d` after its start, which every
-            // interruptible operation it waits on or starts honors (`spec/26 §6`).
+            // `ever`: until `stop`, a failure, or a host stop at the start of an iteration
+            // (`spec/26 §5`, ADR 0116 rules 13 and 14). With `within d`, each iteration has the
+            // deadline `d` after its start, which every interruptible operation it waits on or
+            // starts honors (`spec/26 §7`).
             LoopSource::Ever { within } => {
                 let period = match within {
                     Some((deadline, _)) => match self.atom(env, deadline)? {
@@ -1371,26 +1433,30 @@ impl<'p, 'w> Machine<'p, 'w> {
                     None => None,
                 };
                 let outer = self.deadline.take();
-                loop {
-                    if let Err(stop) = self.within_budget(span) {
-                        self.deadline = outer;
-                        return Err(stop);
+                let ended = loop {
+                    if self.ever_start() {
+                        self.stop_event();
+                        break Ok(());
                     }
+                    if let Err(stop) = self.within_budget(span) {
+                        break Err(stop);
+                    }
+                    self.in_ever = true;
                     self.deadline = period.map(|ms| Deadline::after(ms, self.task.clone()));
-                    match self.iteration(env, caps, var, state, current, &Value::Unit, body) {
+                    let taken = std::mem::take(&mut current);
+                    match self.iteration(env, caps, var, state, taken, &Value::Unit, body) {
                         Ok((next, stopped)) => {
                             current = next;
                             if stopped {
-                                break;
+                                break Ok(());
                             }
                         }
-                        Err(stop) => {
-                            self.deadline = outer;
-                            return Err(stop);
-                        }
+                        Err(stop) => break Err(stop),
                     }
-                }
+                };
+                self.in_ever = false;
                 self.deadline = outer;
+                ended?;
             }
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
             LoopSource::Until { cond, .. } => loop {
@@ -1467,6 +1533,41 @@ impl<'p, 'w> Machine<'p, 'w> {
         Ok(current)
     }
 
+    /// Whether the loop of the host, or a `for ever`, stops at the iteration that starts now
+    /// (ADR 0116 rules 13, 14 and 19): a host stop request has reached the run, which is
+    /// sticky; or `--stop-after-iterations` iterations have started, which makes the run's own
+    /// request now. Otherwise the iteration counts as started.
+    pub(crate) fn ever_start(&mut self) -> bool {
+        if self.stop.stopped() {
+            return true;
+        }
+        if self
+            .stop_after
+            .is_some_and(|limit| self.iterations >= limit)
+        {
+            self.stop.request_local();
+            return true;
+        }
+        self.iterations = self.iterations.saturating_add(1);
+        false
+    }
+
+    /// Appends the `stop` event of a loop that stops at the start of an iteration (ADR 0116
+    /// rule 14), in the current task.
+    pub(crate) fn stop_event(&mut self) {
+        let seq = self.trace.len() + 1;
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+        self.trace.push(Event {
+            seq,
+            task: task.join("."),
+            instance: String::new(),
+            capability: String::new(),
+            op: String::new(),
+            args: Vec::new(),
+            outcome: EventOutcome::Stop,
+        });
+    }
+
     /// The `on stop` block of a loop with the state `current` bound; returns the state it gives
     /// (`spec/26 §5`).
     fn on_stop(
@@ -1529,9 +1630,13 @@ impl<'p, 'w> Machine<'p, 'w> {
         task: &'p Expr,
     ) -> Flow<'p> {
         self.task.push(index + 1);
+        // A started task is a task of its own: a host stop reaches it only through its own
+        // `for ever` loops (ADR 0116 rule 14).
+        let in_ever = std::mem::replace(&mut self.in_ever, false);
         let mark = env.len();
         let result = self.eval(env, caps, task);
         env.truncate(mark);
+        self.in_ever = in_ever;
         self.task.pop();
         result
     }
@@ -1871,7 +1976,7 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// Appends the iteration's one `timeout` event, with the path of the task that runs the
     /// loop, the first time its control flow observes a failure the deadline caused: a trace
-    /// does not depend on which task met the deadline first (`spec/26 §6`).
+    /// does not depend on which task met the deadline first (`spec/26 §7`).
     fn timeout_observed(&mut self) {
         let Some(deadline) = self.deadline.as_mut() else {
             return;
@@ -1894,7 +1999,7 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send};
+        use una_http::client::{Error, Request, send, send_interruptible};
         use una_http::grant::Method;
         let fail = |error: Error| {
             let (name, index) = match error {
@@ -1906,6 +2011,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
+                // Edition 0.4 only: no operation of an earlier edition runs in a `for ever`.
+                Error::Interrupted => ("Interrupted", 8),
                 // Not a failure: the run aborts.
                 Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
@@ -1970,8 +2077,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             body: body.as_bytes(),
             bearer: bearer.as_deref(),
         };
-        // The deadline of a `for ever within` iteration (`spec/26 §6`): past it, the request
-        // fails at once with `TimedOut`; before it, it waits no longer than the time left.
+        // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request
+        // fails at once with `TimedOut`; before it, it waits no longer than the time left. In
+        // the body of a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12):
+        // whichever comes first cuts the wait, in the same poll.
         let mut settings = self.http;
         let mut cut = false;
         if let Some(left) = self.deadline.as_ref().and_then(Deadline::left)
@@ -1982,6 +2091,8 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
         let sent = if cut && settings.timeout.is_zero() {
             Err(Error::TimedOut)
+        } else if self.in_ever {
+            send_interruptible(&request, &grants, &settings, &self.stop.interrupt())
         } else {
             send(&request, &grants, &settings)
         };
@@ -3179,6 +3290,8 @@ mod tests {
             max_depth: 10,
             max_memory: 2,
             held: &probe,
+            stop_after: None,
+            stop: None,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits);
         held.store(

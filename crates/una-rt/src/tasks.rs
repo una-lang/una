@@ -232,7 +232,7 @@ thread_local! {
 fn finish((value, status): (i64, i64)) -> i64 {
     STATUS.with(|cell| cell.set(status));
     // The join of the block: a `for ever within` iteration observes here the deadline that
-    // its tasks met (`spec/26 §6`), unless the block's task must stop.
+    // its tasks met (`spec/26 §7`), unless the block's task must stop.
     if status != 2 {
         crate::deadline::joined();
     }

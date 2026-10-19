@@ -1110,7 +1110,7 @@ impl Lexer<'_> {
             && self.out.keywords >= KeywordSet::V0_4
             && self.rest_of_line_blank();
         // Edition 0.4: `within` right after `for ever` is the deadline of the loop (`spec/26
-        // §6`); anywhere else it stays reserved (U0103).
+        // §7`); anywhere else it stays reserved (U0103).
         let deadline =
             word == "within" && self.out.keywords >= KeywordSet::V0_4 && self.after_for_ever();
         let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
