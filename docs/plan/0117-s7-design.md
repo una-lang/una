@@ -4,7 +4,7 @@
 - Base: slice S4 (#969, `docs/plan/0117-s4-design.md`), on S3 (#968, interruptible waits), S2 (#967) and S1 (#966, the helper pools)
 - Normative text: `spec/27 §2`; decisions in the ADR 0117 amendment of 2026-10-19 on slice S7
 - Later work that builds on it: the listener of #897 (ADR 0123 rule 19)
-- Review: the independent review of S7 (findings R7-1 to R7-8) and its recheck (R7-9 to R7-12) are folded in; §10 lists where each one landed.
+- Review: the independent review of S7 (findings R7-1 to R7-8) and its rechecks (R7-9 to R7-14) are folded in; §10 lists where each one landed.
 
 This note fixes how S7 is built, and lists the decisions it takes where the ADRs leave a choice. Each decision takes the most secure option the ADRs allow.
 
@@ -110,6 +110,8 @@ The crate stays under its cap of 1,200 lines (ADR 0116 amendment of 2026-10-19),
 - **Name resolution** (`una-http`, `resolve.rs`, review R7-10):
   - **One lookup per name at a time.** Callers that ask for a name while its lookup is in flight wait for that lookup's answer, each until its own deadline. A lookup whose callers all gave up keeps its place until the system answers it, but later callers of the name join it rather than start another. So a name whose lookups stall holds one resolver place, whatever the rate of its requests: the bound per name is 1, below a quarter of any bound of the process.
   - **Bounded threads.** Resolver threads are bounded process-wide by `--io-threads` (`una_http::client::limit_resolvers`, set when the run's scheduler is made; 64 in the interpreter), with a first-come, first-served line for a place whose wait the deadline also covers. No thread starts past a deadline.
+  - **At most a quarter of the threads per zone** (the name without its first label: `a.example.net` is in `example.net`), and at least 1 (review R7-13). A zone whose many distinct names never resolve, such as a wildcard zone, holds at most that share, and leaves the other places to other zones; a caller whose zone has its share waits out of the line, so it holds no one behind it, and joins the line's end again once the zone has room.
+  - **A lookup that panics** ends as a failure through a guard in its thread (review R7-14): its place is given back and its callers get `Unreachable`, and a thread that cannot start ends its lookup the same way.
   - **A failed name is remembered** for 5 seconds: it answers `Unreachable` at once, without a new lookup. The time is the monotonic clock of the process, since a run under virtual time has no real network (ADR 0116 rule 19).
   - **Costs.** O(1) per call on average: hash maps by name (never iterated into anything a program sees), a line whose callers that gave up are skipped lazily, and a cache of failures pruned when it has doubled. A place given back wakes the callers waiting for one, at most the threads that resolve.
 - **A literal address** (`127.0.0.1`, `[::1]`) is not resolved: no resolver thread starts for it.
@@ -139,7 +141,7 @@ Each request parked on the reactor holds one socket, where the pool held at most
   - `reactor.rs`: a stale token ignored; a host stop that wakes the waits of its run only; register, wake and remove at 1,000, 10,000 and 100,000 waits in linear time; a parked task woken by readiness, by its time and by a cancellation; a wait of a run that stops woken with no pipe event; a wait without a descriptor woken by its party; a parked task leaving its worker to the others.
   - `reactor.rs`, with the handlers installed, in a process of its own (the test runs its scenario through `current_exe`, so the handlers of the shared test process stay untouched): the pipe is watched, and a run's own stop wakes a wait listed with its run at once, through the pipe.
   - `sockets.rs`: the cap for several limits; places given first come, first served and never lost; a place given back while a waiter leaves is never stranded (the interleaving driven by a test hook); waiters that leave in O(1) each, at 10,000 and 100,000.
-- `una-http` (`resolve.rs`): concurrent callers of a name share one lookup; a stalled name holds one place and another name still resolves beside it under a bound of 2; a failed name is remembered without a new lookup; the line skips callers that left.
+- `una-http` (`resolve.rs`): concurrent callers of a name share one lookup; a stalled name holds one place and another name still resolves beside it under a bound of 2; sixteen distinct names of a stalled zone hold one place between them while a healthy host resolves; a lookup that panics gives its place back and answers its callers; a failed name is remembered without a new lookup; the line skips callers that left.
 - `una-cli` (`tests/http.rs`):
   - 64 requests to a server that never answers, with `--io-threads 1`, beside a task that writes and reads a file and prints: the print comes long before the requests' `--http-timeout`, and the 64 requests time out together, in about one `--http-timeout`, not 64 of them (a stalled upstream holds no thread);
   - 1,000 requests to a server that never answers under `ulimit -n 256`, beside a task that writes, reads and writes again a file: the file's copy holds its text, so no `Files` operation failed;
@@ -171,4 +173,6 @@ Each request parked on the reactor holds one socket, where the pool held at most
 | R7-10 (a stalled name fills the resolver places) | §5, Name resolution: one lookup per name at a time, so at most one place per name; failed names remembered for 5 seconds; tests in `resolve.rs` |
 | R7-11 (a run's own stop does not write the pipe) | §3, Host stops: `RunStop::request_local` wakes the pipe; a test with the handlers installed, in a process of its own |
 | R7-12 (the look at every pass) | §3, Host stops: the reactor keeps the time of its last look, and looks every 100 ms or at a pipe event |
+| R7-13 (a stalled wildcard zone) | §5, Name resolution: at most a quarter of the resolver threads per zone; a test with sixteen names of one stalled zone |
+| R7-14 (a lookup that panics) | §5, Name resolution: a guard in the lookup's thread ends it as a failure; a test with a panicking lookup |
 | R7-8 (count of `unsafe` blocks) | `poll.rs` has eight `unsafe` blocks, `io.rs` two, and `signals.rs` one more, each with its `// SAFETY:` comment |

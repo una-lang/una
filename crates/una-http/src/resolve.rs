@@ -11,6 +11,11 @@
 //! - **A bounded number of resolver threads,** `most` ([`limit`]), with a first-come,
 //!   first-served line for a place, whose wait the caller's deadline covers. No thread starts
 //!   past a deadline.
+//! - **At most a quarter of the threads per zone** (the name without its first label), at
+//!   least 1, so a zone whose many names never resolve, such as a wildcard one, leaves the other
+//!   places to other zones; a caller whose zone has its share waits out of the line.
+//! - **A lookup that panics** ends as a failure through a guard in its thread, so its place and
+//!   its callers are never lost.
 //! - **A failed name is remembered** for [`FAILED_FOR`]: it answers `Unreachable` at once,
 //!   without a new lookup. The time is the monotonic clock of the process: a run under virtual
 //!   time has no real network (ADR 0116 rule 19).
@@ -54,6 +59,8 @@ struct State {
     /// Tickets in `line` whose callers gave up, skipped when they reach its front.
     gave_up: HashSet<u64>,
     pending: HashMap<String, Arc<Pending>>,
+    /// The lookups running in each zone ([`zone`]), for the zones that have one.
+    zones: HashMap<String, usize>,
     failed: HashMap<String, Instant>,
     /// The size of `failed` after its last pruning.
     pruned: usize,
@@ -65,6 +72,41 @@ pub(crate) struct Resolver {
     /// Signaled when a place is given back, a caller leaves the line, or a lookup starts.
     freed: Condvar,
     lookup: Lookup,
+}
+
+/// The zone of a name: the name without its first label (`a.example.net` is in
+/// `example.net`), or the name itself when it has one label. The lookups that run in one zone
+/// are bounded ([`State::per_zone`]), so a zone whose names never resolve, such as a wildcard
+/// one that answers nothing for any of its many names, cannot take every place (review R7-13).
+fn zone(name: &str) -> &str {
+    name.split_once('.').map_or(name, |(_, rest)| rest)
+}
+
+impl State {
+    /// The most lookups that run at once in one zone: a quarter of the bound, at least 1.
+    fn per_zone(&self) -> usize {
+        (self.most / 4).max(1)
+    }
+}
+
+/// Ends a lookup when its thread ends, with a failure when the lookup did not return: a
+/// lookup that panics, or a thread that never started, gives its place back and answers its
+/// callers (review R7-14).
+struct Finishing {
+    resolver: &'static Resolver,
+    name: String,
+    pending: Arc<Pending>,
+    done: bool,
+}
+
+impl Drop for Finishing {
+    fn drop(&mut self) {
+        if !self.done {
+            let failed = Err(std::io::Error::other("the lookup did not return"));
+            self.resolver
+                .finish(&self.name, &self.pending, failed, false);
+        }
+    }
 }
 
 /// What a caller does once it holds the state.
@@ -98,6 +140,7 @@ impl Resolver {
                 line: VecDeque::new(),
                 gave_up: HashSet::new(),
                 pending: HashMap::new(),
+                zones: HashMap::new(),
                 failed: HashMap::new(),
                 pruned: 0,
             }),
@@ -121,17 +164,23 @@ impl Resolver {
         let pending = match next {
             Next::Join(pending) => pending,
             Next::Start(pending) => {
-                let (owned, shared) = (name.to_owned(), Arc::clone(&pending));
-                let started = std::thread::Builder::new()
+                let mut guard = Finishing {
+                    resolver: self,
+                    name: name.to_owned(),
+                    pending: Arc::clone(&pending),
+                    done: false,
+                };
+                // A thread that cannot start drops its closure, and the guard in it ends the
+                // lookup with a failure.
+                let _ = std::thread::Builder::new()
                     .name("una-http-resolve".to_owned())
                     .spawn(move || {
-                        let found = (self.lookup)(&owned);
-                        self.finish(&owned, &shared, found, true);
+                        let found = (guard.resolver.lookup)(&guard.name);
+                        guard.done = true;
+                        guard
+                            .resolver
+                            .finish(&guard.name, &guard.pending, found, true);
                     });
-                if started.is_err() {
-                    let failed = Err(std::io::Error::other("no resolver thread"));
-                    self.finish(name, &pending, failed, false);
-                }
                 pending
             }
         };
@@ -179,22 +228,33 @@ impl Resolver {
                 Self::leave(&mut state, ticket);
                 break Ok(Next::Join(pending));
             }
-            let mine = match ticket {
-                Some(mine) => mine,
-                None => {
-                    let mine = state.next;
-                    state.next = state.next.wrapping_add(1);
-                    state.line.push_back(mine);
-                    ticket = Some(mine);
-                    mine
+            // A zone that runs its share of lookups: the caller waits out of the line, so it
+            // holds no one behind it, and joins its end again once the zone has room.
+            let in_zone = state.zones.get(zone(name)).copied().unwrap_or(0);
+            if in_zone >= state.per_zone() {
+                if ticket.is_some() {
+                    Self::leave(&mut state, ticket.take());
+                    self.freed.notify_all();
                 }
-            };
-            if state.running < state.most && Self::front(&mut state) == Some(mine) {
-                state.line.pop_front();
-                state.running += 1;
-                let pending = Arc::new(Pending::default());
-                state.pending.insert(name.to_owned(), Arc::clone(&pending));
-                break Ok(Next::Start(pending));
+            } else {
+                let mine = match ticket {
+                    Some(mine) => mine,
+                    None => {
+                        let mine = state.next;
+                        state.next = state.next.wrapping_add(1);
+                        state.line.push_back(mine);
+                        ticket = Some(mine);
+                        mine
+                    }
+                };
+                if state.running < state.most && Self::front(&mut state) == Some(mine) {
+                    state.line.pop_front();
+                    state.running += 1;
+                    *state.zones.entry(zone(name).to_owned()).or_insert(0) += 1;
+                    let pending = Arc::new(Pending::default());
+                    state.pending.insert(name.to_owned(), Arc::clone(&pending));
+                    break Ok(Next::Start(pending));
+                }
             }
             let Ok(time) = left(deadline) else {
                 Self::leave(&mut state, ticket);
@@ -251,6 +311,13 @@ impl Resolver {
         {
             let mut state = self.lock();
             state.running = state.running.saturating_sub(1);
+            let zone = zone(name);
+            if let Some(count) = state.zones.get_mut(zone) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    state.zones.remove(zone);
+                }
+            }
             if state
                 .pending
                 .get(name)
@@ -342,6 +409,70 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(resolver.lock().running, 1);
         RELEASE.store(true, Ordering::SeqCst);
+    }
+
+    static ZONE_RELEASE: AtomicBool = AtomicBool::new(false);
+
+    fn stalls_a_zone(name: &str) -> std::io::Result<Vec<SocketAddr>> {
+        if name.ends_with(".wild.test") {
+            let started = Instant::now();
+            while !ZONE_RELEASE.load(Ordering::SeqCst)
+                && started.elapsed() < Duration::from_secs(20)
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        Ok(local())
+    }
+
+    #[test]
+    fn a_stalled_zone_of_many_names_leaves_places_to_the_other_zones() {
+        // Review R7-13: four places, so one per zone; sixteen distinct names of a wildcard zone
+        // that never answers hold one place between them, and a healthy host still resolves.
+        let resolver = leaked(4, stalls_a_zone);
+        let soon = Instant::now() + Duration::from_millis(100);
+        let callers: Vec<_> = (0..16)
+            .map(|i| {
+                std::thread::spawn(move || resolver.resolve(&format!("n{i}.wild.test"), 80, soon))
+            })
+            .collect();
+        for caller in callers {
+            assert_eq!(caller.join().unwrap(), Err(Error::TimedOut));
+        }
+        assert_eq!(resolver.lock().running, 1);
+        let started = Instant::now();
+        let later = Instant::now() + Duration::from_secs(5);
+        assert!(resolver.resolve("healthy.example", 80, later).is_ok());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(resolver.lock().running, 1);
+        ZONE_RELEASE.store(true, Ordering::SeqCst);
+    }
+
+    fn panics(name: &str) -> std::io::Result<Vec<SocketAddr>> {
+        if name == "boom.test" {
+            panic!("a lookup that panics");
+        }
+        Ok(local())
+    }
+
+    #[test]
+    fn a_lookup_that_panics_gives_its_place_back_and_answers_its_callers() {
+        // Review R7-14: with one place, the panicking lookup answers `Unreachable` and gives
+        // its place back, so the next name resolves.
+        let resolver = leaked(1, panics);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let started = Instant::now();
+        assert_eq!(
+            resolver.resolve("boom.test", 80, deadline),
+            Err(Error::Unreachable)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        {
+            let state = resolver.lock();
+            assert_eq!(state.running, 0);
+            assert!(state.pending.is_empty() && state.zones.is_empty());
+        }
+        assert!(resolver.resolve("fine.test", 80, deadline).is_ok());
     }
 
     static FAILED_CALLS: AtomicUsize = AtomicUsize::new(0);
