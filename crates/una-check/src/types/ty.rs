@@ -4,7 +4,7 @@ use std::fmt;
 
 use una_syntax::Span;
 
-use una_core::IntType;
+use una_core::{Coll, IntType};
 
 use super::label::Label;
 pub(crate) use super::shared::{Flagged, Flags, Shared};
@@ -112,6 +112,9 @@ impl KindLabels {
             Ty::Refined(_, inner) => self.written(inner),
             Ty::List(element) | Ty::Dense(_, element) => self.written(element),
             Ty::Map(key, value) => self.written(key).join(&self.written(value)),
+            Ty::Coll(_, args) => args
+                .iter()
+                .fold(Label::public(), |label, arg| label.join(&self.written(arg))),
             Ty::Kind(id, args) => args
                 .iter()
                 .fold(self.own(*id), |label, arg| label.join(&self.written(arg))),
@@ -133,6 +136,11 @@ impl KindLabels {
             Ty::Map(key, value) => {
                 self.occurrences(key, in_fn, out);
                 self.occurrences(value, in_fn, out);
+            }
+            Ty::Coll(_, args) => {
+                for arg in args.iter() {
+                    self.occurrences(arg, in_fn, out);
+                }
             }
             Ty::Kind(id, args) => {
                 for (index, arg) in args.iter().enumerate() {
@@ -218,6 +226,10 @@ pub(crate) enum Ty {
     /// `Map[K, V]`, keyed by an `Ord` type, from edition 0.2 (`spec/21 §1`). Its keys are part
     /// of its shape, so a read takes the labels of the key position with the top label (§3).
     Map(Shared<Ty>, Shared<Ty>),
+    /// A collection type of `std.collections` and its type arguments, edition 0.4 (ADR 0119).
+    /// The arguments that are part of its shape ([`Coll::is_shape`]) are read with its top
+    /// label, as a map's keys are.
+    Coll(Coll, Shared<[Ty]>),
     /// A record or sum kind and its type arguments; nominal (`spec/03 §2.1`).
     Kind(KindId, Shared<[Ty]>),
     /// The type parameter with this index in the declaration being checked.
@@ -503,7 +515,7 @@ impl Flagged for Ty {
             },
             Ty::List(element) | Ty::Dense(_, element) => element.flags(),
             Ty::Map(key, value) => key.flags().and(value.flags()),
-            Ty::Kind(_, args) => args.flags(),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.flags(),
             Ty::Fn(function) => function.flags(),
             Ty::Refined(_, inner) => Flags {
                 refined: true,
@@ -585,6 +597,7 @@ impl Ty {
             (Ty::Dense(x, a), Ty::Dense(y, b)) => x == y && Shared::ptr_eq(a, b),
             (Ty::Map(a, b), Ty::Map(c, d)) => Shared::ptr_eq(a, c) && Shared::ptr_eq(b, d),
             (Ty::Kind(i, a), Ty::Kind(j, b)) => i == j && Shared::ptr_eq(a, b),
+            (Ty::Coll(i, a), Ty::Coll(j, b)) => i == j && Shared::ptr_eq(a, b),
             (Ty::Fn(a), Ty::Fn(b)) => Shared::ptr_eq(a, b),
             (Ty::Labeled(l, a), Ty::Labeled(m, b)) => Shared::ptr_eq(a, b) && l == m,
             (Ty::Refined(r, a), Ty::Refined(q, b)) => Shared::ptr_eq(a, b) && r == q,
@@ -712,6 +725,13 @@ impl Ty {
                     .collect::<Vec<_>>()
                     .into(),
             ),
+            Ty::Coll(coll, args) => Ty::Coll(
+                *coll,
+                args.iter()
+                    .map(Ty::without_units)
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
             Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function.params.iter().map(Ty::without_units).collect(),
                 result: function.result.without_units(),
@@ -767,6 +787,10 @@ impl Ty {
                 *i,
                 a.iter().zip(b.iter()).map(|(x, y)| x.refit(y)).collect(),
             ),
+            (Ty::Coll(i, a), Ty::Coll(j, b)) if i == j && a.len() == b.len() => Ty::Coll(
+                *i,
+                a.iter().zip(b.iter()).map(|(x, y)| x.refit(y)).collect(),
+            ),
             (Ty::Fn(a), Ty::Fn(b)) if a.params.len() == b.params.len() => {
                 Ty::Fn(Shared::new(FnTy {
                     params: a
@@ -816,6 +840,7 @@ impl Ty {
                 reuse(value, value.without_refinements()),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, Ty::without_refinements)),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, Ty::without_refinements)),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 Ty::without_refinements,
@@ -840,6 +865,9 @@ impl Ty {
             Ty::List(element) | Ty::Dense(_, element) => element.deep_label(kinds),
             Ty::Map(key, value) => key.deep_label(kinds).join(&value.deep_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
+                label.join(&arg.deep_label(kinds))
+            }),
+            Ty::Coll(_, args) => args.iter().fold(Label::public(), |label, arg| {
                 label.join(&arg.deep_label(kinds))
             }),
             _ => Label::public(),
@@ -882,6 +910,9 @@ impl Ty {
             Ty::List(element) | Ty::Dense(_, element) => element.every_label(kinds),
             Ty::Map(key, value) => key.every_label(kinds).join(&value.every_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
+                label.join(&arg.every_label(kinds))
+            }),
+            Ty::Coll(_, args) => args.iter().fold(Label::public(), |label, arg| {
                 label.join(&arg.every_label(kinds))
             }),
             Ty::Fn(function) => function
@@ -928,6 +959,10 @@ impl Ty {
                     }),
                 )
             }
+            Ty::Coll(coll, args) => Ty::Coll(
+                *coll,
+                map_args(args, |arg| arg.op_parameter(positive, top, kinds)),
+            ),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.op_parameter(!positive, top, kinds),
@@ -975,6 +1010,9 @@ impl Ty {
                     })
                 },
             ),
+            Ty::Coll(_, args) => args.iter().fold(Label::public(), |label, arg| {
+                label.join(&arg.sent_label(positive, kinds))
+            }),
             Ty::Fn(function) => function.params.iter().fold(
                 function.result.sent_label(positive, kinds),
                 |label, param| label.join(&param.sent_label(!positive, kinds)),
@@ -996,6 +1034,7 @@ impl Ty {
                 reuse(value, value.raise_deep(label)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| a.raise_deep(label))),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, |a| a.raise_deep(label))),
             other => other.clone(),
         };
         self.relabeled(inner, &self.top_label().join(label))
@@ -1019,6 +1058,7 @@ impl Ty {
             Ty::Dense(dense, element) => Ty::Dense(*dense, reuse(element, element.erase())),
             Ty::Map(key, value) => Ty::Map(reuse(key, key.erase()), reuse(value, value.erase())),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, Ty::erase)),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, Ty::erase)),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 Ty::erase,
@@ -1053,6 +1093,9 @@ impl Ty {
             Ty::Kind(id, kind_args) => {
                 Ty::Kind(*id, map_args(kind_args, |arg| arg.substitute(args)))
             }
+            Ty::Coll(coll, coll_args) => {
+                Ty::Coll(*coll, map_args(coll_args, |arg| arg.substitute(args)))
+            }
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.substitute(args),
@@ -1081,6 +1124,7 @@ impl Ty {
                 reuse(value, value.map_labels(f)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| a.map_labels(f))),
+            Ty::Coll(coll, args) => Ty::Coll(*coll, map_args(args, |a| a.map_labels(f))),
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.map_labels(f),
@@ -1113,6 +1157,23 @@ impl Ty {
                 reuse(value, value.symbolic(names)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| a.symbolic(names))),
+            // The positions of a collection's shape carry `ℓ*_T`, as a map's keys do (ADR 0119
+            // IF2 to IF4).
+            Ty::Coll(coll, args) => {
+                let mut index = 0;
+                Ty::Coll(
+                    *coll,
+                    map_args(args, |a| {
+                        let mapped = if coll.is_shape(index) {
+                            a.symbolic(names).map_labels(&starred)
+                        } else {
+                            a.symbolic(names)
+                        };
+                        index += 1;
+                        mapped
+                    }),
+                )
+            }
             Ty::Fn(function) => Ty::Fn(map_function(
                 function,
                 |p| p.symbolic(names),
@@ -1132,7 +1193,7 @@ impl Ty {
             Ty::Labeled(_, inner) | Ty::Refined(_, inner) => inner.second_class(),
             Ty::List(element) | Ty::Dense(_, element) => element.second_class(),
             Ty::Map(key, value) => key.second_class() || value.second_class(),
-            Ty::Kind(_, args) => args.iter().any(Ty::second_class),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(Ty::second_class),
             Ty::Fn(function) => {
                 !function.uses.is_empty()
                     || function.fails.is_some()
@@ -1153,7 +1214,7 @@ impl Ty {
                 key.params(params);
                 value.params(params);
             }
-            Ty::Kind(_, args) => args.iter().for_each(|arg| arg.params(params)),
+            Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().for_each(|arg| arg.params(params)),
             Ty::Fn(function) => {
                 function
                     .params
@@ -1200,6 +1261,8 @@ pub(crate) enum View<'t, T> {
     List(&'t T),
     Dense(Dense, &'t T),
     Map(&'t T, &'t T),
+    /// A collection type of `std.collections` (ADR 0119).
+    Coll(Coll, &'t [T]),
     Kind(KindId, &'t [T]),
     Param(usize),
     /// A function type's parameters and result: its `uses`, `fails` and refinements are not
@@ -1234,6 +1297,7 @@ impl TypeView for Ty {
             Ty::Dense(dense, element) => View::Dense(*dense, element),
             Ty::Map(key, value) => View::Map(key, value),
             Ty::Kind(id, args) => View::Kind(*id, args),
+            Ty::Coll(coll, args) => View::Coll(*coll, args),
             Ty::Param(index) => View::Param(*index),
             Ty::Fn(function) => View::Fn(&function.params, &function.result),
             Ty::Var(_) => View::Var,
@@ -1277,6 +1341,17 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             }
             View::Kind(id, args) => {
                 write!(f, "{}", names.kind_name(id))?;
+                if !args.is_empty() {
+                    let args: Vec<String> = args
+                        .iter()
+                        .map(|arg| Show(arg, names).to_string())
+                        .collect();
+                    write!(f, "[{}]", args.join(", "))?;
+                }
+                Ok(())
+            }
+            View::Coll(coll, args) => {
+                write!(f, "{}", coll.as_str())?;
                 if !args.is_empty() {
                     let args: Vec<String> = args
                         .iter()
@@ -1333,6 +1408,13 @@ impl<T: TypeView, N: Names> fmt::Display for ShowLabeled<'_, '_, T, N> {
                     .map(|arg| ShowLabeled(arg, names).to_string())
                     .collect();
                 write!(f, "{}[{}]", names.kind_name(id), args.join(", "))
+            }
+            View::Coll(coll, args) if !args.is_empty() => {
+                let args: Vec<String> = args
+                    .iter()
+                    .map(|arg| ShowLabeled(arg, names).to_string())
+                    .collect();
+                write!(f, "{}[{}]", coll.as_str(), args.join(", "))
             }
             View::Fn(params, result) => {
                 let params: Vec<String> = params

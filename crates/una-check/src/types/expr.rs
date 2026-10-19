@@ -358,6 +358,8 @@ impl<'a> Checker<'_, 'a, '_> {
             Ty::Map(key, value) => self
                 .unwritable(key, seen)
                 .or_else(|| self.unwritable(value, seen)),
+            // A collection writes its Una form, and needs no `==` for it (ADR 0119 rule 3).
+            Ty::Coll(_, args) => args.iter().find_map(|arg| self.unwritable(arg, seen)),
             Ty::Kind(id, args) => {
                 if !seen.insert(*id) {
                     return None;
@@ -403,6 +405,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Ty::Map(key, value) => self
                 .labeled_field(key, seen)
                 .or_else(|| self.labeled_field(value, seen)),
+            Ty::Coll(_, args) => args.iter().find_map(|arg| self.labeled_field(arg, seen)),
             Ty::Kind(id, args) => {
                 if !seen.insert(*id) {
                     return None;
@@ -968,6 +971,19 @@ impl<'a> Checker<'_, 'a, '_> {
                             span,
                             format!("`{symbol}` cannot compare values of `{shown}`, which hold functions"),
                         );
+                    } else if let Some(coll) = self.facts.unequal(&resolved) {
+                        // ADR 0119 rules 2 and 11: a hash map, a hash set and a priority queue
+                        // have no `==`, nor does a value that holds one.
+                        let message = match resolved.unlabeled() {
+                            Ty::Coll(own, _) if *own == coll => unequal_message(coll),
+                            _ => format!(
+                                "`{symbol}` cannot compare values of `{}`, which hold a {}; {}",
+                                self.show(&resolved),
+                                unequal_noun(coll),
+                                unequal_message(coll)
+                            ),
+                        };
+                        self.report.error(Code::U2001, span, message);
                     }
                 }
                 self.needs.push((left_ty, Constraint::Eq, span));
@@ -2284,4 +2300,26 @@ enum Combine {
 pub(crate) fn interpolates(literal: &Literal) -> bool {
     matches!(literal, Literal::Text(text)
         if text.parts.iter().any(|part| matches!(part, TextPart::Interpolation(_))))
+}
+
+/// What a collection without `==` is called in a message: `hash map`, `hash set` or
+/// `priority queue`.
+fn unequal_noun(coll: una_core::Coll) -> &'static str {
+    match coll {
+        una_core::Coll::HashSet => "hash set",
+        una_core::Coll::PriorityQueue => "priority queue",
+        _ => "hash map",
+    }
+}
+
+/// The message of `==` on a collection without it (ADR 0119 rule 11), naming the method that
+/// compares as sets.
+fn unequal_message(coll: una_core::Coll) -> String {
+    match coll {
+        una_core::Coll::HashSet => "hash sets have no `==`; use `same_items(as:)`".to_owned(),
+        una_core::Coll::PriorityQueue => {
+            "priority queues have no `==`; compare their `items()`".to_owned()
+        }
+        _ => "hash maps have no `==`; use `same_entries(as:)`".to_owned(),
+    }
 }

@@ -958,7 +958,8 @@ impl<'p, 'a> Checker<'p, 'a> {
             {
                 table.edges.push((target, import.module.span));
             }
-            // The importable standard modules (`spec/10 §11` rule 10).
+            // The importable standard modules (`spec/10 §11` rule 10), `std.collections` among
+            // them from edition 0.4 (ADR 0119 rule 0).
             let edition = self.package.settings.edition;
             let importable = prelude::importable(edition);
             let is_std = importable.contains(&path.as_str());
@@ -968,6 +969,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 prelude::STD_HOST => prelude::std_host_names(edition),
                 prelude::STD_TIME => &prelude::STD_TIME_NAMES,
                 prelude::STD_DRIVE => &prelude::STD_DRIVE_NAMES,
+                prelude::STD_COLLECTIONS => &prelude::STD_COLLECTIONS_NAMES,
                 _ => &[],
             };
             if target.is_none() && !is_std {

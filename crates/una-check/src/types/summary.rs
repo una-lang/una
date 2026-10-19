@@ -174,6 +174,11 @@ fn collect(found: &Ty, declared: &Ty, params: &[&str], path: &mut Vec<Step>, out
                 step(Step::Arg(index), found, declared, out);
             }
         }
+        (Ty::Coll(_, found), Ty::Coll(_, declared)) => {
+            for (index, (found, declared)) in found.iter().zip(declared.iter()).enumerate() {
+                step(Step::Arg(index), found, declared, out);
+            }
+        }
         (Ty::Fn(found), Ty::Fn(declared)) => {
             step(Step::Result, &found.result, &declared.result, out);
         }
@@ -229,6 +234,17 @@ fn raise_at(
         ),
         (Ty::Kind(_, declared), Ty::Kind(id, actual)) => Ty::Kind(
             id,
+            actual
+                .iter()
+                .enumerate()
+                .map(|(index, actual)| match declared.get(index) {
+                    Some(declared) => inner(Step::Arg(index), declared, actual.clone()),
+                    None => actual.clone(),
+                })
+                .collect(),
+        ),
+        (Ty::Coll(_, declared), Ty::Coll(coll, actual)) => Ty::Coll(
+            coll,
             actual
                 .iter()
                 .enumerate()

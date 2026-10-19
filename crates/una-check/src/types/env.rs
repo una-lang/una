@@ -82,6 +82,8 @@ pub(crate) enum Builtin {
     Map,
     /// `F64`, built in from edition 0.3 (`spec/29`, ADR 0114 rule 1).
     F64,
+    /// A collection type that `std.collections` exports, edition 0.4 (ADR 0119 rule 0).
+    Coll(una_core::Coll),
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -439,15 +441,41 @@ pub(crate) struct Env<'a> {
     /// declaration and examples keeps from it, by function id: the handler's name and the first
     /// place it is named, which the U4002 at a call of their policy shows.
     pub(crate) blocked_vias: BTreeMap<usize, (String, Span)>,
+    /// The module of the map's built-in method `update`, in edition 0.4 (ADR 0119 rule 18):
+    /// in no scope, so only method syntax on a map reaches it.
+    pub(crate) map_module: Option<usize>,
+    /// The function `update` of that module.
+    pub(crate) map_update: Option<usize>,
+    /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
+    /// rule 0).
+    pub(crate) collections: Option<usize>,
 }
 
-/// The key type of a written `Map[K, V]`, where it is written, and the function whose type
-/// parameters it may name.
+/// The key type of a written `Map[K, V]`, or an argument of a written collection type that
+/// must satisfy a constraint (ADR 0119 rules 7, 8 and 13), where it is written, and the
+/// function whose type parameters it may name.
 #[derive(Clone, Debug)]
 pub(crate) struct MapKey {
     pub(crate) key: Ty,
     pub(crate) span: Span,
     pub(crate) owner: Option<usize>,
+    /// The collection type and the index of the argument; `None` for a map's key.
+    pub(crate) of: Option<(una_core::Coll, usize)>,
+}
+
+impl MapKey {
+    /// The constraint the argument must satisfy: `Ord` for a map's key.
+    pub(crate) fn need(&self) -> Constraint {
+        match self.of {
+            None => Constraint::Ord,
+            Some((coll, index)) => match coll.needs(index) {
+                una_core::Constraint::Eq => Constraint::Eq,
+                una_core::Constraint::Ord => Constraint::Ord,
+                una_core::Constraint::Integer => Constraint::Integer,
+                una_core::Constraint::None => Constraint::None,
+            },
+        }
+    }
 }
 
 /// A step from a position of a type to a position inside it (ADR 0067).
@@ -482,12 +510,16 @@ pub(crate) fn position_text(path: &[Step]) -> String {
 }
 
 impl<'a> Env<'a> {
-    /// Builds the environment of the package modules, then the prelude and `std.testing`, and
-    /// lowers every signature.
+    /// Builds the environment of the package modules, then the prelude, `std.testing`, in
+    /// edition 0.4 the module of the map's `update` and, when the package imports it,
+    /// `std.collections`, and lowers every signature.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         package: Vec<Source<'a>>,
         prelude: Source<'a>,
         after_prelude: Vec<Source<'a>>,
+        map_0_4: Option<Source<'a>>,
+        collections: Option<Source<'a>>,
         categories: Vec<String>,
         edition: Edition,
         report: &mut Report<'_>,
@@ -533,6 +565,9 @@ impl<'a> Env<'a> {
             boundaries: super::boundary::Boundaries::default(),
             plain_vias: BTreeSet::new(),
             blocked_vias: BTreeMap::new(),
+            map_module: None,
+            map_update: None,
+            collections: None,
         };
         for source in package
             .into_iter()
@@ -540,6 +575,29 @@ impl<'a> Env<'a> {
             .chain(after_prelude)
         {
             env.register(source);
+        }
+        if let Some(source) = map_0_4 {
+            env.map_module = Some(env.modules.len());
+            env.register(source);
+        }
+        if let Some(source) = collections {
+            env.collections = Some(env.modules.len());
+            env.register(source);
+        }
+        env.map_update =
+            env.map_module
+                .and_then(|index| match env.modules.get(index)?.lower.get("update") {
+                    Some(Entity::Function(id)) => Some(*id),
+                    _ => None,
+                });
+        // ADR 0119 rule 0: `std.collections` exports its built-in types beside its kinds.
+        if let Some(module) = env.collections.and_then(|index| env.modules.get_mut(index)) {
+            for coll in una_core::Coll::ALL {
+                module
+                    .upper
+                    .entry(coll.as_str())
+                    .or_insert(Entity::Builtin(Builtin::Coll(coll)));
+            }
         }
         if let Some(module) = env.modules.get_mut(count) {
             for (name, builtin) in BUILTINS {
@@ -829,8 +887,11 @@ impl<'a> Env<'a> {
                 let joined = path.join(".");
                 let host = joined == prelude::STD_HOST;
                 let time = joined == prelude::STD_TIME;
-                let standard =
-                    host || time || joined == "std.testing" || joined == prelude::STD_DRIVE;
+                let standard = host
+                    || time
+                    || joined == "std.testing"
+                    || joined == prelude::STD_DRIVE
+                    || joined == prelude::STD_COLLECTIONS;
                 // A dependency's module imports its own modules and the standard ones, never
                 // the root's (ADR 0122 rule 47).
                 let key = match module.mount {
@@ -2259,6 +2320,7 @@ impl<'a> Env<'a> {
                 let expected = match builtin {
                     Builtin::List => 1,
                     Builtin::Map => 2,
+                    Builtin::Coll(coll) => coll.arity(),
                     _ => 0,
                 };
                 if bases.len() != expected {
@@ -2284,9 +2346,27 @@ impl<'a> Env<'a> {
                                 key: key.clone(),
                                 span,
                                 owner: self.owner,
+                                of: None,
                             });
                         }
                         Ty::Map(Shared::new(key), Shared::new(value))
+                    }
+                    // ADR 0119: a set's item and a priority must satisfy `Ord`, and a hash key
+                    // or item `Eq`, where the type is written, as a map's key must.
+                    Builtin::Coll(coll) => {
+                        if reports {
+                            for (index, arg) in bases.iter().enumerate() {
+                                if coll.needs(index) != una_core::Constraint::None {
+                                    self.map_keys.push(MapKey {
+                                        key: arg.clone(),
+                                        span,
+                                        owner: self.owner,
+                                        of: Some((coll, index)),
+                                    });
+                                }
+                            }
+                        }
+                        Ty::Coll(coll, bases.into())
                     }
                 };
                 return Declared::plain(base);

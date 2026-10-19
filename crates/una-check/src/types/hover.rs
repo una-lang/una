@@ -33,6 +33,8 @@ enum Node {
     List(HoverType),
     Dense(super::ty::Dense, HoverType),
     Map(HoverType, HoverType),
+    /// A collection type of `std.collections` (ADR 0119).
+    Coll(una_core::Coll, Arc<[HoverType]>),
     Kind(KindId, Arc<[HoverType]>),
     Param(usize),
     Fn(Arc<[HoverType]>, HoverType),
@@ -76,6 +78,7 @@ impl TypeView for HoverType {
             Node::Dense(dense, element) => View::Dense(*dense, element),
             Node::Map(key, value) => View::Map(key, value),
             Node::Kind(id, args) => View::Kind(*id, args),
+            Node::Coll(coll, args) => View::Coll(*coll, args),
             Node::Param(index) => View::Param(*index),
             Node::Fn(params, result) => View::Fn(params, result),
         }
@@ -195,6 +198,10 @@ impl Snapshots {
             Ty::Kind(id, args) => {
                 let args = self.list(args);
                 self.node(Node::Kind(*id, args))
+            }
+            Ty::Coll(coll, args) => {
+                let args = self.list(args);
+                self.node(Node::Coll(*coll, args))
             }
             Ty::Param(index) => self.node(Node::Param(*index)),
             Ty::Fn(function) => self.function(function),
@@ -324,6 +331,11 @@ mod tests {
             Ty::Kind(0, Vec::new().into()),
             Ty::Kind(1, args.clone()),
             Ty::Kind(9, args),
+            Ty::Coll(
+                una_core::Coll::HashMap,
+                vec![Ty::Text, labeled.clone()].into(),
+            ),
+            Ty::Coll(una_core::Coll::BitSet, Vec::new().into()),
             function.clone(),
             Ty::Labeled(secret(), Shared::new(function)),
             Ty::List(Shared::new(Ty::List(Shared::new(Ty::List(text))))),

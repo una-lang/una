@@ -127,6 +127,18 @@ pub fn builtins() -> Vec<Builtin> {
         entry("keys", "Map[K, V]", "m", &[], "List[K]"),
         entry("values", "Map[K, V]", "m", &[], "List[V]"),
         entry("entries", "Map[K, V]", "m", &[], "List[Entry[K, V]]"),
+        // Edition 0.4 (ADR 0119 rule 18).
+        Builtin {
+            edit: true,
+            since: Edition::V0_4,
+            ..entry(
+                "update",
+                "Map[K, V]",
+                "m",
+                &[("key", "K"), ("initial", "V"), ("change", "fn(V) -> V")],
+                "Unit",
+            )
+        },
     ];
     for target in IntType::ALL {
         let name: &'static str = conversion_name(target);
@@ -210,6 +222,11 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         "entries" => &[
             "The entries of `m` as `Entry` values, in key order, as many as `m.len`",
             "(`spec/21 §2`).",
+        ],
+        "update" => &[
+            "Updates `m` in place, written `edit m.update(...)`: sets `key` to `change(v)`, where",
+            "`v` is its value, or `initial` when `m` has no `key`. `change` is called exactly once,",
+            "and when it fails, `m` keeps its value from before the call (`spec/21 §2`).",
         ],
         "to_int" => &[
             "Converts `x` to `Int`, which every value of a fixed-width type fits, so it always",

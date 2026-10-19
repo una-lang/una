@@ -11,17 +11,30 @@ use super::env::{Constraint, Entity, Env, FnAst, FnKind};
 use super::ty::{KindId, Names, Refinement, Show, Ty};
 use super::{Findings, Report};
 
-/// For each kind, whether its values can hold a function whatever its type arguments are, and
-/// which of its type parameters its fields hold.
+/// For each kind, whether its values can hold a function, or a collection without `==` (ADR
+/// 0119 rule 2), whatever its type arguments are, and which of its type parameters its fields
+/// hold.
 pub(crate) struct KindFacts {
     direct: Vec<bool>,
+    /// Whether its fields hold a `HashMap`, a `HashSet` or a `PriorityQueue`.
+    unequal: Vec<bool>,
     via: Vec<BTreeSet<usize>>,
+}
+
+/// What [`KindFacts::walk`] looks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// A function.
+    Function,
+    /// A collection that does not satisfy `Eq` (ADR 0119 rule 2).
+    Unequal,
 }
 
 impl KindFacts {
     pub(crate) fn new(env: &Env<'_>) -> KindFacts {
         let mut facts = KindFacts {
             direct: vec![false; env.kinds.len()],
+            unequal: vec![false; env.kinds.len()],
             via: vec![BTreeSet::new(); env.kinds.len()],
         };
         loop {
@@ -33,11 +46,17 @@ impl KindFacts {
                     .flatten()
                     .chain(kind.variants.iter().flat_map(|v| v.fields.iter()));
                 let mut direct = false;
+                let mut unequal = false;
                 let mut params = BTreeSet::new();
                 for field in fields {
-                    direct |= facts.walk(&field.ty.base, &mut params);
+                    direct |= facts.walk(&field.ty.base, &mut params, Held::Function);
+                    unequal |= facts.walk(&field.ty.base, &mut BTreeSet::new(), Held::Unequal);
                 }
                 if direct && let Some(slot) = facts.direct.get_mut(id) {
+                    changed |= !*slot;
+                    *slot = true;
+                }
+                if unequal && let Some(slot) = facts.unequal.get_mut(id) {
                     changed |= !*slot;
                     *slot = true;
                 }
@@ -53,24 +72,33 @@ impl KindFacts {
         }
     }
 
-    /// Whether values of `ty` hold a function whatever the type parameters stand for; adds
-    /// the type parameters whose values they hold to `params`.
-    fn walk(&self, ty: &Ty, params: &mut BTreeSet<usize>) -> bool {
+    /// Whether values of `ty` hold what `held` names whatever the type parameters stand for;
+    /// adds the type parameters whose values they hold to `params`.
+    fn walk(&self, ty: &Ty, params: &mut BTreeSet<usize>, held: Held) -> bool {
         match ty {
-            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.walk(inner, params),
-            Ty::Fn(_) => true,
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) => self.walk(inner, params, held),
+            Ty::Fn(_) => held == Held::Function,
             Ty::Param(index) => {
                 params.insert(*index);
                 false
             }
-            Ty::List(element) | Ty::Dense(_, element) => self.walk(element, params),
-            Ty::Map(key, value) => self.walk(key, params) | self.walk(value, params),
+            Ty::List(element) | Ty::Dense(_, element) => self.walk(element, params, held),
+            Ty::Map(key, value) => self.walk(key, params, held) | self.walk(value, params, held),
+            Ty::Coll(coll, args) => args
+                .iter()
+                .fold(held == Held::Unequal && !coll.has_eq(), |holds, arg| {
+                    self.walk(arg, params, held) | holds
+                }),
             Ty::Kind(kind, args) => {
-                let mut holds = self.direct.get(*kind).copied().unwrap_or(false);
+                let direct = match held {
+                    Held::Function => &self.direct,
+                    Held::Unequal => &self.unequal,
+                };
+                let mut holds = direct.get(*kind).copied().unwrap_or(false);
                 if let Some(via) = self.via.get(*kind) {
                     for index in via {
                         if let Some(arg) = args.get(*index) {
-                            holds |= self.walk(arg, params);
+                            holds |= self.walk(arg, params, held);
                         }
                     }
                 }
@@ -83,7 +111,35 @@ impl KindFacts {
     /// Whether values of `ty` can hold a function, so that `==` cannot compare them
     /// (`spec/03 §1`).
     pub(crate) fn has_function(&self, ty: &Ty) -> bool {
-        self.walk(ty, &mut BTreeSet::new())
+        self.walk(ty, &mut BTreeSet::new(), Held::Function)
+    }
+
+    /// The first collection without `==` that values of `ty` can hold, a `HashMap`, a
+    /// `HashSet` or a `PriorityQueue` at any position, so that `==` cannot compare them (ADR
+    /// 0119 rule 2). `None` when they hold none.
+    pub(crate) fn unequal(&self, ty: &Ty) -> Option<una_core::Coll> {
+        if !self.walk(ty, &mut BTreeSet::new(), Held::Unequal) {
+            return None;
+        }
+        Some(self.first_unequal(ty).unwrap_or(una_core::Coll::HashMap))
+    }
+
+    /// The first `HashMap`, `HashSet` or `PriorityQueue` written in `ty`, outermost first, for
+    /// the message of rule 11; `None` when `ty` holds one only through a kind's fields.
+    fn first_unequal(&self, ty: &Ty) -> Option<una_core::Coll> {
+        match ty {
+            Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) => {
+                self.first_unequal(inner)
+            }
+            Ty::Map(key, value) => self
+                .first_unequal(key)
+                .or_else(|| self.first_unequal(value)),
+            Ty::Coll(coll, _) if !coll.has_eq() => Some(*coll),
+            Ty::Coll(_, args) | Ty::Kind(_, args) => {
+                args.iter().find_map(|arg| self.first_unequal(arg))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -368,6 +424,11 @@ fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
                     mentioned(arg, out);
                 }
             }
+            Ty::Coll(_, args) => {
+                for arg in args.iter() {
+                    mentioned(arg, out);
+                }
+            }
             Ty::Fn(function) => {
                 for param in &function.params {
                     mentioned(param, out);
@@ -459,6 +520,8 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         ),
         Ty::Kind(other, args) if args.is_empty() => env.kind_name(*other).to_owned(),
         Ty::Kind(other, args) => format!("{}[{}]", env.kind_name(*other), list(args)),
+        Ty::Coll(coll, args) if args.is_empty() => coll.as_str().to_owned(),
+        Ty::Coll(coll, args) => format!("{}[{}]", coll.as_str(), list(args)),
         Ty::Int => "Int".to_owned(),
         Ty::Bool => "Bool".to_owned(),
         Ty::Text => "Text".to_owned(),
@@ -621,11 +684,13 @@ pub(crate) fn generic_constraints(
             raise(env, *function, *index, *need);
         }
     }
-    // A map's key type must satisfy `Ord` (`spec/21 §1` rule 2): a private function infers it.
+    // A map's key type must satisfy `Ord` (`spec/21 §1` rule 2), and so must a set's item and
+    // a priority, and a hash key or item `Eq` (ADR 0119 rules 7, 8 and 13): a private function
+    // infers it.
     let map_keys = std::mem::take(&mut env.map_keys);
     for key in &map_keys {
         if let (Ty::Param(index), Some(owner)) = (key.key.unlabeled(), key.owner) {
-            raise(env, owner, *index, Constraint::Ord);
+            raise(env, owner, *index, key.need());
         }
     }
     loop {
@@ -656,9 +721,7 @@ pub(crate) fn generic_constraints(
             .and_then(|owner| env.functions.get(owner))
             .map(|def| def.constraints.clone())
             .unwrap_or_default();
-        if satisfies(env, facts, &key.key, Constraint::Ord, &constraints)
-            || !reported.insert(key.span)
-        {
+        if satisfies(env, facts, &key.key, key.need(), &constraints) || !reported.insert(key.span) {
             continue;
         }
         let params = key
@@ -674,10 +737,28 @@ pub(crate) fn generic_constraints(
             },
         )
         .to_string();
+        // What the argument is: "a map's key type", "a set's item type", "a hash map's key
+        // type" (ADR 0119).
+        let (whose, role) = match key.of {
+            None => ("a map's", "key"),
+            Some((coll, index)) => (
+                match coll {
+                    una_core::Coll::Set => "a set's",
+                    una_core::Coll::HashMap => "a hash map's",
+                    una_core::Coll::HashSet => "a hash set's",
+                    una_core::Coll::PriorityQueue => "a priority queue's",
+                    _ => "a collection's",
+                },
+                coll.arg_role(index),
+            ),
+        };
+        let need = key.need().name();
         let message = match (key.key.unlabeled(), key.owner) {
             // `spec/20 §2` rule 1: kinds cannot carry constraints.
-            (Ty::Param(_), None) => "a map's key type must satisfy `Ord`, and a type parameter of a kind or alias cannot be constrained; use a concrete key type".to_owned(),
-            _ => format!("a map's key type must satisfy `Ord`, and `{shown}` does not"),
+            (Ty::Param(_), None) => format!(
+                "{whose} {role} type must satisfy `{need}`, and a type parameter of a kind or alias cannot be constrained; use a concrete {role} type"
+            ),
+            _ => format!("{whose} {role} type must satisfy `{need}`, and `{shown}` does not"),
         };
         report.error(Code::U2025, key.span, message);
     }
@@ -771,7 +852,9 @@ fn satisfies(
         Constraint::Eq => {
             let mut params = Vec::new();
             ty.params(&mut params);
-            !facts.has_function(ty) && params.into_iter().all(|index| param_has(index, need))
+            !facts.has_function(ty)
+                && facts.unequal(ty).is_none()
+                && params.into_iter().all(|index| param_has(index, need))
         }
         Constraint::Ord | Constraint::Integer => match ty.unlabeled() {
             Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => true,
