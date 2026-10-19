@@ -2904,8 +2904,14 @@ impl<'e, 'a> Fx<'e, 'a> {
         let expr = &handled.expr;
         let span = expr.span;
         // `edit m.set(key: k, value: v)` is `m = with(m, k, v)`, and `edit m.remove(key: k)`
-        // is `m = without(m, k)` (`spec/21 §2` rule 1).
-        if let Some(Res::MapUpdate(op)) = self.res(span) {
+        // is `m = without(m, k)` (`spec/21 §2` rule 1); `edit s.add(item: x)` is
+        // `s = with(s, x)`, and `edit s.remove(item: x)` is `s = without(s, x)` (`spec/28 §6`).
+        let update = match self.res(span) {
+            Some(Res::MapUpdate(op)) => Some(Prim::Map(op)),
+            Some(Res::SetUpdate(op)) => Some(Prim::Set(op)),
+            _ => None,
+        };
+        if let Some(prim) = update {
             let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
                 self.broken.set(true);
                 return Atom::Unit;
@@ -2922,7 +2928,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 t.clone(),
                 ty,
                 Bound::Rhs(Rhs::Prim {
-                    prim: Prim::Map(op),
+                    prim,
                     args: values,
                     arg_spans,
                     span,
@@ -3961,12 +3967,19 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
-                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map,
-                // a stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`).
-                Some(res @ (Res::IntMethod(_) | Res::MapMethod(_) | Res::SeqMethod(_))) => {
+                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map, a
+                // stack or a queue that reads it (`spec/21 §2`, `spec/28 §5`), or one of a set
+                // that reads it or gives a new set (`spec/28 §6`).
+                Some(
+                    res @ (Res::IntMethod(_)
+                    | Res::MapMethod(_)
+                    | Res::SeqMethod(_)
+                    | Res::SetMethod(_)),
+                ) => {
                     let prim = match res {
                         Res::MapMethod(op) => Prim::Map(op),
                         Res::SeqMethod(op) => Prim::Seq(op),
+                        Res::SetMethod(op) => Prim::Set(op),
                         Res::IntMethod(prim) => prim,
                         _ => Prim::Len,
                     };

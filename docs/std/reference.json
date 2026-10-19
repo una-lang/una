@@ -18,13 +18,21 @@
   "testing"
  ],
  "pending": [
+  "builtin add",
+  "builtin between",
+  "builtin difference",
+  "builtin first",
+  "builtin intersection",
+  "builtin is_subset",
   "builtin items",
+  "builtin last",
   "builtin peek",
   "builtin peek_back",
   "builtin pop",
   "builtin pop_back",
   "builtin push",
   "builtin push_front",
+  "builtin union",
   "builtin update",
   "prelude Clock",
   "prelude Console",
@@ -1421,20 +1429,46 @@
    "module": "builtin",
    "name": "has",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key to look for; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `m` has an entry at `key`; usable in `requires`, `ensures`, `where` and predicates"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to look for; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Bool",
+      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
+     }
+    }
    },
-   "params": [
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
     {
-     "name": "key",
-     "meaning": "the key to look for; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.has(item: T) -> Bool` nor `where s: Set[T]`"
     }
    ],
-   "returns": {
-    "type": "Bool",
-    "meaning": "`true` when `m` has an entry at `key`; usable in `requires`, `ensures`, `where` and predicates"
-   },
    "use_instead": [
     {
      "item": "builtin get",
@@ -1450,7 +1484,8 @@
       "symbol": "n",
       "meaning": "the number of entries in `m`"
      }
-    ]
+    ],
+    "on": "Map[K, V]"
    }
   },
   {
@@ -1533,20 +1568,46 @@
    "module": "builtin",
    "name": "remove",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`, changed in place, written `edit m.remove(...)`"
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`, changed in place, written `edit m.remove(...)`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `m.has(key: key)` is `false`, and `m.len` shrinks by one when `key` was there"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`, changed in place, written `edit s.remove(...)`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; afterwards `s.has(item: item)` is `false`, and `s.len` shrinks by one when `item` was there"
+     }
+    }
    },
-   "params": [
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
     {
-     "name": "key",
-     "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `edit s.remove(item: T) -> Unit` nor `where s: Set[T]`"
     }
    ],
-   "returns": {
-    "type": "Unit",
-    "meaning": "nothing; afterwards `m.has(key: key)` is `false`, and `m.len` shrinks by one when `key` was there"
-   },
    "use_instead": [
     {
      "item": "builtin without",
@@ -1565,31 +1626,58 @@
       "symbol": "n",
       "meaning": "the number of entries in `m`; in the native runtime the update is in place when `m` is uniquely held, and on a copy, in O(n), otherwise"
      }
-    ]
+    ],
+    "on": "Map[K, V]"
    }
   },
   {
    "module": "builtin",
    "name": "with",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
-   },
-   "params": [
-    {
-     "name": "key",
-     "meaning": "the key; from edition 0.3, with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; from edition 0.3, with a refined key type `K`, it is stored at `K`, an obligation that `una check` proves at the call"
+      },
+      {
+       "name": "value",
+       "meaning": "the value at `key`; from edition 0.3, with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "Map[K, V]",
+      "meaning": "a map with the contract of `set` for the result: `m` with `value` at `key`; `m` itself is unchanged"
+     }
     },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; with a refined item type `T`, it is stored at `T`, an obligation that `una check` proves at the call"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "a set with the contract of `add` for the result: `s` with `item`; `s` itself is unchanged"
+     }
+    }
+   },
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
     {
-     "name": "value",
-     "meaning": "the value at `key`; from edition 0.3, with a refined value type `V`, it is stored at `V`, an obligation that `una check` proves at the call"
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.with(item: T) -> Set[T]` nor `where s: Set[T]`"
     }
    ],
-   "returns": {
-    "type": "Map[K, V]",
-    "meaning": "a map with the contract of `set` for the result: `m` with `value` at `key`; `m` itself is unchanged"
-   },
    "see_also": [
     "builtin set",
     "builtin without"
@@ -1603,27 +1691,54 @@
       "symbol": "n",
       "meaning": "the number of entries in `m`; the update is in place when the call is the last use of `m` and nothing else holds it, and on a copy, in O(n), otherwise"
      }
-    ]
+    ],
+    "on": "Map[K, V]"
    }
   },
   {
    "module": "builtin",
    "name": "without",
    "area": "maps",
-   "receiver": {
-    "type": "Map[K, V]",
-    "meaning": "the map `m`"
+   "by_receiver": {
+    "Map[K, V]": {
+     "meaning": "the map `m`",
+     "params": [
+      {
+       "name": "key",
+       "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+      }
+     ],
+     "returns": {
+      "type": "Map[K, V]",
+      "meaning": "a map with the contract of `remove` for the result: `m` without `key`; `m` itself is unchanged"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item; it is taken at the base type of a refined item type `T`, so an item outside the refinement is not found"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "a set with the contract of `remove` for the result: `s` without `item`; `s` itself is unchanged"
+     }
+    }
    },
-   "params": [
+   "describes": [
+    "0.4"
+   ],
+   "earlier": [
     {
-     "name": "key",
-     "meaning": "the key; from edition 0.3, it is taken at the base type of a refined key type `K`, so a key outside the refinement finds no entry"
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.without(item: T) -> Set[T]` nor `where s: Set[T]`"
     }
    ],
-   "returns": {
-    "type": "Map[K, V]",
-    "meaning": "a map with the contract of `remove` for the result: `m` without `key`; `m` itself is unchanged"
-   },
    "see_also": [
     "builtin remove",
     "builtin with"
@@ -1637,7 +1752,8 @@
       "symbol": "n",
       "meaning": "the number of entries in `m`; the update is in place when the call is the last use of `m` and nothing else holds it, and on a copy, in O(n), otherwise"
      }
-    ]
+    ],
+    "on": "Map[K, V]"
    }
   },
   {
@@ -1713,16 +1829,18 @@
     {
      "type": "Map[K, V]",
      "meaning": "a map `m`: its number of entries, never negative"
+    },
+    {
+     "type": "Set[T]",
+     "meaning": "a set `s`: its number of items"
     }
    ],
    "params": [],
    "returns": {
     "type": "Int",
-    "meaning": "the length of the receiver, a text, a list or a map"
+    "meaning": "the length of the receiver, a text, a list, a map or a set"
    },
    "describes": [
-    "0.2",
-    "0.3",
     "0.4"
    ],
    "earlier": [
@@ -1730,7 +1848,14 @@
      "editions": [
       "0.1"
      ],
-     "differs": "no `Map[K, V]` receiver, since edition 0.1 has no maps: it has neither `m.len -> Int` nor `where m: Map[K, V]`"
+     "differs": "no `Map[K, V]` receiver, since edition 0.1 has no maps, and no `Set[T]` receiver: it has none of `m.len -> Int`, `where m: Map[K, V]`, `s.len -> Int` and `where s: Set[T]`"
+    },
+    {
+     "editions": [
+      "0.2",
+      "0.3"
+     ],
+     "differs": "no `Set[T]` receiver, since `std.collections` begins in edition 0.4: it has neither `s.len -> Int` nor `where s: Set[T]`"
     }
    ],
    "see_also": [

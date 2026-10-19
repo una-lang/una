@@ -1916,6 +1916,73 @@ fn queue_and_stack_pushes_and_pops_scale_linearly() {
     );
 }
 
+/// A `Set` of `COUNT` items built by `add`, each looked up, intersected with a copy missing one
+/// item, then emptied by `remove` (`spec/28 §6`).
+const SET_SCALE: &str = "module scale
+
+import std.collections (Set, empty_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit s: Set[Int] = empty_set()
+  for i in 0..<COUNT
+    edit s.add(item: (i * 7919) mod COUNT)
+  let edit found = 0
+  for i in 0..<COUNT
+    if s.has(item: i)
+      found = found + 1
+  let common = s.intersection(other: s.without(item: 0))
+  for i in 0..<COUNT
+    edit s.remove(item: i)
+  @console.print(\"{found} {common.len} {s.len}\")
+";
+
+#[test]
+fn set_updates_lookups_and_operations_scale_as_n_log_n() {
+    // `spec/28 §6`: `add`, `has` and `remove` are O(log n), `intersection` is O(n + m), and an
+    // update of a set nothing else holds is in place. Ten times the items take under 40 times
+    // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
+    // between them, as for maps.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("set_scale");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita set_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the program of `n` items (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            SET_SCALE.replace("COUNT", &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} {} 0\n", n - 1));
+        seconds
+    };
+    timing::assert_growth(
+        "items",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        40.0,
+        measure,
+    );
+}
+
 /// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
 /// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
 fn appends_through_calls(shape: &str, steps: usize) -> String {

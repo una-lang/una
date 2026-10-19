@@ -145,7 +145,7 @@ pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
 /// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`
 /// and the functions that make the types implemented so far (ADR 0119 rule 0). The other
 /// functions join the list with the types they make.
-pub(crate) const STD_COLLECTIONS_NAMES: [&str; 10] = [
+pub(crate) const STD_COLLECTIONS_NAMES: [&str; 11] = [
     "Stack",
     "Queue",
     "Set",
@@ -156,6 +156,7 @@ pub(crate) const STD_COLLECTIONS_NAMES: [&str; 10] = [
     "BitSet",
     "empty_stack",
     "empty_queue",
+    "empty_set",
 ];
 
 /// The text functions of the prelude in edition 0.2 (`spec/22 §2`).

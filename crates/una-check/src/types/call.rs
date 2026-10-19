@@ -23,7 +23,7 @@ use super::unify::{Origin, Vars};
 pub(crate) type Checked<'a> = (Span, Ty, Ty, &'a str);
 
 impl<'a> Checker<'_, 'a, '_> {
-    /// `e.f`: `.len` of `Text` and `List`, a field of `e`'s record, or a call `f(e)` of a
+    /// `e.f`: `.len` of `Text`, `List`, `Map` and the collections that have it, a field of `e`'s record, or a call `f(e)` of a
     /// function of one parameter declared in scope (`spec/04 §3`); U1001 when
     /// none applies.
     pub(crate) fn field(&mut self, target: &Expr, name: &Ident, span: Span, site: Site) -> Ty {
@@ -57,6 +57,23 @@ impl<'a> Checker<'_, 'a, '_> {
         {
             self.resolved(span, Res::Len);
             return Ty::Int.with_label(&top);
+        }
+        // A collection's size depends on its shape, so `.len` takes the labels of the type
+        // arguments that are part of it too (ADR 0119 IF2 to IF4). The refinement language gains
+        // `.len` of a collection with ADR 0119 V5; until then, it is outside it.
+        if field == "len"
+            && let Ty::Coll(coll, args) = labeled.unlabeled()
+            && super::collections::has_len(*coll)
+        {
+            self.resolved(span, Res::Len);
+            self.outside_rl(span, || format!("`.len` of a `{}`", coll.as_str()));
+            let kinds = self.env.kind_labels.clone();
+            let label = args
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| coll.is_shape(*index))
+                .fold(top, |label, (_, arg)| label.join(&arg.every_label(&kinds)));
+            return Ty::Int.with_label(&label);
         }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
@@ -222,6 +239,17 @@ impl<'a> Checker<'_, 'a, '_> {
             return ty;
         }
         if let Some(ty) = self.seq_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
+        if let Some(ty) = self.set_method(
             target,
             &target_ty,
             place.as_ref(),

@@ -523,6 +523,9 @@ pub enum Prim {
     /// rules 5 and 6), both held as one double-ended sequence; `push` and `pop` are rebinds of
     /// the receiver to the new sequence.
     Seq(SeqOp),
+    /// A built-in method of a `Set` of `std.collections` (`spec/28 §6`, ADR 0119 rule 7);
+    /// `add` and `remove` are rebinds to `With` and `Without`.
+    Set(SetOp),
     /// An operator, method or conversion of `F64` (`spec/29`, ADR 0114): its own kind, so no
     /// existing primitive changes meaning.
     Float(FloatOp),
@@ -1180,6 +1183,62 @@ impl SeqOp {
     }
 }
 
+/// The built-in methods of `Set[T]` (`spec/28 §6`, ADR 0119 rule 7), each over the set in its
+/// first argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetOp {
+    /// `has(item:)`.
+    Has,
+    /// `with(item:)`, and `edit add`.
+    With,
+    /// `without(item:)`, and `edit remove`.
+    Without,
+    /// `first()`, the least item.
+    First,
+    /// `last()`, the greatest item.
+    Last,
+    /// `between(low:, high:)`, the items from `low` to `high`, both included.
+    Between,
+    /// `items()`, ascending.
+    Items,
+    /// `union(other:)`.
+    Union,
+    /// `intersection(other:)`.
+    Intersection,
+    /// `difference(other:)`.
+    Difference,
+    /// `is_subset(of:)`.
+    IsSubset,
+}
+
+impl SetOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SetOp::Has => "has",
+            SetOp::With => "with",
+            SetOp::Without => "without",
+            SetOp::First => "first",
+            SetOp::Last => "last",
+            SetOp::Between => "between",
+            SetOp::Items => "items",
+            SetOp::Union => "union",
+            SetOp::Intersection => "intersection",
+            SetOp::Difference => "difference",
+            SetOp::IsSubset => "is_subset",
+        }
+    }
+
+    /// Whether the operation gives a new set built from its receiver, which it may update in
+    /// place when the receiver is given up (`spec/28 §6`, ADR 0119 rule 1).
+    pub fn rebuilds(self) -> bool {
+        matches!(
+            self,
+            SetOp::With | SetOp::Without | SetOp::Union | SetOp::Intersection | SetOp::Difference
+        )
+    }
+}
+
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedOp {
@@ -1303,6 +1362,7 @@ impl Prim {
             Prim::Fixed(op, _) => op.as_str(),
             Prim::Map(op) => op.as_str(),
             Prim::Seq(op) => op.as_str(),
+            Prim::Set(op) => op.as_str(),
             Prim::Float(op) => op.as_str(),
             Prim::Shape(fun) => fun.as_str(),
             Prim::Decimal(op) => op.as_str(),

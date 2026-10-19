@@ -42,6 +42,9 @@ pub(crate) enum Value<'p> {
     /// A `Stack` or a `Queue` of `std.collections`, a ring buffer front first (`spec/28 §5`,
     /// ADR 0119 rule 19): a stack's top is its front.
     Seq(Rc<VecDeque<Value<'p>>>),
+    /// A `Set` of `std.collections`, in the order of its items (`spec/28 §6`, ADR 0119 rule
+    /// 19): each item keeps its value, for listing and rendering, as a map's key does.
+    Set(Rc<Items<'p>>),
     /// A dense value of edition 0.4, `Array[T]` or `Matrix[T]` (`spec/29 §17`): a view of a
     /// buffer, with its own offset, shape and strides, so a view shares its parent's storage.
     Dense(Rc<Dense<'p>>),
@@ -91,6 +94,9 @@ pub(crate) struct Dense<'p> {
     /// The distance between consecutive indices of each axis, in the buffer.
     pub(crate) strides: Vec<usize>,
 }
+
+/// The items of a set, by their order.
+pub(crate) type Items<'p> = BTreeMap<Key, Value<'p>>;
 
 /// The entries of a map, by the order of their keys.
 pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
@@ -188,6 +194,11 @@ fn unwind(mut pending: Vec<Value<'_>>) {
                     pending.extend(items);
                 }
             }
+            Value::Set(items) => {
+                if let Ok(items) = Rc::try_unwrap(items) {
+                    pending.extend(items.into_values());
+                }
+            }
             Value::Dense(dense) => {
                 if let Ok(mut dense) = Rc::try_unwrap(dense)
                     && let Some(items) = take_values(&mut dense)
@@ -260,6 +271,7 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
         Value::Map(x) if !x.is_empty() => Some((3, Rc::as_ptr(x) as usize)),
         Value::Dense(x) => Some((4, Rc::as_ptr(x) as usize)),
         Value::Seq(x) if !x.is_empty() => Some((5, Rc::as_ptr(x) as usize)),
+        Value::Set(x) if !x.is_empty() => Some((4, Rc::as_ptr(x) as usize)),
         _ => None,
     }
 }
@@ -286,6 +298,7 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         }
         (Value::Map(x), Value::Map(y)) => x.is_empty() && y.is_empty(),
         (Value::Seq(x), Value::Seq(y)) => x.is_empty() && y.is_empty(),
+        (Value::Set(x), Value::Set(y)) => x.is_empty() && y.is_empty(),
         _ => false,
     }
 }
@@ -406,6 +419,9 @@ pub(crate) fn equal_within(a: &Value<'_>, b: &Value<'_>, pairs: usize) -> Option
                         .zip(y.iter())
                         .all(|(a, b)| admit(a, b, &mut pending))
             }
+            // The same items in the same order (`spec/28 §3` rule 3): a set's items are keys,
+            // compared whole, so no pair is left pending.
+            (Value::Set(x), Value::Set(y)) => x.len() == y.len() && x.keys().eq(y.keys()),
             _ => false,
         };
         if !same {

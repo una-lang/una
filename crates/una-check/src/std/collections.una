@@ -18,3 +18,7 @@ pub empty_stack[T]() -> Stack[T]
 pub empty_queue[T]() -> Queue[T]
 =
   empty_queue()
+
+-- The body of `empty_set` is a placeholder: both engines make the set themselves.
+--- An empty set, of the item type that the expected type gives (`spec/28 §6`). O(1).
+pub empty_set[T: Ord]() -> Set[T] = empty_set()

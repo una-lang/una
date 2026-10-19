@@ -90,6 +90,21 @@ pub(crate) fn methods(coll: Coll) -> &'static [&'static str] {
     }
 }
 
+/// Whether `.len` of the collection type `coll` resolves with the labels of its shape (ADR
+/// 0119 rules 5 to 7 and 12 to 14): each type gains it with its methods. `Stack` and `Queue`
+/// resolve it before, with their top label (IF1).
+pub(crate) fn has_len(coll: Coll) -> bool {
+    match coll {
+        Coll::Set => true,
+        Coll::Stack
+        | Coll::Queue
+        | Coll::HashMap
+        | Coll::HashSet
+        | Coll::PriorityQueue
+        | Coll::BitSet => false,
+    }
+}
+
 /// The types whose built-in method a package function named `name`, whose first parameter is
 /// of type `first`, would hide from method syntax in edition 0.4, in the order of ADR 0119's
 /// export list, with `Map` first for `update` (rule 18). Empty when it hides none.

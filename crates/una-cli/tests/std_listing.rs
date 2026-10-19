@@ -317,6 +317,7 @@ fn the_builtins_are_exactly_the_methods_the_checker_resolves() {
         (_, "Map[K, V]") => "Map",
         (_, "Stack[T]") => "Stack",
         (_, "Queue[T]") => "Queue",
+        (_, "Set[T]") => "Set",
         (name, _) if name.starts_with("to_") => "conversion",
         _ => "fixed",
     };
@@ -370,6 +371,8 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
         ("Text", true) => "1",
         ("Bool", false) => "true",
         ("fn(Int) -> Int", false) => "fn(n) -> n",
+        // A set of the receiver's type: the receiver itself.
+        ("Set[Int]", false) => "r",
         (_, false) => "1",
         (_, true) => "\"k\"",
     }
@@ -380,14 +383,6 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
 /// argument of another type, or its result bound to another type when it takes none. A
 /// receiver of `std.collections` is imported, which editions before 0.4 refuse with U1001.
 fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
-    let import = if ["Stack[", "Queue["]
-        .iter()
-        .any(|collection| b.receiver.starts_with(collection))
-    {
-        "import std.collections (Queue, Stack)\n\n"
-    } else {
-        ""
-    };
     let receiver = instantiate(b.receiver, fixed);
     let result = instantiate(&b.result, fixed);
     let args: Vec<String> = b
@@ -420,6 +415,14 @@ fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
         format!("  let edit x: {receiver} = r\n  edit {call}\n")
     } else {
         format!("  let x: {receiver} = r\n  let out: {bound} = {call}\n")
+    };
+    // A receiver of a collection type of `std.collections` names it, so the probe imports it
+    // (ADR 0119 rule 0); before edition 0.4 the import itself is U1001.
+    let head = receiver.split('[').next().unwrap_or_default();
+    let import = if una_core::Coll::from_name(head).is_some() {
+        format!("import std.collections ({head})\n\n")
+    } else {
+        String::new()
     };
     format!("module probe\n\n{import}pub probe(r: {receiver}) -> Unit\n=\n{body}  unit\n")
 }
@@ -658,6 +661,183 @@ fn methods(declaration: &str) -> Vec<Method> {
         });
     }
     found
+}
+
+/// The receivers of a built-in method whose signature lines differ beyond the receiver, as the
+/// entry's `by_receiver` describes them: an object from each receiver type of the declaration,
+/// exactly those, to its `meaning`, `params` and `returns`, and its `requires` when it has any,
+/// each checked against that receiver's signature line as `receiver`, `params` and `returns` are
+/// for a method with one. Gives the preconditions, in the declaration's order of receivers.
+fn by_receiver(
+    by: &serde_json::Value,
+    lines: &[Method],
+    at: &str,
+    problems: &mut Vec<String>,
+) -> Vec<String> {
+    let mut requires = Vec::new();
+    let Some(object) = by.as_object() else {
+        problems.push(format!("{at}: `by_receiver` is not an object"));
+        return requires;
+    };
+    let declared: Vec<&str> = lines.iter().map(|m| m.receiver.as_str()).collect();
+    for key in object.keys() {
+        if !declared.contains(&key.as_str()) {
+            problems.push(format!(
+                "{at}: `by_receiver` names `{key}`, which is not a receiver of the declaration, {declared:?}"
+            ));
+        }
+    }
+    for line in lines {
+        let at = format!("{at} by_receiver {}", line.receiver);
+        let Some(receiver) = object.get(&line.receiver) else {
+            problems.push(format!(
+                "{at}: missing, and `by_receiver` describes every receiver of the declaration"
+            ));
+            continue;
+        };
+        shape(
+            receiver,
+            &at,
+            &["meaning", "params", "returns"],
+            &["requires"],
+            problems,
+        );
+        // Its meaning names it as its signature line does, `m`, and says "changed in place"
+        // exactly when the line is `edit`.
+        let meaning = filled(receiver, "meaning", &at, problems);
+        if !spans(meaning).any(|span| span == line.var) {
+            problems.push(format!(
+                "{at}: its meaning does not name it `{}`, as its signature line does",
+                line.var
+            ));
+        }
+        if meaning.contains("changed in place") != line.edit {
+            problems.push(format!(
+                "{at}: its meaning says \"changed in place\" {}, and its signature line is {}`edit`",
+                if line.edit { "nowhere" } else { "" },
+                if line.edit { "" } else { "not " }
+            ));
+        }
+        let mut params = Vec::new();
+        for (i, param) in list(receiver, "params", &at, problems).iter().enumerate() {
+            let at = format!("{at} parameter {i}");
+            shape(param, &at, &["name", "meaning"], &[], problems);
+            params.push(filled(param, "name", &at, problems).to_owned());
+            // No argument after the receiver of a built-in method is `edit`.
+            if filled(param, "meaning", &at, problems).contains("changed in place") {
+                problems.push(format!(
+                    "{at}: says \"changed in place\", and it is not declared `edit`"
+                ));
+            }
+        }
+        if params != line.params {
+            problems.push(format!(
+                "{at}: parameters {params:?}, its signature line's are {:?}",
+                line.params
+            ));
+        }
+        let returns = &receiver["returns"];
+        shape(
+            returns,
+            &format!("{at} returns"),
+            &["type", "meaning"],
+            &[],
+            problems,
+        );
+        filled(returns, "meaning", &at, problems);
+        if returns["type"].as_str() != Some(line.result.as_str()) {
+            problems.push(format!(
+                "{at}: returns {}, its signature line's result is {}",
+                returns["type"], line.result
+            ));
+        }
+        for (i, condition) in list(receiver, "requires", &at, problems).iter().enumerate() {
+            let at = format!("{at} requires {i}");
+            shape(condition, &at, &["condition", "meaning"], &[], problems);
+            requires.push(filled(condition, "condition", &at, problems).to_owned());
+            filled(condition, "meaning", &at, problems);
+        }
+    }
+    requires
+}
+
+#[test]
+fn by_receiver_refuses_each_case() {
+    let lines = methods(
+        "m.has(key: K) -> Bool\n  where m: Map[K, V]\nedit s.add(item: T) -> Unit\n  where s: Set[T]",
+    );
+    let good = serde_json::json!({
+        "Map[K, V]": {
+            "meaning": "the map `m`",
+            "params": [{"name": "key", "meaning": "the key"}],
+            "returns": {"type": "Bool", "meaning": "whether it is there"}
+        },
+        "Set[T]": {
+            "meaning": "the set `s`, changed in place",
+            "params": [{"name": "item", "meaning": "the item"}],
+            "returns": {"type": "Unit", "meaning": "nothing"},
+            "requires": [{"condition": "s.len >= 0", "meaning": "always"}]
+        }
+    });
+    let mut problems = Vec::new();
+    let requires = by_receiver(&good, &lines, "good", &mut problems);
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(requires, ["s.len >= 0"]);
+    // Each case breaks one rule, which must be refused.
+    let cases: [(&str, &[&str], serde_json::Value); 9] = [
+        ("not an object", &[], serde_json::json!([])),
+        ("a missing receiver", &["Set[T]"], serde_json::Value::Null),
+        ("an unknown receiver", &["List[T]"], good["Set[T]"].clone()),
+        (
+            "a meaning that does not name it",
+            &["Map[K, V]", "meaning"],
+            serde_json::json!("the map"),
+        ),
+        (
+            "an update not changed in place",
+            &["Set[T]", "meaning"],
+            serde_json::json!("the set `s`"),
+        ),
+        (
+            "other parameters",
+            &["Map[K, V]", "params"],
+            serde_json::json!([{"name": "item", "meaning": "the item"}]),
+        ),
+        (
+            "another result",
+            &["Map[K, V]", "returns"],
+            serde_json::json!({"type": "Int", "meaning": "a count"}),
+        ),
+        (
+            "an unknown key",
+            &["Map[K, V]", "receiver"],
+            serde_json::json!("Map[K, V]"),
+        ),
+        (
+            "an argument changed in place",
+            &["Set[T]", "params"],
+            serde_json::json!([{"name": "item", "meaning": "the item, changed in place"}]),
+        ),
+    ];
+    for (case, path, value) in cases {
+        let mut broken = good.clone();
+        match path {
+            [] => broken = value,
+            [receiver] if value.is_null() => {
+                broken.as_object_mut().unwrap().remove(*receiver);
+            }
+            [receiver] => {
+                broken[*receiver] = value;
+            }
+            [receiver, key, rest @ ..] => {
+                assert!(rest.is_empty(), "{case}: a path has at most two steps");
+                broken[*receiver][*key] = value;
+            }
+        }
+        let mut problems = Vec::new();
+        by_receiver(&broken, &lines, case, &mut problems);
+        assert!(!problems.is_empty(), "{case}: accepted");
+    }
 }
 
 /// The shape of a kind's declaration: a sum (`= A | B(x: T)`, its variants), a record (no `=`,
@@ -1034,10 +1214,17 @@ const STATED_COSTS: [Stated; 4] = [
     ),
 ];
 
-/// The receiver that a cost table's row is about where the row names only the method, for a
-/// method with several receivers: ADR 0070 is about texts, so its `.len` row is the cost on a
-/// `Text`.
-const COST_ON: [(&str, &str, &str); 1] = [("ADR 0070", "len", "Text")];
+/// The receiver that a cost table's row or sentence is about where it names only the method,
+/// for a method with several receivers: ADR 0070 is about texts, so its `.len` row is the cost
+/// on a `Text`, and `spec/21 §5` is about maps, so its costs of `has`, `remove`, `with` and
+/// `without` are those on a `Map`.
+const COST_ON: [(&str, &str, &str); 5] = [
+    ("ADR 0070", "len", "Text"),
+    ("spec/21 §5", "has", "Map[K, V]"),
+    ("spec/21 §5", "remove", "Map[K, V]"),
+    ("spec/21 §5", "with", "Map[K, V]"),
+    ("spec/21 §5", "without", "Map[K, V]"),
+];
 
 /// The keys of the reference whose values are prose.
 const PROSE: [&str; 6] = ["meaning", "when", "why", "differs", "note", "requires_note"];
@@ -1624,6 +1811,7 @@ fn the_reference_agrees_with_the_listing() {
                 "definition",
                 "receiver",
                 "receivers",
+                "by_receiver",
                 "describes",
                 "earlier",
                 "use_instead",
@@ -1763,6 +1951,7 @@ fn the_reference_agrees_with_the_listing() {
                 "definition",
                 "receiver",
                 "receivers",
+                "by_receiver",
             ] {
                 if !keys.contains(&key) && entry.get(key).is_some() {
                     problems.push(format!("{at}: a {} has no `{key}`", item.kind));
@@ -1901,83 +2090,98 @@ fn the_reference_agrees_with_the_listing() {
                 )),
             }
         } else if item.kind == "method" {
-            only(
-                &["params", "returns", "requires", "receiver", "receivers"],
-                &mut problems,
-            );
             let lines = methods(declaration);
             let Some(first) = lines.first() else {
                 problems.push(format!("{at}: no signature line in its declaration"));
                 continue;
             };
-            if lines
+            let differ = lines
                 .iter()
-                .any(|m| m.params != first.params || m.result != first.result)
-            {
-                problems.push(format!(
-                    "{at}: its signature lines differ beyond the receiver"
-                ));
-            }
-            check_params(
-                &first.params,
-                &vec![false; first.params.len()],
-                &first.result,
-                &mut problems,
-            );
-            let declared: Vec<&str> = lines.iter().map(|m| m.receiver.as_str()).collect();
-            let receivers: Vec<&serde_json::Value> = match (
-                entry.get("receiver"),
-                entry.get("receivers"),
-                declared.len(),
-            ) {
-                (Some(one), None, 1) => vec![one],
-                (None, Some(many), n) if n > 1 => many.as_array().into_iter().flatten().collect(),
-                _ => {
-                    problems.push(format!(
-                        "{at}: give `receiver` for one receiver type, `receivers` for several; the declaration has {declared:?}"
-                    ));
-                    Vec::new()
-                }
-            };
-            // Each receiver's meaning names it as its signature line does, `m`, and says
-            // "changed in place" exactly when the line is `edit`.
-            let mut types = Vec::new();
-            for (i, receiver) in receivers.iter().enumerate() {
-                let at = format!("{at} receiver {i}");
-                shape(receiver, &at, &["type", "meaning"], &[], &mut problems);
-                let meaning = filled(receiver, "meaning", &at, &mut problems);
-                if let Some(line) = lines.get(i) {
-                    if !spans(meaning).any(|span| span == line.var) {
-                        problems.push(format!(
-                            "{at}: its meaning does not name it `{}`, as its signature line does",
-                            line.var
-                        ));
-                    }
-                    in_place(meaning, line.edit, &at, &mut problems);
-                }
-                types.push(filled(receiver, "type", &at, &mut problems));
-            }
-            if !receivers.is_empty() && types != declared {
-                problems.push(format!(
-                    "{at}: receivers {types:?}, the declaration's are {declared:?}"
-                ));
-            }
-            // Its preconditions are those of the spec rows that call it.
+                .any(|m| m.params != first.params || m.result != first.result);
+            // Its preconditions, which must be those of the spec rows that call it.
             let mut requires = Vec::new();
-            for (i, condition) in list(entry, "requires", &at, &mut problems)
-                .iter()
-                .enumerate()
-            {
-                let at = format!("{at} requires {i}");
-                shape(
-                    condition,
-                    &at,
-                    &["condition", "meaning"],
-                    &[],
+            // Signature lines that differ beyond the receiver, as `has` on a map and on a set,
+            // describe each receiver on its own, in `by_receiver`; the others describe their
+            // parameters and result once.
+            if let Some(by) = entry.get("by_receiver") {
+                only(&["by_receiver"], &mut problems);
+                if !differ {
+                    problems.push(format!(
+                        "{at}: `by_receiver` is for signature lines that differ beyond the receiver, and its lines do not; give `params` and `returns` once"
+                    ));
+                }
+                requires = by_receiver(by, &lines, &at, &mut problems);
+            } else {
+                only(
+                    &["params", "returns", "requires", "receiver", "receivers"],
                     &mut problems,
                 );
-                requires.push(filled(condition, "condition", &at, &mut problems).to_owned());
-                filled(condition, "meaning", &at, &mut problems);
+                if differ {
+                    problems.push(format!(
+                        "{at}: its signature lines differ beyond the receiver; describe each receiver in `by_receiver`"
+                    ));
+                }
+                check_params(
+                    &first.params,
+                    &vec![false; first.params.len()],
+                    &first.result,
+                    &mut problems,
+                );
+                let declared: Vec<&str> = lines.iter().map(|m| m.receiver.as_str()).collect();
+                let receivers: Vec<&serde_json::Value> = match (
+                    entry.get("receiver"),
+                    entry.get("receivers"),
+                    declared.len(),
+                ) {
+                    (Some(one), None, 1) => vec![one],
+                    (None, Some(many), n) if n > 1 => {
+                        many.as_array().into_iter().flatten().collect()
+                    }
+                    _ => {
+                        problems.push(format!(
+                            "{at}: give `receiver` for one receiver type, `receivers` for several; the declaration has {declared:?}"
+                        ));
+                        Vec::new()
+                    }
+                };
+                // Each receiver's meaning names it as its signature line does, `m`, and says
+                // "changed in place" exactly when the line is `edit`.
+                let mut types = Vec::new();
+                for (i, receiver) in receivers.iter().enumerate() {
+                    let at = format!("{at} receiver {i}");
+                    shape(receiver, &at, &["type", "meaning"], &[], &mut problems);
+                    let meaning = filled(receiver, "meaning", &at, &mut problems);
+                    if let Some(line) = lines.get(i) {
+                        if !spans(meaning).any(|span| span == line.var) {
+                            problems.push(format!(
+                                "{at}: its meaning does not name it `{}`, as its signature line does",
+                                line.var
+                            ));
+                        }
+                        in_place(meaning, line.edit, &at, &mut problems);
+                    }
+                    types.push(filled(receiver, "type", &at, &mut problems));
+                }
+                if !receivers.is_empty() && types != declared {
+                    problems.push(format!(
+                        "{at}: receivers {types:?}, the declaration's are {declared:?}"
+                    ));
+                }
+                for (i, condition) in list(entry, "requires", &at, &mut problems)
+                    .iter()
+                    .enumerate()
+                {
+                    let at = format!("{at} requires {i}");
+                    shape(
+                        condition,
+                        &at,
+                        &["condition", "meaning"],
+                        &[],
+                        &mut problems,
+                    );
+                    requires.push(filled(condition, "condition", &at, &mut problems).to_owned());
+                    filled(condition, "meaning", &at, &mut problems);
+                }
             }
             // Read from every spec section, failing closed: a row that says `requires` in a form
             // not read, or a declaration with `requires` lines that no row states, is refused.
@@ -2215,12 +2419,16 @@ fn the_reference_agrees_with_the_listing() {
             let source = filled(cost, "source", &at, &mut problems);
             // With several receivers, `on` names the one whose cost is stated, as `COST_ON` ties
             // it to the source.
-            let receivers: Vec<&str> = entry["receivers"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|r| r["type"].as_str())
-                .collect();
+            let receivers: Vec<&str> = match entry.get("by_receiver").and_then(|by| by.as_object())
+            {
+                Some(by) => by.keys().map(String::as_str).collect(),
+                None => entry["receivers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r["type"].as_str())
+                    .collect(),
+            };
             let tied = COST_ON
                 .iter()
                 .find(|(s, n, _)| *s == source && *n == name)

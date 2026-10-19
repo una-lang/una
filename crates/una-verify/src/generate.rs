@@ -9,7 +9,7 @@ use una_core::flow::Variance;
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, DecimalOp, Decl, Expr, FixedOp,
     FloatOp, Fun, IntType, LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, SeqOp,
-    ShapeFun, Source, Term, Type, Use, print_term_with,
+    SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -2353,6 +2353,41 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     self.seq_facts(*op, &values, &x, ctx);
                 }
+                // ADR 0119 rule 1 and ADR 0103 rule 3: `add` and `with` store their item at
+                // the set's item type, a flow site with its `refinement` obligations; a lookup,
+                // `has`, `remove` and `without`, stores nothing.
+                if *prim == Prim::Set(SetOp::With)
+                    && let Some(Type::Base {
+                        base: Base::Named { args: item, .. },
+                        ..
+                    }) = values.first().map(|set| &set.ty)
+                    && let (Some(target), Some(value)) = (item.first().cloned(), values.get(1))
+                    && has_refinements(&target)
+                {
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, value, at, ctx);
+                }
+                // `union` stores the other set's items at the receiver's item type: the other
+                // set flows into the receiver's type, with the obligations of its nested
+                // positions (ADR 0103 rule 4). The other set operations keep only the
+                // receiver's items, so their other set stores nothing.
+                if *prim == Prim::Set(SetOp::Union)
+                    && let (Some(set), Some(other)) = (values.first(), values.get(1))
+                    && let Type::Base {
+                        base: base @ Base::Named { .. },
+                        label,
+                        ..
+                    } = &set.ty
+                    && has_refinements(&set.ty)
+                {
+                    let target = Type::Base {
+                        base: base.clone(),
+                        refinements: Vec::new(),
+                        label: label.clone(),
+                    };
+                    let at = arg_spans.get(1).copied().unwrap_or(*span);
+                    self.refined_flow(&target, other, at, ctx);
+                }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -3028,6 +3063,60 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 | SeqOp::PushBack
                                 | SeqOp::PopFront
                                 | SeqOp::PopBack => sequence,
+                            }
+                        }
+                        _ => unknown(),
+                    }
+                }
+                // ADR 0119 V6: an item a set gives back carries its position's refinements,
+                // as an element of a list does (ADR 0103 rule 6).
+                Prim::Set(op) => {
+                    let receiver = args.first().map(|set| self.atom(set, ctx).ty);
+                    match (op, receiver) {
+                        (
+                            SetOp::First | SetOp::Last | SetOp::Between | SetOp::Items,
+                            Some(Type::Base {
+                                base: Base::Named { module, name, args },
+                                ..
+                            }),
+                        ) if is_collection(&module, &name) && name == "Set" && args.len() == 1 => {
+                            let wrapper = match op {
+                                SetOp::First | SetOp::Last => "Option",
+                                _ => "List",
+                            };
+                            Type::Base {
+                                base: Base::Named {
+                                    module: una_core::PRELUDE_MODULE.to_owned(),
+                                    name: wrapper.to_owned(),
+                                    args,
+                                },
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
+                            }
+                        }
+                        // A set that an update or a set operation gives holds the receiver's
+                        // items, and the items `add`, `with` and `union` store, each a flow
+                        // site of its own: its type is the receiver's, as a map's `with` is.
+                        (
+                            SetOp::With
+                            | SetOp::Without
+                            | SetOp::Union
+                            | SetOp::Intersection
+                            | SetOp::Difference,
+                            Some(Type::Base {
+                                base: base @ Base::Named { .. },
+                                ..
+                            }),
+                        ) if matches!(
+                            &base,
+                            Base::Named { module, name, args }
+                                if is_collection(module, name) && name == "Set" && args.len() == 1
+                        ) =>
+                        {
+                            Type::Base {
+                                base,
+                                refinements: Vec::new(),
+                                label: type_label(binder).clone(),
                             }
                         }
                         _ => unknown(),
@@ -4196,8 +4285,15 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let args: Vec<F> = values.iter().map(|v| v.f.clone()).collect();
                 float_term(op, &args)?
             }
-            // A sequence's operations are known by their facts (`seq_facts`), not as terms.
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) | Prim::Seq(_) => {
+            // A sequence's operations are known by their facts (`seq_facts`), not as terms. A
+            // set's methods are known by their facts, which ADR 0119 V2 to V4 give, not as
+            // terms: until then, each result is a fresh binder, which proves nothing about it.
+            Prim::Concat
+            | Prim::ToText
+            | Prim::Fixed(..)
+            | Prim::Map(_)
+            | Prim::Seq(_)
+            | Prim::Set(_) => {
                 return None;
             }
             Prim::Decimal(op) => return self.decimal(op, values),
