@@ -119,17 +119,18 @@ pub(crate) fn program(
 /// What a declaration of the package is in Core IR, and its name there, when it has one: a
 /// type, a function (predicates and policies included), a capability, a handler or an
 /// example. `None` for a requirement or a unit of measure, which Core IR does not hold.
-fn core_key<'a>(
-    env: &Env<'a>,
+fn core_key(
+    env: &Env<'_>,
     module: usize,
-    kind: &'a DeclKind,
+    kind: &DeclKind,
     entity: Option<Entity>,
 ) -> Option<(&'static str, String)> {
     let key = match (kind, entity) {
         (DeclKind::Example(example), _) => ("example", example_name(example)),
-        (DeclKind::Kind(_), Some(Entity::Alias(id))) => {
-            ("type", env.aliases.get(id).map_or("", |a| a.name).to_owned())
-        }
+        (DeclKind::Kind(_), Some(Entity::Alias(id))) => (
+            "type",
+            env.aliases.get(id).map_or("", |a| a.name).to_owned(),
+        ),
         (DeclKind::Kind(_), Some(Entity::Kind(id))) => {
             ("type", env.kinds.get(id).map_or("", |k| k.name).to_owned())
         }
@@ -137,9 +138,10 @@ fn core_key<'a>(
         (DeclKind::Function(function), _) => {
             ("function", env.text(module, function.name.name).to_owned())
         }
-        (DeclKind::Predicate(predicate), _) => {
-            ("predicate", env.text(module, predicate.name.name).to_owned())
-        }
+        (DeclKind::Predicate(predicate), _) => (
+            "predicate",
+            env.text(module, predicate.name.name).to_owned(),
+        ),
         (DeclKind::Policy(policy), _) => ("policy", env.text(module, policy.name.name).to_owned()),
         (DeclKind::Capability(capability), _) => (
             "capability",
@@ -155,7 +157,7 @@ fn core_key<'a>(
 
 /// The key of a Core IR declaration, as [`core_key`] names the source declaration it comes
 /// from.
-fn decl_key(decl: &Decl) -> (&'static str, &str) {
+pub(crate) fn decl_key(decl: &Decl) -> (&'static str, &str) {
     match decl {
         Decl::Alias { name, .. } | Decl::Data { name, .. } => ("type", name),
         Decl::Fun(fun) => ("function", &fun.name),

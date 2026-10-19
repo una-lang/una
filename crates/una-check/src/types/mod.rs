@@ -1627,12 +1627,12 @@ mod elaboration_gaps {
 pub kind Positive = Int where it > 0
 
 pub capability Log
-  write(line: Text) -> Unit
+  op write(line: Text) -> Unit
 
 pub handler quiet() for Log
-  write(line) = ()
+  op write(line) = unit
 
-pub predicate small(n: Int) -> Bool = n < 100
+pub predicate reflect small(n: Int) -> Bool = n < 100
 
 pub step(n: Int) -> Int
   requires n > 0
@@ -1648,7 +1648,7 @@ example \"step adds one\"
 ";
 
     /// The type check of `text` in `edition`, its codes and the lines they are at.
-    fn check(text: &str, edition: Edition) -> (TypeCheck, Vec<(Code, u32)>) {
+    fn run(text: &str, edition: Edition) -> (TypeCheck, Vec<(Code, u32)>) {
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
         let id = sources.add("gaps.una", text.as_bytes());
@@ -1699,7 +1699,7 @@ example \"step adds one\"
             .flat_map(|m| {
                 m.decls
                     .iter()
-                    .map(|d| format!("{d:?}").split_whitespace().take(3).collect())
+                    .map(|d| elab::decl_key(d).1.to_owned())
                     .chain(m.examples.iter().map(|e| e.name.clone()))
             })
             .collect()
@@ -1708,7 +1708,7 @@ example \"step adds one\"
     #[test]
     fn the_package_checks_and_elaborates_without_a_failure() {
         for edition in Edition::ALL {
-            let (check, codes) = check(SOURCE, edition);
+            let (check, codes) = run(SOURCE, edition);
             assert_eq!(codes, Vec::new(), "{edition:?}");
             let module = check
                 .program
@@ -1735,7 +1735,7 @@ example \"step adds one\"
         ] {
             for edition in Edition::ALL {
                 let _broken = Break::of(name);
-                let (check, codes) = check(SOURCE, edition);
+                let (check, codes) = run(SOURCE, edition);
                 assert!(
                     codes.contains(&(Code::U8001, line)),
                     "{name} in {edition:?}: {codes:?}"
@@ -1771,13 +1771,13 @@ pub kind Small = Int where small(it)
 pub keep(n: Small) -> Small = n
 ";
         for edition in Edition::ALL {
-            let (check, codes) = check(text, edition);
+            let (check, codes) = run(text, edition);
             assert_eq!(codes, Vec::new(), "{edition:?}");
-            assert!(names(&check).iter().any(|d| d.contains("\"small\"")));
+            assert!(names(&check).iter().any(|d| d == "small"));
             let _eager = Break::eager_resolution();
-            let (check, codes) = check(text, edition);
+            let (check, codes) = run(text, edition);
             assert!(codes.contains(&(Code::U8001, 3)), "{edition:?}: {codes:?}");
-            assert!(!names(&check).iter().any(|d| d.contains("\"small\"")));
+            assert!(!names(&check).iter().any(|d| d == "small"));
         }
     }
 
@@ -1786,7 +1786,7 @@ pub keep(n: Small) -> Small = n
         // `abs` is a function of the prelude: without its signature a call into it would be
         // verified without its contract.
         let _broken = Break::of("abs");
-        let (check, codes) = check(SOURCE, Edition::V0_1);
+        let (check, codes) = run(SOURCE, Edition::V0_1);
         assert_eq!(codes.len(), 1, "{codes:?}");
         let diagnostic = check.diagnostics.first().expect("one diagnostic");
         assert_eq!(diagnostic.code, Code::U8001);
@@ -1800,7 +1800,7 @@ pub keep(n: Small) -> Small = n
         // other, adds nothing.
         let text = format!("{SOURCE}\npub wrong() -> Int = true\n");
         let _broken = Break::of("step");
-        let (_, codes) = check(&text, Edition::V0_1);
+        let (_, codes) = run(&text, Edition::V0_1);
         assert!(!codes.is_empty());
         assert!(
             codes.iter().all(|(code, _)| *code != Code::U8001),
@@ -1813,7 +1813,7 @@ pub keep(n: Small) -> Small = n
         // The audit of #1050: no contract of the standard library, host capability or prelude
         // kind of Core IR is dropped today, in any edition.
         for edition in Edition::ALL {
-            let (_, codes) = check("module gaps\n\npub one() -> Int = 1\n", edition);
+            let (_, codes) = run("module gaps\n\npub one() -> Int = 1\n", edition);
             assert_eq!(codes, Vec::new(), "{edition:?}");
         }
     }
