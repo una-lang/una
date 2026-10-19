@@ -5126,7 +5126,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 has_of(&table.f, &key)
             }
             // A sequence's operations are known by their facts (`seq_facts`), not as terms, and
-            // so are the other methods of a set, a hash map and a hash set (`collection_facts`,
+            // so are the other methods of a set, a hash map and a hash set (`table_facts`,
             // ADR 0119 V2 to V4).
             Prim::Concat
             | Prim::ToText
