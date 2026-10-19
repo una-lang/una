@@ -333,6 +333,47 @@ fn a_call_deeper_than_the_limit_is_u6003() {
     assert!(stderr(&output).contains("maximum call depth of 10000"));
 }
 
+/// A chain of 2^15 records, each holding the previous one and a function value that closes over
+/// it, built by `fold` without deep calls.
+const DEEP_CHAIN: &str = "module chain
+
+pub kind Link = End | Next(rest: Option[Link], again: Option[fn() -> Link])
+
+double(xs: List[Int], times: Int) -> List[Int]
+=
+  if times == 0
+    xs
+  else
+    double(fold(xs, initial: xs, step: fn(acc, x) -> append(acc, item: x)), times: times - 1)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = double([1], times: 15)
+  let chain = fold(xs, initial: End, step: fn(acc, x) -> Next(rest: Some(acc), again: Some(fn() -> acc)))
+  @console.print(\"built {xs.len}\")
+";
+
+#[test]
+fn a_value_deeper_than_the_stack_is_released_without_recursion() {
+    // S-30: `fold` builds a value deeper than the call depth, through records and function
+    // values. Under `--max-depth 20` the run's stack is 16 MiB and some, which releasing the
+    // chain by recursion overflowed, aborting the process; the worklist releases it.
+    let root = package("chain", "", &[]);
+    let file = root.join("chain.una");
+    std::fs::write(&file, DEEP_CHAIN).unwrap();
+    let output = una(&[
+        "run",
+        file.to_str().unwrap(),
+        "--grant",
+        "console",
+        "--max-depth",
+        "20",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "built 32768\n");
+}
+
 #[test]
 fn a_depth_beyond_the_address_space_is_a_usage_error() {
     let root = package("too-deep", "", &[]);
