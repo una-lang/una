@@ -18,8 +18,11 @@ mod manifest;
 pub mod migrate;
 pub mod names;
 mod package;
+pub mod provenance;
 pub mod resolve;
 pub mod tlog;
+pub mod tree;
+pub mod vendor;
 pub mod version;
 
 use std::ops::Range;

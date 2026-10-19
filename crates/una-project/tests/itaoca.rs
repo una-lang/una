@@ -94,12 +94,41 @@ fn a_store_tampered_with_does_not_load() {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(dir.join("ita.una"), dir.join("src/link.una")).unwrap();
-        assert!(
-            itaoca
-                .load(&digest)
-                .unwrap_err()
-                .contains("not a regular file")
-        );
+        assert!(itaoca.load(&digest).unwrap_err().contains("symbolic link"));
+        std::fs::remove_file(dir.join("src/link.una")).unwrap();
+        // A hard link to a file outside the store refuses it too.
+        let outside = dir.parent().unwrap().join("outside.una");
+        std::fs::write(&outside, "module outside\n").unwrap();
+        std::fs::hard_link(&outside, dir.join("src/hard.una")).unwrap();
+        assert!(itaoca.load(&digest).unwrap_err().contains("hard link"));
+        std::fs::remove_file(dir.join("src/hard.una")).unwrap();
+        std::fs::remove_file(&outside).unwrap();
+        assert!(itaoca.load(&digest).is_ok());
+        // So does the package directory itself replaced by a link to a copy of it.
+        let copy = dir.parent().unwrap().join("copy");
+        std::fs::rename(&dir, &copy).unwrap();
+        std::os::unix::fs::symlink(&copy, &dir).unwrap();
+        assert!(itaoca.load(&digest).unwrap_err().contains("symbolic link"));
+        std::fs::remove_file(&dir).unwrap();
+        std::fs::rename(&copy, &dir).unwrap();
+        assert!(itaoca.load(&digest).is_ok());
+    }
+}
+
+#[test]
+fn storing_never_writes_through_a_link() {
+    let itaoca = store("through-link");
+    #[cfg(unix)]
+    {
+        // `packages` is a link to a directory elsewhere: nothing is written there.
+        let elsewhere = itaoca.root.with_file_name("through-link-elsewhere");
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(&itaoca.root).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, itaoca.root.join("packages")).unwrap();
+        let refusal = itaoca.store(&archive(&mut package()).unwrap()).unwrap_err();
+        assert!(refusal.contains("symbolic link"), "{refusal}");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
     }
 }
 

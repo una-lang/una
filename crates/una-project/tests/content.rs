@@ -215,3 +215,72 @@ fn the_digest_and_the_reader_scale_linearly() {
         "per-byte time grew from {small:e} to {large:e}"
     );
 }
+
+/// The archive and listing readers on mutated inputs (ADR 0122 rule 29): deterministic, they
+/// never panic, and an archive they accept is exactly the archive of the files they read, so no
+/// mutation is read as a package other than the bytes say.
+#[test]
+fn the_archive_reader_is_robust_to_mutated_archives() {
+    let good = archive(&mut package()).unwrap();
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for _ in 0..20_000 {
+        let mut bytes = good.clone();
+        for _ in 0..=(next() % 3) {
+            if bytes.is_empty() {
+                break;
+            }
+            let at = (next() as usize) % bytes.len();
+            match next() % 5 {
+                0 => bytes[at] ^= 1 << (next() % 8),
+                1 => bytes.truncate(at),
+                2 => bytes.insert(at, (next() % 256) as u8),
+                3 => {
+                    bytes.remove(at);
+                }
+                _ => bytes[at] = [b'\0', b'\n', b'/', b'.', b'0', b'9'][(next() % 6) as usize],
+            }
+        }
+        if let Ok(read) = read_archive(&bytes) {
+            let mut files: Vec<File> = read
+                .files
+                .iter()
+                .map(|(path, range)| file(path, &bytes[range.clone()]))
+                .collect();
+            assert_eq!(archive(&mut files).unwrap(), bytes);
+            assert_eq!(digest_of(&mut files).unwrap(), read.digest);
+        }
+    }
+}
+
+#[test]
+fn listings_beyond_the_bounds_are_refused_without_reading_further() {
+    let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    // More files than a package holds.
+    let mut listing = String::new();
+    for i in 0..10_001 {
+        listing.push_str(&format!("src/m{i:05}.una\u{0}0\u{0}{hash}\n"));
+    }
+    let bytes = format!("{ARCHIVE_MAGIC}\n{}\n{listing}", listing.len()).into_bytes();
+    assert!(read_archive(&bytes).unwrap_err().contains("more than"));
+    // A file longer than a package may be, which the archive does not hold.
+    let listing = format!("src/a.una\u{0}{}\u{0}{hash}\n", (256u64 << 20) + 1);
+    let bytes = format!("{ARCHIVE_MAGIC}\n{}\n{listing}", listing.len()).into_bytes();
+    assert!(read_archive(&bytes).is_err());
+    // A listing length beyond the bounds, with no listing behind it.
+    let bytes = format!("{ARCHIVE_MAGIC}\n{}\n", (256u64 << 20) + 1).into_bytes();
+    assert!(read_archive(&bytes).is_err());
+    let bytes = format!("{ARCHIVE_MAGIC}\n99999999999999999999999\n").into_bytes();
+    assert!(read_archive(&bytes).is_err());
+    // Paths that leave the package, or that a file system could merge.
+    for path in ["/etc/x.una", "src/../../x.una", "src\\x.una", "SRC/x.una"] {
+        let listing = format!("{path}\u{0}0\u{0}{hash}\n");
+        let bytes = format!("{ARCHIVE_MAGIC}\n{}\n{listing}", listing.len()).into_bytes();
+        assert!(read_archive(&bytes).is_err(), "{path}");
+    }
+}
