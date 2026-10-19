@@ -157,6 +157,8 @@ pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
 
 mod seqs;
 
+mod sets;
+
 /// The fault of a `slice` outside the text (#693).
 const SLICE_OUTSIDE: &str = "`slice` outside the text, which its precondition excludes";
 
@@ -398,6 +400,18 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(item));
                     }
                     parts.push(Task::Text("]".to_owned()));
+                }
+                // `{1, 2, 3}` in ascending order, `{}` when empty (`spec/28 §4`, ADR 0119
+                // rule 3).
+                Value::Set(items) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, item) in items.values().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
                 }
                 Value::Data(data) => {
                     let names = self.fields(&data.ctor);
@@ -981,6 +995,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 ..
             } if op.rebuilds() => args.get(..1)?,
+            // A set given up to `add`, `remove`, `with`, `without` or a set operation that
+            // builds on its receiver (`spec/28 §6`).
+            Rhs::Prim {
+                prim: Prim::Set(op),
+                args,
+                ..
+            } if op.rebuilds() => args.get(..1)?,
             _ => return None,
         };
         let all = match rhs {
@@ -1063,6 +1084,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         prim: Prim::Seq(op),
                                         ..
                                     } => seqs::seq_apply(*op, args)?,
+                                    Rhs::Prim {
+                                        prim: Prim::Set(op),
+                                        ..
+                                    } => sets::set_apply(*op, args)?,
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
@@ -1658,6 +1683,16 @@ impl<'p, 'w> Machine<'p, 'w> {
         Some(Ok(match name {
             // O(1): an empty ring buffer allocates nothing.
             "empty_stack" | "empty_queue" => Value::Seq(Rc::default()),
+            _ => return None,
+        }))
+    }
+
+    /// A function of `std.collections` whose body is native (`spec/28`, ADR 0119), or `None`
+    /// for one the module declares in Una.
+    fn collections(&mut self, name: &str) -> Option<Flow<'p>> {
+        Some(Ok(match name {
+            // O(1).
+            "empty_set" => Value::Set(Rc::default()),
             _ => return None,
         }))
     }
@@ -2463,13 +2498,14 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::List(items) => Value::Int(BigInt::from(items.len())),
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
             Value::Seq(items) => Value::Int(BigInt::from(items.len())),
+            Value::Set(items) => Value::Int(BigInt::from(items.len())),
             // An array's length (`spec/29 §17`).
             Value::Dense(dense) => {
                 Value::Int(BigInt::from(dense.shape.first().copied().unwrap_or(0)))
             }
             _ => {
                 return Err(fault(
-                    "`len` of a value that is not a text, list, map, sequence or array",
+                    "`len` of a value that is not a text, list, map, sequence, set or array",
                 ));
             }
         },
@@ -2501,6 +2537,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         // first, in `Machine::eval`.
         Prim::Map(op) => return map_apply(op, args.to_vec()),
         Prim::Seq(op) => return seqs::seq_apply(op, args.to_vec()),
+        Prim::Set(op) => return sets::set_apply(op, args.to_vec()),
         Prim::Float(op) => return float_apply(op, args),
         Prim::Decimal(op) => return decimal_apply(op, args),
         // The shape of a matrix (`spec/29 §17`).

@@ -1,8 +1,8 @@
 //! The built-in methods of the standard library reference (#690): `.len`, the methods of maps,
-//! of `Stack` and of `Queue`, the conversions and the wrapping, saturating and bit operations of
-//! the fixed-width integers. They have no declaration in the standard modules, so their
-//! signature lines and doc comments are written here, from `spec/14 §2`, `spec/18 §4`, `§5`,
-//! `spec/21 §2` and `spec/28 §5`. The names come from
+//! of `Stack`, of `Queue` and of sets, the conversions and the wrapping, saturating and bit
+//! operations of the fixed-width integers. They have no declaration in the standard modules, so
+//! their signature lines and doc comments are written here, from `spec/14 §2`, `spec/18 §4`,
+//! `§5`, `spec/21 §2`, `spec/28 §5` and `§6`. The names come from
 //! the checker (`una_check::builtin_methods`), and tests keep the two in step: every method the
 //! checker resolves has an entry and every entry is one it resolves, and each entry's signature
 //! is probed against `una check` in every edition, with a positive and a negative call.
@@ -74,8 +74,8 @@ fn fixed_types() -> Vec<&'static str> {
 }
 
 /// Every built-in method on every receiver, in the order of the reference: `.len`, the
-/// methods of maps, of `Stack` and of `Queue`, the conversions, then the fixed-width
-/// operations.
+/// methods of maps, of `Stack` and of `Queue`, those of sets, the conversions, then the
+/// fixed-width operations.
 pub fn builtins() -> Vec<Builtin> {
     let entry = |name: &'static str,
                  receiver: &'static str,
@@ -170,6 +170,31 @@ pub fn builtins() -> Vec<Builtin> {
         seq("peek_back", "Queue[T]", "q", false, &[], "Option[T]"),
         seq("items", "Queue[T]", "q", false, &[], "List[T]"),
     ]);
+    // Edition 0.4: the methods of `Set` (`spec/28 §6`, ADR 0119 rule 7).
+    let set = |name, params: &[(&'static str, &'static str)], result: &str| Builtin {
+        since: Edition::V0_4,
+        ..entry(name, "Set[T]", "s", params, result)
+    };
+    let set_update = |name| Builtin {
+        edit: true,
+        ..set(name, &[("item", "T")], "Unit")
+    };
+    all.extend([
+        len("Set[T]", "s", Edition::V0_4),
+        set("has", &[("item", "T")], "Bool"),
+        set_update("add"),
+        set_update("remove"),
+        set("with", &[("item", "T")], "Set[T]"),
+        set("without", &[("item", "T")], "Set[T]"),
+        set("first", &[], "Option[T]"),
+        set("last", &[], "Option[T]"),
+        set("between", &[("low", "T"), ("high", "T")], "List[T]"),
+        set("items", &[], "List[T]"),
+        set("union", &[("other", "Set[T]")], "Set[T]"),
+        set("intersection", &[("other", "Set[T]")], "Set[T]"),
+        set("difference", &[("other", "Set[T]")], "Set[T]"),
+        set("is_subset", &[("of", "Set[T]")], "Bool"),
+    ]);
     for target in IntType::ALL {
         let name: &'static str = conversion_name(target);
         all.push(entry(name, "Int", "x", &[], target.as_str()));
@@ -224,11 +249,13 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         "len" => &[
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`).",
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
+            "(`spec/28 §6`).",
         ],
         "has" => &[
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
-            "and predicates (`spec/21 §2`, `spec/21 §4`).",
+            "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
+            "`s` holds `item`, in O(log n) (`spec/28 §6`).",
         ],
         "get" => &[
             "`Some` exactly when `m.has(key: k)`. A missing key gives `None`, not a failure",
@@ -241,10 +268,17 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         ],
         "remove" => &[
             "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
-            "and `m.len` shrinks by one when the key was there (`spec/21 §2`).",
+            "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
+            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`).",
         ],
-        "with" => &["A map with the contract of `set`, for the result (`spec/21 §2`)."],
-        "without" => &["A map with the contract of `remove`, for the result (`spec/21 §2`)."],
+        "with" => &[
+            "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
+            "with the contract of `add`, for the result (`spec/28 §6`).",
+        ],
+        "without" => &[
+            "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
+            "with the contract of `remove`, for the result (`spec/28 §6`).",
+        ],
         "keys" => &["The keys of `m`, in key order, as many as `m.len` (`spec/21 §2`)."],
         "values" => {
             &["The values of `m`, in the order of their keys, as many as `m.len` (`spec/21 §2`)."]
@@ -288,6 +322,37 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         "peek_back" => &[
             "The back of a `Queue`, the item `pop_back` would remove, as `Some`, and `None`",
             "exactly when it is empty, in O(1) time (`spec/28 §5`).",
+        ],
+        "add" => &[
+            "Updates `s` in place, written `edit s.add(...)`: afterwards `s.has(item: x)`, and",
+            "`s.len` grows by one when the item was not there. O(log n) (`spec/28 §6`).",
+        ],
+        "first" => &["The least item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`)."],
+        "last" => {
+            &["The greatest item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`)."]
+        }
+        "between" => &[
+            "The items of `s` from `low` to `high`, both included, in ascending order; none when",
+            "`low` is above `high`. O(log n + k) for the k items listed (`spec/28 §6`).",
+        ],
+        "items" => {
+            &["The items of `s` in ascending order, as many as `s.len`. O(n) (`spec/28 §6`)."]
+        }
+        "union" => &[
+            "The items of `s` and those of `other`. O(n + m), or less when `other` is much smaller",
+            "(`spec/28 §6`).",
+        ],
+        "intersection" => &[
+            "The items of `s` that `other` holds. O(n + m), or less when one of the sets is much",
+            "smaller (`spec/28 §6`).",
+        ],
+        "difference" => &[
+            "The items of `s` that `other` does not hold. O(n + m), or less when `other` is much",
+            "smaller (`spec/28 §6`).",
+        ],
+        "is_subset" => &[
+            "Whether `of` holds every item of `s`. O(n + m), or less when `s` is much smaller",
+            "(`spec/28 §6`).",
         ],
         "to_int" => &[
             "Converts `x` to `Int`, which every value of a fixed-width type fits, so it always",

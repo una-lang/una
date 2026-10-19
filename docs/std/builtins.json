@@ -9,7 +9,8 @@
       "spec": [
         "spec/14 §2",
         "spec/21 §2",
-        "spec/14 §1"
+        "spec/14 §1",
+        "spec/28 §6"
       ],
       "variants": [
         {
@@ -20,20 +21,33 @@
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
+            "(`spec/28 §6`)."
           ]
         },
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]",
           "docs": [
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`)."
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
+            "(`spec/28 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]\ns.len -> Int\n  where s: Set[T]",
+          "docs": [
+            "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
+            "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
+            "never negative (`spec/21 §2`). From edition 0.4 on, a `Set` counts its items, in O(1)",
+            "(`spec/28 §6`)."
           ]
         }
       ]
@@ -44,19 +58,31 @@
       "kind": "method",
       "spec": [
         "spec/21 §2",
-        "spec/21 §4"
+        "spec/21 §4",
+        "spec/28 §6"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]",
           "docs": [
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
-            "and predicates (`spec/21 §2`, `spec/21 §4`)."
+            "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
+            "`s` holds `item`, in O(log n) (`spec/28 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]\ns.has(item: T) -> Bool\n  where s: Set[T]",
+          "docs": [
+            "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
+            "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
+            "`s` holds `item`, in O(log n) (`spec/28 §6`)."
           ]
         }
       ]
@@ -111,19 +137,31 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §6"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]",
           "docs": [
             "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
-            "and `m.len` shrinks by one when the key was there (`spec/21 §2`)."
+            "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
+            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]\nedit s.remove(item: T) -> Unit\n  where s: Set[T]",
+          "docs": [
+            "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
+            "and `m.len` shrinks by one when the key was there (`spec/21 §2`). On a `Set`, written",
+            "`edit s.remove(...)`, afterwards `not s.has(item: x)`, in O(log n) (`spec/28 §6`)."
           ]
         }
       ]
@@ -133,18 +171,29 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §6"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]",
           "docs": [
-            "A map with the contract of `set`, for the result (`spec/21 §2`)."
+            "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
+            "with the contract of `add`, for the result (`spec/28 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]\ns.with(item: T) -> Set[T]\n  where s: Set[T]",
+          "docs": [
+            "A map with the contract of `set`, for the result (`spec/21 §2`). On a `Set`, a set",
+            "with the contract of `add`, for the result (`spec/28 §6`)."
           ]
         }
       ]
@@ -154,18 +203,29 @@
       "module": "builtin",
       "kind": "method",
       "spec": [
-        "spec/21 §2"
+        "spec/21 §2",
+        "spec/28 §6"
       ],
       "variants": [
         {
           "editions": [
             "0.2",
-            "0.3",
-            "0.4"
+            "0.3"
           ],
           "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]",
           "docs": [
-            "A map with the contract of `remove`, for the result (`spec/21 §2`)."
+            "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
+            "with the contract of `remove`, for the result (`spec/28 §6`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]\ns.without(item: T) -> Set[T]\n  where s: Set[T]",
+          "docs": [
+            "A map with the contract of `remove`, for the result (`spec/21 §2`). On a `Set`, a set",
+            "with the contract of `remove`, for the result (`spec/28 §6`)."
           ]
         }
       ]
@@ -394,6 +454,183 @@
           "docs": [
             "The back of a `Queue`, the item `pop_back` would remove, as `Some`, and `None`",
             "exactly when it is empty, in O(1) time (`spec/28 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "add",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "edit s.add(item: T) -> Unit\n  where s: Set[T]",
+          "docs": [
+            "Updates `s` in place, written `edit s.add(...)`: afterwards `s.has(item: x)`, and",
+            "`s.len` grows by one when the item was not there. O(log n) (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "first",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.first() -> Option[T]\n  where s: Set[T]",
+          "docs": [
+            "The least item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "last",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.last() -> Option[T]\n  where s: Set[T]",
+          "docs": [
+            "The greatest item of `s`, or `None` when it is empty. O(log n) (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "between",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.between(low: T, high: T) -> List[T]\n  where s: Set[T]",
+          "docs": [
+            "The items of `s` from `low` to `high`, both included, in ascending order; none when",
+            "`low` is above `high`. O(log n + k) for the k items listed (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "items",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.items() -> List[T]\n  where s: Set[T]",
+          "docs": [
+            "The items of `s` in ascending order, as many as `s.len`. O(n) (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "union",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.union(other: Set[T]) -> Set[T]\n  where s: Set[T]",
+          "docs": [
+            "The items of `s` and those of `other`. O(n + m), or less when `other` is much smaller",
+            "(`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "intersection",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.intersection(other: Set[T]) -> Set[T]\n  where s: Set[T]",
+          "docs": [
+            "The items of `s` that `other` holds. O(n + m), or less when one of the sets is much",
+            "smaller (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "difference",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.difference(other: Set[T]) -> Set[T]\n  where s: Set[T]",
+          "docs": [
+            "The items of `s` that `other` does not hold. O(n + m), or less when `other` is much",
+            "smaller (`spec/28 §6`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_subset",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/28 §6"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4"
+          ],
+          "declaration": "s.is_subset(of: Set[T]) -> Bool\n  where s: Set[T]",
+          "docs": [
+            "Whether `of` holds every item of `s`. O(n + m), or less when `s` is much smaller",
+            "(`spec/28 §6`)."
           ]
         }
       ]

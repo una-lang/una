@@ -39,6 +39,10 @@ pub(crate) enum Res {
     /// sequence rebound to the operation's result, and for a removal, the end it removes read
     /// first as the call's value.
     SeqUpdate(una_core::SeqOp),
+    /// A built-in method of a `Set` that reads it or gives a new set (`spec/28 §6`).
+    SetMethod(una_core::SetOp),
+    /// `edit s.add(...)` or `edit s.remove(...)`: the set rebound to `With` or `Without`.
+    SetUpdate(una_core::SetOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

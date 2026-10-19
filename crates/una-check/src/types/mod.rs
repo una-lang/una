@@ -41,6 +41,7 @@ mod map;
 mod memory;
 mod records;
 mod seq;
+mod set;
 mod shared;
 #[cfg(test)]
 mod sharing_tests;
@@ -131,8 +132,8 @@ const TIME: &str = include_str!("../std/time.una");
 /// `std.drive` (`spec/26 §2`), edition 0.4, as Una source.
 const DRIVE: &str = include_str!("../std/drive.una");
 
-/// `std.collections` (ADR 0119) as Una source: its kind `Ranked`. The checker loads it only
-/// for a package of edition 0.4 that imports it.
+/// `std.collections` (ADR 0119) as Una source: its kind `Ranked` and its functions. The checker
+/// loads it only for a package of edition 0.4 that imports it.
 const COLLECTIONS: &str = include_str!("../std/collections.una");
 
 /// The built-in method `update` of maps in edition 0.4 (ADR 0119 rule 18) as Una source, in a
@@ -157,12 +158,12 @@ pub struct StandardSource {
 }
 
 /// The built-in methods and properties that the checker resolves by the type of their
-/// receiver, as `(receiver, name)`: `.len` on `Text`, `List` and `Map` (`spec/14 §2`), the
-/// methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`), the conversions
-/// (`spec/18 §4`), and the wrapping, saturating and bit operations of the fixed-width integers
-/// (`spec/18 §5`). The receivers are `"len"`, `"Map"`, `"Stack"`, `"Queue"`, `"conversion"` and
-/// `"fixed"`. Read-only: it is built from the tables the
-/// checker resolves them with, for the standard library reference (#690).
+/// receiver, as `(receiver, name)`: `.len` on `Text`, `List`, `Map` (`spec/14 §2`) and `Set`,
+/// the methods of maps (`spec/21 §2`), of `Stack` and of `Queue` (`spec/28 §5`) and of sets
+/// (`spec/28 §6`), the conversions (`spec/18 §4`), and the wrapping, saturating and bit
+/// operations of the fixed-width integers (`spec/18 §5`). The receivers are `"len"`, `"Map"`,
+/// `"Stack"`, `"Queue"`, `"Set"`, `"conversion"` and `"fixed"`. Read-only: it is built from the
+/// tables the checker resolves them with, for the standard library reference (#690).
 pub fn builtin_methods() -> Vec<(&'static str, String)> {
     let mut methods = vec![("len", "len".to_owned())];
     methods.extend(
@@ -182,6 +183,12 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
         seq::QUEUE_METHODS
             .iter()
             .map(|(name, ..)| ("Queue", (*name).to_owned())),
+    );
+    // Edition 0.4: the methods of `Set` (ADR 0119 rule 7).
+    methods.extend(
+        set::SET_METHODS
+            .iter()
+            .map(|(name, ..)| ("Set", (*name).to_owned())),
     );
     methods.extend(una_core::IntType::ALL.iter().map(|t| {
         (
@@ -950,7 +957,8 @@ impl Standard {
                 parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
             })
             .collect();
-        let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_1);
+        // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
+        let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_2);
         let map_0_4 = parse_standard(&sources, map_0_4, &mut interner, KeywordSet::V0_2);
         Standard {
             sources,
