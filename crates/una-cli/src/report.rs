@@ -67,7 +67,7 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: [&'static str; 12],
+    out_of_model: [&'static str; 13],
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).

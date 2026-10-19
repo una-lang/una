@@ -122,10 +122,11 @@ pub(crate) struct StartScope {
     pub(crate) cancel: Arc<AtomicUsize>,
 }
 
-/// Opens the `tasks` statement at `site` in the task the thread runs, at most `bound` tasks at
+/// Opens the `tasks` statement in the task the thread runs, at its `site`, which a later abort
+/// of the statement does not need, since each `start` names its own; at most `bound` tasks at
 /// once when `bounded` is 1, the integer of the borrowed word `bound`, else the default bound
 /// (ADR 0117 rule 7). 0, or 2 when the task stops instead.
-pub fn tasks_begin(bound: i64, bounded: i64, site: usize) -> i64 {
+pub fn tasks_begin(bound: i64, bounded: i64, _site: usize) -> i64 {
     let bound = (bounded != 0).then(|| {
         let value = values::int_value(bound);
         // A bound below 1 is refuted by verification; one beyond `usize` bounds nothing.

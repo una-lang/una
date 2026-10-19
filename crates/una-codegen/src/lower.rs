@@ -1777,7 +1777,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Option<Value>, CodegenError> {
         let site = self.site(span);
         let closure = self.closure(&[], task, env)?;
-        let status = self.call("una_rt_start", &[closure, site])?;
+        let status = self.call("una_rt_start_task", &[closure, site])?;
         self.release(closure, Kind::Fn);
         let stop = self.builder.ins().iconst(types::I64, STOPPED);
         self.check(stop, status, scope, catch);
