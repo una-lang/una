@@ -116,7 +116,7 @@ After U3012 and before `main`, as `keys:` files are read, `una_http::serve::prep
 
 1. checks the overlaps of the final grants (manifest and flags together);
 2. raises the soft descriptor limit to the sum of `connections` over the grants plus 64, capped at the hard limit; below it, a usage error;
-3. for each `https` grant: opens the certificate and the key once each, checks the open descriptor, reads from it at most 1 MiB, parses the PEM (below);
+3. for each `https` grant: opens the key and then the certificate, once each, checks the open descriptor, reads from it at most 1 MiB, parses the PEM (below);
 4. binds one listening socket per grant (`una_sys::listen`): `SO_REUSEADDR` set, `SO_REUSEPORT` never set, `IPV6_V6ONLY` set on IPv6, close-on-exec, backlog `min(connections, SOMAXCONN)`; an address that cannot be bound is a usage error that names it.
 
 The sockets are held in `Prepared` until the run ends, and nothing accepts on them yet: the reactor's slice (ADR 0117 step 6, ADR 0123 step 4) takes them over, sets them non-blocking and registers them, and the serve threads accept. Until then a peer's connection waits in the kernel's backlog. No program of this slice can name `HttpServer` (step 5), so no program's behavior depends on it.

@@ -89,7 +89,7 @@ A `serve:` grant lets a run accept connections on one address and port, with lim
 6. **Overlap.** Each address and port is granted once, and a wildcard address may not share its port with another grant of its family, whatever the schemes. IPv6 sockets are bound with `IPV6_V6ONLY`, so `[::]:p` and `0.0.0.0:p` do not overlap. In `ita.una` the later of two grants that overlap is U7008; among the grants of a run, manifest and flags together, an overlap is a usage error.
 7. **Before `main`.** After the checks of `spec/13 §5` and before `main` starts, the host, in this order:
    1. raises the run's limit of open descriptors to the sum of `connections` over the grants, plus 64, within the hard limit; a run that cannot is a usage error;
-   2. for each `https` grant, opens the certificate file and the key file once each, checks each open descriptor, and reads each from that descriptor (rule 8);
+   2. for each `https` grant, opens the key file and then the certificate file, once each, checks each open descriptor, and reads each from that descriptor (rule 8);
    3. binds one listening socket per grant, without `SO_REUSEPORT`, with `IPV6_V6ONLY` on IPv6, so no other process shares its connections; an address that cannot be bound is a usage error that names it.
 8. **TLS files.**
    - **Opening.** Each file is opened once, following symbolic links, without blocking on a FIFO, and checked on the open descriptor with `fstat`, never by its path, so a file swapped between the check and the read is impossible. Each MUST be a regular file of at most 1 MiB. Relative paths resolve as other grants' paths do (`spec/13 §5`).

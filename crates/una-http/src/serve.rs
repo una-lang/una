@@ -129,11 +129,10 @@ pub fn prepare(grants: &[ServeInput<'_>]) -> Result<Prepared, String> {
                         input.grant.listener()
                     ));
                 };
-                Some(TlsMaterial {
-                    chain: load_chain(certificate)?,
-                    key: load_key(key, who)?,
-                    policy,
-                })
+                // The key first: its checks are the ones that keep a secret.
+                let key = load_key(key, who)?;
+                let chain = load_chain(certificate)?;
+                Some(TlsMaterial { chain, key, policy })
             }
         });
     }
