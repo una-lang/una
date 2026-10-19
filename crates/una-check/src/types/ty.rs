@@ -201,6 +201,8 @@ pub(crate) enum Ty {
     Int,
     /// A fixed-width integer type of edition 0.2 (`spec/18`).
     Fixed(IntType),
+    /// `F64`, IEEE binary64, edition 0.3 (`spec/29`, ADR 0114).
+    F64,
     Bool,
     Text,
     Unit,
@@ -504,6 +506,7 @@ impl Flagged for Ty {
             | Ty::Text
             | Ty::Unit
             | Ty::Hashed
+            | Ty::F64
             | Ty::Param(_)
             | Ty::Never
             | Ty::Error(_) => Flags::LEAF,
@@ -562,6 +565,7 @@ impl Ty {
             | (Ty::Text, Ty::Text)
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
+            | (Ty::F64, Ty::F64)
             | (Ty::Never, Ty::Never)
             | (Ty::Error(_), Ty::Error(_)) => true,
             (Ty::Fixed(a), Ty::Fixed(b)) => a == b,
@@ -1144,6 +1148,7 @@ pub(crate) enum View<'t, T> {
     Text,
     Unit,
     Hashed,
+    F64,
     List(&'t T),
     Map(&'t T, &'t T),
     Kind(KindId, &'t [T]),
@@ -1174,6 +1179,7 @@ impl TypeView for Ty {
             Ty::Text => View::Text,
             Ty::Unit => View::Unit,
             Ty::Hashed => View::Hashed,
+            Ty::F64 => View::F64,
             Ty::List(element) => View::List(element),
             Ty::Map(key, value) => View::Map(key, value),
             Ty::Kind(id, args) => View::Kind(*id, args),
@@ -1209,6 +1215,7 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             View::Text => write!(f, "Text"),
             View::Unit => write!(f, "Unit"),
             View::Hashed => write!(f, "Hashed"),
+            View::F64 => write!(f, "F64"),
             View::List(element) => write!(f, "List[{}]", Show(element, names)),
             View::Map(key, value) => {
                 write!(f, "Map[{}, {}]", Show(key, names), Show(value, names))

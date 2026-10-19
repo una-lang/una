@@ -15,6 +15,8 @@ pub(crate) use una_core::Text;
 pub(crate) enum Value<'p> {
     /// An arbitrary-precision integer (ADR 0004).
     Int(BigInt),
+    /// An `F64`, always canonical: its NaN is the canonical NaN (`spec/29`, ADR 0114 rule 9.8).
+    F64(f64),
     /// A boolean.
     Bool(bool),
     /// A text.
@@ -45,6 +47,8 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Int(BigInt),
+    /// An `F64` by the key of totalOrder (ADR 0114 rule 9.5).
+    F64(i64),
     Text(Rc<Text>),
     Variant(usize),
 }
@@ -54,6 +58,7 @@ impl Key {
     pub(crate) fn of(value: &Value<'_>) -> Option<Key> {
         match value {
             Value::Int(n) => Some(Key::Int(n.clone())),
+            Value::F64(x) => Some(Key::F64(una_core::float::order_key(*x))),
             Value::Text(t) => Some(Key::Text(t.clone())),
             Value::Data(data) if data.fields.is_empty() => Some(Key::Variant(data.ctor.index)),
             _ => None,
@@ -169,6 +174,7 @@ fn composite(value: &Value<'_>) -> Option<(u8, usize)> {
 fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::F64(x), Value::F64(y)) => una_core::float::equal(*x, *y),
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
@@ -283,6 +289,7 @@ pub(crate) fn equal_within(a: &Value<'_>, b: &Value<'_>, pairs: usize) -> Option
 pub(crate) fn compare(a: &Value<'_>, b: &Value<'_>) -> Ordering {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::F64(x), Value::F64(y)) => una_core::float::total_cmp(*x, *y),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Data(x), Value::Data(y)) => x.ctor.index.cmp(&y.ctor.index),
         _ => Ordering::Equal,

@@ -326,6 +326,9 @@ pub enum TokenKind {
     CapRef(Symbol),
     /// An integer literal: its decimal digits, without underscores or leading zeros.
     Int(String),
+    /// A float literal of edition 0.3, as written, or its accepted form after U0007
+    /// (`spec/29`).
+    Float(String),
     /// The opening quote of a text literal.
     TextStart,
     /// A run of literal text, with escapes decoded.
@@ -401,7 +404,7 @@ impl TokenKind {
                 format!("`{}`", interner.resolve(*name))
             }
             TokenKind::CapRef(name) => format!("`@{}`", interner.resolve(*name)),
-            TokenKind::Int(digits) => format!("`{digits}`"),
+            TokenKind::Int(digits) | TokenKind::Float(digits) => format!("`{digits}`"),
             TokenKind::TextStart | TokenKind::TextChunk(_) | TokenKind::TextEnd => {
                 "text literal".to_owned()
             }

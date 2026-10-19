@@ -214,6 +214,8 @@ impl Writer<'_> {
             Base::Text => node!(Text),
             Base::Unit => node!(Unit),
             Base::Hashed => node!(Hashed),
+            // ADR 0114 rule 17: the kind `f64`.
+            Base::F64 => J::Obj(vec![("kind", s("f64"))]),
             Base::Named { module, name, args } => node!(Named,
                 "module" => s(module),
                 "name" => s(name),
@@ -348,6 +350,11 @@ impl Writer<'_> {
         match atom {
             Atom::Var(name) => node!(Var, "value" => s(name)),
             Atom::Int(digits) => node!(Int, "value" => s(digits)),
+            // ADR 0114 rule 17: its bits as 16 lowercase hex digits.
+            Atom::F64(bits) => J::Obj(vec![
+                ("kind", s("f64")),
+                ("bits", J::Str(format!("{bits:016x}"))),
+            ]),
             Atom::Bool(b) => node!(Bool, "value" => J::Bool(*b)),
             Atom::Text(text) => node!(Text, "value" => s(text)),
             Atom::Unit => node!(Unit),
@@ -383,6 +390,11 @@ impl Writer<'_> {
                 "values" => J::Arr(vec![self.fixed_op(*op), self.int_type(*int)]),
             ),
             Prim::Map(op) => node!(Map, "value" => self.map_op(*op)),
+            // ADR 0114 rule 17: the operations of `F64` are kinds of their own, under `float`.
+            Prim::Float(op) => node!(Float, "value" => J::Obj(vec![(
+                "kind",
+                s(op.as_str().strip_prefix("f64_").unwrap_or(op.as_str()))
+            )])),
         }
     }
 
@@ -1116,9 +1128,11 @@ mod tests {
                 listed.insert(name, kinds);
             }
         }
-        // Enums that are not nodes of Core: the prelude's field types (#415).
+        // Enums that are not nodes of Core: the prelude's field types (#415), and what an
+        // operation of `F64` returns.
         let mut declared = declared;
         declared.remove("PreludeField");
+        declared.remove("FloatResult");
         assert_eq!(listed, declared);
     }
 }

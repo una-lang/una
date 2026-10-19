@@ -71,6 +71,8 @@ pub(crate) enum Builtin {
     List,
     /// `Map[K, V]`, built in from edition 0.2 (`spec/21 §1`).
     Map,
+    /// `F64`, built in from edition 0.3 (`spec/29`, ADR 0114 rule 1).
+    F64,
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -535,6 +537,12 @@ impl<'a> Env<'a> {
                     .upper
                     .entry("Map")
                     .or_insert(Entity::Builtin(Builtin::Map));
+            }
+            if edition >= Edition::V0_3 {
+                module
+                    .upper
+                    .entry("F64")
+                    .or_insert(Entity::Builtin(Builtin::F64));
             }
         }
         env.imports(count);
@@ -1125,6 +1133,7 @@ impl<'a> Env<'a> {
         for id in 0..self.functions.len() {
             self.function_signature(id, report);
         }
+        self.no_function_to_f64(report);
         // A policy fails and uses capabilities as its `via` function does (`spec/10 §7`).
         for id in 0..self.functions.len() {
             let Some((module, FnAst::Policy(policy))) =
@@ -1217,6 +1226,37 @@ impl<'a> Env<'a> {
         }
         if let Some(def) = self.capabilities.get_mut(id) {
             def.ops = ops;
+        }
+    }
+
+    /// ADR 0114 rule 4.1: in edition 0.3, `n.to_f64()` on an integer is built in, ahead of a
+    /// function of that name, so a package function `to_f64` whose first parameter has an
+    /// integer type, a refinement or a measured one, or is a type parameter, is U1002 at its
+    /// name: no program changes meaning silently.
+    fn no_function_to_f64(&self, report: &mut Report<'_>) {
+        if self.edition < Edition::V0_3 {
+            return;
+        }
+        for def in &self.functions {
+            let FnAst::Function(function) = def.ast else {
+                continue;
+            };
+            if def.name != "to_f64" || !self.reports(def.module) {
+                continue;
+            }
+            let integer = def.params.first().is_some_and(|param| {
+                matches!(
+                    param.ty.base.unlabeled(),
+                    Ty::Int | Ty::Fixed(_) | Ty::Param(_) | Ty::Measured(..)
+                )
+            });
+            if integer {
+                report.error(
+                    Code::U1002,
+                    function.name.span,
+                    "`to_f64` on an integer is a built-in conversion from edition 0.3, so a function cannot take its name for an integer or a type parameter".to_owned(),
+                );
+            }
         }
     }
 
@@ -2035,6 +2075,7 @@ impl<'a> Env<'a> {
                     Builtin::Text => Ty::Text,
                     Builtin::Unit => Ty::Unit,
                     Builtin::Hashed => Ty::Hashed,
+                    Builtin::F64 => Ty::F64,
                     Builtin::List => {
                         Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::error())))
                     }

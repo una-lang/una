@@ -172,9 +172,10 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         checked.push(code.as_str());
     }
     // Every code has its examples, but U8001, an internal error, which no program should
-    // cause, and U6005, which the host's data causes and no program text does (ADR 0086).
+    // cause, U6005, which the host's data causes and no program text does (ADR 0086), and
+    // U6006, which the platform's floating-point environment causes (ADR 0114).
     for code in Code::ALL {
-        if code == Code::U8001 || code == Code::U6005 {
+        if code == Code::U8001 || code == Code::U6005 || code == Code::U6006 {
             assert!(
                 !una_explain::text(code).contains("Stub explanation."),
                 "{code} has its text"

@@ -738,6 +738,9 @@ fn base_type(base: Base) -> Type {
     }
 }
 
+/// The sort of `F64` while it is uninterpreted (`spec/29 §8`).
+const F64_SORT: &str = "i!F64";
+
 /// The sort of a Una type (`spec/12 §4`), in the namespaces of ADR 0038 D8:
 /// `Int` and `Bool` are SMT-LIB's, the other built-in types and the kinds of the prelude are
 /// the encoder's (`i!Text`, `i!List_<T>`, `i!Option_<T>`, `i!FileError`), and the kinds and
@@ -752,6 +755,10 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Text => TEXT.to_owned(),
             Base::Unit => UNIT.to_owned(),
             Base::Hashed => HASHED.to_owned(),
+            // An uninterpreted sort until the FloatingPoint encoding lands: no float term is in
+            // the refinement language yet, so no query states a fact about a float
+            // (`spec/29 §8`).
+            Base::F64 => F64_SORT.to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
                 if is_prelude(module) {
@@ -803,6 +810,7 @@ fn type_name(ty: &Type) -> String {
             Base::Text => "Text".to_owned(),
             Base::Unit => "Unit".to_owned(),
             Base::Hashed => "Hashed".to_owned(),
+            Base::F64 => "F64".to_owned(),
             Base::Named { name, .. } | Base::Param(name) => name.clone(),
             Base::Tuple(_) => "Tuple".to_owned(),
             Base::Unknown => "Unknown".to_owned(),
@@ -2713,7 +2721,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 | Prim::Concat
                 | Prim::ToText
                 | Prim::Convert(_)
-                | Prim::Fixed(..) => unknown(),
+                | Prim::Fixed(..)
+                | Prim::Float(_) => unknown(),
             }),
             Rhs::Call {
                 function,
@@ -3210,6 +3219,16 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ty: base_type(Base::Bool),
             },
             Atom::Text(text) => text_literal(text),
+            // A float literal is a constant of the uninterpreted sort, one per bit pattern: a
+            // query may assume two literals equal, which weakens it and never proves more.
+            Atom::F64(bits) => Tv {
+                f: F::Const(Const {
+                    name: format!("i!f64!{bits:016x}"),
+                    sort: F64_SORT.to_owned(),
+                    role: ConstRole::Internal,
+                }),
+                ty: base_type(Base::F64),
+            },
             Atom::Unit => Tv {
                 f: F::Const(Const {
                     name: "unit".to_owned(),
@@ -3706,7 +3725,10 @@ impl<'p, 'i> Walker<'p, 'i> {
             // (`spec/18 §4`).
             Prim::Convert(_) => arg(0)?.f,
             // The methods of `spec/18 §5` are known by their contracts, not as terms.
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) => return None,
+            // No operation of `F64` is a term yet (`spec/29 §8`): its result is a fresh binder.
+            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) | Prim::Float(_) => {
+                return None;
+            }
         })
     }
 

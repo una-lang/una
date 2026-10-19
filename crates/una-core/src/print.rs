@@ -212,6 +212,7 @@ pub fn print_atom(atom: &Atom) -> String {
     match atom {
         Atom::Var(name) => name.clone(),
         Atom::Int(digits) => digits.clone(),
+        Atom::F64(bits) => crate::float::render(f64::from_bits(*bits)),
         Atom::Bool(value) => value.to_string(),
         Atom::Text(text) => quote(text),
         Atom::Unit => "unit".to_owned(),
@@ -295,6 +296,7 @@ fn write_base(out: &mut String, base: &Base) {
     match base {
         Base::Int => out.push_str("Int"),
         Base::Fixed(int) => out.push_str(int.as_str()),
+        Base::F64 => out.push_str("F64"),
         Base::Bool => out.push_str("Bool"),
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),

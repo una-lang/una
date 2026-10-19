@@ -1,0 +1,15 @@
+-- test: no F64 term is in the refinement language in this release: a float literal, operator or method in a clause is U2014
+-- spec: spec/29 §8
+-- expect: error U2014 at src/m.una:8:12
+-- expect: error U2014 at src/m.una:13:26
+module m
+
+pub finite(x: F64) -> F64
+  requires x.is_finite()
+=
+  x
+
+pub bigger(x: F64, y: F64) -> Bool
+  ensures result implies x > y
+=
+  x > y

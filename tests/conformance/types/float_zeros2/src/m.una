@@ -1,0 +1,27 @@
+-- test: U2033 holds for a literal zero on the left, negated, in parentheses or with an exponent, for a `when` arm `is 0.0`, and in a clause, where the comparison is also outside the refinement language in this step
+-- spec: spec/29 §5
+-- expect: error U2033 at src/m.una:12:28
+-- expect: error U2033 at src/m.una:14:29
+-- expect: error U2033 at src/m.una:16:32
+-- expect: error U2033 at src/m.una:21:5
+-- expect: error U2033 at src/m.una:25:12
+-- expect: error U2014 at src/m.una:25:12
+-- expect: error U2014 at src/m.una:25:16
+module m
+
+pub left(x: F64) -> Bool = -0.0 == x
+
+pub paren(x: F64) -> Bool = (0.0) >= x
+
+pub exponent(x: F64) -> Bool = x != 0.0e5
+
+pub arm(x: F64) -> Text
+=
+  when x
+    is 0.0 -> "zero"
+    else -> "other"
+
+pub clause(x: F64) -> F64
+  requires x < 0.0
+=
+  x

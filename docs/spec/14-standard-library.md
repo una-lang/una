@@ -62,7 +62,7 @@ Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (ef
   - `filter` and `first_where`: the top labels of `xs` and `keep`, and the label of `keep`'s declared result. A predicate's result flows into that declared `Bool`, so a predicate over labeled element values is rejected there (U4001).
     (v0.2, ADR 0067.) In edition `0.2`, the predicate's result is not checked against `Bool`'s label: its label, symbolic labels included, joins the top label of the result instead, since which elements remain, or which one is found, depends on it. `first_where` calls `keep` only up to the first accepted element, so a predicate with effects or failures whose result is labeled is U4002 there (`spec/07 §3` rule 4).
   `.len` takes the top label of its operand (`spec/07 §7` rule 3).
-- **The other functions** read element or argument values, and their result is labeled with the join of every label of their arguments, element types included: `contains`, `sum`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`.
+- **The other functions** read element or argument values, and their result is labeled with the join of every label of their arguments, element types included: `contains`, `sum`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`. (v0.3, ADR 0114.) In edition `0.3`, so do `parse_f64`, `f64_from_bits`, `as_f64` and `json_number` (`spec/29`), and the failure of `parse_f64`, as `parse_int`'s.
 
 The native implementations declare these labels explicitly.
 

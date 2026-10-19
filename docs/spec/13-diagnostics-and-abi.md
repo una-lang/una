@@ -173,6 +173,9 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2028 | types | Values of different units meet, or a measured and a unitless value |
 | U2029 | types | An invalid unit declaration or unit expression |
 | U2030 | types | A unit conversion without an expected unit, or not exact |
+| U2031 | types | A float literal rounds to an infinity, or is not zero and rounds to zero |
+| U2032 | types | A float literal other than zero, or a float range, as a pattern |
+| U2033 | types | A comparison of an `F64` with a float literal zero |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |
@@ -212,6 +215,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U6003 | runtime | Call depth or memory limit exceeded |
 | U6004 | runtime | A header value contains a control character |
 | U6005 | runtime | A host value is not valid UTF-8 |
+| U6006 | runtime | The floating-point environment of the platform is not the default one |
 | U7001 | project | Non-canonical formatting |
 | U7002 | project | Invalid `una.toml` |
 | U7003 | project | Escape budget exceeded |
@@ -219,7 +223,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U7005 | project | Trusted module not declared in both header and `una.toml` |
 | U8001 | internal | Internal compiler error (always a bug) |
 
-Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code, but two. U8001 is an internal error, a bug of the compiler, so its text has no example and says how to report it (ADR 0034). U6005 comes from the host's data, which no program text causes, so its text has no example and says how to fix the data (ADR 0086).
+Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code, but three. U8001 is an internal error, a bug of the compiler, so its text has no example and says how to report it (ADR 0034). U6005 comes from the host's data, which no program text causes, so its text has no example and says how to fix the data (ADR 0086). U6006 comes from the platform's floating-point environment, which no program text causes either (ADR 0114).
 
 ## 5. Command line
 
@@ -374,7 +378,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 
 - `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17`, `spec/18`, `spec/19` and `spec/20` and the keywords of edition `0.2` exist only in packages of edition `"0.2"` and later, and a single file has edition `"0.1"`.
   - (v0.3, ADR 0056 amendment of 2026-10-13.) `edition` is `"0.1"`, `"0.2"` or `"0.3"`. **Editions are cumulative.** Edition `"0.3"` has every construct, keyword and rule of edition `"0.2"`. A rule this specification states for edition `0.2` holds in every later edition, unless it says otherwise. The rules that target edition `0.3` (ADRs 0092, 0093 and 0094) apply only in packages of edition `"0.3"`.
-  - **Edition `0.3` is a preview** until every rule that targets it has landed. Until then, a later `0.3.x` release MAY add obligations or errors to an edition `0.3` package: the edition only ever gets stricter, never looser. (ADR 0056 amendment of 2026-10-13, second.) Stricter concerns the programs that edition `0.2` can express: such a program keeps its result or gains obligations or errors. A later `0.3.x` release MAY also accept a construct that a rule targeting edition `0.3` adds and that earlier releases reject as a syntax error, such as the condition on an operation of ADR 0092. Each such construct MUST only narrow what a program may do: erasing it gives a program that edition `0.2` accepts, with no fewer allowed behaviors. Editions `0.1` and `0.2` keep their stability promise: a later release MUST NOT change what they accept or reject, except to fix a soundness or security error. (v0.3, ADR 0104.) A later `0.3.x` release MAY also give the methods `measured()`, `magnitude()` and `convert()` of `spec/25 §5` their meaning; every use of them where neither the receiver nor the expected type carries a unit is an error. (ADR 0103.) A later `0.3.x` release MAY also accept refined type arguments, and the facts on access they give, in a package of edition `0.3` (`spec/03 §3`); such a package can then be accepted where edition `0.2` rejects it, on facts the obligations of `spec/12 §3` prove.
+  - **Edition `0.3` is a preview** until every rule that targets it has landed. Until then, a later `0.3.x` release MAY add obligations or errors to an edition `0.3` package: the edition only ever gets stricter, never looser. (ADR 0056 amendment of 2026-10-13, second.) Stricter concerns the programs that edition `0.2` can express: such a program keeps its result or gains obligations or errors. A later `0.3.x` release MAY also accept a construct that a rule targeting edition `0.3` adds and that earlier releases reject as a syntax error, such as the condition on an operation of ADR 0092. Each such construct MUST only narrow what a program may do: erasing it gives a program that edition `0.2` accepts, with no fewer allowed behaviors. Editions `0.1` and `0.2` keep their stability promise: a later release MUST NOT change what they accept or reject, except to fix a soundness or security error. (v0.3, ADR 0104.) A later `0.3.x` release MAY also give the methods `measured()`, `magnitude()` and `convert()` of `spec/25 §5` their meaning; every use of them where neither the receiver nor the expected type carries a unit is an error. (ADR 0103.) A later `0.3.x` release MAY also accept refined type arguments, and the facts on access they give, in a package of edition `0.3` (`spec/03 §3`); such a package can then be accepted where edition `0.2` rejects it, on facts the obligations of `spec/12 §3` prove. (ADR 0114.) A later `0.3.x` release MAY also accept the type `F64` and the constructs of `spec/29`, in a package of edition `0.3`; they do not erase to edition `0.2`. A program that edition `0.2` can express gains from them only U1002, for a declaration named `F64` and for a package function `to_f64` on integers, which the built-in conversion resolves ahead of.
   - (v0.4, ADR 0116 rule 0.) `edition` may also be `"0.4"`. Edition `"0.4"` has every construct, keyword and rule of edition `"0.3"`, and is a preview under the same terms until the rules that target it have landed. The constructs of `spec/26` exist only in packages of edition `"0.4"`.
 - `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).
 - `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
@@ -422,8 +426,8 @@ Keys are printed in this order, and two runs over the same sources print the sam
 
 | Enum | Kinds |
 | --- | --- |
-| `Atom` | `var`, `int`, `bool`, `text`, `unit` |
-| `Base` | `int`, `fixed`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
+| `Atom` | `var`, `int`, `f64`, `bool`, `text`, `unit` |
+| `Base` | `int`, `fixed`, `f64`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
 | `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
 | `Bound` | `rhs`, `expr` |
 | `Constraint` | `none`, `eq`, `ord`, `integer` |
@@ -431,10 +435,11 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `Expectation` | `holds`, `fails`, `performed` |
 | `Expr` | `atom`, `let`, `let_tuple`, `loop`, `together`, `together_for`, `if`, `case`, `fail`, `handle`, `attempt`, `with`, `unreachable` |
 | `FixedOp` | `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `saturating_add`, `saturating_sub`, `saturating_mul`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shift_right`, `wrapping_shift_left` |
+| `FloatOp` | `add`, `sub`, `mul`, `div`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `abs`, `sqrt`, `fma`, `rem`, `floor`, `ceil`, `trunc`, `round_half_even`, `round_half_away`, `copy_sign`, `ieee_min`, `ieee_max`, `clamp`, `ieee_eq`, `ieee_ne`, `ieee_lt`, `ieee_le`, `ieee_gt`, `ieee_ge`, `is_nan`, `is_finite`, `is_infinite`, `is_sign_negative`, `is_zero`, `is_positive_zero`, `is_negative_zero`, `to_bits`, `to_int_exact`, `from_int`, `to_text` |
 | `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
 | `LoopSource` | `list`, `range` |
 | `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
-| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map` |
+| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map`, `float` |
 | `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
 | `Source` | `rebind`, `handler` |
 | `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call` |
@@ -453,5 +458,7 @@ Keys are printed in this order, and two runs over the same sources print the sam
 **What a consumer may rely on.** Every fact the formal track's re-check reads from these keys may only raise a signature: more labels, more effects, more failures. The re-check then checks the body against the raised signature, so a wrong fact gives a rejection, never an accept. A future key that could lower a label or drop an effect MUST NOT be added on this assumption. Such a key needs its own argument of soundness, or the re-check reports what depends on it as not re-checked.
 
 `file_state` is such a key: a lower label would label `Files` failures lower. Its argument of soundness is that the re-check does not trust it. Every write the package can perform, wherever it appears, is checked against it, or no `Files`-using declaration of the document is accepted. The re-check MUST reject a write whose path or program counter is above it, and MUST NOT re-check a document whose `file_state` is above `internal`. A write it does not check counts as unchecked: one in a declaration it rejects or does not re-check, in a handler, or in a node it cannot read. So a value too low gives a rejection or a declaration not re-checked, never an accepted one. A value too high only labels failures higher, which can reject, never accept, what the true label would reject.
+
+(ADR 0114.) An `f64` atom, a float literal, has one key after `kind`, `bits`: its bits as 16 lowercase hex digits. An operation of `F64` is a `float` primitive whose `value` is its `FloatOp`, so no existing kind changes meaning.
 
 **Versioning** (ADR 0076). The `kind` of a node is an **open** field: Core gains forms as the language grows, and adding one keeps `una.core/1`. A consumer MUST report a declaration that holds a `kind` it does not know as not understood, never as accepted or checked. A label's `level` is closed. Any other change follows ADR 0076.

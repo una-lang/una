@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use una_diag::Code;
 
 use crate::error::{SyntaxError, SyntaxRepair};
-use crate::intern::Interner;
+use crate::intern::{Interner, Symbol};
 use crate::keywords::reserved_in;
 use crate::source::{FileId, SourceFile, Span};
 use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
@@ -28,6 +28,9 @@ pub struct Lexed {
     /// The U0103 errors that get a rename edit, so that a package can choose each new name
     /// across its files ([`rename_across`]).
     pub renames: Vec<Rename>,
+    /// Edition 0.3: the symbol of `from`, interned when the keyword `from` is followed by `:`,
+    /// which the parser reads as the argument label of `copy_sign(from: y)` (`spec/29 §3`).
+    pub from_label: Option<Symbol>,
 }
 
 /// A U0103 error of [`Lexed::errors`] that gets a rename edit (issue #75, #105, #125).
@@ -246,6 +249,61 @@ fn canonical_integer(raw: &str) -> String {
     } else {
         digits.to_owned()
     }
+}
+
+/// Whether the word at `offset` of `text`, a lowercase name, is followed by `(`: a method call
+/// such as `5.e2()`, which a float literal never is.
+fn method_call(text: &str, offset: usize) -> bool {
+    let rest = text.get(offset..).unwrap_or("");
+    let name = rest
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+        .count();
+    rest.get(name..).is_some_and(|after| after.starts_with('('))
+}
+
+/// Whether a float literal as written is malformed (ADR 0114 rule 2): an integer part or a
+/// fraction that is a malformed digit run, an `E`, a `+`, or an exponent with a leading zero.
+fn is_malformed_float(raw: &str) -> bool {
+    raw != canonical_float(raw)
+}
+
+/// The accepted spelling of a float literal: `digits "." digits [ "e" [ "-" ] exponent ]`,
+/// with the integer part and the fraction's runs of `_` repaired as for integers, `.0` added
+/// when the point or the fraction is missing, a lowercase `e`, no `+`, and no leading zero in
+/// the exponent.
+fn canonical_float(raw: &str) -> String {
+    let (mantissa, exponent) = match raw.find(['e', 'E']) {
+        Some(at) => (raw.get(..at).unwrap_or(""), raw.get(at + 1..)),
+        None => (raw, None),
+    };
+    let (int_part, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let int_part = canonical_integer(int_part);
+    let mut fraction_out = String::new();
+    for c in fraction.trim_matches('_').chars() {
+        if !(c == '_' && fraction_out.ends_with('_')) {
+            fraction_out.push(c);
+        }
+    }
+    if fraction_out.is_empty() {
+        fraction_out.push('0');
+    }
+    let mut out = format!("{int_part}.{fraction_out}");
+    if let Some(exponent) = exponent {
+        let (negative, digits) = match exponent.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, exponent.strip_prefix('+').unwrap_or(exponent)),
+        };
+        let digits: String = digits.chars().filter(|c| *c != '_').collect();
+        let digits = digits.trim_start_matches('0');
+        let digits = if digits.is_empty() { "0" } else { digits };
+        out.push('e');
+        if negative {
+            out.push('-');
+        }
+        out.push_str(digits);
+    }
+    out
 }
 
 /// The leading whitespace of a line.
@@ -639,6 +697,16 @@ impl Lexer<'_> {
                     self.punctuation(TokenKind::DotDot, 2);
                 }
             }
+            '.' if next.is_some_and(|n| n.is_ascii_digit())
+                && self.out.keywords >= KeywordSet::V0_3
+                && !self
+                    .text
+                    .get(..start)
+                    .and_then(|before| before.chars().last())
+                    .is_some_and(|p| p.is_alphanumeric() || matches!(p, '_' | ')' | ']')) =>
+            {
+                self.leading_point();
+            }
             '.' => self.punctuation(TokenKind::Dot, 1),
             _ => self.invalid_character(c),
         }
@@ -796,6 +864,9 @@ impl Lexer<'_> {
     fn integer(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        if self.out.keywords >= KeywordSet::V0_3 && self.float(start) {
+            return;
+        }
         let raw = self.slice(start, self.pos).to_owned();
         let canonical = canonical_integer(&raw);
         if is_malformed_integer(&raw) {
@@ -812,6 +883,89 @@ impl Lexer<'_> {
         self.push(TokenKind::Int(digits), start, self.pos);
     }
 
+    /// Edition 0.3: `.5`, a float literal without its integer part, U0007 with an edit to
+    /// `0.5` (ADR 0114 rule 2.2).
+    fn leading_point(&mut self) {
+        let start = self.pos;
+        self.pos += 1;
+        self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        let raw = self.slice(start, self.pos).to_owned();
+        let canonical = canonical_float(&format!("0{raw}"));
+        let span = self.span(start, self.pos);
+        let error = SyntaxError::new(
+            Code::U0007,
+            span,
+            format!("malformed float literal `{raw}`"),
+        )
+        .with_edit(format!("write `{canonical}`"), span, canonical.clone());
+        self.out.errors.push(error);
+        self.push(TokenKind::Float(canonical), start, self.pos);
+    }
+
+    /// Edition 0.3: a float literal whose integer part, from `start`, was just read
+    /// (`spec/29`, ADR 0114 rule 2), with U0007 and an edit to the accepted form when it is
+    /// malformed: `1.`, `1e5`, `1.e5`, `1.0E5`, `1.0e+5`, a leading zero or a misplaced `_`.
+    /// Returns whether a float literal was read; otherwise the position is unchanged.
+    fn float(&mut self, start: usize) -> bool {
+        let after = self.pos;
+        let text = self.text;
+        let at = move |offset: usize| text.get(offset..).and_then(|rest| rest.chars().next());
+        let point = at(after) == Some('.');
+        let digit_after_point = point && at(after + 1).is_some_and(|c| c.is_ascii_digit());
+        // An exponent right after `offset`: `e` or `E`, an optional sign, and a digit.
+        let exponent_at = |offset: usize| match at(offset) {
+            Some('e' | 'E') => match at(offset + 1) {
+                Some('+' | '-') => at(offset + 2).is_some_and(|c| c.is_ascii_digit()),
+                Some(c) => c.is_ascii_digit(),
+                None => false,
+            },
+            _ => false,
+        };
+        let mut malformed = false;
+        if digit_after_point {
+            self.pos += 1;
+            self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        } else if point && exponent_at(after + 1) && !method_call(text, after + 1) {
+            // `1.e5`; `5.e2()` stays a call of a method named `e2`.
+            self.pos += 1;
+            malformed = true;
+        } else if point
+            && !at(after + 1).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            // `1.` followed by no digit and no method name.
+            self.pos += 1;
+            malformed = true;
+        } else if !exponent_at(after) {
+            return false;
+        } else {
+            // `1e5`: an exponent without a point.
+            malformed = true;
+        }
+        if exponent_at(self.pos) {
+            self.pos += 1;
+            if matches!(self.peek(), Some('+' | '-')) {
+                self.pos += 1;
+            }
+            self.consume_while(|c| c.is_ascii_digit() || c == '_');
+        }
+        let raw = self.slice(start, self.pos).to_owned();
+        let canonical = canonical_float(&raw);
+        if malformed || raw != canonical && is_malformed_float(&raw) {
+            let span = self.span(start, self.pos);
+            let error = SyntaxError::new(
+                Code::U0007,
+                span,
+                format!("malformed float literal `{raw}`"),
+            )
+            .with_edit(format!("write `{canonical}`"), span, canonical.clone());
+            self.out.errors.push(error);
+            self.push(TokenKind::Float(canonical), start, self.pos);
+        } else {
+            self.push(TokenKind::Float(raw), start, self.pos);
+        }
+        true
+    }
+
     fn lower_word(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
@@ -822,6 +976,12 @@ impl Lexer<'_> {
             .tokens
             .last()
             .is_some_and(|token| token.kind == TokenKind::Dot);
+        // Edition 0.3: `from` right before `:` may be the argument label of
+        // `copy_sign(from: y)` (`spec/29 §3`). It stays the keyword; the parser accepts it as a
+        // label in a call's arguments only, so no declaration can take the name.
+        if word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':') {
+            self.out.from_label = Some(self.interner.intern("from"));
+        }
         let kind = if word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2 {
             TokenKind::LowerIdent(self.interner.intern(&word))
         } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {

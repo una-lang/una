@@ -1248,6 +1248,7 @@ dependencies = [
 name = "una-core"
 version = "0.3.16"
 dependencies = [
+ "num-bigint",
  "una-diag",
  "una-syntax",
 ]

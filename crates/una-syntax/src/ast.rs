@@ -1127,6 +1127,8 @@ pub enum UnaryOp {
 pub enum Literal {
     /// An integer: its decimal digits.
     Int(String),
+    /// A float literal of edition 0.3, as written (`spec/29`).
+    Float(String),
     /// A text literal.
     Text(TextLit),
     /// `true` or `false`.

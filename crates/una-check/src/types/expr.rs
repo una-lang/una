@@ -83,7 +83,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 if *op == UnaryOp::Neg
                     && let ExprKind::Literal(Literal::Int(digits)) = &operand.kind
                     && (self.expected_fixed(expected).is_some()
-                        || matches!(expected.map(|e| self.vars.peel(e)), Some(Ty::Measured(..))))
+                        || matches!(
+                            expected.map(|e| self.vars.peel(e)),
+                            Some(Ty::Measured(..) | Ty::F64)
+                        ))
                 {
                     let ty = self.int_literal_type(true, digits, span, expected);
                     self.typed(operand.span, &ty);
@@ -94,6 +97,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         // `-e` has the integer type of `e` (`spec/18 §2`).
                         let hint = match expected.map(|e| self.vars.peel(e)) {
                             Some(measured @ Ty::Measured(..)) => Some(measured),
+                            Some(Ty::F64) => Some(Ty::F64),
                             _ => self.expected_fixed(expected).map(Ty::Fixed),
                         };
                         let found = self.infer(operand, hint.as_ref());
@@ -104,6 +108,11 @@ impl<'a> Checker<'_, 'a, '_> {
                             // In a clause, every integer type reads as `Int` (`spec/18 §2`).
                             Ty::Fixed(_) if self.in_clause() => Ty::Int,
                             Ty::Fixed(int) => Ty::Fixed(int),
+                            // `-x` is IEEE `negate` (ADR 0114 rule 3.1).
+                            Ty::F64 => {
+                                self.outside_rl(span, || "`-` of an `F64`".to_owned());
+                                Ty::F64
+                            }
                             _ => {
                                 self.unify_at(
                                     operand.span,
@@ -247,6 +256,7 @@ impl<'a> Checker<'_, 'a, '_> {
     fn literal(&mut self, literal: &Literal, span: Span, expected: Option<&Ty>) -> Ty {
         match literal {
             Literal::Int(digits) => self.int_literal_type(false, digits, span, expected),
+            Literal::Float(text) => self.float_literal(text, span),
             Literal::Bool(_) => Ty::Bool,
             Literal::Unit => {
                 self.outside_rl(span, || "`unit`".to_owned());
@@ -898,6 +908,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.compare_with_is(op, left, right, span, mark, needs);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
+                if self.is_f64(&left_ty) || self.is_f64(&right_ty) {
+                    self.outside_rl(span, || format!("`{symbol}` of `F64` values"));
+                    self.zero_comparison(symbol, left, right, span, true);
+                }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
@@ -919,11 +933,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (left_ty, right_ty) = self.operand_pair(left, right);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
+                if self.is_f64(&left_ty) || self.is_f64(&right_ty) {
+                    self.outside_rl(span, || format!("`{symbol}` of `F64` values"));
+                    self.zero_comparison(symbol, left, right, span, false);
+                }
                 if self.integers_in_clause(&left_ty, &right_ty, span) {
                     return Ty::Bool;
                 }
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
+                        // `F64` is ordered by IEEE totalOrder (ADR 0114 rule 5.2).
+                        Ty::F64 => {}
                         Ty::Int
                         | Ty::Fixed(_)
                         | Ty::Measured(..)
@@ -965,18 +985,21 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.ints(left, right, &operand, span, expected, Combine::Mul)
             }
             BinaryOp::Div | BinaryOp::Mod => {
-                if int_literal(right) != Some(true) {
-                    self.outside_rl(span, || {
-                        format!("`{symbol}` by a divisor that is not a nonzero literal")
-                    });
-                    self.obligation(ObligationKind::Division, span, None);
-                }
                 let combine = if op == BinaryOp::Div {
                     Combine::Div
                 } else {
                     Combine::Same
                 };
-                self.ints(left, right, &operand, span, expected, combine)
+                let ty = self.ints(left, right, &operand, span, expected, combine);
+                // An `F64` division by zero gives an infinity or NaN, and has no obligation
+                // (ADR 0114 rule 3.2).
+                if int_literal(right) != Some(true) && !self.is_f64(&ty) {
+                    self.outside_rl(span, || {
+                        format!("`{symbol}` by a divisor that is not a nonzero literal")
+                    });
+                    self.obligation(ObligationKind::Division, span, None);
+                }
+                ty
             }
         }
     }
@@ -1011,6 +1034,7 @@ impl<'a> Checker<'_, 'a, '_> {
             None
         } else {
             match (&combine, &expected_magnitude) {
+                (_, Some(Ty::F64)) => Some(Ty::F64),
                 (Combine::Same, Some(ty @ Ty::Fixed(_))) => Some(ty.clone()),
                 _ => self
                     .expected_fixed(expected_magnitude.as_ref())
@@ -1020,6 +1044,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let first_ty = self.infer(first, hint.as_ref());
         // Each operand's top node, read once (ADR 0077: no rebuilding per operation).
         let first_top = self.vars.peel(&first_ty);
+        if matches!(first_top.magnitude(), Ty::F64) {
+            return self.float_arithmetic(first_ty, second, operand, span, combine);
+        }
         let magnitude = match first_top.magnitude() {
             Ty::Fixed(int) if !clause => Ty::Fixed(*int),
             Ty::Fixed(_) => Ty::Int,
@@ -1041,12 +1068,24 @@ impl<'a> Checker<'_, 'a, '_> {
         let second_top = self.vars.peel(&second_ty);
         let second_magnitude = second_top.magnitude().clone();
         if !(clause && fixed::is_integer(&second_magnitude)) {
+            let mark = self.report.count();
             self.unify_at(
                 second.span,
                 &magnitude,
                 &second_magnitude,
                 Role::Condition(operand),
             );
+            // ADR 0114 rule 1.2: an integer operand of an `F64` operator converts by `to_f64()`.
+            if matches!(second_magnitude, Ty::F64) && fixed::is_integer(&magnitude) {
+                let text = self.report.text(first.span).to_owned();
+                let repair = self.report.edit(
+                    "convert the integer with `to_f64()`",
+                    first.span,
+                    format!("({text}).to_f64()"),
+                );
+                self.report
+                    .repair_since(mark, Code::U2001, second.span, repair);
+            }
         }
         self.operands.push(first_ty.clone());
         self.operands.push(second_ty.clone());
@@ -1121,6 +1160,50 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(unit) if !unit.is_one() => Ty::measured(unit, magnitude),
             _ => magnitude,
         }
+    }
+
+    /// The second operand and the type of an arithmetic operator whose first operand is an
+    /// `F64` (ADR 0114 rule 3.1): both are `F64`, an integer operand is U2001 with a repair
+    /// that converts it by `to_f64()`, and `mod` is U2001 with a repair to `rem`.
+    fn float_arithmetic(
+        &mut self,
+        first_ty: Ty,
+        second: &Expr,
+        operand: &str,
+        span: Span,
+        combine: Combine,
+    ) -> Ty {
+        self.outside_rl(span, || "arithmetic on `F64`".to_owned());
+        let mark = self.report.count();
+        let second_ty = self.infer(second, Some(&Ty::F64));
+        let second_top = self.vars.peel(&second_ty);
+        if !matches!(second_top.magnitude(), Ty::F64) {
+            self.unify_at(second.span, &Ty::F64, &second_ty, Role::Condition(operand));
+            if fixed::is_integer(second_top.magnitude()) {
+                let text = self.report.text(second.span).to_owned();
+                let repair = self.report.edit(
+                    "convert the integer with `to_f64()`",
+                    second.span,
+                    format!("({text}).to_f64()"),
+                );
+                self.report
+                    .repair_since(mark, Code::U2001, second.span, repair);
+            }
+        }
+        self.operands.push(first_ty);
+        self.operands.push(second_ty);
+        if matches!(combine, Combine::Same) && operand.contains("`mod`") {
+            let mut diagnostic = self.report.make(
+                Code::U2001,
+                span,
+                "`mod` is not defined on `F64`; `x.rem(by: y)` is the remainder of a truncated quotient",
+            );
+            diagnostic.repairs.push(super::Report::advice(
+                "write `x.rem(by: y)`, whose result has the sign of `x`",
+            ));
+            self.report.push(diagnostic);
+        }
+        Ty::F64
     }
 
     /// The types of the operands of a comparison: the side that is not a literal first, so a
@@ -1305,6 +1388,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.outside_rl_with(span, || "`is` with a literal".to_owned(), repair);
                 self.constant_pattern(literal);
                 let ty = self.expr(value, None);
+                // A float literal is never a pattern (ADR 0114 rules 5.5 and 5.6).
+                if let Literal::Float(text) = literal {
+                    self.float_pattern(text, span);
+                }
                 let literal_ty = self.literal(literal, span, Some(&ty));
                 if !self.vars.unify(&ty, &literal_ty) {
                     let (ty, literal_ty) = (self.show(&ty), self.show(&literal_ty));

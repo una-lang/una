@@ -159,6 +159,13 @@ fn analyze_and(
     with_rejected: bool,
 ) -> (Analysis, Vec<Rejected>) {
     let (manifest, mut diagnostics) = package::project(package);
+    // ADR 0114 rule 6.4: a package of edition 0.3 may hold floats, whose literals the checker
+    // converts, so the environment is tested before any source is read; U6006 stops here.
+    if manifest.edition >= una_project::Edition::V0_3
+        && let Err(probe) = una_core::float::probe_environment()
+    {
+        return (environment_failure(probe), Vec::new());
+    }
     let mut interner = Interner::new();
     let mut trees = Vec::new();
     let keywords = keyword_set(manifest.edition);
@@ -265,6 +272,36 @@ fn analyze_and(
         file_state: types.file_state,
     };
     (analysis, rejected)
+}
+
+/// The analysis of a package of edition 0.3 whose floating-point environment failed the probe
+/// `probe` (ADR 0114 rule 6.4): U6006 alone, at the start of `una.toml`, and nothing checked.
+fn environment_failure(probe: &str) -> Analysis {
+    let start = una_diag::Position { line: 1, col: 1 };
+    let location = una_diag::Location {
+        file: "una.toml".to_owned(),
+        start,
+        end: start,
+    };
+    Analysis {
+        diagnostics: vec![Diagnostic::error(
+            Code::U6006,
+            format!(
+                "the floating-point environment of this platform is not the default one ({probe})"
+            ),
+            location,
+        )],
+        trees: Vec::new(),
+        interner: Interner::new(),
+        headers: Vec::new(),
+        program: una_core::Program::default(),
+        entry: None,
+        pending: Vec::new(),
+        references: Vec::new(),
+        index: una_check::Index::default(),
+        of_lambdas: Vec::new(),
+        file_state: una_core::Label::public(),
+    }
 }
 
 /// The locked functions of `[contracts]`, each clause parsed where its string is written

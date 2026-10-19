@@ -111,6 +111,11 @@ impl Checker<'_, '_, '_> {
             debug_assert!(matches!(*magnitude, Ty::Int | Ty::Fixed(_)));
             return Ty::Measured(unit, magnitude);
         }
+        // ADR 0114 rule 2.6: an integer literal never takes the type `F64`.
+        if expected.is_some_and(|e| self.is_f64(e)) {
+            self.int_literal_for_f64(negative, digits, span);
+            return Ty::F64;
+        }
         let Some(int) = self.expected_fixed(expected) else {
             return Ty::Int;
         };

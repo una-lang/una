@@ -1421,6 +1421,127 @@
       ]
     },
     {
+      "name": "nan",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub nan() -> F64",
+          "docs": [
+            "The canonical NaN, `0x7FF8000000000000`: the one NaN of `F64` (`spec/29 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "infinity",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub infinity() -> F64",
+          "docs": [
+            "The positive infinity of `F64`; `-infinity()` is the negative one (`spec/29 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "f64_from_bits",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §3"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub f64_from_bits(bits: U64) -> F64",
+          "docs": [
+            "The `F64` with the bits `bits`; any NaN gives the canonical NaN (`spec/29 §3`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_f64",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §7"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub parse_f64(t: Text) -> F64\n  fails ParseError",
+          "docs": [
+            "The `F64` that `t` writes, a JSON number, `nan`, `inf` or `-inf`, correctly rounded, or",
+            "why it writes none (`spec/29 §7`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "as_f64",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §10"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub as_f64(j: Json) -> Option[F64]",
+          "docs": [
+            "The `F64` nearest a JSON number, `None` for any other `Json` (`spec/29 §10`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "json_number",
+      "module": "prelude",
+      "kind": "function",
+      "spec": [
+        "spec/29 §10"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.3",
+            "0.4"
+          ],
+          "declaration": "pub json_number(x: F64) -> Option[Json]",
+          "docs": [
+            "`x` as a JSON number, `None` for NaN and the infinities (`spec/29 §10`)."
+          ]
+        }
+      ]
+    },
+    {
       "name": "fake_hash",
       "module": "std.testing",
       "kind": "function",
