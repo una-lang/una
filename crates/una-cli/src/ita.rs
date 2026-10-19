@@ -1,17 +1,17 @@
 //! `una ita` (ADR 0122 rule 57), the package manager of edition `0.4`, and `una fmt` of its
 //! project files (rule 5).
 //!
-//! This release resolves no dependency: `una ita lock` writes the lock of a package with no
-//! `needs`, its solver section kept from the lock it replaces, or the default one; a need is
-//! refused (U7008), never left unresolved. No command here opens a connection or starts a
-//! program.
+//! This release resolves path dependencies only: `una ita lock` writes the solver section, kept
+//! from the lock it replaces or the default one, and each path dependency; a need of a registry
+//! or a workspace is refused (U7008), never left unresolved. No command here opens a connection
+//! or starts a program.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use una_diag::{Code, Diagnostic, render_human};
-use std::collections::{BTreeMap, BTreeSet};
 
 use una_project::content;
 use una_project::ita::{parse_ita_lock, parse_ita_manifest, recorded_ceiling, write_lock};
