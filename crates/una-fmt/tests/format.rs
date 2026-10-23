@@ -14,6 +14,21 @@ fn fmt(text: &str) -> String {
     once
 }
 
+fn fmt_in(text: &str, keywords: KeywordSet) -> String {
+    let mut db = SourceDb::new();
+    let id = db.add("t.una", text.as_bytes());
+    let mut interner = Interner::new();
+    let lexed = lex_in(db.file(id), id, &mut interner, keywords);
+    let parsed = parse(&lexed, id, &interner);
+    assert!(
+        lexed.errors.is_empty() && parsed.errors.is_empty(),
+        "{:?} {:?}\n{text}",
+        lexed.errors,
+        parsed.errors
+    );
+    una_fmt::format(db.file(id), &lexed, &parsed.file, &interner)
+}
+
 fn format_once(text: &str) -> String {
     let mut db = SourceDb::new();
     let id = db.add("t.una", text.as_bytes());
@@ -117,6 +132,111 @@ fn lines_continued_inside_brackets_are_joined() {
     assert_eq!(
         decls("f() -> List[Int] = [\n  1,\n  2\n]\n"),
         "f() -> List[Int] = [1, 2]\n"
+    );
+}
+
+#[test]
+fn wraps_at_legal_argument_and_element_separators() {
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    assert_eq!(
+        decls(&format!("f() -> Int = g({a}, {b})\n")),
+        format!("f() -> Int = g({a},\n  {b}\n)\n")
+    );
+
+    let a = "a".repeat(42);
+    let b = "b".repeat(42);
+    let c = "c".repeat(42);
+    assert_eq!(
+        decls(&format!("f() -> Int = g({a}, {b}, {c})\n")),
+        format!("f() -> Int = g({a},\n  {b}, {c}\n)\n")
+    );
+
+    let a = "a".repeat(52);
+    let b = "b".repeat(52);
+    assert_eq!(
+        decls(&format!("f() -> Int = g(h({a}, {b}), 1)\n")),
+        format!("f() -> Int = g(h({a},\n    {b}\n  ), 1)\n")
+    );
+
+    let a = "a".repeat(50);
+    let b = "b".repeat(50);
+    let c = "c".repeat(50);
+    let d = "d".repeat(50);
+    let nested = decls(&format!("f() -> Int = outer(inner({a}, {b}), {c}, {d})\n"));
+    assert_eq!(
+        nested,
+        format!("f() -> Int = outer(inner({a},\n    {b}\n  ),\n  {c},\n  {d}\n)\n")
+    );
+    assert_eq!(decls(&nested), nested);
+
+    let values = format!(
+        "[{}]",
+        (0..24)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert_eq!(
+        decls(&format!("f() -> List[Int] = {values}\n")),
+        "f() -> List[Int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,\n  22, 23\n]\n"
+    );
+
+    let arguments = (0..1_000)
+        .map(|i| format!("item_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let formatted = decls(&format!("f() -> Int = g({arguments})\n"));
+    assert!(formatted.lines().all(|line| line.chars().count() <= 100));
+    assert_eq!(decls(&formatted), formatted);
+}
+
+#[test]
+fn wrapping_counts_unicode_scalars_and_does_not_split_indivisible_tokens() {
+    let at_limit = format!(
+        "f() -> Int = g(\"{}\", \"{}\")\n",
+        "🙂".repeat(50),
+        "🙂".repeat(28)
+    );
+    let at_limit = decls(&at_limit);
+    assert_eq!(at_limit.lines().count(), 1);
+    assert_eq!(at_limit.trim_end().chars().count(), 100);
+
+    let over_limit = format!(
+        "f() -> Int = g(\"{}\", \"{}\")\n",
+        "🙂".repeat(50),
+        "🙂".repeat(29)
+    );
+    let over_limit = decls(&over_limit);
+    assert_eq!(over_limit.lines().count(), 3);
+    assert!(over_limit.lines().all(|line| line.chars().count() <= 100));
+
+    let indivisible = format!("f() -> Text = \"{}\"\n", "🙂".repeat(120));
+    let formatted = decls(&indivisible);
+    assert_eq!(formatted.lines().count(), 1);
+    assert!(formatted.trim_end().chars().count() > 100);
+    assert_eq!(decls(&formatted), formatted);
+}
+
+#[test]
+fn wrapping_is_edition_independent_and_comments_keep_their_source_breaks() {
+    let a = "a".repeat(60);
+    let b = "b".repeat(60);
+    let source = format!("module t\n\nf() -> Int = g({a}, {b})\n");
+    let expected = format!("module t\n\nf() -> Int = g({a},\n  {b}\n)\n");
+    for edition in [
+        KeywordSet::V0_1,
+        KeywordSet::V0_2,
+        KeywordSet::V0_3,
+        KeywordSet::V0_4,
+    ] {
+        assert_eq!(fmt_in(&source, edition), expected);
+    }
+
+    let comment = "-- keep this comment on its original physical line";
+    assert_eq!(
+        decls(&format!("f() -> Int = g({a},\n  {comment}\n  {b})\n")),
+        format!("f() -> Int = g({a},\n  {comment}\n  {b})\n")
     );
 }
 

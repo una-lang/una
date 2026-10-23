@@ -103,6 +103,16 @@ struct Element {
     text: String,
 }
 
+/// A comma-separated piece of a logical line, with the delimiter group at its end and any
+/// closing delimiters inside it.
+struct WrapSegment {
+    text: String,
+    depth: usize,
+    separator_group: Option<usize>,
+    /// `(start, end, group id, indentation of the opener)` byte offsets in `text`.
+    closers: Vec<(usize, usize, usize, usize)>,
+}
+
 struct Layout<'a> {
     text: &'a str,
     source: SourceLines<'a>,
@@ -382,12 +392,31 @@ impl Layout<'_> {
             text.push_str(self.comment_text(comment));
         }
         let blank = self.source.blank_before(self.source.line(output.start));
+        let wrapped = match (
+            output.inside.is_empty(),
+            output.trailing,
+            physical.as_slice(),
+        ) {
+            (true, None, [(_, text)]) => self
+                .wrap(output, &sequence)
+                .unwrap_or_else(|| vec![(text.clone(), output.depth)]),
+            _ => Vec::new(),
+        };
+        let physical = if wrapped.is_empty() {
+            physical
+                .into_iter()
+                .enumerate()
+                .map(|(rank, (_, text))| (text, output.depth + usize::from(rank > 0)))
+                .collect()
+        } else {
+            wrapped
+        };
         physical
             .into_iter()
             .enumerate()
-            .map(|(rank, (_, text))| {
+            .map(|(rank, (text, depth))| {
                 let element = Element {
-                    depth: output.depth + usize::from(rank > 0),
+                    depth,
                     blank: if rank == 0 { blank } else { 0 },
                     equals: output.equals,
                     text,
@@ -395,6 +424,147 @@ impl Layout<'_> {
                 ((output.start, 1, rank), element)
             })
             .collect()
+    }
+
+    /// Wraps a comment-free logical line at commas inside parenthesized and bracketed lists.
+    /// Segments are measured once, so packing a line is linear in its source length.
+    fn wrap(&self, output: &Output, sequence: &[usize]) -> Option<Vec<(String, usize)>> {
+        const WIDTH: usize = 100;
+
+        let mut segments = Vec::new();
+        let mut current = String::new();
+        let mut closers = Vec::new();
+        let mut spacer: Option<Spacer> = None;
+        let mut previous: Option<&TokenKind> = None;
+        let mut delimiters = Vec::new();
+        let mut interpolation_depth = 0usize;
+        let mut segment_depth = output.depth;
+        let mut next_group = 0usize;
+
+        for &index in sequence {
+            let Some(token) = self.tokens.get(index) else {
+                continue;
+            };
+            let space = match (previous, spacer.as_mut()) {
+                (Some(previous), Some(spacer)) => spacer.space(previous, &token.kind),
+                _ => {
+                    spacer = Some(Spacer::new(&token.kind));
+                    false
+                }
+            };
+            if space {
+                current.push(' ');
+            }
+            let token_start = current.len();
+            current.push_str(self.token_text(index));
+            let token_end = current.len();
+
+            match token.kind {
+                TokenKind::InterpStart => interpolation_depth += 1,
+                TokenKind::InterpEnd => interpolation_depth = interpolation_depth.saturating_sub(1),
+                TokenKind::LParen | TokenKind::LBracket => {
+                    delimiters.push((next_group, output.depth + delimiters.len()));
+                    next_group += 1;
+                }
+                TokenKind::RParen | TokenKind::RBracket => {
+                    if let Some((group, opener_depth)) = delimiters.pop() {
+                        closers.push((token_start, token_end, group, opener_depth));
+                    }
+                }
+                TokenKind::Comma if !delimiters.is_empty() && interpolation_depth == 0 => {
+                    let separator_group = delimiters.last().map(|(group, _)| *group);
+                    segments.push(WrapSegment {
+                        text: std::mem::take(&mut current),
+                        depth: segment_depth,
+                        separator_group,
+                        closers: std::mem::take(&mut closers),
+                    });
+                    segment_depth = output.depth + delimiters.len();
+                }
+                _ => {}
+            }
+            previous = Some(&token.kind);
+        }
+        if !current.is_empty() || segments.is_empty() {
+            segments.push(WrapSegment {
+                text: current,
+                depth: segment_depth,
+                separator_group: None,
+                closers,
+            });
+        }
+        if segments.len() < 2 {
+            return None;
+        }
+
+        // Greedily pack the latest comma-separated pieces that fit. Every piece is measured
+        // once, so this pass is linear in the rendered source length.
+        let mut line_ranges = Vec::new();
+        let mut range_start = 0;
+        let first = segments.first()?;
+        let mut line_width = output.depth * 2 + first.text.chars().count();
+        let mut previous_separator_group = first.separator_group;
+        let mut wrapped_groups = std::collections::HashSet::new();
+        for (index, segment) in segments.iter().enumerate().skip(1) {
+            let segment_width = segment.text.chars().count();
+            if line_width + segment_width > WIDTH {
+                line_ranges.push((range_start, index));
+                if let Some(group) = previous_separator_group {
+                    wrapped_groups.insert(group);
+                }
+                range_start = index;
+                line_width = segment.depth * 2 + segment_width.saturating_sub(1);
+            } else {
+                line_width += segment_width;
+            }
+            previous_separator_group = segment.separator_group;
+        }
+        line_ranges.push((range_start, segments.len()));
+        if wrapped_groups.is_empty() {
+            return None;
+        }
+
+        let mut lines = Vec::new();
+        for (start, end) in line_ranges {
+            let Some(first) = segments.get(start) else {
+                continue;
+            };
+            let mut depth = first.depth;
+            let mut line = String::new();
+            for (index, segment) in segments.iter().enumerate().take(end).skip(start) {
+                let trim_space = index == start && segment.text.starts_with(' ');
+                let offset_base = usize::from(trim_space);
+                let content = segment.text.get(offset_base..).unwrap_or("");
+                let mut copied = 0;
+                for &(close_start, close_end, group, opener_depth) in &segment.closers {
+                    if !wrapped_groups.contains(&group) || close_start < offset_base {
+                        continue;
+                    }
+                    let close_start = close_start - offset_base;
+                    let close_end = close_end - offset_base;
+                    let Some(before) = content.get(copied..close_start) else {
+                        continue;
+                    };
+                    line.push_str(before);
+                    if !line.is_empty() {
+                        lines.push((std::mem::take(&mut line), depth));
+                    }
+                    let Some(closer) = content.get(close_start..close_end) else {
+                        continue;
+                    };
+                    line.push_str(closer);
+                    depth = opener_depth;
+                    copied = close_end;
+                }
+                if let Some(rest) = content.get(copied..) {
+                    line.push_str(rest);
+                }
+            }
+            if !line.is_empty() {
+                lines.push((line, depth));
+            }
+        }
+        Some(lines)
     }
 
     /// Appends the tokens `first..=last` in printing order: dropped tokens left out and
