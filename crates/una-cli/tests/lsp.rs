@@ -63,6 +63,23 @@ fn cli_check(dir: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn repair_marker(repair: &Value) -> Option<String> {
+    let mut costs = Vec::new();
+    if let Some(kind) = repair["escape"]["kind"].as_str() {
+        costs.push(format!(
+            "escape: {kind}; cost: {}",
+            repair["escape"]["cost"].as_str()?
+        ));
+    }
+    if let Some(kind) = repair["widens"]["kind"].as_str() {
+        costs.push(format!(
+            "widens {kind}; cost: {}",
+            repair["widens"]["cost"].as_str()?
+        ));
+    }
+    (!costs.is_empty()).then(|| format!("[{}]", costs.join("; ")))
+}
+
 /// The diagnostics that the server publishes for the CLI's `diagnostics`, converted as ADR
 /// 0063 rule 8 says: positions 0-based in UTF-32, the counterexample and the repairs without
 /// an edit in the message.
@@ -94,8 +111,10 @@ fn converted(dir: &Path, diagnostics: &Value) -> Value {
             }
             for repair in d["repairs"].as_array().unwrap() {
                 if repair["edit"].is_null() {
+                    let marker =
+                        repair_marker(repair).map_or_else(String::new, |value| format!(" {value}"));
                     message.push_str(&format!(
-                        "\nhelp: {}",
+                        "\nhelp{marker}: {}",
                         repair["description"].as_str().unwrap()
                     ));
                 }
@@ -301,6 +320,137 @@ fn tier_0_diagnostics_of_unsaved_buffers_equal_una_check() {
     // Fixing the buffer clears the file's diagnostics.
     session.change(&file, 3, "module app\n\npub bad(n: Int) -> Int = n + 1\n");
     assert_eq!(session.published(&file), json!([]));
+    session.finish();
+}
+
+#[test]
+fn repair_costs_are_visible_in_diagnostics_and_quick_fix_titles() {
+    // An escape has advice but no mechanical edit: its cost must appear in the diagnostic.
+    let escape = "module app\n\npredicate opaque valid_slug(t: Text) -> Bool = t.len >= 3\n\npub accept(raw: Text) -> Bool = valid_slug(raw)\n";
+    let dir = package("escape-cost", "module app\n\npub fine(n: Int) -> Int = n\n");
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, "module app\n\npub fine(n: Int) -> Int = n\n");
+    assert_eq!(session.published(&file), json!([]));
+    session.change(&file, 2, escape);
+    let diagnostics = session.published(&file);
+    assert_eq!(diagnostics[0]["code"], "U2016");
+    std::fs::write(&file, escape).unwrap();
+    let cli = cli_check(&dir);
+    assert_eq!(diagnostics, converted(&dir, &cli["diagnostics"]));
+    let escape_cost = cli["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|diagnostic| diagnostic["repairs"].as_array().unwrap())
+        .find(|repair| repair["escape"]["kind"] == "checked")
+        .unwrap()["escape"]["cost"]
+        .as_str()
+        .unwrap();
+    assert!(
+        diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("help [escape: checked; cost: {escape_cost}]"))
+    );
+    session.finish();
+
+    // A widening is a mechanical edit: its cost must be on the action the user selects.
+    let widening = r#"module app
+
+capability Log
+  op write(line: Text) -> Unit
+
+write_one() -> Unit
+  uses @log: Log[write]
+=
+  @log.write("x")
+
+pub send() -> Unit = write_one()
+"#;
+    let dir = package(
+        "authority-cost",
+        "module app\n\npub fine(n: Int) -> Int = n\n",
+    );
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, "module app\n\npub fine(n: Int) -> Int = n\n");
+    assert_eq!(session.published(&file), json!([]));
+    session.change(&file, 2, widening);
+    let diagnostics = session.published(&file);
+    assert!(
+        diagnostics
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "U3003")
+    );
+    std::fs::write(&file, widening).unwrap();
+    let actions = session.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri(&file) },
+            "range": diagnostics[0]["range"].clone(),
+            "context": { "diagnostics": diagnostics },
+        }),
+    );
+    let titles: Vec<&str> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|action| action["title"].as_str())
+        .collect();
+    let cli = cli_check(&dir);
+    let widening_cost = cli["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|diagnostic| diagnostic["repairs"].as_array().unwrap())
+        .find(|repair| repair["widens"]["kind"] == "authority")
+        .unwrap()["widens"]["cost"]
+        .as_str()
+        .unwrap();
+    assert!(
+        titles
+            .iter()
+            .any(|title| title.contains(&format!("[widens authority; cost: {widening_cost}]"))),
+        "{titles:?}"
+    );
+    session.finish();
+}
+
+#[test]
+fn hover_on_a_call_shows_its_transitive_effect_contract() {
+    let text = r#"module app
+
+capability Console
+  op print(line: Text) -> Unit
+
+pub emit() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  emit()
+"#;
+    let dir = package("transitive-effect-hover", text);
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, text);
+    assert_eq!(session.published(&file), json!([]));
+    let hover = session.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri(&file) },
+            "position": position(13, 4),
+        }),
+    );
+    let shown = hover["contents"]["value"].as_str().unwrap_or_default();
+    assert!(shown.contains("pub emit() -> Unit"), "{shown}");
+    assert!(shown.contains("uses @console: Console[print]"), "{shown}");
     session.finish();
 }
 
