@@ -13,6 +13,8 @@ codes: [U3023, U7002]
 
 The example below says `update` may write only when `dry_run` is false. Its implementation checks that condition, and both runtime examples verify the dry-run and live paths.
 
+Learn more: [Authority and locked contracts](/learn/authority/).
+
 ## Forms
 
 ```text
