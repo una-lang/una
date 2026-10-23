@@ -13,7 +13,7 @@ cargo test -p una-cli --test feature_catalog --test conformance
 
 Use the editions actually printed by the compiler built from the checkout. Python 3.11 or newer is required for its standard TOML parser. The conformance test also reads manifests through Una's own parser, confirms that the normal corpus discovers the cases, and rejects pending or negative evidence. The existing conformance runner remains responsible for exact diagnostic and runtime expectations. No new fixture format is introduced.
 
-`site-bundle.sh` validates every tracked guide front-matter edition and every standard-library variant against the editions of its binary, before packing. It checks the catalog's positive packages with that same binary and the pinned Z3. The generated [availability table](../guide/availability.md) must match byte for byte. Invalid data fails the build; the script does not infer support from file names, a release number, or the binary installed on the machine.
+`site-bundle.sh` validates every guide Markdown file present in the source snapshot, including nested directories, and every standard-library variant against the editions of its binary, before packing. The scan works from a source snapshot without Git metadata. It checks the catalog's positive packages with that same binary and the pinned Z3. The generated [availability table](../guide/availability.md) must match byte for byte. Invalid data fails the build; the script does not infer support from file names, a release number, or the binary installed on the machine.
 
 ## Bundle compatibility
 

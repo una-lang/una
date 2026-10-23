@@ -95,6 +95,16 @@ class CatalogTests(unittest.TestCase):
             features.validate_document_editions(self.root, ['0.1', '0.2'])
         features.validate_document_editions(self.root, ['0.1', '0.2', '0.3'])
 
+    def test_document_edition_scan_works_without_git_metadata(self):
+        import shutil
+        shutil.rmtree(self.root / '.git')
+        nested = self.root / 'docs/guide/language/units.md'
+        nested.parent.mkdir(parents=True)
+        nested.write_text('---\neditions: ["0.4"]\n---\n# Units\n')
+        with self.assertRaisesRegex(ValueError, 'docs/guide/language/units.md.*edition 0.4'):
+            features.validate_document_editions(self.root, ['0.1', '0.2', '0.3'])
+        features.validate_document_editions(self.root, ['0.1', '0.2', '0.3', '0.4'])
+
     def test_stale_table_fails_the_command(self):
         (self.root / 'docs/guide/availability.md').write_text('stale\n')
         result = subprocess.run(['python3', '-B', str(Path(__file__).with_name('site-features.py')), '--root', str(self.root), '--editions', '0.1,0.2,0.3'], capture_output=True, text=True)

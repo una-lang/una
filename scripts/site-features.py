@@ -73,7 +73,7 @@ def load_catalog(root, editions):
 
 
 def validate_document_editions(root, editions):
-    paths = subprocess.check_output(['git', 'ls-files', 'docs/guide/*.md'], cwd=root, text=True).splitlines()
+    paths = sorted(path.relative_to(root).as_posix() for path in (root / 'docs/guide').rglob('*.md'))
     named = []
     for name in paths:
         text = (root / name).read_text()
