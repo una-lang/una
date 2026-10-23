@@ -1,1 +1,1 @@
-`una fmt` and `una check` now use canonical soft wrapping at legal argument and element separators, with a 100-Unicode-scalar target.
+- **Canonical soft wrapping** (#1113, ADR 0125, `spec/15 §2`). `una fmt` and `una check` now use a 100-Unicode-scalar soft target and wrap at legal argument and element separators.

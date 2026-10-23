@@ -826,7 +826,7 @@ fn contract_and_report_show_result_summaries() {
     .unwrap();
     std::fs::write(
         root.join("src/s.una"),
-        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\n--- Which elements stay depends on comparisons of `T` values.\npub below[T: Ord](xs: List[T], pivot: T) -> List[T] = xs.filter(keep: fn(x) -> x < pivot)\n\npub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))\n\npub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U], Int] = Pair(left: if x == y then [tag] else [], right: 1)\n\nhelper[T](x: T) -> List[T] = [x]\n\npub size[T](xs: List[T]) -> Int = xs.len\n\npub apply[T: Eq](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int\n  uses of k\n=\n  k(if a == b then p else q)\n",
+        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\n--- Which elements stay depends on comparisons of `T` values.\npub below[T: Ord](xs: List[T], pivot: T) -> List[T] = xs.filter(keep: fn(x) -> x < pivot)\n\npub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc,\n    x\n  ) -> acc.append(item: x))\n\npub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U],\n  Int\n] = Pair(left: if x == y then [tag] else [], right: 1)\n\nhelper[T](x: T) -> List[T] = [x]\n\npub size[T](xs: List[T]) -> Int = xs.len\n\npub apply[T: Eq](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int\n  uses of k\n=\n  k(if a == b then p else q)\n",
     )
     .unwrap();
     let human = una_in(&root, &["contract", "s.below"]);
