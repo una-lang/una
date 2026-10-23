@@ -1,7 +1,7 @@
 ---
 construct: for
 editions: ["0.2"]
-spec: ["spec/17 §1", "spec/17 §2", "spec/17 §4", "spec/17 §5", "spec/17 §6", "spec/17 §7", "spec/01 §5", "spec/12 §6", "spec/17 §3"]
+spec: ["spec/17 §1", "spec/17 §2", "spec/17 §4", "spec/17 §5", "spec/17 §6", "spec/17 §7", "spec/01 §5", "spec/12 §6", "spec/17 §3", "spec/11 §7"]
 codes: [U0101, U0103, U2017, U2019, U4002, U5002]
 ---
 
@@ -83,6 +83,30 @@ pub order_total(prices: List[Int]) -> Int
     price = price + 1
   cents
 ```
+
+## A bounded loop is not a general cost proof
+
+A precondition can bound a particular range. The function below accepts at most 1,000 iterations and returns the count for this input:
+
+```una
+module demo
+
+pub count_up(limit: Int) -> Nat
+  requires limit >= 0 and limit <= 1000
+=
+  let edit count: Nat = 0
+  for i in 0..<limit
+    count = count + 1
+  count
+
+example "bounded"
+  do count_up(5)
+  expect result == 5
+```
+
+This example's `expect` checks the chosen input; it is not a proof that every possible call returns the limit. The checker preserves declared refinements such as `Nat`; it does not infer the equality between this counter and the processed prefix. The `requires` bounds the range only when callers prove it; it is not a bound on the cost of each iteration or on allocations the body performs.
+
+Runtime limits are separate: `--max-depth` caps calls in progress, and `--max-memory` caps heap held by a run. Exceeding either aborts with U6003; neither proves that a function terminates or that it meets a time/cost contract. See [U6003](../../../../crates/una-explain/explain/U6003.md) for the runtime behavior. A general termination or cost guarantee needs a separate language design.
 
 ## Edge cases
 

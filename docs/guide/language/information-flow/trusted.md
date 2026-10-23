@@ -1,7 +1,7 @@
 ---
 construct: trusted modules
 editions: ["0.1", "0.2"]
-spec: ["spec/07 §6", "spec/07 §5", "spec/02 §1", "spec/13 §6", "spec/13 §7"]
+spec: ["spec/07 §6", "spec/07 §5", "spec/07 §1", "spec/02 §1", "spec/13 §6", "spec/13 §7"]
 codes: [U4004, U7005]
 ---
 
@@ -131,6 +131,18 @@ Further rules:
 
 - **Everything else is checked.** Only the `via` functions of policies skip label checks; every other declaration of a trusted module is checked normally, and every obligation of a `via` function is proven.
 - **Reported.** `una report` lists each trusted module with its line count under `tcb`.
+
+## Reading the trust report
+
+Read the report fields separately:
+
+- `proven` counts proof obligations discharged for this checked program and its assumptions. It does not establish that the requirement is complete or that an external system behaves as declared.
+- `assumptions` lists capability operations and their declared `ensures`; those contracts are assumptions about the external implementation.
+- `escapes` lists run-time `checked` tests and their budget.
+- `tcb` lists trusted modules and line counts, host capabilities, solver and proof-cache details. Line counts help locate code for human review; they are not a security score or evidence that a policy's purpose is appropriate.
+- `out_of_model` lists channels outside the information-flow guarantee, including timing, termination, resource consumption, hard links, and external systems beyond declared signatures.
+
+A human reviewer still needs to compare policy purpose and owner with the source requirement and inspect the assumptions and excluded channels. These fields are defined in `spec/13 §6`; the information-flow scope is in `spec/07 §1`.
 
 ## Diagnostics
 

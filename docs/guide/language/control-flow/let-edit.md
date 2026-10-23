@@ -104,6 +104,46 @@ pub log_visit(t: Visits) -> Visits
   copy
 ```
 
+## A failed call rolls back edits, not completed effects
+
+An `edit` argument is transactional for the caller: if the call fails, its local value is unchanged. An effect already performed through a capability is external and remains performed. This example uses a test handler to make that distinction visible:
+
+```una
+module demo
+
+pub kind StoreError = | Rejected
+
+pub capability Store
+  op write(value: Int) -> Unit
+
+pub update(edit current: Int) -> Unit
+  uses @store: Store[write]
+  fails StoreError
+=
+  current = current + 1
+  @store.write(current)
+  fail Rejected
+
+pub scenario() -> Int
+  uses @store: Store[write]
+=
+  let edit value = 10
+  update(edit value)
+    if error use unit
+  value
+
+handler store() for Store
+  op write(value) = unit
+
+example "local rollback preserves an already performed effect"
+  given @store = store()
+  do scenario()
+  expect result == 10
+  expect performed @store.write
+```
+
+This scenario demonstrates only Una's local `edit` and trace behavior; it does not promise rollback of effects or transactions in an external system. If an application retries after an uncertain response, it needs a destination-defined idempotency key and a way to query whether the prior operation committed. Retry is safe only when the destination's contract says so. A compensating action is another effect that can fail; it is not an automatic rollback. A durable journal or reconciliation workflow belongs to the application/service design, outside Una's guarantee.
+
 ## Edge cases
 
 **Exclusivity.** An `edit p` argument excludes every other use of `p`'s root binding in the same call, even of a disjoint field:

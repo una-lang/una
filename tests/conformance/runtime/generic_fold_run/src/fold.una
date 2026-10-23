@@ -1,0 +1,14 @@
+-- test: a generic fold accepts an explicitly supplied combining function and adds the list to 6
+-- spec: spec/20 §1, §2, §3
+-- grant: console
+-- expect: run-output "6"
+module fold
+
+fold_with[T](items: List[T], initial: T, step: fn(T, T) -> T) -> T = items.fold(initial: initial, step: step)
+
+total(items: List[Int]) -> Int = fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{total([1, 2, 3])}")

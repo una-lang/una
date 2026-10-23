@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Una is a verification-first programming language for machine-generated software. This repository contains the reference compiler, written in Rust: v0.1 ("Una Core") is released, and v0.2 is in development in parallel with Gate 1 (charter §5b). Read `docs/00-charter.md` before any task.
+Una is a verification-first programming language for machine-generated software. This repository contains its reference compiler, written in Rust. Edition `0.1` is stable, edition `0.2` is the systems edition, edition `0.3` is a preview with explicit exceptions, and edition `0.4` is an opt-in preview governed by ADR 0121. Read `docs/00-charter.md`, identify the package edition, and read its applicable chapters in `docs/spec/` and accepted ADRs before any task.
 
 ## Source of truth
 
@@ -15,10 +15,10 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 
 ## Scope guard
 
-- In scope: the v0.1 scope of `docs/00-charter.md` §5 and, for v0.2 work, §5b (native backend, fixed-width integers, memory model; ADRs 0055 to 0057). Work only on the version and issue you are assigned.
+- In scope: the charter's v0.1 scope (§5) and v0.2 scope (§5b), plus work for editions `0.3` and `0.4` assigned by issue. Follow the edition terms in `docs/spec/13 §7` and the applicable accepted ADRs. Edition `0.4` is an opt-in preview governed by ADR 0121; editions `0.1` to `0.3` keep their stated terms.
 - Everything else in `docs/plan/backlog.md` is out of scope, even when it looks easy.
 - Do not add syntax, keywords, diagnostics codes, CLI commands or standard library items that the spec does not define.
-- Keywords reserved for future versions (`docs/spec/01-lexical-structure.md`) must be rejected by the parser with U0103, not half-implemented. v0.2 syntax exists only under `edition = "0.2"` in `una.toml` (ADR 0056); edition 0.1 keeps the v0.1 keyword tables.
+- Keywords reserved for another edition (`docs/spec/01-lexical-structure.md`) must be rejected with U0103, not half-implemented. Edition-specific syntax is available only when the selected edition admits it under `docs/spec/13 §7`; edition `0.1` keeps its own keyword table.
 
 ## How to work
 

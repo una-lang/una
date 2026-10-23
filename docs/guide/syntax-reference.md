@@ -35,7 +35,7 @@
 Una is a verification-first language for machine-generated software. Its design follows a few visible rules:
 
 - **A function is an equation.** The header is the contract; `=` separates it from the body, the implementation.
-- **`@` marks authority.** Every interaction with the outside world goes through a capability written `@name`. A line without `@` touches nothing outside the program.
+- **`@` marks direct capability operations.** Every direct interaction with the outside world goes through a capability written `@name`. Calls may also perform the effects declared by their callees. Inspect the function contract for transitive authority.
 - **Words over symbols:** `and`, `or`, `not`, `implies`, `mod`, `if error fail`.
 - **One canonical form:** significant indentation of 2 spaces, one formatter, and non-canonical source is an error.
 - **Nothing implicit.** No exceptions, no null, no implicit conversions, no ambient authority, no shared mutable state.
@@ -2270,12 +2270,23 @@ pub availability(e: Event) -> Availability
 --- Clamps a raw count into the seat range.
 pub clamp_seats(raw: Int) -> Seats = if raw < 0 then 0 else if raw > 5000 then 5000 else raw
 
---- A record is not interpolated, so it is described field by field.
-pub describe(e: Event) -> Text = "{e.name} ({e.remaining} seats)"
+--- Shows an event in its Una form.
+pub describe(e: Event) -> Text = "{e}"
+
+--- Shows a list of events in their Una forms.
+pub describe_many(events: List[Event]) -> Text = "{events}"
 
 example "an event with no seats is sold out"
   do availability(Event(name: "Launch", remaining: 0))
   expect result is SoldOut
+
+example "an event record can be interpolated"
+  do describe(Event(name: "Launch", remaining: 0))
+  expect result == "Event(name: \"Launch\", remaining: 0)"
+
+example "a list of event records can be interpolated"
+  do describe_many([Event(name: "Launch", remaining: 0)])
+  expect result == "[Event(name: \"Launch\", remaining: 0)]"
 
 example "an event with many seats is open"
   do availability(Event(name: "Meetup", remaining: 120))
@@ -2431,11 +2442,13 @@ These are planned or deliberately absent. Using a reserved word gives U0103 (§1
 | Task values, detached tasks, `race`, `select`, timeouts, channels, actors | not planned for v0.2; `together` is the only concurrency |
 | `break`, `continue`, an `invariant` clause for loops | not in v0.2 |
 | A checked left shift | not in v0.2; use `wrapping_shift_left` or a multiplication |
-| Printing records and lists through interpolation | not in v0.2; describe them field by field |
 | Cross-compilation of native executables | not in v0.2; each host builds for itself |
-| Units of measure, pipelines (`\|>`), FFI | later |
-| Quantified laws, property tests, semantic diff | v0.3 |
-| Cost contracts | v0.3 or later |
+| Units of measure | edition `0.3` preview ([spec/25](../spec/25-units-of-measure.md), [ADR 0104](../adr/0104-units-of-measure.md)) |
+| Pipeline operator (`\|>`) | not added; method-call chains already cover this form ([ADR 0110](../adr/0110-pipelines-and-shorthand-lambdas.md)) |
+| Foreign code and FFI | not permitted in any edition ([ADR 0121](../adr/0121-the-terms-of-a-preview-edition.md), rule 17) |
+| Quantified laws and property tests | not in this edition; tiers 2 and 3 are deferred ([spec/12](../spec/12-verification.md), [roadmap](../plan/roadmap.md)) |
+| Semantic diff | planned for v0.3, not available yet ([roadmap](../plan/roadmap.md)) |
+| Cost contracts | deferred to v0.3 or later ([roadmap](../plan/roadmap.md)) |
 | External state semantics (idempotency, delivery, `observe`), durable effect journal | v0.4 |
 | Services, data access, infrastructure generation | v0.4 |
 | Exceptions, null, inheritance, operator overloading, macros, implicit conversions, global mutable state, ambient authority | never |
