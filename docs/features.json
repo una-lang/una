@@ -1,0 +1,154 @@
+{
+  "schema": "una.features/1",
+  "scope": "Selected features reviewed by the improvement backlog; not an exhaustive language inventory.",
+  "features": [
+    {
+      "id": "checked",
+      "title": "Explicit checked validation",
+      "status": "supported",
+      "edition": "0.1",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/11-dynamic-semantics.md"
+      ],
+      "fixtures": [
+        "runtime/checked"
+      ]
+    },
+    {
+      "id": "contracts.lock",
+      "title": "Conditional effect contract locks",
+      "status": "preview",
+      "edition": "0.3",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/05-capabilities-and-effects.md"
+      ],
+      "fixtures": [
+        "authority/contracts_accepted"
+      ]
+    },
+    {
+      "id": "foreign.ffi",
+      "title": "Foreign code and FFI",
+      "status": "excluded",
+      "edition": null,
+      "minimum_release": null,
+      "normative": [
+        "docs/adr/0121-the-terms-of-a-preview-edition.md"
+      ],
+      "fixtures": []
+    },
+    {
+      "id": "generics.constraints",
+      "title": "Built-in constraints",
+      "status": "supported",
+      "edition": "0.2",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/20-constraints-on-generics.md"
+      ],
+      "fixtures": [
+        "runtime/constraint_runs"
+      ]
+    },
+    {
+      "id": "logic.quantified-laws",
+      "title": "Quantified laws",
+      "status": "proposed",
+      "edition": null,
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/12-verification.md"
+      ],
+      "fixtures": []
+    },
+    {
+      "id": "memory.edit",
+      "title": "Value-semantic edit and rollback",
+      "status": "supported",
+      "edition": "0.2",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/17-memory-model.md"
+      ],
+      "fixtures": [
+        "runtime/edit_moves"
+      ]
+    },
+    {
+      "id": "numbers.f64",
+      "title": "IEEE 754 F64",
+      "status": "preview",
+      "edition": "0.3",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/29-numerics.md"
+      ],
+      "fixtures": [
+        "runtime/float_parse_run"
+      ]
+    },
+    {
+      "id": "syntax.pipeline",
+      "title": "Pipeline operator",
+      "status": "excluded",
+      "edition": null,
+      "minimum_release": null,
+      "normative": [
+        "docs/adr/0110-pipelines-and-shorthand-lambdas.md"
+      ],
+      "fixtures": []
+    },
+    {
+      "id": "tasks.together",
+      "title": "Structured together blocks",
+      "status": "supported",
+      "edition": "0.2",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/19-structured-concurrency.md"
+      ],
+      "fixtures": [
+        "runtime/together_traces"
+      ]
+    },
+    {
+      "id": "text.interpolation",
+      "title": "Text and collection interpolation",
+      "status": "supported",
+      "edition": "0.2",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/22-text.md"
+      ],
+      "fixtures": [
+        "runtime/text_run"
+      ]
+    },
+    {
+      "id": "tools.semantic-diff",
+      "title": "Semantic diff",
+      "status": "proposed",
+      "edition": null,
+      "minimum_release": null,
+      "normative": [
+        "docs/plan/backlog.md"
+      ],
+      "fixtures": []
+    },
+    {
+      "id": "units.integer",
+      "title": "Integer units of measure",
+      "status": "preview",
+      "edition": "0.3",
+      "minimum_release": null,
+      "normative": [
+        "docs/spec/25-units-of-measure.md"
+      ],
+      "fixtures": [
+        "types/units_accepted"
+      ]
+    }
+  ]
+}

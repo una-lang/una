@@ -19,7 +19,9 @@
 # knows are neutral.
 #
 # It needs a built `una` of this checkout: UNA_BIN, else target/release/una, else
-# target/debug/una. Its version must be the workspace's.
+# target/debug/una. Its version must be the workspace's. When docs name a newer
+# edition, build una from this commit. Python 3.11+ validates the catalog and its
+# fixture manifests; the pinned Z3 must be on PATH for their positive checks.
 #
 # Usage: scripts/site-bundle.sh OUT
 set -eu
@@ -65,6 +67,8 @@ mkdir -p "$bundle/files" "$bundle/help"
 "$una" --version >"$bundle/version.txt"
 editions=$(sed -n 's/^editions: //p' "$bundle/version.txt")
 [ -n "$editions" ] || fail "una --version names no editions"
+python3 -B scripts/site-features.py --editions "$editions" --una "$una" >"$bundle/.features" \
+    || fail "feature evidence or document editions"
 NO_COLOR=1 "$una" --help >"$bundle/help/una.txt"
 commands=$(sed -n 's/^  \([a-z][a-z]*\)  .*/\1/p' "$bundle/help/una.txt" | grep -v '^help$')
 [ -n "$commands" ] || fail "una --help lists no commands"
@@ -88,6 +92,7 @@ files=$(
         git ls-files 'crates/una-explain/explain/U*.md' | sed 's/^/explain /'
         git ls-files examples | sed 's/^/example /'
         git ls-files 'docs/std/*' | sed 's/^/std /'
+        git ls-files docs/features.json | sed 's/^/features /'
     } | awk '!seen[$2]++'
 )
 
@@ -129,15 +134,16 @@ done
 count=$(wc -l <"$entries" | tr -d ' ')
 not_neutral=$(grep -c '"neutral":false' "$entries" || true)
 {
-    printf '{"schema":"una.site-bundle/1","version":"%s","commit":"%s","editions":[%s],"neutrality":"%s","commands":[%s],"files":[\n' \
+    printf '{"schema":"una.site-bundle/1","version":"%s","commit":"%s","editions":[%s],"neutrality":"%s","commands":[%s],"feature_catalog":%s,"files":[\n' \
         "$version" "$commit" \
         "$(echo "$editions" | tr ',' '\n' | sed 's/^ *//' | while read -r e; do printf '"%s",' "$e"; done | sed 's/,$//')" \
         "$neutrality" \
-        "$(for c in $commands; do printf '"%s",' "$c"; done | sed 's/,$//')"
+        "$(for c in $commands; do printf '"%s",' "$c"; done | sed 's/,$//')" \
+        "$(cat "$bundle/.features")"
     sed '$!s/$/,/' "$entries"
     printf ']}\n'
 } >"$bundle/manifest.json"
-rm "$entries"
+rm "$entries" "$bundle/.features"
 
 # --- The check: every listed file is in the bundle with its digest, and every command has its help.
 grep -o '"path":"[^"]*","kind":"[a-z]*","title":[^,]*\(,[^,]*\)*,"sha256":"[0-9a-f]\{64\}"' "$bundle/manifest.json" >/dev/null \
