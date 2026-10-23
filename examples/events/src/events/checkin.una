@@ -50,7 +50,9 @@ handler fake_keys() for Keys
   op hmac(key_name, data) = fake_hash(1)
 
 example "a registered attendee is checked in and audited"
-  given @registrations = one_registration(Registration(name: "Ana", event: Event(name: "Launch", remaining: 820)))
+  given @registrations = one_registration(Registration(name: "Ana", event: Event(name: "Launch",
+        remaining: 820
+      )))
   given @audit = audit_log()
   given @keys = fake_keys()
   do check_in(parse_phone("12345678901"))
