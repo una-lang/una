@@ -4,6 +4,10 @@
 -- expect: error U4001 at src/l40.una:9:82
 module l40
 
-doubler[T](xs: List[T], p: T) -> List[List[T]] = xs.map(each: fn(x) -> if x == p then [x] else [x, x])
+doubler[T](xs: List[T], p: T) -> List[List[T]] = xs.map(each: fn(x) -> if x == p then [x] else [x,
+    x
+  ])
 
-pub leak(xs: List[secret Int]) -> Int = doubler(xs, p: 1).fold(initial: 0, step: fn(acc, row) -> acc + row.len)
+pub leak(xs: List[secret Int]) -> Int = doubler(xs, p: 1).fold(initial: 0, step: fn(acc,
+    row
+  ) -> acc + row.len)

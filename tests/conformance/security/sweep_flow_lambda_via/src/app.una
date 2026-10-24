@@ -17,6 +17,12 @@ pub kind Boom = | Bang
 
 pub apply_l(f: fn(Int) -> Int) -> Int = 0
 
-pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_l(fn(x: Int) -> mask(s) + 1)
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_l(fn(x: Int) -> mask(s) + 1)
 
-pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_l(fn(x: Int) -> lower(s) + 1)
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_l(fn(x: Int) -> lower(s) + 1)

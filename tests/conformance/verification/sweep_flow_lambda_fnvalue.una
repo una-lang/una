@@ -23,14 +23,32 @@ pub apply_f(f: fn(Int) -> fn(Int) -> Pos) -> Int = 0
 
 pub apply_e(f: fn(Int) -> fn(Int) -> Int) -> Int = 0
 
-pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_r(fn(x: Int) -> g(1))
+pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_r(fn(x: Int) -> g(1))
 
-pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_r(fn(x: Int) -> k(1))
+pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_r(fn(x: Int) -> k(1))
 
-pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_f(fn(x: Int) -> g)
+pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_f(fn(x: Int) -> g)
 
-pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_f(fn(x: Int) -> k)
+pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_f(fn(x: Int) -> k)
 
-pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> w)
+pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_e(fn(x: Int) -> w)
 
-pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> g)
+pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
+  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) -> Int = apply_e(fn(x: Int) -> g)

@@ -5,4 +5,6 @@ module b05b_fn_returned_to_caller
 
 chooser[T](a: T, b: T, p: T, q: T) -> fn(fn(T) -> Int) -> Int = fn(k) -> k(if a == b then p else q)
 
-pub leak(s: secret Int) -> Int = chooser([s], b: [0], p: [], q: [1, 2])(fn(xs: List[secret Int]) -> xs.len)
+pub leak(s: secret Int) -> Int = chooser([s], b: [0], p: [], q: [1,
+    2
+  ])(fn(xs: List[secret Int]) -> xs.len)

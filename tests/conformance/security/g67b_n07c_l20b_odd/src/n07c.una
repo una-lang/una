@@ -3,8 +3,14 @@
 -- expect: error U4001 at src/n07c.una:10:34
 module n07c
 
-f[T, U](a: T, b: U, kb: U, ka: T, n: Int) -> List[Int] = if n <= 0 then [] else g(b, b: a, kb: ka, ka: kb, n: n - 1)
+f[T, U](a: T, b: U, kb: U, ka: T, n: Int) -> List[Int] = if n <= 0 then [] else g(b, b: a, kb: ka,
+  ka: kb, n: n - 1
+)
 
-g[T, U](a: T, b: U, kb: U, ka: T, n: Int) -> List[Int] = if n == 1 then (if b == kb then [1] else []) else f(a, b, kb: kb, ka: ka, n: n - 1)
+g[T, U](a: T, b: U, kb: U, ka: T,
+  n: Int
+) -> List[Int] = if n == 1 then (if b == kb then [1] else []) else f(a, b, kb: kb, ka: ka,
+  n: n - 1
+)
 
 pub leak(s: secret Int) -> Int = f(s, b: 0, kb: 0, ka: 5, n: 2).len

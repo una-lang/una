@@ -5,4 +5,6 @@ module l19
 
 pick[T, U](a: T, b: T, x: U, y: U) -> List[U] = if a == b then [x] else [y]
 
-pub leak(s: secret Int) -> Int = pick(s, b: 0, x: 1, y: 2).fold(initial: 0, step: fn(acc, v) -> acc + v)
+pub leak(s: secret Int) -> Int = pick(s, b: 0, x: 1, y: 2).fold(initial: 0, step: fn(acc,
+    v
+  ) -> acc + v)

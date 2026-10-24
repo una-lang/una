@@ -4,7 +4,9 @@
 -- expect: error U5001 at src/m.una:14:56
 module m
 
-pub split(x: Decimal[2], y: Decimal[2]) -> Decimal[2] = x.divide(by: y, scale: 2, rounding: HalfEven)
+pub split(x: Decimal[2], y: Decimal[2]) -> Decimal[2] = x.divide(by: y, scale: 2,
+  rounding: HalfEven
+)
 
 pub guarded(x: Decimal[2], y: Decimal[2]) -> Decimal[2]
   requires y > 0.00

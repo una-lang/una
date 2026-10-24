@@ -20,7 +20,9 @@ pub join_1(c: Bool, v: Result[Int, secret Int], w: Result[Int, Int]) -> Result[I
   let j = if c then w else v
   j
 
-pub join_2(c: Bool, v: Result[Int, Int], w: Result[secret Int, secret Int]) -> Result[secret Int, secret Int]
+pub join_2(c: Bool, v: Result[Int, Int], w: Result[secret Int, secret Int]) -> Result[secret Int,
+  secret Int
+]
 =
   let j = if c then w else v
   j

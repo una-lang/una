@@ -90,7 +90,9 @@ pub chosen_boxed_list_twin(x: Box[List[secret Int]]) -> secret Int = if x == Box
 
 pub chosen_option_box_twin(x: Option[Box[secret Int]]) -> secret Int = if x == Some(Box(value: 2)) then 1 else 0
 
-pub chosen_wallet_twin(x: Wallet) -> secret Int = if x == Wallet(acct: Acct(id: 1, pin: 2)) then 1 else 0
+pub chosen_wallet_twin(x: Wallet) -> secret Int = if x == Wallet(acct: Acct(id: 1,
+    pin: 2
+  )) then 1 else 0
 
 pub printed_wallet_twin(x: Wallet) -> Unit
   uses @console: Console[print]

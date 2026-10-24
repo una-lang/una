@@ -30,7 +30,9 @@ logger[U](x: U, f: fn(U) -> Int) -> Unit
 g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int, c: Bool) -> Unit
   uses @log: Log[write]
 =
-  logger(if a == b then p else q, f: if c then (if c then fn(x: T) -> k(x) else fn(x: T) -> 1) else fn(x: T) -> 0)
+  logger(if a == b then p else q,
+    f: if c then (if c then fn(x: T) -> k(x) else fn(x: T) -> 1) else fn(x: T) -> 0
+  )
 
 pub leak(s: secret Int) -> Unit
   uses @log: Log[write]

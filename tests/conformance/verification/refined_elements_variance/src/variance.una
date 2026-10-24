@@ -29,7 +29,9 @@ pub widen(o: Option[Pos], r: Result[Pos, Oops], m: Map[Pos, Pos], b: Box[Pos]) -
   let b2: Box[Int] = b
   m2.len
 
-pub narrow(o: Option[Int], r: Result[Int, Oops], m: Map[Text, Int], k: Map[Int, Text], b: Box[Int]) -> Int
+pub narrow(o: Option[Int], r: Result[Int, Oops], m: Map[Text, Int], k: Map[Int, Text],
+  b: Box[Int]
+) -> Int
 =
   let o2: Option[Pos] = o
   let r2: Result[Pos, Oops] = r

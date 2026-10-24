@@ -9,4 +9,6 @@ kind Card
 
 apply[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int = k(if a == b then p else q)
 
-pub leak(s: secret Int) -> Int = apply(Card(pin: s, tag: 0), b: Card(pin: 1234, tag: 0), p: Card(pin: 0, tag: 1), q: Card(pin: 0, tag: 2), k: fn(c: Card) -> c.tag)
+pub leak(s: secret Int) -> Int = apply(Card(pin: s, tag: 0), b: Card(pin: 1234, tag: 0),
+  p: Card(pin: 0, tag: 1), q: Card(pin: 0, tag: 2), k: fn(c: Card) -> c.tag
+)

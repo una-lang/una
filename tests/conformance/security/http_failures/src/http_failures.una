@@ -55,7 +55,9 @@ pub by_url_control(url: internal Text) -> internal Bool
 pub by_header(session: internal Text) -> Bool
   uses @http: Http[get]
 =
-  let r = attempt @http.get("http://127.0.0.1:8765/", headers: [Header(name: "Cookie", value: session)], key_name: None)
+  let r = attempt @http.get("http://127.0.0.1:8765/", headers: [Header(name: "Cookie",
+        value: session
+      )], key_name: None)
   r is Ok
 
 pub by_key_name(name: internal Text) -> Bool

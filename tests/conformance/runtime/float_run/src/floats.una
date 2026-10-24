@@ -50,7 +50,9 @@ pub main() -> Unit
   @console.print("convert {9007199254740993.to_f64()} {(-7).to_f64()} {1.0e308.to_int_exact()} {0.5.to_int_exact()} {nz.to_int_exact()} {nan().to_int_exact()}")
   @console.print("fixed {255.to_u8().to_f64()} {f64_from_bits(bits: 4607182418800017408.to_u64())} {f64_from_bits(bits: 18444492273895866368.to_u64()).to_bits()}")
   @console.print("sorted {show(sort([nan(), 1.0, zero, -infinity(), nz, infinity(), -1.0]))}")
-  let m = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg").with(key: nan(), value: "nan").with(key: zero / zero, value: "nan again")
+  let m = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg").with(key: nan(),
+    value: "nan"
+  ).with(key: zero / zero, value: "nan again")
   @console.print("map {m.len} {m.keys()} {Point(x: nan(), y: nz) == Point(x: zero / zero, y: -0.0)}")
   let p = attempt parse_f64("-0")
   let q = attempt parse_f64("1E+5")

@@ -18,8 +18,14 @@ pub kind Boom = | Bang
 pub capability SrcL
   op get() -> Int
 
-pub handler l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcL
+pub handler l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
+  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) for SrcL
   op get() = mask(s)
 
-pub handler l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcL
+pub handler l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
+  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
+  q: fn(Int) -> Int uses @c: Console[print]
+) for SrcL
   op get() = lower(s)

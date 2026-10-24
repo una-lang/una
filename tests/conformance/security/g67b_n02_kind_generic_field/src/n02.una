@@ -9,4 +9,6 @@ kind Pair[A, B]
 
 pick[U](x: U, y: U, p: U, q: U) -> U = if x == y then p else q
 
-pub leak(s: secret Int) -> Int = pick(Pair(first: s, second: 0), y: Pair(first: 0, second: 0), p: Pair(first: 0, second: 1), q: Pair(first: 0, second: 2)).second
+pub leak(s: secret Int) -> Int = pick(Pair(first: s, second: 0), y: Pair(first: 0, second: 0),
+  p: Pair(first: 0, second: 1), q: Pair(first: 0, second: 2)
+).second

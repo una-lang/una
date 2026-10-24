@@ -43,7 +43,9 @@ pub p_filter_boxed_list(xs: List[Box[List[secret Int]]]) -> Int = xs.filter(keep
 
 pub p_map_boxed_list(xs: List[Box[List[secret Int]]]) -> List[Int] = xs.map(each: fn(y) -> 1)
 
-pub p_fold_boxed_list(xs: List[Box[List[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n, y) -> n + 1)
+pub p_fold_boxed_list(xs: List[Box[List[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n,
+    y
+  ) -> n + 1)
 
 pub p_is_some_boxed_list(o: Option[Box[List[secret Int]]]) -> Bool = o.is_some()
 
@@ -77,7 +79,9 @@ pub p_filter_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.filter(ke
 
 pub p_map_option_box(xs: List[Option[Box[secret Int]]]) -> List[Int] = xs.map(each: fn(y) -> 1)
 
-pub p_fold_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n, y) -> n + 1)
+pub p_fold_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n,
+    y
+  ) -> n + 1)
 
 pub p_is_some_option_box(o: Option[Option[Box[secret Int]]]) -> Bool = o.is_some()
 
@@ -99,7 +103,9 @@ pub p_len_twin_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.len
 
 grab_wallet(x: Wallet) -> secret Int = x.acct.pin
 
-pub p_contains_wallet(xs: List[Wallet]) -> Bool = xs.contains(item: Wallet(acct: Acct(id: 1, pin: 2)))
+pub p_contains_wallet(xs: List[Wallet]) -> Bool = xs.contains(item: Wallet(acct: Acct(id: 1,
+      pin: 2
+    )))
 
 pub p_first_wallet(xs: List[Wallet]) -> Bool = xs.first() is Some
 
@@ -117,9 +123,13 @@ pub p_is_some_wallet(o: Option[Wallet]) -> Bool = o.is_some()
 
 pub p_is_ok_wallet(r: Result[Wallet, Int]) -> Bool = r.is_ok()
 
-pub p_append_wallet(xs: List[Wallet]) -> Int = xs.append(item: Wallet(acct: Acct(id: 1, pin: 2))).len
+pub p_append_wallet(xs: List[Wallet]) -> Int = xs.append(item: Wallet(acct: Acct(id: 1,
+      pin: 2
+    ))).len
 
-pub p_or_else_wallet(o: Option[Wallet]) -> Wallet = o.or_else(default: Wallet(acct: Acct(id: 1, pin: 2)))
+pub p_or_else_wallet(o: Option[Wallet]) -> Wallet = o.or_else(default: Wallet(acct: Acct(id: 1,
+      pin: 2
+    )))
 
 pub p_is_empty_wallet(xs: List[Wallet]) -> Bool = xs.is_empty()
 

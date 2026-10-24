@@ -20,7 +20,9 @@ pub elem_1(v: Result[Int, secret Int], w: Result[Int, Int]) -> List[Result[Int, 
   let ws = [w, v]
   ws
 
-pub elem_2(v: Result[Int, Int], w: Result[secret Int, secret Int]) -> List[Result[secret Int, secret Int]]
+pub elem_2(v: Result[Int, Int], w: Result[secret Int, secret Int]) -> List[Result[secret Int,
+    secret Int
+  ]]
 =
   let ws = [w, v]
   ws

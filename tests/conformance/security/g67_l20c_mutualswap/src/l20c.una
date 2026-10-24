@@ -7,6 +7,8 @@ f[T, U](a: T, b: U, n: Int) -> List[Int] = if n <= 0 then [] else g(b, b: a, n: 
 
 g[T, U](a: T, b: U, n: Int) -> List[Int] = h(b, b: a, n: n)
 
-h[T, U](a: T, b: U, n: Int) -> List[Int] = if n == 1 then (if a == a then [1] else []) else f(a, b, n: n - 1)
+h[T, U](a: T, b: U, n: Int) -> List[Int] = if n == 1 then (if a == a then [1] else []) else f(a, b,
+  n: n - 1
+)
 
 pub leak(s: secret Int) -> Int = f(s, b: 0, n: 9).len

@@ -3,7 +3,9 @@
 -- expect: error U4001 at src/f03d.una:6:86
 module f03d
 
-mk[T, U](a: T, b: T, p: U, q: U) -> fn(fn(U) -> Int) -> Int = fn(k: fn(U) -> Int) -> k(if a == b then p else q)
+mk[T, U](a: T, b: T, p: U,
+  q: U
+) -> fn(fn(U) -> Int) -> Int = fn(k: fn(U) -> Int) -> k(if a == b then p else q)
 
 pub leak(s: secret Int) -> Int
 =

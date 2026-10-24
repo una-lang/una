@@ -9,4 +9,6 @@ insert[T: Ord](sorted: List[T], item: T) -> List[T]
   let behind = sorted.filter(keep: fn(s) -> not (s < item))
   behind.fold(initial: ahead.append(item: item), step: fn(acc, s) -> acc.append(item: s))
 
-pub leak(xs: List[Int], s: secret Int) -> Int = insert(xs, item: s).fold(initial: 0, step: fn(acc, v) -> acc * 10 + 1)
+pub leak(xs: List[Int], s: secret Int) -> Int = insert(xs, item: s).fold(initial: 0, step: fn(acc,
+    v
+  ) -> acc * 10 + 1)

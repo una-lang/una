@@ -56,4 +56,6 @@ pub via_get(m: Map[Text, Pos]) -> Int
     is Some(v) -> needs(v)
     is None -> 0
 
-pub fold_at_the_base(ps: List[Pos], p: Pos) -> Int = ps.fold(initial: p, step: fn(acc, x) -> acc - x)
+pub fold_at_the_base(ps: List[Pos], p: Pos) -> Int = ps.fold(initial: p, step: fn(acc,
+    x
+  ) -> acc - x)

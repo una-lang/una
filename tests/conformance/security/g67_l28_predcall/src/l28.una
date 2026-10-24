@@ -3,6 +3,8 @@
 -- expect: error U4001 at src/l28.una:8:66
 module l28
 
-count_by[T](xs: List[T], p: fn(T) -> Bool) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> if p(x) then acc + 1 else acc)
+count_by[T](xs: List[T], p: fn(T) -> Bool) -> Int = xs.fold(initial: 0, step: fn(acc,
+    x
+  ) -> if p(x) then acc + 1 else acc)
 
 pub leak(xs: List[secret Int]) -> Int = count_by(xs, p: fn(x) -> x > 0)

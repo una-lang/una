@@ -7,7 +7,9 @@ pub kind Body
   mass: F64
   name: Text
 
-pub literals() -> List[F64] = [0.5, 1.0, 6.674_30e-11, 1.0e21, 1.0e-7, 0.0, -0.0, 1.7976931348623158e308, 2.4703282292062328e-324]
+pub literals() -> List[F64] = [0.5, 1.0, 6.674_30e-11, 1.0e21, 1.0e-7, 0.0, -0.0,
+  1.7976931348623158e308, 2.4703282292062328e-324
+]
 
 pub arithmetic(a: F64, b: F64) -> F64 = (a + b) * (a - b) / -a
 
@@ -15,7 +17,9 @@ pub methods(x: F64, y: F64) -> F64
 =
   let s = x.abs().sqrt() + x.fma(times: y, plus: 1.0) + x.rem(by: y)
   let r = x.floor() + x.ceil() + x.trunc() + x.round_half_even() + x.round_half_away()
-  s + r + x.copy_sign(from: y) + x.ieee_min(other: y) + x.ieee_max(other: y) + x.clamp(lo: 0.5, hi: 1.5)
+  s + r + x.copy_sign(from: y) + x.ieee_min(other: y) + x.ieee_max(other: y) + x.clamp(lo: 0.5,
+    hi: 1.5
+  )
 
 pub tests(x: F64, y: F64) -> Bool
 =

@@ -15,7 +15,9 @@ pub secret_url(token: secret Text) -> Unit
 pub secret_header(token: secret Text) -> Unit
   uses @http: Http[get]
 =
-  let r = attempt @http.get("https://api.example.com/", headers: [Header(name: "X-Token", value: token)], key_name: None)
+  let r = attempt @http.get("https://api.example.com/", headers: [Header(name: "X-Token",
+        value: token
+      )], key_name: None)
   unit
 
 pub secret_body(token: secret Text) -> Unit
@@ -27,7 +29,9 @@ pub secret_body(token: secret Text) -> Unit
 pub internal_header(session: internal Text) -> Unit
   uses @http: Http[get]
 =
-  let r = attempt @http.get("https://api.example.com/", headers: [Header(name: "Cookie", value: session)], key_name: None)
+  let r = attempt @http.get("https://api.example.com/", headers: [Header(name: "Cookie",
+        value: session
+      )], key_name: None)
   unit
 
 pub internal_body(note: internal Text) -> Unit

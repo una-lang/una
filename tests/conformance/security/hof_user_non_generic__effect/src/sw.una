@@ -25,7 +25,9 @@ log_int(n: Int, f: fn(Int) -> Unit uses @log: Log[write]) -> Unit
 =
   f(n)
 
-g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write], h: fn(Int) -> Unit uses @log: Log[write]) -> Unit
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write],
+  h: fn(Int) -> Unit uses @log: Log[write]
+) -> Unit
   uses @log: Log[write]
 =
   log_int(if a == b then 1 else 0, f: h)

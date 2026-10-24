@@ -13,7 +13,9 @@ pub same[T: Eq](a: T, b: T) -> Bool = a == b
 
 pub different[T: Ord](a: T, b: T) -> Bool = a != b
 
-pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
+pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best,
+    x
+  ) -> max(best, b: x))
 
 pub total[T: Integer](xs: List[T]) -> Int = xs.map(each: fn(x) -> x.to_int()).sum()
 

@@ -4,6 +4,8 @@
 -- expect: error U4001 at src/a20_fold_max_like.una:9:34
 module a20_fold_max_like
 
-best[T](xs: List[T], y: T) -> T = xs.fold(initial: y, step: fn(acc, x) -> if x == acc then x else acc)
+best[T](xs: List[T], y: T) -> T = xs.fold(initial: y, step: fn(acc,
+    x
+  ) -> if x == acc then x else acc)
 
 pub leak(s: secret Int) -> Int = best([[s]], y: [0]).len

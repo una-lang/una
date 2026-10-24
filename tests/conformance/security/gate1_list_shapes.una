@@ -4,11 +4,17 @@
 -- expect: error U4001 at 11:103
 module gate1_list_shapes
 
-pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
+pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc,
+    x
+  ) -> acc.append(item: x))
 
-pub newest_first[T](items: List[T]) -> List[T] = items.fold(initial: [], step: fn(acc, x) -> concat([x], back: acc))
+pub newest_first[T](items: List[T]) -> List[T] = items.fold(initial: [], step: fn(acc,
+    x
+  ) -> concat([x], back: acc))
 
-pub ranked_by[T](items: List[T], before: fn(T, T) -> Bool) -> List[T] = items.fold(initial: [], step: fn(sorted, item) -> insert(sorted, item, before))
+pub ranked_by[T](items: List[T], before: fn(T, T) -> Bool) -> List[T] = items.fold(initial: [],
+  step: fn(sorted, item) -> insert(sorted, item, before)
+)
 
 insert[T](sorted: List[T], item: T, before: fn(T, T) -> Bool) -> List[T]
 =

@@ -14,7 +14,9 @@ pub kind Cell
 made(i: Int) -> F64
 =
   let zero = 0.0
-  if i == 0 then zero / zero else if i == 1 then 1.0.rem(by: zero) else if i == 2 then infinity().rem(by: 1.0) else if i == 3 then infinity().fma(times: zero, plus: 1.0) else (-1.0).sqrt()
+  if i == 0 then zero / zero else if i == 1 then 1.0.rem(by: zero) else if i == 2 then infinity().rem(by: 1.0) else if i == 3 then infinity().fma(times: zero,
+    plus: 1.0
+  ) else (-1.0).sqrt()
 
 pub main() -> Unit
   uses @console: Console[print]

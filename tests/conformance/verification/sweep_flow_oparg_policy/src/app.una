@@ -32,12 +32,16 @@ zero(x: Int) -> Int = 0
 
 ident[T](x: T) -> T = x
 
-pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
+pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
+  t: fn(Int) -> secret Int
+) -> Int
   uses @p: Probe[take_r]
 =
   @p.take_r(lower(s))
 
-pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
+pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
+  t: fn(Int) -> secret Int
+) -> Int
   uses @p: Probe[take_r]
 =
   @p.take_r(lower_pos(s))

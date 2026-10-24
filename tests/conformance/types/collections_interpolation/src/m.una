@@ -10,7 +10,9 @@ pub kind Bag
 
 pub sequences(a: Stack[Int], b: Queue[Text], c: PriorityQueue[Text, Int]) -> Text = "{a} {b} {c}"
 
-pub sets(d: Set[Int], e: HashSet[Text], f: BitSet, g: HashMap[Text, Int]) -> Text = "{d} {e} {f} {g}"
+pub sets(d: Set[Int], e: HashSet[Text], f: BitSet, g: HashMap[Text,
+    Int
+  ]) -> Text = "{d} {e} {f} {g}"
 
 pub bag(h: Bag) -> Text = "{h}"
 

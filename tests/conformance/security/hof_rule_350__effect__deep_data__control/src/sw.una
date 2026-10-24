@@ -24,7 +24,9 @@ deep[U](xs: List[Hold[List[U]]], f: fn(Hold[List[U]]) -> Int) -> Unit
 =
   @log.write(xs.map(each: f).sum())
 
-g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write], hk: fn(Hold[List[T]]) -> Int) -> Unit
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write],
+  hk: fn(Hold[List[T]]) -> Int
+) -> Unit
   uses @log: Log[write]
 =
   deep([Hold(value: [p])], f: hk)

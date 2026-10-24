@@ -32,7 +32,9 @@ pub main() -> Unit
   let counts = count_words(["b", "a", "b", "c", "b"])
   @console.print("counts: {counts} {counts.len}")
   let no_ints: Map[Int, Text] = empty_map()
-  let big = no_ints.with(key: 9223372036854775807, value: "max").with(key: -5, value: "neg").with(key: 4611686018427387904, value: "tag")
+  let big = no_ints.with(key: 9223372036854775807, value: "max").with(key: -5,
+    value: "neg"
+  ).with(key: 4611686018427387904, value: "tag")
   @console.print("ints: {big.keys()}")
   let fixed: Map[U8, Bool] = empty_map()
   @console.print("fixed: {fixed.with(key: 200, value: true).with(key: 7, value: false)}")

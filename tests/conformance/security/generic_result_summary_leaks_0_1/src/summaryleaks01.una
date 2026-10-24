@@ -17,7 +17,9 @@ pub kind Box[T]
   item: T
   count: Int
 
-pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
+pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc,
+    x
+  ) -> acc.append(item: x))
 
 --- The shape depends on a comparison of `T` values: the top carries `T`.
 smaller[T](a: T, b: T) -> List[T] = if a == b then [a] else [b, a]
@@ -32,7 +34,11 @@ pub leak_filter(xs: List[secret Int]) -> Int = below(xs, pivot: 0).len
 pub leak_first(xs: List[secret Int]) -> Bool = xs.first_where(keep: fn(x) -> x > 0).is_some()
 
 --- Recursion: a branch on `T` values deep in the recursion still reaches the top.
-matches[T](xs: List[T], x: T, n: Int) -> List[Int] = if n <= 0 then (if xs.contains(item: x) then [1] else []) else concat([], back: matches(xs, x, n: n - 1))
+matches[T](xs: List[T], x: T,
+  n: Int
+) -> List[Int] = if n <= 0 then (if xs.contains(item: x) then [1] else []) else concat([],
+  back: matches(xs, x, n: n - 1)
+)
 
 pub leak_recursion(xs: List[secret Int]) -> Int = matches(xs, x: 1, n: 3).len
 

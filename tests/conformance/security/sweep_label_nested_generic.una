@@ -30,7 +30,9 @@ pub generic_boxed_list(x: Box[List[secret Int]]) -> Bool = same_boxed_list(x, b:
 
 pub constant_boxed_list(x: Box[List[secret Int]]) -> Int = keep_boxed_list(x)
 
-pub generic_twin_boxed_list(x: Box[List[secret Int]]) -> secret Bool = same_boxed_list(x, b: Box(value: [2]))
+pub generic_twin_boxed_list(x: Box[List[secret Int]]) -> secret Bool = same_boxed_list(x,
+  b: Box(value: [2])
+)
 
 grab_option_box(x: Option[Box[secret Int]]) -> secret Int = x.or_else(default: Box(value: 0)).value
 
@@ -38,11 +40,15 @@ same_option_box[T](a: T, b: T) -> Bool = a == b
 
 keep_option_box[T](a: T) -> Int = 1
 
-pub generic_option_box(x: Option[Box[secret Int]]) -> Bool = same_option_box(x, b: Some(Box(value: 2)))
+pub generic_option_box(x: Option[Box[secret Int]]) -> Bool = same_option_box(x,
+  b: Some(Box(value: 2))
+)
 
 pub constant_option_box(x: Option[Box[secret Int]]) -> Int = keep_option_box(x)
 
-pub generic_twin_option_box(x: Option[Box[secret Int]]) -> secret Bool = same_option_box(x, b: Some(Box(value: 2)))
+pub generic_twin_option_box(x: Option[Box[secret Int]]) -> secret Bool = same_option_box(x,
+  b: Some(Box(value: 2))
+)
 
 grab_wallet(x: Wallet) -> secret Int = x.acct.pin
 
@@ -54,4 +60,6 @@ pub generic_wallet(x: Wallet) -> Bool = same_wallet(x, b: Wallet(acct: Acct(id: 
 
 pub constant_wallet(x: Wallet) -> Int = keep_wallet(x)
 
-pub generic_twin_wallet(x: Wallet) -> secret Bool = same_wallet(x, b: Wallet(acct: Acct(id: 1, pin: 2)))
+pub generic_twin_wallet(x: Wallet) -> secret Bool = same_wallet(x, b: Wallet(acct: Acct(id: 1,
+      pin: 2
+    )))

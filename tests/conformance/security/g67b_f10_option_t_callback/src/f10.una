@@ -5,4 +5,6 @@ module f10
 
 apply[T](a: T, b: T, k: fn(Option[T]) -> Int) -> Int = k(if a == b then Some(a) else None)
 
-pub leak(s: secret Int) -> Int = apply(s, b: 0, k: fn(o: Option[secret Int]) -> if o is Some then 1 else 0)
+pub leak(s: secret Int) -> Int = apply(s, b: 0,
+  k: fn(o: Option[secret Int]) -> if o is Some then 1 else 0
+)

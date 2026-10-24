@@ -7,4 +7,6 @@ module l14
 
 nest[T](a: T, b: T) -> List[List[Int]] = [[if a == b then 1 else 0]]
 
-pub leak(s: secret Int) -> Int = nest(s, b: 0).fold(initial: 0, step: fn(acc, row) -> row.fold(initial: acc, step: fn(n, v) -> n + v))
+pub leak(s: secret Int) -> Int = nest(s, b: 0).fold(initial: 0, step: fn(acc,
+    row
+  ) -> row.fold(initial: acc, step: fn(n, v) -> n + v))

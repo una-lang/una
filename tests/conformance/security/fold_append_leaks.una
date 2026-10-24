@@ -11,10 +11,16 @@ module fold_append_leaks
 
 pub summed(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + x)
 
-pub declassified(xs: List[secret Int]) -> List[Int] = xs.fold(initial: [], step: fn(acc, x) -> acc.append(item: x))
+pub declassified(xs: List[secret Int]) -> List[Int] = xs.fold(initial: [], step: fn(acc,
+    x
+  ) -> acc.append(item: x))
 
-pub counted(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> if x > 0 then acc + 1 else acc)
+pub counted(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: fn(acc,
+    x
+  ) -> if x > 0 then acc + 1 else acc)
 
 pub appended(xs: List[Int], s: secret Int) -> List[Int] = xs.append(item: s)
 
-pub generic_count[T](xs: List[T], y: T) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> if x == y then acc + 1 else acc)
+pub generic_count[T](xs: List[T], y: T) -> Int = xs.fold(initial: 0, step: fn(acc,
+    x
+  ) -> if x == y then acc + 1 else acc)

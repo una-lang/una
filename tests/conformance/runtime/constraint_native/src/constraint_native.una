@@ -19,7 +19,9 @@ before[T: Ord](a: T, than: T) -> Bool = a < than
 at_most[T: Ord](a: T, than: T) -> Bool = not before(than, than: a)
 
 --- The least of `xs` and `floor`.
-smallest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best, x) -> min(best, b: x))
+smallest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best,
+    x
+  ) -> min(best, b: x))
 
 --- Whether `a` is at most `than`, two generic callers away from `before`.
 within[T: Ord](a: T, than: T) -> Bool = at_most(a, than: than)

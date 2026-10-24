@@ -39,13 +39,19 @@ pub insert(tree: Option[Tree], n: Int) -> Tree
 =
   when tree
     is None -> Tree(left: None, value: n, right: None)
-    is Some(node) -> if n < node.value then Tree(left: Some(insert(node.left, n)), value: node.value, right: node.right) else Tree(left: node.left, value: node.value, right: Some(insert(node.right, n)))
+    is Some(node) -> if n < node.value then Tree(left: Some(insert(node.left, n)),
+      value: node.value, right: node.right
+    ) else Tree(left: node.left, value: node.value,
+      right: Some(insert(node.right, n))
+    )
 
 pub walk(tree: Option[Tree]) -> List[Int]
 =
   when tree
     is None -> []
-    is Some(node) -> walk(node.right).fold(initial: walk(node.left).append(item: node.value), step: fn(acc, x) -> acc.append(item: x))
+    is Some(node) -> walk(node.right).fold(initial: walk(node.left).append(item: node.value),
+      step: fn(acc, x) -> acc.append(item: x)
+    )
 
 pub adder(k: Int) -> fn(Int) -> Int = fn(x) -> x + k
 
@@ -70,7 +76,9 @@ pub main() -> Unit
   let q = swap(p)
   let back = swap(q) == p
   @console.print("pair: {q.first} {q.second}, swapped back: {back}")
-  let tree = [5, 3, 8, 1, 4, 9].fold(initial: None, step: fn(t: Option[Tree], n: Int) -> Some(insert(t, n)))
+  let tree = [5, 3, 8, 1, 4, 9].fold(initial: None, step: fn(t: Option[Tree],
+      n: Int
+    ) -> Some(insert(t, n)))
   let walked = walk(tree)
   let line = walked.fold(initial: "", step: fn(acc, n) -> if acc == "" then "{n}" else "{acc} {n}")
   let size = walked.len
@@ -107,9 +115,13 @@ pub main() -> Unit
   let total = [boxed.amount, 4611686018427387904].sum()
   let held = Some(boxed).or_else(default: Boxed(amount: 0, note: "none"))
   @console.print("big: {boxed.amount} {total} {held.amount}")
-  let joined = ["a", "b", "c"].fold(initial: "", step: fn(acc, t) -> if acc == "" then t else "{acc}-{t}")
+  let joined = ["a", "b", "c"].fold(initial: "", step: fn(acc,
+      t
+    ) -> if acc == "" then t else "{acc}-{t}")
   let word = trim("  una ")
-  let words = [word, word].fold(initial: "", step: fn(acc, t) -> if acc == "" then t else "{acc} {t}")
+  let words = [word, word].fold(initial: "", step: fn(acc,
+      t
+    ) -> if acc == "" then t else "{acc} {t}")
   let kept = ["x", "yy", "zzz", ""].filter(keep: fn(t) -> t.len > 0).len
   @console.print("texts: {joined}, {words}, {kept}")
   let yes = positive(3)
