@@ -45,10 +45,14 @@ pub shopping_list(items: List[Item]) -> List[Text]
   missing(items).map(each: fn(i) -> i.name)
 
 --- How much of one measure the pantry holds.
-pub total(items: List[Item], measure: Measure) -> Int = items.fold(initial: 0, step: fn(sum, i) -> if i.measure == measure then sum + i.amount else sum)
+pub total(items: List[Item], measure: Measure) -> Int = items.fold(initial: 0, step: fn(sum,
+    i
+  ) -> if i.measure == measure then sum + i.amount else sum)
 
 --- The item called `name`, when the pantry has it.
-pub find(items: List[Item], name: Text) -> Option[Item] = items.first_where(keep: fn(i) -> i.name == name)
+pub find(items: List[Item],
+  name: Text
+) -> Option[Item] = items.first_where(keep: fn(i) -> i.name == name)
 
 --- The amount left of `name`, zero when the pantry has none.
 pub amount_of(items: List[Item], name: Text) -> Nat
@@ -74,11 +78,15 @@ example "using up takes from the amount"
   expect result.amount == 2
 
 example "the shopping list names what ran out"
-  do shopping_list([Item(name: "rice", amount: 0, measure: Grams), Item(name: "eggs", amount: 6, measure: Pieces), Item(name: "oil", amount: 0, measure: Milliliters)])
+  do shopping_list([Item(name: "rice", amount: 0, measure: Grams), Item(name: "eggs", amount: 6,
+        measure: Pieces
+      ), Item(name: "oil", amount: 0, measure: Milliliters)])
   expect result == ["rice", "oil"]
 
 example "totals count one measure only"
-  do total([Item(name: "rice", amount: 500, measure: Grams), Item(name: "flour", amount: 200, measure: Grams), Item(name: "eggs", amount: 6, measure: Pieces)], measure: Grams)
+  do total([Item(name: "rice", amount: 500, measure: Grams), Item(name: "flour", amount: 200,
+        measure: Grams
+      ), Item(name: "eggs", amount: 6, measure: Pieces)], measure: Grams)
   expect result == 700
 
 example "an item the pantry does not have amounts to zero"

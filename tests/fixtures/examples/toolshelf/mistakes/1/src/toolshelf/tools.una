@@ -109,10 +109,14 @@ example "a shelf that is offline stops the checkout"
 
 example "bringing a tool back frees a place"
   given @shelf = shelf_with(tools: [])
-  do bring_back(Checkout(tool: Tool(name: "saw", deposit: 15), member: Member(name: "Bo", holding: 3), due: 10))
+  do bring_back(Checkout(tool: Tool(name: "saw", deposit: 15), member: Member(name: "Bo",
+        holding: 3
+      ), due: 10))
   expect result.holding == 2
   expect performed @shelf.bring_back
 
 example "a tool returned three days after its due day is three days late"
-  do late_days(Checkout(tool: Tool(name: "saw", deposit: 15), member: Member(name: "Bo", holding: 1), due: 10), today: 13)
+  do late_days(Checkout(tool: Tool(name: "saw", deposit: 15), member: Member(name: "Bo",
+        holding: 1
+      ), due: 10), today: 13)
   expect result == 3

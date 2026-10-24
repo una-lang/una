@@ -55,7 +55,9 @@ example shortlinks.links "a slug is stored" ... ok
 pub kind Slug = Text where valid_slug(it)
 
 ...
-pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t, prefix: "-")
+pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t,
+  prefix: "-"
+)
 ```
 
 A predicate comes in two forms. The solver sees the body of a `reflect` predicate, so it can prove the fact from other facts. It sees only the name of an `opaque` one, so a value can get the fact only from a test at run time, or from the `ensures` of a capability operation. This package uses the test. `valid_slug` is opaque because a slug comes from a user: no proof can show that a typed string is valid, so the program has to look at it.
@@ -141,13 +143,13 @@ In `resolve`, call the store with the raw text, `@links.get(raw)`:
 
 ```text una="check ." after="mistakes/1"
 [U5001] Error: refinement `valid_slug(raw)` is refuted
-    ╭─[ src/shortlinks/links.una:54:27 ]
+    ╭─[ src/shortlinks/links.una:56:27 ]
     │
  10 │ pub kind Slug = Text where valid_slug(it)
     │                            ───────┬──────
     │                                   ╰──────── where clause
     │
- 54 │   let target = @links.get(raw)
+ 56 │   let target = @links.get(raw)
     │                           ─┬─
     │                            ╰─── refinement `valid_slug(raw)` is refuted
     │
@@ -173,9 +175,9 @@ In `shorten`, replace the two lines that parse the slug, `let slug = parse_slug(
 
 ```text una="check ." after="mistakes/2"
 [U7003] Error: module `shortlinks.links` uses `checked` 2 times, and `[escape_budget] checked_per_module` allows 1
-    ╭─[ src/shortlinks/links.una:41:14 ]
+    ╭─[ src/shortlinks/links.una:43:14 ]
     │
- 41 │   let slug = checked(raw, valid_slug(it)) else fail BadSlug
+ 43 │   let slug = checked(raw, valid_slug(it)) else fail BadSlug
     │              ───────────────────────┬──────────────────────
     │                                     ╰──────────────────────── module `shortlinks.links` uses `checked` 2 times, and `[escape_budget] checked_per_module` allows 1
     │

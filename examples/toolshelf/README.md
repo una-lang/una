@@ -229,11 +229,11 @@ In `main`, ask for the ladder for 30 days, `days: 30`:
 
 ```text una="check ." after="mistakes/3"
 [U5001] Error: refinement `30 in 1..28` is refuted
-    ╭─[ src/toolshelf/main.una:15:90 ]
+    ╭─[ src/toolshelf/main.una:18:11 ]
     │
- 15 │   let checkout = check_out(Member(name: "Ana", holding: 0), name: "ladder", today, days: 30) with @shelf = shelf_with(tools: catalog())
-    │                                                                                          ─┬
-    │                                                                                           ╰── refinement `30 in 1..28` is refuted
+ 18 │     days: 30
+    │           ─┬
+    │            ╰── refinement `30 in 1..28` is refuted
     │
     ├─[ src/toolshelf/tools.una:16:28 ]
     │

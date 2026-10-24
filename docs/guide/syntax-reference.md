@@ -512,7 +512,9 @@ module demo
 pub first_or[T](xs: List[T], default: T) -> T = xs.first().or_else(default)
 
 --- `Ord` allows comparisons; `max` is generic over `Ord` in edition 0.2.
-pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
+pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best,
+    x
+  ) -> max(best, b: x))
 
 --- `Eq` allows `==` and `!=`.
 pub same[T: Eq](a: T, b: T) -> Bool = a == b
@@ -2363,7 +2365,9 @@ handler fake_keys() for Keys
   op hmac(key_name, data) = fake_hash(1)
 
 example "a registered attendee is checked in and audited"
-  given @registrations = one_registration(Registration(name: "Ana", event: Event(name: "Meetup", remaining: 120)))
+  given @registrations = one_registration(Registration(name: "Ana", event: Event(name: "Meetup",
+        remaining: 120
+      )))
   given @audit = audit_log()
   given @keys = fake_keys()
   do check_in(parse_phone("11900000001"))
@@ -2396,7 +2400,9 @@ label(status: Availability) -> Text
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let events = [Event(name: "Meetup", remaining: clamp_seats(120)), Event(name: "Launch", remaining: 0)]
+  let events = [Event(name: "Meetup", remaining: clamp_seats(120)), Event(name: "Launch",
+      remaining: 0
+    )]
   for event in events
     let status = availability(event)
     @console.print("{describe(event)}: {label(status)}")
