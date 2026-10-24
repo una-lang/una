@@ -1,1 +1,1 @@
-- **Canonical soft wrapping** (#1113, ADR 0125, `spec/15 §2`). `una fmt` and `una check` now use a 100-Unicode-scalar soft target and wrap at legal argument and element separators.
+- **Canonical soft wrapping** (#1113, ADR 0125, `spec/15 §2`). `una fmt` and `una check` now use a 100-Unicode-scalar soft target and wrap at legal argument and element separators. Layout-only wrapping preserves obligation IDs; span-based normalization runs in O(n) time and space with one lexing pass and one span traversal.

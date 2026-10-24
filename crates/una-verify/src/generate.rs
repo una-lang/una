@@ -12,7 +12,7 @@ use una_core::{
     SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
-use una_syntax::{SourceDb, Span};
+use una_syntax::{Interner, SourceDb, Span, TokenKind, lex};
 
 use crate::run::Problem;
 use crate::smt::{
@@ -5238,7 +5238,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 forgotten.push(name);
             }
         }
-        let normalized: String = goal.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized = normalized_goal(&goal);
         let id = obligation_id(self.module, &self.declaration, kind, &normalized);
         self.obligations.push(Obligation {
             id,
@@ -6604,6 +6604,42 @@ fn prim_text(prim: Prim, args: &[String], whole: &str) -> String {
     }
 }
 
+/// Collapses goal whitespace while erasing the line break a canonical formatter places before
+/// a closing delimiter. Layout-only edits must not change an obligation's stable id (`spec/12 §8`).
+fn normalized_goal(goal: &str) -> String {
+    let mut sources = SourceDb::new();
+    let file = sources.add("<obligation-goal>", goal.as_bytes());
+    let source = sources.file(file);
+    let mut interner = Interner::new();
+    let lexed = lex(source, file, &mut interner);
+    let closers = lexed
+        .tokens
+        .iter()
+        .filter(|token| matches!(token.kind, TokenKind::RParen | TokenKind::RBracket))
+        .map(|token| token.span.start);
+    let text = source.text();
+    let mut layout_normalized = String::with_capacity(text.len());
+    let mut previous = 0;
+    for closer in closers {
+        let Some(prefix) = text.get(previous..closer) else {
+            continue;
+        };
+        let trimmed = prefix.trim_end_matches(char::is_whitespace);
+        let trailing = prefix.get(trimmed.len()..).unwrap_or_default();
+        if trailing.contains('\n') {
+            layout_normalized.push_str(trimmed);
+        } else {
+            layout_normalized.push_str(prefix);
+        }
+        previous = closer;
+    }
+    layout_normalized.push_str(text.get(previous..).unwrap_or_default());
+    layout_normalized
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `ob-` and the first 12 hex digits of SHA-256 over the module path, the declaration, the
 /// kind and the normalized goal (`spec/12 §8`).
 fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &str) -> String {
@@ -7394,6 +7430,81 @@ mod tests {
         for (formula, shown) in cases {
             assert_eq!(walker.show_formula(&formula), shown);
         }
+    }
+
+    #[test]
+    fn formatter_closing_delimiter_layout_does_not_change_obligation_identity() {
+        let inline = "Checkout(tool: Tool(name: \"saw\", deposit: 15), member: Member(name: \"Bo\", holding: 3), due: 10).member.holding > 0";
+        let wrapped = "Checkout(tool: Tool(name: \"saw\", deposit: 15), member: Member(name: \"Bo\", holding: 3\n  ), due: 10).member.holding > 0";
+        assert_eq!(normalized_goal(inline), normalized_goal(wrapped));
+        let inline_id = obligation_id(
+            "toolshelf.tools",
+            "toolshelf.tools.example \"bringing a tool back frees a place\"",
+            ObligationKind::Precondition,
+            &normalized_goal(inline),
+        );
+        assert_eq!(inline_id, "ob-436d76f3dbf7");
+        assert_eq!(
+            inline_id,
+            obligation_id(
+                "toolshelf.tools",
+                "toolshelf.tools.example \"bringing a tool back frees a place\"",
+                ObligationKind::Precondition,
+                &normalized_goal(wrapped),
+            )
+        );
+        assert_ne!(normalized_goal("f(\"x )\")"), normalized_goal("f(\"x)\")"));
+        assert_ne!(normalized_goal("f(\"x ]\")"), normalized_goal("f(\"x]\")"));
+        for unchanged in [
+            "f(\"a  b\")",
+            "f(\"a \\\"b\")",
+            "f(\"{value}  )\")",
+            r#"f("outer {g("inner ) ]")}  )")"#,
+            "f(value )",
+            "f(value) -- a  comment",
+        ] {
+            assert_eq!(
+                normalized_goal(unchanged),
+                unchanged.split_whitespace().collect::<Vec<_>>().join(" "),
+                "{unchanged}"
+            );
+        }
+        for size in [16, 256, 4096] {
+            let wrapped = (0..size)
+                .map(|index| format!("f(value,\n  {index})"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let inline = (0..size)
+                .map(|index| format!("f(value, {index})"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            assert_eq!(normalized_goal(&wrapped), inline);
+        }
+    }
+
+    #[test]
+    fn goal_normalization_scales_linearly_with_wrapped_delimiters() {
+        use std::time::Instant;
+
+        let per_byte = |size: usize| {
+            let unit = "f(value,\n  1\n) + ";
+            let goal = unit.repeat(size / unit.len());
+            let started = Instant::now();
+            let normalized = normalized_goal(std::hint::black_box(&goal));
+            std::hint::black_box(normalized);
+            started.elapsed().as_secs_f64() / goal.len() as f64
+        };
+        per_byte(1 << 15);
+        let small = (0..3)
+            .map(|_| per_byte(1 << 15))
+            .fold(f64::INFINITY, f64::min);
+        let large = (0..3)
+            .map(|_| per_byte(1 << 19))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            large <= small * 4.0,
+            "per-byte time grew from {small:e} to {large:e}"
+        );
     }
 
     #[test]
