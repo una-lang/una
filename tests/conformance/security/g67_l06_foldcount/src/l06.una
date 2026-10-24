@@ -1,7 +1,7 @@
 -- test: ADR 0067 adversarial check of #231, L06_foldcount: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
 -- expect: error U4001 at src/l06.una:7:67
--- expect: error U4001 at src/l06.una:9:41
+-- expect: error U4001 at src/l06.una:11:41
 module l06
 
 count_eq[T](xs: List[T], p: T) -> Int = xs.fold(initial: 0, step: fn(acc,

@@ -1,7 +1,7 @@
 -- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: a non-generic callee with an Int parameter
 -- spec: spec/07 §7
--- expect: error U4002 at src/sw.una:31:3
--- expect: error U4001 at src/sw.una:31:11
+-- expect: error U4002 at src/sw.una:33:3
+-- expect: error U4001 at src/sw.una:33:11
 module sw
 
 pub capability Log

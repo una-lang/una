@@ -1,8 +1,8 @@
 -- test: a call argument fed by a lambda checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 22:223
--- expect: error U3003 at 26:223
--- expect: error U3007 at 30:223
+-- expect: error U4001 at 25:33
+-- expect: error U3003 at 35:33
+-- expect: error U3007 at 45:33
 module sweep_flow_arg_lambda
 
 pub kind Pos = Int where it > 0

@@ -1,11 +1,11 @@
 -- test: an if and a when branch join fed by a field read checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 33:218
--- expect: error U5001 at 40:10
--- expect: error U5001 at 51:218
--- expect: error U5001 at 58:10
--- expect: error U5001 at 69:218
+-- expect: error U5001 at 36:19
+-- expect: error U5001 at 46:10
+-- expect: error U5001 at 66:19
 -- expect: error U5001 at 76:10
+-- expect: error U5001 at 96:19
+-- expect: error U5001 at 106:10
 module sweep_flow_join_field
 
 pub kind Pos = Int where it > 0

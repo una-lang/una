@@ -1,16 +1,16 @@
 -- test: the edition 0.1 twin of `generic_result_summary_leaks`: D-137 raises every position, so each leak is rejected at least where edition 0.2 rejects it; comparisons on `T` are equalities, since edition 0.1 has no `Ord` (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
--- expect: error U4001 at src/summaryleaks01.una:25:41
--- expect: error U4001 at src/summaryleaks01.una:28:71
--- expect: error U4001 at src/summaryleaks01.una:30:48
--- expect: error U4001 at src/summaryleaks01.una:32:78
--- expect: error U4001 at src/summaryleaks01.una:35:134
--- expect: error U4001 at src/summaryleaks01.una:37:51
--- expect: error U4001 at src/summaryleaks01.una:40:45
--- expect: error U4001 at src/summaryleaks01.una:45:3
--- expect: error U4001 at src/summaryleaks01.una:50:49
--- expect: error U4001 at src/summaryleaks01.una:53:56
--- expect: error U4001 at src/summaryleaks01.una:55:40
+-- expect: error U4001 at src/summaryleaks01.una:27:41
+-- expect: error U4001 at src/summaryleaks01.una:30:71
+-- expect: error U4001 at src/summaryleaks01.una:32:48
+-- expect: error U4001 at src/summaryleaks01.una:34:78
+-- expect: error U4001 at src/summaryleaks01.una:40:9
+-- expect: error U4001 at src/summaryleaks01.una:43:51
+-- expect: error U4001 at src/summaryleaks01.una:46:45
+-- expect: error U4001 at src/summaryleaks01.una:51:3
+-- expect: error U4001 at src/summaryleaks01.una:56:49
+-- expect: error U4001 at src/summaryleaks01.una:59:56
+-- expect: error U4001 at src/summaryleaks01.una:61:40
 module summaryleaks01
 
 pub kind Box[T]

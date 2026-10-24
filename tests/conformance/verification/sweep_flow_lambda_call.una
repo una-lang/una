@@ -1,8 +1,8 @@
 -- test: a lambda result fed by a call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 38:224
--- expect: error U5001 at 42:224
--- expect: error U5001 at 46:224
+-- expect: error U5001 at 41:34
+-- expect: error U5001 at 51:34
+-- expect: error U5001 at 61:34
 module sweep_flow_lambda_call
 
 pub kind Pos = Int where it > 0

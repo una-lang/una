@@ -1,6 +1,6 @@
 -- test: an operation argument fed by a generic call checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/12 §3
--- expect: error U5001 at 38:13
+-- expect: error U5001 at 40:13
 module sweep_flow_oparg_generic
 
 pub kind Pos = Int where it > 0

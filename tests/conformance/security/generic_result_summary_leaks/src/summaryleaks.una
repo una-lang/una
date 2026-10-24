@@ -1,13 +1,13 @@
 -- test: where a generic body's result does depend on values of a type parameter, its summary holds the parameter at that position, so a secret argument still reaches the result there: by a branch, by a filter over a comparison, by a recursive helper, through a returned function's result, an option's presence and a kind's field (ADR 0067, spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
--- expect: error U4001 at src/summaryleaks.una:22:41
--- expect: error U4001 at src/summaryleaks.una:27:48
+-- expect: error U4001 at src/summaryleaks.una:24:41
 -- expect: error U4001 at src/summaryleaks.una:29:48
--- expect: error U4001 at src/summaryleaks.una:32:138
--- expect: error U4001 at src/summaryleaks.una:34:51
--- expect: error U4001 at src/summaryleaks.una:37:49
--- expect: error U4001 at src/summaryleaks.una:47:49
--- expect: error U4001 at src/summaryleaks.una:50:60
+-- expect: error U4001 at src/summaryleaks.una:31:48
+-- expect: error U4001 at src/summaryleaks.una:37:9
+-- expect: error U4001 at src/summaryleaks.una:40:51
+-- expect: error U4001 at src/summaryleaks.una:43:49
+-- expect: error U4001 at src/summaryleaks.una:53:49
+-- expect: error U4001 at src/summaryleaks.una:56:60
 module summaryleaks
 
 pub kind Box[T]

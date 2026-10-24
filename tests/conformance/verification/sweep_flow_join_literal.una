@@ -1,7 +1,7 @@
 -- test: an if and a when branch join fed by a literal checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 21:218
--- expect: error U5001 at 28:10
+-- expect: error U5001 at 24:19
+-- expect: error U5001 at 34:10
 module sweep_flow_join_literal
 
 pub kind Pos = Int where it > 0

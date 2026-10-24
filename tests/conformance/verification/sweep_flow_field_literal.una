@@ -1,6 +1,6 @@
 -- test: a constructor field fed by a literal checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 21:211
+-- expect: error U5001 at 24:21
 module sweep_flow_field_literal
 
 pub kind Pos = Int where it > 0

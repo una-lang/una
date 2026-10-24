@@ -1,6 +1,6 @@
 -- test: a constructor field fed by a field read checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 21:211
+-- expect: error U4001 at 24:21
 module sweep_flow_field_field
 
 pub kind Pos = Int where it > 0

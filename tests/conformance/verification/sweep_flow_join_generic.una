@@ -1,11 +1,11 @@
 -- test: an if and a when branch join fed by a generic call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 35:218
--- expect: error U5001 at 42:10
--- expect: error U5001 at 44:218
--- expect: error U5001 at 51:10
--- expect: error U5001 at 53:218
--- expect: error U5001 at 60:10
+-- expect: error U5001 at 38:19
+-- expect: error U5001 at 48:10
+-- expect: error U5001 at 53:19
+-- expect: error U5001 at 63:10
+-- expect: error U5001 at 68:19
+-- expect: error U5001 at 78:10
 module sweep_flow_join_generic
 
 pub kind Pos = Int where it > 0

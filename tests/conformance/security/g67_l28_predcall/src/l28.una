@@ -1,6 +1,6 @@
 -- test: ADR 0067 adversarial check of #231, L28_predcall: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
--- expect: error U4001 at src/l28.una:8:66
+-- expect: error U4001 at src/l28.una:10:66
 module l28
 
 count_by[T](xs: List[T], p: fn(T) -> Bool) -> Int = xs.fold(initial: 0, step: fn(acc,

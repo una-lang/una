@@ -1,8 +1,8 @@
 -- test: an annotated let fed by a field read checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 22:16
--- expect: error U5001 at 32:27
--- expect: error U5001 at 42:27
+-- expect: error U5001 at 24:16
+-- expect: error U5001 at 38:27
+-- expect: error U5001 at 52:27
 module sweep_flow_let_field
 
 pub kind Pos = Int where it > 0

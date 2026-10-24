@@ -1,8 +1,8 @@
 -- test: a declared result fed by a field read checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 20:202
--- expect: error U5001 at 24:213
--- expect: error U5001 at 28:213
+-- expect: error U5001 at 23:12
+-- expect: error U5001 at 33:23
+-- expect: error U5001 at 43:23
 module sweep_flow_return_field
 
 pub kind Pos = Int where it > 0

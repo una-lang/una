@@ -1,8 +1,8 @@
 -- test: a constructor field fed by a lambda checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 23:225
--- expect: error U3003 at 27:225
--- expect: error U3007 at 31:225
+-- expect: error U4001 at 26:35
+-- expect: error U3003 at 36:35
+-- expect: error U3007 at 46:35
 module sweep_flow_field_lambda
 
 pub kind Pos = Int where it > 0

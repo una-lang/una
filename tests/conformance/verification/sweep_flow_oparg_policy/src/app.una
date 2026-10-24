@@ -1,6 +1,6 @@
 -- test: an operation argument fed by a policy call checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/12 §3
--- expect: error U5001 at src/app.una:38:13
+-- expect: error U5001 at src/app.una:40:13
 module app
 
 import release (Pos, lower, lower_pos, mask)

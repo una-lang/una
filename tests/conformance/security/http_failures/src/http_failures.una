@@ -1,22 +1,22 @@
 -- test: whether an operation of Http fails, and how, is labeled by every argument, since the server receives them all and may decide it, the values that Header declares internal and the body included, so every request's failure is internal (S-15, ADR 0085): attempt gives a Result labeled by them and if error pass or fail is U4002 when they are above public; H-1's program prints under that label (U4003); each with a control, and the Http that std.host exports is the same capability (#313) (spec/07 §7, spec/24 §5); a loop, together, every method and a generic helper are rejected alike, and a Files path decides a write's failure while its content does not, though a package that writes to a labeled path makes every Files failure internal (S-14)
 -- spec: spec/24 §5
--- expect: error U4001 at src/http_failures.una:127:3
--- expect: error U4001 at src/http_failures.una:134:3
--- expect: error U4001 at src/http_failures.una:140:3
--- expect: error U4001 at src/http_failures.una:146:3
--- expect: error U4001 at src/http_failures.una:156:14
--- expect: error U4001 at src/http_failures.una:166:3
--- expect: error U4001 at src/http_failures.una:175:13
+-- expect: error U4001 at src/http_failures.una:129:3
+-- expect: error U4001 at src/http_failures.una:136:3
+-- expect: error U4001 at src/http_failures.una:142:3
+-- expect: error U4001 at src/http_failures.una:148:3
+-- expect: error U4001 at src/http_failures.una:158:14
+-- expect: error U4001 at src/http_failures.una:168:3
+-- expect: error U4001 at src/http_failures.una:177:13
 -- expect: error U4001 at src/http_failures.una:47:3
--- expect: error U4001 at src/http_failures.una:59:3
--- expect: error U4001 at src/http_failures.una:65:3
--- expect: error U4001 at src/http_failures.una:72:3
--- expect: error U4001 at src/http_failures.una:79:3
--- expect: error U4002 at src/http_failures.una:103:5
--- expect: error U4002 at src/http_failures.una:112:5
--- expect: error U4002 at src/http_failures.una:119:5
--- expect: error U4002 at src/http_failures.una:87:5
--- expect: error U4002 at src/http_failures.una:95:5
+-- expect: error U4001 at src/http_failures.una:61:3
+-- expect: error U4001 at src/http_failures.una:67:3
+-- expect: error U4001 at src/http_failures.una:74:3
+-- expect: error U4001 at src/http_failures.una:81:3
+-- expect: error U4002 at src/http_failures.una:105:5
+-- expect: error U4002 at src/http_failures.una:114:5
+-- expect: error U4002 at src/http_failures.una:121:5
+-- expect: error U4002 at src/http_failures.una:89:5
+-- expect: error U4002 at src/http_failures.una:97:5
 -- expect: error U4003 at src/http_failures.una:39:14
 -- expect: error U4003 at src/http_failures.una:40:15
 module http_failures

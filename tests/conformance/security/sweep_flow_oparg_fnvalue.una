@@ -1,7 +1,7 @@
 -- test: an operation argument fed by a function value parameter checks every flow (label of a function parameter, sink); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/07 §7
--- expect: error U4001 at 39:13
--- expect: error U4003 at 49:13
+-- expect: error U4001 at 41:13
+-- expect: error U4003 at 55:13
 module sweep_flow_oparg_fnvalue
 
 pub kind Pos = Int where it > 0

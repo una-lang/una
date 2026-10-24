@@ -1,10 +1,10 @@
 -- test: a constructor field fed by a generic call checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 30:211
--- expect: error U3003 at 34:211
--- expect: error U3016 at 34:214
--- expect: error U3009 at 38:211
--- expect: error U3016 at 38:214
+-- expect: error U4001 at 33:21
+-- expect: error U3003 at 43:21
+-- expect: error U3016 at 43:24
+-- expect: error U3009 at 53:21
+-- expect: error U3016 at 53:24
 module sweep_flow_field_generic
 
 pub kind Pos = Int where it > 0

@@ -1,6 +1,6 @@
 -- test: a call argument fed by a literal checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 20:209
+-- expect: error U5001 at 23:19
 module sweep_flow_arg_literal
 
 pub kind Pos = Int where it > 0

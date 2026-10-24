@@ -1,8 +1,8 @@
 -- test: a lambda result fed by a generic call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 28:224
--- expect: error U5001 at 30:224
--- expect: error U5001 at 32:224
+-- expect: error U5001 at 31:34
+-- expect: error U5001 at 36:34
+-- expect: error U5001 at 41:34
 module sweep_flow_lambda_generic
 
 pub kind Pos = Int where it > 0

@@ -1,7 +1,7 @@
 -- test: an if and a when branch join fed by a policy call checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at src/app.una:21:218
--- expect: error U4001 at src/app.una:28:10
+-- expect: error U4001 at src/app.una:24:19
+-- expect: error U4001 at src/app.una:34:10
 module app
 
 import release (Pos, lower, lower_pos, mask)

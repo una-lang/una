@@ -1,6 +1,6 @@
 -- test: a call argument fed by a value derived from a policy call checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at src/app.una:20:209
+-- expect: error U4001 at src/app.una:23:19
 module app
 
 import release (Pos, lower, lower_pos, mask)

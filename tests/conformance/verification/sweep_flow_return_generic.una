@@ -1,8 +1,8 @@
 -- test: a declared result fed by a generic call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 22:202
--- expect: error U5001 at 24:213
--- expect: error U5001 at 26:213
+-- expect: error U5001 at 25:12
+-- expect: error U5001 at 30:23
+-- expect: error U5001 at 35:23
 module sweep_flow_return_generic
 
 pub kind Pos = Int where it > 0

@@ -1,15 +1,15 @@
 -- test: an if and a when branch join fed by a function value parameter checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 33:218
--- expect: error U4001 at 40:10
--- expect: error U3003 at 51:218
--- expect: error U3006 at 51:228
--- expect: error U3006 at 56:19
--- expect: error U3003 at 58:10
--- expect: error U3009 at 69:218
--- expect: error U3006 at 69:228
+-- expect: error U4001 at 36:19
+-- expect: error U4001 at 46:10
+-- expect: error U3003 at 66:19
+-- expect: error U3006 at 66:29
 -- expect: error U3006 at 74:19
--- expect: error U3009 at 76:10
+-- expect: error U3003 at 76:10
+-- expect: error U3009 at 96:19
+-- expect: error U3006 at 96:29
+-- expect: error U3006 at 104:19
+-- expect: error U3009 at 106:10
 module sweep_flow_join_fnvalue
 
 pub kind Pos = Int where it > 0

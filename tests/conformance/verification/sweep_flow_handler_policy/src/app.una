@@ -1,6 +1,6 @@
 -- test: a handler operation result fed by a policy call checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at src/app.una:22:14
+-- expect: error U5001 at src/app.una:25:14
 module app
 
 import release (Pos, lower, lower_pos, mask)

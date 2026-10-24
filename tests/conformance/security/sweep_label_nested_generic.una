@@ -2,10 +2,10 @@
 -- spec: spec/07 §7
 -- expect: error U4001 at 29:60
 -- expect: error U4001 at 31:60
--- expect: error U4001 at 41:62
 -- expect: error U4001 at 43:62
--- expect: error U4001 at 53:41
--- expect: error U4001 at 55:41
+-- expect: error U4001 at 47:62
+-- expect: error U4001 at 59:41
+-- expect: error U4001 at 61:41
 module sweep_label_nested_generic
 
 kind Acct

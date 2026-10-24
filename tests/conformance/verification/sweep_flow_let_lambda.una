@@ -1,7 +1,7 @@
 -- test: an annotated let fed by a lambda checks every flow (function result refinement, function parameter refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 21:41
--- expect: error U5001 at 31:27
+-- expect: error U5001 at 23:41
+-- expect: error U5001 at 37:27
 module sweep_flow_let_lambda
 
 pub kind Pos = Int where it > 0

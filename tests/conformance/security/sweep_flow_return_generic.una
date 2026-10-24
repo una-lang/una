@@ -1,10 +1,10 @@
 -- test: a declared result fed by a generic call checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 24:202
--- expect: error U3003 at 28:213
--- expect: error U3016 at 28:216
--- expect: error U3009 at 32:213
--- expect: error U3016 at 32:216
+-- expect: error U4001 at 27:12
+-- expect: error U3003 at 37:23
+-- expect: error U3016 at 37:26
+-- expect: error U3009 at 47:23
+-- expect: error U3016 at 47:26
 module sweep_flow_return_generic
 
 pub kind Pos = Int where it > 0

@@ -1,8 +1,8 @@
 -- test: a constructor field fed by a call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 41:211
--- expect: error U5001 at 45:211
--- expect: error U5001 at 49:211
+-- expect: error U5001 at 44:21
+-- expect: error U5001 at 54:21
+-- expect: error U5001 at 64:21
 module sweep_flow_field_call
 
 pub kind Pos = Int where it > 0

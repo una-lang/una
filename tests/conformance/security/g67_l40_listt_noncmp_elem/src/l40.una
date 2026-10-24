@@ -1,7 +1,7 @@
 -- test: ADR 0067 adversarial check of #231, L40_listT_noncmp_elem: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
--- expect: error U4001 at src/l40.una:9:41
--- expect: error U4001 at src/l40.una:9:82
+-- expect: error U4001 at src/l40.una:11:41
+-- expect: error U4001 at src/l40.una:11:82
 module l40
 
 doubler[T](xs: List[T], p: T) -> List[List[T]] = xs.map(each: fn(x) -> if x == p then [x] else [x,

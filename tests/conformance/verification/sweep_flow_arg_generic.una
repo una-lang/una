@@ -1,8 +1,8 @@
 -- test: a call argument fed by a generic call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 28:209
--- expect: error U5001 at 30:209
--- expect: error U5001 at 32:209
+-- expect: error U5001 at 31:19
+-- expect: error U5001 at 36:19
+-- expect: error U5001 at 41:19
 module sweep_flow_arg_generic
 
 pub kind Pos = Int where it > 0

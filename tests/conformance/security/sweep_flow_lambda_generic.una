@@ -1,10 +1,10 @@
 -- test: a lambda result fed by a generic call checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 28:224
--- expect: error U3003 at 32:224
--- expect: error U3016 at 32:227
--- expect: error U3009 at 36:224
--- expect: error U3016 at 36:227
+-- expect: error U4001 at 31:34
+-- expect: error U3003 at 41:34
+-- expect: error U3016 at 41:37
+-- expect: error U3009 at 51:34
+-- expect: error U3016 at 51:37
 module sweep_flow_lambda_generic
 
 pub kind Pos = Int where it > 0

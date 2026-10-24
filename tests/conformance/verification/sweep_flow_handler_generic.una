@@ -1,8 +1,8 @@
 -- test: a handler operation result fed by a generic call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 32:14
 -- expect: error U5001 at 35:14
--- expect: error U5001 at 38:14
+-- expect: error U5001 at 41:14
+-- expect: error U5001 at 47:14
 module sweep_flow_handler_generic
 
 pub kind Pos = Int where it > 0

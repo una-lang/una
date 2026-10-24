@@ -1,20 +1,20 @@
 -- test: nested kinds and generics holding a secret: prelude results carry the field labels of their element and argument types (label sweep); the structural functions, whose results the field labels no longer reach unless they read them, are accepted (ADR 0051)
 -- spec: spec/07 §7
 -- expect: error U4001 at 34:70
--- expect: error U4001 at 54:87
--- expect: error U4001 at 58:57
+-- expect: error U4001 at 56:87
 -- expect: error U4001 at 60:57
 -- expect: error U4001 at 62:57
--- expect: error U4001 at 68:72
--- expect: error U4001 at 88:91
--- expect: error U4001 at 92:59
--- expect: error U4001 at 94:59
+-- expect: error U4001 at 64:57
+-- expect: error U4001 at 70:72
+-- expect: error U4001 at 92:91
 -- expect: error U4001 at 96:59
--- expect: error U4001 at 102:51
--- expect: error U4001 at 122:53
--- expect: error U4001 at 126:38
--- expect: error U4001 at 128:38
--- expect: error U4001 at 130:38
+-- expect: error U4001 at 98:59
+-- expect: error U4001 at 100:59
+-- expect: error U4001 at 106:51
+-- expect: error U4001 at 130:53
+-- expect: error U4001 at 136:38
+-- expect: error U4001 at 138:38
+-- expect: error U4001 at 140:38
 module sweep_label_nested_prelude
 
 kind Acct

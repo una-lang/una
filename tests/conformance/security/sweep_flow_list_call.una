@@ -1,6 +1,6 @@
 -- test: a list element fed by a call checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 24:23
+-- expect: error U4001 at 26:23
 module sweep_flow_list_call
 
 pub kind Pos = Int where it > 0

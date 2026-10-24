@@ -1,7 +1,7 @@
 -- test: an if and a when branch join fed by a call checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 25:218
--- expect: error U4001 at 32:10
+-- expect: error U4001 at 28:19
+-- expect: error U4001 at 38:10
 module sweep_flow_join_call
 
 pub kind Pos = Int where it > 0
