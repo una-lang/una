@@ -156,16 +156,22 @@ pub main() -> Unit
   fails FileError
 =
   let base = "http://127.0.0.1:{port}"
-  let a = attempt @http.get("{{base}}/ok", headers: [Header(name: "X-A", value: "1")], key_name: Some("api"))
+  let a = attempt @http.get("{{base}}/ok", headers: [Header(name: "X-A", value: "1")],
+    key_name: Some("api")
+  )
   let b = attempt @http.post("{{base}}/echo", headers: [], body: "hello", key_name: None)
   let c = attempt @http.get("http://other.invalid/", headers: [], key_name: None)
   let d = attempt @http.get("{{base}}/big", headers: [], key_name: None)
   let e = attempt @http.get("{{base}}/slow", headers: [], key_name: None)
   let f = attempt @http.get("not a url", headers: [], key_name: None)
-  let g = attempt @http.get("{{base}}/ok", headers: [Header(name: "Host", value: "x")], key_name: None)
+  let g = attempt @http.get("{{base}}/ok", headers: [Header(name: "Host", value: "x")],
+    key_name: None
+  )
   let h = attempt @http.get("{{base}}/ok", headers: [], key_name: Some("missing"))
   let j = attempt @http.get("{{base}}/nothing", headers: [], key_name: None)
-  @files.write("out.txt", content: "{{shown(a)}}|{{shown(b)}}|{{shown(c)}}|{{shown(d)}}|{{shown(e)}}|{{shown(f)}}|{{shown(g)}}|{{shown(h)}}|{{shown(j)}}")
+  @files.write("out.txt",
+    content: "{{shown(a)}}|{{shown(b)}}|{{shown(c)}}|{{shown(d)}}|{{shown(e)}}|{{shown(f)}}|{{shown(g)}}|{{shown(h)}}|{{shown(j)}}"
+  )
     if error pass
 "#
     )
@@ -258,7 +264,9 @@ fn traces_redact_labeled_prelude_fields_and_agree_in_both_engines() {
 pub main() -> Unit
   uses @http: Http[get]
 =
-  let r = attempt @http.get("http://127.0.0.1:{port}/cookie", headers: [Header(name: "Cookie", value: "session-abc")], key_name: None)
+  let r = attempt @http.get("http://127.0.0.1:{port}/cookie", headers: [Header(name: "Cookie",
+        value: "session-abc"
+      )], key_name: None)
   unit
 "#
     );
@@ -310,7 +318,9 @@ pub main() -> Unit
   @console.print("before")
   let value = @env.get("UNA_TEST_HEADER")
     if none use "fine"
-  let r = attempt @http.get("http://127.0.0.1:{port}/ok", headers: [Header(name: "X-A", value: value)], key_name: None)
+  let r = attempt @http.get("http://127.0.0.1:{port}/ok", headers: [Header(name: "X-A",
+        value: value
+      )], key_name: None)
   @console.print("after")
 "#
     );
@@ -386,7 +396,20 @@ pub main() -> Unit
 fn a_header_value_abort_in_a_task_ends_the_run_in_both_engines() {
     // Under `together` (`spec/19`): a bad header value's abort ends the run with U6004, as U6003 in a
     // task does, in both engines.
-    let program = "module web\n\npub main() -> Unit\n  uses @http: Http[get]\n  uses @console: Console[print]\n=\n  @console.print(\"before\")\n  together\n    let a = attempt @http.get(\"http://127.0.0.1:9/\", headers: [Header(name: \"X-A\", value: \"a\\nb\")], key_name: None)\n    let b = attempt @http.get(\"http://127.0.0.1:9/\", headers: [], key_name: None)\n  @console.print(\"after\")\n";
+    let program = r#"module web
+
+pub main() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  @console.print("before")
+  together
+    let a = attempt @http.get("http://127.0.0.1:9/", headers: [Header(name: "X-A", value: "a\nb")],
+      key_name: None
+    )
+    let b = attempt @http.get("http://127.0.0.1:9/", headers: [], key_name: None)
+  @console.print("after")
+"#;
     let dir = package(
         "tasked",
         "\n[run]\nentry = \"web\"\ngrants = [\"console\", \"http:http://127.0.0.1:9\"]\n",
