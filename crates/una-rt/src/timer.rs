@@ -92,6 +92,9 @@ struct Inner {
     /// Whether the thread is to look at the wheel before its target: a timer earlier than the
     /// target was armed, the target's timer was cancelled, or the timers closed.
     look: bool,
+    /// The timers that an arming found due before the thread reached them, kept for its
+    /// capacity, [`TIMER_CAPACITY`] at first, so that arming allocates nothing.
+    late: Vec<(TimerId, Arc<AtomicUsize>)>,
     /// The passes the thread made after its first, in tests: each is a wake.
     #[cfg(test)]
     wakes: u64,
@@ -145,6 +148,7 @@ impl Timers {
                     closed: false,
                     target: None,
                     look: false,
+                    late: Vec::with_capacity(TIMER_CAPACITY),
                     #[cfg(test)]
                     wakes: 0,
                     #[cfg(test)]
@@ -201,11 +205,12 @@ impl Timers {
                 // the cascade wakes it causes, follow from its own moment and deadline. A slot
                 // due by now is one the thread has not reached yet: its timers fire here.
                 let now = self.shared.source.now();
-                let mut late = Vec::new();
+                let mut late = std::mem::take(&mut inner.late);
                 inner.wheel.advance_unordered(now, &mut late);
-                for (_, due) in late {
+                for (_, due) in late.drain(..) {
                     due.store(0, Ordering::SeqCst);
                 }
+                inner.late = late;
                 let id = inner.wheel.arm(at, Arc::clone(flag)).ok();
                 // The thread wakes only when the new timer comes before the moment it sleeps
                 // until.
@@ -565,6 +570,10 @@ mod tests {
             timers.settle(start);
             assert_eq!(timers.held(), (0, false), "after {history} cancels");
             let before = timers.wakes();
+            // The window arms its live timers in increasing order of deadline, the same in
+            // both histories, so each arm meets the same target in both: whether an arm wakes
+            // the thread depends on the timers armed before it in the window, and kept in this
+            // order the wake count compared depends only on the window's own live timers.
             let (a, b, c) = (flag(), flag(), flag());
             timers.arm(start + MS, &a).unwrap();
             timers.arm(start + 2 * MS + 7, &b).unwrap();

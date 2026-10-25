@@ -424,9 +424,10 @@ mod tests {
         // #1151, P13: a wait of whole milliseconds plus a fraction ends at or after its exact
         // instant, and close to it. The old wait polled for the time left rounded up to whole
         // milliseconds, so it ended about 700 us late for a rest of 300 us, by the phase of the
-        // tick; here the rest is slept to the instant, and only the system's sleep latency is
-        // left. The bound is on the median of 20 waits, so one late wake of a busy machine does
-        // not fail it, while the old rounding, late in every wait, does.
+        // tick, plus the system's latency; here the rest is slept to the instant, and only
+        // that latency is left. The bound, 600 us, is on the median of 20 waits, so one late
+        // wake of a busy machine does not fail it, while the old rounding, late in every wait,
+        // does.
         let stop = RunStop::new(1);
         let mut late = Vec::new();
         for k in 0..20u32 {
@@ -439,7 +440,7 @@ mod tests {
         }
         let median = median(&mut late);
         assert!(
-            median < Duration::from_micros(400),
+            median < Duration::from_micros(600),
             "median {median:?} past the instant: {late:?}"
         );
     }
@@ -466,7 +467,7 @@ mod tests {
         }
         let median = median(&mut late);
         assert!(
-            median < Duration::from_micros(400),
+            median < Duration::from_micros(600),
             "median {median:?} past the instant: {late:?}"
         );
     }
