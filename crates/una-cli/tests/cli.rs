@@ -553,6 +553,72 @@ fn fmt_refuses_a_link_that_leads_outside_the_package() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Writes the toolchain may make with a call that follows a link at the name it writes, each
+/// with its reason: `(file under crates/, pattern)`. Every other write goes through a fresh
+/// exclusive temporary file (`create_new`) and a rename, with the in-package check (#1160).
+const FOLLOWING_WRITES_ALLOWED: &[(&str, &str)] = &[];
+
+/// The calls that create or truncate a file through a link planted at its name.
+const FOLLOWING_WRITES: [&str; 4] = [
+    "std::fs::write(",
+    "fs::write(",
+    "File::create(",
+    ".create(true)",
+];
+
+/// #1160: no non-test source of the crates that write into a package (`una-cli`, and
+/// `una-verify` for the proof cache) writes a file through a call that follows a link at its
+/// name, outside [`FOLLOWING_WRITES_ALLOWED`]. A file's test module, from its first
+/// `#[cfg(test)]` line on, is not scanned.
+#[test]
+fn no_source_writes_a_file_through_a_planted_link_1160() {
+    fn sources(dir: &std::path::Path, found: &mut Vec<PathBuf>) {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                sources(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for name in ["una-cli", "una-verify", "una-codegen"] {
+        let src = crates.join(name).join("src");
+        if src.is_dir() {
+            sources(&src, &mut files);
+        }
+    }
+    assert!(files.len() > 10, "{files:?}");
+    let mut offenders = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let relative = file
+            .strip_prefix(&crates)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                break;
+            }
+            for pattern in FOLLOWING_WRITES {
+                if line.contains(pattern)
+                    && !FOLLOWING_WRITES_ALLOWED.contains(&(relative.as_str(), pattern))
+                {
+                    offenders.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert_eq!(offenders, Vec::<String>::new());
+}
+
 #[test]
 fn check_reports_t7001_with_a_mechanical_edit() {
     let output = una(&[
