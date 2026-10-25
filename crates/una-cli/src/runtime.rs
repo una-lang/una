@@ -409,6 +409,14 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
+    // ADR 0116 amendment, P8 (#1148): the client's TLS settings are built before `main` when
+    // the grants include `Http`, as a native executable builds them, never at a first request.
+    if grants
+        .iter()
+        .any(|grant| matches!(grant, una_interp::Grant::Http(_)))
+    {
+        una_http::client::prepare();
+    }
     let host = Host {
         grants,
         keys,

@@ -1181,9 +1181,12 @@ enum Waited<T> {
 /// the job returns, or until a cancellation of one of `entries` wakes it, whichever comes
 /// first ([`crate::interrupt`]). `None` when the cancellation came first: the job may still
 /// run, or complete, on its helper, an effect in doubt, and its result is then dropped there.
-/// `also`, when given, is called on that interruption too, as the request's wait at a limit is
-/// abandoned so that it leaves its queues unsent (ADR 0117 rule 8). Outside a task's coroutine
-/// it runs `job` inline, as [`blocking`] does.
+/// `also`, when given, is called on that interruption too, as the request is abandoned: a wait
+/// at a limit leaves its queues unsent (ADR 0117 rule 8), and an exchange in progress stops at
+/// its next I/O step, which bounds what the job does after the task left it (ADR 0116 P9,
+/// #1148). A deadline's cut of a `tasks` statement wakes no such wait
+/// ([`crate::started::cancel_tasks`]). Outside a task's coroutine it runs `job` inline, as
+/// [`blocking`] does.
 pub(crate) fn blocking_interruptible<T: Send + 'static>(
     pool: Pool,
     entries: &[crate::runtime::Cancel],

@@ -1893,6 +1893,17 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         concurrency: options.concurrency,
         sched: None,
     };
+    // ADR 0116 amendment, P8 (#1148): a run whose grants include `Http` builds the client's TLS
+    // settings here, before `main`, with the other state it starts up front. Built at the run's
+    // first `https` request, they would be state that earlier code left, saving a later request
+    // the time of building them. A run without such a grant never builds them.
+    if state
+        .grants
+        .iter()
+        .any(|grant| matches!(grant, Grant::Http(_)))
+    {
+        una_http::client::prepare();
+    }
     // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
     // any code of the program runs; each thread the program runs on writes it too.
     let floats = meta.float_environment;
@@ -2935,6 +2946,40 @@ mod tests {
             *seen.lock().unwrap(),
             [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]
         );
+    }
+
+    #[test]
+    #[ignore = "run by `the_tls_settings_exist_before_main_exactly_when_a_grant_includes_http`, in a process of its own"]
+    fn the_tls_settings_scenario() {
+        // A fresh process: nothing has built the TLS settings. A run without an `Http` grant
+        // builds none, before or during `main`; one with such a grant has them before `main`
+        // runs, before any request.
+        start(&[], r#"{"grants":[],"uses":[]}"#, || {
+            eprintln!("{STEP}: without http {}", una_http::client::tls_ready());
+            0
+        });
+        start(
+            &strings(&["--grant", "http:https://example.com"]),
+            r#"{"grants":[],"uses":[]}"#,
+            || {
+                eprintln!("{STEP}: with http {}", una_http::client::tls_ready());
+                0
+            },
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn the_tls_settings_exist_before_main_exactly_when_a_grant_includes_http() {
+        // #1148, ADR 0116 amendment P8: the client's TLS settings are state a run starts up
+        // front when its grants include `Http`, so no request after earlier `secret` code finds
+        // them built while another builds them. Before the fix they were built at the first
+        // `https` request, and `main` found none in either run.
+        let (code, stderr) = scenario("the_tls_settings_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 2, "{stderr}");
+        assert!(stderr.contains("without http false"), "{stderr}");
+        assert!(stderr.contains("with http true"), "{stderr}");
     }
 
     #[test]
