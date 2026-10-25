@@ -2421,7 +2421,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_program_with_tasks_starts_every_thread_before_main() {
         // #1145, ADR 0116 amendment P8: when the description says the program holds a task
         // construct or a `for ever`, the scheduler exists before `main` runs, with every worker
@@ -2449,7 +2449,10 @@ mod tests {
             });
             assert_eq!(status, 0);
         }
-        assert_eq!(*seen.lock().unwrap(), [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]
+        );
     }
 
     #[test]

@@ -750,6 +750,7 @@ fn current_worker() -> usize {
 /// about twice as long as under an even spread. The S1 design note records that the slot
 /// measures this slowdown; a placement by a hash of the task's path, still structural, is the
 /// candidate if it is large, through a later amendment.
+fn placement(parent: usize, part: usize, count: usize) -> usize {
     let count = count.max(1);
     // Each term is reduced first, so the sum never overflows.
     (parent % count + part % count) % count
@@ -1045,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers() {
         // #1145, `spec/27 §1` rule 2. A run-wide round-robin counter made a construct's workers
         // depend on how many parts earlier code had forked, so a `secret` number of earlier
@@ -1065,14 +1066,18 @@ mod tests {
         for earlier in 0..8 {
             let warm = construct(&sched, earlier, earlier % 3);
             assert_eq!(warm.len(), earlier);
-            assert_eq!(construct(&sched, 4, 5), expected, "after {earlier} earlier parts");
+            assert_eq!(
+                construct(&sched, 4, 5),
+                expected,
+                "after {earlier} earlier parts"
+            );
         }
         // Outside a task, the calling code counts as worker 0.
         assert_eq!(current_worker(), 0);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn start_all_starts_every_worker_and_both_pools_before_any_task() {
         // #1145, ADR 0116 amendment P8: before `main`, a program with a task construct has every
         // worker's thread and both helper pools at full size, so no construct starts a thread.
@@ -1104,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size() {
         // #1145: before `main` the pool holds `POOL_STACKS` stacks of one size, so a block maps
         // a stack only while more than `POOL_STACKS` tasks are live at once, which its own

@@ -210,12 +210,20 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
         .collect();
     eprintln!("deadline {deadline} ms; from /mark to /hold, ms, keys alternating: {measured:?}");
     // Key 0 against key 1, run by run, and every run the same.
-    assert_eq!(outcomes[0], outcomes[1], "key 0 and key 1 differ; deadline {deadline} ms");
+    assert_eq!(
+        outcomes[0], outcomes[1],
+        "key 0 and key 1 differ; deadline {deadline} ms"
+    );
     assert!(
-        outcomes[0].iter().all(|&timed_out| timed_out == outcomes[0][0]),
+        outcomes[0]
+            .iter()
+            .all(|&timed_out| timed_out == outcomes[0][0]),
         "the runs of one key differ: {outcomes:?}; deadline {deadline} ms"
     );
-    assert!(!outcomes[0][0], "every run timed out; deadline {deadline} ms");
+    assert!(
+        !outcomes[0][0],
+        "every run timed out; deadline {deadline} ms"
+    );
     for dir in dirs.iter().chain([&calibration]) {
         let _ = std::fs::remove_dir_all(dir);
     }
