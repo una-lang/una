@@ -207,11 +207,15 @@ pub(crate) fn build_command(
             )
         }
     };
-    if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    let object_path = output.with_extension("o");
-    std::fs::write(&object_path, object)?;
+    // #1160: the object and the executable are written only inside the package, or inside the
+    // directory `--out` names, never through a link planted there that leads elsewhere.
+    let (output, object_path) = match placed(&root, options.out.is_some(), &output, &object) {
+        Ok(placed) => placed,
+        Err(error) => {
+            writeln!(stderr, "error: cannot write `{shown}`: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
     let linked = link(&object_path, &output, options.environment);
     let _ = std::fs::remove_file(&object_path);
     if let Err(message) = linked {
@@ -247,6 +251,44 @@ fn print_json(
         )?,
     }
     stdout.flush()
+}
+
+/// Creates the directory of `output` and writes the object next to it, then returns the paths
+/// the linker is given: the executable and the object (#1160).
+///
+/// The default output, `target/una/<name>`, is placed inside the package root `root`: each
+/// level of `target/una` is created one at a time, and a link among them that leads outside the
+/// package is refused. An `--out` path (`explicit`) is placed inside the directory it names,
+/// which is created as the user asked. The object is written through
+/// [`una_diag::safe_write::write_atomically`], and the executable's path is checked by
+/// [`una_diag::safe_write::checked_output`] before the linker starts: it must not be a link.
+fn placed(
+    root: &Path,
+    explicit: bool,
+    output: &Path,
+    object: &[u8],
+) -> io::Result<(PathBuf, PathBuf)> {
+    let write_root = if explicit {
+        // The directory the user named on the command line, not one the package chose.
+        let directory = match output.parent().filter(|p| !p.as_os_str().is_empty()) {
+            Some(parent) => parent.to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        std::fs::create_dir_all(&directory)?;
+        directory
+    } else {
+        let root = if root.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            root
+        };
+        una_diag::safe_write::create_dir_inside(root, &root.join("target").join("una"))?;
+        root.to_path_buf()
+    };
+    let output = una_diag::safe_write::checked_output(&write_root, output)?;
+    let object_path = output.with_extension("o");
+    una_diag::safe_write::write_atomically(&write_root, &object_path, object, true)?;
+    Ok((output, object_path))
 }
 
 /// The directory of `una.toml`, or of the file of a single-file package.

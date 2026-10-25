@@ -475,6 +475,48 @@ fn una_build_writes_the_executable_and_prints_una_build_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn una_build_never_writes_through_a_link_leading_outside_the_package_1160() {
+    // #1160: a repository can commit `target/una/<name>.o`, `target/una/<name>` or `target`
+    // itself as a link to somewhere outside it. `una build` refuses each before it writes,
+    // and before the linker starts, and the file the link leads to stays as it was.
+    let dir = package(
+        "planted",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let outside = dir.with_extension("outside");
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim");
+    std::fs::write(&victim, "untouched").unwrap();
+    let refused = |expected: &str| {
+        let output = una(&dir, &["build"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+    };
+    // The object's name.
+    std::fs::create_dir_all(dir.join("target/una")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted.o")).unwrap();
+    refused("outside the package");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted")).is_err());
+    // The executable's name, which the linker would write.
+    std::fs::remove_file(dir.join("target/una/planted.o")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted")).unwrap();
+    refused("is a symbolic link");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted.o")).is_err());
+    // `target` itself: nothing is created outside.
+    std::fs::remove_dir_all(dir.join("target")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("target")).unwrap();
+    refused("outside the package");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn una_build_finds_the_runtime_through_a_symlinked_una() {
     // HOST-5 (#185): `una` installed as a symlink, as a package manager links it into `bin/`,

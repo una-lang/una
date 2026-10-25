@@ -16,6 +16,9 @@ use crate::solver::{Answer, Status};
 /// A proof cache: its directory, and the secret key that authenticates its entries.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProofCache {
+    /// The package directory: no entry is written outside it, through a link or otherwise
+    /// (#1160).
+    pub root: PathBuf,
     /// The directory, `.una/cache/proofs` of the package.
     pub dir: PathBuf,
     /// The user's secret key (ADR 0064).
@@ -26,6 +29,7 @@ impl std::fmt::Debug for ProofCache {
     // The key never appears in output.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProofCache")
+            .field("root", &self.root)
             .field("dir", &self.dir)
             .finish_non_exhaustive()
     }
@@ -64,9 +68,13 @@ pub(crate) fn get(cache: &ProofCache, key: &str) -> Option<Answer> {
     matches.then_some(entry.answer)
 }
 
-/// Stores an answer with its tag, through a temporary file and a rename so that parallel runs
-/// never read a partial entry. An `unknown` from the wall-clock guard depends on time, and one
-/// from a cancelled run (ADR 0063 rule 4) answers nothing: neither is stored.
+/// Stores an answer with its tag, through a fresh temporary file and a rename so that parallel
+/// runs never read a partial entry. An `unknown` from the wall-clock guard depends on time, and
+/// one from a cancelled run (ADR 0063 rule 4) answers nothing: neither is stored.
+///
+/// The directory and the entry are written only inside the package root (#1160): when `.una`,
+/// `.una/cache` or `.una/cache/proofs` is a link that leads outside it, or the entry's name is
+/// one, nothing is stored and the query is solved again next time.
 pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     if answer.status == Status::Unknown
         && matches!(answer.reason.as_deref(), Some("wallclock" | "cancelled"))
@@ -82,15 +90,16 @@ pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     }) else {
         return;
     };
-    if std::fs::create_dir_all(&cache.dir).is_err() {
+    let Ok(dir) = una_diag::safe_write::create_dir_inside(&cache.root, &cache.dir) else {
         return;
-    }
-    let temporary = cache.dir.join(format!(".{key}.{}.tmp", std::process::id()));
-    if std::fs::write(&temporary, text).is_ok()
-        && std::fs::rename(&temporary, entry(&cache.dir, key)).is_err()
-    {
-        let _ = std::fs::remove_file(&temporary);
-    }
+    };
+    // A failed store only means the query is solved again.
+    let _ = una_diag::safe_write::write_atomically(
+        &cache.root,
+        &entry(&dir, key),
+        text.as_bytes(),
+        true,
+    );
 }
 
 /// The tag of an entry: the hex HMAC-SHA-256 under `secret` of the entry's key and its answer
@@ -160,7 +169,9 @@ mod tests {
     }
 
     fn cache(dir: &Path, key: &[u8]) -> ProofCache {
+        // The cache's directory is made under the system's temporary directory, its root.
         ProofCache {
+            root: dir.parent().unwrap().to_path_buf(),
             dir: dir.to_path_buf(),
             key: key.to_vec(),
         }
@@ -197,6 +208,52 @@ mod tests {
         std::fs::write(&file, serde_json::to_string(&forged).unwrap()).unwrap();
         assert_eq!(get(&mine, &query), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_entry_is_stored_through_a_link_leading_outside_the_package_1160() {
+        // #1160: a repository can commit `.una`, `.una/cache` or `.una/cache/proofs` as a link
+        // to a directory outside it, or an entry's name as a link to a file there. The cache
+        // then stores nothing, and writes nothing outside the package.
+        let base = std::env::temp_dir().join(format!("una-cache-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let package = base.join("package");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&package).unwrap();
+        let mine = ProofCache {
+            root: package.clone(),
+            dir: package.join(".una").join("cache").join("proofs"),
+            key: b"0123456789abcdef0123456789abcdef".to_vec(),
+        };
+        let query = key("lock", "(check-sat)");
+        for planted in [".una", ".una/cache", ".una/cache/proofs"] {
+            // `remove_dir_all` removes a link itself, never what it leads to.
+            let _ = std::fs::remove_dir_all(package.join(".una"));
+            let _ = std::fs::remove_dir_all(&outside);
+            std::fs::create_dir_all(&outside).unwrap();
+            if let Some(parent) = Path::new(planted).parent() {
+                std::fs::create_dir_all(package.join(parent)).unwrap();
+            }
+            std::os::unix::fs::symlink(&outside, package.join(planted)).unwrap();
+            put(&mine, &query, &proven());
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "{planted}");
+            assert_eq!(get(&mine, &query), None, "{planted}");
+        }
+        // An entry's name planted as a link to a file outside: that file stays as it was.
+        let _ = std::fs::remove_dir_all(package.join(".una"));
+        std::fs::create_dir_all(&mine.dir).unwrap();
+        let victim = outside.join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, entry(&mine.dir, &query)).unwrap();
+        put(&mine, &query, &proven());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        // Without links, the entry is stored inside the package and reads back.
+        let _ = std::fs::remove_dir_all(package.join(".una"));
+        put(&mine, &query, &proven());
+        assert_eq!(get(&mine, &query), Some(proven()));
+        assert!(entry(&mine.dir, &query).is_file());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
