@@ -64,7 +64,7 @@ class CatalogTests(unittest.TestCase):
             self.load()
 
     def test_unavailable_feature_cannot_claim_support(self):
-        self.catalog['features'][0]['status'] = 'proposed'
+        self.catalog['features'][0]['status'] = 'deferred'
         with self.assertRaisesRegex(ValueError, 'unavailable'):
             self.load()
 

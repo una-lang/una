@@ -1,6 +1,6 @@
 {
   "schema": "una.features/1",
-  "scope": "Selected features reviewed by the improvement backlog; not an exhaustive language inventory.",
+  "scope": "A selected set of reviewed features; not an exhaustive language inventory.",
   "features": [
     {
       "id": "checked",
@@ -9,7 +9,7 @@
       "edition": "0.1",
       "minimum_release": null,
       "normative": [
-        "docs/spec/11-dynamic-semantics.md"
+        "docs/spec/06-errors.md"
       ],
       "fixtures": [
         "runtime/checked"
@@ -55,11 +55,12 @@
     {
       "id": "logic.quantified-laws",
       "title": "Quantified laws",
-      "status": "proposed",
+      "status": "deferred",
       "edition": null,
       "minimum_release": null,
       "normative": [
-        "docs/spec/12-verification.md"
+        "docs/spec/12-verification.md",
+        "docs/plan/backlog.md"
       ],
       "fixtures": []
     },
@@ -115,21 +116,21 @@
     },
     {
       "id": "text.interpolation",
-      "title": "Text and collection interpolation",
+      "title": "Interpolation of values in their Una form",
       "status": "supported",
       "edition": "0.2",
       "minimum_release": null,
       "normative": [
-        "docs/spec/22-text.md"
+        "docs/spec/11-dynamic-semantics.md"
       ],
       "fixtures": [
-        "runtime/text_run"
+        "runtime/print_values"
       ]
     },
     {
       "id": "tools.semantic-diff",
       "title": "Semantic diff",
-      "status": "proposed",
+      "status": "deferred",
       "edition": null,
       "minimum_release": null,
       "normative": [
