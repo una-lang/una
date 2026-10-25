@@ -18,6 +18,7 @@ fn repository() -> PathBuf {
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository().join(dir))
         .output()
@@ -323,6 +324,7 @@ pub double(x: Int) -> Int
     let una = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", &home)
+            .env_remove("UNA_PROOF_KEY")
             .args(args)
             .current_dir(repository())
             .output()
@@ -341,6 +343,7 @@ pub double(x: Int) -> Int
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", &home)
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "trace", "NUM_1"])
         .current_dir(&root)
         .output()
@@ -494,6 +497,7 @@ fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
         let second = una_in(dir, &args);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(&args)
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(repository().join(dir))
