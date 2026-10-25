@@ -1447,6 +1447,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "una-itaty"
+version = "0.3.16"
+dependencies = [
+ "ed25519-dalek",
+ "pretty_assertions",
+ "sha2",
+ "una-project",
+ "una-syntax",
+]
+
+[[package]]
 name = "una-lsp"
 version = "0.3.16"
 dependencies = [
