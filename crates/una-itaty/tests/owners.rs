@@ -404,8 +404,14 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     );
     // The next size is signed under the new root; the older checkpoints are kept as they are.
     assert_eq!(f.submit("orbit", "cancel 4", 1, &[&o]).unwrap(), 7);
-    assert!(f.checkpoint_text(8).contains("ita-root 2 sha256:"));
-    assert!(f.checkpoint_text(5).contains("ita-root 1 sha256:"));
+    let named = |text: &str| {
+        let checkpoint = una_project::tlog::note::parse_checkpoint(text).unwrap();
+        una_project::tlog::root::named(&checkpoint.extensions)
+            .unwrap()
+            .0
+    };
+    assert_eq!(named(&f.checkpoint_text(8)), 2);
+    assert_eq!(named(&f.checkpoint_text(5)), 1);
     f.cosign(&[0, 1, 2], later + 10);
 
     // The client reads Itaty's store as a mirror and verifies everything with its own code.
@@ -964,4 +970,53 @@ fn a_notice_names_its_entry_by_index_and_the_digest_of_its_bytes() {
     );
     assert_eq!(notice.leaf, digest_string(&receipt.leaf));
     assert_eq!(notice.link, "tile/entries/000");
+}
+
+#[test]
+fn owner_checks_refuse_by_their_cause() {
+    let mut f = Fixture::new("owner-checks");
+    let a = keypair(60, "acme.a");
+    let c = keypair(61, "trustee.c");
+    let d = keypair(64, "acme.d");
+    f.register("acme", &[&a], &[&c]);
+    // An owner with recovery cosigners in effect has no dispute.
+    let dispute = f.event("acme", &format!("dispute {}", key_text(&d.1)), 1);
+    assert_eq!(
+        f.registry
+            .request(dispute.as_bytes(), false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::DisputeWithCosigners)
+    );
+    // `since` at the entry's own position, and past it.
+    for since in [1, 2] {
+        assert_eq!(
+            f.submit("acme", &format!("revoke acme.a since {since}"), 1, &[&a])
+                .unwrap_err()
+                .cause(),
+            Some(&Cause::SinceNotReached),
+            "{since}"
+        );
+    }
+    // Another owner's key, under another name.
+    let stolen = keypair(60, "zenith.a");
+    let theirs = f.registration("zenith", &[&stolen], 1, &[]);
+    assert_eq!(
+        f.registry
+            .register(note_of(&theirs, &[&stolen]).as_bytes(), false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::KeyOfAnotherOwner)
+    );
+    // A registration naming one of its own keys as a cosigner.
+    let o = keypair(67, "orbit.o");
+    let own = f.registration("orbit", &[&o], 1, &[&o]);
+    assert_eq!(
+        f.registry
+            .register(note_of(&own, &[&o]).as_bytes(), false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::CosignerIsOwnKey)
+    );
+    assert_eq!(f.registry.size(), 1);
 }

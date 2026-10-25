@@ -190,6 +190,9 @@ pub enum Cause {
     StartMoves(u64),
     /// The store could not be read or written.
     Store,
+    /// A release statement's `authority` or `trust` is not what its archive's code gives
+    /// (rule 37).
+    Interface,
 }
 
 /// Why a submission is not logged.
@@ -1316,12 +1319,14 @@ impl Registry {
         let trusted: Vec<String> = manifest.trusted.iter().map(|t| t.value.clone()).collect();
         let computed = interface(&trusted, &files).map_err(invalid)?;
         if computed.authority != statement.authority {
-            return Err(invalid(
+            return Err(rule(
+                Cause::Interface,
                 "the statement's `authority` is not the union of the archive's public functions' and handlers' `uses`",
             ));
         }
         if computed.trust != statement.trust {
-            return Err(invalid(
+            return Err(rule(
+                Cause::Interface,
                 "the statement's `trust` is not the archive's trusted modules",
             ));
         }

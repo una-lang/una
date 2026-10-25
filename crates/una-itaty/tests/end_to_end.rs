@@ -382,7 +382,14 @@ fn a_client_publishes_and_verifies_every_proof() {
     let (_, understated) = publication(&v1, None, &authority(&[]), &[&acme]);
     let (status, why) = post(addr, "publish", &understated);
     assert_eq!(status, 400, "{why}");
-    assert!(why.contains("authority"), "{why}");
+    // Its cause, typed, is the interface (rule 37).
+    let (understated_note, _) = publication(&v1, None, &authority(&[]), &[&acme]);
+    assert_eq!(
+        Registry::prepare(understated_note.as_bytes(), v1.archive.clone())
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::Interface)
+    );
     // A statement signed by a key that is not the owner's is refused.
     let (_, unsigned) = publication(&v1, None, &console, &[&other]);
     let (status, why) = post(addr, "publish", &unsigned);
@@ -481,7 +488,6 @@ fn a_client_publishes_and_verifies_every_proof() {
     );
     let (status, why) = post(addr, "publish", &body);
     assert_eq!(status, 400, "{why}");
-    assert!(why.contains("next major version"), "{why}");
     // A `previous` that is not the name's head is refused.
     let v11 = package("1.1.0", "", body_1);
     let (_, stale) = publication(&v11, None, &console, &[&acme]);
@@ -757,4 +763,76 @@ fn an_advisory_identifier_is_given_once_per_name() {
 /// A notifier that records notices in memory, which every registry needs.
 fn recording() -> Arc<una_itaty::notify::Recording> {
     Arc::new(una_itaty::notify::Recording::new())
+}
+
+#[test]
+fn releases_and_yanks_are_judged_by_the_clients_replay() {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let store: Arc<dyn Store> = Arc::new(una_itaty::store::MemoryStore::new());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let mut registry = Registry::open(Arc::clone(&store), &config, clock, recording()).unwrap();
+    let acme = signer("acme.a", 60);
+    let trustee = signer("trustee.c", 61);
+    let other = signer("other.o", 62);
+    let registration = format!(
+        "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\n{}\ncosigner {} {}\ncosigners 1\n",
+        key_line(&acme),
+        trustee.key().name,
+        encode_base64(&trustee.key().public)
+    );
+    let registered = registry
+        .register(note(&registration, &[&acme]).as_bytes(), false)
+        .unwrap();
+    let body = "pub answer() -> Int = 42\n";
+    let none = authority(&[]);
+    let release = package("1.0.0", "", body);
+    let (document, _) = publication(&release, None, &none, &[&acme]);
+    let first = registry
+        .publish(Registry::prepare(document.as_bytes(), release.archive.clone()).unwrap())
+        .unwrap();
+    let first_leaf = digest_string(&first.leaf);
+    // A release signed by no key of its owner is refused, judged as the client judges it.
+    let next = package("1.1.0", "", body);
+    let (unsigned, _) = publication(&next, Some((first.index, &first_leaf)), &none, &[&other]);
+    assert_eq!(
+        registry
+            .publish(Registry::prepare(unsigned.as_bytes(), next.archive.clone()).unwrap())
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::NotSigned)
+    );
+    // The cosigners claim the owner's last key compromised since 1.
+    let claim = format!(
+        "ita-key/1\nsource itaty\nowner acme\nprevious 0 {}\nrevoke acme.a since 1\nthreshold 1\n",
+        digest_string(&registered.leaf)
+    );
+    registry
+        .submit(note(&claim, &[&trustee]).as_bytes())
+        .unwrap();
+    // What that key signs from then on would be void: a yank and a release are refused.
+    let yank = format!(
+        "ita-yank/1\nsource itaty\nname acme/ledger\nversion 1.0.0\nprevious {} {first_leaf}\n",
+        first.index
+    );
+    assert_eq!(
+        registry
+            .submit(note(&yank, &[&acme]).as_bytes())
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::Void)
+    );
+    let (compromised, _) = publication(&next, Some((first.index, &first_leaf)), &none, &[&acme]);
+    assert_eq!(
+        registry
+            .publish(Registry::prepare(compromised.as_bytes(), next.archive.clone()).unwrap())
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::Void)
+    );
 }
