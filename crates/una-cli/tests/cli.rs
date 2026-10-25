@@ -16,6 +16,7 @@ const EMPTY_LIST: &str = "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[],\
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .output()
@@ -143,6 +144,7 @@ fn check_json_is_byte_identical_across_runs() {
         let second = una(&["check", "--json", target]);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["check", "--json", target])
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(&repository)
@@ -494,6 +496,66 @@ fn fmt_writes_through_a_symbolic_link_onto_its_target() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// #1160: a symbolic link planted at the temporary names a write used to take, such as one a
+/// cloned repository commits, is never written through: its destination stays as it was.
+#[cfg(unix)]
+#[test]
+fn fmt_never_writes_through_a_planted_temporary_link() {
+    let root = scratch("fmt-planted-temporary");
+    let package = root.join("package");
+    std::fs::create_dir_all(&package).unwrap();
+    let victim = root.join("victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    let module = package.join("main.una");
+    std::fs::write(&module, "module main\n\npub one() -> Int\n=\n  1+1\n").unwrap();
+    for name in [".main.una.fmt-tmp", ".main.una.tmp"] {
+        std::os::unix::fs::symlink(&victim, package.join(name)).unwrap();
+    }
+    let fmt = una(&["fmt", module.to_str().unwrap()]);
+    assert_eq!(fmt.status.code(), Some(0), "{}", stderr(&fmt));
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert_eq!(
+        std::fs::read_to_string(&module).unwrap(),
+        "module main\n\npub one() -> Int = 1 + 1\n"
+    );
+    assert!(
+        !std::fs::symlink_metadata(&module)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    for name in [".main.una.fmt-tmp", ".main.una.tmp"] {
+        assert_eq!(std::fs::read_link(package.join(name)).unwrap(), victim);
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// #1160: a source that is a symbolic link leading outside the package is not written
+/// through, and the error names where it leads.
+#[cfg(unix)]
+#[test]
+fn fmt_refuses_a_link_that_leads_outside_the_package() {
+    let root = scratch("fmt-link-outside");
+    let package = root.join("package");
+    std::fs::create_dir_all(&package).unwrap();
+    let outside = root.join("outside.una");
+    let original = "module linked\n\npub one() -> Int\n=\n  1+1\n";
+    std::fs::write(&outside, original).unwrap();
+    let link = package.join("linked.una");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let fmt = una(&["fmt", link.to_str().unwrap()]);
+    assert_ne!(fmt.status.code(), Some(0));
+    assert!(
+        stderr(&fmt).contains("outside the package"),
+        "{}",
+        stderr(&fmt)
+    );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), original);
+    assert_eq!(std::fs::read_link(&link).unwrap(), outside);
+    assert_eq!(std::fs::read_dir(&package).unwrap().count(), 1);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn check_reports_t7001_with_a_mechanical_edit() {
     let output = una(&[
@@ -571,6 +633,7 @@ fn una_in(dir: &std::path::Path, args: &[&str]) -> Output {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository.join(dir))
         .output()

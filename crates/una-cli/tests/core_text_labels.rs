@@ -38,6 +38,7 @@ fn package(name: &str, edition: &str, source: &str) -> PathBuf {
 fn to_text_labels(dir: &PathBuf) -> Vec<String> {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "core", "."])
         .current_dir(dir)
         .output()
@@ -153,6 +154,7 @@ fn an_interpolated_value_text_carries_its_fields_labels_in_the_core_export() {
 fn bool_temporary_labels(dir: &PathBuf) -> Vec<String> {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "core", "."])
         .current_dir(dir)
         .output()

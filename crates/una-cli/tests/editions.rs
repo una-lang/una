@@ -233,6 +233,7 @@ fn run_as(
     std::fs::write(&manifest, text.replace(EDITION_0_2, edition)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", command, "."])
         .current_dir(work)
         .output()
