@@ -350,10 +350,11 @@ pub fn audit<E>(
     out
 }
 
-/// Evidence against a registry that the audit reports (`spec/30 §15` rule 7): what the
-/// registry logged or kept that a registry following the rules never does. It is said as such,
-/// apart from the findings about packages, for the user to publish with the registry's
-/// checkpoint, to its witnesses and to other places.
+/// Evidence the audit reports apart from its findings (`spec/30 §15` rule 7): what a registry
+/// following the rules never logs or keeps. An unsettled chain is the registry's, since every
+/// place serves the same verified log; a missing deadline checkpoint or a cadence gap is
+/// evidence from an absence, the registry's only when at least two places served the same view
+/// ([`Evidence::attributed`]), and otherwise a place's or the registry's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Evidence {
     /// The registry logged an owner chain that does not settle (`spec/30 §14` rule 5,
@@ -369,6 +370,10 @@ pub enum Evidence {
         index: u64,
         /// Its target witness time, in seconds since the Unix epoch.
         target: u64,
+        /// The places read.
+        places: Vec<String>,
+        /// Whether at least two places served the same view of the checkpoints it rests on.
+        attributed: bool,
     },
     /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
     /// a registry may leave between two such checkpoints.
@@ -377,6 +382,10 @@ pub enum Evidence {
         from: u64,
         /// The last size of the range.
         to: u64,
+        /// The places read.
+        places: Vec<String>,
+        /// Whether at least two places served the same view of every checkpoint of the range.
+        attributed: bool,
     },
 }
 
@@ -388,24 +397,59 @@ impl From<Misbehavior> for Evidence {
                 owner,
                 index,
                 target,
+                places,
+                attributed,
             } => Evidence::MissingDeadline {
                 owner,
                 index,
                 target,
+                places,
+                attributed,
             },
-            Misbehavior::CadenceGap { from, to } => Evidence::CadenceGap { from, to },
+            Misbehavior::CadenceGap {
+                from,
+                to,
+                places,
+                attributed,
+            } => Evidence::CadenceGap {
+                from,
+                to,
+                places,
+                attributed,
+            },
         }
     }
 }
 
 impl Evidence {
-    /// What the evidence states against the registry `source`, shown safely.
+    /// Whether it is the registry's misbehavior: an unsettled chain always; evidence from an
+    /// absence only when at least two places served the same view.
+    pub fn attributed(&self) -> bool {
+        match self {
+            Evidence::Unsettled(_) => true,
+            Evidence::MissingDeadline { attributed, .. }
+            | Evidence::CadenceGap { attributed, .. } => *attributed,
+        }
+    }
+
+    /// What the evidence states about the registry `source`, shown safely: against the
+    /// registry when it is attributed; otherwise `unattributed: a place or the registry`, with
+    /// the places read.
     pub fn text(&self, source: &str) -> String {
-        let against = format!("evidence against the registry `{}`", shown(source));
+        let source = shown(source);
+        let who = if self.attributed() {
+            format!("evidence against the registry `{source}`")
+        } else {
+            format!("unattributed: a place or the registry `{source}`")
+        };
+        let read = |places: &[String]| -> String {
+            let names: Vec<String> = places.iter().map(|place| shown(place)).collect();
+            format!("; places read: {}", names.join(", "))
+        };
         let publish = "keep its checkpoint and the files read, and publish them as evidence";
         match self {
             Evidence::Unsettled(unsettled) => format!(
-                "{against}: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; {publish}",
+                "{who}: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; {publish}",
                 shown(&unsettled.owner),
                 unsettled.passes,
                 unsettled.index
@@ -414,12 +458,18 @@ impl Evidence {
                 owner,
                 index,
                 target,
+                places,
+                ..
             } => format!(
-                "{against}: no place serves the deadline checkpoint of the request at the log index {index} of the owner `{}`, the first checkpoint at or after its target witness time {target} with the witnesses' threshold of cosignatures, which a registry keeps; {publish}",
-                shown(owner)
+                "{who}: no place serves the deadline checkpoint of the request at the log index {index} of the owner `{}`, the first checkpoint at or after its target witness time {target} with the witnesses' threshold of cosignatures, which a registry keeps{}; {publish}",
+                shown(owner),
+                read(places)
             ),
-            Evidence::CadenceGap { from, to } => format!(
-                "{against}: no checkpoint of the sizes {from} to {to} carries the witnesses' threshold of cosignatures, a longer gap than a registry may leave; {publish}"
+            Evidence::CadenceGap {
+                from, to, places, ..
+            } => format!(
+                "{who}: no checkpoint of the sizes {from} to {to} carries the witnesses' threshold of cosignatures, a longer gap than a registry may leave{}; {publish}",
+                read(places)
             ),
         }
     }

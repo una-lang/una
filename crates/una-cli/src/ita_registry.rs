@@ -912,13 +912,23 @@ pub(crate) fn audit_command(
             );
         }
     }
-    diagnostics.extend(evidence_diagnostics(&project, &evidence));
+    // Attributed evidence is the registry's misbehavior (U7010); evidence from an absence that
+    // fewer than two places agree on is said, unattributed, and decides nothing.
+    let (attributed, unattributed): (Vec<_>, Vec<_>) = evidence
+        .into_iter()
+        .partition(|(_, found)| found.attributed());
+    notes.extend(
+        unattributed
+            .iter()
+            .map(|(source, found)| format!("note: {}", found.text(source))),
+    );
+    diagnostics.extend(evidence_diagnostics(&project, &attributed));
     finish("audit", &[], &notes, &diagnostics, &project.package.sources, out)
 }
 
-/// The diagnostics of the evidence against registries that `una ita audit` found: one U7010
-/// per record, at the `registry` section of its source in `ita.lock`, else at the lock's first
-/// package of that source. O(E x (R + P)) for E records, R sections and P packages.
+/// The diagnostics of the evidence attributed to registries that `una ita audit` found: one
+/// U7010 per record, at the `registry` section of its source in `ita.lock`, else at the lock's
+/// first package of that source. O(E x (R + P)) for E records, R sections and P packages.
 fn evidence_diagnostics(
     project: &Project,
     evidence: &[(String, audit::Evidence)],

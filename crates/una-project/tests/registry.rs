@@ -2000,6 +2000,8 @@ fn a_bundle_carries_every_places_copy_of_a_kept_checkpoint() {
 fn the_audit_reports_deadline_and_cadence_evidence() {
     let a = keypair(60, "acme.a");
     let mut test = TestRegistry::new("acme");
+    // A registry that leaves its checkpoints below a cosigned one uncosigned.
+    test.bare = true;
     test.register("acme", &a);
     test.checkpoint(NOW - 30 * 86_400);
     let (release, _) = test.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
@@ -2020,27 +2022,56 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
     )
     .unwrap();
     client.logged_at(release).unwrap();
+    // One place read: evidence from an absence, unattributed.
+    let place = memory.describe();
     let gap = audit::Evidence::CadenceGap {
         from: release + 1,
         to: release + 64,
+        places: vec![place.clone()],
+        attributed: false,
     };
     assert_eq!(audit::evidence(&client), [gap.clone()]);
+    assert!(!gap.attributed());
     let text = gap.text("acme");
     assert!(
-        text.contains("evidence against the registry `acme`")
-            && text.contains(&format!("sizes {} to {}", release + 1, release + 64)),
+        text.starts_with("unattributed: a place or the registry `acme`")
+            && text.contains(&format!("sizes {} to {}", release + 1, release + 64))
+            && text.contains(&format!("places read: {place}")),
         "{text}"
+    );
+    // Two places with the same view: the registry's misbehavior.
+    let both = Fallback::new(Box::new(memory.clone()), vec![Box::new(memory.clone())]);
+    let mut client = Registry::open(
+        "acme",
+        &both,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    client.logged_at(release).unwrap();
+    let evidence = audit::evidence(&client);
+    assert_eq!(evidence.len(), 1, "{evidence:?}");
+    assert!(evidence[0].attributed(), "{evidence:?}");
+    assert!(
+        evidence[0]
+            .text("acme")
+            .starts_with("evidence against the registry `acme`")
     );
     let missing = audit::Evidence::from(Misbehavior::MissingDeadline {
         owner: "acme".to_owned(),
         index: 7,
         target: 1_000_000,
+        places: vec!["a".to_owned(), "b".to_owned()],
+        attributed: true,
     });
     let text = missing.text("acme");
     assert!(
-        text.contains("log index 7")
+        text.starts_with("evidence against the registry `acme`")
+            && text.contains("log index 7")
             && text.contains("the owner `acme`")
-            && text.contains("target witness time 1000000"),
+            && text.contains("target witness time 1000000")
+            && text.contains("places read: a, b"),
         "{text}"
     );
 }
