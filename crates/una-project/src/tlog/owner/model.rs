@@ -213,7 +213,10 @@ impl Keys {
                 continue;
             }
             let bytes = if real {
-                self.pairs[*k as usize].sign(text.as_bytes()).to_bytes().to_vec()
+                self.pairs[*k as usize]
+                    .sign(text.as_bytes())
+                    .to_bytes()
+                    .to_vec()
             } else {
                 MARK.to_vec()
             };
@@ -917,12 +920,14 @@ impl Search<'_, '_> {
                     signers.extend(list.iter().copied());
                     let at = start.len() as u64;
                     let step = Step::owner(Act::Recover(K::R), signers, 0);
-                    self.answer(&mut start, &mut refused, step).then_some((at, K::R))
+                    self.answer(&mut start, &mut refused, step)
+                        .then_some((at, K::R))
                 }
                 None => {
                     let at = start.len() as u64;
                     let step = Step::owner(Act::Dispute(K::R), vec![K::Log], 0);
-                    self.answer(&mut start, &mut refused, step).then_some((at, K::R))
+                    self.answer(&mut start, &mut refused, step)
+                        .then_some((at, K::R))
                 }
                 Some(_) => {
                     refused.push("no recovery or dispute is open to the owner".to_owned());
@@ -951,9 +956,8 @@ impl Search<'_, '_> {
         let recovery = start
             .get(request as usize)
             .is_some_and(|s| matches!(s.act, Act::Recover(_)));
-        let late = |act: Act, signers: Vec<K>, wait: u64| {
-            thief_step(act, signers, &held, wait, true)
-        };
+        let late =
+            |act: Act, signers: Vec<K>, wait: u64| thief_step(act, signers, &held, wait, true);
         let mut first: Vec<Vec<Step>> = vec![Vec::new()];
         if !held.is_empty() {
             if recovery {
@@ -1362,9 +1366,8 @@ impl Search<'_, '_> {
         }
         // Retired witnesses cosigning a checkpoint off the log, the registration's size over
         // other leaves under the first root: rejected, never a different verdict.
-        let forged_root = crate::tlog::merkle::root(&[crate::tlog::merkle::leaf_hash(
-            b"another registration",
-        )]);
+        let forged_root =
+            crate::tlog::merkle::root(&[crate::tlog::merkle::leaf_hash(b"another registration")]);
         let text = format!(
             "{}\n1\n{}\nita-map {}\nita-root 1 {}\n",
             registry.keys.log.1.name,
@@ -1414,8 +1417,7 @@ impl Search<'_, '_> {
                 Box::new(|path: &str| path.starts_with("root/") && path != "root/1"),
             ),
         ];
-        let mut omissions: Vec<(String, std::collections::BTreeMap<String, Vec<u8>>)> =
-            Vec::new();
+        let mut omissions: Vec<(String, std::collections::BTreeMap<String, Vec<u8>>)> = Vec::new();
         for (class, omitted) in &classes {
             let mut files = registry.files.clone();
             files.retain(|path, _| !omitted(path));
@@ -1683,11 +1685,9 @@ fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64, Vec<u64>)
             } => {
                 let owned: Vec<(SigningKey, Key)> = list.iter().map(|k| pair(*k)).collect();
                 let owned: Vec<&(SigningKey, Key)> = owned.iter().collect();
-                let (k, designated) = cosigners
-                    .as_ref()
-                    .map_or((0, Vec::new()), |(k, list)| {
-                        (*k, list.iter().map(|x| pair(*x)).collect::<Vec<_>>())
-                    });
+                let (k, designated) = cosigners.as_ref().map_or((0, Vec::new()), |(k, list)| {
+                    (*k, list.iter().map(|x| pair(*x)).collect::<Vec<_>>())
+                });
                 let designated: Vec<&(SigningKey, Key)> = designated.iter().collect();
                 registry.register_keys("acme", &owned, *threshold, &designated, k)
             }
@@ -2021,7 +2021,10 @@ fn the_extension_point_sees_every_final_chain() {
         checker: Some(&mut checker),
     });
     assert!(failures.is_empty(), "{failures:#?}");
-    assert!(finals > 0 && finals <= stats.responses, "{finals} {stats:?}");
+    assert!(
+        finals > 0 && finals <= stats.responses,
+        "{finals} {stats:?}"
+    );
     assert!(offered > 0);
 }
 
@@ -2055,7 +2058,9 @@ fn the_model_finds_the_last_moment_cancellation_without_its_rules() {
     };
     let (_, failures) = run_with(false);
     assert!(
-        failures.iter().any(|f| f.starts_with("(3)") || f.starts_with("(2)")),
+        failures
+            .iter()
+            .any(|f| f.starts_with("(3)") || f.starts_with("(2)")),
         "{failures:#?}"
     );
     let (stats, failures) = run_with(true);

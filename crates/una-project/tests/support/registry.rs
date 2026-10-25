@@ -52,11 +52,18 @@ pub fn cosign_line(pair: &SigningKey, key: &Key, text: &str, time: u64) -> Strin
     format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
 }
 
-/// A signed note of `text` by each of `signers`.
+/// A signed note of `text` by each of `signers`. A note's text ends with a line feed and is
+/// followed by a blank line, then the signature lines, each over that exact text: a `text` the
+/// builders form without its last line feed gets one here.
 pub fn signed(text: &str, signers: &[&(SigningKey, Key)]) -> String {
+    let text = if text.ends_with('\n') {
+        text.to_owned()
+    } else {
+        format!("{text}\n")
+    };
     let mut document = format!("{text}\n");
     for (pair, key) in signers {
-        document.push_str(&sign_line(pair, key, text));
+        document.push_str(&sign_line(pair, key, &text));
     }
     document
 }
@@ -123,9 +130,8 @@ pub fn root_text_with(
     k: usize,
     revoked: &[String],
 ) -> String {
-    let mut text = format!(
-        "ita-root/1\nsource {source}\nversion {version}\nexpires {expires}\nroot 2\n"
-    );
+    let mut text =
+        format!("ita-root/1\nsource {source}\nversion {version}\nexpires {expires}\nroot 2\n");
     for key in roots {
         text.push_str(&format!("key {}\n", key_text(key)));
     }

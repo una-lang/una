@@ -1151,9 +1151,7 @@ fn run_command(
                             output,
                         )
                     }
-                    ItaCommand::Fetch { path } => {
-                        ita::fetch_command(&path, store.as_ref(), output)
-                    }
+                    ItaCommand::Fetch { path } => ita::fetch_command(&path, store.as_ref(), output),
                     ItaCommand::Vendor { path } => {
                         ita::vendor_command(&path, store.as_ref(), output)
                     }

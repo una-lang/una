@@ -93,7 +93,11 @@ pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, String> 
             .map_err(|error| format!("cannot read `{}`: {error}", file.display()))?;
         let (workspace, errors) = crate::ita::parse_workspace(&text);
         if let Some(error) = errors.first() {
-            return Err(format!("`{}` does not read: {}", file.display(), error.message));
+            return Err(format!(
+                "`{}` does not read: {}",
+                file.display(),
+                error.message
+            ));
         }
         let member = workspace.members.iter().any(|member| {
             std::fs::canonicalize(ancestor.join(member.value.trim_end_matches('/')))
@@ -124,7 +128,10 @@ pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, String> 
 /// A textual reading, for advice only (rule 26): it neither checks nor refuses anything.
 fn public_headers(files: &[File]) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
-    for file in files.iter().filter(|f| f.path.ends_with(".una") && f.path != "ita.una") {
+    for file in files
+        .iter()
+        .filter(|f| f.path.ends_with(".una") && f.path != "ita.una")
+    {
         let Ok(text) = std::str::from_utf8(&file.bytes) else {
             continue;
         };
@@ -309,7 +316,10 @@ pub fn release(
         .ok_or_else(|| vec!["the package has no ita.una".to_owned()])?;
     let archive = content::archive(&mut files).map_err(|refusal| vec![refusal])?;
     let digest = content::digest_of(&mut files).map_err(|refusal| vec![refusal])?;
-    let head = state.head.as_ref().map(|(index, leaf)| (*index, leaf.as_str()));
+    let head = state
+        .head
+        .as_ref()
+        .map(|(index, leaf)| (*index, leaf.as_str()));
     let text = publish::statement(
         manifest,
         &Release {
@@ -372,7 +382,10 @@ pub fn yank(
     if keys.is_empty() {
         return Err("no signing key is given; a yank is signed by the owner's keys".to_owned());
     }
-    let head = state.head.as_ref().map(|(index, leaf)| (*index, leaf.as_str()));
+    let head = state
+        .head
+        .as_ref()
+        .map(|(index, leaf)| (*index, leaf.as_str()));
     let text = yank_text(&state.source, &state.name, version, head);
     let entry = sign_note(&text, keys)?;
     Ok(Submission {

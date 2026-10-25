@@ -353,7 +353,9 @@ pub fn named(extensions: &[String]) -> Result<(u64, String), String> {
         .filter(|_| valid)
         .ok_or("the `ita-root` version is not a decimal from 1 without a leading zero")?;
     if !crate::ita::is_digest(digest) {
-        return Err("the `ita-root` digest is not `sha256:` and 64 lowercase hex digits".to_owned());
+        return Err(
+            "the `ita-root` digest is not `sha256:` and 64 lowercase hex digits".to_owned(),
+        );
     }
     Ok((version, digest.to_owned()))
 }

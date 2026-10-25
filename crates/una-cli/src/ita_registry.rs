@@ -19,11 +19,11 @@ use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
 use una_project::ProjectError;
+use una_project::client::{OpenError, Point, Registry, owner_of, shown};
 use una_project::content::{self, File};
 use una_project::ita::{ItaLock, parse_ita_lock, parse_ita_manifest};
 use una_project::itaoca::Itaoca;
 use una_project::provenance::Expected;
-use una_project::client::{OpenError, Point, Registry, owner_of, shown};
 use una_project::registry::keyfile::{self, SigningKey};
 use una_project::registry::submit::NameState;
 use una_project::registry::{audit, bundle, submit, watch};
@@ -168,8 +168,8 @@ fn prepare(
                     let bytes = registry
                         .archive(&statement.digest)
                         .map_err(|why| at(crate::registry::code_of(&mut registry), why))?;
-                    let tree = VerifiedTree::from_archive(&bytes)
-                        .map_err(|why| at(Code::U7010, why))?;
+                    let tree =
+                        VerifiedTree::from_archive(&bytes).map_err(|why| at(Code::U7010, why))?;
                     if tree.digest() != statement.digest {
                         return Err(at(
                             Code::U7010,
@@ -236,9 +236,7 @@ fn package_files(root: &Path, package: &crate::package::Package) -> Result<Vec<F
 
 /// The union of the `uses` of the package's public functions and of its handlers: capability
 /// and operations (rule 37).
-fn authority(
-    analysis: &crate::Analysis,
-) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+fn authority(analysis: &crate::Analysis) -> BTreeMap<String, std::collections::BTreeSet<String>> {
     let mut public = std::collections::BTreeSet::new();
     for module in &analysis.program.modules {
         for decl in &module.decls {
@@ -444,7 +442,10 @@ pub(crate) fn publish_command(
     };
     lines.push(format!(
         "published {name} {} to `{}`",
-        read.version.as_ref().map(|v| v.value.as_str()).unwrap_or_default(),
+        read.version
+            .as_ref()
+            .map(|v| v.value.as_str())
+            .unwrap_or_default(),
         prepared.url
     ));
     let record = submitted(&submission, &prepared.url, &name, prepared.time);
@@ -517,7 +518,12 @@ fn record_submission(
 }
 
 /// The record of `submission` of `name`, sent to `url` at the witness time `time`.
-fn submitted(submission: &submit::Submission, url: &str, name: &str, time: u64) -> watch::Submitted {
+fn submitted(
+    submission: &submit::Submission,
+    url: &str,
+    name: &str,
+    time: u64,
+) -> watch::Submitted {
     watch::Submitted {
         leaf: submission
             .leaf
@@ -549,7 +555,10 @@ pub(crate) fn yank_command(
         return usage(out, &not_a_package(path));
     }
     let Ok(version) = Version::parse_full(version) else {
-        return usage(out, &format!("`{version}` is not a full version, such as `0.3.1`"));
+        return usage(
+            out,
+            &format!("`{version}` is not a full version, such as `0.3.1`"),
+        );
     };
     let text = match std::fs::read_to_string(&manifest_path) {
         Ok(text) => text,
@@ -730,14 +739,17 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
         let name = locked.name.value.to_string();
         // The consent the lock records for the owner's chain, `accepted <owner> <index> …` and
         // `effect <owner> <index> …`, counted by `audit::facts` as `una ita lock --check` does.
-        let indices_of = |lines: &[una_syntax::ita::LockAccepted]| -> std::collections::BTreeSet<u64> {
-            lines
-                .iter()
-                .find(|line| line.owner.value == owner_of(&name))
-                .map(|line| line.indices.iter().map(|index| index.value).collect())
-                .unwrap_or_default()
-        };
-        let accepted = registry.map(|r| indices_of(&r.accepted)).unwrap_or_default();
+        let indices_of =
+            |lines: &[una_syntax::ita::LockAccepted]| -> std::collections::BTreeSet<u64> {
+                lines
+                    .iter()
+                    .find(|line| line.owner.value == owner_of(&name))
+                    .map(|line| line.indices.iter().map(|index| index.value).collect())
+                    .unwrap_or_default()
+            };
+        let accepted = registry
+            .map(|r| indices_of(&r.accepted))
+            .unwrap_or_default();
         let effects = registry.map(|r| indices_of(&r.effects)).unwrap_or_default();
         packages.push(audit::Locked {
             source: source.to_owned(),
@@ -849,7 +861,14 @@ pub(crate) fn audit_command(
         Ok(mirrors) => mirrors,
         Err(errors) => {
             let diagnostics = located(&project.package.sources, project.manifest_id, errors);
-            return finish("audit", &[], &[], &diagnostics, &project.package.sources, out);
+            return finish(
+                "audit",
+                &[],
+                &[],
+                &diagnostics,
+                &project.package.sources,
+                out,
+            );
         }
     };
     let read = project.manifest.ita.as_deref();
@@ -861,8 +880,7 @@ pub(crate) fn audit_command(
         .filter_map(registry_source)
         .map(str::to_owned)
         .collect();
-    let mut places: BTreeMap<String, (ita::Source, Vec<crate::registry::Place>)> =
-        BTreeMap::new();
+    let mut places: BTreeMap<String, (ita::Source, Vec<crate::registry::Place>)> = BTreeMap::new();
     for source in &used {
         if let Some(declared) = read.and_then(|read| crate::registry::declared(read, source)) {
             let list = crate::registry::places_of(declared, &mirrors);
@@ -904,10 +922,7 @@ pub(crate) fn audit_command(
         Some(Err(failure)) => Err(failure.clone()),
         None => Err((
             Code::U7010,
-            format!(
-                "`{}` is not a source of ita.una's `sources`",
-                locked.source
-            ),
+            format!("`{}` is not a source of ita.una's `sources`", locked.source),
         )),
     };
     let (mut diagnostics, lines) = audit_project(&project, &mut facts_of);
@@ -935,7 +950,14 @@ pub(crate) fn audit_command(
             .map(|(source, found)| format!("note: {}", found.text(source))),
     );
     diagnostics.extend(evidence_diagnostics(&project, &attributed));
-    finish("audit", &[], &notes, &diagnostics, &project.package.sources, out)
+    finish(
+        "audit",
+        &[],
+        &notes,
+        &diagnostics,
+        &project.package.sources,
+        out,
+    )
 }
 
 /// The diagnostics of the evidence attributed to registries that `una ita audit` found: one
@@ -1098,7 +1120,9 @@ pub(crate) fn watch_command(
     match submissions(itaoca, source) {
         Err(why) => {
             failed = true;
-            lines.push(format!("error: the submissions recorded cannot be read: {why}"));
+            lines.push(format!(
+                "error: the submissions recorded cannot be read: {why}"
+            ));
         }
         Ok(list) => {
             // Settled lines whose record is gone are pruned, so the position stays bounded.
@@ -1152,7 +1176,9 @@ pub(crate) fn watch_command(
                 }
                 match &assessment.verdict {
                     watch::Verdict::Pending => {
-                        lines.push(format!("pending: the submission sha256:{leaf} is not logged yet"));
+                        lines.push(format!(
+                            "pending: the submission sha256:{leaf} is not logged yet"
+                        ));
                     }
                     watch::Verdict::Unavailable(why) => {
                         // What a place failed to give never makes a verdict: not settled, judged
@@ -1163,7 +1189,9 @@ pub(crate) fn watch_command(
                         ));
                     }
                     watch::Verdict::Kept => {
-                        lines.push(format!("kept: the submission sha256:{leaf} is logged as promised"));
+                        lines.push(format!(
+                            "kept: the submission sha256:{leaf} is logged as promised"
+                        ));
                     }
                     watch::Verdict::Broken(why) => {
                         // Provisional: judged from what the places served, so judged again on
@@ -1185,8 +1213,8 @@ pub(crate) fn watch_command(
         lines.push(format!("nothing new for `{owner}` at `{source}`"));
     }
     let mut written: Vec<String> = Vec::new();
-    let stored_position = tree::make_dirs(&itaoca.root, &["registry", source, "watch"])
-        .and_then(|parent| {
+    let stored_position =
+        tree::make_dirs(&itaoca.root, &["registry", source, "watch"]).and_then(|parent| {
             tree::store_file(
                 &parent,
                 &position_name,
@@ -1287,8 +1315,9 @@ fn judge_submission(
             Some(watch::Stored { bytes, log })
         }
     };
-    let served = Location::parse(&record.url)
-        .and_then(|location| transport::open(&location).get(&format!("submit/{leaf}/promise"), 1 << 16));
+    let served = Location::parse(&record.url).and_then(|location| {
+        transport::open(&location).get(&format!("submit/{leaf}/promise"), 1 << 16)
+    });
     let target = format!("sha256:{leaf}");
     let chain = match watch::chain_of(registry, &record.name) {
         Ok(chain) => chain,
@@ -1415,7 +1444,9 @@ pub(crate) fn bundle_command(
             map
         });
     for (source, packages) in by_source {
-        let first_range = packages.first().map_or(0..0, |(_, locked)| locked.range.clone());
+        let first_range = packages
+            .first()
+            .map_or(0..0, |(_, locked)| locked.range.clone());
         let Some(declared) = read.and_then(|read| crate::registry::declared(read, source)) else {
             problems.push(problem(
                 Code::U7010,
@@ -1445,8 +1476,11 @@ pub(crate) fn bundle_command(
     let bytes = match bundle::entries(&packed, &registries).and_then(bundle::write) {
         Ok(bytes) => bytes,
         Err(why) => {
-            let diagnostics =
-                located(sources, project.lock_id, vec![problem(Code::U7010, 0..0, why)]);
+            let diagnostics = located(
+                sources,
+                project.lock_id,
+                vec![problem(Code::U7010, 0..0, why)],
+            );
             return finish("bundle", &[], &[], &diagnostics, sources, out);
         }
     };
@@ -1461,10 +1495,7 @@ pub(crate) fn bundle_command(
 
 /// What a bundle takes of one source: each package's archive and provenance, and the files of
 /// the registry the client read; or the code, the package's index and why not.
-type Bundled = (
-    Vec<(Expected, bundle::Packed)>,
-    BTreeMap<String, Vec<u8>>,
-);
+type Bundled = (Vec<(Expected, bundle::Packed)>, BTreeMap<String, Vec<u8>>);
 
 /// A failure of `registry`'s reading for the package at `at`: U7013 when a document no place
 /// serves made it unavailable, U7010 otherwise ([`crate::registry::code_of`]).
@@ -1503,8 +1534,7 @@ fn bundle_source(
             }
         };
         let recording = bundle::Recording::new(transport);
-        let mut registry = match crate::registry::open(declared, &recording, &point, itaoca, None)
-        {
+        let mut registry = match crate::registry::open(declared, &recording, &point, itaoca, None) {
             // A floor not stored is a note of `open`; the bundle is still written.
             Ok((registry, opened)) => {
                 notes.extend(opened);
@@ -1559,8 +1589,7 @@ fn bundle_source(
             let provenance = registry
                 .provenance(&release, &key)
                 .map_err(|why| coded(&mut registry, at, why))?;
-            una_project::provenance::verify(&provenance, one)
-                .map_err(|why| fail(shown(&why)))?;
+            una_project::provenance::verify(&provenance, one).map_err(|why| fail(shown(&why)))?;
             let archive = registry
                 .archive(&one.digest)
                 .map_err(|why| coded(&mut registry, at, why))?;

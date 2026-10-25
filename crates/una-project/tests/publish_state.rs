@@ -90,7 +90,10 @@ fn yanks_read_strictly() {
     .unwrap();
     assert_eq!(yank.version, Version::parse_full("0.3.0").unwrap());
     assert_eq!(yank.previous.unwrap().index, 2);
-    assert!(parse_yank("ita-yank/1\nsource itaty\nname acme/ledger\nversion 0.3\nprevious none\n").is_err());
+    assert!(
+        parse_yank("ita-yank/1\nsource itaty\nname acme/ledger\nversion 0.3\nprevious none\n")
+            .is_err()
+    );
 }
 
 #[test]

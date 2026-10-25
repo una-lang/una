@@ -245,8 +245,8 @@ pub fn owner_keys(
     // same one and still private. Any change refuses. The check becomes relative to the
     // directory's descriptor later, which closes the window between the checks and the opens.
     let before = crate::tree::private_dir_identity(dir)?;
-    let entries =
-        std::fs::read_dir(dir).map_err(|error| format!("cannot list `{}`: {error}", dir.display()))?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| format!("cannot list `{}`: {error}", dir.display()))?;
     let mut names: Vec<String> = entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .filter(|name| {

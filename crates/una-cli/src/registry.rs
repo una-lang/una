@@ -46,7 +46,11 @@ pub(crate) fn load_mirrors(itaoca: Option<&Itaoca>) -> Result<Mirrors, Vec<Proje
     let text = match itaoca.load_mirrors() {
         Ok(Some(text)) => text,
         Ok(None) => return Ok(Mirrors::default()),
-        Err(why) => return Err(vec![refuse(format!("Itaoca's mirrors.una does not read: {why}"))]),
+        Err(why) => {
+            return Err(vec![refuse(format!(
+                "Itaoca's mirrors.una does not read: {why}"
+            ))]);
+        }
     };
     let (read, errors) = mirrors::parse(&text);
     if errors.is_empty() {
@@ -264,7 +268,9 @@ pub(crate) fn open<'t>(
                 None
             }),
             itaoca.load_root_version(&id).unwrap_or_else(|why| {
-                notes.push(format!("note: the root floor of `{name}` does not read: {why}"));
+                notes.push(format!(
+                    "note: the root floor of `{name}` does not read: {why}"
+                ));
                 None
             }),
         ),
@@ -277,15 +283,16 @@ pub(crate) fn open<'t>(
     let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
     if matches!(point, Point::Latest { .. } | Point::Served) {
         let size = registry.point.checkpoint.size;
-        if floor.as_deref().is_some_and(|stored| registry.below(stored)) {
+        if floor
+            .as_deref()
+            .is_some_and(|stored| registry.below(stored))
+        {
             return Err(OpenError::Refused(format!(
                 "the registry `{name}` serves a checkpoint of size {size}, below one this client already accepted; a registry never goes back"
             )));
         }
         if let Some((size, hash)) = lock_floor {
-            registry
-                .extends(*size, hash)
-                .map_err(OpenError::Refused)?;
+            registry.extends(*size, hash).map_err(OpenError::Refused)?;
         }
     }
     if let Some(itaoca) = itaoca {
@@ -365,7 +372,10 @@ pub(crate) fn authority_of(release: &LoggedRelease) -> Vec<String> {
         .map(|(capability, ops)| {
             format!(
                 "{capability}[{}]",
-                ops.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
+                ops.iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })
         .collect()

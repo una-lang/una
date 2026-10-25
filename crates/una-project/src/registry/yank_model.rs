@@ -37,7 +37,9 @@
 use crate::client::{Marks, YankStanding, apply_yank};
 use crate::registry::audit::{self, Facts, Kind};
 use crate::tlog::owner::History;
-use crate::tlog::owner::model::{Act, Final, K, Keys, OWNER, Options, THIEF, explore, registrations};
+use crate::tlog::owner::model::{
+    Act, Final, K, Keys, OWNER, Options, THIEF, explore, registrations,
+};
 use crate::version::Version;
 
 /// The counts of a run of the yank extension, each path it took.
@@ -232,7 +234,10 @@ fn check_yanks(depth: usize, stride: u64, sample_cap: u64) -> Counts {
             .collect::<Vec<_>>()
             .join("\n\n")
     );
-    println!("yank model: depth {depth}, {counts:?}, chains {}", stats.chains);
+    println!(
+        "yank model: depth {depth}, {counts:?}, chains {}",
+        stats.chains
+    );
     assert!(counts.finals <= stats.responses, "{stats:?}");
     counts
 }
@@ -242,7 +247,10 @@ fn check_yanks(depth: usize, stride: u64, sample_cap: u64) -> Counts {
 fn yanks_hold_their_invariants_to_depth_three() {
     let counts = check_yanks(3, 97, 100);
     assert!(counts.finals > 0, "{counts:?}");
-    assert!(counts.thief_judged > 0 && counts.thief_logged > 0, "{counts:?}");
+    assert!(
+        counts.thief_judged > 0 && counts.thief_logged > 0,
+        "{counts:?}"
+    );
     assert!(counts.thief_void > 0, "{counts:?}");
     assert_eq!(counts.void_reported, counts.thief_void, "{counts:?}");
     assert!(counts.owner_logged > 0, "{counts:?}");
