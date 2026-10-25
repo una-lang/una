@@ -39,3 +39,39 @@ The workspace forbids `unsafe` (`unsafe_code = "forbid"`, `conventions.md §1`).
 ## Amendment (2026-10-18, ADRs 0116 and 0117)
 
 A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks with guard pages (ADR 0117 rule 2), which both the native runtime and the interpreter use. It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.
+
+## Amendment (2026-10-25): what `una-sys` holds, and its size
+
+The amendment of 2026-10-18 limits `una-sys` to the signal handlers and the coroutine stacks, under 800 lines. The concurrency and server records, and the package store, need more operating-system bindings than those two. Each of them is in the crate's own Rust: not foreign code, and not a binding to a system library beyond the C library that `libc` declares.
+
+- **What it may hold.** Bindings to the operating system that the standard library cannot provide, used by the runtime, the interpreter, the project tooling and the HTTP client:
+  - signal handlers (ADR 0116 rule 18);
+  - coroutines and their stacks (ADR 0117 rule 2);
+  - the readiness poller (ADR 0117 rule 3);
+  - listening sockets, the run's identity and its descriptor limit (ADR 0123);
+  - descriptor-relative file operations for the package store (ADR 0122).
+
+  Each binding has:
+  - a safe wrapper;
+  - a doc comment that names why the standard library cannot do it;
+  - its own test, in `crates/una-sys/tests/`;
+  - a `// SAFETY:` comment on every `unsafe` block.
+- **What stays the same.**
+  - It depends on no crate of the repository, and on no external crate but `libc`.
+  - Every change gets an independent security review before it merges.
+  - `una-rt`, `una-interp`, `una-cli`, `una-http` and `una-project` may depend on it, and stay free of `unsafe` outside `una-rt`'s `ffi.rs`.
+  - A binding is added only when no safe standard-library form exists, and one binding serves every caller: no system call is bound twice.
+- **The size.** The cap counts the physical lines of `crates/una-sys/src/*.rs`; tests live in `crates/una-sys/tests/` and do not count. The lines each slice adds:
+
+  | Slice | Adds | Total |
+  | --- | --- | --- |
+  | Before these slices (`main`) | | 363 |
+  | ADR 0116 S6 (#943): an interruptible wait, and a wake without a request | 81 | 444 |
+  | ADR 0117 S1 (#966): coroutines, stacks, the switch | 531 | 975 |
+  | ADR 0117 S4 (#969): scopes whose bodies borrow | 29 | 1,004 |
+  | ADR 0117 S7 (#972): the poller, the descriptor limit | 195 | 1,199 |
+  | ADR 0123 S3 (#1005): listening sockets, the run's identity, the descriptor limit raised | 127 | 1,326 |
+  | Descriptor-relative file operations (#1094) | 196 | 1,522 |
+  | Bindings shared once merged (the descriptor limit, `geteuid`) | about −15 | about 1,507 |
+
+  The cap becomes **FINAL_CAP lines**: the exact total once these slices are merged, FINAL_TOTAL, with at most 5% headroom. The ADR 0116 amendment of 2026-10-19, which raised the cap to 1,200 for ADR 0117's slice S1, is superseded by this one. A slice that would go past the cap needs a new amendment, with its line count, before it merges.
