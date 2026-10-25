@@ -11,7 +11,7 @@ codes: [U0101, U0103, U2017, U2019, U4002, U5002]
 
 From edition `0.2`, `for x in xs` runs its body once for each element of a list, in order, and `for i in a..<b` or `for i in a..b` once for each integer of a range, in increasing order. A loop is a statement with the value `unit` (the value that carries no information): it does its work by updating `let edit` bindings, names whose value the code may change, declared before it.
 
-Learn more: [Loops: for and let edit](/learn/collections/loops-for-and-let-edit/).
+Learn more: [for over ranges and texts](/learn/loops/for-over-ranges-and-texts/).
 
 ```una
 module shop
@@ -104,7 +104,7 @@ pub basket_size(prices: List[Int]) -> Basket
 
 The diagnostic's reason says what the loop forgets, and what to do: "guard the use with an `if`, or move the update into a helper with an `edit` parameter whose `ensures` states what the use needs".
 
-**A labeled list raises the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures](/learn/information-flow/branches-and-failures-implicit-flows/)). The body runs under the top label of the list, or of a range's bounds, since how often it runs depends on them. There, `fail` and calls that can fail are U4002:
+**A labeled list raises the program counter** (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)). The body runs under the top label of the list, or of a range's bounds, since how often it runs depends on them. There, `fail` and calls that can fail are U4002:
 
 ```una
 -- fails with U4002
