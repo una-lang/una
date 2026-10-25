@@ -18,29 +18,38 @@
 //! - `provenance/<source>/<hex>/checkpoint-<size>`: that package's provenance at the resolution
 //!   point of `<size>` ([`crate::provenance`]): the root chain, the checkpoint with its
 //!   cosignatures, the release statement and its inclusion proof;
-//! - `state/<source>/...`: documents of the per-name state, which the registry client verifies
-//!   and stores; this module carries them and stores none.
+//! - `registry/<source>/<path>`: every file of the source's registry that the client read to
+//!   verify the lock's releases of it at the lock's resolution point ([`Recording`]): the root
+//!   chain, the checkpoint of that point and the kept checkpoints that time its entries, the
+//!   log's tiles and entry bundles, and the name map's tiles of each name and owner, so the
+//!   per-name state, the owners' keys and every inclusion proof travel with it.
 //!
 //! **Nothing in a bundle is trusted.** Unbundling reads the bundle once into memory, checks its
 //! listing and every entry's hash, and then, for every registry package of the lock, verifies
-//! its archive's digest against the lock and its provenance as every load does (rule 17): the
-//! root from the pin of `ita.una`, the checkpoint's log signature and witnesses, the statement's
-//! signature by the key the lock names, its inclusion, and its `manifest` against the archive's
-//! `ita.una`. Only when every package verifies is anything written; a bundle that fails writes
-//! nothing. No clock freshness is asked: the lock's digests and provenance decide.
+//! its archive's digest against the lock and its provenance as every load does (rule 17); and
+//! opens each source's copy ([`Memory`]) with the registry client at the lock's resolution point
+//! (rules 35 to 39): the root chain from the pin of `ita.una`, the checkpoint's log signature and
+//! witnesses, the consistency with the checkpoint Itaoca stores for the source, the name's whole
+//! chain with its yanks and advisories, and the owner's keys. The release the client reads MUST
+//! be the lock's: its log index and digest. Only when every package verifies is anything
+//! written; then the source's checkpoint is stored as its floor, which never moves backwards. No
+//! clock freshness is asked: the lock's digests and the proofs decide.
 //!
 //! Costs: O(B) for a bundle of B bytes, read and hashed once, with memory O(B); O(e log e) to
 //! sort e entries; and per package the provenance's O(log L) hashes.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use sha2::{Digest, Sha256};
 
 use super::{decimal, digest_hex, hex};
+use crate::client::{Point, Registry};
 use crate::content::check_path;
 use crate::itaoca::Itaoca;
 use crate::provenance::{self, Expected};
+use crate::transport::{Refusal, Transport, segments};
 use crate::tree::VerifiedTree;
 use crate::vendor::{Problem, check_source};
 
@@ -61,6 +70,88 @@ pub fn package_path(digest: &str) -> Option<String> {
 pub fn provenance_path(source: &str, digest: &str, size: u64) -> Option<String> {
     check_source(source).ok()?;
     digest_hex(digest).map(|hex| format!("provenance/{source}/{hex}/checkpoint-{size}"))
+}
+
+/// A transport that records every file it serves, so a bundle carries exactly what the client
+/// read to verify the lock.
+pub struct Recording<'t> {
+    /// The transport read through.
+    pub inner: &'t dyn Transport,
+    /// The files served, by path.
+    pub seen: RefCell<BTreeMap<String, Vec<u8>>>,
+}
+
+impl<'t> Recording<'t> {
+    /// A recording of `inner`.
+    pub fn new(inner: &'t dyn Transport) -> Recording<'t> {
+        Recording {
+            inner,
+            seen: RefCell::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl Transport for Recording<'_> {
+    fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
+        let got = self.inner.get(path, limit)?;
+        if let Some(bytes) = &got {
+            self.seen
+                .borrow_mut()
+                .insert(path.to_owned(), bytes.clone());
+        }
+        Ok(got)
+    }
+
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+}
+
+/// A source's registry files as a bundle carries them, served from memory.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Memory {
+    /// The source.
+    pub source: String,
+    /// The files, by path.
+    pub files: BTreeMap<String, Vec<u8>>,
+}
+
+impl Transport for Memory {
+    fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
+        segments(path)?;
+        match self.files.get(path) {
+            Some(bytes) if bytes.len() as u64 > limit => Err(format!(
+                "`{path}` of the bundle's copy of `{}` holds more than {limit} bytes",
+                self.source
+            )),
+            Some(bytes) => Ok(Some(bytes.clone())),
+            None => Ok(None),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("the bundle's copy of `{}`", self.source)
+    }
+}
+
+/// The copy of `source`'s registry files that the bundle `bytes`, as `read` read it, holds.
+pub fn memory(bytes: &[u8], read: &Read, source: &str) -> Memory {
+    let prefix = format!("registry/{source}/");
+    let files = read
+        .entries
+        .range(prefix.clone()..)
+        .take_while(|(path, _)| path.starts_with(&prefix))
+        .filter_map(|(path, range)| {
+            Some((
+                path.get(prefix.len()..)?.to_owned(),
+                bytes.get(range.clone())?.to_vec(),
+            ))
+        })
+        .collect();
+    Memory {
+        source: source.to_owned(),
+        files,
+    }
 }
 
 /// Whether `path` is an entry a bundle may hold, by its form: rule 27's, and one of the three
@@ -86,7 +177,9 @@ fn is_entry(path: &str) -> bool {
                     .and_then(decimal)
                     .is_some()
         }
-        ["state", source, _, ..] => check_source(source).is_ok(),
+        ["registry", source, rest @ ..] => {
+            check_source(source).is_ok() && !rest.is_empty() && segments(&rest.join("/")).is_ok()
+        }
         _ => false,
     }
 }
@@ -225,13 +318,14 @@ pub struct Packed {
 }
 
 /// The entries of a bundle for `packages`, each the package `expected` names, verified as it was
-/// loaded, with its archive and provenance; and `state`, documents of the per-name state, each
-/// below `state/<source>/`. Refused for a path this module does not name.
+/// loaded, with its archive and provenance; and `registries`, each source's files that the
+/// client read ([`Recording`]), below `registry/<source>/`. Refused for a path this module does
+/// not name.
 pub fn entries(
     packages: &[(Expected, Packed)],
-    state: Vec<(String, Vec<u8>)>,
+    registries: &[(String, BTreeMap<String, Vec<u8>>)],
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let mut out = Vec::with_capacity(packages.len() * 2 + state.len());
+    let mut out = Vec::with_capacity(packages.len() * 2);
     for (expected, packed) in packages {
         let archive = package_path(&expected.digest)
             .ok_or_else(|| format!("`{}` is not a digest", expected.digest))?;
@@ -241,11 +335,11 @@ pub fn entries(
         out.push((archive, packed.archive.clone()));
         out.push((provenance, packed.provenance.clone()));
     }
-    for (path, bytes) in state {
-        if !path.starts_with("state/") {
-            return Err(format!("`{path}` is not a document of the per-name state"));
+    for (source, files) in registries {
+        check_source(source)?;
+        for (path, bytes) in files {
+            out.push((format!("registry/{source}/{path}"), bytes.clone()));
         }
-        out.push((path, bytes));
     }
     // Two packages of one digest, source and resolution point are one entry.
     out.sort();
@@ -321,6 +415,60 @@ fn verify_parts(
     })
 }
 
+/// Opens `copy` with the registry client at the resolution point of the packages of its source
+/// among `expected`, with `floor` as the stored checkpoint (rules 35 to 39, no freshness), and
+/// checks that each of those packages is the release the client reads there, by log index and
+/// digest, and that its name's yanks and advisories verify. Returns the checkpoint read, to
+/// store as the source's floor; `Err` gives the package's index and why.
+fn verify_source(
+    copy: &Memory,
+    expected: &[Expected],
+    floor: Option<&str>,
+) -> Result<String, (usize, String)> {
+    let mut opened: Option<Registry<'_>> = None;
+    for (index, package) in expected.iter().enumerate() {
+        if package.source != copy.source {
+            continue;
+        }
+        if opened.is_none() {
+            let point = Point::At {
+                size: package.checkpoint_size,
+                hash: package.checkpoint_hash.clone(),
+            };
+            let registry = Registry::open(&copy.source, copy, &package.root, &point, floor)
+                .map_err(|why| (index, why))?;
+            opened = Some(registry);
+        }
+        let Some(registry) = opened.as_mut() else {
+            continue;
+        };
+        if registry.point.checkpoint.size != package.checkpoint_size {
+            return Err((
+                index,
+                "the lock names two resolution points of one source".to_owned(),
+            ));
+        }
+        let version =
+            crate::version::Version::parse_full(&package.version).map_err(|why| (index, why))?;
+        let release = registry
+            .release(&package.name, &version)
+            .map_err(|why| (index, why))?;
+        if release.index != package.logged || release.statement.digest != package.digest {
+            return Err((
+                index,
+                format!(
+                    "the registry's `{} {}` is not the lock's: its log index or digest differs",
+                    package.name, package.version
+                ),
+            ));
+        }
+        registry.marks(&package.name).map_err(|why| (index, why))?;
+    }
+    opened
+        .map(|registry| registry.point.document.clone())
+        .ok_or_else(|| (0, format!("no package of `{}` is locked", copy.source)))
+}
+
 /// What unbundling did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unbundled {
@@ -353,6 +501,31 @@ pub fn unbundle(
         ));
         verified.push(packed);
     }
+    // Each source's copy, opened by the client at the lock's resolution point, against the
+    // floor Itaoca stores: the releases are the lock's, and their names' states verify.
+    let mut floors: Vec<(String, String)> = Vec::new();
+    let sources: BTreeSet<&str> = expected.iter().map(|e| e.source.as_str()).collect();
+    for source in sources {
+        let copy = memory(bytes, &read, source);
+        let first = expected.iter().position(|e| e.source == source);
+        if copy.files.is_empty() {
+            return Err((
+                first,
+                Problem::Absent(format!(
+                    "the bundle holds no copy of the registry `{source}`, whose state its packages need"
+                )),
+            ));
+        }
+        for path in copy.files.keys() {
+            used.insert(format!("registry/{source}/{path}"));
+        }
+        let floor = itaoca
+            .load_checkpoint(source)
+            .map_err(|why| (first, Problem::Refused(why)))?;
+        let document = verify_source(&copy, expected, floor.as_deref())
+            .map_err(|(index, why)| (Some(index), Problem::Refused(why)))?;
+        floors.push((source.to_owned(), document));
+    }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
         let fail = |why: String| (Some(index), Problem::Refused(why));
@@ -374,6 +547,11 @@ pub fn unbundle(
                 ))
             })?;
         stored.push(format!("{} {}", package.name, package.version));
+    }
+    for (source, document) in &floors {
+        itaoca
+            .store_checkpoint(source, document)
+            .map_err(|why| (None, Problem::Refused(why)))?;
     }
     let unused = read
         .entries

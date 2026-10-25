@@ -22,7 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::decimal;
 use super::submit::{Promise, broken};
-use super::view::{ChainEntry, Failure, Registry};
+use crate::client::{Registry, hash_text};
+use crate::tlog::{merkle, owner};
+use crate::transport::Refusal;
 use crate::vendor::check_source;
 
 /// The format line of a position.
@@ -110,37 +112,65 @@ impl Position {
     }
 }
 
+/// An entry of a chain, as watching prints it: its log index, its leaf hash and its format
+/// line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seen {
+    /// Its log index.
+    pub index: u64,
+    /// Its leaf hash, `sha256:` and hex.
+    pub leaf: String,
+    /// Its format line, such as `ita-release/1`.
+    pub format: String,
+}
+
+/// The whole chain of `name` in `registry`, verified ([`Registry::chain`]), as watching reads
+/// it; the owner's chain is the name `owner:<owner>` ([`crate::tlog::owner::chain_name`]).
+pub fn chain_of(registry: &mut Registry<'_>, name: &str) -> Result<Vec<Seen>, Refusal> {
+    Ok(registry
+        .chain(name)?
+        .into_iter()
+        .map(|entry| Seen {
+            index: entry.index,
+            leaf: hash_text(&merkle::leaf_hash(entry.document.as_bytes())),
+            format: entry
+                .note
+                .text
+                .split('\n')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        })
+        .collect())
+}
+
 /// What watching found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     /// The new entries, by chain (the owner, then each name in order), oldest first.
-    pub entries: Vec<(String, ChainEntry)>,
+    pub entries: Vec<(String, Seen)>,
     /// The promises whose entries appeared.
     pub kept: Vec<Promise>,
     /// The promises broken: their time passed, and their entries did not appear.
     pub broken: Vec<Promise>,
     /// The position to store.
     pub position: Position,
-    /// States asked for, for the scaling test.
+    /// Chains read, for the scaling test.
     pub asked: usize,
 }
 
-/// Follows the owner of `position` and its names, and `more` names besides, from `position`;
-/// checks `promises` against the entries that appear.
+/// Follows the owner of `position` and the names it holds, and `more` names besides, from
+/// `position`, each chain read whole and verified by `chain` (the owner's by the name
+/// `owner:<owner>`); checks `promises` against the entries that appear, at a checkpoint of
+/// witness time `checkpoint_time`. A chain shorter than the count stored is refused: a chain
+/// never shrinks.
 pub fn watch(
-    registry: &dyn Registry,
+    chain: &mut dyn FnMut(&str) -> Result<Vec<Seen>, Refusal>,
+    checkpoint_time: u64,
     position: &Position,
     more: &[String],
     promises: &[Promise],
-) -> Result<Report, Failure> {
-    let source = position.source.as_str();
-    let owner = registry.owner(source, &position.owner, position.owner_count)?;
-    if owner.count < position.owner_count {
-        return Err(Failure::Refused(format!(
-            "the chain of `{}` has {} entries, fewer than the {} already seen",
-            position.owner, owner.count, position.owner_count
-        )));
-    }
+) -> Result<Report, Refusal> {
     let mut report = Report {
         entries: Vec::new(),
         kept: Vec::new(),
@@ -148,44 +178,44 @@ pub fn watch(
         position: Position {
             source: position.source.clone(),
             owner: position.owner.clone(),
-            owner_count: owner.count,
+            owner_count: 0,
             names: BTreeMap::new(),
         },
-        asked: 1,
+        asked: 0,
     };
     let mut logged: BTreeSet<String> = BTreeSet::new();
-    for entry in &owner.entries {
-        logged.insert(entry.leaf.clone());
-        report.entries.push((position.owner.clone(), entry.clone()));
-    }
+    let mut follow = |label: &str, chain_name: &str, held: u64, report: &mut Report| {
+        let entries = chain(chain_name)?;
+        report.asked += 1;
+        let count = entries.len() as u64;
+        if count < held {
+            return Err(format!(
+                "the chain of `{label}` has {count} entries, fewer than the {held} already seen"
+            ));
+        }
+        for entry in entries.into_iter().skip(usize::try_from(held).unwrap_or(usize::MAX)) {
+            logged.insert(entry.leaf.clone());
+            report.entries.push((label.to_owned(), entry));
+        }
+        Ok(count)
+    };
+    let owner_chain = owner::chain_name(&position.owner);
+    report.position.owner_count =
+        follow(&position.owner, &owner_chain, position.owner_count, &mut report)?;
     let mut names: BTreeSet<&str> = position.names.keys().map(String::as_str).collect();
-    names.extend(owner.packages.iter().map(String::as_str));
     names.extend(more.iter().map(String::as_str));
     if names.len() > MAX_NAMES {
-        return Err(Failure::Unavailable(format!(
-            "watching follows at most {MAX_NAMES} names"
-        )));
+        return Err(format!("watching follows at most {MAX_NAMES} names"));
     }
     for name in names {
         let held = position.names.get(name).copied().unwrap_or(0);
-        let state = registry.name(source, name, held)?;
-        report.asked += 1;
-        if state.count < held {
-            return Err(Failure::Refused(format!(
-                "the chain of `{name}` has {} entries, fewer than the {held} already seen",
-                state.count
-            )));
-        }
-        for entry in state.entries {
-            logged.insert(entry.leaf.clone());
-            report.entries.push((name.to_owned(), entry));
-        }
-        report.position.names.insert(name.to_owned(), state.count);
+        let count = follow(name, name, held, &mut report)?;
+        report.position.names.insert(name.to_owned(), count);
     }
     for promise in promises {
         if logged.contains(&promise.leaf) {
             report.kept.push(promise.clone());
-        } else if broken(promise, owner.checkpoint_time, false) {
+        } else if broken(promise, checkpoint_time, false) {
             report.broken.push(promise.clone());
         }
     }

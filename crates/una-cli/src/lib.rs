@@ -18,6 +18,7 @@ mod migrate;
 mod package;
 mod proof_key;
 mod recovery;
+mod registry;
 mod report;
 mod runtime;
 mod std_builtins;
@@ -674,14 +675,25 @@ pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca
     una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
 }
 
-/// The codes `una ita audit` reports for the package at `path` against `registry`, the states
-/// a verified registry client gives (ADR 0122 rule 41, U7014): for the explain examples of
-/// U7014 and the tests, which state a registry's state without a network.
+/// The codes `una ita audit` reports for the package at `path`, each registry package's facts
+/// from `facts_of`, as the verified client gives them (ADR 0122 rule 41, U7014): for the explain
+/// examples of U7014, which state a registry's state without a registry.
 pub fn audit_codes(
     path: &Path,
-    registry: &dyn una_project::registry::view::Registry,
+    facts_of: &mut dyn FnMut(
+        &una_project::registry::audit::Locked,
+    ) -> Result<una_project::registry::audit::Facts, String>,
 ) -> Vec<Code> {
-    ita_registry::audit_codes(path, registry)
+    ita_registry::audit_codes(path, facts_of)
+}
+
+/// The local clock, in seconds since the Unix epoch, which only the freshness of a registry's
+/// checkpoint reads (ADR 0122 rules 36.4 and 39); 0 when the clock is before the epoch, which
+/// makes every checkpoint look ahead of it, so resolution stops with a clock skew.
+pub(crate) fn local_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
@@ -790,6 +802,7 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
                 | ItaCommand::Vendor { path }
                 | ItaCommand::Verify { path }
                 | ItaCommand::Remove { path, .. }
+                | ItaCommand::Fetch { path }
                 | ItaCommand::Publish { path, .. }
                 | ItaCommand::Yank { path, .. }
                 | ItaCommand::Audit { path }
@@ -1050,6 +1063,8 @@ fn run_command(
                     stdout,
                     stderr,
                 };
+                let store = itaoca(environment);
+                let clock = local_clock();
                 match command {
                     ItaCommand::Tree { path } => ita::tree_command(&path, output),
                     ItaCommand::Remove { name, path } => ita::remove_command(&name, &path, output),
@@ -1058,10 +1073,21 @@ fn run_command(
                         check,
                         accept_authority,
                         accept_trust,
+                        accept_key,
                         dry_run,
                     } => ita::lock_command(
                         &path,
-                        ita::LockOptions::lock(check, dry_run, accept_authority, &accept_trust),
+                        ita::LockOptions {
+                            accept_key: &accept_key,
+                            itaoca: store.as_ref(),
+                            now: clock,
+                            ..ita::LockOptions::lock(
+                                check,
+                                dry_run,
+                                accept_authority,
+                                &accept_trust,
+                            )
+                        },
                         output,
                     ),
                     ItaCommand::Update {
@@ -1070,6 +1096,7 @@ fn run_command(
                         now,
                         accept_authority,
                         accept_trust,
+                        accept_key,
                         dry_run,
                     } => {
                         let options = ita::LockOptions {
@@ -1081,6 +1108,9 @@ fn run_command(
                                     hours.saturating_mul(3600)
                                 })
                             },
+                            accept_key: &accept_key,
+                            itaoca: store.as_ref(),
+                            now: clock,
                             ..ita::LockOptions::lock(
                                 false,
                                 dry_run,
@@ -1105,6 +1135,8 @@ fn run_command(
                             } else {
                                 una_project::resolve::COOLDOWN
                             },
+                            itaoca: store.as_ref(),
+                            now: clock,
                             ..ita::LockOptions::lock(false, dry_run, false, &[])
                         };
                         ita::add_command(
@@ -1117,28 +1149,23 @@ fn run_command(
                             output,
                         )
                     }
+                    ItaCommand::Fetch { path } => {
+                        ita::fetch_command(&path, store.as_ref(), output)
+                    }
                     ItaCommand::Vendor { path } => {
-                        ita::vendor_command(&path, itaoca(environment).as_ref(), output)
+                        ita::vendor_command(&path, store.as_ref(), output)
                     }
                     ItaCommand::Verify { path } => {
-                        ita::verify_command(&path, itaoca(environment).as_ref(), output)
+                        ita::verify_command(&path, store.as_ref(), output)
                     }
                     ItaCommand::Publish { path } => {
                         let solving = solving(DEFAULT_WALLCLOCK.as_secs());
-                        let registry = ita_registry::client(solving.itaoca.as_ref());
                         let home = variable(environment, "HOME");
                         let keys = ita_registry::keys_dir(home.as_deref());
-                        ita_registry::publish_command(
-                            &path,
-                            keys.as_deref(),
-                            &solving,
-                            registry.as_deref(),
-                            output,
-                        )
+                        ita_registry::publish_command(&path, keys.as_deref(), &solving, output)
                     }
                     ItaCommand::Yank { version, path } => {
                         let store = itaoca(environment);
-                        let registry = ita_registry::client(store.as_ref());
                         let home = variable(environment, "HOME");
                         let keys = ita_registry::keys_dir(home.as_deref());
                         ita_registry::yank_command(
@@ -1146,26 +1173,15 @@ fn run_command(
                             &path,
                             keys.as_deref(),
                             store.as_ref(),
-                            registry.as_deref(),
                             output,
                         )
                     }
                     ItaCommand::Audit { path } => {
-                        let store = itaoca(environment);
-                        let registry = ita_registry::client(store.as_ref());
-                        ita_registry::audit_command(&path, registry.as_deref(), output)
+                        ita_registry::audit_command(&path, itaoca(environment).as_ref(), output)
                     }
                     ItaCommand::Watch { owner, names, from } => {
                         let store = itaoca(environment);
-                        let registry = ita_registry::client(store.as_ref());
-                        ita_registry::watch_command(
-                            &owner,
-                            &names,
-                            &from,
-                            store.as_ref(),
-                            registry.as_deref(),
-                            output,
-                        )
+                        ita_registry::watch_command(&owner, &names, &from, store.as_ref(), output)
                     }
                     ItaCommand::Bundle { file, path } => ita_registry::bundle_command(
                         &file,

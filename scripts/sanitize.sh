@@ -194,6 +194,9 @@ fuzz_bin=$fuzz_out/build/$host/release
 # machine, about ten times below the ceiling.
 FUZZ_SEED=766
 FUZZ_TARGETS="literal:350000 words:350000 json:450000"
+# The parsers of the documents a package registry serves (ADR 0122). Their counts and floors are
+# placeholders until a run on the release machine measures them.
+FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000"
 FUZZ_CEILING=600
 # The coverage each target must reach, so that a target that returns early on every input, or a
 # runtime built without libFuzzer's counters, fails rather than running its count for nothing:
@@ -201,6 +204,7 @@ FUZZ_CEILING=600
 # (`ft`) its run ends with. Each floor is nine tenths of a measured run's value
 # (docs/release-gates.md).
 FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
+FUZZ_FLOORS="$FUZZ_FLOORS registry_note:1:1:1 registry_root:1:1:1 registry_statement:1:1:1 registry_owner:1:1:1 registry_map_tile:1:1:1 registry_mirrors:1:1:1 registry_tile:1:1:1 registry_provenance:1:1:1 registry_archive:1:1:1"
 
 # The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml
 # and left out here, or the reverse, fails.

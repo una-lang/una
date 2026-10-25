@@ -52,8 +52,8 @@ pub struct RegistryPackage {
     pub problem: Option<(Code, String)>,
 }
 
-/// A path dependency of the root: the need that names it, and its files, or why they could not
-/// be read.
+/// A dependency of the root: a path dependency, or a registry release of the lock that loaded
+/// verified; the need that names it, and its files, or why they could not be read.
 #[derive(Debug)]
 pub struct Dependency {
     /// The need's index in the root's `needs`.
@@ -67,6 +67,17 @@ pub struct Dependency {
     pub modules: Vec<FileId>,
     /// Why it could not be loaded.
     pub error: Option<String>,
+    /// For a registry release, where it comes from; `None` for a path dependency.
+    pub registry: Option<RegistryOrigin>,
+}
+
+/// Where a mounted registry release comes from (ADR 0122 rules 16 and 58).
+#[derive(Clone, Debug)]
+pub struct RegistryOrigin {
+    /// The source.
+    pub source: String,
+    /// Its index among the lock's packages.
+    pub lock: usize,
 }
 
 /// Loads the package at `path` (ADR 0021 rule 1). Its registry packages are looked for in its
@@ -123,7 +134,7 @@ pub fn load_in(
         load_dependencies(path, &text, overlay, &mut package);
         if let Some(lock) = package.lock {
             let lock = package.sources.file(lock).text().to_owned();
-            package.registry = load_registry(path, &text, &lock, itaoca);
+            load_registry(path, &text, &lock, itaoca, &mut package);
         }
     }
     Ok(package)
@@ -131,15 +142,19 @@ pub fn load_in(
 
 /// Loads and verifies each registry package of the lock (ADR 0122 rule 17), when the lock reads
 /// without an error: a lock that does not read is U7009 already, and names nothing to trust.
+/// A release that loads verified and that a need of the root names is added to the package as
+/// a dependency, its files the verified bytes read once, under `vendor/ita/<source>/<release>/`
+/// or `itaoca/<source>/<release>/` in the source database, which [`project`] mounts.
 fn load_registry(
     root: &Path,
     manifest: &str,
     lock: &str,
     itaoca: Option<&Itaoca>,
-) -> Vec<RegistryPackage> {
+    package: &mut Package,
+) {
     let (read, errors) = parse_ita_lock(lock);
     if !errors.is_empty() {
-        return Vec::new();
+        return;
     }
     let (manifest, _) = una_syntax::ita::parse_manifest(manifest);
     let mut registry = Vec::new();
@@ -164,13 +179,110 @@ fn load_registry(
             Some(&manifest),
             locked,
         ) {
-            Ok(_) => None,
+            Ok(loaded) => {
+                mount_registry(package, &manifest, locked, source, index, &loaded);
+                None
+            }
             Err(Problem::Absent(message)) => Some((Code::U7011, message)),
             Err(Problem::Refused(message)) => Some((Code::U7010, message)),
         };
         registry.push(RegistryPackage { index, problem });
     }
-    registry
+    package.registry = registry;
+}
+
+/// Adds the verified release `loaded`, the lock's package `index` of `source`, as a dependency
+/// of the root, when a need of the root names it: its name, its source, and its major line.
+fn mount_registry(
+    package: &mut Package,
+    manifest: &ita::Manifest,
+    locked: &ita::LockPackage,
+    source: &str,
+    index: usize,
+    loaded: &una_project::vendor::Loaded,
+) {
+    let Ok(version) = una_project::version::Version::parse_full(&locked.version.value) else {
+        return;
+    };
+    let need = manifest.needs.iter().position(|need| {
+        need.name.value == locked.name.value
+            && matches!(
+                need.origin.as_ref().map(|o| &o.value),
+                Some(ita::Origin::Source(s)) if s == source
+            )
+            && need
+                .version
+                .as_ref()
+                .and_then(|v| una_project::version::Version::parse(&v.value).ok())
+                .is_some_and(|written| written.version.line() == version.line())
+    });
+    let Some(need) = need else {
+        return;
+    };
+    let Ok(release) =
+        una_project::vendor::release_dir(&locked.name.value.to_string(), &locked.version.value)
+    else {
+        return;
+    };
+    let place = match loaded.place {
+        una_project::vendor::Place::Vendor => "vendor/ita",
+        una_project::vendor::Place::Itaoca => "itaoca",
+    };
+    let dir = format!("{place}/{source}/{release}");
+    let mut dependency = Dependency {
+        need,
+        dir: dir.clone(),
+        manifest: None,
+        modules: Vec::new(),
+        error: None,
+        registry: Some(RegistryOrigin {
+            source: source.to_owned(),
+            lock: index,
+        }),
+    };
+    for file in loaded.tree.files() {
+        if file.path == "ita.una" {
+            let id = package.sources.add(format!("{dir}/ita.una"), &file.bytes);
+            dependency.manifest = Some(id);
+        } else if file.path.starts_with("src/") && file.path.ends_with(".una") {
+            let id = package.sources.add(format!("{dir}/{}", file.path), &file.bytes);
+            dependency.modules.push(id);
+        }
+    }
+    package.dependencies.push(dependency);
+}
+
+/// A package of edition 0.4 from its files in memory, by their paths in the package: its
+/// `ita.una` and its modules under `src/`, in path order, with no lock and no dependency. It
+/// checks the code of a verified archive (ADR 0122 rule 37) from the bytes that were verified,
+/// never read from disk again.
+pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
+    let mut package = Package {
+        sources: SourceDb::new(),
+        single: false,
+        format: Format::Ita,
+        both_manifests: false,
+        manifest: None,
+        lock: None,
+        modules: Vec::new(),
+        disk_paths: BTreeMap::new(),
+        dependencies: Vec::new(),
+        registry: Vec::new(),
+    };
+    let mut sorted: Vec<&(String, String)> = files.iter().collect();
+    sorted.sort();
+    for (path, text) in sorted {
+        if path == "ita.una" {
+            package.manifest = Some(package.sources.add(path.clone(), text.as_bytes()));
+        } else if path.starts_with("src/") && path.ends_with(".una") {
+            let id = package.sources.add(path.clone(), text.as_bytes());
+            package.modules.push(id);
+        }
+    }
+    if package.manifest.is_none() {
+        return Err(LoadError::NotAPackage(PathBuf::from("ita.una")));
+    }
+    Ok(package)
 }
 
 /// Loads the path dependencies that the root's `ita.una` names (ADR 0122 rule 7). A directory
@@ -201,6 +313,7 @@ fn load_dependencies(
             manifest: None,
             modules: Vec::new(),
             error: None,
+            registry: None,
         };
         let refusal = (|| {
             if !una_project::ita::is_relative_dir(&written) || written == "." {
@@ -305,23 +418,37 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                 range: need.range.clone(),
                 message,
             };
-            let Some(ita::At {
-                value: ita::Origin::Path(_),
-                ..
-            }) = &need.origin
-            else {
-                // Registry and workspace sources are not loaded by this release: a need of one
-                // is refused, so no import reaches a package that is not checked.
-                located(
-                    manifest_id,
-                    vec![refuse(format!(
-                        "this release loads only path dependencies, so `{}` cannot be needed",
-                        need.name.value
-                    ))],
-                );
-                continue;
+            // A path dependency, or a release of a source of `sources` that the lock pins and
+            // that loaded verified (`spec/30 §14`). A need of `itaty`, whose root is not built
+            // into this release, or of a workspace member is refused, so no import reaches a
+            // package that is not checked. A registry need whose release did not load is
+            // reported at its line of the lock (U7009, U7010, U7011), and is not mounted.
+            let registry_need = match need.origin.as_ref().map(|o| &o.value) {
+                Some(ita::Origin::Path(_)) => false,
+                Some(ita::Origin::Source(source))
+                    if source != una_project::ita::ITATY
+                        && read
+                            .as_deref()
+                            .is_some_and(|r| r.sources.iter().any(|s| s.name.value == *source)) =>
+                {
+                    true
+                }
+                _ => {
+                    located(
+                        manifest_id,
+                        vec![refuse(format!(
+                            "this release loads path dependencies and the packages of the sources of `sources`, so `{}` cannot be needed",
+                            need.name.value
+                        ))],
+                    );
+                    continue;
+                }
             };
-            let Some(dependency) = package.dependencies.iter().find(|d| d.need == index) else {
+            let Some(dependency) = package
+                .dependencies
+                .iter()
+                .find(|d| d.need == index && d.registry.is_some() == registry_need)
+            else {
                 continue;
             };
             if let Some(reason) = &dependency.error {
@@ -341,7 +468,14 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                 parse_ita_manifest(package.sources.file(dependency_manifest).text());
             let invalid = !errors.is_empty();
             located(dependency_manifest, errors);
-            let mut problems = dependency_problems(need, &settings, &manifest);
+            let mut problems =
+                dependency_problems(need, &settings, &manifest, dependency.registry.is_none());
+            if dependency.registry.is_some() && !settings.trusted.is_empty() {
+                problems.push(refuse(format!(
+                    "`{}` has trusted modules, which this release does not load for a registry package yet",
+                    need.name.value
+                )));
+            }
             if invalid {
                 problems.push(refuse(format!(
                     "the path dependency `{}` has an invalid ita.una",
@@ -352,7 +486,9 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
                 located(manifest_id, problems);
                 continue;
             }
-            if let Some(version) = &settings.version {
+            if let Some(version) = &settings.version
+                && dependency.registry.is_none()
+            {
                 versions.insert(dependency.dir.clone(), version.value.clone());
             }
             let local = una_project::ita::local_name(need);
@@ -538,12 +674,14 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
     (manifest, diagnostics)
 }
 
-/// Why a loaded path dependency may not be used as the root writes it (ADR 0122 rules 42, 49
-/// and 53, and what this release does not load yet), each at the root's need.
+/// Why a loaded dependency may not be used as the root writes it (ADR 0122 rules 42, 49 and 53,
+/// and what this release does not load yet), each at the root's need. `local` is a path
+/// dependency, whose name the root accepts with `accept name`.
 pub(crate) fn dependency_problems(
     need: &ita::Need,
     dependency: &Manifest,
     root: &Manifest,
+    local: bool,
 ) -> Vec<ProjectError> {
     let mut problems = Vec::new();
     let mut problem = |code: Code, message: String| {
@@ -570,7 +708,7 @@ pub(crate) fn dependency_problems(
     // Rule 42: a local package carries a name that a registry may hold (an unscoped name is
     // Itaúna's, and an owner may be any registry's, which no client can tell offline), so the
     // root accepts it by name.
-    if need.accept_name.is_none() {
+    if local && need.accept_name.is_none() {
         problem(
             Code::U7012,
             format!(

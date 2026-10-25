@@ -1,5 +1,5 @@
-//! Mirrors (ADR 0122 rule 40): `mirrors.una` in Itaoca lists, per source, URLs to try before
-//! the source's own, and a document is taken from the first place whose copy verifies.
+//! Mirrors (ADR 0122 rule 40): `mirrors.una` in Itaoca lists, per source, the locations to try
+//! before the source's own, and a registry is read from the first place whose copy verifies.
 //!
 //! ```una
 //! mirrors
@@ -9,32 +9,36 @@
 //! ```
 //!
 //! A mirror serves the same paths as its source, and everything it serves is verified as if
-//! the source had served it, so it can refuse service or serve an old checkpoint, which
-//! freshness bounds, and nothing else. A mirror whose document does not verify is skipped and
-//! named (U7010); one that cannot serve is skipped as a refusal of service. Each URL is read by
-//! [`location`], which refuses plain `http://` and every scheme but `https` and `file`.
+//! the source had served it ([`crate::client`]), so it can refuse service or serve an old
+//! checkpoint, which freshness bounds, and nothing else. Each location is read by
+//! [`Location::parse`] and must be an `https://` URL or a `file://` URL of a local directory:
+//! plain `http://`, every other scheme, and a bare path are refused. A mirror whose copy does
+//! not verify is skipped and named (U7010 where a command reports it); one that cannot serve is
+//! skipped as a refusal of service.
 //!
 //! Costs: reading the file is O(n) in its size; [`first_verified`] tries at most m + 1 places
-//! for m mirrors, O(m) transports and verifications, and stops at the first that verifies.
+//! for m mirrors, and stops at the first that verifies.
 
 use std::collections::BTreeMap;
 
 use una_diag::Code;
 use una_syntax::ita::{self, Item};
 
-use super::transport::{Failure, Location, Transport, location};
 use crate::ProjectError;
+use crate::transport::{Location, Transport};
 use crate::vendor::check_source;
 
-/// The most bytes of `mirrors.una`, as of `ita.una` (`spec/30 §1` rule 4).
+/// The name of the file in Itaoca's directory.
+pub const FILE: &str = "mirrors.una";
+/// The most bytes of `mirrors.una`, as of `ita.una` (`spec/30 §1`).
 pub const MAX_BYTES: usize = 1 << 20;
 /// The most mirrors of one source.
 pub const MAX_PER_SOURCE: usize = 64;
 
-/// A mirror: its URL as written, and where it is.
+/// A mirror: its location as written, and where it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mirror {
-    /// The URL, as written.
+    /// The location, as written.
     pub url: String,
     /// Where it is.
     pub location: Location,
@@ -48,7 +52,7 @@ pub struct Mirrors {
 }
 
 impl Mirrors {
-    /// The mirrors of `source`, to try before its own URL; none when it has none.
+    /// The mirrors of `source`, to try before its own location; none when it has none.
     pub fn of(&self, source: &str) -> &[Mirror] {
         self.by_source.get(source).map_or(&[], Vec::as_slice)
     }
@@ -62,16 +66,31 @@ fn refusal(range: std::ops::Range<usize>, message: impl Into<String>) -> Project
     }
 }
 
+/// A mirror's location: an `https://` URL, or a `file://` URL of a local directory. Plain
+/// `http://`, every other scheme and a bare path are refused.
+pub fn location(url: &str) -> Result<Location, String> {
+    if !url.starts_with("https://") && !url.starts_with("file://") {
+        return Err(format!(
+            "`{url}` is not a mirror's location: write an `https://` URL or a `file://` URL of a directory; plain `http://` is never used"
+        ));
+    }
+    Location::parse(url)
+}
+
 /// Reads `mirrors.una`: one line `mirrors`, below it one line per source, and below each
-/// source one text per URL. A source named twice, a URL listed twice for one source, more than
-/// [`MAX_PER_SOURCE`] of them, and a URL that [`location`] refuses, plain `http://` included,
-/// are each U7008 at their line; the file is refused whole above [`MAX_BYTES`].
+/// source one text per location. A source named twice, a location listed twice for one source,
+/// more than [`MAX_PER_SOURCE`] of them, and a location that [`location`] refuses, plain
+/// `http://` included, are each U7008 at their line; the file is refused whole above
+/// [`MAX_BYTES`]. O(n).
 pub fn parse(text: &str) -> (Mirrors, Vec<ProjectError>) {
     let mut mirrors = Mirrors::default();
     if text.len() > MAX_BYTES {
         return (
             mirrors,
-            vec![refusal(0..0, format!("mirrors.una holds more than {MAX_BYTES} bytes"))],
+            vec![refusal(
+                0..0,
+                format!("mirrors.una holds more than {MAX_BYTES} bytes"),
+            )],
         );
     }
     let read = ita::lines(text);
@@ -132,7 +151,7 @@ pub fn parse(text: &str) -> (Mirrors, Vec<ProjectError>) {
                     _ => {
                         errors.push(refusal(
                             url_line.range.clone(),
-                            "a mirror is a URL in quotes",
+                            "a mirror is a location in quotes",
                         ));
                         continue;
                     }
@@ -140,7 +159,7 @@ pub fn parse(text: &str) -> (Mirrors, Vec<ProjectError>) {
                 _ => {
                     errors.push(refusal(
                         url_line.range.clone(),
-                        "a mirror is a URL in quotes, one per line",
+                        "a mirror is a location in quotes, one per line",
                     ));
                     continue;
                 }
@@ -169,10 +188,10 @@ pub fn parse(text: &str) -> (Mirrors, Vec<ProjectError>) {
     (mirrors, errors)
 }
 
-/// A place skipped: the transport's name, and why.
+/// A place skipped: the place, as its location is written, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skipped {
-    /// The transport, by the URL it was made from.
+    /// The place.
     pub from: String,
     /// Why.
     pub reason: String,
@@ -181,57 +200,66 @@ pub struct Skipped {
 /// What [`first_verified`] found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fetched<T> {
-    /// The verified value and the transport that served it, when one did.
+    /// The verified value and the place that served it, when one did.
     pub value: Option<(T, String)>,
-    /// The places that served a document that did not verify: evidence against each (U7010).
+    /// The places that served a copy that did not verify: evidence against each (U7010).
     pub refused: Vec<Skipped>,
-    /// The places that did not serve it: a refusal of service, or no document there.
+    /// The places that did not serve: a refusal of service, no transport, or nothing there.
     pub unavailable: Vec<Skipped>,
-    /// How many documents were verified, for the scaling test.
-    pub tried: usize,
 }
 
-/// The document at `path` from the first of `transports`, in order (the mirrors, then the
-/// source's own), whose bytes `verify` accepts. A place whose document does not verify is
-/// skipped and named in `refused`, and the next is tried: one place serving a bad document
-/// never stops a good one from being used, and never makes a bad one accepted.
-pub fn first_verified<T>(
-    transports: &[&dyn Transport],
-    path: &str,
-    limit: u64,
-    verify: &dyn Fn(&[u8]) -> Result<T, String>,
+/// A place a registry may be read from: its location as written, and its transport, or why it
+/// has none (an `https://` location, in this release).
+pub type Place<'p> = (String, Result<&'p dyn Transport, String>);
+
+/// The first of `places`, in order (the mirrors, then the source's own), from which `verify`
+/// accepts a copy. `verify` reads what it needs through the place's transport. A place whose
+/// copy does not verify is skipped and named in `refused`, and the next is tried: one place
+/// serving a bad copy never stops a good one from being used, and never makes a bad one
+/// accepted. A place with no transport, or whose transport cannot serve, is `unavailable`.
+pub fn first_verified<'p, T>(
+    places: &[Place<'p>],
+    verify: &mut dyn FnMut(&'p dyn Transport) -> Result<T, Attempt>,
 ) -> Fetched<T> {
     let mut fetched = Fetched {
         value: None,
         refused: Vec::new(),
         unavailable: Vec::new(),
-        tried: 0,
     };
-    for transport in transports {
-        let bytes = match transport.get(path, limit) {
-            Ok(bytes) => bytes,
-            Err(failure) => {
+    for (from, transport) in places {
+        let transport = match transport {
+            Ok(transport) => *transport,
+            Err(reason) => {
                 fetched.unavailable.push(Skipped {
-                    from: transport.name().to_owned(),
-                    reason: match failure {
-                        Failure::Absent => format!("it has no `{path}`"),
-                        Failure::Unavailable(reason) => reason,
-                    },
+                    from: from.clone(),
+                    reason: reason.clone(),
                 });
                 continue;
             }
         };
-        fetched.tried += 1;
-        match verify(&bytes) {
+        match verify(transport) {
             Ok(value) => {
-                fetched.value = Some((value, transport.name().to_owned()));
+                fetched.value = Some((value, from.clone()));
                 return fetched;
             }
-            Err(reason) => fetched.refused.push(Skipped {
-                from: transport.name().to_owned(),
+            Err(Attempt::Unavailable(reason)) => fetched.unavailable.push(Skipped {
+                from: from.clone(),
+                reason,
+            }),
+            Err(Attempt::Refused(reason)) => fetched.refused.push(Skipped {
+                from: from.clone(),
                 reason,
             }),
         }
     }
     fetched
+}
+
+/// Why a place's copy was not taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Attempt {
+    /// It did not serve: a refusal of service, or nothing there.
+    Unavailable(String),
+    /// It served a copy that does not verify.
+    Refused(String),
 }

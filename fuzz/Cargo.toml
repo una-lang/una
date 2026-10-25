@@ -1,4 +1,5 @@
-# The fuzz targets of the native runtime (#766, the `sanitize` release gate). Outside the
+# The fuzz targets of the native runtime (#766, the `sanitize` release gate) and of the parsers
+# of the documents a package registry serves (ADR 0122). Outside the
 # workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
 # it. scripts/sanitize.sh builds it with the checking toolchain of scripts/check-toolchain.toml,
 # with libFuzzer's coverage, AddressSanitizer and `--cfg una_fuzz`, and runs each target.
@@ -16,6 +17,8 @@ publish = false
 libfuzzer-sys = "=0.4.13"
 num-bigint = "0.4.6"
 una-core = { path = "../crates/una-core" }
+# The parsers of the documents a registry serves (ADR 0122 rules 29 to 39), in pure Rust.
+una-project = { path = "../crates/una-project" }
 una-rt = { path = "../crates/una-rt" }
 
 [[bin]]
@@ -42,6 +45,69 @@ bench = false
 [[bin]]
 name = "canary"
 path = "fuzz_targets/canary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_note"
+path = "fuzz_targets/registry_note.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_root"
+path = "fuzz_targets/registry_root.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_statement"
+path = "fuzz_targets/registry_statement.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_owner"
+path = "fuzz_targets/registry_owner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_map_tile"
+path = "fuzz_targets/registry_map_tile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_tile"
+path = "fuzz_targets/registry_tile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_provenance"
+path = "fuzz_targets/registry_provenance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_archive"
+path = "fuzz_targets/registry_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_mirrors"
+path = "fuzz_targets/registry_mirrors.rs"
 test = false
 doc = false
 bench = false

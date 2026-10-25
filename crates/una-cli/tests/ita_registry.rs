@@ -1,12 +1,23 @@
 //! `una ita publish`, `yank`, `audit`, `watch`, `bundle` and `unbundle` (ADR 0122 rules 33, 36,
-//! 36.2 and 40 to 43, `spec/30 §14`).
+//! 36.2 and 41 to 43, `spec/30 §15`).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "../../una-project/tests/support/registry.rs"]
+mod support;
+
 use std::path::{Path, PathBuf};
 
 use pretty_assertions::assert_eq;
+use support::{TestRegistry, keypair};
+use una_project::client::{Point, Registry};
+use una_project::content::File;
+use una_project::registry::keyfile::SigningKey;
+use una_project::registry::submit::{self, NameState, Submission};
+use una_project::transport::Directory;
+use una_project::tree::VerifiedTree;
+use una_project::version::Version;
 
 const MANIFEST: &str = "ita demo\n  version 0.1.0\n  edition 0.4\n";
 const MODULE: &str = "module demo\n\npub one() -> Int = 1\n";
@@ -65,162 +76,152 @@ fn codes_of(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// A test registry `acme` with one release, `acme/ledger 0.3.1`, signed by its own root,
-/// log, witnesses and publisher (ADR 0122 rules 35 to 38).
-mod registry {
-    use ed25519_dalek::{Signer, SigningKey};
-    use una_project::content::{File, archive, digest_of};
-    use una_project::provenance::{Provenance, sha256_digest, signed_name};
-    use una_project::tlog::merkle::{inclusion_proof, leaf_hash, root as tree_root};
-    use una_project::tlog::note::{Key, encode_base64};
+const DAY: u64 = 24 * 3600;
 
-    const LOG: &str = "acme.example/log";
-
-    fn keypair(seed: u8, name: &str) -> (SigningKey, Key) {
-        let pair = SigningKey::from_bytes(&[seed; 32]);
-        let public: [u8; 32] = pair.verifying_key().to_bytes();
-        (
-            pair,
-            Key {
-                name: name.to_owned(),
-                public,
-            },
-        )
-    }
-
-    fn sign_line(pair: &SigningKey, key: &Key, text: &str) -> String {
-        let mut bytes = key.id().to_vec();
-        bytes.extend_from_slice(&pair.sign(text.as_bytes()).to_bytes());
-        format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
-    }
-
-    fn cosign_line(pair: &SigningKey, key: &Key, text: &str, time: u64) -> String {
-        let message = format!("cosignature/v1\ntime {time}\n{text}");
-        let mut bytes = key.cosignature_id().to_vec();
-        bytes.extend_from_slice(&time.to_be_bytes());
-        bytes.extend_from_slice(&pair.sign(message.as_bytes()).to_bytes());
-        format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
-    }
-
-    fn key_line(key: &Key) -> String {
-        format!("key {} {}\n", key.name, encode_base64(&key.public))
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    /// The release: its archive, provenance, root digest, and the lines a lock writes for it.
-    pub struct Release {
-        pub archive: Vec<u8>,
-        pub provenance: Vec<u8>,
-        pub root: String,
-        pub lock: String,
-    }
-
-    pub fn release() -> Release {
-        let mut files = vec![
-            File {
-                path: "ita.una".to_owned(),
-                bytes: b"ita acme/ledger\n  version 0.3.1\n  edition 0.4\n".to_vec(),
-            },
-            File {
-                path: "src/ledger.una".to_owned(),
-                bytes: b"module ledger\n\npub total() -> Int = 3\n".to_vec(),
-            },
-        ];
-        let archive = archive(&mut files).unwrap();
-        let digest = digest_of(&mut files).unwrap();
-        let (r1, k1) = keypair(10, "root.a");
-        let (log_pair, log) = keypair(20, LOG);
-        let (w1, wa) = keypair(30, "witness.a");
-        let (_, security) = keypair(40, "security.a");
-        let (_, itauna) = keypair(41, "itauna.a");
-        let mut text =
-            "ita-root/1\nsource acme\nversion 1\nexpires 4000000000\nroot 1\n".to_owned();
-        text.push_str(&key_line(&k1));
-        text.push_str(&format!(
-            "log {} {}\n",
-            log.name,
-            encode_base64(&log.public)
-        ));
-        text.push_str("witnesses 1\n");
-        text.push_str(&key_line(&wa));
-        text.push_str("security 1\n");
-        text.push_str(&key_line(&security));
-        text.push_str("itauna 1\n");
-        text.push_str(&key_line(&itauna));
-        let root_document = format!("{text}\n{}", sign_line(&r1, &k1, &text));
-        let manifest = sha256_digest(&files.iter().find(|f| f.path == "ita.una").unwrap().bytes);
-        let statement_text = format!(
-            "ita-release/1\nsource acme\nname acme/ledger\nversion 0.3.1\nprevious none\ndigest {digest}\nmanifest {manifest}\nedition 0.4\nauthority none\ntrust none\n"
-        );
-        let (publisher_pair, publisher) = keypair(50, "acme.publisher");
-        let statement = format!(
-            "{statement_text}\n{}",
-            sign_line(&publisher_pair, &publisher, &statement_text)
-        );
-        let leaves = [
-            leaf_hash(b"an earlier entry"),
-            leaf_hash(statement.as_bytes()),
-        ];
-        let top = tree_root(&leaves);
-        let checkpoint_text = format!("{LOG}\n2\n{}\n", encode_base64(&top));
-        let checkpoint = format!(
-            "{checkpoint_text}\n{}{}",
-            sign_line(&log_pair, &log, &checkpoint_text),
-            cosign_line(&w1, &wa, &checkpoint_text, 1_900_000_000)
-        );
-        let root = una_project::tlog::root::digest(&root_document);
-        let provenance = Provenance {
-            roots: vec![root_document],
-            checkpoint,
-            statement,
-            index: 1,
-            proof: inclusion_proof(1, &leaves),
-            key: publisher.clone(),
-        };
-        let lock = format!(
-            "registry acme\n  root \"{root}\"\n  checkpoint 2 \"sha256:{}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{}\"\n  logged 1\n",
-            hex(&top),
-            signed_name("acme/ledger", &publisher.public)
-        );
-        Release {
-            archive,
-            provenance: provenance.encode(),
-            root,
-            lock,
-        }
-    }
+/// The local clock, as `una ita` reads it.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
-const SOLVER: &str = "solver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
+/// A registry `acme`: the owner `acme` registered with the key of seed 60, its checkpoint
+/// cosigned `ago` seconds before now. Returns it, the owner's key pair, and its signing key as a
+/// publisher holds it.
+fn acme(ago: u64) -> (TestRegistry, (ed25519_dalek::SigningKey, una_project::tlog::note::Key), SigningKey) {
+    let mut registry = TestRegistry::new("acme");
+    let pair = keypair(60, "acme.laptop");
+    registry.register("acme", &pair);
+    registry.checkpoint(now() - ago);
+    let signing = SigningKey::from_secret("acme.laptop", &[60; 32]).unwrap();
+    (registry, pair, signing)
+}
 
-/// A package whose lock holds the registry release, with Itaoca beside it holding the release
-/// when `stored`.
-fn with_registry(name: &str, stored: bool) -> (PathBuf, PathBuf) {
-    let release = registry::release();
+/// The registry's client at its latest checkpoint, read from its files as a mirror serves them.
+fn client(registry: &TestRegistry) -> Registry<'static> {
+    // The files live as long as the test: leaked on purpose, so the client may borrow them.
+    let memory: &'static una_project::registry::bundle::Memory =
+        Box::leak(Box::new(una_project::registry::bundle::Memory {
+            source: "acme".to_owned(),
+            files: registry.files.clone(),
+        }));
+    Registry::open(
+        "acme",
+        memory,
+        &registry.pin(),
+        &Point::Latest { now: now() },
+        None,
+    )
+    .unwrap()
+}
+
+/// The registry logs a submission it found in `inbox`: the archive, as a blob, and the entry,
+/// as the next entry about `name`.
+fn log_submission(registry: &mut TestRegistry, inbox: &Path, submission: &Submission, name: &str) {
+    let dir = inbox.join(submission.dir());
+    if let Ok(archive) = std::fs::read(dir.join("archive")) {
+        let digest = VerifiedTree::from_archive(&archive)
+            .unwrap()
+            .digest()
+            .to_owned();
+        let hex = digest.strip_prefix("sha256:").unwrap();
+        registry.files.insert(format!("blobs/sha256/{hex}"), archive);
+    }
+    let entry = std::fs::read_to_string(dir.join("entry")).unwrap();
+    registry.append(name, &entry);
+}
+
+/// The files of the release `acme/ledger` at `version`, as a publisher's package holds them.
+fn ledger_files(version: &str) -> (String, Vec<File>) {
     let manifest = format!(
-        "{MANIFEST}\nsources\n  acme \"https://ita.acme.example\"\n    root \"{}\"\n    owners acme\n",
-        release.root
+        "ita acme/ledger\n  version {version}\n  edition 0.4\n  about \"Ledgers\"\n  license \"Apache-2.0\"\n  publish to acme\n"
     );
-    let dir = package(name, &manifest);
+    let files = vec![
+        File {
+            path: "ita.una".to_owned(),
+            bytes: manifest.as_bytes().to_vec(),
+        },
+        File {
+            path: "src/ledger.una".to_owned(),
+            bytes: b"module ledger\n\npub total() -> Int = 3\n".to_vec(),
+        },
+    ];
+    (manifest, files)
+}
+
+/// A package that needs `acme/ledger 0.3` from `acme`, the registry written as a mirror beside
+/// it, and an Itaoca whose `mirrors.una` lists it. Returns the package, the mirror and Itaoca.
+fn project(name: &str, registry: &TestRegistry) -> (PathBuf, PathBuf, PathBuf) {
+    let base = scratch("ita-registry-projects", name);
+    let dir = base.join("demo");
+    let mirror = base.join("mirror");
+    let itaoca = base.join("itaoca");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(&itaoca).unwrap();
     std::fs::write(
-        dir.join("ita.lock"),
-        format!("lock 1\n\n{SOLVER}\n{}", release.lock),
+        dir.join("ita.una"),
+        format!(
+            "{MANIFEST}\nsources\n  acme \"https://ita.acme.example\"\n    root \"{}\"\n    owners acme\n\nneeds\n  acme/ledger 0.3 from acme\n",
+            registry.pin()
+        ),
     )
     .unwrap();
-    let itaoca = scratch("ita-registry-store", name);
-    if stored {
-        let store = una_project::itaoca::Itaoca {
-            root: itaoca.clone(),
-        };
-        store.store(&release.archive).unwrap();
-        store
-            .store_provenance("acme", "acme/ledger", "0.3.1", 2, &release.provenance)
-            .unwrap();
-    }
-    (dir, itaoca)
+    std::fs::write(dir.join("src/demo.una"), MODULE).unwrap();
+    registry.write(&mirror);
+    std::fs::write(
+        itaoca.join("mirrors.una"),
+        format!("mirrors\n  acme\n    \"file://{}\"\n", mirror.display()),
+    )
+    .unwrap();
+    (dir, mirror, itaoca)
+}
+
+/// A registry `acme` that holds `acme/ledger 0.3.1`, published through the library into a
+/// directory and logged a month ago, and a fresh checkpoint.
+fn published_registry(name: &str) -> (TestRegistry, SigningKey, PathBuf) {
+    let (mut registry, _, signing) = acme(40 * DAY);
+    let inbox = scratch("ita-registry-inbox", name);
+    let size = registry.entries.len() as u64;
+    let checkpoint =
+        String::from_utf8(registry.files[&format!("checkpoint/{size}")].clone()).unwrap();
+    let note = una_project::tlog::note::parse_note(&checkpoint).unwrap();
+    let root = una_project::tlog::note::parse_checkpoint(&note.text).unwrap().root;
+    let memory = una_project::registry::bundle::Memory {
+        source: "acme".to_owned(),
+        files: registry.files.clone(),
+    };
+    let mut reader = Registry::open(
+        "acme",
+        &memory,
+        &registry.pin(),
+        &Point::At {
+            size,
+            hash: support::hash_hex(&root),
+        },
+        None,
+    )
+    .unwrap();
+    let state = NameState::read(&mut reader, "acme/ledger").unwrap();
+    let (text, files) = ledger_files("0.3.1");
+    let (manifest, errors) = una_syntax::ita::parse_manifest(&text);
+    assert!(errors.is_empty(), "{errors:?}");
+    let submission = submit::release(
+        &manifest,
+        files,
+        &std::collections::BTreeMap::new(),
+        &std::collections::BTreeSet::new(),
+        &state,
+        &[&signing],
+    )
+    .unwrap();
+    // Published into a directory: the registry's inbox.
+    submit::send(&Directory::new(&inbox), &submission).unwrap();
+    log_submission(&mut registry, &inbox, &submission, "acme/ledger");
+    registry.checkpoint(now() - 30 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(now() - 60);
+    (registry, signing, inbox)
 }
 
 // --- publish and yank ------------------------------------------------------------------------
@@ -346,67 +347,46 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
     assert!(err.contains("full version"), "{err}");
 }
 
-// --- audit and watch -------------------------------------------------------------------------
+// --- end to end: publish, lock and fetch through mirrors.una, yank, audit ------------------
 
-/// A verified client's states: `acme/ledger 0.3.1` yanked and named by an advisory.
-struct Yanked;
-
-impl una_project::registry::view::Registry for Yanked {
-    fn name(
-        &self,
-        source: &str,
-        name: &str,
-        _held: u64,
-    ) -> Result<una_project::registry::view::NameState, una_project::registry::view::Failure> {
-        let mut state = una_project::registry::view::NameState {
-            source: source.to_owned(),
-            name: name.to_owned(),
-            ..Default::default()
-        };
-        state.releases.insert(
-            una_project::version::Version::parse_full("0.3.1").unwrap(),
-            una_project::tlog::state::ReleaseState {
-                digest: String::new(),
-                logged_at: 1,
-                yanked: true,
-                advised: vec!["ITA-1".to_owned()],
-                threshold_fix: false,
-            },
-        );
-        Ok(state)
-    }
-
-    fn owner(
-        &self,
-        source: &str,
-        owner: &str,
-        _held: u64,
-    ) -> Result<una_project::registry::view::OwnerState, una_project::registry::view::Failure>
-    {
-        Ok(una_project::registry::view::OwnerState {
-            source: source.to_owned(),
-            owner: owner.to_owned(),
-            ..Default::default()
-        })
-    }
-
-    fn log_key(
-        &self,
-        _source: &str,
-    ) -> Result<una_project::tlog::note::Key, una_project::registry::view::Failure> {
-        Err(una_project::registry::view::Failure::Unavailable(String::new()))
-    }
+/// A release published into a directory registry is locked and fetched through `mirrors.una`;
+/// then its owner yanks it, and `una ita audit` reports U7014.
+#[test]
+fn a_published_release_is_locked_fetched_yanked_and_audited() {
+    let (mut registry, signing, inbox) = published_registry("end-to-end");
+    let (dir, mirror, itaoca) = project("end-to-end", &registry);
+    let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
+    assert_eq!(status, 0, "{out}{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(lock.contains("package acme/ledger 0.3.1"), "{lock}");
+    let (status, out, err) = una_in(&["una", "ita", "fetch", path(&dir)], &itaoca);
+    assert_eq!(status, 0, "{out}{err}");
+    let (status, out, err) = una_in(&["una", "ita", "audit", path(&dir)], &itaoca);
+    assert_eq!(status, 0, "{out}{err}");
+    assert!(out.contains("audited 1 registry packages"), "{out}");
+    // The owner yanks it: the yank is published into the directory and logged.
+    let mut reader = client(&registry);
+    let state = NameState::read(&mut reader, "acme/ledger").unwrap();
+    drop(reader);
+    let yank = submit::yank(&state, &Version::parse_full("0.3.1").unwrap(), &[&signing]).unwrap();
+    submit::send(&Directory::new(&inbox), &yank).unwrap();
+    log_submission(&mut registry, &inbox, &yank, "acme/ledger");
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7014"], "{out}");
+    assert!(out.contains("0.3.1 is yanked"), "{out}");
+    // A source no place can serve is not called clean.
+    std::fs::remove_file(itaoca.join("mirrors.una")).unwrap();
+    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
+    assert_eq!(status, 1);
+    assert_eq!(codes_of(&out), ["U7010"], "{out}");
 }
 
 #[test]
-fn audit_reports_u7014_once_per_package_and_nothing_unverified_as_clean() {
-    let (dir, store) = with_registry("audit", false);
-    assert_eq!(una_cli::audit_codes(&dir, &Yanked), [una_diag::Code::U7014]);
-    // With no verified client, every registry package is reported as not verified (U7010).
-    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &store);
-    assert_eq!(status, 1);
-    assert_eq!(codes_of(&out), ["U7010"]);
-    // A lock with no registry package audits clean.
+fn audit_of_a_lock_with_no_registry_package_is_clean() {
+    let store = scratch("ita-registry-store", "audit-plain");
     let plain = package("audit-plain", MANIFEST);
     una_in(&["una", "ita", "lock", path(&plain)], &store);
     let (status, out, _) = una_in(&["una", "ita", "audit", path(&plain)], &store);
@@ -415,29 +395,40 @@ fn audit_reports_u7014_once_per_package_and_nothing_unverified_as_clean() {
 }
 
 #[test]
-fn watch_needs_the_verified_client() {
+fn watch_reads_the_source_it_is_given() {
     let store = scratch("ita-registry-store", "watch");
-    let (status, _, err) = una_in(&["una", "ita", "watch", "acme", "--from", "acme"], &store);
-    assert_eq!(status, 1);
-    assert!(err.contains("registry client"), "{err}");
     let (status, _, _) = una_in(&["una", "ita", "watch", "Acme"], &store);
     assert_eq!(status, 2);
+    // The source must be declared where the command runs: here, nowhere.
+    let (status, _, err) = una_in(&["una", "ita", "watch", "acme", "--from", "acme"], &store);
+    assert_eq!(status, 2, "{err}");
 }
 
 // --- bundle and unbundle (rule 33) -----------------------------------------------------------
 
+/// A locked, fetched package: its registry, the package, the mirror and Itaoca.
+fn fetched(name: &str) -> (TestRegistry, PathBuf, PathBuf, PathBuf) {
+    let (registry, _, _) = published_registry(name);
+    let (dir, mirror, itaoca) = project(name, &registry);
+    let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
+    assert_eq!(status, 0, "{out}{err}");
+    (registry, dir, mirror, itaoca)
+}
+
 #[test]
 fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
-    let (dir, store) = with_registry("bundle", true);
+    let (_, dir, _, itaoca) = fetched("bundle");
     let file = scratch("ita-registry-bundles", "one").join("demo.bundle");
-    let (status, out, err) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &store);
+    let (status, out, err) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
     assert!(out.contains("bundled 1 registry packages"), "{out}");
-    // On another machine: a fresh Itaoca, filled from the bundle alone.
+    // On another machine: a fresh Itaoca, with no mirror, filled from the bundle alone.
     let isolated = scratch("ita-registry-store", "bundle-isolated");
-    let (status, out, err) = una_in(&["una", "ita", "unbundle", path(&file), path(&dir)], &isolated);
+    let (status, out, err) =
+        una_in(&["una", "ita", "unbundle", path(&file), path(&dir)], &isolated);
     assert_eq!(status, 0, "{out}{err}");
     assert!(out.contains("stored acme/ledger 0.3.1 in Itaoca"), "{out}");
+    assert!(isolated.join("registry/acme/checkpoint").exists(), "the floor is stored");
     let (status, out, _) = una_in(&["una", "ita", "verify", path(&dir)], &isolated);
     assert_eq!(status, 0, "{out}");
     assert!(out.contains("verified acme/ledger 0.3.1 in Itaoca"), "{out}");
@@ -449,9 +440,9 @@ fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
 /// A tampered bundle is refused (U7010) and leaves Itaoca as it was.
 #[test]
 fn a_tampered_bundle_is_refused() {
-    let (dir, store) = with_registry("bundle-tampered", true);
+    let (_, dir, _, itaoca) = fetched("bundle-tampered");
     let file = scratch("ita-registry-bundles", "tampered").join("demo.bundle");
-    let (status, _, _) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &store);
+    let (status, _, _) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &itaoca);
     assert_eq!(status, 0);
     let mut bytes = std::fs::read(&file).unwrap();
     // A byte of the module's text, inside the archive inside the bundle.
@@ -469,18 +460,22 @@ fn a_tampered_bundle_is_refused() {
     assert_eq!(status, 1);
     assert_eq!(codes_of(&out), ["U7010"]);
     assert!(!isolated.join("packages").exists());
+    assert!(!isolated.join("registry").exists());
 }
 
+/// Bundling reads the registry at the lock's resolution point: with no place to read it from,
+/// nothing is written.
 #[test]
-fn bundle_reports_a_package_it_does_not_hold() {
-    let (dir, store) = with_registry("bundle-absent", false);
-    let file = scratch("ita-registry-bundles", "absent").join("demo.bundle");
+fn bundle_needs_the_registry() {
+    let (_, dir, _, itaoca) = fetched("bundle-no-place");
+    std::fs::remove_file(itaoca.join("mirrors.una")).unwrap();
+    let file = scratch("ita-registry-bundles", "no-place").join("demo.bundle");
     let (status, out, _) = una_in(
         &["una", "--json", "ita", "bundle", path(&file), path(&dir)],
-        &store,
+        &itaoca,
     );
     assert_eq!(status, 1);
-    assert_eq!(codes_of(&out), ["U7011"]);
+    assert_eq!(codes_of(&out), ["U7013"], "{out}");
     assert!(!file.exists());
 }
 
@@ -513,7 +508,7 @@ fn add_binds_an_owner_to_the_source_that_serves_it() {
     let dir = package("add-owner", &manifest);
     let (code, out, _) = una_at(&dir, &["--json", "ita", "add", "acme/ledger", "0.3"]);
     assert_eq!(code, 1);
-    assert!(out.contains("the per-name state of `acme`"), "{out}");
+    assert!(out.contains("`acme`"), "{out}");
     let (code, _, err) = una_at(
         &dir,
         &["ita", "add", "acme/ledger", "0.3", "--from", "itaty"],

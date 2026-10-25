@@ -26,15 +26,25 @@
 use std::collections::BTreeMap;
 
 use super::note::{Key, Note};
-use super::release::Statement;
+use super::owner::parse_previous;
+use super::release::{Previous, Statement};
 use crate::ita::is_digest;
 use crate::version::{Line, Version};
+
+/// The format line of a yank.
+pub const YANK: &str = "ita-yank/1";
+/// The format line of an advisory.
+pub const ADVISORY: &str = "ita-advisory/1";
 
 /// A yank, as read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Yank {
+    /// The source.
+    pub source: String,
     /// The name.
     pub name: String,
+    /// The previous entry of the name's chain.
+    pub previous: Option<Previous>,
     /// The version yanked.
     pub version: Version,
 }
@@ -42,8 +52,12 @@ pub struct Yank {
 /// An advisory, as read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Advisory {
+    /// The source.
+    pub source: String,
     /// The name.
     pub name: String,
+    /// The previous entry of the name's chain.
+    pub previous: Option<Previous>,
     /// Its identifier.
     pub id: String,
     /// The major line it concerns.
@@ -84,27 +98,40 @@ fn expect<'t>(fields: &[(&'t str, &'t str)], at: usize, key: &str) -> Result<&'t
 
 /// Reads a yank's text.
 pub fn parse_yank(text: &str) -> Result<Yank, String> {
-    let f = fields(text, "ita-yank/1")?;
+    let f = fields(text, YANK)?;
     if f.len() != 4 {
         return Err("a yank has `source`, `name`, `version` and `previous`".to_owned());
     }
-    expect(&f, 0, "source")?;
+    let source = expect(&f, 0, "source")?.to_owned();
     let name = expect(&f, 1, "name")?.to_owned();
     let version = Version::parse_full(expect(&f, 2, "version")?)?;
-    expect(&f, 3, "previous")?;
-    Ok(Yank { name, version })
+    let previous = parse_previous(expect(&f, 3, "previous")?)?;
+    Ok(Yank {
+        source,
+        name,
+        previous,
+        version,
+    })
 }
 
 /// Reads an advisory's text.
 pub fn parse_advisory(text: &str) -> Result<Advisory, String> {
-    let f = fields(text, "ita-advisory/1")?;
+    let f = fields(text, ADVISORY)?;
     if f.len() != 9 {
         return Err("an advisory has `source`, `name`, `previous`, `id`, `line`, `affected`, `fixed`, `severity` and `summary`".to_owned());
     }
-    expect(&f, 0, "source")?;
+    let source = expect(&f, 0, "source")?.to_owned();
     let name = expect(&f, 1, "name")?.to_owned();
-    expect(&f, 2, "previous")?;
+    let previous = parse_previous(expect(&f, 2, "previous")?)?;
     let id = expect(&f, 3, "id")?.to_owned();
+    let id_ok = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    if !id_ok {
+        return Err(format!("`{id}` is not an advisory's identifier"));
+    }
     let line = Line::parse(expect(&f, 4, "line")?).ok_or("`line` is a major line")?;
     let affected = expect(&f, 5, "affected")?
         .split(", ")
@@ -138,7 +165,9 @@ pub fn parse_advisory(text: &str) -> Result<Advisory, String> {
         return Err("the summary has a control character".to_owned());
     }
     Ok(Advisory {
+        source,
         name,
+        previous,
         id,
         line,
         affected,

@@ -284,7 +284,8 @@ pub enum Code {
     U7012,
     /// No resolution: no release meets a need, or a bound of resolution is exceeded.
     U7013,
-    /// A locked release that is yanked, under an advisory, or signed after a stated compromise.
+    /// A locked release yanked, under an advisory or signed after a stated compromise, or a
+    /// pending recovery, a key change or a transfer of its owner.
     U7014,
     /// Internal compiler error (always a bug).
     U8001,
@@ -971,7 +972,7 @@ impl Code {
             Code::U7014 => &Entry {
                 code: "U7014",
                 domain: Domain::Project,
-                meaning: "A locked release that is yanked, under an advisory, or signed after a stated compromise",
+                meaning: "A locked release yanked, under an advisory or signed after a stated compromise, or a pending recovery, a key change or a transfer of its owner",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

@@ -272,6 +272,11 @@ pub(crate) enum ItaCommand {
         #[arg(long, value_name = "PACKAGE")]
         accept_trust: Vec<String>,
 
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
+
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
@@ -297,6 +302,11 @@ pub(crate) enum ItaCommand {
         /// Record consent to the trusted modules of this package as its content is now
         #[arg(long, value_name = "PACKAGE")]
         accept_trust: Vec<String>,
+
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
 
         /// Print the review of the changes, and write nothing
         #[arg(long)]
@@ -325,6 +335,12 @@ pub(crate) enum ItaCommand {
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Fetch each locked registry package into Itaoca, verified, with its provenance
+    Fetch {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
     /// Copy each locked registry package from Itaoca into vendor/ita/, with its provenance
     Vendor {

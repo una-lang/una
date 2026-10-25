@@ -1,5 +1,5 @@
 //! `una ita publish`, `yank`, `audit`, `watch`, `bundle` and `unbundle` (ADR 0122 rules 33, 36,
-//! 36.2 and 40 to 43; `spec/30 §14`).
+//! 36.2 and 41 to 43; `spec/30 §15`).
 //!
 //! A submission goes to the source the head's `publish to` names, at the URL that source is
 //! declared with, through a transport. This release has only the directory transport, and a
@@ -23,10 +23,12 @@ use una_project::content::{self, File};
 use una_project::ita::{ItaLock, parse_ita_lock, parse_ita_manifest};
 use una_project::itaoca::Itaoca;
 use una_project::provenance::Expected;
+use una_project::client::{Point, Registry, owner_of};
 use una_project::registry::keyfile::{self, SigningKey};
-use una_project::registry::transport::{Directory, Failure as TransportFailure, Transport};
-use una_project::registry::view::{Failure, Registry, owner_of};
+use una_project::registry::submit::NameState;
 use una_project::registry::{audit, bundle, submit, watch};
+use una_project::transport::{self, Location, Transport};
+use una_project::tree::VerifiedTree;
 use una_project::version::Version;
 use una_project::{tree, vendor};
 use una_syntax::{FileId, SourceDb, ita};
@@ -34,17 +36,6 @@ use una_syntax::{FileId, SourceDb, ita};
 use crate::ExitStatus;
 use crate::ita::{Output, finish, located};
 use crate::verification::Solving;
-
-/// Why a command that needs the verified registry client stops in this release.
-const NO_CLIENT: &str =
-    "this release has no registry client to verify a registry's roots, checkpoints, name map and chains";
-
-/// The verified registry client (ADR 0122 rules 35 to 39) that publishing, yanks, audit and
-/// watch read through. It joins with the verification of roots, checkpoints, the name map and
-/// proofs; until then there is none.
-pub(crate) fn client(_itaoca: Option<&Itaoca>) -> Option<Box<dyn Registry>> {
-    None
-}
 
 /// A usage error: one line on stderr, exit code 2.
 fn usage(out: Output<'_>, message: &str) -> io::Result<ExitStatus> {
@@ -75,61 +66,138 @@ pub(crate) fn keys_dir(home: Option<&str>) -> Option<PathBuf> {
         .map(|home| Path::new(home).join(".una").join("keys"))
 }
 
-/// The transport of the source a submission goes to, or the problem at `range` (U7013): a
-/// source declared nowhere, or served over HTTPS, which has no transport yet.
-fn target(
-    path: &Path,
-    source: &str,
-    range: std::ops::Range<usize>,
-) -> Result<Directory, ProjectError> {
-    submit::declared_source(path, source)
-        .and_then(|url| Directory::of(&url))
-        .map_err(|why| {
-            problem(
-                Code::U7013,
-                range,
-                format!("the submission cannot be sent to `{source}`: {why}; nothing is sent"),
-            )
-        })
+/// What a submission needs, read verified from the source the head's `publish to` names.
+struct Prepared {
+    /// The transport of the source's own URL, which the submission is written to.
+    target: Box<dyn Transport>,
+    /// That URL.
+    url: String,
+    /// The name's state at a fresh checkpoint.
+    state: NameState,
+    /// The owner's keys that sign.
+    keys: Vec<SigningKey>,
+    /// The files of the highest earlier release of the version's line, for rule 26's advice.
+    earlier: Option<Vec<File>>,
+    /// Notes of mirrors skipped.
+    notes: Vec<String>,
 }
 
-/// The owner's keys that sign for `name` at `source`: the owner's key files of `keys`, chosen
-/// against the owner's keys and threshold in its verified state ([`keyfile::owner_keys`]); or
-/// the problem at `range`, U7013, or U7010 for a state that does not verify.
-fn signing_keys(
-    registry: &dyn Registry,
-    keys: Option<&Path>,
+/// Reads what a submission of `name` to `source` needs (ADR 0122 rules 8, 38, 39, 40 and 43):
+/// the source's declaration in the package's workspace, the transport of its own URL (an
+/// `https://` one has none yet, U7013), the registry opened at a fresh checkpoint from its first
+/// place that verifies (its mirrors, then its URL), the name's state, the owner's keys from
+/// `keys`, and, with `version`, the files of the highest earlier release of its line. Each
+/// problem is at `range`: U7010 for what does not verify, U7013 otherwise.
+fn prepare(
+    path: &Path,
     source: &str,
     name: &str,
+    version: Option<&Version>,
+    keys: Option<&Path>,
+    itaoca: Option<&Itaoca>,
     range: std::ops::Range<usize>,
-) -> Result<Vec<SigningKey>, ProjectError> {
-    let owner = owner_of(name);
-    let state = registry
-        .owner(source, owner, 0)
-        .map_err(|failure| match failure {
-            Failure::Refused(why) => problem(
-                Code::U7010,
-                range.clone(),
-                format!("the keys of `{owner}` at `{source}` do not verify: {why}"),
-            ),
-            Failure::Unavailable(why) => problem(
+) -> Result<Prepared, ProjectError> {
+    let at = |code: Code, why: String| problem(code, range.clone(), why);
+    let declared = submit::declared_source(path, source).map_err(|why| {
+        at(
+            Code::U7013,
+            format!("the submission cannot be sent to `{source}`: {why}; nothing is sent"),
+        )
+    })?;
+    let url = declared.url.value.clone();
+    let target = match Location::parse(&url) {
+        Ok(Location::Https(_)) => {
+            return Err(at(
                 Code::U7013,
-                range.clone(),
                 format!(
-                    "the keys of `{owner}` at `{source}` cannot be had: {why}; nothing is sent"
+                    "the submission cannot be sent to `{source}`: `{url}` is reached over https, and there is no https transport yet; nothing is sent"
                 ),
-            ),
+            ));
+        }
+        Ok(location) => transport::open(&location),
+        Err(why) => return Err(at(Code::U7013, why)),
+    };
+    let mirrors = crate::registry::load_mirrors(itaoca).map_err(|errors| {
+        let why = errors
+            .into_iter()
+            .map(|error| error.message)
+            .collect::<Vec<_>>()
+            .join("; ");
+        at(Code::U7008, why)
+    })?;
+    let places = crate::registry::places_of(&declared, &mirrors);
+    let point = Point::Latest {
+        now: crate::local_clock(),
+    };
+    let (mut registry, notes) =
+        crate::registry::open_first(&declared, &places, &point, itaoca, None)
+            .map_err(|(code, why)| at(code, why))?;
+    let state = NameState::read(&mut registry, name).map_err(|why| at(Code::U7010, why))?;
+    let owner = owner_of(name);
+    let history = registry
+        .history(owner)
+        .map_err(|why| at(Code::U7010, why))?;
+    let snapshot = history
+        .at(registry.point.checkpoint.size)
+        .cloned()
+        .ok_or_else(|| {
+            at(
+                Code::U7013,
+                format!("the owner `{owner}` has no key at `{source}`; nothing is sent"),
+            )
         })?;
     let Some(keys) = keys else {
-        return Err(problem(
+        return Err(at(
             Code::U7013,
-            range,
             "no key directory: set `HOME`, whose `.una/keys` holds the owner's key files"
                 .to_owned(),
         ));
     };
-    keyfile::owner_keys(keys, owner, &state.keys, state.threshold)
-        .map_err(|why| problem(Code::U7013, range, why))
+    let keys = keyfile::owner_keys(keys, owner, &snapshot.keys, snapshot.threshold)
+        .map_err(|why| at(Code::U7013, why))?;
+    let earlier = match version {
+        Some(version) => {
+            let statement = state
+                .statements
+                .range(..version.clone())
+                .rev()
+                .find(|(v, _)| v.line() == version.line())
+                .map(|(_, statement)| statement.clone());
+            match statement {
+                Some(statement) => {
+                    let bytes = registry
+                        .archive(&statement.digest)
+                        .map_err(|why| at(Code::U7010, why))?;
+                    let tree = VerifiedTree::from_archive(&bytes)
+                        .map_err(|why| at(Code::U7010, why))?;
+                    if tree.digest() != statement.digest {
+                        return Err(at(
+                            Code::U7010,
+                            format!(
+                                "the archive of `{name} {}` is not the one its statement names",
+                                statement.version
+                            ),
+                        ));
+                    }
+                    Some(tree.into_files())
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
+    if let Some(itaoca) = itaoca {
+        // The checkpoint read is the source's floor from now on (rule 39).
+        let _ = itaoca.store_checkpoint(source, &registry.point.document);
+    }
+    Ok(Prepared {
+        target,
+        url,
+        state,
+        keys,
+        earlier,
+        notes,
+    })
 }
 
 /// The files a package publishes: its `ita.una` and modules, as checked, and its `README.md`,
@@ -210,37 +278,6 @@ fn authority(
     out
 }
 
-/// The name state of the package's name from the client, or the problem at `range`: U7010 for
-/// a failure to verify, U7013 when there is no state to publish against.
-fn name_state(
-    registry: Option<&dyn Registry>,
-    source: &str,
-    name: &str,
-    range: std::ops::Range<usize>,
-) -> Result<una_project::registry::view::NameState, ProjectError> {
-    let Some(registry) = registry else {
-        return Err(problem(
-            Code::U7013,
-            range,
-            format!(
-                "the chain of `{name}` at `{source}` cannot be read and verified, since {NO_CLIENT}; nothing is sent"
-            ),
-        ));
-    };
-    registry.name(source, name, 0).map_err(|failure| match failure {
-        Failure::Refused(why) => problem(
-            Code::U7010,
-            range,
-            format!("the state of `{name}` at `{source}` does not verify: {why}"),
-        ),
-        Failure::Unavailable(why) => problem(
-            Code::U7013,
-            range,
-            format!("the state of `{name}` at `{source}` cannot be had: {why}; nothing is sent"),
-        ),
-    })
-}
-
 /// `una ita publish [path]` (ADR 0122 rule 43): refuses what rule 43 names, and a package in a
 /// git repository while the check for uncommitted changes is not available; checks the package
 /// at tier 1 and refuses any diagnostic; builds its archive (rule 27); resolves the source the
@@ -253,7 +290,6 @@ pub(crate) fn publish_command(
     path: &Path,
     keys: Option<&Path>,
     solving: &Solving,
-    registry: Option<&dyn Registry>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     if !path.join("ita.una").is_file() {
@@ -348,40 +384,44 @@ pub(crate) fn publish_command(
         .as_ref()
         .map(|n| n.value.to_string())
         .unwrap_or_default();
-    let transport = match target(path, &source, head.clone()) {
-        Ok(transport) => transport,
+    let version = read
+        .version
+        .as_ref()
+        .and_then(|v| Version::parse_full(&v.value).ok());
+    let prepared = match prepare(
+        path,
+        &source,
+        &name,
+        version.as_ref(),
+        keys,
+        solving.itaoca.as_ref(),
+        head.clone(),
+    ) {
+        Ok(prepared) => prepared,
         Err(refusal) => {
             diagnostics.extend(located(sources, manifest_id, vec![refusal]));
             return finish("publish", &[], &[], &diagnostics, sources, out);
         }
     };
-    let state = match name_state(registry, &source, &name, head.clone()) {
-        Ok(state) => state,
-        Err(refusal) => {
-            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
-            return finish("publish", &[], &[], &diagnostics, sources, out);
-        }
-    };
-    let keys = match registry
-        .ok_or_else(|| problem(Code::U7013, head.clone(), NO_CLIENT.to_owned()))
-        .and_then(|registry| signing_keys(registry, keys, &source, &name, head.clone()))
-    {
-        Ok(keys) => keys,
-        Err(refusal) => {
-            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
-            return finish("publish", &[], &[], &diagnostics, sources, out);
-        }
-    };
+    // Rule 26's advice against the highest earlier release of the line: nothing is refused.
+    let mut lines = prepared.notes.clone();
+    if let Some(earlier) = &prepared.earlier {
+        lines.extend(
+            submit::header_advice(earlier, &files)
+                .into_iter()
+                .map(|advice| format!("advice: {advice}")),
+        );
+    }
     let (project, _) = crate::package::project(&package);
     let trust: std::collections::BTreeSet<String> =
         project.trusted.iter().map(|t| t.value.clone()).collect();
-    let signers: Vec<&SigningKey> = keys.iter().collect();
+    let signers: Vec<&SigningKey> = prepared.keys.iter().collect();
     let submission = match submit::release(
         read,
         files,
         &authority(&analysis),
         &trust,
-        &state,
+        &prepared.state,
         &signers,
     ) {
         Ok(submission) => submission,
@@ -397,17 +437,18 @@ pub(crate) fn publish_command(
             return finish("publish", &[], &[], &diagnostics, sources, out);
         }
     };
+    lines.push(format!(
+        "published {name} {} to `{}`",
+        read.version.as_ref().map(|v| v.value.as_str()).unwrap_or_default(),
+        prepared.url
+    ));
     send_and_record(
         "publish",
         &submission,
-        &transport,
-        &source,
+        prepared.target.as_ref(),
+        (&source, &prepared.url),
         solving.itaoca.as_ref(),
-        format!(
-            "published {name} {} to `{}`",
-            read.version.as_ref().map(|v| v.value.as_str()).unwrap_or_default(),
-            transport.name()
-        ),
+        lines,
         (sources, manifest_id, head),
         out,
     )
@@ -418,10 +459,10 @@ pub(crate) fn publish_command(
 fn send_and_record(
     command: &str,
     submission: &submit::Submission,
-    transport: &Directory,
-    source: &str,
+    transport: &dyn Transport,
+    (source, url): (&str, &str),
     itaoca: Option<&Itaoca>,
-    done: String,
+    done: Vec<String>,
     (sources, file, range): (&SourceDb, FileId, std::ops::Range<usize>),
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
@@ -432,15 +473,13 @@ fn send_and_record(
             return finish(command, &[], &[], &diagnostics, sources, out);
         }
     };
-    let mut lines = vec![
-        done,
-        format!(
-            "the log will hold the leaf {}; `una ita watch` checks the registry's promise to log it",
-            submission.leaf
-        ),
-    ];
+    let mut lines = done;
+    lines.push(format!(
+        "the log will hold the leaf {}; `una ita watch` checks the registry's promise to log it",
+        submission.leaf
+    ));
     if let Some(itaoca) = itaoca
-        && let Err(why) = record_submission(itaoca, source, submission, transport.name())
+        && let Err(why) = record_submission(itaoca, source, submission, url)
     {
         lines.push(format!("the submission is not recorded in Itaoca: {why}"));
     }
@@ -476,7 +515,6 @@ pub(crate) fn yank_command(
     path: &Path,
     keys: Option<&Path>,
     itaoca: Option<&Itaoca>,
-    registry: Option<&dyn Registry>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
@@ -514,32 +552,15 @@ pub(crate) fn yank_command(
         ));
         return finish("yank", &[], &[], &diagnostics, &sources, out);
     };
-    let transport = match target(path, &source, head.clone()) {
-        Ok(transport) => transport,
+    let prepared = match prepare(path, &source, &name, None, keys, itaoca, head.clone()) {
+        Ok(prepared) => prepared,
         Err(refusal) => {
             diagnostics.extend(located(&sources, id, vec![refusal]));
             return finish("yank", &[], &[], &diagnostics, &sources, out);
         }
     };
-    let state = match name_state(registry, &source, &name, head.clone()) {
-        Ok(state) => state,
-        Err(refusal) => {
-            diagnostics.extend(located(&sources, id, vec![refusal]));
-            return finish("yank", &[], &[], &diagnostics, &sources, out);
-        }
-    };
-    let keys = match registry
-        .ok_or_else(|| problem(Code::U7013, head.clone(), NO_CLIENT.to_owned()))
-        .and_then(|registry| signing_keys(registry, keys, &source, &name, head.clone()))
-    {
-        Ok(keys) => keys,
-        Err(refusal) => {
-            diagnostics.extend(located(&sources, id, vec![refusal]));
-            return finish("yank", &[], &[], &diagnostics, &sources, out);
-        }
-    };
-    let signers: Vec<&SigningKey> = keys.iter().collect();
-    let submission = match submit::yank(&state, &version, &signers) {
+    let signers: Vec<&SigningKey> = prepared.keys.iter().collect();
+    let submission = match submit::yank(&prepared.state, &version, &signers) {
         Ok(submission) => submission,
         Err(message) => {
             diagnostics.extend(located(
@@ -550,13 +571,15 @@ pub(crate) fn yank_command(
             return finish("yank", &[], &[], &diagnostics, &sources, out);
         }
     };
+    let mut lines = prepared.notes.clone();
+    lines.push(format!("yanked {name} {version} at `{}`", prepared.url));
     send_and_record(
         "yank",
         &submission,
-        &transport,
-        &source,
+        prepared.target.as_ref(),
+        (&source, &prepared.url),
         itaoca,
-        format!("yanked {name} {version} at `{}`", transport.name()),
+        lines,
         (&sources, id, head),
         out,
     )
@@ -649,11 +672,12 @@ fn registry_source(locked: &ita::LockPackage) -> Option<&str> {
     }
 }
 
-/// The diagnostics of `una ita audit` on `project` against `registry`, and the lines it prints.
-fn audit_project(
-    project: &Project,
-    registry: Option<&dyn Registry>,
-) -> (Vec<Diagnostic>, Vec<String>) {
+/// What the audit reads of each locked package: its facts, from the verified client.
+type FactsOf<'f> = dyn FnMut(&audit::Locked) -> Result<audit::Facts, String> + 'f;
+
+/// The diagnostics of `una ita audit` on `project`, each package's facts from `facts_of`, and
+/// the lines it prints.
+fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnostic>, Vec<String>) {
     let sources = &project.package.sources;
     let mut problems: Vec<ProjectError> = Vec::new();
     let mut at_needs: Vec<ProjectError> = Vec::new();
@@ -663,20 +687,9 @@ fn audit_project(
         let Some(source) = registry_source(locked) else {
             continue;
         };
-        let name = locked.name.value.to_string();
         let Ok(version) = Version::parse_full(&locked.version.value) else {
             continue;
         };
-        if registry.is_none() {
-            problems.push(problem(
-                Code::U7010,
-                locked.range.clone(),
-                format!(
-                    "the state of `{name}` at `{source}` cannot be verified, since {NO_CLIENT}; the audit reports nothing as clean that it did not verify"
-                ),
-            ));
-            continue;
-        }
         let resolution = project
             .lock
             .read
@@ -686,107 +699,144 @@ fn audit_project(
             .map_or(0, |r| r.checkpoint_size.value);
         packages.push(audit::Locked {
             source: source.to_owned(),
-            name,
+            name: locked.name.value.to_string(),
             version,
-            signed: locked.signed.as_ref().map(|s| s.value.clone()),
             logged: locked.logged.as_ref().map(|l| l.value),
             resolution,
         });
         lines_of.push(locked);
     }
     let mut lines = Vec::new();
-    if let Some(registry) = registry {
-        match audit::audit(&packages, registry) {
-            Err((index, failure)) => {
-                let why = match failure {
-                    Failure::Refused(why) => why,
-                    Failure::Unavailable(why) => format!("no fresh, verified state: {why}"),
-                };
-                if let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index)) {
-                    problems.push(problem(
-                        Code::U7010,
-                        locked.range.clone(),
-                        format!(
-                            "the state of `{}` at `{}` cannot be verified: {why}",
-                            package.name, package.source
-                        ),
-                    ));
-                }
-            }
-            Ok(result) => {
-                let mut by_package: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-                for finding in &result.findings {
-                    if let Some(package) = packages.get(finding.package) {
-                        by_package
-                            .entry(finding.package)
-                            .or_default()
-                            .push(finding.text(package));
-                    }
-                }
-                for (index, texts) in by_package {
-                    let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index))
-                    else {
-                        continue;
-                    };
-                    let message = format!(
-                        "`{}` ({}): {}; run `una ita update {}`",
-                        package.name,
-                        package.source,
-                        texts.join("; "),
-                        package.name
-                    );
-                    // At the root's need when it needs the package directly, else at its lock
-                    // line.
-                    let need = project.manifest.ita.as_deref().and_then(|m| {
-                        m.needs
-                            .iter()
-                            .find(|need| need.name.value.to_string() == package.name)
-                    });
-                    match need {
-                        Some(need) => {
-                            at_needs.push(problem(Code::U7014, need.range.clone(), message));
-                        }
-                        None => {
-                            problems.push(problem(Code::U7014, locked.range.clone(), message));
-                        }
-                    }
-                }
-                if result.findings.is_empty() {
-                    lines.push(format!(
-                        "audited {} registry packages: none is yanked, advised, or of an owner whose keys changed",
-                        packages.len()
-                    ));
-                }
+    match audit::audit(&packages, facts_of) {
+        Err((index, why)) => {
+            if let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index)) {
+                problems.push(problem(
+                    Code::U7010,
+                    locked.range.clone(),
+                    format!(
+                        "the state of `{}` at `{}` cannot be verified at a fresh checkpoint: {why}; the audit reports nothing as clean that it did not verify",
+                        package.name, package.source
+                    ),
+                ));
             }
         }
-    } else if problems.is_empty() {
-        lines.push("no registry package is locked".to_owned());
+        Ok(findings) => {
+            let mut by_package: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+            for finding in &findings {
+                if let Some(package) = packages.get(finding.package) {
+                    by_package
+                        .entry(finding.package)
+                        .or_default()
+                        .push(finding.text(package));
+                }
+            }
+            for (index, texts) in by_package {
+                let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index))
+                else {
+                    continue;
+                };
+                let message = format!(
+                    "`{}` ({}): {}; run `una ita update {}`",
+                    package.name,
+                    package.source,
+                    texts.join("; "),
+                    package.name
+                );
+                // At the root's need when it needs the package directly, else at its lock
+                // line.
+                let need = project.manifest.ita.as_deref().and_then(|m| {
+                    m.needs
+                        .iter()
+                        .find(|need| need.name.value.to_string() == package.name)
+                });
+                match need {
+                    Some(need) => {
+                        at_needs.push(problem(Code::U7014, need.range.clone(), message));
+                    }
+                    None => {
+                        problems.push(problem(Code::U7014, locked.range.clone(), message));
+                    }
+                }
+            }
+            if packages.is_empty() {
+                lines.push("no registry package is locked".to_owned());
+            } else if findings.is_empty() {
+                lines.push(format!(
+                    "audited {} registry packages: none is yanked, advised, or of an owner whose keys changed",
+                    packages.len()
+                ));
+            }
+        }
     }
     let mut diagnostics = located(sources, project.manifest_id, at_needs);
     diagnostics.extend(located(sources, project.lock_id, problems));
     (diagnostics, lines)
 }
 
-/// `una ita audit [path]` (ADR 0122 rule 41, U7014): each registry package of the lock against
-/// the verified state of its name and its owner at a fresh checkpoint. Exit code 1 on any
-/// finding, and on any state that cannot be verified.
+/// `una ita audit [path]` (ADR 0122 rules 39 and 41, U7014): each registry package of the lock
+/// against the verified state of its name and its owner, each source opened at a fresh
+/// checkpoint from its first place that verifies (rule 40). Exit code 1 on any finding, and on
+/// any state that cannot be verified (U7010).
 pub(crate) fn audit_command(
     path: &Path,
-    registry: Option<&dyn Registry>,
+    itaoca: Option<&Itaoca>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     let project = match project(path) {
         Ok(project) => project,
         Err(ended) => return ended.finish("audit", out),
     };
-    let (diagnostics, lines) = audit_project(&project, registry);
+    let mirrors = match crate::registry::load_mirrors(itaoca) {
+        Ok(mirrors) => mirrors,
+        Err(errors) => {
+            let diagnostics = located(&project.package.sources, project.manifest_id, errors);
+            return finish("audit", &[], &[], &diagnostics, &project.package.sources, out);
+        }
+    };
+    let read = project.manifest.ita.as_deref();
+    let used: std::collections::BTreeSet<String> = project
+        .lock
+        .read
+        .packages
+        .iter()
+        .filter_map(registry_source)
+        .map(str::to_owned)
+        .collect();
+    let mut places: BTreeMap<String, (ita::Source, Vec<crate::registry::Place>)> =
+        BTreeMap::new();
+    for source in &used {
+        if let Some(declared) = read.and_then(|read| crate::registry::declared(read, source)) {
+            let list = crate::registry::places_of(declared, &mirrors);
+            places.insert(source.clone(), (declared.clone(), list));
+        }
+    }
+    let point = Point::Latest {
+        now: crate::local_clock(),
+    };
+    let mut opened: BTreeMap<String, Result<Registry<'_>, String>> = BTreeMap::new();
+    for (source, (declared, list)) in &places {
+        let registry = crate::registry::open_first(declared, list, &point, itaoca, None)
+            .map(|(registry, _)| registry)
+            .map_err(|(_, why)| why);
+        opened.insert(source.clone(), registry);
+    }
+    let mut facts_of = |locked: &audit::Locked| match opened.get_mut(&locked.source) {
+        Some(Ok(registry)) => audit::facts(registry, locked),
+        Some(Err(why)) => Err(why.clone()),
+        None => Err(format!(
+            "`{}` is not a source of ita.una's `sources`",
+            locked.source
+        )),
+    };
+    let (diagnostics, lines) = audit_project(&project, &mut facts_of);
     finish("audit", &[], &lines, &diagnostics, &project.package.sources, out)
 }
 
-/// The codes `una ita audit` reports for the package at `path` against `registry`.
-pub(crate) fn audit_codes(path: &Path, registry: &dyn Registry) -> Vec<Code> {
+/// The codes `una ita audit` reports for the package at `path`, each package's facts from
+/// `facts_of`.
+pub(crate) fn audit_codes(path: &Path, facts_of: &mut FactsOf<'_>) -> Vec<Code> {
     match project(path) {
-        Ok(project) => audit_project(&project, Some(registry))
+        Ok(project) => audit_project(&project, facts_of)
             .0
             .iter()
             .map(|diagnostic| diagnostic.code)
@@ -795,17 +845,29 @@ pub(crate) fn audit_codes(path: &Path, registry: &dyn Registry) -> Vec<Code> {
     }
 }
 
+/// The declaration of `source` for `una ita watch` in `dir`: the one `ita.una`'s `sources`
+/// gives, else the one of the workspace that lists the package ([`submit::declared_source`]).
+fn find_source(dir: &Path, source: &str) -> Result<ita::Source, String> {
+    if let Ok(text) = std::fs::read_to_string(dir.join("ita.una")) {
+        let (read, _) = ita::parse_manifest(&text);
+        if let Some(declared) = read.sources.iter().find(|s| s.name.value == source) {
+            return Ok(declared.clone());
+        }
+    }
+    submit::declared_source(dir, source)
+}
+
 /// `una ita watch <owner> [<name>...] [--from <source>]` (ADR 0122 rules 36 and 36.2): prints
-/// every entry of the owner's chain and of its packages' chains since the position stored in
-/// Itaoca, then stores the new position; and checks the registry's promise for each submission
-/// recorded, reporting a broken one. Exit code 1 when a promise is broken or a chain does not
-/// verify.
+/// every entry of the owner's chain and of the chains of the names followed since the position
+/// stored in Itaoca, each read verified at a fresh checkpoint, then stores the new position; and
+/// checks the registry's promise for each submission recorded, reporting a broken one. The
+/// source is the one the package in the current directory, or its workspace, declares. Exit
+/// code 1 when a promise is broken or a chain does not verify.
 pub(crate) fn watch_command(
     owner: &str,
     names: &[String],
     source: &str,
     itaoca: Option<&Itaoca>,
-    registry: Option<&dyn Registry>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     if let Err(message) = vendor::check_source(source) {
@@ -821,13 +883,29 @@ pub(crate) fn watch_command(
         );
     };
     let sources = SourceDb::new();
-    let Some(registry) = registry else {
-        writeln!(
-            out.stderr,
-            "error: the chains of `{owner}` at `{source}` cannot be followed, since {NO_CLIENT}"
-        )?;
-        return Ok(ExitStatus::Errors);
+    let declared = match find_source(Path::new("."), source) {
+        Ok(declared) => declared,
+        Err(why) => return usage(out, &why),
     };
+    let mirrors = match crate::registry::load_mirrors(Some(itaoca)) {
+        Ok(mirrors) => mirrors,
+        Err(errors) => {
+            let why: Vec<String> = errors.into_iter().map(|e| e.message).collect();
+            return usage(out, &why.join("; "));
+        }
+    };
+    let places = crate::registry::places_of(&declared, &mirrors);
+    let point = Point::Latest {
+        now: crate::local_clock(),
+    };
+    let (mut registry, notes) =
+        match crate::registry::open_first(&declared, &places, &point, Some(itaoca), None) {
+            Ok(opened) => opened,
+            Err((code, why)) => {
+                writeln!(out.stderr, "error[{}]: {why}", code.as_str())?;
+                return Ok(ExitStatus::Errors);
+            }
+        };
     let position_name = format!("{owner}.position");
     let stored = match tree::locate(&itaoca.root, &["registry", source, "watch", &position_name]) {
         Ok(Some(file)) => match tree::read_file(&file, 1 << 20)
@@ -845,33 +923,33 @@ pub(crate) fn watch_command(
         Ok(None) => watch::Position::start(source, owner),
         Err(why) => return usage(out, &why),
     };
-    let promises = match recorded_promises(itaoca, source, registry) {
+    let log = registry.root.log.clone();
+    let promises = match recorded_promises(itaoca, source, &log) {
         Ok(promises) => promises,
         Err(why) => {
             writeln!(out.stderr, "error: {why}")?;
             return Ok(ExitStatus::Errors);
         }
     };
-    let report = match watch::watch(registry, &stored, names, &promises) {
+    let time = registry.point.time;
+    let mut chain = |name: &str| watch::chain_of(&mut registry, name);
+    let report = match watch::watch(&mut chain, time, &stored, names, &promises) {
         Ok(report) => report,
-        Err(Failure::Refused(why) | Failure::Unavailable(why)) => {
+        Err(why) => {
             writeln!(
                 out.stderr,
-                "error: the chains of `{owner}` at `{source}` cannot be followed: {why}"
+                "error[U7010]: the chains of `{owner}` at `{source}` cannot be followed: {why}"
             )?;
             return Ok(ExitStatus::Errors);
         }
     };
-    let mut lines: Vec<String> = report
-        .entries
-        .iter()
-        .map(|(name, entry)| {
-            format!(
-                "{name}: {} at log entry {} ({})",
-                entry.format, entry.index, entry.leaf
-            )
-        })
-        .collect();
+    let mut lines: Vec<String> = notes;
+    lines.extend(report.entries.iter().map(|(name, entry)| {
+        format!(
+            "{name}: {} at log entry {} ({})",
+            entry.format, entry.index, entry.leaf
+        )
+    }));
     for promise in &report.kept {
         lines.push(format!("kept: the promise to log {} by {}", promise.leaf, promise.by));
     }
@@ -881,7 +959,7 @@ pub(crate) fn watch_command(
             promise.leaf, promise.by
         ));
     }
-    if lines.is_empty() {
+    if report.entries.is_empty() && report.kept.is_empty() && report.broken.is_empty() {
         lines.push(format!("nothing new for `{owner}` at `{source}`"));
     }
     let mut written: Vec<String> = Vec::new();
@@ -908,11 +986,12 @@ pub(crate) fn watch_command(
 }
 
 /// The promises of the submissions recorded in Itaoca, each read from the place it was sent to
-/// and verified with the log's key: a submission whose promise has not appeared yet is skipped.
+/// and verified with the log's key `log`: a submission whose promise has not appeared yet is
+/// skipped.
 fn recorded_promises(
     itaoca: &Itaoca,
     source: &str,
-    registry: &dyn Registry,
+    log: &una_project::tlog::note::Key,
 ) -> Result<Vec<submit::Promise>, String> {
     let Some(dir) = tree::locate(&itaoca.root, &["registry", source, "submitted"])? else {
         return Ok(Vec::new());
@@ -923,14 +1002,6 @@ fn recorded_promises(
         .filter(|name| name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()))
         .collect();
     leaves.sort();
-    if leaves.is_empty() {
-        return Ok(Vec::new());
-    }
-    let log = registry.log_key(source).map_err(|failure| match failure {
-        Failure::Refused(why) | Failure::Unavailable(why) => {
-            format!("the log's key of `{source}` cannot be had: {why}")
-        }
-    })?;
     let mut promises = Vec::new();
     for leaf in leaves {
         let Some(file) = tree::locate(&dir, &[leaf.as_str()])? else {
@@ -938,14 +1009,18 @@ fn recorded_promises(
         };
         let url = String::from_utf8(tree::read_file(&file, 4096)?)
             .map_err(|_| "a recorded submission is not UTF-8".to_owned())?;
-        let transport = Directory::of(url.trim_end())?;
-        let document = match transport.get(&format!("submit/{leaf}/promise"), 1 << 16) {
-            Ok(bytes) => String::from_utf8(bytes).map_err(|_| "a promise is not UTF-8".to_owned())?,
-            Err(TransportFailure::Absent) => continue,
-            Err(TransportFailure::Unavailable(why)) => return Err(why),
+        let transport = transport::open(&Location::parse(url.trim_end())?);
+        let Some(bytes) = transport.get(&format!("submit/{leaf}/promise"), 1 << 16)? else {
+            continue;
         };
-        let promise = submit::check_promise(&document, &log, source, &format!("sha256:{leaf}"))?;
-        promises.push(promise);
+        let document =
+            String::from_utf8(bytes).map_err(|_| "a promise is not UTF-8".to_owned())?;
+        promises.push(submit::check_promise(
+            &document,
+            log,
+            source,
+            &format!("sha256:{leaf}"),
+        )?);
     }
     Ok(promises)
 }
@@ -990,10 +1065,13 @@ fn write_file(file: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
-/// `una ita bundle <file> [path]` (ADR 0122 rule 33): writes each registry package of the lock,
-/// loaded verified from the vendor directory or Itaoca, as its archive with its provenance, into
-/// one file for an air-gapped machine. A package in neither place is U7011, one that does not
-/// verify U7010; then nothing is written. O(bytes of the packages).
+/// `una ita bundle <file> [path]` (ADR 0122 rule 33): reads each source of the lock's registry
+/// packages at the lock's resolution point, from its first place that verifies (rule 40), and
+/// writes into one file, for an air-gapped machine, each package's archive and provenance and
+/// every file of the registry the client read to verify them: the root chain, the checkpoints,
+/// tiles and map tiles of each name's state and owner's keys. A source no place serves verified
+/// is U7010 or U7013, a release the registry does not hold at that point U7010; then nothing is
+/// written. O(bytes of the packages and of the files read).
 pub(crate) fn bundle_command(
     file: &Path,
     path: &Path,
@@ -1006,27 +1084,41 @@ pub(crate) fn bundle_command(
     };
     let sources = &project.package.sources;
     let (expected, mut problems) = expected_packages(&project);
+    let mirrors = match crate::registry::load_mirrors(itaoca) {
+        Ok(mirrors) => mirrors,
+        Err(errors) => {
+            let diagnostics = located(sources, project.manifest_id, errors);
+            return finish("bundle", &[], &[], &diagnostics, sources, out);
+        }
+    };
+    let read = project.manifest.ita.as_deref();
     let mut packed = Vec::new();
-    for (one, locked) in expected {
-        match vendor::load(path, itaoca, &one) {
-            Ok(loaded) => {
-                let mut files = loaded.tree.into_files();
-                match content::archive(&mut files) {
-                    Ok(archive) => packed.push((
-                        one,
-                        bundle::Packed {
-                            archive,
-                            provenance: loaded.provenance,
-                        },
-                    )),
-                    Err(why) => problems.push(problem(Code::U7010, locked.range.clone(), why)),
-                }
+    let mut registries: Vec<(String, BTreeMap<String, Vec<u8>>)> = Vec::new();
+    let by_source: BTreeMap<&str, Vec<&(Expected, &ita::LockPackage)>> =
+        expected.iter().fold(BTreeMap::new(), |mut map, one| {
+            map.entry(one.0.source.as_str()).or_default().push(one);
+            map
+        });
+    for (source, packages) in by_source {
+        let first_range = packages.first().map_or(0..0, |(_, locked)| locked.range.clone());
+        let Some(declared) = read.and_then(|read| crate::registry::declared(read, source)) else {
+            problems.push(problem(
+                Code::U7010,
+                first_range,
+                format!("`{source}` is not a source of ita.una's `sources`"),
+            ));
+            continue;
+        };
+        match bundle_source(declared, &packages, &mirrors, itaoca) {
+            Ok((one_source, files)) => {
+                packed.extend(one_source);
+                registries.push((source.to_owned(), files));
             }
-            Err(vendor::Problem::Absent(why)) => {
-                problems.push(problem(Code::U7011, locked.range.clone(), why));
-            }
-            Err(vendor::Problem::Refused(why)) => {
-                problems.push(problem(Code::U7010, locked.range.clone(), why));
+            Err((code, at, why)) => {
+                let range = packages
+                    .get(at)
+                    .map_or(first_range, |(_, locked)| locked.range.clone());
+                problems.push(problem(code, range, why));
             }
         }
     }
@@ -1035,7 +1127,7 @@ pub(crate) fn bundle_command(
         return finish("bundle", &[], &[], &diagnostics, sources, out);
     }
     let count = packed.len();
-    let bytes = match bundle::entries(&packed, Vec::new()).and_then(bundle::write) {
+    let bytes = match bundle::entries(&packed, &registries).and_then(bundle::write) {
         Ok(bytes) => bytes,
         Err(why) => {
             let diagnostics =
@@ -1049,6 +1141,107 @@ pub(crate) fn bundle_command(
     let shown = file.display().to_string();
     let lines = vec![format!("bundled {count} registry packages into {shown}")];
     finish("bundle", &[shown.as_str()], &lines, &[], sources, out)
+}
+
+/// What a bundle takes of one source: each package's archive and provenance, and the files of
+/// the registry the client read; or the code, the package's index and why not.
+type Bundled = (
+    Vec<(Expected, bundle::Packed)>,
+    BTreeMap<String, Vec<u8>>,
+);
+
+/// Reads `declared`'s registry for `packages`, all of one source, at the lock's resolution
+/// point, from its first place that verifies, through a [`bundle::Recording`] of that place's
+/// transport.
+fn bundle_source(
+    declared: &ita::Source,
+    packages: &[&(Expected, &ita::LockPackage)],
+    mirrors: &una_project::mirrors::Mirrors,
+    itaoca: Option<&Itaoca>,
+) -> Result<Bundled, (Code, usize, String)> {
+    let Some((first, _)) = packages.first() else {
+        return Ok((Vec::new(), BTreeMap::new()));
+    };
+    let point = Point::At {
+        size: first.checkpoint_size,
+        hash: first.checkpoint_hash.clone(),
+    };
+    let places = crate::registry::places_of(declared, mirrors);
+    let mut reasons: Vec<String> = Vec::new();
+    for (from, place) in &places {
+        let transport = match place {
+            Ok(transport) => transport.as_ref(),
+            Err(why) => {
+                reasons.push(format!("`{from}`: {why}"));
+                continue;
+            }
+        };
+        let recording = bundle::Recording::new(transport);
+        let mut registry = match crate::registry::open(declared, &recording, &point, itaoca, None)
+        {
+            Ok(registry) => registry,
+            Err(why) => {
+                reasons.push(format!("`{from}`: {why}"));
+                continue;
+            }
+        };
+        let mut out = Vec::new();
+        for (at, (one, _)) in packages.iter().enumerate() {
+            let fail = |why: String| (Code::U7010, at, why);
+            let version = Version::parse_full(&one.version).map_err(fail)?;
+            let release = registry.release(&one.name, &version).map_err(fail)?;
+            registry.marks(&one.name).map_err(fail)?;
+            if release.index != one.logged || release.statement.digest != one.digest {
+                return Err(fail(format!(
+                    "the registry's `{} {}` is not the lock's: its log index or digest differs",
+                    one.name, one.version
+                )));
+            }
+            let key = release
+                .signers
+                .iter()
+                .find(|key| {
+                    una_project::provenance::signed_name(&one.name, &key.public) == one.signed
+                })
+                .cloned()
+                .ok_or_else(|| fail(format!("no signer of `{}` is the key the lock names", one.name)))?;
+            let provenance = registry.provenance(&release, &key).map_err(fail)?;
+            una_project::provenance::verify(&provenance, one).map_err(fail)?;
+            let archive = registry.archive(&one.digest).map_err(fail)?;
+            let tree = VerifiedTree::from_archive(&archive).map_err(fail)?;
+            if tree.digest() != one.digest {
+                return Err(fail(format!(
+                    "the archive of `{} {}` is not the lock's",
+                    one.name, one.version
+                )));
+            }
+            out.push((
+                one.clone(),
+                bundle::Packed {
+                    archive,
+                    provenance: provenance.encode(),
+                },
+            ));
+        }
+        drop(registry);
+        // The archives travel as packages, not twice as registry files.
+        let files: BTreeMap<String, Vec<u8>> = recording
+            .seen
+            .into_inner()
+            .into_iter()
+            .filter(|(path, _)| !path.starts_with("blobs/"))
+            .collect();
+        return Ok((out, files));
+    }
+    Err((
+        Code::U7013,
+        0,
+        format!(
+            "no place of the source `{}` serves its registry at the lock's resolution point: {}",
+            declared.name.value,
+            reasons.join("; ")
+        ),
+    ))
 }
 
 /// `una ita unbundle <file> [path]` (ADR 0122 rule 33): verifies every registry package of the

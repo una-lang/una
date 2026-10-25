@@ -35,15 +35,15 @@ use std::path::{Path, PathBuf};
 use una_syntax::ita;
 
 use super::keyfile::{SigningKey, sign_note};
-use super::transport::{Failure, Transport};
-use super::view::NameState;
 use super::{decimal, digest_hex, hex};
+use crate::client::{Registry, hash_text};
 use crate::content::{self, File};
 use crate::provenance::sha256_digest;
 use crate::tlog::merkle;
 use crate::tlog::note::{self, Key};
 use crate::tlog::publish::{self, Release};
 use crate::tlog::release::{self, Statement};
+use crate::transport::{Refusal, Transport};
 use crate::version::Version;
 
 /// The `.git` entry, a directory or a file, of `dir` or of the nearest of its ancestors up to
@@ -58,13 +58,13 @@ pub fn git_entry(dir: &Path) -> Option<PathBuf> {
         .find(|entry| std::fs::symlink_metadata(entry).is_ok())
 }
 
-/// The base URL of `source` for the package at `dir` (rules 8 and 43): only the root and
+/// The declaration of `source` for the package at `dir` (rules 8 and 43): only the root and
 /// `itaty.una` declare sources, and a published package has no `sources` section, so it is the
-/// URL that the `sources` of the nearest workspace listing the package as a member gives.
-/// `itaty`, whose URL is built into `una` with its root, is served over HTTPS. Refused: a
-/// source no such workspace declares, and an `itaty.una` that does not read. O(d) for a path of
-/// d components, and the workspace's size.
-pub fn declared_source(dir: &Path, source: &str) -> Result<String, String> {
+/// one that the `sources` of the nearest workspace listing the package as a member gives, with
+/// its URL and its root's pin. `itaty`, whose URL and root are built into `una`, is served over
+/// HTTPS, and its root is not built in yet. Refused: a source no such workspace declares, and an
+/// `itaty.una` that does not read. O(d) for a path of d components, and the workspace's size.
+pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, String> {
     if source == crate::ita::ITATY {
         return Err("`itaty` is served over HTTPS, and there is no https transport yet".to_owned());
     }
@@ -92,7 +92,7 @@ pub fn declared_source(dir: &Path, source: &str) -> Result<String, String> {
             .sources
             .iter()
             .find(|declared| declared.name.value == source)
-            .map(|declared| declared.url.value.clone())
+            .cloned()
             .ok_or_else(|| {
                 format!(
                     "`{source}` is not a source of `{}`, the workspace of the package",
@@ -103,6 +103,41 @@ pub fn declared_source(dir: &Path, source: &str) -> Result<String, String> {
     Err(format!(
         "`{source}` is declared by no `itaty.una` of a workspace that lists the package; a source a package is published to is `itaty` or one its workspace declares"
     ))
+}
+
+/// The public headers of a package's modules, by module file: each line of a module that starts,
+/// at its first column, with `pub `, up to its ` = ` or its end, with runs of spaces made one.
+/// A textual reading, for advice only (rule 26): it neither checks nor refuses anything.
+fn public_headers(files: &[File]) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for file in files.iter().filter(|f| f.path.ends_with(".una") && f.path != "ita.una") {
+        let Ok(text) = std::str::from_utf8(&file.bytes) else {
+            continue;
+        };
+        for line in text.lines().filter(|line| line.starts_with("pub ")) {
+            let header = line.split(" = ").next().unwrap_or(line);
+            let header = header.split_whitespace().collect::<Vec<_>>().join(" ");
+            out.insert((file.path.clone(), header));
+        }
+    }
+    out
+}
+
+/// The advice of rule 26 at publishing (rule 43): each public header of `earlier`, the files of
+/// the highest earlier release of the line, that the new release's `files` no longer have as
+/// written, a header removed or changed, which a release of the same major line should keep.
+/// Advice only: nothing is refused. O(n log n) in the lines of both.
+pub fn header_advice(earlier: &[File], files: &[File]) -> Vec<String> {
+    let new = public_headers(files);
+    public_headers(earlier)
+        .into_iter()
+        .filter(|header| !new.contains(header))
+        .map(|(path, header)| {
+            format!(
+                "`{header}` of `{path}` in the earlier release is removed or changed; a release of the same major line keeps every public header"
+            )
+        })
+        .collect()
 }
 
 /// The format line of a promise.
@@ -134,6 +169,47 @@ impl Submission {
 /// SHA-256 of `0x00` and its bytes (RFC 9162).
 pub fn leaf_of(entry: &str) -> String {
     format!("sha256:{}", hex(&merkle::leaf_hash(entry.as_bytes())))
+}
+
+/// What publishing and yanking read of a name's verified state at a checkpoint (rules 36.1, 37
+/// and 41): the head of its chain, which a new entry names as its `previous`, its release
+/// statements, and the releases yanked.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NameState {
+    /// The source.
+    pub source: String,
+    /// The name.
+    pub name: String,
+    /// The head of the name's chain, its log index and leaf hash, or none for a name with no
+    /// entry, as the map's proof of absence shows.
+    pub head: Option<(u64, String)>,
+    /// The release statement of each release, by version.
+    pub statements: BTreeMap<Version, Statement>,
+    /// The releases yanked.
+    pub yanked: BTreeSet<Version>,
+}
+
+impl NameState {
+    /// The state of `name` in `registry`, verified ([`Registry::head`], [`Registry::releases`]
+    /// and [`Registry::marks`]).
+    pub fn read(registry: &mut Registry<'_>, name: &str) -> Result<NameState, Refusal> {
+        let head = registry
+            .head(name)?
+            .map(|head| (head.index, hash_text(&head.leaf)));
+        let statements = registry
+            .releases(name)?
+            .into_iter()
+            .map(|release| (release.statement.version.clone(), release.statement))
+            .collect();
+        let yanked = registry.marks(name)?.yanked.into_keys().collect();
+        Ok(NameState {
+            source: registry.source.clone(),
+            name: name.to_owned(),
+            head,
+            statements,
+            yanked,
+        })
+    }
 }
 
 /// The highest release of `version`'s line below it in `state`, whose statement rule 26
@@ -187,7 +263,7 @@ pub fn release(
             state.name, state.source
         )]);
     }
-    if state.releases.contains_key(&version) {
+    if state.statements.contains_key(&version) {
         return Err(vec![format!(
             "{name} {version} is already released at `{source}`; a version is published once"
         )]);
@@ -240,17 +316,14 @@ pub fn yank(
     version: &Version,
     keys: &[&SigningKey],
 ) -> Result<Submission, String> {
-    match state.releases.get(version) {
-        None => {
-            return Err(format!(
-                "{} {version} is not released at `{}`",
-                state.name, state.source
-            ));
-        }
-        Some(release) if release.yanked => {
-            return Err(format!("{} {version} is already yanked", state.name));
-        }
-        Some(_) => {}
+    if !state.statements.contains_key(version) {
+        return Err(format!(
+            "{} {version} is not released at `{}`",
+            state.name, state.source
+        ));
+    }
+    if state.yanked.contains(version) {
+        return Err(format!("{} {version} is already yanked", state.name));
     }
     if keys.is_empty() {
         return Err("no signing key is given; a yank is signed by the owner's keys".to_owned());
@@ -271,23 +344,23 @@ pub fn yank(
 pub fn send(transport: &dyn Transport, submission: &Submission) -> Result<Vec<String>, String> {
     let dir = submission.dir();
     let mut written = Vec::new();
-    let fail = |path: &str, failure: Failure| match failure {
-        Failure::Absent => format!("`{path}` of `{}` cannot be written", transport.name()),
-        Failure::Unavailable(reason) => {
-            format!("`{path}` of `{}` cannot be written: {reason}", transport.name())
-        }
+    let fail = |path: &str, reason: Refusal| {
+        format!(
+            "`{path}` of {} cannot be written: {reason}",
+            transport.describe()
+        )
     };
     if let Some(archive) = &submission.archive {
         let path = format!("{dir}/archive");
         transport
             .put(&path, archive)
-            .map_err(|failure| fail(&path, failure))?;
+            .map_err(|reason| fail(&path, reason))?;
         written.push(path);
     }
     let path = format!("{dir}/entry");
     transport
         .put(&path, submission.entry.as_bytes())
-        .map_err(|failure| fail(&path, failure))?;
+        .map_err(|reason| fail(&path, reason))?;
     written.push(path);
     Ok(written)
 }

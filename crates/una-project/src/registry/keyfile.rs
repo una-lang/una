@@ -4,13 +4,13 @@
 //! A key file in `~/.una/keys/` is, in this release, the form written with `--no-passphrase`:
 //!
 //! ```text
-//! ita-key/1
+//! ita-keyfile/1
 //! name acme.publisher
 //! secret <base64 of the 32-byte Ed25519 secret>
 //! ```
 //!
 //! A key file encrypted with a passphrase, the default of rule 38, is not read yet:
-//! [`SigningKey::parse`] refuses it by its first line, `ita-key-encrypted/1`, saying that
+//! [`SigningKey::parse`] refuses it by its first line, `ita-keyfile-encrypted/1`, saying that
 //! passphrase encryption is not implemented yet, and never reads it as clear. A key is accepted
 //! only when its public key passes the strict rule ([`crate::tlog::ed25519`]) on a signature of
 //! its own. [`owner_keys`] chooses, among the files of `~/.una/keys/`, the owner's keys that
@@ -25,9 +25,9 @@ use crate::tlog::ed25519;
 use crate::tlog::note::{Key, base64, encode_base64};
 
 /// The first line of a key file without a passphrase.
-pub const FORMAT: &str = "ita-key/1";
+pub const FORMAT: &str = "ita-keyfile/1";
 /// The first line of a key file encrypted with a passphrase.
-pub const ENCRYPTED: &str = "ita-key-encrypted/1";
+pub const ENCRYPTED: &str = "ita-keyfile-encrypted/1";
 
 /// A signing key and its name. Its secret is never printed: `Debug` shows the name only.
 pub struct SigningKey {
@@ -63,7 +63,7 @@ impl SigningKey {
             name: name.to_owned(),
             public: secret.verifying_key().to_bytes(),
         };
-        let probe = b"ita-key/1 probe";
+        let probe = b"ita-keyfile/1 probe";
         let signature = secret.sign(probe).to_bytes();
         ed25519::verify(&key.public, probe, &signature)
             .map_err(|refusal| format!("the key `{name}` is refused: {refusal:?}"))?;

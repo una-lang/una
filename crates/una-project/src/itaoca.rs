@@ -7,7 +7,9 @@
 //!   ([`crate::tree::store_tree`]);
 //! - `registry/<source>/releases/<release>/checkpoint-<size>.provenance`: the provenance of a
 //!   release at the resolution point of size `size` ([`crate::provenance`]), where `<release>`
-//!   is the release's directory name ([`crate::vendor::release_dir`]).
+//!   is the release's directory name ([`crate::vendor::release_dir`]);
+//! - `registry/<source>/checkpoint`: the largest checkpoint of the source the client accepted,
+//!   the floor of ADR 0122 rule 39, replaced only by a larger one ([`Itaoca::store_checkpoint`]).
 //!
 //! The root itself must not be a symbolic link; what lies above it is the user's choice. A
 //! package is verified on every load, not once: its files are read again as [`crate::tree`]
@@ -177,5 +179,59 @@ impl Itaoca {
             Some(path) => tree::read_file(&path, provenance::MAX_BYTES as u64).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// The text of `mirrors.una` (rule 40), read once with no link followed, or `None` when
+    /// Itaoca has none. [`crate::mirrors::parse`] reads it.
+    pub fn load_mirrors(&self) -> Result<Option<String>, Refusal> {
+        tree::not_a_link(&self.root)?;
+        match tree::locate(&self.root, &[crate::mirrors::FILE])? {
+            Some(path) => {
+                let bytes = tree::read_file(&path, crate::mirrors::MAX_BYTES as u64)?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| "mirrors.una is not UTF-8".to_owned())
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The checkpoint stored for `source`, the floor of rule 39, read once with no link
+    /// followed, or `None` when there is none. The caller verifies what it uses of it.
+    pub fn load_checkpoint(&self, source: &str) -> Result<Option<String>, Refusal> {
+        vendor::check_source(source)?;
+        tree::not_a_link(&self.root)?;
+        match tree::locate(&self.root, &["registry", source, "checkpoint"])? {
+            Some(path) => {
+                let bytes = tree::read_file(&path, crate::tlog::note::MAX_NOTE as u64)?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| format!("the checkpoint stored for `{source}` is not UTF-8"))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Stores `document`, a checkpoint the client accepted for `source`, as its floor: only when
+    /// it is larger than the one stored, so the floor never moves backwards (rule 39). The
+    /// caller verified it, and its consistency with the one stored.
+    pub fn store_checkpoint(&self, source: &str, document: &str) -> Result<(), Refusal> {
+        use crate::tlog::note;
+
+        vendor::check_source(source)?;
+        let size = |text: &str| -> Result<u64, Refusal> {
+            let signed = note::parse_note(text)?;
+            Ok(note::parse_checkpoint(&signed.text)?.size)
+        };
+        let new = size(document)?;
+        if let Some(stored) = self.load_checkpoint(source)?
+            && size(&stored).is_ok_and(|old| old >= new)
+        {
+            return Ok(());
+        }
+        tree::not_a_link(&self.root)?;
+        let parent = tree::make_dirs(&self.root, &["registry", source])?;
+        tree::store_file(&parent, "checkpoint", document.as_bytes(), true)
+            .map_err(|refusal| format!("cannot store the checkpoint of `{source}`: {refusal}"))
     }
 }

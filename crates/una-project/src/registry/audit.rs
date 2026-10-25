@@ -1,21 +1,19 @@
 //! `una ita audit` (ADR 0122 rules 38, 38.1 and 41, U7014): the lock's registry packages
-//! against the verified per-name state at a fresh checkpoint.
+//! against the verified state of each name and its owner at a fresh checkpoint (rule 39).
 //!
 //! A locked release is reported when it is yanked; when an advisory names it; when the key that
-//! signed it was revoked with "compromised since log entry p" and it was logged at p or later;
-//! and, since the lock's resolution point, for a recovery pending for its owner, a key event of
-//! its owner, or a transfer of its name. Each finding names the package; the command reports one
-//! U7014 per package, with every finding of it, and exits with code 1 on any. Nothing here reads
-//! a registry's word: the states come from [`Registry`], verified.
+//! signed it was revoked with "compromised since log entry p" and it was logged after p; and
+//! for a recovery or a dispute pending for its owner, and a key event of its owner since the
+//! lock's resolution point. Each finding names the package; the command reports one U7014 per
+//! package, with every finding of it, and exits with code 1 on any. The facts come from the
+//! verified client ([`facts`]); nothing here reads a registry's word.
 //!
-//! Costs: one state per distinct name and one per distinct owner, each asked once, then
-//! O(A + K + T) per package for its A advisories and its owner's K key events and T transfers,
-//! so O(P log P + E) for P packages and E entries of state in all, linear but for the sort.
+//! Costs: per package, one verified state of its name and one of its owner, each cached by the
+//! client, then O(A + K) for its A advisories and its owner's K key events.
 
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
-
-use super::view::{Failure, NameState, OwnerState, Registry, owner_of};
+use crate::client::{Registry, owner_of};
+use crate::tlog::state::Advisory;
+use crate::transport::Refusal;
 use crate::version::Version;
 
 /// A registry package of the lock, as the audit reads it.
@@ -27,12 +25,66 @@ pub struct Locked {
     pub name: String,
     /// Its version.
     pub version: Version,
-    /// The key that signed it, `ed25519:<owner>:<fingerprint>`, when the lock records it.
-    pub signed: Option<String>,
     /// Its log index, when the lock records it.
     pub logged: Option<u64>,
     /// The lock's resolution point at its source: the checkpoint's size.
     pub resolution: u64,
+}
+
+/// What the verified state says of a locked release.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// Whether a yank of it stands.
+    pub yanked: bool,
+    /// The advisories that name it.
+    pub advisories: Vec<Advisory>,
+    /// The log entry since which the key that signed it is compromised, when it counts only
+    /// with such a key.
+    pub compromised_since: Option<u64>,
+    /// The log indexes of the recoveries and disputes pending for its owner.
+    pub pending: Vec<u64>,
+    /// The first log positions of its owner's key changes after the lock's resolution point.
+    pub key_changes: Vec<u64>,
+}
+
+/// The facts of `locked` from `registry`, opened at a fresh checkpoint of its source: its name's
+/// releases and marks ([`Registry::releases`], [`Registry::marks`]) and its owner's history
+/// ([`Registry::history`]). A release the registry does not hold refuses: a lock names only
+/// logged releases.
+pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refusal> {
+    let release = registry.release(&locked.name, &locked.version)?;
+    let marks = registry.marks(&locked.name)?;
+    let history = registry.history(owner_of(&locked.name))?;
+    let advisories = marks
+        .advised
+        .get(&locked.version)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| marks.advisories.get(id).map(|(_, a)| a.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let compromised_since = if release.compromised {
+        release
+            .signers
+            .iter()
+            .filter_map(|key| history.compromised.get(&key.public).copied())
+            .min()
+    } else {
+        None
+    };
+    Ok(Facts {
+        yanked: marks.yanked.contains_key(&locked.version),
+        advisories,
+        compromised_since,
+        pending: history.pending.iter().map(|p| p.index).collect(),
+        key_changes: history
+            .snapshots
+            .iter()
+            .map(|s| s.from)
+            .filter(|from| *from > locked.resolution)
+            .collect(),
+    })
 }
 
 /// What the audit found about a locked package.
@@ -49,17 +101,15 @@ pub enum Kind {
         /// Its summary.
         summary: String,
     },
-    /// The key that signed it was revoked as compromised since a log entry at or before it.
+    /// The key that signed it was revoked as compromised since a log entry before it.
     Compromised {
         /// The entry since which the key is compromised.
         since: u64,
     },
-    /// A recovery of its owner is pending, logged at this index.
+    /// A recovery or a dispute of its owner is pending, logged at this index.
     PendingRecovery(u64),
-    /// A key event of its owner since the resolution point, at this index.
+    /// A key change of its owner since the resolution point, from this log position.
     KeyChange(u64),
-    /// A transfer of its name since the resolution point, at this index.
-    Transfer(u64),
 }
 
 /// A finding: the package, by its index among the packages audited, and what was found.
@@ -90,117 +140,49 @@ impl Finding {
                 owner_of(&locked.name)
             ),
             Kind::KeyChange(index) => format!(
-                "the keys of the owner `{}` changed after the lock's resolution point (log entry {index})",
+                "the keys of the owner `{}` changed after the lock's resolution point (from log position {index})",
                 owner_of(&locked.name)
             ),
-            Kind::Transfer(index) => format!(
-                "`{}` was transferred after the lock's resolution point (log entry {index})",
-                locked.name
-            ),
         }
     }
 }
 
-/// The result of an audit, and the work it took, for the scaling test.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Audit {
-    /// The findings, by package, in the order audited.
-    pub findings: Vec<Finding>,
-    /// States asked for.
-    pub asked: usize,
-    /// Entries of state examined.
-    pub work: usize,
+/// The findings of one package from its facts, in a fixed order: yanked, advisories,
+/// compromise, pending recoveries, key changes. O(A + K).
+pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
+    let mut kinds = Vec::new();
+    if facts.yanked {
+        kinds.push(Kind::Yanked);
+    }
+    for advisory in &facts.advisories {
+        kinds.push(Kind::Advisory {
+            id: advisory.id.clone(),
+            severity: advisory.severity.clone(),
+            summary: advisory.summary.clone(),
+        });
+    }
+    if let Some(since) = facts.compromised_since {
+        kinds.push(Kind::Compromised { since });
+    }
+    kinds.extend(facts.pending.iter().map(|index| Kind::PendingRecovery(*index)));
+    kinds.extend(facts.key_changes.iter().map(|from| Kind::KeyChange(*from)));
+    kinds
+        .into_iter()
+        .map(|kind| Finding { package, kind })
+        .collect()
 }
 
-/// Audits `packages` against `registry`. `Err` names the package whose state could not be had,
-/// verified, and why: nothing is reported as clean that was not verified.
-pub fn audit(packages: &[Locked], registry: &dyn Registry) -> Result<Audit, (usize, Failure)> {
-    let mut names: BTreeMap<(&str, &str), NameState> = BTreeMap::new();
-    let mut owners: BTreeMap<(&str, &str), OwnerState> = BTreeMap::new();
-    let mut result = Audit {
-        findings: Vec::new(),
-        asked: 0,
-        work: 0,
-    };
+/// Audits `packages`, each with the facts `facts_of` gives, which a verified client reads.
+/// `Err` names the package whose facts could not be had, verified, and why: nothing is
+/// reported as clean that was not verified.
+pub fn audit(
+    packages: &[Locked],
+    facts_of: &mut dyn FnMut(&Locked) -> Result<Facts, Refusal>,
+) -> Result<Vec<Finding>, (usize, Refusal)> {
+    let mut out = Vec::new();
     for (index, locked) in packages.iter().enumerate() {
-        let key = (locked.source.as_str(), locked.name.as_str());
-        if let Entry::Vacant(slot) = names.entry(key) {
-            let state = registry
-                .name(&locked.source, &locked.name, 0)
-                .map_err(|failure| (index, failure))?;
-            result.asked += 1;
-            slot.insert(state);
-        }
-        let owner = owner_of(&locked.name);
-        let owner_key = (locked.source.as_str(), owner);
-        if let Entry::Vacant(slot) = owners.entry(owner_key) {
-            let state = registry
-                .owner(&locked.source, owner, 0)
-                .map_err(|failure| (index, failure))?;
-            result.asked += 1;
-            slot.insert(state);
-        }
-        let mut kinds: Vec<Kind> = Vec::new();
-        let mut transfers: BTreeSet<u64> = BTreeSet::new();
-        if let Some(state) = names.get(&key) {
-            if let Some(release) = state.releases.get(&locked.version) {
-                if release.yanked {
-                    kinds.push(Kind::Yanked);
-                }
-                for id in &release.advised {
-                    let (severity, summary) = state
-                        .advisories
-                        .get(id)
-                        .map(|a| (a.severity.clone(), a.summary.clone()))
-                        .unwrap_or_default();
-                    kinds.push(Kind::Advisory {
-                        id: id.clone(),
-                        severity,
-                        summary,
-                    });
-                }
-                result.work += 1 + release.advised.len();
-            }
-            for entry in &state.entries {
-                result.work += 1;
-                if entry.format == "ita-transfer/1"
-                    && entry.index >= locked.resolution
-                    && transfers.insert(entry.index)
-                {
-                    kinds.push(Kind::Transfer(entry.index));
-                }
-            }
-        }
-        if let Some(state) = owners.get(&owner_key) {
-            if let (Some(signed), Some(logged)) = (&locked.signed, locked.logged) {
-                for (key, since) in &state.compromised {
-                    if key == signed && logged >= *since {
-                        kinds.push(Kind::Compromised { since: *since });
-                    }
-                }
-            }
-            for at in &state.pending_recoveries {
-                kinds.push(Kind::PendingRecovery(*at));
-            }
-            for at in &state.key_events {
-                if *at >= locked.resolution {
-                    kinds.push(Kind::KeyChange(*at));
-                }
-            }
-            for (at, name) in &state.transfers {
-                if *name == locked.name && *at >= locked.resolution && transfers.insert(*at) {
-                    kinds.push(Kind::Transfer(*at));
-                }
-            }
-            result.work += state.compromised.len()
-                + state.pending_recoveries.len()
-                + state.key_events.len()
-                + state.transfers.len();
-        }
-        result.findings.extend(kinds.into_iter().map(|kind| Finding {
-            package: index,
-            kind,
-        }));
+        let facts = facts_of(locked).map_err(|why| (index, why))?;
+        out.extend(findings(index, &facts));
     }
-    Ok(result)
+    Ok(out)
 }

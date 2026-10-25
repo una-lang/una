@@ -1,28 +1,32 @@
 //! The registry client's side of publishing, yanks, advisories, audit, watch, mirrors and
-//! bundles (ADR 0122 rules 33, 36.2 and 40 to 43, `spec/30 §14`).
+//! bundles (ADR 0122 rules 33, 36.2 and 41 to 43, `spec/30 §15`).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
+#[path = "support/registry.rs"]
+mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
+use support::{NOW, TestRegistry, hash_hex, keypair};
+use una_project::client::{Point, Registry};
 use una_project::content::File;
 use una_project::itaoca::Itaoca;
-use una_project::provenance::Expected;
-use una_project::registry::audit::{self, Kind, Locked};
-use una_project::registry::bundle;
+use una_project::mirrors::{Attempt, first_verified};
+use una_project::provenance::{Expected, signed_name};
+use una_project::registry::audit::{self, Facts, Kind, Locked};
+use una_project::registry::bundle::{self, Memory, Recording};
 use una_project::registry::entries::{check_advisory, check_yank, cooled, releases, yank_text};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
-use una_project::registry::mirrors::{self, first_verified};
-use una_project::registry::submit::{self, Promise, broken, check_promise};
-use una_project::registry::transport::{Directory, Failure as TransportFailure, Location, Transport, location};
-use una_project::registry::view::{ChainEntry, Failure, NameState, OwnerState, Registry};
-use una_project::registry::watch::{Position, watch};
-use una_project::tlog::note::{Key, parse_note};
+use una_project::registry::submit::{self, NameState, Promise, broken, check_promise};
+use una_project::registry::watch::{Position, Seen, watch};
+use una_project::tlog::note::parse_note;
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::{Advisory, ReleaseState};
+use una_project::transport::{Directory, Transport};
 use una_project::vendor::Problem;
 use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
@@ -46,149 +50,64 @@ fn key(seed: u8, name: &str) -> SigningKey {
     SigningKey::from_secret(name, &[seed; 32]).unwrap()
 }
 
-// --- URLs, transports and mirrors (rule 40) -------------------------------------------------
+// --- Writing through a transport, and mirrors tried in order (rules 40 and 43) --------------
 
 #[test]
-fn only_https_and_file_urls_are_read() {
+fn the_directory_transport_writes_once_and_reads_back() {
+    let dir = scratch("transport");
+    let transport = Directory::new(&dir);
+    transport.put("submit/abc/entry", b"one").unwrap();
     assert_eq!(
-        location("https://ita.acme.example/base").unwrap(),
-        Location::Https("https://ita.acme.example/base".to_owned())
+        transport.get("submit/abc/entry", 10).unwrap(),
+        Some(b"one".to_vec())
     );
-    assert_eq!(
-        location("file:///srv/mirror").unwrap(),
-        Location::Directory(PathBuf::from("/srv/mirror"))
-    );
-    for (url, part) in [
-        ("http://ita.acme.example", "plain HTTP"),
-        ("HTTP://ita.acme.example", "plain HTTP"),
-        ("ftp://ita.acme.example", "scheme `ftp`"),
-        ("HTTPS://ita.acme.example", "scheme `HTTPS`"),
-        ("ita.acme.example", "no scheme"),
-        ("https:///path", "no host"),
-        ("file://host/srv", "names a host"),
-        ("file:///srv/../etc", "`..`"),
-        ("https://ita.acme.example/a b", "space"),
-    ] {
-        let refusal = location(url).unwrap_err();
-        assert!(refusal.contains(part), "{url}: {refusal}");
+    // The same bytes again are accepted; other bytes are refused.
+    transport.put("submit/abc/entry", b"one").unwrap();
+    assert!(transport.put("submit/abc/entry", b"two").is_err());
+    assert_eq!(transport.get("submit/none", 10), Ok(None));
+    for path in ["../x", "a/../b", "/abs", "a//b", "checkpoint"] {
+        assert!(transport.put(path, b"x").is_err(), "{path}");
     }
+    assert!(transport.get("submit/abc/entry", 2).is_err(), "over the limit");
+    // An https location has no transport yet: it never writes.
+    let https = una_project::transport::Unavailable {
+        url: "https://ita.acme.example".to_owned(),
+    };
     assert!(
-        Directory::of("https://ita.acme.example")
+        https
+            .put("submit/abc/entry", b"one")
             .unwrap_err()
             .contains("no https transport yet")
     );
 }
 
-#[test]
-fn the_directory_transport_writes_once_and_reads_back() {
-    let dir = scratch("transport");
-    let transport = Directory::new(&dir, "file:///test");
-    transport.put("submit/abc/entry", b"one").unwrap();
-    assert_eq!(transport.get("submit/abc/entry", 10).unwrap(), b"one");
-    // The same bytes again are accepted; other bytes are refused.
-    transport.put("submit/abc/entry", b"one").unwrap();
-    assert!(transport.put("submit/abc/entry", b"two").is_err());
-    assert_eq!(transport.get("submit/none", 10), Err(TransportFailure::Absent));
-    for path in ["../x", "a/../b", ".hidden", "/abs", "a//b"] {
-        assert!(transport.get(path, 10).is_err(), "{path}");
-        assert!(transport.put(path, b"x").is_err(), "{path}");
-    }
-    assert!(transport.get("submit/abc/entry", 2).is_err(), "over the limit");
-}
-
-#[test]
-fn mirrors_una_reads_and_refuses_plain_http() {
-    let (mirrors, errors) = mirrors::parse(
-        "mirrors\n  itaty\n    \"https://ita-mirror.example.net\"\n    \"file:///srv/ita\"\n  acme\n    \"https://acme-mirror.example\"\n",
-    );
-    assert_eq!(errors, []);
-    assert_eq!(mirrors.of("itaty").len(), 2);
-    assert_eq!(mirrors.of("acme")[0].url, "https://acme-mirror.example");
-    assert!(mirrors.of("other").is_empty());
-    let (_, errors) = mirrors::parse("mirrors\n  itaty\n    \"http://ita-mirror.example.net\"\n");
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].code, una_diag::Code::U7008);
-    assert!(errors[0].message.contains("plain HTTP"), "{}", errors[0].message);
-    for text in [
-        "mirror\n  itaty\n    \"https://a.example\"\n",
-        "mirrors\n  itaty\n    \"https://a.example\"\n    \"https://a.example\"\n",
-        "mirrors\n  itaty\n    \"https://a.example\"\n  itaty\n    \"https://b.example\"\n",
-        "mirrors\n  Itaty\n    \"https://a.example\"\n",
-        "mirrors\n  itaty\n    https\n",
-    ] {
-        let (_, errors) = mirrors::parse(text);
-        assert!(!errors.is_empty(), "{text:?}");
-        assert!(errors.iter().all(|e| e.code == una_diag::Code::U7008));
-    }
-}
-
-/// A mirror that serves a document that does not verify is skipped and named; the next one's
-/// verified copy is taken. Verified bytes decide, wherever they come from.
-#[test]
-fn a_mirror_serving_a_tampered_document_is_skipped() {
-    let bad = scratch("mirror-bad");
-    let good = scratch("mirror-good");
-    let empty = scratch("mirror-empty");
-    let archive = package_archive("0.3.1");
-    let digest = una_project::tree::VerifiedTree::from_archive(&archive)
-        .unwrap()
-        .digest()
-        .to_owned();
-    let mut tampered = archive.clone();
-    let last = tampered.len() - 2;
-    tampered[last] ^= 1;
-    let path = bundle::package_path(&digest).unwrap().replace("packages", "blobs/sha256");
-    let bad = Directory::new(&bad, "file:///bad");
-    let empty = Directory::new(&empty, "file:///empty");
-    let good = Directory::new(&good, "file:///good");
-    bad.put(&path, &tampered).unwrap();
-    good.put(&path, &archive).unwrap();
-    let verify = |bytes: &[u8]| -> Result<String, String> {
-        let tree = una_project::tree::VerifiedTree::from_archive(bytes)?;
-        if tree.digest() == digest {
-            Ok(tree.digest().to_owned())
-        } else {
-            Err(format!("the digest is {}", tree.digest()))
-        }
-    };
-    let transports: [&dyn Transport; 3] = [&bad, &empty, &good];
-    let fetched = first_verified(&transports, &path, 1 << 20, &verify);
-    assert_eq!(fetched.value, Some((digest.clone(), "file:///good".to_owned())));
-    assert_eq!(fetched.refused.len(), 1);
-    assert_eq!(fetched.refused[0].from, "file:///bad");
-    assert_eq!(fetched.unavailable[0].from, "file:///empty");
-    // With only the bad one, nothing is taken.
-    let only_bad: [&dyn Transport; 1] = [&bad];
-    assert_eq!(first_verified(&only_bad, &path, 1 << 20, &verify).value, None);
-}
-
-/// Trying m mirrors costs O(m): one fetch and one verification each, never more.
+/// Trying m places costs O(m): one verification each, never more, and the first that verifies
+/// is taken after every bad one is skipped and named.
 #[test]
 fn trying_mirrors_scales_linearly() {
-    let path = "blobs/sha256/x";
-    for m in [10usize, 100, 400] {
-        let parent = scratch(&format!("scale-{m}"));
-        let dirs: Vec<Directory> = (0..m)
-            .map(|i| {
-                let transport = Directory::new(&parent.join(format!("m{i}")), &format!("file:///m{i}"));
-                let bytes: &[u8] = if i + 1 == m { b"good" } else { b"bad!" };
-                transport.put(path, bytes).unwrap();
-                transport
-            })
+    for m in [10usize, 100, 1000] {
+        let places: Vec<(String, Result<&dyn Transport, String>)> = (0..m)
+            .map(|i| (format!("file:///m{i}"), Err("unused".to_owned())))
             .collect();
-        let transports: Vec<&dyn Transport> = dirs.iter().map(|d| d as &dyn Transport).collect();
-        let verify = |bytes: &[u8]| -> Result<(), String> {
-            if bytes == b"good" {
-                Ok(())
+        let mut seen = 0usize;
+        let fetched = first_verified(&places, &mut |_| -> Result<(), Attempt> { Ok(()) });
+        assert!(fetched.value.is_none(), "no place has a transport");
+        assert_eq!(fetched.unavailable.len(), m);
+        let memory = Memory::default();
+        let places: Vec<(String, Result<&dyn Transport, String>)> = (0..m)
+            .map(|i| (format!("file:///m{i}"), Ok(&memory as &dyn Transport)))
+            .collect();
+        let fetched = first_verified(&places, &mut |_| {
+            seen += 1;
+            if seen == m {
+                Ok(seen)
             } else {
-                Err("bad".to_owned())
+                Err(Attempt::Refused("a copy that does not verify".to_owned()))
             }
-        };
-        let fetched = first_verified(&transports, path, 16, &verify);
-        assert!(fetched.value.is_some());
-        assert_eq!(fetched.tried, m);
+        });
+        assert_eq!(fetched.value, Some((m, format!("file:///m{}", m - 1))));
         assert_eq!(fetched.refused.len(), m - 1);
-        let _ = std::fs::remove_dir_all(&parent);
+        assert_eq!(seen, m);
     }
 }
 
@@ -206,11 +125,11 @@ fn a_key_file_reads_back_and_signs_notes() {
     assert!(sign_note("hello\n", &[]).is_err());
     assert!(sign_note("a\n\nb\n", &[&publisher]).is_err());
     assert!(
-        SigningKey::parse("ita-key-encrypted/1\n...\n")
+        SigningKey::parse("ita-keyfile-encrypted/1\n...\n")
             .unwrap_err()
             .contains("passphrase")
     );
-    assert!(SigningKey::parse("ita-key/1\nname a+b\nsecret AAAA\n").is_err());
+    assert!(SigningKey::parse("ita-keyfile/1\nname a+b\nsecret AAAA\n").is_err());
     // A key name with a space cannot name a signature line.
     assert!(SigningKey::from_secret("bad name", &[1; 32]).is_err());
 }
@@ -280,13 +199,13 @@ fn a_release_is_built_signed_and_sent() {
     assert_eq!(tree.digest(), statement.digest);
     // Sent through the directory transport: the archive, then the entry.
     let dir = scratch("send");
-    let transport = Directory::new(&dir, "file:///registry");
+    let transport = Directory::new(&dir);
     let written = submit::send(&transport, &submission).unwrap();
     assert_eq!(written.len(), 2);
     assert!(written[0].ends_with("/archive") && written[1].ends_with("/entry"));
     assert_eq!(
         transport.get(&written[1], 1 << 16).unwrap(),
-        submission.entry.as_bytes()
+        Some(submission.entry.as_bytes().to_vec())
     );
     // Sending it again is the same submission.
     submit::send(&transport, &submission).unwrap();
@@ -327,16 +246,6 @@ fn publishing_refuses_what_rules_26_and_43_name() {
     let mut state = first_state();
     state.head = Some((7, D.to_owned()));
     state.statements.insert(v("0.3.0"), parse_statement(&earlier).unwrap());
-    state.releases.insert(
-        v("0.3.0"),
-        ReleaseState {
-            digest: D.to_owned(),
-            logged_at: 1,
-            yanked: false,
-            advised: Vec::new(),
-            threshold_fix: false,
-        },
-    );
     assert!(refusal(&published("0.3.1", ""), &state, &[&publisher]).contains("Http[post]"));
     assert!(refusal(&published("0.3.0", ""), &state, &[&publisher]).contains("already released"));
     // A new major line may grow, and names the chain's head as its previous entry.
@@ -439,110 +348,52 @@ fn the_cooldown_is_a_wait_in_witness_time() {
 
 // --- Audit and watch (rules 36, 36.2, 38, 41; U7014) ----------------------------------------
 
-/// A registry of verified states, as the client gives them.
-#[derive(Default)]
-struct Fake {
-    names: BTreeMap<String, NameState>,
-    owners: BTreeMap<String, OwnerState>,
-    asked: std::cell::Cell<usize>,
-}
-
-impl Registry for Fake {
-    fn name(&self, _source: &str, name: &str, held: u64) -> Result<NameState, Failure> {
-        self.asked.set(self.asked.get() + 1);
-        let mut state = self.names.get(name).cloned().unwrap_or_else(|| NameState {
-            name: name.to_owned(),
-            ..NameState::default()
-        });
-        state.entries = state.entries.split_off((held as usize).min(state.entries.len()));
-        Ok(state)
-    }
-
-    fn owner(&self, _source: &str, owner: &str, held: u64) -> Result<OwnerState, Failure> {
-        self.asked.set(self.asked.get() + 1);
-        let mut state = self.owners.get(owner).cloned().unwrap_or_else(|| OwnerState {
-            owner: owner.to_owned(),
-            ..OwnerState::default()
-        });
-        state.entries = state.entries.split_off((held as usize).min(state.entries.len()));
-        Ok(state)
-    }
-
-    fn log_key(&self, _source: &str) -> Result<Key, Failure> {
-        Ok(key(20, "acme.example/log").key().clone())
-    }
-}
-
-fn entry(index: u64, format: &str) -> ChainEntry {
-    ChainEntry {
-        index,
-        leaf: format!("sha256:{index:064x}"),
-        format: format.to_owned(),
-        text: format!("{format}\n"),
-    }
-}
-
-fn release_state(yanked: bool, advised: &[&str]) -> ReleaseState {
-    ReleaseState {
-        digest: D.to_owned(),
-        logged_at: 1,
-        yanked,
-        advised: advised.iter().map(|a| (*a).to_owned()).collect(),
-        threshold_fix: false,
-    }
-}
-
-fn locked(name: &str, version: &str, logged: u64) -> Locked {
+fn locked(name: &str, version: &str) -> Locked {
     Locked {
         source: "acme".to_owned(),
         name: name.to_owned(),
         version: v(version),
-        signed: Some("ed25519:acme:aa".to_owned()),
-        logged: Some(logged),
+        logged: Some(45),
         resolution: 100,
+    }
+}
+
+fn advisory(id: &str) -> Advisory {
+    Advisory {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        previous: None,
+        id: id.to_owned(),
+        line: Line::Zero(3),
+        affected: vec![v("0.3.1")],
+        fixed: None,
+        severity: "high".to_owned(),
+        summary: "An overflow".to_owned(),
     }
 }
 
 #[test]
 fn audit_reports_yanks_advisories_compromises_and_owner_events() {
-    let mut fake = Fake::default();
-    let mut ledger = NameState {
-        source: "acme".to_owned(),
-        name: "acme/ledger".to_owned(),
-        ..NameState::default()
+    let packages = [locked("acme/ledger", "0.3.1"), locked("acme/ledger", "0.3.2")];
+    let mut facts_of = |package: &Locked| -> Result<Facts, String> {
+        Ok(if package.version == v("0.3.1") {
+            Facts {
+                yanked: true,
+                advisories: vec![advisory("ITA-1")],
+                compromised_since: Some(40),
+                pending: vec![130],
+                key_changes: vec![140],
+            }
+        } else {
+            Facts {
+                pending: vec![130],
+                ..Facts::default()
+            }
+        })
     };
-    ledger.releases.insert(v("0.3.1"), release_state(true, &["ITA-1"]));
-    ledger.releases.insert(v("0.3.2"), release_state(false, &[]));
-    ledger.advisories.insert(
-        "ITA-1".to_owned(),
-        Advisory {
-            name: "acme/ledger".to_owned(),
-            id: "ITA-1".to_owned(),
-            line: Line::Zero(3),
-            affected: vec![v("0.3.1")],
-            fixed: None,
-            severity: "high".to_owned(),
-            summary: "An overflow".to_owned(),
-        },
-    );
-    ledger.entries = vec![entry(50, "ita-release/1"), entry(120, "ita-transfer/1")];
-    fake.names.insert("acme/ledger".to_owned(), ledger);
-    fake.owners.insert(
-        "acme".to_owned(),
-        OwnerState {
-            owner: "acme".to_owned(),
-            compromised: vec![("ed25519:acme:aa".to_owned(), 40)],
-            pending_recoveries: vec![130],
-            key_events: vec![60, 140],
-            transfers: vec![(120, "acme/ledger".to_owned())],
-            ..OwnerState::default()
-        },
-    );
-    let packages = [locked("acme/ledger", "0.3.1", 45), locked("acme/ledger", "0.3.2", 30)];
-    let result = audit::audit(&packages, &fake).unwrap();
+    let findings = audit::audit(&packages, &mut facts_of).unwrap();
     let of = |package: usize| -> Vec<Kind> {
-        result
-            .findings
+        findings
             .iter()
             .filter(|f| f.package == package)
             .map(|f| f.kind.clone())
@@ -557,88 +408,72 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                 severity: "high".to_owned(),
                 summary: "An overflow".to_owned()
             },
-            Kind::Transfer(120),
             Kind::Compromised { since: 40 },
             Kind::PendingRecovery(130),
             Kind::KeyChange(140),
         ]
     );
-    // Logged before the compromise: not flagged for it; the owner's events still are.
+    assert_eq!(of(1), [Kind::PendingRecovery(130)]);
+    assert_eq!(findings[0].text(&packages[0]), "0.3.1 is yanked");
+    // Facts that cannot be had verified fail the audit: nothing is called clean unverified.
+    let mut down = |_: &Locked| -> Result<Facts, String> { Err("a bad map proof".to_owned()) };
     assert_eq!(
-        of(1),
-        [Kind::Transfer(120), Kind::PendingRecovery(130), Kind::KeyChange(140)]
-    );
-    // One state per name and per owner.
-    assert_eq!(result.asked, 2);
-    let finding = &result.findings[0];
-    assert_eq!(finding.text(&packages[0]), "0.3.1 is yanked");
-    // A state that cannot be verified fails the audit: nothing is called clean unverified.
-    struct Down;
-    impl Registry for Down {
-        fn name(&self, _: &str, _: &str, _: u64) -> Result<NameState, Failure> {
-            Err(Failure::Refused("a bad map proof".to_owned()))
-        }
-        fn owner(&self, _: &str, _: &str, _: u64) -> Result<OwnerState, Failure> {
-            Err(Failure::Unavailable("no checkpoint".to_owned()))
-        }
-        fn log_key(&self, _: &str) -> Result<Key, Failure> {
-            Err(Failure::Unavailable("no root".to_owned()))
-        }
-    }
-    assert_eq!(
-        audit::audit(&packages, &Down).unwrap_err(),
-        (0, Failure::Refused("a bad map proof".to_owned()))
+        audit::audit(&packages, &mut down).unwrap_err(),
+        (0, "a bad map proof".to_owned())
     );
 }
 
-/// The audit asks one state per name and owner and examines each entry once: its work per
-/// package stays constant as the lock grows.
+/// The audit asks once per package and its findings are linear in its facts.
 #[test]
 fn audit_scales_linearly() {
-    let mut per_package = Vec::new();
     for count in [100usize, 1000, 10_000] {
-        let mut fake = Fake::default();
-        let mut packages = Vec::new();
-        for i in 0..count {
-            let name = format!("acme/p{i}");
-            let mut state = NameState {
-                name: name.clone(),
-                ..NameState::default()
-            };
-            state.releases.insert(v("1.0.0"), release_state(i % 2 == 0, &["A", "B"]));
-            state.entries = vec![entry(1, "ita-release/1")];
-            fake.names.insert(name.clone(), state);
-            packages.push(locked(&name, "1.0.0", 1));
-        }
-        let result = audit::audit(&packages, &fake).unwrap();
-        assert_eq!(result.asked, count + 1);
-        assert_eq!(fake.asked.get(), count + 1);
-        per_package.push(result.work as f64 / count as f64);
+        let packages: Vec<Locked> = (0..count)
+            .map(|i| locked(&format!("acme/p{i}"), "1.0.0"))
+            .collect();
+        let mut asked = 0usize;
+        let mut facts_of = |_: &Locked| -> Result<Facts, String> {
+            asked += 1;
+            Ok(Facts {
+                yanked: true,
+                advisories: vec![advisory("A"), advisory("B")],
+                ..Facts::default()
+            })
+        };
+        let findings = audit::audit(&packages, &mut facts_of).unwrap();
+        assert_eq!(asked, count);
+        assert_eq!(findings.len(), 3 * count);
     }
-    assert!(per_package.windows(2).all(|w| (w[1] - w[0]).abs() < 0.01), "{per_package:?}");
+}
+
+fn seen(index: u64, format: &str) -> Seen {
+    Seen {
+        index,
+        leaf: format!("sha256:{index:064x}"),
+        format: format.to_owned(),
+    }
 }
 
 #[test]
 fn watch_reports_new_entries_and_broken_promises() {
-    let mut fake = Fake::default();
-    let mut ledger = NameState {
-        name: "acme/ledger".to_owned(),
-        count: 3,
-        ..NameState::default()
+    let chains: BTreeMap<String, Vec<Seen>> = [
+        (
+            "owner:acme".to_owned(),
+            vec![seen(0, "ita-owner/1"), seen(4, "ita-key/1")],
+        ),
+        (
+            "acme/ledger".to_owned(),
+            vec![
+                seen(1, "ita-release/1"),
+                seen(2, "ita-release/1"),
+                seen(3, "ita-yank/1"),
+            ],
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let mut chain = |name: &str| -> Result<Vec<Seen>, String> {
+        Ok(chains.get(name).cloned().unwrap_or_default())
     };
-    ledger.entries = vec![entry(1, "ita-release/1"), entry(2, "ita-release/1"), entry(3, "ita-yank/1")];
-    fake.names.insert("acme/ledger".to_owned(), ledger);
-    fake.owners.insert(
-        "acme".to_owned(),
-        OwnerState {
-            owner: "acme".to_owned(),
-            count: 2,
-            checkpoint_time: 5000,
-            packages: vec!["acme/ledger".to_owned()],
-            entries: vec![entry(0, "ita-key/1"), entry(4, "ita-key/1")],
-            ..OwnerState::default()
-        },
-    );
     let mut position = Position::start("acme", "acme");
     position.owner_count = 1;
     position.names.insert("acme/ledger".to_owned(), 2);
@@ -650,23 +485,119 @@ fn watch_reports_new_entries_and_broken_promises() {
         by,
         document: String::new(),
     };
-    let kept = promise(entry(3, "").leaf, 10);
+    let kept = promise(seen(3, "").leaf, 10);
     let late = promise(format!("sha256:{}", "cd".repeat(32)), 4000);
     let waiting = promise(format!("sha256:{}", "ef".repeat(32)), 9000);
-    let report = watch(&fake, &position, &[], &[kept.clone(), late.clone(), waiting]).unwrap();
-    let seen: Vec<(String, u64)> = report
+    let report = watch(
+        &mut chain,
+        5000,
+        &position,
+        &[],
+        &[kept.clone(), late.clone(), waiting],
+    )
+    .unwrap();
+    let new: Vec<(String, u64)> = report
         .entries
         .iter()
         .map(|(name, e)| (name.clone(), e.index))
         .collect();
-    assert_eq!(seen, [("acme".to_owned(), 4), ("acme/ledger".to_owned(), 3)]);
+    assert_eq!(new, [("acme".to_owned(), 4), ("acme/ledger".to_owned(), 3)]);
     assert_eq!(report.kept, [kept]);
     assert_eq!(report.broken, [late]);
     assert_eq!(report.position.owner_count, 2);
     assert_eq!(report.position.names["acme/ledger"], 3);
     // A chain that shrank is refused.
     position.names.insert("acme/ledger".to_owned(), 9);
-    assert!(matches!(watch(&fake, &position, &[], &[]), Err(Failure::Refused(_))));
+    assert!(watch(&mut chain, 5000, &position, &[], &[]).is_err());
+}
+
+// --- Yanks and advisories read by the client (rule 41) --------------------------------------
+
+/// A yank signed by the owner and an advisory signed by a security key, logged after the
+/// releases they name, mark them; resolution reads them through the client's state.
+#[test]
+fn the_client_reads_yanks_and_advisories() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    test.release("acme/ledger", "0.3.0", "none", "none", &[&owner]);
+    let (_, fix_digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    let yank = format!(
+        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
+        test.previous("acme/ledger")
+    );
+    let document = support::signed(&yank, &[&owner]);
+    test.append("acme/ledger", &document);
+    let advisory = format!(
+        "ita-advisory/1\nsource acme\nname acme/ledger\n{}\nid ITA-1\nline 0.3\naffected 0.3.0\nfixed 0.3.1 {fix_digest}\nseverity high\nsummary An overflow",
+        test.previous("acme/ledger")
+    );
+    let security = (
+        ed25519_dalek::SigningKey::from_bytes(&test.keys.security.0.to_bytes()),
+        test.keys.security.1.clone(),
+    );
+    let document = support::signed(&advisory, &[&security, &owner]);
+    test.append("acme/ledger", &document);
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let marks = client.marks("acme/ledger").unwrap();
+    assert!(marks.yanked.contains_key(&v("0.3.0")));
+    assert_eq!(marks.advised[&v("0.3.0")], ["ITA-1"]);
+    assert!(marks.threshold_fix.contains(&v("0.3.1")), "two signers lift the cooldown");
+    let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
+    let old = state.iter().find(|r| r.version == v("0.3.0")).unwrap();
+    assert!(old.yanked && old.advised);
+    // The state a publisher reads names the chain's head and the yank.
+    let name = NameState::read(&mut client, "acme/ledger").unwrap();
+    assert!(name.yanked.contains(&v("0.3.0")));
+    assert_eq!(name.head.as_ref().unwrap().0, 4, "the advisory is the head");
+    // A yank signed by a key that is not the owner's refuses the name.
+    let mut forged = TestRegistry::new("acme");
+    forged.register("acme", &owner);
+    forged.release("acme/ledger", "0.3.0", "none", "none", &[&owner]);
+    let stranger = keypair(61, "stranger");
+    let yank = format!(
+        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
+        forged.previous("acme/ledger")
+    );
+    let document = support::signed(&yank, &[&stranger]);
+    forged.append("acme/ledger", &document);
+    forged.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: forged.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &forged.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
+}
+
+#[test]
+fn header_advice_names_public_headers_removed_or_changed() {
+    let earlier = files("ita acme/ledger\n  version 0.3.0\n  edition 0.4\n");
+    let mut new = files("ita acme/ledger\n  version 0.3.1\n  edition 0.4\n");
+    assert!(submit::header_advice(&earlier, &new).is_empty());
+    new[1].bytes = b"module ledger\n\npub total(n: Int) -> Int = n\n".to_vec();
+    let advice = submit::header_advice(&earlier, &new);
+    assert_eq!(advice.len(), 1);
+    assert!(advice[0].contains("pub total() -> Int"), "{advice:?}");
 }
 
 // --- Bundles (rule 33) -----------------------------------------------------------------------
@@ -677,162 +608,176 @@ fn package_archive(version: &str) -> Vec<u8> {
     una_project::content::archive(&mut files).unwrap()
 }
 
-/// A test registry `acme` with one release of `acme/ledger`, signed by its own root, log,
-/// witness and publisher: the archive, the provenance, and what a lock says of it.
-fn registry_release() -> (Vec<u8>, Vec<u8>, Expected) {
-    use una_project::provenance::{Provenance, sha256_digest, signed_name};
-    use una_project::tlog::merkle::{inclusion_proof, leaf_hash, root as tree_root};
-    use una_project::tlog::note::encode_base64;
+/// A test registry `acme` with one release of `acme/ledger`, and what a bundle of it holds:
+/// the package, its provenance, what a lock says of it, and the registry's files the client
+/// read at the lock's resolution point.
+struct Bundled {
+    archive: Vec<u8>,
+    provenance: Vec<u8>,
+    expected: Expected,
+    files: BTreeMap<String, Vec<u8>>,
+    test: TestRegistry,
+}
 
-    let archive = package_archive("0.3.1");
-    let tree = una_project::tree::VerifiedTree::from_archive(&archive).unwrap();
-    let digest = tree.digest().to_owned();
-    let root_key = key(10, "root.a");
-    let log = key(20, "acme.example/log");
-    let witness = key(30, "witness.a");
-    let security = key(40, "security.a");
-    let itauna = key(41, "itauna.a");
-    let line = |k: &SigningKey| format!("key {} {}\n", k.key().name, encode_base64(&k.key().public));
-    let mut text = "ita-root/1\nsource acme\nversion 1\nexpires 4000000000\nroot 1\n".to_owned();
-    text.push_str(&line(&root_key));
-    text.push_str(&format!("log {} {}\n", log.key().name, encode_base64(&log.key().public)));
-    text.push_str("witnesses 1\n");
-    text.push_str(&line(&witness));
-    text.push_str("security 1\n");
-    text.push_str(&line(&security));
-    text.push_str("itauna 1\n");
-    text.push_str(&line(&itauna));
-    let root_document = sign_note(&text, &[&root_key]).unwrap();
-    let manifest = sha256_digest(tree.file("ita.una").unwrap());
-    let statement_text = format!(
-        "ita-release/1\nsource acme\nname acme/ledger\nversion 0.3.1\nprevious none\ndigest {digest}\nmanifest {manifest}\nedition 0.4\nauthority none\ntrust none\n"
-    );
-    let publisher = key(50, "acme.publisher");
-    let statement = sign_note(&statement_text, &[&publisher]).unwrap();
-    let leaves = [leaf_hash(b"an earlier entry"), leaf_hash(statement.as_bytes())];
-    let top = tree_root(&leaves);
-    let checkpoint_text = format!("{}\n2\n{}\n", log.key().name, encode_base64(&top));
-    let mut checkpoint = sign_note(&checkpoint_text, &[&log]).unwrap();
-    checkpoint.push_str(&cosign_line(&witness, &checkpoint_text, 1_900_000_000));
-    let provenance = Provenance {
-        roots: vec![root_document.clone()],
-        checkpoint,
-        statement,
-        index: 1,
-        proof: inclusion_proof(1, &leaves),
-        key: publisher.key().clone(),
+fn bundled() -> Bundled {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    let size = test.checkpoint(NOW);
+    let served = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
     };
-    let hex: String = top.iter().map(|b| format!("{b:02x}")).collect();
+    let recording = Recording::new(&served);
+    let checkpoint = parse_note(std::str::from_utf8(&test.files[&format!("checkpoint/{size}")]).unwrap())
+        .unwrap();
+    let root = una_project::tlog::note::parse_checkpoint(&checkpoint.text)
+        .unwrap()
+        .root;
+    let point = Point::At {
+        size,
+        hash: hash_hex(&root),
+    };
+    let mut client = Registry::open("acme", &recording, &test.pin(), &point, None).unwrap();
+    let release = client.release("acme/ledger", &v("0.3.1")).unwrap();
+    client.marks("acme/ledger").unwrap();
+    let provenance = client.provenance(&release, &owner.1).unwrap().encode();
+    let archive = served.files[&format!("blobs/sha256/{}", digest.strip_prefix("sha256:").unwrap())].clone();
+    drop(client);
+    let files = recording.seen.into_inner();
     let expected = Expected {
         source: "acme".to_owned(),
         name: "acme/ledger".to_owned(),
         version: "0.3.1".to_owned(),
         digest,
-        signed: signed_name("acme/ledger", &publisher.key().public),
-        logged: 1,
-        root: una_project::tlog::root::digest(&root_document),
-        checkpoint_size: 2,
-        checkpoint_hash: format!("sha256:{hex}"),
+        signed: signed_name("acme/ledger", &owner.1.public),
+        logged: index,
+        root: test.pin(),
+        checkpoint_size: size,
+        checkpoint_hash: hash_hex(&root),
     };
-    (archive, provenance.encode(), expected)
+    Bundled {
+        archive,
+        provenance,
+        expected,
+        files,
+        test,
+    }
 }
 
-/// A cosignature/v1 line by `witness` of a checkpoint's text at `time`.
-fn cosign_line(witness: &SigningKey, text: &str, time: u64) -> String {
-    use ed25519_dalek::Signer as _;
-    use una_project::tlog::note::encode_base64;
-    // The test signs with the same seed the key was made from.
-    let secret = ed25519_dalek::SigningKey::from_bytes(&[30; 32]);
-    assert_eq!(secret.verifying_key().to_bytes(), witness.key().public);
-    let message = format!("cosignature/v1\ntime {time}\n{text}");
-    let mut bytes = witness.key().cosignature_id().to_vec();
-    bytes.extend_from_slice(&time.to_be_bytes());
-    bytes.extend_from_slice(&secret.sign(message.as_bytes()).to_bytes());
-    format!("\u{2014} {} {}\n", witness.key().name, encode_base64(&bytes))
+fn bundle_of(b: &Bundled, archive: &[u8], provenance: &[u8], files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    bundle::write(
+        bundle::entries(
+            &[(
+                b.expected.clone(),
+                bundle::Packed {
+                    archive: archive.to_vec(),
+                    provenance: provenance.to_vec(),
+                },
+            )],
+            &[("acme".to_owned(), files.clone())],
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
 fn a_bundle_unbundles_verified_into_itaoca() {
-    let (archive, provenance, expected) = registry_release();
-    let packed = bundle::Packed {
-        archive: archive.clone(),
-        provenance: provenance.clone(),
-    };
-    let entries = bundle::entries(
-        &[(expected.clone(), packed)],
-        vec![("state/acme/ledger-chain".to_owned(), b"opaque".to_vec())],
-    )
-    .unwrap();
-    let bytes = bundle::write(entries).unwrap();
-    assert_eq!(bundle::read(&bytes).unwrap().entries.len(), 3);
+    let b = bundled();
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let read = bundle::read(&bytes).unwrap();
+    assert!(read.entries.keys().any(|path| path.starts_with("registry/acme/root/")));
     let store = Itaoca {
         root: scratch("unbundle"),
     };
-    let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&expected)).unwrap();
+    let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected)).unwrap();
     assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
-    assert_eq!(done.unused, ["state/acme/ledger-chain"]);
-    // What was stored loads verified, as every load does.
-    assert!(una_project::vendor::stored(&store, &expected).unwrap().is_some());
+    assert!(done.unused.is_empty(), "{:?}", done.unused);
+    // What was stored loads verified, as every load does, and the checkpoint is the floor.
+    assert!(una_project::vendor::stored(&store, &b.expected).unwrap().is_some());
+    assert!(store.load_checkpoint("acme").unwrap().is_some());
 }
 
-/// A bundle is trusted for nothing: a tampered archive, a tampered provenance, or a changed
-/// byte of the bundle itself, is refused, and nothing is written.
+/// A bundle is trusted for nothing: a tampered archive, provenance or registry file, or a
+/// changed byte of the bundle itself, is refused, and nothing is written.
 #[test]
 fn a_tampered_bundle_is_refused_and_writes_nothing() {
-    let (archive, provenance, expected) = registry_release();
-    let write = |archive: &[u8], provenance: &[u8]| {
-        bundle::write(
-            bundle::entries(
-                &[(
-                    expected.clone(),
-                    bundle::Packed {
-                        archive: archive.to_vec(),
-                        provenance: provenance.to_vec(),
-                    },
-                )],
-                Vec::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap()
-    };
-    // Another package's archive under the digest's path: its digest is not the lock's.
-    let other = package_archive("0.3.2");
+    let b = bundled();
     let store = Itaoca {
         root: scratch("unbundle-tampered"),
     };
     let refused = |bytes: &[u8]| -> (Option<usize>, String) {
-        match bundle::unbundle(bytes, &store, std::slice::from_ref(&expected)).unwrap_err() {
+        match bundle::unbundle(bytes, &store, std::slice::from_ref(&b.expected)).unwrap_err() {
             (at, Problem::Refused(why)) => (at, why),
             (at, Problem::Absent(why)) => (at, format!("absent: {why}")),
         }
     };
-    let (at, why) = refused(&write(&other, &provenance));
+    // Another package's archive under the digest's path: its digest is not the lock's.
+    let other = package_archive("0.3.2");
+    let (at, why) = refused(&bundle_of(&b, &other, &b.provenance, &b.files));
     assert_eq!(at, Some(0));
     assert!(why.contains("not the lock's"), "{why}");
     // A provenance whose statement was edited: its signature no longer verifies.
-    let edited = String::from_utf8(provenance.clone())
+    let edited = String::from_utf8(b.provenance.clone())
         .unwrap()
         .replace("authority none", "authority nope");
-    let (_, why) = refused(&write(&archive, edited.as_bytes()));
+    let (_, why) = refused(&bundle_of(&b, &b.archive, edited.as_bytes(), &b.files));
     assert!(why.contains("provenance"), "{why}");
+    // A registry file changed in the bundle's copy: the client refuses it.
+    let mut files = b.files.clone();
+    let tile = files
+        .keys()
+        .find(|path| path.starts_with("tile/entries/"))
+        .unwrap()
+        .clone();
+    let entry = files.get_mut(&tile).unwrap();
+    let middle = entry.len() / 2;
+    entry[middle] ^= 1;
+    let (at, why) = refused(&bundle_of(&b, &b.archive, &b.provenance, &files));
+    assert_eq!(at, Some(0), "{why}");
+    // A bundle without the registry's files: its state cannot be verified.
+    let (_, why) = refused(&bundle_of(&b, &b.archive, &b.provenance, &BTreeMap::new()));
+    assert!(why.contains("absent") && why.contains("no copy of the registry"), "{why}");
     // A byte of the bundle changed: its listing's hash refuses it.
-    let mut bytes = write(&archive, &provenance);
+    let mut bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let last = bytes.len() - 1;
     bytes[last] ^= 1;
     let (at, _) = refused(&bytes);
     assert_eq!(at, None);
-    // A bundle without the package: absent, not refused.
-    let empty = bundle::write(Vec::new()).unwrap();
-    assert!(matches!(
-        bundle::unbundle(&empty, &store, std::slice::from_ref(&expected)),
-        Err((Some(0), Problem::Absent(_)))
-    ));
     // Nothing was written by any of them.
-    assert!(!store.contains(&expected.digest).unwrap());
-    // A path the bundle does not name is refused when writing and reading.
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    assert!(store.load_checkpoint("acme").unwrap().is_none());
+    // A path the bundle does not name is refused when writing.
     assert!(bundle::write(vec![("../x".to_owned(), Vec::new())]).is_err());
     assert!(bundle::write(vec![("packages/zz".to_owned(), Vec::new())]).is_err());
+}
+
+/// Unbundling never moves the checkpoint stored for a source backwards (rule 39).
+#[test]
+fn unbundling_keeps_a_larger_floor() {
+    let mut b = bundled();
+    let store = Itaoca {
+        root: scratch("unbundle-floor"),
+    };
+    // The client has seen a larger checkpoint of the same log.
+    let owner = keypair(60, "acme.laptop");
+    b.test.release("acme/ledger", "0.3.2", "none", "none", &[&owner]);
+    let larger = b.test.checkpoint(NOW + 10);
+    let document = String::from_utf8(b.test.files[&format!("checkpoint/{larger}")].clone()).unwrap();
+    store.store_checkpoint("acme", &document).unwrap();
+    // The bundle's files hold the larger log's tiles too, so its consistency can be proven.
+    let mut files = b.files.clone();
+    for (path, bytes) in &b.test.files {
+        if path.starts_with("tile/") {
+            files.insert(path.clone(), bytes.clone());
+        }
+    }
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let result = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected));
+    let stored = store.load_checkpoint("acme").unwrap().unwrap();
+    assert_eq!(stored, document, "{result:?}");
 }
 
 /// Reading a bundle is one pass: its work grows with its bytes, entry by entry.
@@ -841,7 +786,7 @@ fn bundles_read_in_linear_time() {
     let mut per_entry = Vec::new();
     for count in [100usize, 1000, 10_000] {
         let entries: Vec<(String, Vec<u8>)> = (0..count)
-            .map(|i| (format!("state/acme/n{i}"), vec![b'x'; 64]))
+            .map(|i| (format!("registry/acme/tile/n{i}"), vec![b'x'; 64]))
             .collect();
         let bytes = bundle::write(entries).unwrap();
         let started = std::time::Instant::now();
@@ -893,7 +838,7 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
     }];
     assert!(owner_keys(&dir, "acme", &renamed, 1).is_err());
     // An encrypted key file of the owner refuses the whole choice, never skipped.
-    write_key(&dir, "acme-1.key", "ita-key-encrypted/1\nopaque\n");
+    write_key(&dir, "acme-1.key", "ita-keyfile-encrypted/1\nopaque\n");
     let refusal = owner_keys(&dir, "acme", &registered, 1).unwrap_err();
     assert!(refusal.contains("not implemented yet"), "{refusal}");
     std::fs::remove_file(dir.join("acme-1.key")).unwrap();
@@ -939,7 +884,7 @@ fn a_published_source_is_the_one_its_workspace_declares() {
     )
     .unwrap();
     assert_eq!(
-        submit::declared_source(&package, "acme").unwrap(),
+        submit::declared_source(&package, "acme").unwrap().url.value,
         "https://ita.acme.example"
     );
     assert!(submit::declared_source(&package, "other").unwrap_err().contains("not a source"));

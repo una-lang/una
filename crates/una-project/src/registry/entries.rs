@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use super::view::owner_of;
+use crate::client::owner_of;
 use crate::tlog::note::{self, Key};
 use crate::tlog::state::{self, Advisory, ReleaseState, Signers, Yank};
 use crate::tlog::witness;
