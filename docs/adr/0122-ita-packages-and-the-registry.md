@@ -1147,3 +1147,11 @@ Existing codes cover the rest:
 
 **ADR 0121, Note, appended on its acceptance, coordinated with Question 8.1.** In edition `0.4`, the edition switch of rule 2 and its opt-ins are read from `ita.una` (ADR 0122), where rule 2 says `una.toml`. The `0.3`-to-`0.4` pair of the edition test (rule 11) runs `una migrate` on each `0.3` package of the suite, then compares; a difference that the migration alone causes is not a clash. `una.toml` naming edition `0.4` is U7002 if no released `una` accepted that form when ADR 0122's files land, and a U7007 ledger entry otherwise.
 
+## Amendment of 2026-10-25: the yank command
+
+Rule 41 states that an owner yanks a release by a logged statement, and rule 57 lists the commands of `una ita`. This amendment names the command that writes that statement.
+
+- **`una ita yank <version> [path]`** writes the yank statement of the release `<version>` of the package at `path`: a statement in the chain of the package's name (rule 36.1), whose `previous` is the head of that chain, of the form `spec/30 §11` gives, which the log then holds as a leaf (rule 41).
+- **Who signs it.** The owner's keys, at least the owner's threshold of keys valid at the head of its chain (rule 38). A yank signed by fewer is not a yank: the registry does not log it, and no client reads it as one.
+- **Where it goes.** To the source that the head's `publish to` names, as a submission, through the same transport as `una ita publish` (rule 43), with the registry's signed promise to log it (rule 36.2).
+- **What it changes.** As rule 41 states: new resolutions skip the release, existing locks keep it, and nothing is deleted. A version that was never released, or is already yanked, is refused.
