@@ -1064,7 +1064,12 @@ fn run_command(
                             mirrors: &mirror,
                             itaoca: store.as_ref(),
                             now: clock,
-                            ..ita::LockOptions::lock(check, dry_run, accept_authority, &accept_trust)
+                            ..ita::LockOptions::lock(
+                                check,
+                                dry_run,
+                                accept_authority,
+                                &accept_trust,
+                            )
                         },
                         output,
                     ),

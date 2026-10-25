@@ -715,7 +715,8 @@ fn resolve_and_lock(
             if !names.is_empty() && !names.contains(&need.name.value.to_string()) {
                 continue;
             }
-            let (Some(version), Some(cell)) = (&need.version, online.registries.get(&identity.source))
+            let (Some(version), Some(cell)) =
+                (&need.version, online.registries.get(&identity.source))
             else {
                 continue;
             };
@@ -2368,7 +2369,12 @@ fn fetch_one(
         .signers
         .iter()
         .find(|key| provenance::signed_name(&expected.name, &key.public) == expected.signed)
-        .ok_or_else(|| format!("{what} is not signed by `{}`, the key the lock names", expected.signed))?
+        .ok_or_else(|| {
+            format!(
+                "{what} is not signed by `{}`, the key the lock names",
+                expected.signed
+            )
+        })?
         .clone();
     let bytes = registry.archive(&expected.digest)?;
     let tree = VerifiedTree::from_archive(&bytes)?;
@@ -2409,8 +2415,8 @@ fn fetch_one(
 }
 
 /// What the code of a verified archive uses, checked at tier 0 from the archive's own bytes
-/// (ADR 0122 rule 37): the package is read from a scratch-free overlay, so no byte of it is read
-/// from a file that could have changed since it was verified. The modules of its own needs are
+/// (ADR 0122 rule 37): the package is read from the verified bytes in memory, so no byte of it
+/// is read from a file that could have changed since it was verified. The modules of its own needs are
 /// not loaded, so what its calls into them use is counted where its own headers write it.
 fn archive_authority(
     tree: &una_project::tree::VerifiedTree,
