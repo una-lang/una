@@ -18,7 +18,7 @@ Una is four components designed together: a language, a verifier, an agent-facin
 | --- | --- | --- |
 | P0 | Conformance, not intent | Every guarantee is stated relative to a specification and to the proof boundary (§3) |
 | P1 | A function is an equation | Header (contract) `=` body (implementation) |
-| P2 | `@` marks each direct capability operation | A call performs its callee's effects, which the caller's `uses` cover |
+| P2 | `@` marks every use of authority | A line without `@` touches nothing outside the program |
 | P3 | Words over symbols | `implies`, `if error fail`, `performed`; few sigils |
 | P4 | One canonical form | Significant indentation, one formatter, non-canonical source is an error |
 | P5 | Labeled arguments | Calls with two or more arguments label all but the first |
