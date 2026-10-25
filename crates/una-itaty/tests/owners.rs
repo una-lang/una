@@ -947,3 +947,21 @@ fn a_store_has_one_writer() {
         Err(una_itaty::store::OpenError::Locked)
     ));
 }
+
+#[test]
+fn a_notice_names_its_entry_by_index_and_the_digest_of_its_bytes() {
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new("notice-link");
+    let a = keypair(60, "acme.a");
+    f.register("acme", &[&a], &[]);
+    let document = note_of(&f.event("acme", "cancel 0", 1), &[&a]);
+    let receipt = f.registry.submit(document.as_bytes()).unwrap();
+    let notice = f.recording.notices().pop().unwrap();
+    assert_eq!(notice.index, receipt.index);
+    assert_eq!(
+        notice.digest,
+        digest_string(&Sha256::digest(document.as_bytes()).into())
+    );
+    assert_eq!(notice.leaf, digest_string(&receipt.leaf));
+    assert_eq!(notice.link, "tile/entries/000");
+}

@@ -323,6 +323,8 @@ struct Recorded {
     entry: owner::Entry,
     /// The entry's leaf hash, which its notice names.
     leaf: Hash,
+    /// The SHA-256 of the entry's bytes, which its notice names.
+    digest: Hash,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -934,7 +936,14 @@ impl Registry {
             .values()
             .flatten()
             .filter(|recorded| after.is_none_or(|cursor| recorded.index > cursor))
-            .filter_map(|recorded| self.notice_of(&recorded.entry, recorded.index, &recorded.leaf))
+            .filter_map(|recorded| {
+                self.notice_of(
+                    &recorded.entry,
+                    recorded.index,
+                    &recorded.leaf,
+                    &recorded.digest,
+                )
+            })
             .collect();
         due.sort_by_key(|notice| notice.index);
         for notice in due {
@@ -945,7 +954,13 @@ impl Registry {
     /// The notice of `read`, an owner's entry logged at `index` with the leaf hash `leaf`,
     /// when it is an `ita-key/1` entry: every key event, co-signer change, recovery or dispute
     /// logged against an owner's chain.
-    fn notice_of(&self, read: &owner::Entry, index: u64, leaf: &Hash) -> Option<Notice> {
+    fn notice_of(
+        &self,
+        read: &owner::Entry,
+        index: u64,
+        leaf: &Hash,
+        digest: &Hash,
+    ) -> Option<Notice> {
         let kind = match &read.event {
             Event::Register { .. } => return None,
             Event::Add(_) => "add",
@@ -962,6 +977,7 @@ impl Registry {
             index,
             kind: kind.to_owned(),
             leaf: digest_string(leaf),
+            digest: digest_string(digest),
             link: entry_bundle_path(index / WIDTH, WIDTH),
         })
     }
@@ -1998,6 +2014,7 @@ impl Registry {
                     note: entry.note.clone(),
                     entry: read.as_ref().clone(),
                     leaf: entry.leaf(),
+                    digest: Sha256::digest(&entry.bytes).into(),
                 });
             }
         }
@@ -2112,10 +2129,10 @@ impl Registry {
         self.prune();
         // The owner is notified at once, after the entry is logged: sending never delays or
         // conditions logging, and a notice the notifier cannot take is only counted.
-        if let Some(notice) = entry
-            .owner_entry()
-            .and_then(|read| self.notice_of(read, index, &leaf))
-        {
+        if let Some(notice) = entry.owner_entry().and_then(|read| {
+            let digest: Hash = Sha256::digest(&entry.bytes).into();
+            self.notice_of(read, index, &leaf, &digest)
+        }) {
             self.deliver(&notice);
         }
         let text = format!(

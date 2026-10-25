@@ -34,18 +34,24 @@ pub struct Notice {
     pub kind: String,
     /// Its leaf hash, `sha256:` and hex.
     pub leaf: String,
-    /// The log entry: the path below the registry's base of the entry bundle that holds it.
+    /// The SHA-256 of the entry's bytes, `sha256:` and hex: with the index, what identifies the
+    /// entry wherever it is read.
+    pub digest: String,
+    /// Where the log serves it: the path below the registry's base of the full entry bundle
+    /// `tile/entries/<N>`, N the index divided by 256, the entry at the index modulo 256. While
+    /// the bundle is partial, it is served at `tile/entries/<N>.p/<W>`, W the entries the
+    /// bundle holds, at least the index modulo 256 plus one.
     pub link: String,
 }
 
 impl Notice {
     /// The notice as one line of an outbox: `ita-notice/1`, then the source, the owner, the
-    /// index, the kind, the leaf hash and the link, separated by spaces, none of which holds a
-    /// space or a line feed.
+    /// index, the kind, the leaf hash, the digest of the entry's bytes and the link, separated
+    /// by spaces, none of which holds a space or a line feed.
     pub fn line(&self) -> String {
         format!(
-            "ita-notice/1 {} {} {} {} {} {}\n",
-            self.source, self.owner, self.index, self.kind, self.leaf, self.link
+            "ita-notice/1 {} {} {} {} {} {} {}\n",
+            self.source, self.owner, self.index, self.kind, self.leaf, self.digest, self.link
         )
     }
 }
@@ -212,11 +218,12 @@ mod tests {
             index: 7,
             kind: "recover".to_owned(),
             leaf: "sha256:00".to_owned(),
+            digest: "sha256:01".to_owned(),
             link: "tile/entries/000".to_owned(),
         };
         assert_eq!(
             notice.line(),
-            "ita-notice/1 itaty acme 7 recover sha256:00 tile/entries/000\n"
+            "ita-notice/1 itaty acme 7 recover sha256:00 sha256:01 tile/entries/000\n"
         );
         let recording = Recording::new();
         recording.notify(&notice).unwrap();
