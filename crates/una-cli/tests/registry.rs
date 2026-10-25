@@ -72,7 +72,10 @@ fn una_at(dir: &Path, args: &[&str], itaoca: &Path) -> (u8, String, String) {
 
 /// A registry `acme` with the owner `acme` and releases of `acme/ledger`, logged a month ago,
 /// and its latest checkpoint cosigned now. Returns it with the owner's key.
-fn acme() -> (TestRegistry, (ed25519_dalek::SigningKey, una_project::tlog::note::Key)) {
+fn acme() -> (
+    TestRegistry,
+    (ed25519_dalek::SigningKey, una_project::tlog::note::Key),
+) {
     let mut registry = TestRegistry::new("acme");
     let key = keypair(60, "acme.laptop");
     registry.register("acme", &key);
@@ -150,10 +153,7 @@ fn codes(dir: &Path, itaoca: &Path) -> Vec<String> {
 fn a_registry_need_is_locked_fetched_and_mounted() {
     let (registry, _) = acme();
     let (dir, _, itaoca) = project("end-to-end", &registry);
-    let (code, out, err) = una_in(
-        &["una", "ita", "lock", arg(&dir)],
-        &itaoca,
-    );
+    let (code, out, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     // Minimal version selection: the least release at or above the need, never the newest.
     assert!(
@@ -162,7 +162,10 @@ fn a_registry_need_is_locked_fetched_and_mounted() {
     );
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
     assert!(lock.contains("\nregistry acme\n  root \""), "{lock}");
-    assert!(lock.contains("\npackage acme/ledger 0.3.1\n  from acme\n"), "{lock}");
+    assert!(
+        lock.contains("\npackage acme/ledger 0.3.1\n  from acme\n"),
+        "{lock}"
+    );
     assert!(lock.contains("  signed \"ed25519:acme:"), "{lock}");
     assert!(lock.contains("  logged 1\n"), "{lock}");
     // The checkpoint read is stored as the registry's floor.
@@ -170,16 +173,17 @@ fn a_registry_need_is_locked_fetched_and_mounted() {
     // Locked but not fetched: U7011, and nothing is mounted, so the import fails too.
     assert!(codes(&dir, &itaoca).contains(&"U7011".to_owned()));
     // Fetched at the lock's resolution point, verified, into Itaoca.
-    let (code, out, err) = una_in(
-        &["una", "ita", "fetch", arg(&dir)],
-        &itaoca,
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
     );
-    assert_eq!((code, out.as_str()), (0, "fetched acme/ledger 0.3.1\n"), "{err}");
-    let (code, out, _) = una_in(
-        &["una", "ita", "fetch", arg(&dir)],
-        &itaoca,
+    let (code, out, _) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "acme/ledger 0.3.1 is in Itaoca\n")
     );
-    assert_eq!((code, out.as_str()), (0, "acme/ledger 0.3.1 is in Itaoca\n"));
     // Mounted: the program checks, and the report names the registry.
     assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
     let (_, out, _) = una_in(&["una", "--json", "report", arg(&dir)], &itaoca);
@@ -188,10 +192,7 @@ fn a_registry_need_is_locked_fetched_and_mounted() {
     assert_eq!(report["tcb"]["registries"][0]["source"], "acme");
     assert_eq!(report["tcb"]["registries"][0]["root"], registry.pin());
     // The lock is the one `una ita lock --check` writes at its own resolution point.
-    let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--check", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
 }
 
@@ -204,9 +205,7 @@ fn a_source_is_read_only_from_its_places_and_never_over_plain_http() {
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(
-        err.contains("U7013")
-            && err.contains("no https transport")
-            && err.contains("mirrors.una"),
+        err.contains("U7013") && err.contains("no https transport") && err.contains("mirrors.una"),
         "{err}"
     );
     assert!(!dir.join("ita.lock").exists());
@@ -275,10 +274,7 @@ fn a_mirror_with_a_bad_copy_is_skipped_for_one_that_verifies() {
 fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
     let (registry, _) = acme();
     let (dir, mirror, itaoca) = project("tampered", &registry);
-    let (code, _, err) = una_in(
-        &["una", "ita", "lock", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     // One byte of the archive in the mirror changed.
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
@@ -293,13 +289,16 @@ fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
     let last = bytes.len() - 2;
     bytes[last] ^= 0x01;
     std::fs::write(&blob, &bytes).unwrap();
-    let (code, _, err) = una_in(
-        &["una", "ita", "fetch", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(err.contains("U7010"), "{err}");
-    assert!(!itaoca.join("packages").join("sha256").join(&digest).exists());
+    assert!(
+        !itaoca
+            .join("packages")
+            .join("sha256")
+            .join(&digest)
+            .exists()
+    );
     // A changed tile: the log's proofs fail before any archive is read.
     registry.write(&mirror);
     let size = registry.entries.len();
@@ -307,10 +306,7 @@ fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
     let mut bytes = std::fs::read(&tile).unwrap();
     bytes[0] ^= 0x01;
     std::fs::write(&tile, &bytes).unwrap();
-    let (code, _, err) = una_in(
-        &["una", "ita", "fetch", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(err.contains("U7010"), "{err}");
 }
@@ -319,10 +315,7 @@ fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
 fn a_change_of_the_owners_keys_needs_accept_key() {
     let (mut registry, key) = acme();
     let (dir, mirror, itaoca) = project("accept-key", &registry);
-    let (code, _, err) = una_in(
-        &["una", "ita", "lock", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     // The owner adds a key after the lock's resolution point.
     let second = keypair(61, "acme.desktop");
@@ -334,10 +327,7 @@ fn a_change_of_the_owners_keys_needs_accept_key() {
     );
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
-    let (code, _, err) = una_in(
-        &["una", "ita", "lock", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(
         err.contains("U7014") && err.contains("--accept-key acme/ledger"),
@@ -368,7 +358,10 @@ fn update_raises_past_the_cooldown_only() {
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("acme/ledger 0.3.2 (acme)"), "{out}");
     let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
-    assert!(manifest.contains("  acme/ledger 0.3.2 from acme\n"), "{manifest}");
+    assert!(
+        manifest.contains("  acme/ledger 0.3.2 from acme\n"),
+        "{manifest}"
+    );
     // `--now` takes the release within the cooldown.
     let (code, _, err) = una_at(&dir, &["ita", "update", "--now"], &itaoca);
     assert_eq!(code, 0, "{err}");
@@ -388,7 +381,11 @@ fn add_takes_the_newest_release_past_the_cooldown_from_its_owners_source() {
         ),
     )
     .unwrap();
-    std::fs::write(dir.join("src/demo.una"), "module demo\n\npub one() -> Int = 1\n").unwrap();
+    std::fs::write(
+        dir.join("src/demo.una"),
+        "module demo\n\npub one() -> Int = 1\n",
+    )
+    .unwrap();
     let (code, _, err) = una_at(&dir, &["ita", "add", "acme/ledger"], &itaoca);
     assert_eq!(code, 0, "{err}");
     let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
@@ -408,10 +405,7 @@ fn a_registry_that_logged_a_breach_of_rule_26_is_refused() {
     registry.checkpoint(now() - 20 * DAY);
     registry.checkpoint(now() - 60);
     let (dir, _, itaoca) = project("rule-26", &registry);
-    let (code, _, err) = una_in(
-        &["una", "ita", "lock", arg(&dir)],
-        &itaoca,
-    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(err.contains("U7010") && err.contains("rule 26"), "{err}");
     assert!(!dir.join("ita.lock").exists());
@@ -432,7 +426,14 @@ fn a_pending_recovery_needs_accept_key() {
     );
     assert!(!dir.join("ita.lock").exists());
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &[
+            "una",
+            "ita",
+            "lock",
+            "--accept-key",
+            "acme/ledger",
+            arg(&dir),
+        ],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
@@ -462,7 +463,14 @@ fn a_pending_cosigner_change_needs_accept_key() {
     );
     assert!(!dir.join("ita.lock").exists());
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &[
+            "una",
+            "ita",
+            "lock",
+            "--accept-key",
+            "acme/ledger",
+            arg(&dir),
+        ],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
@@ -500,7 +508,10 @@ fn a_release_signed_by_a_compromised_key_is_not_fetched() {
     .unwrap();
     let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
-    assert!(err.contains("U7010") && err.contains("compromised"), "{err}");
+    assert!(
+        err.contains("U7010") && err.contains("compromised"),
+        "{err}"
+    );
     assert!(!itaoca.join("packages").exists());
 }
 
@@ -526,7 +537,10 @@ fn an_archive_that_does_not_check_is_not_fetched() {
     assert_eq!(code, 0, "{err}");
     let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
-    assert!(err.contains("U7010") && err.contains("does not check"), "{err}");
+    assert!(
+        err.contains("U7010") && err.contains("does not check"),
+        "{err}"
+    );
 }
 
 /// Floors are stored as soon as a checkpoint is accepted, even when nothing is written; and a
@@ -575,9 +589,19 @@ fn consent_to_a_pending_dispute_is_recorded_in_the_lock() {
     let (dir, mirror, itaoca) = project("accepted", &registry);
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
-    assert!(err.contains("U7014") && err.contains("a dispute logged at"), "{err}");
+    assert!(
+        err.contains("U7014") && err.contains("a dispute logged at"),
+        "{err}"
+    );
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &[
+            "una",
+            "ita",
+            "lock",
+            "--accept-key",
+            "acme/ledger",
+            arg(&dir),
+        ],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
@@ -589,7 +613,11 @@ fn consent_to_a_pending_dispute_is_recorded_in_the_lock() {
     let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     let (code, out, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!((code, out.as_str()), (0, "ita.lock is up to date\n"), "{err}");
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "ita.lock is up to date\n"),
+        "{err}"
+    );
     // Another dispute: not recorded, so it needs consent again.
     registry.recover("acme", "dispute", &keypair(65, "acme.second").1, &[]);
     registry.checkpoint(now() - 30);
@@ -628,7 +656,8 @@ fn floors_belong_to_a_registry_not_to_its_name() {
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     let size = |registry: &TestRegistry| {
-        let text = std::fs::read_to_string(floor_dir(&itaoca, registry).join("checkpoint")).unwrap();
+        let text =
+            std::fs::read_to_string(floor_dir(&itaoca, registry).join("checkpoint")).unwrap();
         text.lines().nth(1).unwrap().parse::<u64>().unwrap()
     };
     assert_eq!(size(&first), first.entries.len() as u64);
@@ -703,7 +732,10 @@ fn a_forged_accepted_index_is_refused() {
         .unwrap();
         let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
         assert_eq!(code, 1, "{forged}");
-        assert!(err.contains("U7009") && err.contains("accepted index"), "{forged}: {err}");
+        assert!(
+            err.contains("U7009") && err.contains("accepted index"),
+            "{forged}: {err}"
+        );
     }
 }
 
@@ -743,12 +775,22 @@ fn a_consented_dispute_needs_new_consent_when_it_takes_effect() {
     assert_eq!(code, 1);
     assert!(err.contains("U7014") && err.contains("changed"), "{err}");
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &[
+            "una",
+            "ita",
+            "lock",
+            "--accept-key",
+            "acme/ledger",
+            arg(&dir),
+        ],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
-    assert!(lock.contains(&format!("\n  effect acme {dispute}\n")), "{lock}");
+    assert!(
+        lock.contains(&format!("\n  effect acme {dispute}\n")),
+        "{lock}"
+    );
     assert!(!lock.contains("  accepted "), "{lock}");
     let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
@@ -769,7 +811,10 @@ fn a_consented_index_past_the_checkpoint_is_refused_when_read() {
         .unwrap()
         .to_owned();
     let size: u64 = checkpoint_line.split(' ').nth(3).unwrap().parse().unwrap();
-    for line in [format!("accepted acme {size}"), format!("effect acme {}", size + 5)] {
+    for line in [
+        format!("accepted acme {size}"),
+        format!("effect acme {}", size + 5),
+    ] {
         std::fs::write(
             dir.join("ita.lock"),
             lock.replacen(&checkpoint_line, &format!("{checkpoint_line}\n  {line}"), 1),
@@ -1013,7 +1058,11 @@ fn a_resolution_takes_the_code_of_its_registrys_failure() {
         let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
         assert_eq!(code, 1, "{name}: {err}");
         assert!(err.contains(expected), "{name}: {err}");
-        let other = if expected == "U7013" { "U7010" } else { "U7013" };
+        let other = if expected == "U7013" {
+            "U7010"
+        } else {
+            "U7013"
+        };
         assert!(!err.contains(other), "{name}: {err}");
         assert!(!dir.join("ita.lock").exists());
     }

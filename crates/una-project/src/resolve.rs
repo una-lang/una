@@ -393,12 +393,10 @@ impl Resolver<'_> {
             releases.dedup_by(|a, b| a.version == b.version);
             self.releases.insert(identity.clone(), releases);
         }
-        self.releases
-            .get(identity)
-            .ok_or_else(|| Problem::Index {
-                source: None,
-                why: format!("the releases of {identity} were not kept"),
-            })
+        self.releases.get(identity).ok_or_else(|| Problem::Index {
+            source: None,
+            why: format!("the releases of {identity} were not kept"),
+        })
     }
 
     /// The release a need of `version` reaches: the least release of the identity at or

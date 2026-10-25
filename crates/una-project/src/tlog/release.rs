@@ -272,8 +272,8 @@ pub fn check_archive(
             "the ita.una of {what} is not the one its statement names"
         ));
     }
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| format!("the ita.una of {what} is not UTF-8"))?;
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| format!("the ita.una of {what} is not UTF-8"))?;
     let (read, errors) = una_syntax::ita::parse_manifest(text);
     if let Some(error) = errors.first() {
         return Err(format!(

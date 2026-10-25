@@ -13,7 +13,7 @@ mod registry;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use registry::{NOW, TestRegistry, hash_hex, keypair, key_text};
+use registry::{NOW, TestRegistry, hash_hex, key_text, keypair};
 use una_project::client::{
     Failure, Floors, LoggedRelease, Misbehavior, Omission, OpenError, Point, Registry, owner_of,
     shown,
@@ -172,7 +172,10 @@ fn entry_bundles_are_read_strictly() {
     );
     assert!(parse_entry_bundle(&bundle, 3, false).is_err(), "too few");
     assert!(parse_entry_bundle(&[0, 2, b'h'], 1, false).is_err(), "cut");
-    assert!(parse_entry_bundle(&[0, 0, 9], 1, false).is_err(), "trailing");
+    assert!(
+        parse_entry_bundle(&[0, 0, 9], 1, false).is_err(),
+        "trailing"
+    );
 }
 
 #[test]
@@ -229,8 +232,7 @@ fn open<'t>(transport: &'t dyn Transport, registry: &TestRegistry) -> Result<Reg
 fn a_release_verifies_from_its_root_to_its_archive() {
     let mut registry = TestRegistry::new("acme");
     let key = acme(&mut registry);
-    let (index, content) =
-        registry.release("acme/ledger", "0.3.1", "Http[get]", "none", &[&key]);
+    let (index, content) = registry.release("acme/ledger", "0.3.1", "Http[get]", "none", &[&key]);
     registry.checkpoint(NOW);
     let dir = scratch("end-to-end");
     registry.write(&dir);
@@ -250,12 +252,12 @@ fn a_release_verifies_from_its_root_to_its_archive() {
     let bytes = client.archive(&content).unwrap();
     let tree = VerifiedTree::from_archive(&bytes).unwrap();
     let mut authority = BTreeMap::new();
-    authority.insert(
-        "Http".to_owned(),
-        ["get".to_owned()].into_iter().collect(),
-    );
+    authority.insert("Http".to_owned(), ["get".to_owned()].into_iter().collect());
     check_archive(&release.statement, &tree, Some(&authority)).unwrap();
-    authority.insert("Files".to_owned(), ["read".to_owned()].into_iter().collect());
+    authority.insert(
+        "Files".to_owned(),
+        ["read".to_owned()].into_iter().collect(),
+    );
     let refusal = check_archive(&release.statement, &tree, Some(&authority)).unwrap_err();
     assert!(refusal.contains("Files[read]"), "{refusal}");
     // Its provenance verifies offline, as every load verifies it.
@@ -355,7 +357,11 @@ fn checkpoints_need_witnesses_freshness_and_their_floor() {
     let refusal = open(&memory, &registry).err().unwrap();
     assert!(refusal.contains("fewer than its threshold"), "{refusal}");
     // A forward-dating witness does not make an old checkpoint fresh.
-    registry.checkpoint_with(&[Some(NOW - 2 * DAY), Some(NOW - 2 * DAY), Some(NOW + 10 * DAY)]);
+    registry.checkpoint_with(&[
+        Some(NOW - 2 * DAY),
+        Some(NOW - 2 * DAY),
+        Some(NOW + 10 * DAY),
+    ]);
     let memory = Memory {
         files: registry.files.clone(),
     };
@@ -387,7 +393,9 @@ fn checkpoints_need_witnesses_freshness_and_their_floor() {
         "acme",
         &memory,
         &registry.pin(),
-        &Point::Latest { now: NOW + 4 * 3600 },
+        &Point::Latest {
+            now: NOW + 4 * 3600,
+        },
         Some(&floor),
     )
     .unwrap();
@@ -402,7 +410,9 @@ fn checkpoints_need_witnesses_freshness_and_their_floor() {
         "acme",
         &memory,
         &registry.pin(),
-        &Point::Latest { now: NOW + 4 * 3600 },
+        &Point::Latest {
+            now: NOW + 4 * 3600,
+        },
         Some(&forked),
     )
     .err()
@@ -435,7 +445,11 @@ fn the_root_chain_rotates_and_expires() {
     // Version 2 rotates the third root key, signed by two keys of version 1 and of its own,
     // and expires before the checkpoint's witness time.
     let new_root = keypair(13, "acme.root.13");
-    let roots = [&registry.keys.roots[0].1, &registry.keys.roots[1].1, &new_root.1];
+    let roots = [
+        &registry.keys.roots[0].1,
+        &registry.keys.roots[1].1,
+        &new_root.1,
+    ];
     let text = registry::root_text("acme", 2, NOW - 1, &registry.keys, &roots);
     let document = registry::signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
     registry
@@ -498,7 +512,10 @@ fn a_second_statement_of_a_version_and_a_breach_of_rule_26_are_refused() {
     let memory = Memory {
         files: registry.files.clone(),
     };
-    let refusal = open(&memory, &registry).unwrap().releases("acme/ledger").unwrap_err();
+    let refusal = open(&memory, &registry)
+        .unwrap()
+        .releases("acme/ledger")
+        .unwrap_err();
     assert!(refusal.contains("immutable"), "{refusal}");
 
     let mut registry = TestRegistry::new("acme");
@@ -506,25 +523,47 @@ fn a_second_statement_of_a_version_and_a_breach_of_rule_26_are_refused() {
     registry.release("acme/mailer", "2.1.0", "Http[get]", "none", &[&key]);
     registry.release("acme/mailer", "2.2.0", "Http[get, post]", "none", &[&key]);
     // A new major may need more.
-    registry.release("acme/mailer", "3.0.0", "Http[get, post]", "modules mailer.keys", &[&key]);
+    registry.release(
+        "acme/mailer",
+        "3.0.0",
+        "Http[get, post]",
+        "modules mailer.keys",
+        &[&key],
+    );
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),
     };
-    let refusal = open(&memory, &registry).unwrap().releases("acme/mailer").unwrap_err();
-    assert!(refusal.contains("Http[post]") && refusal.contains("rule 26"), "{refusal}");
+    let refusal = open(&memory, &registry)
+        .unwrap()
+        .releases("acme/mailer")
+        .unwrap_err();
+    assert!(
+        refusal.contains("Http[post]") && refusal.contains("rule 26"),
+        "{refusal}"
+    );
 
     let mut registry = TestRegistry::new("acme");
     let key = acme(&mut registry);
     registry.release("acme/mailer", "2.1.0", "Http[get, post]", "none", &[&key]);
     registry.release("acme/mailer", "2.2.0", "Http[get]", "none", &[&key]);
-    registry.release("acme/mailer", "3.0.0", "Http[get, post]", "modules mailer.keys", &[&key]);
+    registry.release(
+        "acme/mailer",
+        "3.0.0",
+        "Http[get, post]",
+        "modules mailer.keys",
+        &[&key],
+    );
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),
     };
     assert_eq!(
-        open(&memory, &registry).unwrap().releases("acme/mailer").unwrap().len(),
+        open(&memory, &registry)
+            .unwrap()
+            .releases("acme/mailer")
+            .unwrap()
+            .len(),
         3
     );
 }
@@ -541,7 +580,12 @@ fn statements_need_the_owners_keys_valid_at_their_position() {
     let memory = Memory {
         files: registry.files.clone(),
     };
-    assert!(open(&memory, &registry).unwrap().releases("acme/ledger").is_err());
+    assert!(
+        open(&memory, &registry)
+            .unwrap()
+            .releases("acme/ledger")
+            .is_err()
+    );
 
     // Threshold 2: one key is not enough; then the first key is revoked as compromised since
     // a position, and the release it signed after that is skipped as yanked.
@@ -558,7 +602,12 @@ fn statements_need_the_owners_keys_valid_at_their_position() {
     let memory = Memory {
         files: registry.files.clone(),
     };
-    assert!(open(&memory, &registry).unwrap().releases("acme/ledger").is_err());
+    assert!(
+        open(&memory, &registry)
+            .unwrap()
+            .releases("acme/ledger")
+            .is_err()
+    );
 
     let mut registry = TestRegistry::new("acme");
     let first = first;
@@ -596,7 +645,12 @@ fn statements_need_the_owners_keys_valid_at_their_position() {
     let memory = Memory {
         files: after.files.clone(),
     };
-    assert!(open(&memory, &after).unwrap().releases("acme/ledger").is_err());
+    assert!(
+        open(&memory, &after)
+            .unwrap()
+            .releases("acme/ledger")
+            .is_err()
+    );
 }
 
 /// A recovery takes effect seven days of witness time after the checkpoint that first included
@@ -675,8 +729,15 @@ fn owner_entries_are_read_strictly() {
     );
     let read = owner::parse_entry(&good).unwrap();
     assert_eq!(read.threshold, 1);
-    assert!(matches!(read.event, owner::Event::Register { cosigners: None, .. }));
-    let previous = "previous 4 sha256:aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04";
+    assert!(matches!(
+        read.event,
+        owner::Event::Register {
+            cosigners: None,
+            ..
+        }
+    ));
+    let previous =
+        "previous 4 sha256:aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04";
     for bad in [
         good.replace("threshold 1", "threshold 2"),
         good.replace("threshold 1", "threshold 0"),
@@ -694,7 +755,13 @@ fn owner_entries_are_read_strictly() {
     }
     let with_cosigners = format!("{good}cosigner {}\ncosigners 1\n", key_text(&other.1));
     let read = owner::parse_entry(&with_cosigners).unwrap();
-    assert!(matches!(read.event, owner::Event::Register { cosigners: Some((1, _)), .. }));
+    assert!(matches!(
+        read.event,
+        owner::Event::Register {
+            cosigners: Some((1, _)),
+            ..
+        }
+    ));
     let event = |action: &str, threshold: &str| {
         format!("ita-key/1\nsource acme\nowner acme\n{previous}\n{action}\nthreshold {threshold}\n")
     };
@@ -719,7 +786,10 @@ fn owner_entries_are_read_strictly() {
         ("cancel 05".to_owned(), "1"),
         ("revoke acme.laptop".to_owned(), "0"),
     ] {
-        assert!(owner::parse_entry(&event(&action, threshold)).is_err(), "{action}");
+        assert!(
+            owner::parse_entry(&event(&action, threshold)).is_err(),
+            "{action}"
+        );
     }
     // A key event is never a chain's first entry, and has one action.
     let first = event("revoke acme.laptop", "1").replace(previous, "previous none");
@@ -806,7 +876,10 @@ fn map_tiles_prove_what_the_map_proves() {
     assert_eq!(found, None);
     assert!(verify(&root, "nobody/here", None, &proof));
     // A tile changed, or missing: refused, never a different head.
-    for path in files.keys().filter(|p| p.starts_with("map/0/") || p.starts_with("map/31/")) {
+    for path in files
+        .keys()
+        .filter(|p| p.starts_with("map/0/") || p.starts_with("map/31/"))
+    {
         let mut changed = files.clone();
         let bytes = changed.get_mut(path).unwrap();
         let last = bytes.len() - 1;
@@ -831,20 +904,29 @@ fn map_tiles_prove_what_the_map_proves() {
 #[test]
 fn map_tiles_are_read_strictly() {
     use una_project::tlog::map::{MAX_TILE, decode_tile};
-    assert!(decode_tile(&[0u8; 31], 0, &[]).is_err(), "short of its bitmap");
+    assert!(
+        decode_tile(&[0u8; 31], 0, &[]).is_err(),
+        "short of its bitmap"
+    );
     assert!(decode_tile(&[0u8; 32], 0, &[]).is_err(), "no node");
     let mut one = vec![0u8; 32];
     one[0] = 1;
     assert!(decode_tile(&one, 0, &[]).is_err(), "cut inside a hash");
     one.extend_from_slice(&[0u8; 32]);
-    assert!(decode_tile(&one, 0, &[]).is_err(), "an empty subtree listed");
+    assert!(
+        decode_tile(&one, 0, &[]).is_err(),
+        "an empty subtree listed"
+    );
     one.truncate(32);
     one.extend_from_slice(&[7u8; 32]);
     assert!(decode_tile(&one, 0, &[]).is_ok());
     one.push(0);
     assert!(decode_tile(&one, 0, &[]).is_err(), "trailing bytes");
     assert!(decode_tile(&vec![0u8; MAX_TILE + 1], 0, &[]).is_err());
-    assert!(decode_tile(&one, 3, &[]).is_err(), "a prefix of the wrong length");
+    assert!(
+        decode_tile(&one, 3, &[]).is_err(),
+        "a prefix of the wrong length"
+    );
 }
 
 #[test]
@@ -897,7 +979,10 @@ fn the_first_place_whose_copy_verifies_is_taken() {
         files: BTreeMap::new(),
     };
     let places: Vec<(String, Result<&dyn Transport, String>)> = vec![
-        ("https://ita.acme.example".to_owned(), Err("no https transport".to_owned())),
+        (
+            "https://ita.acme.example".to_owned(),
+            Err("no https transport".to_owned()),
+        ),
         ("file:///bad".to_owned(), Ok(&bad)),
         ("file:///empty".to_owned(), Ok(&empty)),
         ("file:///good".to_owned(), Ok(&good)),
@@ -1039,7 +1124,14 @@ fn compromise_cascades_to_the_entries_it_signed() {
     let memory = Memory {
         files: registry.files.clone(),
     };
-    assert_eq!(open(&memory, &registry).unwrap().releases("acme/ledger").unwrap().len(), 1);
+    assert_eq!(
+        open(&memory, &registry)
+            .unwrap()
+            .releases("acme/ledger")
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// A recovery cancelled twice stands again only when both cancellations are overruled.
@@ -1103,8 +1195,14 @@ fn floors_refuse_an_older_root_and_a_point_off_the_lock() {
     let size = client.point.checkpoint.size;
     let own = hash_hex(&client.point.checkpoint.root);
     assert!(client.extends(size, &own).is_ok());
-    assert!(client.extends(size, &hash_hex(&[9u8; 32])).is_err(), "another log");
-    assert!(client.extends(size + 1, &own).is_err(), "a point below the lock's");
+    assert!(
+        client.extends(size, &hash_hex(&[9u8; 32])).is_err(),
+        "another log"
+    );
+    assert!(
+        client.extends(size + 1, &own).is_err(),
+        "a point below the lock's"
+    );
     let prefix = hash_hex(&tree_root(
         &registry.entries[..1]
             .iter()
@@ -1131,7 +1229,10 @@ fn notes_bound_their_signature_lines() {
     use una_project::tlog::note::{MAX_SIGNATURES, parse_note};
     let line = "\u{2014} k AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n";
     assert!(parse_note(&format!("text\n\n{line}")).is_ok());
-    assert!(parse_note(&format!("text\n\n{line}{line}")).is_err(), "one line per key");
+    assert!(
+        parse_note(&format!("text\n\n{line}{line}")).is_err(),
+        "one line per key"
+    );
     let mut many = "text\n\n".to_owned();
     for i in 0..=MAX_SIGNATURES {
         many.push('\u{2014}');
@@ -1178,7 +1279,10 @@ fn messages_escape_and_bound_what_a_place_served() {
     files.insert("root/2".to_owned(), "y".repeat(5000).into_bytes());
     let memory = Memory { files };
     let refusal = open(&memory, &registry).err().unwrap();
-    assert!(refusal.starts_with("the registry `acme` (memory): "), "{refusal}");
+    assert!(
+        refusal.starts_with("the registry `acme` (memory): "),
+        "{refusal}"
+    );
     assert!(refusal.len() < 600, "{refusal}");
 }
 
@@ -1202,7 +1306,11 @@ fn floors_never_move_backwards() {
             dash = '\u{2014}'
         )
     };
-    let size_of = |text: &str| parse_checkpoint(&parse_note(text).unwrap().text).unwrap().size;
+    let size_of = |text: &str| {
+        parse_checkpoint(&parse_note(text).unwrap().text)
+            .unwrap()
+            .size
+    };
     itaoca
         .store_checkpoint(&id, &checkpoint(1), &mut |_| Ok(()))
         .unwrap();
@@ -1216,7 +1324,11 @@ fn floors_never_move_backwards() {
                 let checkpoint = &checkpoint;
                 scope.spawn(move || {
                     for round in 0..30u64 {
-                        let size = if round % 2 == 0 { low + round } else { high - round };
+                        let size = if round % 2 == 0 {
+                            low + round
+                        } else {
+                            high - round
+                        };
                         itaoca
                             .store_checkpoint(id, &checkpoint(size.max(1)), &mut |_| Ok(()))
                             .unwrap();
@@ -1264,7 +1376,8 @@ fn floors_never_move_backwards() {
     assert!(dir.join("registry").join(&id).join("floor.lock").exists());
     // A registry's floors are its own: another pin is another identity, and the identity is
     // the pin's alone, whatever name `sources` gives it.
-    let other = registry_id("sha256:0202020202020202020202020202020202020202020202020202020202020202");
+    let other =
+        registry_id("sha256:0202020202020202020202020202020202020202020202020202020202020202");
     assert_ne!(id, other);
     assert_eq!(itaoca.load_checkpoint(&other).unwrap(), None);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1289,7 +1402,11 @@ fn a_compromise_never_undoes_a_registration() {
     };
     let mut client = open(&memory, &registry).unwrap();
     let history = client.history("acme").unwrap();
-    assert_eq!(history.compromised.get(&x.1.public), Some(&2), "clamped to the registration");
+    assert_eq!(
+        history.compromised.get(&x.1.public),
+        Some(&2),
+        "clamped to the registration"
+    );
     assert_eq!(history.at(10).unwrap().keys, vec![y.1.clone()]);
     let releases = client.releases("acme/ledger").unwrap();
     assert_eq!(releases.len(), 2);
@@ -1556,7 +1673,12 @@ fn past_the_known_cap_entries_are_void_never_a_refusal() {
             public: signing.verifying_key().to_bytes(),
         };
         let pair = (signing, key);
-        registry.owner_event("acme", &format!("add {}", key_text(&pair.1)), 1, &[&a, &pair]);
+        registry.owner_event(
+            "acme",
+            &format!("add {}", key_text(&pair.1)),
+            1,
+            &[&a, &pair],
+        );
     }
     registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
     registry.recover("acme", "recover", &recovered.1, &[]);
@@ -1604,7 +1726,11 @@ fn revoking_a_key_whose_addition_is_void_changes_nothing() {
             };
             let mut client = open(&memory, &registry).unwrap();
             let history = client.history("acme");
-            assert!(history.is_ok(), "{claim_first} {since:?}: {:?}", history.err());
+            assert!(
+                history.is_ok(),
+                "{claim_first} {since:?}: {:?}",
+                history.err()
+            );
             let releases = client.releases("acme/ledger").unwrap();
             assert!(!releases[0].compromised);
         }
@@ -1676,16 +1802,11 @@ fn a_pending_designation_is_cancelled_by_any_current_key() {
         let mut registry = TestRegistry::new("acme");
         registry.register_keys("acme", &[&a, &b], 1, &[], 0);
         registry.checkpoint(NOW - 30 * DAY);
-        let designation = registry.owner_event(
-            "acme",
-            &format!("cosigners 1 {}", key_text(&z.1)),
-            1,
-            &[&a],
-        );
+        let designation =
+            registry.owner_event("acme", &format!("cosigners 1 {}", key_text(&z.1)), 1, &[&a]);
         registry.checkpoint(NOW - 29 * DAY);
-        let cancelled = cancel.then(|| {
-            registry.owner_event("acme", &format!("cancel {designation}"), 1, &[&b])
-        });
+        let cancelled = cancel
+            .then(|| registry.owner_event("acme", &format!("cancel {designation}"), 1, &[&b]));
         registry.append("other", "filler");
         registry.checkpoint(NOW);
         (registry, designation, cancelled)
@@ -1723,12 +1844,8 @@ fn a_thiefs_designation_takes_effect_only_after_seven_days_uncancelled() {
         let mut registry = TestRegistry::new("acme");
         registry.register("acme", &a);
         registry.checkpoint(NOW - 40 * DAY);
-        let designation = registry.owner_event(
-            "acme",
-            &format!("cosigners 1 {}", key_text(&z.1)),
-            1,
-            &[&a],
-        );
+        let designation =
+            registry.owner_event("acme", &format!("cosigners 1 {}", key_text(&z.1)), 1, &[&a]);
         registry.checkpoint(NOW - days * DAY);
         registry.append("other", "filler");
         registry.checkpoint(NOW - 2 * DAY);
@@ -2029,12 +2146,8 @@ fn a_cancelled_recovery_ends_when_its_cosigners_are_replaced() {
     registry.register_keys("acme", &[&a, &b], 1, &[&x], 1);
     registry.checkpoint(NOW - 30 * DAY);
     let recovery = registry.recover("acme", "recover", &n.1, &[&x]);
-    let designation = registry.owner_event(
-        "acme",
-        &format!("cosigners 1 {}", key_text(&y.1)),
-        1,
-        &[&b],
-    );
+    let designation =
+        registry.owner_event("acme", &format!("cosigners 1 {}", key_text(&y.1)), 1, &[&b]);
     registry.checkpoint(NOW - 29 * DAY);
     let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
     registry.checkpoint(NOW - 23 * DAY);
@@ -2117,10 +2230,8 @@ fn an_omitted_kept_checkpoint_is_unavailable_never_a_later_effect() {
     let full_place = Memory {
         files: registry.files.clone(),
     };
-    let both = una_project::transport::Fallback::new(
-        Box::new(omitting),
-        vec![Box::new(full_place)],
-    );
+    let both =
+        una_project::transport::Fallback::new(Box::new(omitting), vec![Box::new(full_place)]);
     let mut client = open(&both, &registry).unwrap();
     assert_eq!(client.history("acme").unwrap(), full);
     assert!(client.take_omitted().is_empty());
@@ -2174,8 +2285,7 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
         files: registry.files.clone(),
     };
     let stripping_files = stripping.files.clone();
-    let both =
-        una_project::transport::Fallback::new(Box::new(stripping), vec![Box::new(honest)]);
+    let both = una_project::transport::Fallback::new(Box::new(stripping), vec![Box::new(honest)]);
     let mut client = open(&both, &registry).unwrap();
     assert_eq!(client.history("acme").unwrap(), full);
     assert!(!client.releases("acme/ledger").unwrap()[0].compromised);
@@ -2315,7 +2425,9 @@ fn a_checkpoint_names_its_root_and_a_hidden_newer_root_is_unavailable() {
         let mut place = Memory {
             files: registry.files.clone(),
         };
-        place.files.insert("checkpoint".to_owned(), resign(&altered));
+        place
+            .files
+            .insert("checkpoint".to_owned(), resign(&altered));
         let opened = Registry::open_with("acme", &place, &registry.pin(), &point, &floors);
         assert!(matches!(opened, Err(OpenError::Refused(_))), "{altered}");
     }
@@ -2534,10 +2646,8 @@ fn a_withheld_eligibility_delay_is_observed_and_merging_ends_it() {
     let honest = Memory {
         files: registry.files.clone(),
     };
-    let both = una_project::transport::Fallback::new(
-        Box::new(Memory { files }),
-        vec![Box::new(honest)],
-    );
+    let both =
+        una_project::transport::Fallback::new(Box::new(Memory { files }), vec![Box::new(honest)]);
     let mut client = open(&both, &registry).unwrap();
     assert_eq!(client.logged_at(fix).unwrap(), NOW - 4 * DAY);
     assert_eq!(newest_eligible(&mut client), fixed);
@@ -2621,7 +2731,13 @@ fn straddling_cosignatures_with_every_witness_needed_keep_the_owner_available() 
         files: registry.files.clone(),
     };
     let mut client = open(&memory, &registry).unwrap();
-    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert!(
+        client
+            .history("acme")
+            .unwrap()
+            .took_effect
+            .contains_key(&dispute)
+    );
     assert_eq!(
         client.earliest_effect(dispute).unwrap(),
         client.recovery_effect(dispute).unwrap()
@@ -2922,7 +3038,13 @@ fn a_pre_deadline_checkpoint_cosigned_late_keeps_the_owner_available() {
         files: registry.files.clone(),
     };
     let mut client = open(&memory, &registry).unwrap();
-    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert!(
+        client
+            .history("acme")
+            .unwrap()
+            .took_effect
+            .contains_key(&dispute)
+    );
     assert_eq!(
         client.earliest_effect(dispute).unwrap(),
         client.recovery_effect(dispute).unwrap()
@@ -2990,7 +3112,13 @@ fn a_deadline_reads_pinned_checkpoints_and_one_bracket() {
     assert!(reads <= w / 64 + 2 * 64 + 2, "{reads} reads for {w} sizes");
     assert!(reads < w / 2, "{reads} reads for {w} sizes");
     assert_eq!(client.earliest_effect(dispute).unwrap(), Some(effect));
-    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert!(
+        client
+            .history("acme")
+            .unwrap()
+            .took_effect
+            .contains_key(&dispute)
+    );
     assert!(client.take_omitted().is_empty());
     assert!(client.misbehavior().is_empty());
 }

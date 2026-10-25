@@ -277,7 +277,12 @@ pub fn verify(provenance: &Provenance, expected: &Expected) -> Result<Statement,
     root::walk(&pinned, &next, 0)?;
     let chain: Vec<(root::Root, String)> = root::walk_all(&pinned, &next, 0)?
         .into_iter()
-        .zip(provenance.roots.iter().map(|document| root::digest(document)))
+        .zip(
+            provenance
+                .roots
+                .iter()
+                .map(|document| root::digest(document)),
+        )
         .collect();
     let signed = note::parse_note(&provenance.checkpoint)?;
     let checkpoint = note::parse_checkpoint(&signed.text)?;
