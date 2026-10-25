@@ -1,307 +1,368 @@
 # ADR 0123 S4: the serve threads (design note)
 
-- Issue: #1006, part of #897. Implementation plan step 4 of ADR 0123: one listening socket per grant with exclusive wake-ups, per-worker readiness, the shared counters, the peer table, the reserves and shares of requests, replies and delivered requests, the closing of the slowest connections under reply pressure, the handshake rate and share, timers, `Host` checks, the host's own answers, the closing after a refusal, and graceful shutdown (rules 12, 14, 17 to 19); the interpreter's serve threads and `--serve-threads` (rule 20).
-- Base: ADR 0117 S7 (#972, the reactor, `docs/plan/0117-s7-design.md`) with ADR 0123 S3 (#1005, `docs/plan/0123-s3-design.md`) merged in. S7 sits on an older ADR 0117 S4. The branch is restacked onto ADR 0117 S5 (#970) before any code of this slice is written: S5's base holds the fixes of #1145 (placement, threads up front) and #1146 (turns), `crates/una-cli/tests/timing_channels.rs` and `crates/una-cli/tests/common/rank.rs`, none of which this base has. The code of this slice also builds on #1151 (deadlines in nanoseconds and the timer wheel of the amendment of 2026-10-25) and #1148 (`L_res`), once they land.
+- Issue: #1006, part of #897. Implementation plan step 4 of ADR 0123: one listening socket per grant with exclusive wake-ups, per-thread readiness, the shared counters, the peer table, the reserves and shares of requests, replies and delivered requests, the closing of the slowest connections under reply pressure, the handshake rate and share, timers, `Host` checks, the host's own answers, the closing after a refusal, and graceful shutdown (rules 12, 14, 17 to 19); the interpreter's serve threads and `--serve-threads` (rule 20).
+- Slices of ADR 0123 named here: S5 is #1007 (the `HttpServer` capability, implementation plan step 5), S6 is #1008 (`[serve]`, step 6). They are not ADR 0117's slices S5 (#970, limits on `Http` grants) and S6 (#971, `limiter`), which this note always names with "ADR 0117".
+- Base: ADR 0117 S7 (#972, the reactor, `docs/plan/0117-s7-design.md`) with ADR 0123 S3 (#1005, `docs/plan/0123-s3-design.md`) merged in. S7 sits on an older ADR 0117 S4. The branch is restacked onto ADR 0117 S5 (#970) before any code of this slice is written: that base holds the fixes of #1145 (placement, threads up front) and #1146 (turns), `crates/una-cli/tests/timing_channels.rs` and `crates/una-cli/tests/common/rank.rs`, none of which this base has.
 - Normative text: ADR 0123 rules 12, 14, 17 to 20, Security, Costs; ADR 0116, amendment of 2026-10-25 "a precise `τ_conc`" (P0 to P13) and amendment of 2026-10-25 "the timer wheel of P13"; `spec/31`, which gains §6 with this slice.
+- Revision: this is the second version, after an independent review (four High, ten Medium and several Low findings). §17 lists each finding and where this text answers it. The amendment of ADR 0123 that the departures below need is drafted in `docs/plan/0123-s4-amendment-draft.md`, status Proposed.
 
-This note fixes how S4 is built, and lists the decisions it takes where the records leave a choice. Each decision takes the most secure option the records allow. Where a decision departs from the text of an accepted record, it says so, and the departure waits for a dated amendment (§11).
+This note fixes how S4 is built, and lists the decisions it takes where the records leave a choice. Each decision takes the most secure option the records allow. Where a decision departs from the text of an accepted record, it says so, and the departure waits for the amendment.
 
 ## 1. What this slice does, and what it leaves
 
 | Part | This slice | Later |
 | --- | --- | --- |
-| Accepting on the listeners of S3 | one acceptor thread per run, one-shot readiness, connections handed to their owner (§3) | |
-| Per-worker readiness | a poller per worker; I/O between turns and while idle (§4) | |
-| Connections | the state machine of rule 12: idle, reading, waiting, writing, closing after a refusal; at most one timer each | |
-| Shared counters and reserves | `/once`, the rate, `waiting`, `connections`, `buffers`, `delivered`, `replies`, with their shares per peer (§5) | |
-| The peer table | per grant, IPv4 or IPv6 /64, O(1) per accept and close (§5.3) | |
-| Reply pressure | the slowest connection of the peer furthest over its share, else the slowest of all (§5.5) | |
-| Handshakes | the rate per grant and per peer at accept, the half of the workers that may run one (§5.6) | the TLS server itself waits for #1059 |
-| `Host` and the host's own answers | `421` by the grant's `hosts`, `408`, `503`, `100 Continue`, the auto-answers' bytes (§6) | the auto-answers' triggers (step 5) |
-| Shutdown | the host's side of rule 18, and `close` (§7) | `Interrupted` and `Closed` of `next` (step 5) |
-| The interpreter | serve threads of its own, `--serve-threads` (§8) | |
-| `HttpServer`, `next`, `reply`, reply rights, U3033, IF6, traces | none: no program can name `HttpServer` yet | step 5 |
-| `[serve]` and its driver | none | step 6 |
-| `--serve-script`, `--serve-out` | none; the conformance scripts of §10 use their format and a test harness | step 7 |
+| The serve threads | dedicated threads in both engines, never the task workers (§3, decision S4-D1) | |
+| Accepting on the listeners of S3 | every serve thread may accept, one at a time, through one shared accept poller; each connection goes to the thread its keyed hash names (§4) | |
+| Connections | the state machine of rule 12: handshaking, idle, reading, waiting, delivered, writing, closing after a refusal; at most one timer each | |
+| Shared counters and reserves | `/once`, the rate, `waiting`, `connections`, `buffers`, `delivered`, `replies`, with their shares per peer (§6) | |
+| The peer table | per grant, IPv4 or IPv6 /64, bounded (§6.3) | |
+| Reply pressure | the slowest connection of the peer furthest over its share, else the slowest of all, freed at once (§6.5) | |
+| Handshakes | the rates per grant and per peer at accept, and the half of the serve threads that may run a step (§6.6) | the TLS server itself waits for #1059 |
+| `Host` and the host's own answers | `421`, `408`, `503`, `100 Continue`, the auto-answers' bytes (§7) | the auto-answers' triggers (ADR 0123 S5, #1007) |
+| Shutdown | the host's side of rule 18, and `close` (§8) | `Interrupted` and `Closed` of `next` (#1007) |
+| `--serve-threads` | both engines (§3) | |
+| The label `L_srv` | specified (§10); implemented in the checker with #1007 | #1007 |
+| `HttpServer`, `next`, `reply`, reply rights, U3033, IF6, traces | none: no program can name `HttpServer` yet | #1007 |
+| `[serve]` and its driver | none | #1008 |
+| `--serve-script`, `--serve-out` | none; the conformance scripts of §11.1 use their format through a test harness | ADR 0123 step 7 |
 
-**Dormant until step 5.** The serve threads start only in a run whose program can perform an operation of `HttpServer` (§9, P8). No program can until step 5, so every run of this slice keeps the behavior of S3: listeners bound and held, nothing accepted. The slice is exercised through the engine's own tests (§10), with a consumer written in Rust in place of the program.
+**Dormant until #1007.** The serve threads start only in a run whose program can perform an operation of `HttpServer` (§10, P8). No program can until #1007, so every run of this slice keeps the behavior of S3: listeners bound and held, nothing accepted. The slice is exercised through the engine's own tests (§11), with a consumer written in Rust in place of the program.
 
 ## 2. Layout
 
-- `crates/una-http/src/serve/engine.rs` and submodules (safe code, no `unsafe`): the connection state machine, the grant state shared by the workers, the peer table, the reserves, the reply-pressure heaps, the handshake gate, and the delivery queues. It is driven through a trait `Io` (sockets, clock, wakes), implemented by real sockets in both engines and by scripted sockets with a clock the test drives. Both engines run this one code (rule 20).
-- `crates/una-http/src/wheel.rs`: the timer wheel, moved from `crates/una-rt/src/wheel.rs` without change after #1151 lands, and re-exported by `una-rt`. The engine needs it, and `una-interp` cannot depend on `una-rt`.
-- `crates/una-rt`: the workers own their pollers and run the engine between turns (§4); the acceptor thread; the placement of rule 19; the start before `main` (§9).
-- `crates/una-interp`: the serve threads and `--serve-threads` (§8).
-- `crates/una-sys`: no change (§12).
+- `crates/una-http/src/serve/engine.rs` and submodules (safe code, no `unsafe`): the serve thread's loop, the connection state machine, the grant state, the peer table, the reserves, the reply-pressure heaps, the handshake gate, the delivery queues, the inboxes. It is driven through a trait `Io` (sockets, clock, wakes), implemented by real sockets in both engines and by scripted sockets with a clock the test drives. Both engines run this one code (rule 20).
+- `crates/una-http/src/wheel.rs`: the timer wheel, moved from `crates/una-rt/src/wheel.rs` without change after #1151 lands, and re-exported by `una-rt`; `una-interp` cannot depend on `una-rt`.
+- `crates/una-http` gains a dependency on `una-hash` (SipHash-2-4, no `unsafe`, `getrandom` only) for the keyed placement and the peer table (§4).
+- `crates/una-rt` and `crates/una-interp`: start the serve threads before `main` (§10, P8), deliver requests to tasks, take replies from them. The workers do not change.
+- `crates/una-sys`: no change (§13).
 
-## 3. Listening and accepting
+## 3. Dedicated serve threads (H1, decision S4-D1)
 
-**One acceptor thread per run, and an owner chosen by the accept order.**
+**The choice.** The engine runs on serve threads of its own in both engines, `--serve-threads` of them, and never on the task workers. A serve thread runs no Una code and no task. The workers run tasks only, as in ADR 0117.
 
-- **The socket.** Each grant keeps the one socket that S3 binds before `main`: `SO_REUSEADDR`, never `SO_REUSEPORT`, `IPV6_V6ONLY` on IPv6. No other process can bind the same address and port and take a share of the connections (rule 19, Security).
-- **The acceptor.** One thread, `una-accept`, started before `main` (§9), registers each listener in a poller of its own with the one-shot read interest that S7's `Poller::add` already has. At an event it accepts up to 16 connections from that listener, then registers it again. One thread waits on each listener, so each connection wakes exactly one thread: the exclusive wake-ups of rule 19, without `EPOLLEXCLUSIVE` or a nested `kqueue` with `EV_DISPATCH`.
-- **The owner (decision S4-D1).** The `k`-th connection the run accepts, counting every descriptor the kernel hands over, those closed at once included, is owned by worker `k mod N`, with `N` the number of workers (native) or of serve threads (interpreter). The acceptor hands the descriptor to its owner's inbox and wakes the owner. The owner sets it non-blocking and `TCP_NODELAY`, registers it in its own poller, and serves it for its whole life.
-  - **Why.** Rule 19 has the worker that accepts own the connection. Which worker wakes first then depends on how busy each worker is, which the tasks of earlier constructs decide, possibly on `secret` data, and the connections stay with that worker for their keep-alive life. Rule 19's placement then puts request tasks on those workers: a placement set by the history of earlier code, the channel that P6 closes for task placement (SC1 in §9). The accept order is the kernel's backlog order, a function of the request stream alone, which Question 4 makes input.
-  - **Cost.** One atomic increment and one push into an inbox per connection, not per request; keep-alive amortizes it. The acceptor's own work per connection is `accept`, two `fcntl` calls inside std, and the push: far below a TLS handshake or a request's parse, which the owner does.
-  - **Departure from rule 19's text.** Rule 19 describes per-worker waits with `EPOLLEXCLUSIVE` and `EV_DISPATCH`, and the acceptor as the owner. This choice needs no new `una-sys` code (§12) and closes SC1. It waits for the amendment of §11.
-- **Checks at accept, in this order, each O(1):** the grant's `connections` (at the cap, the acceptor stops registering the listener until a connection of the grant closes, so the kernel's backlog holds the rest, rule 12); the peer's `peer` count (a connection over it is closed at once); for `https`, the grant's and the peer's handshake rates (§5.6), a connection over either closed at once, before any handshake work. A connection that passes takes its head reserve (§5.4), its place in the peer table, and the `read` timer from the accept.
-- **Errors of `accept`.** `ECONNABORTED` and `EINTR` are skipped. `EMFILE`, `ENFILE`, `ENOBUFS` and `ENOMEM` stop accepting on that listener for 100 ms, by a timer of the acceptor, so a full descriptor table never makes the acceptor spin; the connection waits in the backlog. Any other error is treated the same way, and counted for the report of a later slice.
-- **The descriptor budget (decision S4-D2).** S3 raises the soft limit to the sum of `connections` plus 64. S7's cap on the sockets of `Http` requests (`una_rt::sockets`) is computed from the soft limit at its first use, so on a server it would claim the descriptors meant for connections. The cap becomes the soft limit, less the sum of `connections` over the `serve:` grants, less S7's reserve, and at least 1. A server's connections and its own requests then cannot starve each other of descriptors.
+**The options weighed.**
+- **(a) Dedicated serve threads**, with a label computed over the code that runs after the program's server operations (§10). Chosen.
+- **(b) The engine on the workers**, as rule 19 writes it. Its I/O shares each worker's turns, so P7 must count pending engine work as a second task (finding H2), timers fire between turns (finding M2), and every pass of I/O shifts the turns of the tasks on that worker. The engine's work then sits inside the scheduler that the `τ_conc` argument reasons about, and the only label that covers it is P10's over every ancestor of a server operation, which is in effect `τ⁰` of the whole program (finding H1). Not chosen.
+- **(c) Others considered.** A single acceptor thread (the first version of this note) adds a hand-off for every connection and a single point of failure, without closing more. A per-worker engine with one listener socket per worker needs `SO_REUSEPORT`, which rule 19 forbids. Neither is better than (a).
 
-## 4. Per-worker readiness
+**What changes in ADR 0123** (drafted in the amendment):
+- **Rule 19.** "The workers of ADR 0117 rule 2 serve the connections" becomes: dedicated serve threads serve them, `--serve-threads` in both engines. The placement of a task that captures a reply right on its connection's worker (ADR 0123 Appendix A, amendment of ADR 0117 rule 2) is withdrawn: every task is placed by P6. A connection belongs to the serve thread its keyed hash names (§4). The `[serve]` path no longer reads, handles and answers a request on one core: a request is read on its serve thread, handled on a worker, and written on its serve thread.
+- **Rule 20.** `--serve-threads <n>`, from 1 to 256, applies to native executables too. Its default is the number of cores in the interpreter, as rule 20 says, and half the cores, at least 1, in native code, where the workers take the other half.
 
-- **A poller per worker.** Each worker owns a `Poller` (S7's `una_sys::poll`), its connection slab, its timer wheel, its queue of handshakes, and its queue of requests read and waiting (rule 19, "Per worker"). A wake socket pair (`UnixStream::pair`, as S7's reactor uses) lets other threads wake it: the acceptor's hand-off, a reply handed off by a task on another worker, a stop.
-- **When the worker does I/O (decision S4-D3).** Only between turns, never inside one:
-  - **between two turns,** one poll with a zero timeout, then at most 64 events and the due timers of its wheel;
-  - **while it has no ready task,** a blocking poll until the earliest live timer of its wheel, which replaces the condition variable a worker waits on today.
+**The performance cost.** Two hand-offs between threads per request on every path, where rule 19 promised none on the `[serve]` path: the request goes from its serve thread to a task on a worker, and the reply back to the serve thread's inbox. Each is one lock-free push, and a wake only when the receiving thread sleeps (§5). At saturation threads rarely sleep, so the cost is about two queue operations and the cache misses of moving the request's bytes, on the order of a microsecond per request. Native code also runs more threads than cores by default (workers plus serve threads). The measurement of §12 decides whether this stays within the parity bar, and is the condition of a further amendment if it does not.
 
-  The budget is a count of events, never a span of time, and no tick shared by the run decides when a pass happens. The work of a pass depends only on the events ready, which the request stream and the replies decide (§9, SC8).
-- **Connections and their state.** A slab of connections with a free list; a token is the slot and its generation, so a stale event is ignored, as in S7. A connection is in one of: handshaking, idle (between requests), reading, waiting for delivery, delivered (an open exchange), writing, closing after a refusal (rule 10). Registrations are one-shot, added when the connection waits for readiness and deleted when the wait ends, as S7 does.
-- **One request at a time** (rule 12). A connection's next request is read only after the reply to the current one is written, so a pipelined client is served in order. Bytes that arrive past the current request stay in the connection's buffer, within its head reserve.
-- **Timers** (rule 12, P13). At most one per connection, `idle`, `read` or `write`, and one per open exchange, `answer`, on the owner's wheel. The wheel is that of the amendment of 2026-10-25 on P13: exact deadlines in nanoseconds of the monotonic clock, cancellation that removes the timer at once, no dead entries left by code that has ended. `read` counts from the accept for a connection's first request, the handshake included; a request past `read` is answered `408` and closed; an idle connection past `idle`, or a reply not written within `write`, is closed.
+## 4. Listening, accepting and placement (M1, decided)
 
-## 5. Shared state
+- **The socket.** Each grant keeps the one socket that S3 binds before `main`: `SO_REUSEADDR`, never `SO_REUSEPORT`, `IPV6_V6ONLY` on IPv6 (rule 19, Security).
+- **One accept poller per run.** Every listener is registered, one-shot, in one shared `Poller` (S7's `una_sys::poll`), and that poller's descriptor is registered, one-shot, in each serve thread's own poller. When a listener is ready, the serve threads whose registration is armed wake; the first to wait on the accept poller with a zero timeout receives the listener's one-shot event, accepts up to 16 connections, then registers the listener again; the others find no event and register the accept poller again. Exactly one thread accepts from a listener at a time, with no new `una-sys` code. On Linux, a registration that fired stays, disabled, until it is deleted, so re-arming is a delete followed by an add, as S7 does (finding L3).
+- **The owner: a keyed hash (decision S4-D2).** A connection belongs to serve thread `H(listener, peer address, peer port) mod M`, with `M` the number of serve threads and `H` SipHash-2-4 (`una_hash::sip24`) under a 128-bit key drawn for the run from the operating system's random source (`getrandom`, as `una_hash::ProcessKey::from_host` reads it). The key is separate from the process key of hash tables, used only for placement and the peer table's shards, never written to a trace, the report, a message or an error, and has no `Debug`. A run whose host gives no random bytes does not start, as for the hash tables' key (U6009). The thread that accepts hands a connection that is not its own to the owner's inbox.
+  - **Why keyed, and why these inputs.** The owner depends only on the connection's own addresses, which are input: not on the accept order, nor on which thread happened to accept, nor on how busy any thread was. Without the key a peer could choose its source ports to put every connection on one serve thread; with it, it cannot predict the thread, and throwaway connections cannot move later ones, since each connection's place is computed alone.
+  - **Cost.** One SipHash of at most 38 bytes per connection, and one push when the acceptor is not the owner.
+- **Checks at accept, in this order, each O(1):** the grant's `connections` (at the cap, the accepting thread does not re-arm the listener; a close of a connection of the grant re-arms it, so the kernel's backlog holds the rest, rule 12); the peer's `peer` count, over which the connection is closed at once; for `https`, the grant's and the peer's handshake rates (§6.6), over which the connection is closed at once, before any handshake work. A connection that passes takes its head reserve (§6.4), its place in the peer table, and the `read` timer from the accept.
+- **Errors of `accept`.** `ECONNABORTED` and `EINTR` are skipped. `EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM` and any other error stop accepting on that listener for 100 ms, by a timer of the thread that saw it, so a full descriptor table never makes a thread spin.
+- **Close-on-exec (finding L4).** std's `TcpListener::accept` uses `accept4` with `SOCK_CLOEXEC` on Linux, and `accept` followed by `ioctl(FIOCLEX)` on macOS; non-blocking mode and `TCP_NODELAY` are std calls. No `fcntl` of this crate is involved.
 
-All shared state is per grant, except the handshake gate and the accept counter, which are per run. Counters sit each on its own cache line (`#[repr(align(128))]`, which covers the adjacent-line prefetch of x86 and the 128-byte lines of Apple's cores). Sizes and counts are `u64`, compared with checked or saturating arithmetic (rule 7).
+## 5. A serve thread's loop (M6, M7)
 
-### 5.1 Counters
+- **Its state.** A `Poller`, a wake pair (`UnixStream::pair`, as S7's reactor uses), an inbox, its connection slab, its timer wheel, its queue of handshakes and its queue of requests read and waiting.
+- **The loop.** Drain the inbox; handle at most 256 ready events and at most 1,024 due timers per pass, so neither starves the other; if there is more, pass again at once; otherwise block in the poller until the earliest live timer.
+- **Try first, register on `EAGAIN` (M6).** Every read and write is tried at once; a connection registers its interest only when the call returns `EAGAIN`, one-shot, and deletes it when the wait ends.
+- **Noticing a departing peer (finding L4).** While a connection waits for its exchange to end, its read interest stays registered (`EPOLLRDHUP` on Linux, `EV_EOF` on macOS), so a peer that leaves is seen at once and its exchange ends with its reply discarded (rule 14). Bytes that arrive meanwhile are kept within the connection's head reserve and read no further.
+- **The inbox.** A `std::sync::mpsc` channel per serve thread: unbounded and lock-free on the sending side, so a task that hands off a reply never waits on a lock a serve thread holds. Each message names its connection by slot and generation, and a message for a slot reused since is dropped (finding L4).
+- **Wakes without loss, only of sleeping threads (M6, M7).** A serve thread stores `sleeping = true` (sequentially consistent), checks its inbox once more, and only then blocks in its poller; on waking it stores `false`. A sender pushes its message, then reads `sleeping` (sequentially consistent), and writes one byte to the wake pair only when it is true. Either the sender sees `true` and writes, or the sleeper sees the message in its last check: no wake is lost, and a busy thread is never woken.
+- **Every path that pushes to a serve thread,** each followed by the wake rule above:
+  1. a connection handed to its owner by the thread that accepted it;
+  2. a reply handed off by `reply`, from a task on a worker or from the interpreter's thread;
+  3. the end of an exchange by the program (auto-answers, `close`) and by the host's own transitions on another thread (§6.5's victims);
+  4. a host stop or `close` (§8): the stop path pushes a stop message to every serve thread;
+  5. a re-arm of the accept poller after a close below `connections`.
+- **Every path from a serve thread to a task:** a request delivered to a task parked in `next`, and a slot of `/once` or room in `delivered` freed for one. Each goes through S7's `sched::channel` send, which pushes a resume job to the task's worker and wakes it by the scheduler's own condition variable, unchanged. S7's reactor and the timer thread push only to workers, as today, and never to a serve thread. Joins and task placement never involve a serve thread.
+
+## 6. Shared state
+
+All shared state is per grant, except the handshake gate, which is per run. Counters sit each on its own cache line (`#[repr(align(128))]`). Sizes and counts are `u64`, with checked or saturating arithmetic (rule 7).
+
+### 6.1 Counters
 
 | Counter | Charged | Released | Operation |
 | --- | --- | --- | --- |
-| `connections` open | at accept | at close | atomic increment below the cap, O(1) |
-| `waiting` requests | when a request is read and queued | at delivery or refusal | atomic increment below the cap; at the cap, `503` (rule 14) |
-| `/once` open exchanges | at delivery | when the exchange ends | atomic increment below the cap; at the cap, delivery waits |
-| the rate | at delivery | never: a token | GCRA timestamp, §5.2 |
-| `buffers` bytes | at a body's admission (§5.4) | at delivery or refusal | atomic add below the cap, together with the peer's share |
+| `connections` open | at accept | at close | atomic increment below the cap |
+| `waiting` requests | when a request is read and queued | at delivery or refusal | atomic increment below the cap; at the cap, `503` |
+| `/once` open exchanges | at delivery | when the exchange ends | atomic increment below the cap; else delivery waits |
+| the rate | at delivery | never: a token | GCRA timestamp, §6.2 |
+| `buffers` bytes | at a body's admission | at delivery or refusal | atomic add below the cap, with the peer's share |
 | `delivered` bytes | at delivery | when the exchange ends | atomic add below the cap; else delivery waits, within `answer` |
-| `replies` bytes | at `reply`'s hand-off | as bytes are written, or at close | atomic add, never refused (rule 13); over the cap, §5.5 |
+| `replies` bytes | when `reply` reserves them (§6.5) | as bytes are written, or when freed under pressure | atomic add, never refused |
 
-A request costs a few atomic operations on these, O(1), and no lock (rule 19). Delivery that must wait parks the calling task (step 5) on a list of the grant's waiters under a mutex, which only the waiting path takes.
+A request costs a few atomic operations, O(1), and no lock (rule 19). The peer's shares are atomics of the peer's entry, which the connection holds by reference from its accept, so no request touches the peer table's locks (M5). A delivery that must wait parks its task on the grant's list of waiters under a mutex that only the waiting path takes.
 
-### 5.2 The rate (GCRA)
+### 6.2 The rate (GCRA)
 
-- **One timestamp per grant**, an `AtomicU64` of nanoseconds of the monotonic clock, updated by a compare-and-swap loop: O(1), lock-free. The interval `T / n` is rounded up to a whole nanosecond, never to zero, as rule 7 allows ("A token interval of a rate is rounded up, never to zero"). S5's governor counts in `1/n` nanoseconds in 128-bit integers under a mutex, which a lock-free update cannot do on the targets' stable atomics; rounding up only ever delivers fewer, never more, than the grant says.
-- **Exact deadlines.** A delivery that waits for a token wakes at the token's exact moment, a timer of the wheel (P13).
-- **Not S5's governor.** The governor charges a request to several `Http` grants at once and orders waiters by ticket. A delivery is charged to one grant, so the timestamp alone serves. The arithmetic of periods is shared.
+One `AtomicU64` of nanoseconds of the monotonic clock per grant, updated by a compare-and-swap loop, O(1), lock-free. The interval `T / n` is rounded up to a whole nanosecond, never to zero, as rule 7 allows; rounding up only ever delivers fewer than the grant says. A delivery that waits for a token wakes at the token's moment, a timer of the wheel. The period arithmetic is shared with ADR 0117 S5's governor, which keeps its own exact form for `Http`.
 
-### 5.3 The peer table
+### 6.3 The peer table (M4)
 
 - **Keys.** An IPv4 address, or the /64 prefix of an IPv6 address; an IPv4-mapped IPv6 address counts as its IPv4 address (rule 12).
-- **Entries.** Open connections, bytes of bodies admitted (`peer_buffers`), bytes of replies pending (`peer_replies`), and the peer's handshake timestamp (§5.6). An entry exists while any of them is nonzero, so the table holds at most `connections` entries.
-- **Structure (decision S4-D4).** 64 shards per grant, each a hash map behind its own mutex, with the hasher of std (`RandomState`, keyed at random per run), so a peer cannot choose addresses that collide. O(1) on average per accept, close and share charge; O(1) expected under any choice of addresses, since the keys are secret.
-- **Departure from rule 19's wording.** Rule 19 lists the peer table among the atomic counters. A lock-free map is far more code for no gain: the table is touched at accept and close, and when a body or a reply is charged, not on each byte. Requests on an open connection read no peer entry. The mutexes are per shard and held for O(1) work.
+- **Entries.** Open connections, bytes of bodies admitted, bytes of replies pending, and the peer's handshake timestamp (§6.6), each an atomic; an entry is held by reference by each of its connections.
+- **Structure (decision S4-D3).** 64 shards per grant, each a hash map behind its own mutex, hashed by SipHash under the run's placement key, so a peer cannot make its addresses collide. Locks are taken at accept, at close and at expiry only, never per request. O(1) on average, and O(1) expected under any choice of addresses.
+- **Life and bound.** An entry lives while it has an open connection, or while its next allowed handshake time is in the future; then a timer of the serve thread that last updated it removes it, unless it was used again. The GCRA timestamp of a peer is at most one burst ahead of the clock, and a burst of `max(4, handshakes / 16)` at that rate lasts one second, so an entry with no connection lives at most one second. Entries with no connection are created only by handshakes the grant's rate admitted, at most `handshakes` per second. So the table of a grant holds at most `connections + handshakes` entries: 1,536 with the defaults. A plain `http` grant keeps no handshake timestamps, and holds at most `connections`.
 
-### 5.4 Reserves of request bytes (rule 13)
+### 6.4 Reserves of request bytes (rule 13)
 
-1. **Heads.** Each connection's reserve, `line + header`, is accounting counted at accept and released at close, never allocated ahead. Reading a head never waits for a shared budget.
-2. **Bodies.** A declared `Content-Length` reserves its whole length before the body is read; a chunked body reserves 64 KiB before each step. A reservation must fit the peer's `peer_buffers` and the grant's `buffers`, charged together: the grant's atomic add first, then the peer's entry; a failure of the second gives back the first, so the counters never hold a charge that was refused. When it does not fit, `503` with `Retry-After: 1` at once, and the connection closes after it (§6). `100 Continue` is sent only after the admission.
-3. **Delivered.** From delivery until the exchange ends, the request's head and body bytes are charged to `delivered`. Delivery waits for room, within `answer`, after which the request is refused with `503`.
+1. **Heads.** Each connection's reserve, `line + header`, is accounting counted at accept and released at close, never allocated ahead.
+2. **Bodies.** A declared `Content-Length` reserves its whole length before the body is read; a chunked body reserves 64 KiB before each step. A reservation must fit the peer's `peer_buffers` and the grant's `buffers`: the grant's atomic add first, then the peer's; a failure of the second gives the first back. When it does not fit, `503` with `Retry-After: 1` at once, and the connection closes after it (§7). `100 Continue` is sent only after the admission.
+3. **Delivered.** From delivery until the exchange ends, the request's bytes are charged to `delivered`; delivery waits for room, within `answer`, then `503`.
 
-### 5.5 Reply pressure
+### 6.5 Reply pressure (H4, M5)
 
-- **Charges.** A reply's serialized bytes are charged to the grant's `replies` and the peer's `peer_replies` when it is handed off. The bytes are allocated outside `--max-memory` (rule 13), so `reply` never waits or fails for them.
-- **Heaps (decision S4-D5).** Per grant, under one mutex that only this accounting takes:
-  - an indexed max-heap of the peers by how far they are over their share, `bytes - peer_replies`;
-  - per peer, an indexed max-heap of its connections by the bytes their pending reply has left;
-  - an indexed max-heap of all connections with a pending reply by bytes left.
+- **Reserve first, free victims, then allocate.** `reply` reserves its serialized size `r` on the grant's `replies` and the peer's `peer_replies`, with atomic adds. When the grant is then over `replies`, the same thread, before it allocates its own buffer, frees victims until the grant is back under `replies` or no other reply is pending:
+  1. it takes the grant's pressure mutex and picks the victim: the connection with the most bytes left of the peer furthest over its share; when no peer is over its share, the connection with the most bytes left of all; ties to the lower connection id;
+  2. it marks the victim discarded in its outbox (below), removes it from the heaps, takes its pending buffer and drops it, and gives its bytes back to both counters, at once;
+  3. it pushes a close of the victim to the victim's owner (§5). The owner only closes the descriptor later.
 
-  Each holds positions in its entries, so an update or a removal is O(log c). A connection's key is updated when its reply is charged, after each write step of at most 16 KiB, and when the reply ends.
-- **Closing.** While the grant is over `replies`, the owner of the connection whose charge crossed the cap closes, in order: the connection with the most bytes left of the peer furthest over its share; when no peer is over its share, the connection with the most bytes left of all. Ties go to the lower connection id, so the choice is a function of the state. A closed connection's reply is discarded, and the program never sees it (rule 14, IF4). A close of a connection that another worker owns is a message to that worker's inbox; its bytes stay charged until it closes, so the loop never closes two for one excess.
-- **One reply larger than `replies`** is written only while the grant has no other reply pending, else its connection is closed at once (rule 13).
+  Then it allocates and serializes its reply, and pushes it to its connection's owner. `reply` never waits on a peer, and never fails for this (rule 13).
+- **Outboxes.** A connection's pending reply sits in an outbox under a mutex of that connection alone: the owner takes it for one non-blocking write of at most 16 KiB, the victim's freer for the take above. It is uncontended except under pressure, and it is the only lock a request's reply meets (declared in the amendment).
+- **Heaps, lazily.** Outside pressure there are no heaps, and nothing but atomics is touched. When a grant first goes over `replies`, its pressure mutex builds three indexed max-heaps from its connections with pending replies, O(c): the peers by how far they are over their share, each peer's connections by bytes left, and all connections by bytes left. Keys are the bytes left when last read; they only ever decrease, since bytes are only written or freed, so a key is an upper bound. A pick refreshes the top from the connection's atomic count, and keeps it when it still beats the next key, which is then a true maximum; otherwise it reinserts it lower and tries again. Each refresh lowers a key, so picks cost O(log c) amortized. The heaps are kept, under the mutex, while the grant is above three quarters of `replies`, and dropped below. A new episode starts only after a quarter of `replies` has been written or freed, so the O(c) build is amortized over that many bytes.
+- **One reply larger than `replies`** is kept only while the grant has no other reply pending, else its connection is closed at once (rule 13).
+- **The bound outside `--max-memory`.** For a grant, at any moment: the bytes of pending replies are at most `replies` plus the replies being reserved at that moment, at most one per worker (or the interpreter's thread), each no larger than the `Text` it was made from, which `--max-memory` bounded; plus the head bytes held, at most `connections × (line + header)`, which rule 13 counts; plus, with #1059, the TLS buffers of `rustls`, bounded per connection by its buffer limit (one record of about 16.5 KiB each way, set with `set_buffer_limit`), which rule 13's statement of the worst case gains: about 34 MiB for 1,024 connections (finding L4).
 
-### 5.6 Handshakes
+### 6.6 Handshakes
 
-- **Rates at accept.** Per grant, `handshakes` per second, and per peer `max(4, handshakes / 16)` per second, each a GCRA timestamp as in §5.2, the peer's in its entry. Over either, the connection is closed at its accept, before any handshake work (rule 9).
-- **The share.** A per-run counter of the workers inside a handshake step. A worker takes a place before each step and gives it back after, and takes one only while fewer than `ceil(N / 2)` are taken; otherwise the connection stays in the worker's queue of handshakes, within its `read` timer. Request handling always keeps the other workers (rule 19).
-- **The TLS server itself waits for #1059** (S3, "TLS provider"). Until then the engine's handshake step is a trait whose only implementation is a test double, and a run whose program can serve and that holds an `https` grant is refused before `main`, a usage error: it fails closed rather than serve plain bytes on an `https` address.
+- **Rates at accept.** Per grant, `handshakes` per second, and per peer `max(4, handshakes / 16)` per second, each a GCRA timestamp as in §6.2. Over either, the connection is closed at its accept, before any handshake work (rule 9).
+- **The share.** A per-run count of serve threads inside a handshake step. A thread takes a place before each step and gives it back after, only while fewer than `ceil(M / 2)` are taken; otherwise the connection stays in the thread's queue of handshakes, within its `read` timer.
+- **One serve thread (finding L4).** With `M = 1`, `ceil(1 / 2)` is 1: the one thread may run handshakes, and does at most 8 handshake steps per pass of its loop, so requests on its open connections still progress between them.
+- **The TLS server waits for #1059.** Until then the handshake step is a trait whose test implementation is compiled only under `cfg(test)` (finding L4), and a run whose program can serve and that holds an `https` grant is refused before `main`, a usage error: it fails closed rather than serve plain bytes on an `https` address.
 
-### 5.7 Delivery
+### 6.7 Delivery (M5)
 
-- **Per worker, first come, first served** (rule 19): each worker's queue of requests read and waiting, in the order it finished reading them.
-- **Across workers, for the language form (decision S4-D6).** A run-level ready list of workers whose queue holds a request, each worker in it at most once, under one mutex: `next` takes the first worker of the list and the oldest request of that worker's queue. O(1). Order across workers is not kept, as rule 19 says.
-- **For `[serve]`** (step 6), each worker's driver takes from its own queue only.
+- **Per serve thread, first come, first served** (rule 19): each thread's queue of requests read and waiting, in the order it finished reading them, under a mutex held for O(1).
+- **Across serve threads.** Each thread has a ready flag, an atomic set when its queue becomes non-empty. A `next` scans the flags from a per-run rotating cursor, an atomic advanced at each delivery, so no thread's requests wait behind another's indefinitely (finding L4). O(1) expected under load, O(M) at worst.
+- **For `[serve]`** (#1008), each worker's driver loop scans from its own index.
 
-## 6. `Host`, the host's own answers, and the closing after a refusal
+### 6.8 Descriptors (H3)
 
-- **`Host`.** The syntax check of S2 (`una_http::request::host`) on every grant, then `Hosts::allows` of S3 with the grant's `hosts`: `421` otherwise. Over TLS, the server name of the handshake MUST equal the `Host` name, else `421` (with #1059). O(names).
-- **The host's answers** are written by `una_http::reply::write_answer` (S2): an empty body, `Content-Length: 0`, `Retry-After: 1` on `503`, `Connection: close` when the connection closes. The engine sends them for: the refusals of rules 8, 10 and 11; `408` past `read`; `503` for a full `waiting`, a body that does not fit, a wait past `answer` for delivery, an exchange past `answer` without a reply, and a stop or `close` that finds a request undelivered or still being read. The `500` and `503` auto-answers of rule 4.5 use the same writer; their triggers come with step 5.
-- **The closing after a refusal** (rule 10). After a `400`, `413`, `431` or `503` that closes the connection, the owner writes the answer, shuts down the sending side (`TcpStream::shutdown(Write)`), reads and drops what the peer still sends, at most 64 KiB or for one second, whichever comes first, by the connection's one timer, and closes. The connection keeps its place in `connections` and in the peer table until it closes, so lingering connections cannot be used to exceed either.
+- **The target.** Before `main`, S3's `prepare` raises the soft limit of open descriptors, within the hard limit, to
 
-## 7. Graceful shutdown
+  `T = Σ connections + L + 1 + 3M + C + R`
 
-At a host stop (ADR 0116 rule 14), or at `close` (rule 1):
+  with `L` the listeners (one per grant), 1 the accept poller, `3M` a poller and a wake pair per serve thread, `C = 256` sockets kept for the program's own `Http` requests, and `R = 64` for `Files`, `Console`, the reactor, its pair, the wake pipe and the runtime. A run that cannot reach `T` is a usage error naming `T`, before anything runs, as S3 does for its smaller target. `prepare` therefore takes `M`.
+- **S7's cap** on the sockets of `Http` requests, in a run that serves, is the soft limit less `Σ connections + L + 1 + 3M + R`, so at least `C`, and never 1.
+- **Test.** Under a hard limit of `T - 1` the run is refused, and its message names `T`; at `T`, the cap of `una_rt::sockets` is exactly `C`; and with every connection of the grant open, 256 requests of the program's own `Http` all get a socket.
 
-1. the acceptor deregisters and closes every listener, and each worker closes its idle keep-alive connections;
-2. requests read but not delivered get `503` with `Connection: close`; a request still being read gets it as soon as its head is read, or at once when its head is not complete;
-3. open exchanges drain: their replies carry `Connection: close`, and each connection closes after its reply;
-4. at the hard stop (ADR 0116 rule 16), every open exchange whose task is cancelled gets its auto-answer (step 5) written without waiting on its peer: one non-blocking write, then close.
+## 7. `Host`, the host's own answers, and the closing after a refusal
 
-The cost is O(connections + queued requests). Workers do this from their own inboxes; nothing waits on a peer. `Interrupted` and `Closed` of `next` come with step 5.
+- **`Host`.** The syntax check of S2, then `Hosts::allows` of S3 with the grant's `hosts`, else `421`. Over TLS, the server name of the handshake MUST equal the `Host` name, else `421` (with #1059). O(names).
+- **The host's answers** are written by `una_http::reply::write_answer` (S2): the refusals of rules 8, 10 and 11; `408` past `read`; `503` for a full `waiting`, a body that does not fit, a wait past `answer` for delivery, an exchange past `answer` without a reply, and a stop or `close` that finds a request undelivered or being read. The auto-answers of rule 4.5 use the same writer; their triggers come with #1007.
+- **The closing after a refusal** (rule 10). After a `400`, `413`, `431` or `503` that closes the connection, the owner writes the answer, shuts down the sending side, reads and drops what the peer still sends, at most 64 KiB or for one second, by the connection's one timer, and closes. The connection keeps its place in `connections` and in the peer table until it closes.
 
-## 8. The interpreter's serve threads (rule 20)
+## 8. Graceful shutdown
 
-- **`--serve-threads <n>`,** from 1 to 256, by default the number of cores, at most 256. Out of range, or not a number, is a usage error, exit code 2. It is a flag of `una run` only: executables serve on their `--workers`, and refuse it as an unknown flag (decision S4-D7). It is accepted and unused in a run that does not serve.
-- **The threads** run the same engine as native workers, each with its poller, slab, wheel and queues, and the same acceptor, owner rule and shared state. They run no Una code.
-- **What crosses.** Only plain owned data, as for the interpreter's other waiting operations (ADR 0117 rule 11): a request's bytes and fields, owned `String`s and `Vec`s, go to the interpreter's thread through a delivery mailbox; a serialized reply goes back to the owner's inbox. No value of the interpreter crosses.
-- **Under `--virtual-time`** the interpreter uses one serve thread whatever `--serve-threads` says, as the native run uses one worker (rule 19), so the two engines read and deliver in the same order (rule 21).
-- **Up front.** All `n` threads and the acceptor start before `main`, in a run whose program can serve (§9, P8).
+At a host stop (ADR 0116 rule 14), or at `close`: every serve thread deregisters and closes the listeners and its idle keep-alive connections; requests read but not delivered, or being read, get `503` with `Connection: close`, as soon as their head is read or at once when it is not complete; open exchanges drain, each reply with `Connection: close`. At the hard stop (ADR 0116 rule 16), every auto-answer is written with one non-blocking write, then the connection closes, without waiting on its peer. O(connections + queued requests).
 
-## 9. Timing channels
+## 9. The interpreter and `--serve-threads`
 
-ADR 0116's amendment of 2026-10-25 requires that every runtime decision beside a site depend only on the tasks that run and on time measured from points inside them (D, step 3), or carry a label. Question 4 of ADR 0123 makes the request stream input, with its dependence on the server's timing out of model (IF5). This section reads that as: the stream's bytes, and their timing relative to the program's own steps, are input labeled `internal`, as requests are. Every shared resource of the serve threads is listed below with what its behavior can depend on, and how P6 to P13 apply.
+- **`--serve-threads <n>`,** 1 to 256, in `una run` and in executables (§3). Out of range or not a number is a usage error, exit code 2. Accepted and unused in a run that does not serve.
+- **What crosses** between a serve thread and the interpreter's thread: only plain owned data, a request's bytes and fields, a serialized reply (ADR 0117 rule 11).
+- **`--virtual-time` (M9).** A run under `--virtual-time` that holds a `serve:` grant and has no `--serve-script` is refused before `main`, a usage error: live peers send in real time, which virtual time cannot place. Until step 7 adds `--serve-script`, every such run is refused. Under `--serve-script`, both engines use one serve thread, so they read and deliver in the same order (rule 21).
 
-| Resource | What its behavior can depend on | Effect | Handling |
-| --- | --- | --- | --- |
-| Accept, and which worker owns a connection | with rule 19's text: which worker woke first, set by the load of earlier tasks; with S4-D1: the accept order only | placement of request tasks (rule 19) | **SC1, closed structurally**: owner `k mod N` (§3) |
-| Per-worker readiness, and the I/O of the serve threads (handshakes, reads, parses, writes, closes) | the request stream; replies, whose content is at most `internal` and whose moment is the handler's | time taken on the workers' cores beside any site | **SC2, labeled `L_srv`** (below) |
-| When the I/O runs on a worker | only the events ready, between turns or while idle, by an event budget | the order of task turns | **SC8, closed structurally**: no I/O inside a turn, no time budget, no shared tick (§4, P7) |
-| Counters `/once`, `waiting`, `delivered`, the rate's timestamp | how many exchanges are open and when earlier deliveries happened, which the program's earlier code timed | how long `next` waits; which requests are refused | **SC3, labeled `L_srv`** for waits; refusals are the stream's (IF5) |
-| Which request `next` returns, across workers | the workers' load and the stream | the content of an `internal` value | **SC4, out of model, stated**: Question 4 and IF5 of ADR 0123, accepted, "what `internal` code may learn ... from which requests arrive"; the report's `out_of_model` entry of rule 22 names it |
-| The stream's phase against the program | when peers send, against where the program is | which code the host's reading work lands beside | **SC5**: input, `internal`; its work is under `L_srv`'s floor |
-| The peer table, reserves and shares, reply-pressure heaps, handshake rates | the stream; reply sizes (`internal`); the program's timing in answering | which connections are closed or refused (the network only, IF4); host work | network effects out of model (IF4, IF5); work under `L_srv` |
-| The handshake share | other workers' handshake steps | when a handshake step runs | host work, under `L_srv` |
-| Timers (`idle`, `read`, `write`, `answer`, linger, accept back-off) | the exact moments they were armed, by input events | network only; their firing work | **SC7, closed structurally**: exact nanoseconds, removal at once, no dead entries (P13 and its wheel amendment) |
-| Threads of the server (acceptor, pollers, interpreter serve threads) | with a lazy start: whether earlier code started them | time taken inside the construct that would start them | **SC6, closed structurally**: all start before `main` (P8) |
-| The peer table's hash keys | a random key of the run and the peers' addresses | lookup time | none: no program data reaches it |
-| Delivered requests in the heap | requests and the program's speed | `--max-memory` exhaustion | termination, out of model (P12) |
-| Descriptors (§3, S4-D2) | the program's own files and requests | accept back-off | host work and network, under `L_srv` |
+## 10. Timing channels
 
-**P6, placement.** Rule 19 places a started task that holds a reply right on the worker that owns its connection. With S4-D1 that worker is a function of the accept order, which is input, so the placement depends only on the constructs around the task and on input labeled `internal`. Every site beside a request task already has `τ_conc` at least `internal`, since the construct that delivers requests reaches `next`, whose `ρ` is `internal` (IF1). Other started tasks keep P6's `(w + i) mod N`.
+ADR 0116's amendment of 2026-10-25 requires that every runtime decision beside a site depend only on the tasks that run and on time measured from points inside them (D, step 3), or carry a label. Question 4 of ADR 0123 makes the request stream input, with its dependence on the server's timing out of model (IF5). This note reads that as: the stream's bytes, and their timing relative to the program's own steps, are input labeled `internal`, as requests are.
 
-**P7, turns.** The engine runs between turns and while a worker is idle, never inside one, so a turn's count is unchanged: from the later of its start and the moment its worker gained a second task. The engine's handlers are not tasks and do not count as one.
+### 10.1 The serve threads' sites, and `L_srv`
 
-**P8, threads up front.** The static condition of P8 gains "an operation of `HttpServer`, or a `[serve]` table". A run that meets it starts, before `main`: the acceptor, every worker's poller and wake pair, and in the interpreter every serve thread. The listeners are registered and accepting begins before `main`. Nothing of the server starts inside a construct.
+**The server's hand-off sites,** `S_srv` (finding L4):
+- each call of `next`, `reply` and `close` of `HttpServer`;
+- each `start` whose captures can hold a `ReplyRight`, by their types, or a function value (IF6's sites): the started task's end may send an auto-answer;
+- the driver of a `[serve]` table (#1008), as a node of the graph whose body is its loop, `handle` and `on_stop`.
 
-**P9, residue, and the new label `L_srv` (SC2, SC3).** The work of the serve threads is not inside any construct, as a helper's residue is not, and it runs beside every site of the run on the same cores. Its amount and moments depend on the stream (`internal`) and on when the program handed off its replies and called `next`, which code before those sites decides, possibly on `secret` data. A program without tasks shows the channel already: a loop that delivers a request, computes for a `secret`-dependent time, replies, and later runs a `within` over `public` work, whose deadline the writing of earlier replies may or may not overlap. So:
+**The suffix of a call site.** For a call site `c` in the body of `m`, `sfx(c)` is `τ⁰` of the statements of `m`'s body that can run at or after `c`: at each level of nesting, the statement that holds `c` and every statement after it in its block, and, when `c` is inside a loop, the whole loop; with `τ⁰` of everything those statements call. For a node `n`, `Suf*(n)` is the least label with `Suf*(n) ≥ sfx(c) ⊔ Suf*(m)` for every edge from `m` to `n` at a site `c`, the edges of P1 with `start` and the parts of every construct included. Roots (`main`, the driver) have no incoming edge. Within a strongly connected component every member's `Suf*` includes `τ⁰` of every member's body, as P11 does.
 
-- **`L_srv`** is the join of `internal` and, over every site `s` that performs an operation of `HttpServer`, `τ⁰` of the body of every ancestor of `s`'s node, `s`'s own node included, `τ_conc(s)` and `L_res`: P10's rule, applied to the server's operations. Code between two hand-offs of one task lies in an ancestor's body, as P10 argues for requests; the work of other tasks is under their own `τ_conc`.
-- **It joins `τ` of every timing site** of a package whose program can perform an operation of `HttpServer`, as `L_res` does (C of the amendment). It is `public` in every other package, which starts no serve thread.
-- **It covers SC3.** A `next` under a deadline whose wait at the rate, a `/once` slot or `delivered` depends on earlier deliveries is P10's example with `next` in place of a request; its `TimedOut` carries `t`, which includes `L_srv`.
-- **The cost to programs.** A server's timing sites are at least `internal`, which IF7 already makes them in request tasks. A server whose request handling reads `secret` data, or whose ancestors do, has `L_srv = secret`, and no `within` or `first of` anywhere in it can then take `internal` operations: IF7 already says so for request tasks, and this extends it to the rest of such a program. P11's code between hand-offs MAY relax it later, as for requests.
-- **Where it lands.** In the checker with step 5, where the first sites exist, after the amendment of §11 is accepted. Step 5 MUST NOT merge without it, and no release ships `HttpServer` before it.
+**The label.**
 
-**P10, history.** The history that earlier code leaves in the grant's counters and timestamps is covered by `L_srv`'s ancestor term (above). The handshake rates' timestamps are driven by accept times, which are input; they decide only closes at accept.
+    L_srv = internal ⊔ ⨆ over s in S_srv of ( sfx(s) ⊔ Suf*(node(s)) ⊔ τ_conc(s) ) ⊔ L_res
 
-**P12, out of model.** The memory budget (delivered requests count toward `--max-memory`, whose exhaustion ends the run); the allocator's state; caches; the host's load from other processes. Nothing else of this slice is added to P12.
+It joins `τ` of every timing site of a package whose program can perform an operation of `HttpServer`, as `L_res` does (C of the amendment), and it is `public` in every other package, which starts no serve thread. It costs one backward sweep per body for `sfx`, and one pass over the components of the graph for `Suf*`: O(V + E + size of the bodies), with the join's O(k).
 
-**P13, exact deadlines.** Every timer of the engine is armed and fired at its exact deadline in nanoseconds of the monotonic clock, on the wheel of the amendment on P13's wheel. The `Date` header is written from the clock in seconds and is never a value of the program.
+**What it leaves out:** the code that can only run before every server operation: a program's set-up, its configuration, the keys it loads and the secrets it computes before it serves. That is the narrowing that H1 asks for. P10's ancestor rule, which the first version used, kept all of it, since `main` is an ancestor of every site.
 
-**Named channels, and their status:**
+**When #1155 lands,** P11's `Suf` over the graph of expressions MAY replace `sfx`, which is its statement-level over-approximation: a statement holds everything evaluated after the call in it, and more.
 
-| Channel | Status | Reason |
+### 10.2 Soundness
+
+**The claim.** Take a timing site `e`, an observer at `l` with `τ(e) ≤ l`, so `L_srv ≤ l`, and two runs that differ only in data above `l`, with the same stop schedule and the same request stream relative to the program's steps (Question 4). Then the work the serve threads do, and the moments they do it, relative to `e`'s start, are the same in both runs; and what remains of their effect on `e` is the sharing of the machine, which P12 puts out of model.
+
+1. **The serve threads are a function of three inputs.** They run no Una code. What a serve thread does, and when, is a deterministic function of: the events of its sockets (the request stream); the messages of its inbox (the program's hand-offs, §5's paths 2, 3 and 4, and other serve threads' messages, which are functions of the same inputs); and its timers, armed by the two. No choice of a serve thread reads a worker's state, a task's state, a turn or the scheduler's queues.
+2. **The stream** is the same in both runs relative to the program's steps (Question 4), and is labeled `internal`, the floor of `L_srv`.
+3. **The hand-offs.** A hand-off `h` happens in a task at a site of `S_srv`. Its effect on `e` depends on when `h` happens relative to `e`'s start. Every step that runs after `h` and before `e`'s start is one of:
+   - a step of `h`'s task after `h`, in the body that holds `h` or in a caller after the call that led to it: in `sfx(h) ⊔ Suf*(node(h))`, by the definition, since each caller's call site is an edge into the chain;
+   - a step of another part of a construct that holds `h`'s task, which runs until that construct ends: the construct is a statement of a caller's body that holds the edge into `h`'s chain, so `sfx` of that edge holds it whole;
+   - a step of code after `h`'s task has ended, in the task that started it: again in `sfx` of the `start` edge or the construct's statement;
+   - a step of a task that runs beside `e`: covered by `τ_conc(e)`, as P4 states;
+   - a step of `e`'s own expression, when `h` is inside it: covered by `τ⁰(e)`.
+
+   So the time from `h` to `e` depends only on data at most `L_srv ⊔ τ_conc(e) ⊔ τ⁰(e) ≤ τ(e) ≤ l`. A hand-off that comes after `e`'s start is inside `e` or beside it, the last two cases. Code before the first hand-off of the run plays no part: before it, the serve threads' work is the stream's alone (step 2).
+4. **State left by earlier hand-offs** (counters, timestamps, heaps, the peer table, pending replies): a function of the stream and of earlier hand-offs `h'`. Each `h'` lies before `e`, and the time from `h'` to `e` is covered by step 3, applied to `h'`. So the state at any moment of `e` is the same function of the same data in both runs.
+5. **Timers.** Each is armed at a stream event or a hand-off, and fires at its exact moment, or up to 1 ms later where `epoll_wait` rounds its timeout (M2). The rounding depends on the phase of the arming moment, which steps 2 and 3 fix. So firing moments are the same in both runs. This channel is covered by `L_srv`, not closed by the wheel, and no `una-sys` line is spent on `timerfd` or `epoll_pwait2` (§13).
+6. **What the serve threads do to the workers.** Besides the machine, three things only, each a function of steps 2 to 5:
+   - **wakes of tasks** (§5's paths from a serve thread): a resume job pushed to a task's worker at the moment a request is delivered or a slot is freed;
+   - **locks shared with tasks:** the delivery queues and the waiters' list (taken by `next`), the outboxes and the pressure mutex (taken by `reply`), each held for O(1), or O(log c) under pressure. A task meets them only at a site of `S_srv`, and how long it waits is a function of the serve threads' activity (steps 1 to 5); the time after that site is in its `sfx`. The inboxes are lock-free on the sending side, so `reply` never waits on a serve thread;
+   - **the descriptor table:** disjoint budgets (§6.8), so the serve threads never make a task's `Files` or `Http` operation fail; descriptor numbers are never values of the program.
+7. **What is left: the machine.** With steps 1 to 6, the serve threads run the same work at the same moments relative to `e` in both runs. What remains is how the operating system shares cores, caches and memory bandwidth between them and the workers, and the allocator's state that their buffers leave. That is P12's "the host's load", "the processor's caches" and "the allocator's state", exactly as for a program without tasks, whose timing other threads of the host also share: the effect of a work pattern that does not differ between the two runs. P9's helpers are not a counterexample: their pattern differs with `secret` data unless labeled, and `L_res` labels it; here `L_srv` labels the pattern, and only the sharing of the machine is left to P12.
+8. **Conclusion.** The outcome at `e` is the same in both runs, and it carries at least `τ(e) ⊇ L_srv`. The argument holds per fixed stop schedule, as T6 does.
+
+### 10.3 Every shared resource
+
+| Resource | What it can depend on | Handling |
 | --- | --- | --- |
-| SC1, connection placement history | closed | owner by accept order (S4-D1) |
-| SC2, serve work beside sites | labeled, `L_srv` | the work cannot be removed from the cores it shares; its moments follow the program's hand-offs |
-| SC3, delivery history | labeled, `L_srv` | rule 7's rate counts deliveries, which the program times |
-| SC4, cross-worker delivery order | out of model, stated | ADR 0123 Question 4 and IF5, accepted |
-| SC5, the stream's phase | input, `internal`; work under `L_srv` | Question 4 |
-| SC6, lazy start of the server's threads | closed | P8, extended |
-| SC7, timer state | closed | P13 and its wheel |
-| SC8, I/O inside turns | closed | I/O only between turns and while idle (S4-D3) |
+| Which serve thread owns a connection | the connection's addresses and the run's key | **SC1, closed**: keyed hash of input (§4) |
+| Placement of tasks | the constructs around them | **closed**: P6 for every task; the reply-right placement is withdrawn (§3) |
+| The serve threads' I/O, handshakes, parsing, writing, closes | the stream; hand-offs | **SC2, labeled `L_srv`** (§10.2 steps 1 to 4, 7) |
+| `/once`, `waiting`, `delivered`, the rate's timestamp | the stream; earlier deliveries and exchange ends | **SC3, labeled `L_srv`**: when `next` returns, and its `TimedOut` under a deadline (§10.2 step 4) |
+| Which request `next` returns, across serve threads | the serve threads' progress (stream, hand-offs) and the order in which tasks on all workers, background tasks included, call `next` | **SC4, out of model, stated**: new text in the amendment and a new `out_of_model` entry of rule 22 (§10.4) |
+| The stream's phase against the program | when peers send | **SC5, input**, `internal` (§10.2 step 2) |
+| Threads of the server | none: all start before `main` | **SC6, closed** (P8, extended below) |
+| Timers | their arming moments; `epoll_wait`'s rounding | **SC7, labeled `L_srv`** (§10.2 step 5) |
+| I/O inside a worker's turns | none: no engine on workers | **SC8, closed** (§3) |
+| Wakes of tasks; locks met at `next` and `reply`; the descriptor table | as above | **labeled `L_srv`**, or disjoint (§10.2 step 6) |
+| Reply buffers and the allocator | the replies' sizes and moments | pattern under `L_srv`; the allocator's state is P12 |
+| The placement key | the host's random source | none: no program data reaches it, and it is never shown |
+| Delivered requests in the heap | requests and the program's speed | `--max-memory` exhaustion is termination, out of model (P12) |
 
-## 10. Tests
+**P6.** Every task is placed by P6's `(w + i) mod N`. **P7.** The workers' turns are unchanged; no engine work runs on a worker. **P8.** Its static condition gains "an operation of `HttpServer`, or a `[serve]` table"; such a run starts, before `main`, every serve thread with its poller and wake pair, and the accept poller, and registers the listeners. **P9.** `L_srv` joins `L_res` at every site. **P10.** The counters' history is `L_srv`'s. **P12.** §10.2 step 7. **P13.** Every timer is armed in nanoseconds on the wheel of the P13 amendment; `epoll_wait`'s rounding is labeled.
 
-### 10.1 Conformance first
+### 10.4 SC4, in the amendment
 
-The cases are written before the engine, as script cases in the format of rule 21: `tests/conformance/serve/<case>/` holds `grant.txt` (the `serve:` spec), `script.jsonl` (connections, bytes, paced reads and closes at virtual milliseconds), `consumer.jsonl` (the replies a Rust consumer gives each delivered request and when, standing for the program until step 5) and `expected.jsonl` (the bytes each connection receives, with the virtual time each leaves). A harness in `crates/una-http/tests/serve_scripts.rs` runs each through the engine with one worker and a clock the test drives. Step 7 runs the same scripts through `una run --serve-script` and the executable, and compares the engines byte for byte. After each case the harness asserts that every counter, reserve, share and heap is back to zero, and the peer table empty.
+IF5 of ADR 0123 says what `internal` code may learn "about the timing of the program's own handlers from which requests arrive". Which request `next` returns depends also on the timing of tasks that are not handlers, through when each task calls `next`, and on the serve threads' progress. The amendment states it under IF5 and adds to rule 22's `out_of_model` list, for packages that serve: "which request a call of `next` receives when several serve threads hold requests, which the timing of every task of the run and of the serve threads decides".
 
-Cases: keep-alive and `requests`; `Connection: close`; `HTTP/1.0`; pipelined requests answered in order; each timer passing (`idle`, `read` with `408`, `write`, `answer` with `503` and a late reply discarded); a peer at `peer`, and two IPv6 peers in one /64 counted as one; `connections` reached, the next connection held until one closes; a body over `buffers` or `peer_buffers`, `503` at once; `Expect: 100-continue` answered after admission only; `waiting` full; `/once`, the rate and `delivered` delaying delivery; `Host` that is a DNS name without `hosts` (`421`), and with `hosts`; the closing after a refusal, with a peer that keeps sending past 64 KiB and one that keeps the connection open past one second; 64 paced connections that never read 1 MiB replies, 64 that never read 3 MiB, and 64 that trickle 1 MiB bodies, while a fresh client is answered within its own time and the slowest connections close; one reply larger than `replies`; a stop with requests queued, in flight, being read and idle; the hard stop.
+### 10.5 The cost to programmers
 
-### 10.2 Unit and engine tests (`una-http`)
+Stated as a Question of the amendment:
+- A server's timing sites are at least `internal`, as IF7 already makes them in request tasks.
+- `L_srv` is `secret` when code that can run after a server operation reads `secret` data: a handler that reads it, or code after the accept loop. Inside the server's `tasks` statement this adds nothing to P2, which already gives every site the statement's `κ`, so rule 15's `start answer(exchange) within d` and rule 16's `[serve] within` keep the status IF7 gives them. Outside it, such as an `on stop` with a `within`, or a later construct, those sites become `secret` too.
+- Code that runs only before the first server operation, such as set-up that loads keys or computes on `secret` data, leaves `L_srv` unchanged.
 
-GCRA with the interval rounded up; the peer table's keys (/64, IPv4-mapped); the reserves charged and given back on every path, including a refused second charge; the heaps' choice and its tie-break; the handshake gate never above `ceil(N / 2)`; the owner rule `k mod N` whatever thread accepts; accept back-off on `EMFILE`, without spinning; S7's socket cap less the sum of `connections`.
+## 11. Tests
 
-### 10.3 Deterministic guards (ordinary `cargo test`)
+### 11.1 Conformance first
 
-- **SC1.** With a test acceptor that hands connections from a chosen thread, the owners follow the accept order alone.
-- **SC6.** A scheduler made for a program that can serve has the acceptor, every poller and every listener registration in place before its first job; one made for a program that cannot serve starts none of them (beside #1145's guard of P8).
-- **SC7.** After any history of arming and cancelling connection timers, each worker's wheel holds only live timers, and no wakeup beyond what they need (the test of the wheel amendment, run on the engine's timers).
-- **SC8.** A worker's engine pass never runs while a task's turn is open: a counter the test reads, under a scheduler driven by the test.
+The cases are written before the engine, in the format of rule 21: `tests/conformance/serve/<case>/` holds `grant.txt` (the `serve:` spec), `script.jsonl` (connections, bytes, paced reads and closes at virtual milliseconds), `consumer.jsonl` (the replies a Rust consumer gives each delivered request and when, standing for the program until #1007) and `expected.jsonl` (the bytes each connection receives, with the virtual time each leaves). A harness in `crates/una-http/tests/serve_scripts.rs` runs each through the engine with one serve thread and a clock the test drives; step 7 runs the same scripts through both engines. After each case, every counter, reserve, share and heap is zero and the peer table empty, or holds only entries whose handshake time is still ahead.
 
-### 10.4 Native and interpreter
+Cases: keep-alive and `requests`; `Connection: close`; `HTTP/1.0`; pipelined requests in order; each timer passing (`idle`; `read` with `408`; `write`; `answer` with `503` and a late reply discarded); a peer at `peer`, and two IPv6 peers in one /64; `connections` reached, the next connection held until one closes; a body over `buffers` or `peer_buffers`; `Expect: 100-continue` after admission only; `waiting` full; `/once`, the rate and `delivered` delaying delivery; `Host` without and with `hosts`; the closing after a refusal with a peer that sends past 64 KiB and one that stays past one second; a peer that leaves while its exchange is open; 64 paced connections that never read 1 MiB replies, 64 that never read 3 MiB, and 64 that trickle 1 MiB bodies, while a fresh client is answered and the slowest connections close, with the pending bytes never above the bound of §6.5; one reply larger than `replies`; a stop with requests queued, in flight, being read and idle; the hard stop.
 
-- `una-rt`: the engine on real workers with the Rust consumer, over loopback: requests answered on their connection's worker; a reply handed off from another worker; shutdown draining.
-- `una-interp`: the same on serve threads, and requests and replies crossing as owned data only.
-- `una-cli`: `--serve-threads` 0, 257 and `x` refused with exit code 2; accepted on `una run`; refused by an executable; an `https` grant in a run that can serve refused before `main` until #1059 (with step 5, when such a run exists).
+### 11.2 Unit and engine tests (`una-http`)
 
-### 10.5 Real-clock oracles
+GCRA rounded up; the peer table's keys, its expiry, and its bound of `connections + handshakes`; the reserves given back on every path, a refused second charge included; the victim's buffer freed by the thread that crossed the cap, before its own allocation; the lazy heaps' picks against a brute-force maximum over random histories; the handshake gate never above `ceil(M / 2)`, and at `M = 1`; inbox messages for a reused slot dropped; the wake rule never losing a message under a test that interleaves sender and sleeper at every step; `--virtual-time` without `--serve-script` refused; the descriptor target of §6.8 and its three tests.
 
-In `crates/una-cli/tests/timing_channels.rs`, each with exactly `#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]`, run with `--ignored --test-threads=1` in release form, 20 runs of each input alternating, judged by the Mann-Whitney U test of `crates/una-cli/tests/common/rank.rs` (on the S5 base) at a two-sided p below 0.001, with a control of one input against itself. Each needs a program that names `HttpServer`, so each lands in step 5's pull request, before it merges:
+### 11.3 Deterministic guards (ordinary `cargo test`)
 
-- `serve_owner_history` (SC1): a `secret` decides whether an earlier construct kept worker 0 busy while 8 keep-alive connections were accepted; the measured `within` over `public` work then runs beside request tasks on those connections. Closed by S4-D1: the two inputs' times do not differ.
-- `serve_io_between_turns` (SC8): a request flood on worker 0's connections beside a `public` `within` on worker 0, with a `secret` deciding the phase of the root's turn at the fork. Closed: no difference.
-- `serve_up_front` (SC6): a `secret` decides whether an earlier construct performed a `next`; the measured construct performs the first one. Closed: no difference.
-- `serve_residue` (SC2) and `serve_delivery_history` (SC3): the differentials of the leaks before `L_srv`, whose check after the fix is U4001 from `una check`, as P9's and P10's are; the oracle runs the `public` twins only, as positive controls that the channel exists on the machine.
+- **SC1, placement spread (M1).** With a fixed test key, 65,536 connections from one peer address over crafted source ports, and 65,536 from addresses of one /64, each spread over `M` of 2, 7 and 64: the chi-square statistic of the counts stays below the 0.999 quantile for `M - 1` degrees of freedom, and the largest count is below 1.2 times the mean. A second guard checks that the owner never depends on which thread accepted, nor on the accept order.
+- **SC6.** A run that can serve has every serve thread, poller, wake pair and listener registration in place before its first job; one that cannot serve starts none of them.
+- **SC7.** After any history of arming and cancelling connection timers, each wheel holds only live timers.
+- **SC8.** The workers' loop has no path into the engine: a test that runs the engine while counting the engine's entries from worker threads, which must be zero.
 
-### 10.6 Scaling
+### 11.4 Native and interpreter
 
-Each doubling MUST take less than three times as long as the size before:
+`una-rt` and `una-interp`: the engine on real serve threads with the Rust consumer, over loopback, requests answered and shutdown draining; only owned data crossing in the interpreter. `una-cli`: `--serve-threads` 0, 257 and `x` refused with exit code 2 by `una run` and by an executable; `--virtual-time` with a `serve:` grant refused before `main`.
 
-- engine, scripted sockets: 1,000 to 50,000 connections accepted and closed (peer table, slab), 10,000 to 100,000 reply charges under pressure (heaps, O(log c)), 10,000 to 100,000 timers armed and cancelled, 1,000 to 64,000 bytes of headers and 1 to 1,000 lines (linear parse), bodies in 1-byte chunks up to the limit;
-- live sockets: 1,000 and 10,000 idle keep-alive connections, memory linear and no time growth per request; 50,000 for the release gates, `#[ignore]` with the reason of the gates.
+### 11.5 Real-clock oracles
 
-## 11. Records this slice needs amended
+In `crates/una-cli/tests/timing_channels.rs` (on the ADR 0117 S5 base), each with exactly `#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]`, run with `--ignored --test-threads=1` in release form, 20 runs of each input alternating, judged by the Mann-Whitney U test of `crates/una-cli/tests/common/rank.rs` at a two-sided p below 0.001, with a control of one input against itself. They need a program that names `HttpServer`, so they land in #1007's pull request, before it merges. Each program is accepted by `una check` under `L_srv`, so each builds:
 
-The departures below change the text of ADR 0123, which is accepted, so each is proposed as a dated amendment appended to it, in a pull request of its own with status Proposed, before the code that relies on it merges:
+- `serve_prefix_secret` (the narrowing of §10.1): a `secret` decides 0 or 300 ms of work before the program's first server operation. The program then prints a ready line (`public`, before any server operation), and only then does the harness connect, so the stream is fixed relative to the program's steps. A request task over `public` work under `within` replies with whether its deadline passed. The two inputs' outcomes and times MUST not differ.
+- `serve_owner_spread` (SC1): two runs, whose `secret` decides 0 or 300 ms of set-up work, each served by 8 connections from crafted ports of one address; the request tasks' outcomes MUST not differ.
+- `serve_handoff_residue` and `serve_delivery_history` (SC2, SC3): positive controls. Their `public` twins, in which a `public` key decides how many reply bytes are pending to a paced client, or how long the code between two deliveries under a rate takes, MUST show a difference, so the channel that `L_srv` labels exists on the machine. Their `secret` versions are refused by U4003 in #1007's checker tests, as P9's and P10's are.
 
-1. **Rule 19, accepting.** One acceptor thread per run with one-shot readiness, in place of per-worker waits with `EPOLLEXCLUSIVE` or `EV_DISPATCH`; and the owner of a connection chosen by the accept order, `k mod N`, in place of the worker that accepts (S4-D1, SC1).
-2. **Rule 19, the peer table** under sharded mutexes, touched per connection, not per request (S4-D4).
-3. **Information flow, `L_srv`** (§9), joined into `τ` of every timing site of a package that can serve, and P8's static condition extended to `HttpServer` and `[serve]`, as the amendment of ADR 0116 frames its own rules.
-4. **Rule 20, `--serve-threads`** on `una run` only (S4-D7).
+SC6 and SC8 have no oracle: their channel has no switch a `secret` can turn, since the threads start before `main` and no engine runs on a worker. Their guards are those of §11.3.
 
-## 12. `una-sys`
+### 11.6 Scaling
 
-**No new binding.** The acceptor uses S7's `Poller::add` with the one-shot read interest, and std for `accept`, non-blocking mode, `TCP_NODELAY`, `shutdown` and peer addresses. The wake pairs are `UnixStream::pair` from std. Every libc function stays bound once: `poll` and `getrlimit` in `io.rs`, `setrlimit` in `server.rs`, `fcntl` once in `signals.rs`, `epoll_ctl` and `kevent` in `poll.rs`.
+Each doubling MUST take less than three times as long as the size before: engine with scripted sockets, 1,000 to 50,000 connections accepted and closed, 10,000 to 100,000 reply charges under pressure, 10,000 to 100,000 timers, headers of 1 to 64 KiB and 1 to 1,000 lines, bodies in 1-byte chunks; live sockets, 1,000 and 10,000 idle keep-alive connections, memory linear and no time growth per request, 50,000 for the release gates.
 
-- **Counting rule.** Before and after any change to the crate: `find crates/una-sys/src -name '*.rs' -exec cat {} + | wc -l`, recorded in the commit message; any change that adds lines waits for the decision of the cap (below).
-- **The count now.** 1,199 lines on S7, 1,382 after S3 was merged in, with the folds of the merge (one `poll`, one `getrlimit`, one conversion of `errno`, one `fcntl`). The crate is over its cap of 1,200 lines (ADR 0116 amendment of 2026-10-19). This slice adds none.
+## 12. The measurement (M8)
 
-## 13. Implementation plan
+On the measuring machine, quiet, in release form, before the amendment is accepted and again before ADR 0123's performance step:
+- **What.** Connections accepted per second; CPU time per request at saturation; the 50th and 99th percentile latency at fixed loads with uniform handler costs and with skewed ones (one request in a hundred a hundred times slower); memory per idle connection.
+- **Against.** (i) this design; (ii) a prototype with the engine on the workers and per-worker exclusive accept (rule 19 as written); (iii) the `hyper` on `tokio` baseline of ADR 0123 Costs, with the same limits.
+- **The condition.** When (i) is above the parity bar against (iii), CPU time per request at saturation above 1.1 times, while (ii) is within it, a further amendment is proposed that weighs the gap against the label (ii) needs. The records are kept with the runs' provenance.
+
+## 13. `una-sys`
+
+**No new binding.** The accept poller and every serve thread's poller use S7's `Poller` with its one-shot interests; std does `accept`, non-blocking mode, `TCP_NODELAY`, `shutdown` and peer addresses; the wake pairs are std's `UnixStream::pair`. Exact timers (`timerfd`, `epoll_pwait2`) are not added: SC7 is labeled (§10.2 step 5). Every libc function stays bound once: `poll` and `getrlimit` in `io.rs`, `setrlimit` in `server.rs`, `fcntl` once in `signals.rs`, `epoll_ctl` and `kevent` in `poll.rs`.
+
+- **Counting rule.** Before and after any change to the crate: `find crates/una-sys/src -name '*.rs' -exec cat {} + | wc -l`, recorded in the commit message.
+- **The count, for the cap's decision (finding L1).** 1,199 on S7; 1,382 at `4a39956f`, after S3 was merged in with the folds of one `poll`, one `getrlimit`, one conversion of `errno` and one `fcntl`; 1,384 at `7f59d354`, after `rustfmt` of the merged files. Over the cap of 1,200 (ADR 0116 amendment of 2026-10-19); this slice adds none.
+
+## 14. Implementation plan
 
 Each sub-step is a commit, with fmt, clippy and the workspace's tests run in the check slot before it is pushed.
 
-0. **Docs.** This note; the amendment of §11 as Proposed, in its own pull request.
-1. **Restack** onto ADR 0117 S5 (#970) and, as they land, #1151 and #1148.
-2. **Conformance first.** The script cases of §10.1, their harness and the zero-state assertions, failing.
-3. **The wheel** moves to `una-http`, unchanged.
-4. **The engine's state.** Counters, GCRA, the peer table, reserves, heaps, the handshake gate, delivery queues, with their unit and scaling tests.
-5. **The engine's connections.** The state machine, timers, `Host`, the host's answers, the closing after a refusal, shutdown, against scripted sockets: the cases of step 2 pass.
-6. **Native.** Pollers per worker, I/O between turns and while idle, the acceptor and the owner rule, the start before `main`, S7's socket cap less the sum of `connections`, the guards of §10.3.
-7. **Interpreter.** Serve threads, `--serve-threads`, owned data across, one thread under `--virtual-time`.
-8. **Live and scaling tests** of §10.4 and §10.6.
-9. **Spec and changelog.** `spec/31 §6`, "Connections and serve threads", with rules 12, 14, 17, 18 (host side), 19 and 20 as they land; `changelog.d/1006-serve-threads.md`; `docs/security/tcb.md` lists the engine.
-10. **Security review** of the engine before the pull request merges.
+0. **Docs.** This note; the amendment draft (`docs/plan/0123-s4-amendment-draft.md`), which goes to ADR 0123 as a dated amendment once the project accepts it.
+1. **Restack** onto ADR 0117 S5 (#970), then #1151 and #1148 as they land.
+2. **Conformance first.** The script cases of §11.1 and their harness, failing.
+3. **The wheel** moves to `una-http`, unchanged; `una-http` depends on `una-hash`.
+4. **The engine's state.** Counters, GCRA, the peer table, reserves, pressure, the handshake gate, delivery, the placement hash, with their unit tests, guards and scaling tests.
+5. **The serve thread.** Its loop, inbox and wakes, connections, timers, `Host`, the host's answers, the closing after a refusal, shutdown: the cases of step 2 pass.
+6. **Both engines.** The serve threads started before `main`, delivery to tasks and replies back, `--serve-threads`, the refusal under `--virtual-time`, the descriptor target and S7's cap.
+7. **Live and scaling tests.**
+8. **Spec and changelog.** `spec/31 §6`, "Connections and serve threads", with rules 12, 14, 17, 18 (host side), 19 and 20 as amended; `changelog.d/1006-serve-threads.md`; `docs/security/tcb.md` lists the engine.
+9. **Security review** of the engine, then the measurement of §12.
 
-## 14. Dependencies
+## 15. Dependencies
 
 - **ADR 0117 S5 (#970):** the restack base, with #1145, #1146, the timing oracles' file and `rank.rs`.
-- **#1151:** the wheel in nanoseconds with removal at once, which the engine's timers use (SC7).
-- **#1148:** `L_res`, which `L_srv` joins.
-- **#1059:** the TLS provider; until it is decided, `https` serving fails closed (§5.6).
-- **ADR 0117 S6 (#971, `limiter` and `std.limit`): not needed.** The handshake rates and the delivery rate are limits of the grant (rule 7), kept by the host, of the kind of ADR 0117 rule 8, not the program's own `limiter` (rule 9). Their GCRA is §5.2's, with the period arithmetic shared with S5's governor. Nothing waits for S6, and nothing is done for it. A later wish to pace `[serve]` requests in code is `limiter`'s, after S6, and step 6's or later.
-- **#1128:** `identity()` in `una-sys/src/server.rs` keeps its `geteuid` until #1128's `dir::effective_uid` lands (a TODO there names it).
+- **#1151:** the wheel in nanoseconds with removal at once.
+- **#1148:** `L_res`, which `L_srv` joins; needed by #1007 for the label.
+- **#1087:** the analysis, whose graph (P1), `τ_conc` (P4) and construct tree `L_srv` uses.
+- **#1147:** the ancestor machinery of P10 (`limit_labels`), which `Suf*`'s pass over the components reuses in the forward direction.
+- **#1155:** P11; its `Suf` MAY replace `sfx` (§10.1).
+- **#1059:** the TLS provider; until it is decided, `https` serving fails closed (§6.6).
+- **#1128:** `identity()` in `una-sys/src/server.rs` keeps its `geteuid` until `dir::effective_uid` lands.
+- **ADR 0117 S6 (#971, `limiter` and `std.limit`): not needed.** The handshake rates and the delivery rate are limits of the grant (rule 7), kept by the host, of the kind of ADR 0117 rule 8, not the program's `limiter` (rule 9). Nothing waits for it.
 
-## 15. Decisions
+## 16. Decisions
 
-- **S4-D1** one acceptor thread per run; a connection's owner is `k mod N` by the accept order (§3; amendment §11.1).
-- **S4-D2** S7's request-socket cap leaves the sum of `connections` to the server.
-- **S4-D3** the engine runs between turns and while idle, with an event budget of 64, never inside a turn.
-- **S4-D4** the peer table: 64 shards per grant under mutexes, with a random key per run.
-- **S4-D5** reply pressure: indexed heaps per grant and per peer, O(log c), ties to the lower connection id.
-- **S4-D6** delivery across workers through a ready list of workers, O(1).
-- **S4-D7** `--serve-threads` on `una run` only; one serve thread under `--virtual-time`.
-- **S4-D8** the serve threads start only in a run whose program can serve, before `main`; dormant until step 5.
+- **S4-D1** dedicated serve threads in both engines; P6 places every task (§3).
+- **S4-D2** a connection belongs to the serve thread of a keyed SipHash of (listener, peer address, peer port), under a key of the run that is never shown; every serve thread may accept, through one accept poller (§4).
+- **S4-D3** the peer table: 64 shards per grant under mutexes, locked at accept, close and expiry only; entries bounded by `connections + handshakes`.
+- **S4-D4** reply pressure: reserve, free victims at once on the thread that crosses the cap, then allocate; lazy heaps only under pressure.
+- **S4-D5** delivery across serve threads by ready flags and a rotating cursor.
+- **S4-D6** wake only sleeping threads, by the store-check protocol of §5; inboxes lock-free on the sending side.
+- **S4-D7** the descriptor target `Σ connections + L + 1 + 3M + 256 + 64`.
+- **S4-D8** the serve threads start only in a run that can serve, before `main`; dormant until #1007.
 - **S4-D9** `https` serving fails closed until #1059.
-- **S4-D10** `L_srv` (§9), in the checker with step 5, after its amendment is accepted.
+- **S4-D10** `L_srv` over the suffixes of the server's hand-off sites, in the checker with #1007, after the amendment is accepted.
+- **S4-D11** `--virtual-time` with a `serve:` grant and no `--serve-script` is refused before `main`.
 
-## 16. Open questions, with the answers this slice takes
+## 17. The review's findings
 
-1. **The `una-sys` cap.** The merged crate has 1,382 lines against a cap of 1,200; S3's note proposed 1,400. *Answer:* S4 adds no line (§12), so the cap amendment stays the S3 proposal; nothing of this slice waits for it, and any later `una-sys` change waits for it.
-2. **Owner by accept order, or by the worker that accepts, as rule 19 says?** *Answer:* by accept order (S4-D1), since the other leaves a placement set by earlier code (SC1); proposed as an amendment.
-3. **Atomic GCRA with the interval rounded up, or S5's exact `1/n` arithmetic under a mutex?** *Answer:* atomic, rounded up, which rule 7 allows and which only delivers fewer.
-4. **A lock-free peer table?** *Answer:* no; sharded mutexes, touched per connection (S4-D4).
-5. **Does accepting start before `main`?** *Answer:* yes, in a run that can serve (P8); requests that arrive before the program's first `next` wait in `waiting`, within `answer`.
-6. **Does a server need ADR 0117 S6?** *Answer:* no (§14).
-7. **May `L_srv` be avoided by a structural fix?** *Answer:* not in this slice. The serve threads' work shares the cores with every site, and its moments follow the program's hand-offs; separate threads would not change that (P9 counts helpers' work for the same reason). The label is the sound option now; P11's relaxation MAY narrow it later.
-8. **What does an `https` grant do before #1059?** *Answer:* a run that can serve with one is refused before `main` (S4-D9); S3's behavior, binding with nothing accepting, stays for runs that cannot serve.
-9. **`--serve-threads` on executables?** *Answer:* refused, since native code serves on `--workers` (S4-D7).
+| Finding | Where this text answers it |
+| --- | --- |
+| H1, `L_srv` was `τ⁰` of the whole program | §3 (option (a), dedicated serve threads), §10.1 (`L_srv` over the suffixes of the hand-off sites, which leaves set-up code out), §10.2 (the soundness argument, with P12 for the machine), §10.5 and the amendment's Question (the cost); the oracles of §11.5 are accepted programs |
+| H2, a worker with one task never does its I/O | moot: no engine runs on a worker (§3); a serve thread caps events, timers and handshake steps per pass (§5, §6.6) |
+| H3, the descriptor budget | §6.8: the target, S7's cap at least 256, and three tests |
+| H4, memory outside `--max-memory` | §6.5: reserve, free the victims at once on the detecting thread, then allocate; the bound, TLS buffers included |
+| M1, keyed placement | §4: SipHash-2-4 of `una-hash` under a key of the run, never shown; every serve thread may accept; §11.3's spread test |
+| M2, timers between turns, `epoll_wait`'s rounding | SC7 labeled under `L_srv` (§10.2 step 5); no `una-sys` cost (§13) |
+| M3, SC4 | §10.4 and the amendment: IF5 text and a new `out_of_model` entry |
+| M4, the peer table's size | §6.3: expiry at the end of the handshake burst; at most `connections + handshakes` entries |
+| M5, locks per request | §6.1 (peer shares by reference), §6.5 (lazy heaps only under pressure; the outbox mutex declared), §6.7 (ready flags) |
+| M6, try first, wake only sleepers | §5 |
+| M7, every push path, no lost wakeup | §5's lists and the store-check protocol, with its test (§11.2) |
+| M8, the measurement | §12, with the 1.1 parity bar as the condition of a further amendment |
+| M9, `--virtual-time` with live listeners | §9 and S4-D11 |
+| M10, dependencies | §15: #1087, #1147, #1148 for #1007's label, #1155 |
+| L1, `una-sys` at 1,384 | §13 |
+| L2, slice numbers | the header: #1007 and #1008, distinct from ADR 0117's #970 and #971 |
+| L3, re-arming on Linux | §4: delete, then add |
+| L4, small gaps | handshake share at one thread (§6.6); `rustls` buffers in rule 13's bound (§6.5); inbox messages by slot and generation (§5); read interest to notice a departing peer (§5); the handshake double under `cfg(test)` (§6.6); the ready cursor's rotation (§6.7); `accept4` and `ioctl(FIOCLEX)` (§4); `L_srv` names its sites (§10.1) |
+
+## 18. Open questions, with the answers this slice takes
+
+1. **Dedicated serve threads, or the engine on the workers?** *Answer:* dedicated (S4-D1, §3), subject to the measurement of §12.
+2. **Does CPU sharing between serve threads and workers need a label?** *Answer:* the pattern of the serve threads' work does, `L_srv`; the sharing of the machine by a pattern that does not differ is P12's (§10.2 step 7).
+3. **Exact timers in `una-sys`?** *Answer:* no; labeled (§10.2 step 5), at no `una-sys` cost.
+4. **The `una-sys` cap.** *Answer:* this slice adds no line; the cap's decision stays with the amendment S3 proposed, and §13 records the count.
+5. **Native `--serve-threads` default?** *Answer:* half the cores, at least 1; the measurement may change it.
+6. **Does a server need ADR 0117 S6?** *Answer:* no (§15).
