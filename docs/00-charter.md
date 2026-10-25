@@ -34,7 +34,7 @@ Every Una guarantee has the form: *the implementation satisfies its specificatio
 | Zone | Contents in v0.1 | Who is responsible |
 | --- | --- | --- |
 | **Proven** | Type safety, effect and capability confinement, information-flow noninterference (termination-insensitive), refinement and contract obligations | The compiler and verifier |
-| **Trusted** | Compiler, reference interpreter, SMT solver, standard library, `trusted` modules, host capability implementations, the proof cache of the package (ADR 0041) | Una maintainers and module owners |
+| **Trusted** | Compiler, reference interpreter, SMT solver, standard library, `trusted` modules, host capability implementations, the proof cache key (UNA-SA-019) | Una maintainers and module owners |
 | **Assumed** | Behavior of external systems as declared in `capability` signatures (return types, failures, `ensures`) | Capability authors |
 | **Human** | Adequacy of requirements and contracts: that the specification captures intent | Requirement owners and reviewers |
 

@@ -932,6 +932,16 @@ fn a_planted_proof_cache_entry_never_proves_a_false_contract_1164() {
             (solved.clone(), shown.clone()),
             "{what}"
         );
+        // The run read that exact name: it solved the query again and rewrote the entry there
+        // as a tagged refutation.
+        let rewritten: Value =
+            serde_json::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        assert_eq!(rewritten["answer"]["status"], "refuted", "{what}");
+        let tag = rewritten["tag"].as_str().unwrap();
+        assert!(
+            tag.len() == 64 && tag.bytes().all(|b| b.is_ascii_hexdigit()) && tag != unkeyed,
+            "{what}: {rewritten}"
+        );
         std::fs::write(&entry, text).unwrap();
         let output = run(Some(home.as_path()), None, &["check"]);
         assert_eq!(output.status.code(), Some(1), "{what}: {}", stderr(&output));

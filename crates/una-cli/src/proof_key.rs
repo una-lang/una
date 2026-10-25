@@ -25,6 +25,9 @@ const LENGTH: usize = 32;
 /// A key shorter than this is not used.
 const MINIMUM: usize = 16;
 
+/// A key file longer than this is not a key: it is not used, and not read past it.
+const MAXIMUM: u64 = 4096;
+
 /// The user's key: its bytes, and its file as the build report shows it.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ProofKey {
@@ -62,7 +65,7 @@ pub(crate) fn resolve(environment: Environment<'_>) -> Option<ProofKey> {
 /// `path` is absent; the loser reads the winner's. The link is atomic, so `path` never shows a
 /// key half written.
 fn read_or_make(path: &Path) -> Option<Vec<u8>> {
-    match read_private(path) {
+    match read_settled(path) {
         Ok(bytes) => return Some(bytes),
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return None,
         Err(_) => {}
@@ -96,14 +99,31 @@ fn read_or_make(path: &Path) -> Option<Vec<u8>> {
     let _ = std::fs::remove_file(&staged);
     match linked {
         Ok(()) => Some(secret),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_private(path).ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_settled(path).ok(),
         Err(_) => None,
     }
 }
 
-/// The bytes of the key file at `path` when it is a private regular file of the user (#1164),
-/// and an error otherwise: `NotFound` when there is no file, `PermissionDenied` when there is
-/// one this module does not use.
+/// [`read_private`], waiting a little while the key file has a second link: a process that makes
+/// the key links its staged file to `path` and then removes the staged name, so the count is two
+/// for that moment. A second link that stays is refused after about 100 ms.
+fn read_settled(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut tries = 0;
+    loop {
+        match read_private(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// The bytes of the key file at `path` when it is a private regular file of the user (#1164)
+/// with one link and at most 4 KiB, and an error otherwise: `NotFound` when there is no file,
+/// `WouldBlock` when it has more than one link, `PermissionDenied` when there is one this module
+/// does not use otherwise.
 ///
 /// The file is checked by `symlink_metadata`, which never follows a link, then opened, and the
 /// opened file is checked again and must be the one checked first (same device and inode), so
@@ -120,13 +140,24 @@ fn read_private(path: &Path) -> std::io::Result<Vec<u8>> {
     if !private(&checked, user) {
         return Err(refused());
     }
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     let opened = file.metadata()?;
     if !private(&opened, user) || !same_file(&checked, &opened) {
         return Err(refused());
     }
+    // One link only: a second name for the key, which could be in a directory others control,
+    // is not used.
+    if !single_link(&checked) || !single_link(&opened) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "the proof cache key has more than one link",
+        ));
+    }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    file.take(MAXIMUM + 1).read_to_end(&mut bytes)?;
+    if !u64::try_from(bytes.len()).is_ok_and(|length| length <= MAXIMUM) {
+        return Err(refused());
+    }
     Ok(bytes)
 }
 
@@ -145,6 +176,19 @@ fn private(metadata: &std::fs::Metadata, user: Option<u32>) -> bool {
     }
     #[cfg(not(unix))]
     let _ = user;
+    true
+}
+
+/// Whether the file of `metadata` has one link only.
+#[cfg(unix)]
+fn single_link(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink() == 1
+}
+
+/// Without Unix link counts, every file counts as having one link.
+#[cfg(not(unix))]
+fn single_link(_: &std::fs::Metadata) -> bool {
     true
 }
 
@@ -280,6 +324,17 @@ mod tests {
         write_private(&writable, &[7u8; 32]);
         std::fs::set_permissions(&writable, std::fs::Permissions::from_mode(0o620)).unwrap();
         assert_eq!(resolve(&named(&writable)), None);
+        // A key with a second link, or longer than 4 KiB, is not used.
+        let linked = dir.join("linked-twice.key");
+        write_private(&linked, &[7u8; 32]);
+        std::fs::hard_link(&linked, dir.join("second-name.key")).unwrap();
+        assert_eq!(resolve(&named(&linked)), None);
+        let long = dir.join("long.key");
+        write_private(&long, &[7u8; 4097]);
+        assert_eq!(resolve(&named(&long)), None);
+        let longest = dir.join("longest.key");
+        write_private(&longest, &[7u8; 4096]);
+        assert_eq!(resolve(&named(&longest)).unwrap().secret.len(), 4096);
         // A directory is not a key file either, and nothing is made in its place.
         let directory = dir.join("a-directory");
         std::fs::create_dir_all(&directory).unwrap();

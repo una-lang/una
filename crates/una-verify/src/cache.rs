@@ -7,6 +7,7 @@
 //! one written before this format, is not an answer: the query is solved again. So a cache
 //! that anyone can write cannot forge a proof.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,16 +15,30 @@ use sha2::{Digest, Sha256};
 
 use crate::solver::{Answer, Status};
 
+/// A key shorter than this authenticates nothing: [`ProofCache::new`] refuses it.
+pub(crate) const MINIMUM_KEY: usize = 16;
+
+/// An entry larger than this is not one the cache wrote: it is a miss, and is not read past it.
+const MAXIMUM_ENTRY: u64 = 64 * 1024;
+
 /// A proof cache: its directory, and the secret key that authenticates its entries.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProofCache {
     /// The package directory: no entry is written outside it, through a link or otherwise
     /// (#1160).
-    pub root: PathBuf,
+    root: PathBuf,
     /// The directory, `.una/cache/proofs` of the package.
-    pub dir: PathBuf,
+    dir: PathBuf,
     /// The user's secret key.
-    pub key: Vec<u8>,
+    key: Vec<u8>,
+}
+
+impl ProofCache {
+    /// The cache in `dir`, `.una/cache/proofs` of the package directory `root`, whose entries
+    /// are authenticated under `key`; `None` when the key is shorter than 16 bytes.
+    pub fn new(root: PathBuf, dir: PathBuf, key: Vec<u8>) -> Option<ProofCache> {
+        (key.len() >= MINIMUM_KEY).then_some(ProofCache { root, dir, key })
+    }
 }
 
 impl std::fmt::Debug for ProofCache {
@@ -55,7 +70,7 @@ pub(crate) fn key(lock: &str, script: &str) -> String {
 /// The cached answer to the query with `key`, if the entry exists, reads, and carries the tag
 /// of `cache`'s secret key over that key and that answer.
 pub(crate) fn get(cache: &ProofCache, key: &str) -> Option<Answer> {
-    let text = std::fs::read_to_string(entry(&cache.dir, key)).ok()?;
+    let text = read_entry(&entry(&cache.dir, key))?;
     let entry: Entry = serde_json::from_str(&text).ok()?;
     let expected = tag(&cache.key, key, &entry.answer)?;
     // A comparison that takes the same time whatever the bytes, so that timing does not reveal
@@ -69,13 +84,32 @@ pub(crate) fn get(cache: &ProofCache, key: &str) -> Option<Answer> {
     matches.then_some(entry.answer)
 }
 
+/// The text of the entry file at `path`, when it is a regular file, neither a link nor a FIFO
+/// or a device, both on its name and once opened, of at most [`MAXIMUM_ENTRY`] bytes of UTF-8.
+fn read_entry(path: &Path) -> Option<String> {
+    if !std::fs::symlink_metadata(path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAXIMUM_ENTRY + 1).read_to_end(&mut bytes).ok()?;
+    if u64::try_from(bytes.len()).ok()? > MAXIMUM_ENTRY {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Stores an answer with its tag, through a fresh temporary file and a rename so that parallel
 /// runs never read a partial entry. An `unknown` from the wall-clock guard depends on time and
 /// is not stored.
 ///
-/// The directory and the entry are written only inside the package root (#1160): when `.una`,
-/// `.una/cache` or `.una/cache/proofs` is a link that leads outside it, or the entry's name is
-/// one, nothing is stored and the query is solved again next time.
+/// The directory is written only inside the package root (#1160): when `.una`, `.una/cache` or
+/// `.una/cache/proofs` is a link that leads outside it, nothing is stored and the query is
+/// solved again next time. A link at the entry's own name is never followed, even one that
+/// leads inside the package: the link itself is replaced by the entry.
 pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     if answer.status == Status::Unknown && answer.reason.as_deref() == Some("wallclock") {
         return;
@@ -94,11 +128,10 @@ pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     };
     // A failed store only means the query is solved again. No fsync: the cache is best-effort,
     // and an entry torn by a crash fails its tag and is solved again.
-    let _ = una_diag::safe_write::write_atomically(
+    let _ = una_diag::safe_write::write_new_name(
         &cache.root,
         &entry(&dir, key),
         text.as_bytes(),
-        true,
         false,
     );
 }
@@ -269,11 +302,18 @@ mod tests {
         std::os::unix::fs::symlink(&victim, dir.join(format!(".{query}.{pid}.tmp"))).unwrap();
         put(&mine(&dir), &query, &proven());
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
-        // The entry's own name planted as a link to a file outside: refused, left as it was.
+        // The entry's own name planted as a link to a file outside: the link itself is replaced
+        // by the entry, and the file it led to is left as it was.
         std::os::unix::fs::symlink(&victim, entry(&dir, &query)).unwrap();
         put(&mine(&dir), &query, &proven());
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
-        assert_eq!(std::fs::read_link(entry(&dir, &query)).unwrap(), victim);
+        assert!(
+            std::fs::symlink_metadata(entry(&dir, &query))
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert_eq!(get(&mine(&dir), &query), Some(proven()));
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -370,5 +410,81 @@ mod tests {
             assert_eq!(get(&mine, &query), None, "{what}");
         }
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #1160: a link at an entry's name that leads inside the package, such as one to
+    /// `.git/config`, is never written through either: the link is replaced by the entry.
+    #[cfg(unix)]
+    #[test]
+    fn an_entry_link_inside_the_package_is_replaced_not_followed_1160() {
+        let scratch = scratch("inside-link");
+        let package = scratch.join("package");
+        let dir = package.join(".una").join("cache").join("proofs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(package.join(".git")).unwrap();
+        let config = package.join(".git").join("config");
+        std::fs::write(&config, "[core]\n").unwrap();
+        let query = key("lock", "(check-sat)");
+        std::os::unix::fs::symlink("../../../.git/config", entry(&dir, &query)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(entry(&dir, &query)).unwrap(),
+            "[core]\n"
+        );
+        put(&mine(&dir), &query, &proven());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[core]\n");
+        assert!(
+            std::fs::symlink_metadata(entry(&dir, &query))
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert_eq!(get(&mine(&dir), &query), Some(proven()));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// An entry is read only from a regular file of at most 64 KiB: a link to a valid entry, a
+    /// FIFO, or a file past the cap is a miss.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_small_regular_entry_file_is_read() {
+        let scratch = scratch("regular");
+        let package = scratch.join("package");
+        let dir = package.join(".una").join("cache").join("proofs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = mine(&dir);
+        let query = key("lock", "(check-sat)");
+        put(&cache, &query, &proven());
+        assert_eq!(get(&cache, &query), Some(proven()));
+        let file = entry(&dir, &query);
+        let valid = std::fs::read(&file).unwrap();
+        // A link to a valid, tagged entry elsewhere in the package.
+        let elsewhere = package.join("valid.json");
+        std::fs::write(&elsewhere, &valid).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &file).unwrap();
+        assert_eq!(get(&cache, &query), None);
+        std::fs::remove_file(&file).unwrap();
+        // A FIFO is never opened.
+        let made = std::process::Command::new("mkfifo").arg(&file).status();
+        if made.is_ok_and(|status| status.success()) {
+            assert_eq!(get(&cache, &query), None);
+            std::fs::remove_file(&file).unwrap();
+        }
+        // A valid entry padded past 64 KiB with trailing spaces, which JSON allows.
+        let mut padded = valid.clone();
+        padded.resize(64 * 1024 + 1, b' ');
+        std::fs::write(&file, &padded).unwrap();
+        assert_eq!(get(&cache, &query), None);
+        padded.truncate(64 * 1024);
+        std::fs::write(&file, &padded).unwrap();
+        assert_eq!(get(&cache, &query), Some(proven()));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_key_shorter_than_16_bytes_makes_no_cache() {
+        let dir = PathBuf::from("p/.una/cache/proofs");
+        assert!(ProofCache::new(PathBuf::from("p"), dir.clone(), vec![7; 15]).is_none());
+        assert!(ProofCache::new(PathBuf::from("p"), dir, vec![7; 16]).is_some());
     }
 }

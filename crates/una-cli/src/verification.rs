@@ -129,10 +129,9 @@ pub(crate) fn settings(package: &Package, solving: Solving<'_>) -> Settings {
         wallclock: solving.wallclock,
         cache: package_root(package)
             .zip(solving.proof_key)
-            .map(|(root, key)| una_verify::ProofCache {
-                dir: root.join(".una").join("cache").join("proofs"),
-                root,
-                key: key.secret.clone(),
+            .and_then(|(root, key)| {
+                let dir = root.join(".una").join("cache").join("proofs");
+                una_verify::ProofCache::new(root, dir, key.secret.clone())
             }),
     }
 }

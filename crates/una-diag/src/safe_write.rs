@@ -6,7 +6,8 @@
 //!   to the write, then synced (unless the caller opts out) and renamed onto its destination
 //!   ([`write_atomically`]).
 //! - A link at the destination is written through only when it resolves inside the package
-//!   root; the directory written in must resolve inside it too.
+//!   root; the directory written in must resolve inside it too. [`write_new_name`] never writes
+//!   through a link at the destination: it replaces the link itself.
 //! - A directory chain is created one level at a time, and a link in it that leads outside the
 //!   root is refused ([`create_dir_inside`]).
 
@@ -68,6 +69,32 @@ pub fn write_atomically(
         .map(|metadata| metadata.permissions());
     let (temporary, file) = fresh_temporary(&directory, &name, permissions.is_some())?;
     let written = fill_and_rename(file, &temporary, &destination, permissions, bytes, sync);
+    if written.is_err() {
+        // The name was created by this write alone, so removing it removes no one else's file.
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// Replaces whatever is at the name `target` with a new file holding `bytes`, through a fresh
+/// temporary file and a rename, and never follows a symbolic link at that name: a link there,
+/// even one that resolves inside `root`, is itself replaced, and the file it leads to is left
+/// as it was. The directory written in must resolve inside `root`. The new file is created under
+/// the umask; `sync` is as for [`write_atomically`].
+///
+/// # Errors
+///
+/// Any error of the file system, or the refusal of a directory outside `root`.
+pub fn write_new_name(root: &Path, target: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
+    let root = canonical_root(root)?;
+    let directory = std::fs::canonicalize(directory_of(target))?;
+    if !directory.starts_with(&root) {
+        return Err(outside(target, &directory));
+    }
+    let name = file_name(target, target)?;
+    let destination = directory.join(&name);
+    let (temporary, file) = fresh_temporary(&directory, &name, false)?;
+    let written = fill_and_rename(file, &temporary, &destination, None, bytes, sync);
     if written.is_err() {
         // The name was created by this write alone, so removing it removes no one else's file.
         let _ = std::fs::remove_file(&temporary);

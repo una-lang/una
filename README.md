@@ -169,7 +169,7 @@ Every guarantee has the form: *the implementation satisfies its specification, a
 | Zone | Contents in v0.1 | Who is responsible |
 | --- | --- | --- |
 | **Proven** | Type safety, effect and capability confinement, information-flow noninterference (termination-insensitive), refinement and contract obligations | The compiler and the verifier |
-| **Trusted** | The compiler, the reference interpreter, the SMT solver, the standard library, `trusted` modules, host capability implementations, the proof cache of the package | Una maintainers and module owners |
+| **Trusted** | The compiler, the reference interpreter, the SMT solver, the standard library, `trusted` modules, host capability implementations, the proof cache key (UNA-SA-019) | Una maintainers and module owners |
 | **Assumed** | The behavior of external systems as declared in `capability` signatures | Capability authors |
 | **Human** | That requirements and contracts capture the intent | Requirement owners and reviewers |
 
