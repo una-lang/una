@@ -1188,9 +1188,8 @@ fn resolve_and_lock(
         let mut check_notes: Vec<String> = Vec::new();
         if let Some((lock_id, lock, _)) = &existing {
             for (source, list) in &places {
-                let (Some(declared), Some(old)) =
-                    (crate::registry::declared(read, source), locked_point(source))
-                else {
+                let declared = crate::registry::declared(read, source);
+                let (Some(declared), Some(old)) = (declared, locked_point(source)) else {
                     continue;
                 };
                 let owners: BTreeMap<String, (String, std::ops::Range<usize>)> = lock
