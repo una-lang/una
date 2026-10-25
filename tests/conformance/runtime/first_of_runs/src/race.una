@@ -45,20 +45,20 @@ all_fail() -> Int
 
 double(n: Int) -> Int = n * 2
 
-leaf(n: Int) -> secret Int
+leaf(n: Int) -> restricted Int
 =
   first of
     double(n)
     double(n)
 
-middle(n: Int) -> secret Int
+middle(n: Int) -> restricted Int
 =
   together
     let a = leaf(n)
     let b = leaf(n)
   a + b
 
-top(n: Int) -> secret Int
+top(n: Int) -> restricted Int
 =
   first of
     middle(n)
@@ -80,6 +80,6 @@ pub main() -> Unit
     double(2)
   @console.print("same {same}")
   -- A race inside a task's function is timed by the tasks beside it (`τ_conc`, ADR 0116 IF6),
-  -- so `deep` is `secret`: its value is checked by `runtime/first_of_virtual`.
+  -- so `deep` is `restricted`: its value is checked by `runtime/first_of_virtual`.
   let deep = top(1)
   @console.print("deep done")

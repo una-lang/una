@@ -72,7 +72,7 @@ pub(crate) struct OpenWithin {
     key: Span,
     span: Span,
     tau: Label,
-    saved: Option<(Label, Span)>,
+    saved: Option<(Label, Span, Construct)>,
 }
 
 impl OpenWithin {
@@ -102,8 +102,8 @@ impl Checker<'_, '_, '_> {
         self.timing_source(label, "the deadline".to_owned());
         let floor = match self.ctx.timing.clone() {
             _ if tau.is_public() => self.ctx.timing.clone(),
-            Some((outer, _)) => Some((outer.join(&tau), span)),
-            None => Some((tau.clone(), span)),
+            Some((outer, _, _)) => Some((outer.join(&tau), span, Construct::Within)),
+            None => Some((tau.clone(), span, Construct::Within)),
         };
         let saved = std::mem::replace(&mut self.ctx.timing, floor);
         OpenWithin {
@@ -146,8 +146,8 @@ impl Checker<'_, '_, '_> {
         self.timing_start();
         let floor = match self.ctx.timing.clone() {
             _ if tau.is_public() => self.ctx.timing.clone(),
-            Some((outer, _)) => Some((outer.join(&tau), span)),
-            None => Some((tau.clone(), span)),
+            Some((outer, _, _)) => Some((outer.join(&tau), span, Construct::FirstOf)),
+            None => Some((tau.clone(), span, Construct::FirstOf)),
         };
         let saved = std::mem::replace(&mut self.ctx.timing, floor);
         OpenWithin {

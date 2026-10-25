@@ -3,13 +3,13 @@
 -- expect: ok
 module forms
 
-pub kind FetchError = Unreachable
+pub kind FetchError = | Unreachable
 
 primary(n: Int) -> Int = n + 1
 
 replica(n: Int) -> Int = n + 2
 
-checked(n: Int) -> Int
+guarded(n: Int) -> Int
   fails FetchError
 =
   if n < 0 then fail Unreachable else n
@@ -33,9 +33,9 @@ pub last(n: Int) -> Int
   fails FetchError
 =
   first of
-    checked(n)
+    guarded(n)
       if error pass
-    checked(n + 1)
+    guarded(n + 1)
       if error use 0
 
 pub named(xs: List[Int]) -> Int
