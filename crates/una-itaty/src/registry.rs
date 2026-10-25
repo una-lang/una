@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use una_project::client::{
-    CADENCE, Marks, Retired, YankStanding, accept_checkpoint, apply_yank, owner_of,
+    CADENCE, Kind, Marks, Retired, YankStanding, accept_checkpoint, apply_yank, owner_of,
 };
 use una_project::content::read_archive;
 use una_project::tlog::map::Head;
@@ -58,7 +58,7 @@ use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
 
 use crate::authority::interface;
-use crate::entry::{Entry, Kind, parse_entry, previous_text};
+use crate::entry::{Entry, parse_entry, previous_text};
 use crate::namemap::NameMap;
 use crate::names::{self, Names};
 use crate::notify::{Notice, Notifier};
@@ -2366,17 +2366,19 @@ impl Registry {
             Kind::Owner(read) => {
                 let index = self.tree.size().saturating_sub(1);
                 let owner_name = read.owner.clone();
-                let keys: Vec<&Key> = match &read.event {
+                let publics: Vec<[u8; 32]> = match &read.event {
                     Event::Register { keys, .. } => {
                         self.names.add_owner(&owner_name);
-                        keys.iter().collect()
+                        keys.iter().map(|key| key.public).collect()
                     }
-                    Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => vec![key],
+                    Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => {
+                        vec![key.public]
+                    }
                     _ => Vec::new(),
                 };
-                for key in keys {
+                for public in publics {
                     self.owner_keys
-                        .entry(key.public)
+                        .entry(public)
                         .or_insert_with(|| owner_name.clone());
                 }
                 // A recovery, a dispute and a co-signer change wait seven days of witness time,
