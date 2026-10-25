@@ -2547,10 +2547,12 @@ impl Registry {
                 self.store.put(STATE_TIMED_CANCELS, cancels.as_bytes())?;
             }
             if logging.cosigner_change {
+                // Changes older than seven days no longer count toward the cap: dropped.
                 let changes: String = self
                     .cosigner_logged
                     .iter()
                     .chain(std::iter::once((&index, &now)))
+                    .filter(|(_, time)| time.saturating_add(owner::RECOVERY_DELAY) > now)
                     .map(|(index, time)| format!("{index} {time}\n"))
                     .collect();
                 self.store.put(STATE_COSIGNER_CHANGES, changes.as_bytes())?;
@@ -2569,6 +2571,8 @@ impl Registry {
         }
         if logging.cosigner_change {
             self.cosigner_logged.insert(index, now);
+            self.cosigner_logged
+                .retain(|_, time| time.saturating_add(owner::RECOVERY_DELAY) > now);
         }
         if logging.throttled {
             self.bucket.take(now);
