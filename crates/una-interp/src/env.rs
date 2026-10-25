@@ -55,6 +55,16 @@ impl<'p> Env<'p> {
         Env::default()
     }
 
+    /// Takes the values of every binding out of the environment, which is left empty: what
+    /// dropping it releases, for a worklist (`crate::value`, S-30).
+    pub(crate) fn take_values(&mut self) -> Vec<Value<'p>> {
+        self.positions = None;
+        std::mem::take(&mut self.bindings)
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect()
+    }
+
     /// How many bindings are in scope: a mark that [`Env::truncate`] returns to.
     pub(crate) fn len(&self) -> usize {
         self.bindings.len()
