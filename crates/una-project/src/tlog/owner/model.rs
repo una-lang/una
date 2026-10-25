@@ -11,12 +11,12 @@
 //! or asks a recovery or a dispute naming `N1` or `N2` while none of its own waits, each with or
 //! without a week passing first while something waits. From a chosen position on, a thief holds `A`: it adds its own key `T`, revokes any key
 //! with or without `since 0`, claims a former key, designates its co-signer `Z` or removes the
-//! co-signers, and cancels the owner's pending requests, signing with every key it holds; the
-//! owner, unaware, may still add a key or designate `X` with its other keys. With an account
+//! co-signers, and cancels the owner's pending requests, each entry signed in turn by every
+//! non-empty subset of the keys it holds that may sign it; the owner, unaware, may still add a key or designate `X` with its other keys. With an account
 //! takeover, the thief also asks a dispute or a recovery naming `M`. No week passes after the
 //! theft: the owner answers within the seven days of the thief's first pending change, by its
-//! response (below), and then a week passes, so that every pending request takes effect. Every
-//! signer set is the whole set of keys its signer holds; the symmetric keys `B` and `C`, and
+//! response (below), and then a week passes, so that every pending request takes effect. The
+//! owner signs with every key it holds; the symmetric keys `B` and `C`, and
 //! `N1` and `N2`, are used in order, never swapped. The depth counts the entries before the
 //! response, the registration included.
 //!
@@ -35,8 +35,9 @@
 //! the response is logged. With either thief: the thief's
 //! keys never sign a release that counts once the owner responded; (4) a replay run twice gives
 //! the same history, and never meets the pass cap; (5) the history does not depend on the order
-//! of a note's signature lines. A sample of the chains, every chosen-th one, is replayed again
-//! with Ed25519 signatures, and must give the same history and judgments as the model.
+//! of a note's signature lines. A sample of the chains, every chosen-th one and every chosen-th
+//! one where the thief signed with only some of its keys, is replayed again with Ed25519
+//! signatures, and must give the same history and judgments as the model.
 
 #![allow(
     clippy::indexing_slicing,
@@ -208,6 +209,8 @@ struct Step {
     signers: Vec<K>,
     gap: bool,
     thief: bool,
+    /// Whether the thief signed it with only some of the keys it holds.
+    partial: bool,
 }
 
 /// A chain built: its notes and entries, and each request's first position.
@@ -375,10 +378,14 @@ struct Stats {
     chains: u64,
     key_only: u64,
     with_account: u64,
+    /// Chains where the thief signed an entry with only some of the keys it holds.
+    subset_chains: u64,
     frozen: u64,
     /// Entries the registry would not log, pruned.
     pruned: u64,
     sampled: u64,
+    /// Of the sample, the chains where the thief signed with only some of its keys.
+    sampled_subset: u64,
 }
 
 struct Search<'k> {
@@ -524,6 +531,7 @@ impl Search<'_> {
                     signers: signers.clone(),
                     gap,
                     thief: false,
+                    partial: false,
                 });
             }
         }
@@ -543,10 +551,18 @@ impl Search<'_> {
             .collect();
         let threshold = v.threshold;
         let n = v.keys.len();
+        // Choosing its signers is the thief's lever: every non-empty subset of the keys it
+        // holds signs, in turn, each entry they may sign.
+        let sets = subsets(&held);
+        let enough: Vec<Vec<K>> = sets
+            .iter()
+            .filter(|set| set.len() >= threshold)
+            .cloned()
+            .collect();
         let mut acts: Vec<(Act, Vec<K>)> = Vec::new();
-        if held.len() >= threshold {
+        for set in &enough {
             if !ever.contains(&K::T) {
-                let mut signers = held.clone();
+                let mut signers = set.clone();
                 signers.push(K::T);
                 acts.push((Act::Add(K::T, threshold), signers.clone()));
                 acts.push((Act::Add(K::T, threshold + 1), signers));
@@ -554,35 +570,35 @@ impl Search<'_> {
             if n >= 2 {
                 for k in &v.keys {
                     for since in [None, Some(0)] {
-                        acts.push((Act::Revoke(*k, threshold.min(n - 1), since), held.clone()));
+                        acts.push((Act::Revoke(*k, threshold.min(n - 1), since), set.clone()));
                     }
                 }
             }
             // A claim on a key the owner held before.
             for k in OWNER {
                 if ever.contains(&k) && !v.keys.contains(&k) && k != K::A {
-                    acts.push((Act::Revoke(k, threshold, Some(0)), held.clone()));
+                    acts.push((Act::Revoke(k, threshold, Some(0)), set.clone()));
                 }
             }
             let designation = Some((1, vec![K::Z]));
             if v.latest != designation {
-                acts.push((Act::Cosigners(designation, threshold), held.clone()));
+                acts.push((Act::Cosigners(designation, threshold), set.clone()));
             }
             if v.latest.is_some() {
-                acts.push((Act::Cosigners(None, threshold), held.clone()));
+                acts.push((Act::Cosigners(None, threshold), set.clone()));
             }
         }
-        if !held.is_empty() {
+        for set in &sets {
             for (index, change) in &v.pending {
                 let owners = match change {
                     Change::Recovery(key) => self.keys.of(key) != K::M,
-                    Change::Cosigners(set) => !set
+                    Change::Cosigners(designated) => !designated
                         .as_ref()
                         .is_some_and(|(_, list)| list.iter().any(|k| self.keys.of(k) == K::Z)),
                     Change::Dispute(_) => false,
                 };
                 if owners {
-                    acts.push((Act::Cancel(*index, threshold), held.clone()));
+                    acts.push((Act::Cancel(*index, threshold), set.clone()));
                 }
             }
         }
@@ -601,6 +617,8 @@ impl Search<'_> {
         }
         acts.into_iter()
             .map(|(act, signers)| Step {
+                partial: signers.iter().any(|k| *k == K::A || *k == K::T)
+                    && held.iter().any(|k| !signers.contains(k)),
                 act,
                 signers,
                 gap: false,
@@ -625,6 +643,7 @@ impl Search<'_> {
             signers,
             gap,
             thief: false,
+            partial: false,
         };
         if self.log(chain, step).is_none() {
             refused.push(what);
@@ -786,6 +805,10 @@ impl Search<'_> {
         } else {
             self.stats.key_only += 1;
         }
+        let partial = steps.iter().any(|s| s.partial);
+        if partial {
+            self.stats.subset_chains += 1;
+        }
         let (chain, refused) = self.respond(steps, pre, theft);
         let built = build(self.keys, &chain, true, false, false);
         let last = run(self.keys, &built);
@@ -898,9 +921,15 @@ impl Search<'_> {
                 }
             }
         }
-        // The sample, with Ed25519.
-        if self.stats.chains % self.stride == 0 && self.stats.sampled < self.sample_cap {
+        // The sample, with Ed25519: every stride-th chain, and every stride-th of those where
+        // the thief signed with only some of its keys, so the sample covers both.
+        let chosen = self.stats.chains % self.stride == 0
+            || (partial && self.stats.subset_chains % self.stride == 0);
+        if chosen && self.stats.sampled < self.sample_cap {
             self.stats.sampled += 1;
+            if partial {
+                self.stats.sampled_subset += 1;
+            }
             set_modeled(false);
             let real = run(self.keys, &build(self.keys, &chain, true, true, false));
             let thief_real = real
@@ -915,6 +944,21 @@ impl Search<'_> {
             }
         }
     }
+}
+
+/// Every non-empty subset of `held`, in a fixed order: the signer sets the thief chooses from.
+fn subsets(held: &[K]) -> Vec<Vec<K>> {
+    let mut out = Vec::new();
+    for mask in 1..(1_u32 << held.len()) {
+        out.push(
+            held.iter()
+                .enumerate()
+                .filter(|(at, _)| mask & (1 << at) != 0)
+                .map(|(_, k)| *k)
+                .collect(),
+        );
+    }
+    out
 }
 
 /// Every key the steps name as an owner key, applied, void or waiting, so none is named twice.
@@ -961,6 +1005,7 @@ fn registrations() -> Vec<Step> {
                 signers: keys.clone(),
                 gap: false,
                 thief: false,
+                partial: false,
             });
         }
     }
@@ -1006,25 +1051,39 @@ fn check_all(depth: usize, stride: u64, sample_cap: u64) -> Stats {
     search.stats
 }
 
-/// The model to depth 4 in the ordinary test run.
+/// The model to depth 4 in the ordinary test run, the thief signing with every subset of its
+/// keys: about 16,000 to 42,000 chains by the estimate.
 #[test]
 fn owner_replay_holds_its_contract_to_depth_four() {
-    let stats = check_all(4, 37, 240);
-    assert!(stats.chains >= 1_000, "{stats:?}");
+    let stats = check_all(4, 97, 300);
+    assert!(stats.chains >= 2_000, "{stats:?}");
     assert!(stats.key_only > 0 && stats.with_account > 0, "{stats:?}");
+    assert!(stats.subset_chains >= 100, "{stats:?}");
     assert!(stats.frozen > 0, "{stats:?}");
-    assert!(stats.sampled >= 100_u64.min(stats.chains / 37), "{stats:?}");
+    assert!(stats.sampled >= 100_u64.min(stats.chains / 97), "{stats:?}");
+    assert!(
+        stats.sampled_subset >= 10_u64.min(stats.subset_chains / 97),
+        "{stats:?}"
+    );
 }
 
-/// The model to depth 6: the release gate `owner-replay` runs it (`docs/release-gates.md`).
+/// The model to depth 5: the release gate `owner-replay` runs it (`docs/release-gates.md`).
+/// Depth 5, not 6: with the thief signing with every subset of its keys, depth 6 was estimated
+/// at 1.1 to 6.4 million chains, up to about 50 minutes in a release build, and depth 5 at
+/// 120,000 to 520,000, a few minutes.
 #[test]
 #[ignore = "exhaustive model of the owner-chain replay: run by the owner-replay release gate"]
-fn owner_replay_holds_its_contract_to_depth_six() {
-    let stats = check_all(6, 9_973, 400);
-    assert!(stats.chains >= 100_000, "{stats:?}");
+fn owner_replay_holds_its_contract_to_depth_five() {
+    let stats = check_all(5, 997, 400);
+    assert!(stats.chains >= 20_000, "{stats:?}");
+    assert!(stats.subset_chains >= 1_000, "{stats:?}");
     assert!(stats.frozen > 0, "{stats:?}");
     assert!(
-        stats.sampled >= 100_u64.min(stats.chains / 9_973),
+        stats.sampled >= 100_u64.min(stats.chains / 997),
+        "{stats:?}"
+    );
+    assert!(
+        stats.sampled_subset >= 10_u64.min(stats.subset_chains / 997),
         "{stats:?}"
     );
 }
