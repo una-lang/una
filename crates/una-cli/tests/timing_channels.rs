@@ -4,11 +4,11 @@
 //! machine without another heavy job, so they are not run by an ordinary `cargo test`; the
 //! deterministic halves of their differentials run there instead.
 //!
-//! **Ignored is not skipped.** Every test here is a security oracle. The local-ci step "Timing
-//! channels (security oracles)" and the release gate of the same name (#1065) run this file
-//! with `cargo test -p una-cli --test timing_channels -- --ignored --test-threads=1`, one test
-//! at a time on a quiet machine, and record its output; a pull request that fixes a timing
-//! channel runs it too.
+//! **Ignored is not skipped.** Every test in this file is a security timing oracle and MUST be
+//! `#[ignore]`d. It runs only in local-ci's "Timing channels (security oracles)" step and the
+//! matching release gate, which #1065 adds: both run this file with `cargo test -p una-cli
+//! --test timing_channels -- --ignored --test-threads=1`, one test at a time on a quiet
+//! machine, and record its output.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
