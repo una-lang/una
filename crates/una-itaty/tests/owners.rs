@@ -791,7 +791,10 @@ fn notices_not_taken_before_a_crash_are_sent_again_on_reopening() {
     assert!(status.last_error.is_some());
     // Opened again, as after a crash: each notice after the cursor is sent, once more.
     let recording = Arc::new(Recording::new());
-    let reopened = f.reopen_with(recording.clone());
+    let mut reopened = f.reopen_with(recording.clone());
+    // Opening sends nothing; the notices are sent once the notifier that serves is set.
+    assert!(recording.notices().is_empty());
+    reopened.resend_notices();
     let indices: Vec<u64> = recording
         .notices()
         .iter()
@@ -1627,4 +1630,35 @@ fn a_release_cut_short_by_a_crash_is_done_again_once() {
             .is_none_or(|bytes| bytes.is_empty())
     );
     assert_eq!(reopened.size(), 4);
+}
+
+#[test]
+fn notices_a_crash_left_reach_the_outbox_once_served() {
+    let mut f = Fixture::new("crash-serve");
+    let a = keypair(60, "acme.a");
+    f.register("acme", &[&a], &[]);
+    f.registry.set_notifier(Arc::new(Failing));
+    f.submit("acme", "cancel 0", 1, &[&a]).unwrap();
+    f.submit("acme", "cancel 0", 1, &[&a]).unwrap();
+    // Opened again, as after a crash, with a stand-in notifier, then served with its outbox.
+    let stand_in = Arc::new(Recording::new());
+    let reopened = f.reopen_with(stand_in.clone());
+    let outbox = temp_dir("crash-serve-outbox");
+    let _service = Service::new(
+        f.store.clone(),
+        reopened,
+        ServerConfig {
+            outbox: Some(outbox.clone()),
+            ..ServerConfig::default()
+        },
+    )
+    .unwrap();
+    assert!(stand_in.notices().is_empty());
+    let lines = std::fs::read_to_string(&outbox).unwrap();
+    let indices: Vec<&str> = lines
+        .lines()
+        .filter_map(|line| line.split(' ').nth(3))
+        .collect();
+    assert_eq!(indices, vec!["1", "2"], "{lines}");
+    let _ = std::fs::remove_file(&outbox);
 }

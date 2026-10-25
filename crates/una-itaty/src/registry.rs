@@ -518,8 +518,9 @@ impl Registry {
     ///
     /// Notices go to `notifier`, which a registry MUST have (`spec/30 §16` rule 11). Every
     /// notice of an `ita-key/1` entry after the last one the notifier took, by the cursor in
-    /// `state/notices`, is sent again on opening, so an entry logged before a crash is notified
-    /// at least once; a notice names its index, by which the sender drops a repeat.
+    /// `state/notices`, is sent again by [`Registry::resend_notices`], which the service calls
+    /// once its outbox is set, so an entry logged before a crash is notified at least once; a
+    /// notice names its index, by which the sender drops a repeat.
     pub fn open(
         store: Arc<dyn Store>,
         config: &Config,
@@ -576,7 +577,6 @@ impl Registry {
             registry.release_held(size)?;
         }
         registry.load_notices()?;
-        registry.renotify();
         Ok(registry)
     }
 
@@ -1013,8 +1013,11 @@ impl Registry {
         self.record_deliveries(delivered);
     }
 
-    /// Sends again the notice of every `ita-key/1` entry after the cursor, in log order.
-    fn renotify(&mut self) {
+    /// Sends again the notice of every `ita-key/1` entry after the cursor, in log order, to
+    /// the notifier now set. Opening does not: whoever serves the registry calls it once its
+    /// outbox is set (`crate::http::Service::new`), so no notice goes to a notifier that only
+    /// stood in at opening.
+    pub fn resend_notices(&mut self) {
         let after = self.notices.notified;
         let mut due: Vec<Notice> = self
             .owners

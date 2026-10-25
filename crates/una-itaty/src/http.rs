@@ -255,6 +255,8 @@ impl Service {
             return Err(StartError::NoNotifier);
         };
         registry.set_notifier(Arc::new(Outbox::open(path).map_err(StartError::Outbox)?));
+        // The notices a crash left after the cursor go to the outbox now set, at once.
+        registry.resend_notices();
         registry.defer_notices(true);
         Ok(Service::unnotified_for_tests(store, registry, config))
     }

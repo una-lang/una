@@ -298,8 +298,14 @@ fn a_client_publishes_and_verifies_every_proof() {
         pin: pin.clone(),
         log_seed: [20; 32],
     };
-    let registry = Registry::open(Arc::clone(&store), &config, clock.clone(), recording()).unwrap();
     let outbox = temp_dir("e2e-outbox");
+    let registry = Registry::open(
+        Arc::clone(&store),
+        &config,
+        clock.clone(),
+        Arc::new(una_itaty::notify::Outbox::open(&outbox).unwrap()),
+    )
+    .unwrap();
     let service = Arc::new(
         Service::new(
             Arc::clone(&store),
