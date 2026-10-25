@@ -477,7 +477,7 @@ pub fn decode_tile(bytes: &[u8], t: usize, prefix: &[u8]) -> Result<Tile, String
 pub fn prove_from_tiles(
     root: &Hash,
     name: &str,
-    fetch: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, String>,
+    fetch: &mut Fetch<'_>,
 ) -> Result<(Option<Head>, Proof), String> {
     let key = key(name);
     // The sibling of the path at each depth 1 to 256, `None` when empty.
@@ -538,6 +538,9 @@ pub fn prove_from_tiles(
     ))
 }
 
+/// A source of tile bytes by path: the bytes, `None` when absent, or why it could not answer.
+type Fetch<'a> = dyn FnMut(&str) -> Result<Option<Vec<u8>>, String> + 'a;
+
 /// The tiles of the map of `heads`, by name: its root, and each tile's path and bytes. For a
 /// registry that builds its map at once, and for tests. O(n · 32 · 8) hashes for n names.
 pub fn build_tiles(heads: &[(String, Head)]) -> (Hash, Vec<(String, Vec<u8>)>) {
@@ -545,7 +548,7 @@ pub fn build_tiles(heads: &[(String, Head)]) -> (Hash, Vec<(String, Vec<u8>)>) {
         .iter()
         .map(|(name, head)| (key(name), *head))
         .collect();
-    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.sort_by_key(|a| a.0);
     keyed.dedup_by(|a, b| a.0 == b.0);
     let mut files = Vec::new();
     if keyed.is_empty() {

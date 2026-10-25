@@ -1232,8 +1232,8 @@ impl Search<'_, '_> {
         }
         // The sample, with Ed25519: every stride-th response, and every stride-th of those
         // where the thief signed with only some of its keys, so the sample covers both.
-        let chosen = self.stats.responses % self.stride == 0
-            || (partial && self.stats.subset_chains % self.stride == 0);
+        let chosen = self.stats.responses.is_multiple_of(self.stride)
+            || (partial && self.stats.subset_chains.is_multiple_of(self.stride));
         if chosen && self.stats.sampled < self.sample_cap {
             self.stats.sampled += 1;
             if partial {

@@ -82,9 +82,11 @@ pub fn parse_hash_tile(bytes: &[u8], width: u64, full: bool) -> Result<Vec<Hash>
         ));
     }
     Ok(bytes
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .take(usize::try_from(width).unwrap_or(0))
-        .filter_map(|chunk| <[u8; 32]>::try_from(chunk).ok())
+        .copied()
         .collect())
 }
 
@@ -257,7 +259,7 @@ impl<'t> Tiles<'t> {
             .filter(|len| *len > 0)
             .ok_or("an empty range of the log's tree")?;
         if len.is_power_of_two() {
-            if start % len != 0 {
+            if !start.is_multiple_of(len) {
                 return Err("a range of the log's tree is not one of its subtrees".to_owned());
             }
             return self.node(len.trailing_zeros(), start / len);

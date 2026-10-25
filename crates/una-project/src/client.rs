@@ -1790,9 +1790,8 @@ impl<'t> Registry<'t> {
             let mut effect_failure: Option<Failure> = None;
             let replayed = {
                 let mut effect = |index: u64| {
-                    self.recovery_effect(index).map_err(|why| {
+                    self.recovery_effect(index).inspect_err(|_| {
                         effect_failure = self.failure.get();
-                        why
                     })
                 };
                 owner::replay(owner_name, &source, &logged, &log, &mut effect)
@@ -2164,6 +2163,8 @@ impl Index for Online<'_> {
 
 /// Resolution over registries and local packages ([`resolve::resolve`]), re-exported for the
 /// commands.
+// `Problem` is the resolver's error type, shared by every caller; boxing it would ripple widely.
+#[allow(clippy::result_large_err)]
 pub fn resolve_online(
     root: &[Need],
     index: &Online<'_>,

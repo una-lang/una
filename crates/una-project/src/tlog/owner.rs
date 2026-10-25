@@ -243,8 +243,11 @@ pub fn parse_previous(value: &str) -> Result<Option<Previous>, String> {
     }))
 }
 
+/// An entry's format line and its `<field> <value>` lines.
+type Fields<'a> = (&'a str, Vec<(&'a str, &'a str)>);
+
 /// The format line and the `<field> <value>` lines of an entry's text.
-fn fields(text: &str) -> Result<(&str, Vec<(&str, &str)>), String> {
+fn fields(text: &str) -> Result<Fields<'_>, String> {
     if text.len() > MAX_NOTE {
         return Err(format!("an owner's entry is longer than {MAX_NOTE} bytes"));
     }
@@ -965,6 +968,10 @@ struct Revocation {
     own: bool,
 }
 
+/// The result of one replay pass: the history, and for each standing revocation its claim and
+/// whether only the named key's own signature met the requirement.
+type Replayed = (History, BTreeMap<u64, (Claim, bool)>);
+
 /// One replay of the chain with the keys `compromised` taken as compromised since their
 /// positions. Returns the history and, for each revocation with `since` that stands in this
 /// pass (applied, or void only because its signers are compromised), the key it removes or
@@ -979,7 +986,7 @@ fn replay_once(
     compromised: &BTreeMap<[u8; 32], u64>,
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
-) -> Result<(History, BTreeMap<u64, (Claim, bool)>), String> {
+) -> Result<Replayed, String> {
     let mut state = Owner {
         keys: Vec::new(),
         threshold: 1,
@@ -1040,7 +1047,7 @@ fn replay_once(
             }
         }
         let owners_all = count_distinct(&signing);
-        let sound_signing: Vec<Key> = signing.iter().filter(|k| sound(*k)).cloned().collect();
+        let sound_signing: Vec<Key> = signing.iter().filter(|k| sound(k)).cloned().collect();
         let owners_sound = count_distinct(&sound_signing);
         let by_cosigners = match &state.cosigners {
             Some((k, set)) => signers_of(note, set.as_slice(), &mut checks) >= *k,
