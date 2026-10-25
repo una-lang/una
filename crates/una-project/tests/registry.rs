@@ -18,14 +18,14 @@ use una_project::itaoca::Itaoca;
 use una_project::mirrors::{Attempt, first_verified};
 use una_project::provenance::{Expected, signed_name};
 use una_project::registry::audit::{self, Facts, Kind, Locked};
+use una_project::tlog::state::{Signers, parse_advisory};
 use una_project::registry::bundle::{self, Memory, Recording};
-use una_project::registry::entries::{check_advisory, check_yank, cooled, releases, yank_text};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
-use una_project::registry::submit::{self, NameState, Promise, broken, check_promise};
-use una_project::registry::watch::{Position, Seen, watch};
+use una_project::registry::submit::{self, NameState, PROMISE_WINDOW, Promise, check_promise};
+use una_project::registry::watch::{Position, Seen, Submitted, Verdict, judge, watch};
 use una_project::tlog::note::parse_note;
 use una_project::tlog::release::parse_statement;
-use una_project::tlog::state::{Advisory, ReleaseState};
+use una_project::tlog::state::Advisory;
 use una_project::transport::{Directory, Transport};
 use una_project::vendor::Problem;
 use una_project::version::{Line, Version};
@@ -65,10 +65,24 @@ fn the_directory_transport_writes_once_and_reads_back() {
     transport.put("submit/abc/entry", b"one").unwrap();
     assert!(transport.put("submit/abc/entry", b"two").is_err());
     assert_eq!(transport.get("submit/none", 10), Ok(None));
-    for path in ["../x", "a/../b", "/abs", "a//b", "checkpoint"] {
+    for path in [
+        "../x",
+        "a/../b",
+        "/abs",
+        "a//b",
+        "checkpoint",
+        "checkpoint/latest",
+        "checkpoint/7",
+    ] {
         assert!(transport.put(path, b"x").is_err(), "{path}");
     }
     assert!(transport.get("submit/abc/entry", 2).is_err(), "over the limit");
+    // No staged copy is left behind, whether the link succeeded or found the file there.
+    let staged = std::fs::read_dir(dir.join("submit/abc"))
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+        .count();
+    assert_eq!(staged, 0);
     // An https location has no transport yet: it never writes.
     let https = una_project::transport::Unavailable {
         url: "https://ita.acme.example".to_owned(),
@@ -248,6 +262,26 @@ fn publishing_refuses_what_rules_26_and_43_name() {
     state.statements.insert(v("0.3.0"), parse_statement(&earlier).unwrap());
     assert!(refusal(&published("0.3.1", ""), &state, &[&publisher]).contains("Http[post]"));
     assert!(refusal(&published("0.3.0", ""), &state, &[&publisher]).contains("already released"));
+    // Rule 26 compares in log order, against the highest release of the line, even above the new
+    // version: 0.3.0 needed `Http[post]`, the later 0.3.5 did not, so 0.3.2 may not need it.
+    let mut ordered = first_state();
+    let statement_of = |version: &str, authority: &str| {
+        parse_statement(&format!(
+            "ita-release/1\nsource acme\nname acme/ledger\nversion {version}\nprevious none\ndigest {D}\nmanifest {D}\nedition 0.4\nauthority {authority}\ntrust none\n"
+        ))
+        .unwrap()
+    };
+    ordered
+        .statements
+        .insert(v("0.3.0"), statement_of("0.3.0", "Http[get, post]"));
+    ordered
+        .statements
+        .insert(v("0.3.5"), statement_of("0.3.5", "Http[get]"));
+    assert_eq!(
+        submit::highest_of_line(&ordered, &v("0.3.2")).unwrap().version,
+        v("0.3.5")
+    );
+    assert!(refusal(&published("0.3.2", ""), &ordered, &[&publisher]).contains("Http[post]"));
     // A new major line may grow, and names the chain's head as its previous entry.
     let text = published("1.0.0", "");
     let (manifest, _) = parse_manifest(&text);
@@ -273,7 +307,7 @@ fn publishing_refuses_what_rules_26_and_43_name() {
 }
 
 #[test]
-fn a_promise_is_verified_and_broken_only_past_its_time() {
+fn a_promise_is_verified() {
     let log = key(20, "acme.example/log");
     let other = key(21, "acme.example/other");
     let leaf = format!("sha256:{}", "ab".repeat(32));
@@ -284,66 +318,91 @@ fn a_promise_is_verified_and_broken_only_past_its_time() {
     assert!(check_promise(&document, other.key(), "acme", &leaf).is_err());
     assert!(check_promise(&document, log.key(), "itaty", &leaf).is_err());
     assert!(check_promise(&document, log.key(), "acme", D).is_err());
-    assert!(!broken(&promise, 1000, false));
-    assert!(broken(&promise, 1001, false));
-    assert!(!broken(&promise, 5000, true));
 }
 
-// --- Yanks, advisories and the cooldown (rules 24 and 41) -----------------------------------
+/// Kept means logged by `by`; a promise past the window, a late entry, and no promise past the
+/// window are each broken; and a settled submission is recorded and never judged again.
+#[test]
+fn promises_are_judged_once_by_the_time_their_entry_was_logged() {
+    let submitted = Submitted {
+        leaf: "ab".repeat(32),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/other".to_owned(),
+        time: 1000,
+    };
+    assert_eq!(Submitted::parse(&submitted.leaf, &submitted.encode()).unwrap(), submitted);
+    let promise = |by: u64| Promise {
+        source: "acme".to_owned(),
+        leaf: format!("sha256:{}", submitted.leaf),
+        by,
+        document: String::new(),
+    };
+    let window = 1000 + PROMISE_WINDOW + una_project::client::SKEW;
+    // Logged by `by`: kept, whatever the checkpoint's time now.
+    assert_eq!(judge(&submitted, Some(&promise(2000)), Some(1990), 9_000_000), Verdict::Kept);
+    // Logged after `by`: broken.
+    assert!(matches!(
+        judge(&submitted, Some(&promise(2000)), Some(2001), 9_000_000),
+        Verdict::Broken(_)
+    ));
+    // Not logged: pending until `by`, broken after.
+    assert_eq!(judge(&submitted, Some(&promise(2000)), None, 2000), Verdict::Pending);
+    assert!(matches!(judge(&submitted, Some(&promise(2000)), None, 2001), Verdict::Broken(_)));
+    // A `by` past the window is itself a broken promise.
+    assert!(matches!(
+        judge(&submitted, Some(&promise(window + 1)), Some(1100), 1100),
+        Verdict::Broken(_)
+    ));
+    // No promise: pending within the window, broken after it, kept if logged within it.
+    assert_eq!(judge(&submitted, None, None, window), Verdict::Pending);
+    assert!(matches!(judge(&submitted, None, None, window + 1), Verdict::Broken(_)));
+    assert_eq!(judge(&submitted, None, Some(window), window + 10), Verdict::Kept);
+    // A settled submission is recorded in the position, for a name not followed too, and a
+    // second run, which reads the position back, sees it settled.
+    let mut first_run = Position::start("acme", "acme");
+    first_run.settled.insert(submitted.leaf.clone(), true);
+    let second_run = Position::parse(&first_run.encode(), "acme", "acme").unwrap();
+    assert!(!second_run.names.contains_key("acme/other"));
+    assert_eq!(second_run.settled.get(&submitted.leaf), Some(&true));
+    // The chains a second run follows keep the settled submissions.
+    let mut chain = |_: &str| -> Result<Vec<Seen>, String> { Ok(Vec::new()) };
+    let report = watch(&mut chain, &second_run, &[]).unwrap();
+    assert_eq!(report.position.settled, second_run.settled);
+}
+
+// --- Advisories' thresholds and form (rules 35 and 41) --------------------------------------
+
+/// Holding a release back needs one security key; lifting the cooldown needs the root's security
+/// threshold, never fewer than two, or one security key and the owner's threshold.
+#[test]
+fn lifting_the_cooldown_needs_the_roots_security_threshold() {
+    let signers = |security: usize, owner_threshold: bool| Signers {
+        security,
+        owner_threshold,
+    };
+    assert!(!signers(0, true).valid());
+    assert!(signers(1, false).valid());
+    assert!(!signers(1, false).lifts_cooldown(1), "never fewer than two");
+    assert!(signers(2, false).lifts_cooldown(1));
+    assert!(!signers(2, false).lifts_cooldown(3), "the root asks for three");
+    assert!(signers(3, false).lifts_cooldown(3));
+    assert!(signers(1, true).lifts_cooldown(3), "one and the owner's threshold");
+    assert!(!signers(0, true).lifts_cooldown(1));
+}
 
 #[test]
-fn yanks_need_the_owner_threshold_and_advisories_a_security_key() {
-    let owner_a = key(60, "acme.a");
-    let owner_b = key(61, "acme.b");
-    let security_a = key(70, "security.a");
-    let security_b = key(71, "security.b");
-    let owners = [owner_a.key().clone(), owner_b.key().clone()];
-    let security = [security_a.key().clone(), security_b.key().clone()];
-    let text = yank_text("acme", "acme/ledger", &v("0.3.1"), Some((9, D)));
-    let one = sign_note(&text, &[&owner_a]).unwrap();
-    let both = sign_note(&text, &[&owner_a, &owner_b]).unwrap();
-    assert!(check_yank(&one, &owners, 2).unwrap_err().contains("fewer than its threshold of 2"));
-    assert_eq!(check_yank(&both, &owners, 2).unwrap().version, v("0.3.1"));
-    assert!(check_yank(&one, &owners, 1).is_ok());
-    let advisory = format!(
-        "ita-advisory/1\nsource acme\nname acme/ledger\nprevious 9 {D}\nid ITA-1\nline 0.3\naffected 0.3.1\nfixed 0.3.2 {D}\nseverity high\nsummary An overflow\n"
+fn an_advisory_names_each_version_once_and_its_fix_past_them() {
+    let advisory = |affected: &str, fixed: &str| {
+        format!(
+            "ita-advisory/1\nsource acme\nname acme/ledger\nprevious none\nid ITA-1\nline 0.3\naffected {affected}\nfixed {fixed}\nseverity high\nsummary An overflow\n"
+        )
+    };
+    assert!(parse_advisory(&advisory("0.3.0, 0.3.2", &format!("0.3.3 {D}"))).is_ok());
+    assert!(parse_advisory(&advisory("0.3.0, 0.3.0", "none")).is_err(), "twice");
+    assert!(
+        parse_advisory(&advisory("0.3.0, 0.3.2", &format!("0.3.1 {D}"))).is_err(),
+        "a fix within the affected range"
     );
-    let unsigned = sign_note(&advisory, &[&owner_a]).unwrap();
-    assert!(check_advisory(&unsigned, &security, &owners, 2).is_err());
-    let single = sign_note(&advisory, &[&security_a]).unwrap();
-    let (_, signers) = check_advisory(&single, &security, &owners, 2).unwrap();
-    assert!(signers.valid() && !signers.lifts_cooldown());
-    let two = sign_note(&advisory, &[&security_a, &security_b]).unwrap();
-    assert!(check_advisory(&two, &security, &owners, 2).unwrap().1.lifts_cooldown());
-    let with_owner = sign_note(&advisory, &[&security_a, &owner_a, &owner_b]).unwrap();
-    assert!(check_advisory(&with_owner, &security, &owners, 2).unwrap().1.lifts_cooldown());
-}
-
-#[test]
-fn the_cooldown_is_a_wait_in_witness_time() {
-    let hours = 3600;
-    assert!(!cooled(100, 100 + 71 * hours, 72 * hours, false));
-    assert!(cooled(100, 100 + 72 * hours, 72 * hours, false));
-    assert!(cooled(100, 100, 72 * hours, true), "a threshold fix lifts it");
-    // A checkpoint whose witness time is before the release waited nothing.
-    assert!(!cooled(500, 100, 1, false));
-    let mut state = BTreeMap::new();
-    for (version, yanked, advised) in [("0.3.0", false, false), ("0.3.1", true, false), ("0.3.2", false, true)] {
-        state.insert(
-            v(version),
-            ReleaseState {
-                digest: D.to_owned(),
-                logged_at: 5,
-                yanked,
-                advised: if advised { vec!["ITA-1".to_owned()] } else { Vec::new() },
-                threshold_fix: false,
-            },
-        );
-    }
-    let read = releases(&state, &|version| *version == v("0.3.0"));
-    assert!(read[0].yanked, "signed after a stated compromise");
-    assert!(read[1].yanked && !read[1].advised);
-    assert!(!read[2].yanked && read[2].advised);
 }
 
 // --- Audit and watch (rules 36, 36.2, 38, 41; U7014) ----------------------------------------
@@ -354,6 +413,7 @@ fn locked(name: &str, version: &str) -> Locked {
         name: name.to_owned(),
         version: v(version),
         logged: Some(45),
+        digest: None,
         resolution: 100,
     }
 }
@@ -383,6 +443,7 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                 compromised_since: Some(40),
                 pending: vec![130],
                 key_changes: vec![140],
+                void_yanks: vec![150],
             }
         } else {
             Facts {
@@ -391,7 +452,9 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
             }
         })
     };
-    let findings = audit::audit(&packages, &mut facts_of).unwrap();
+    let result = audit::audit(&packages, &mut facts_of);
+    assert!(result.unverified.is_empty());
+    let findings = result.findings;
     let of = |package: usize| -> Vec<Kind> {
         findings
             .iter()
@@ -411,16 +474,27 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
             Kind::Compromised { since: 40 },
             Kind::PendingRecovery(130),
             Kind::KeyChange(140),
+            Kind::VoidYank(150),
         ]
     );
     assert_eq!(of(1), [Kind::PendingRecovery(130)]);
     assert_eq!(findings[0].text(&packages[0]), "0.3.1 is yanked");
-    // Facts that cannot be had verified fail the audit: nothing is called clean unverified.
-    let mut down = |_: &Locked| -> Result<Facts, String> { Err("a bad map proof".to_owned()) };
-    assert_eq!(
-        audit::audit(&packages, &mut down).unwrap_err(),
-        (0, "a bad map proof".to_owned())
-    );
+    // A package that cannot be verified is reported, and the audit goes on with the next:
+    // nothing is called clean unverified, and no finding is hidden.
+    let mut first_down = |package: &Locked| -> Result<Facts, String> {
+        if package.version == v("0.3.1") {
+            Err("a bad map proof".to_owned())
+        } else {
+            Ok(Facts {
+                yanked: true,
+                ..Facts::default()
+            })
+        }
+    };
+    let result = audit::audit(&packages, &mut first_down);
+    assert_eq!(result.unverified, [(0, "a bad map proof".to_owned())]);
+    assert_eq!(result.findings.len(), 1);
+    assert_eq!(result.findings[0].package, 1);
 }
 
 /// The audit asks once per package and its findings are linear in its facts.
@@ -439,7 +513,7 @@ fn audit_scales_linearly() {
                 ..Facts::default()
             })
         };
-        let findings = audit::audit(&packages, &mut facts_of).unwrap();
+        let findings = audit::audit(&packages, &mut facts_of).findings;
         assert_eq!(asked, count);
         assert_eq!(findings.len(), 3 * count);
     }
@@ -454,7 +528,7 @@ fn seen(index: u64, format: &str) -> Seen {
 }
 
 #[test]
-fn watch_reports_new_entries_and_broken_promises() {
+fn watch_reports_new_entries_and_checks_its_position() {
     let chains: BTreeMap<String, Vec<Seen>> = [
         (
             "owner:acme".to_owned(),
@@ -477,38 +551,30 @@ fn watch_reports_new_entries_and_broken_promises() {
     let mut position = Position::start("acme", "acme");
     position.owner_count = 1;
     position.names.insert("acme/ledger".to_owned(), 2);
-    assert_eq!(Position::parse(&position.encode()).unwrap(), position);
-    assert!(Position::parse("ita-watch/1\nsource acme\nowner acme 01\n").is_err());
-    let promise = |leaf: String, by: u64| Promise {
-        source: "acme".to_owned(),
-        leaf,
-        by,
-        document: String::new(),
-    };
-    let kept = promise(seen(3, "").leaf, 10);
-    let late = promise(format!("sha256:{}", "cd".repeat(32)), 4000);
-    let waiting = promise(format!("sha256:{}", "ef".repeat(32)), 9000);
-    let report = watch(
-        &mut chain,
-        5000,
-        &position,
-        &[],
-        &[kept.clone(), late.clone(), waiting],
-    )
-    .unwrap();
+    assert_eq!(
+        Position::parse(&position.encode(), "acme", "acme").unwrap(),
+        position
+    );
+    // A position is read only for the source and owner it names, with names of packages.
+    assert!(Position::parse(&position.encode(), "other", "acme").is_err());
+    assert!(Position::parse(&position.encode(), "acme", "other").is_err());
+    assert!(Position::parse("ita-watch/1\nsource acme\nowner acme 01\n", "acme", "acme").is_err());
+    assert!(
+        Position::parse("ita-watch/1\nsource acme\nowner acme 0\nname Acme/X 1\n", "acme", "acme")
+            .is_err()
+    );
+    let report = watch(&mut chain, &position, &[]).unwrap();
     let new: Vec<(String, u64)> = report
         .entries
         .iter()
         .map(|(name, e)| (name.clone(), e.index))
         .collect();
     assert_eq!(new, [("acme".to_owned(), 4), ("acme/ledger".to_owned(), 3)]);
-    assert_eq!(report.kept, [kept]);
-    assert_eq!(report.broken, [late]);
     assert_eq!(report.position.owner_count, 2);
     assert_eq!(report.position.names["acme/ledger"], 3);
     // A chain that shrank is refused.
     position.names.insert("acme/ledger".to_owned(), 9);
-    assert!(watch(&mut chain, 5000, &position, &[], &[]).is_err());
+    assert!(watch(&mut chain, &position, &[]).is_err());
 }
 
 // --- Yanks and advisories read by the client (rule 41) --------------------------------------
@@ -631,8 +697,68 @@ fn a_yank_signed_after_its_keys_compromise_is_void() {
     .unwrap();
     let marks = client.marks("acme/ledger").unwrap();
     assert!(marks.yanked.is_empty(), "{marks:?}");
+    assert_eq!(marks.voided.len(), 1, "listed for the audit");
+    assert_eq!(marks.voided[0].version, v("0.3.0"));
     let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
     assert!(!state[0].yanked);
+    // The audit reports it, and does not refuse the name.
+    let facts = audit::facts(
+        &mut client,
+        &Locked {
+            source: "acme".to_owned(),
+            name: "acme/ledger".to_owned(),
+            version: v("0.3.0"),
+            logged: Some(good),
+            digest: None,
+            resolution: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(facts.void_yanks, [marks.voided[0].index]);
+    // A lock that names another digest or log index for the release is not audited as clean.
+    let mismatch = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.0"),
+        logged: Some(good + 1),
+        digest: None,
+        resolution: 0,
+    };
+    assert!(audit::facts(&mut client, &mismatch).is_err());
+}
+
+/// A second yank of a version already yanked is void and ignored, with a note.
+#[test]
+fn a_second_yank_is_void() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    test.release("acme/ledger", "0.3.0", "none", "none", &[&owner]);
+    for _ in 0..2 {
+        let yank = format!(
+            "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
+            test.previous("acme/ledger")
+        );
+        let document = support::signed(&yank, &[&owner]);
+        test.append("acme/ledger", &document);
+    }
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let marks = client.marks("acme/ledger").unwrap();
+    assert_eq!(marks.yanked.len(), 1);
+    assert_eq!(marks.voided.len(), 1);
+    assert!(marks.voided[0].why.contains("yanked already"));
 }
 
 #[test]
@@ -880,6 +1006,14 @@ fn write_key(dir: &std::path::Path, name: &str, text: &str) {
 #[test]
 fn the_owners_registered_keys_sign_at_least_its_threshold() {
     let dir = scratch("keys");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // A directory others can enter is refused first.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(owner_keys(&dir, "acme", &[], 1).unwrap_err().contains("0700"));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let a = key(80, "acme.a");
     let b = key(81, "acme.b");
     let unregistered = key(82, "acme.c");
@@ -925,9 +1059,11 @@ fn a_git_entry_in_the_directory_or_an_ancestor_is_found() {
     let package = base.join("a/b");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(base.join(".git"), "gitdir: elsewhere\n").unwrap();
-    assert_eq!(submit::git_entry(&package), Some(base.join(".git")));
+    assert_eq!(submit::git_entry(&package).unwrap(), Some(base.join(".git")));
     std::fs::create_dir(package.join(".git")).unwrap();
-    assert_eq!(submit::git_entry(&package), Some(package.join(".git")));
+    assert_eq!(submit::git_entry(&package).unwrap(), Some(package.join(".git")));
+    // It fails closed: a directory that cannot be resolved refuses.
+    assert!(submit::git_entry(&base.join("missing")).is_err());
 }
 
 #[test]

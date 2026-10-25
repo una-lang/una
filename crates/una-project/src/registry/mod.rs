@@ -9,7 +9,6 @@
 
 pub mod audit;
 pub mod bundle;
-pub mod entries;
 pub mod keyfile;
 pub mod submit;
 pub mod watch;

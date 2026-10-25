@@ -472,6 +472,10 @@ fn verify_source(
             ));
         }
         registry.marks(&package.name).map_err(|why| (index, why))?;
+        // Its logged time, from the kept checkpoints the bundle carries (rule 33).
+        registry
+            .logged_at(release.index)
+            .map_err(|why| (index, why))?;
     }
     opened
         .map(|registry| (registry.point.document.clone(), registry.root.version))

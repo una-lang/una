@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use pretty_assertions::assert_eq;
 use una_project::tlog::publish::{Release, refusals, statement};
 use una_project::tlog::release::parse_statement;
-use una_project::tlog::state::{Entry, Signers, audit, fold, parse_advisory, parse_yank};
+use una_project::tlog::state::{parse_advisory, parse_yank};
 use una_project::version::Version;
 use una_syntax::ita::parse_manifest;
 
@@ -74,81 +74,23 @@ fn the_statement_written_reads_back() {
     assert!(read.trust.contains("ledger.keys"));
 }
 
-fn release(version: &str, digest: &str, logged_at: u64) -> Entry {
-    let text = format!(
-        "ita-release/1\nsource itaty\nname acme/ledger\nversion {version}\nprevious none\ndigest {digest}\nmanifest {E}\nedition 0.4\nauthority none\ntrust none\n"
-    );
-    Entry::Release(parse_statement(&text).unwrap(), logged_at)
-}
-
 fn advisory(fixed: &str) -> String {
     format!(
         "ita-advisory/1\nsource itaty\nname acme/ledger\nprevious 3 {D}\nid ITA-2026-0007\nline 0.3\naffected 0.3.0, 0.3.1\nfixed {fixed}\nseverity high\nsummary An overflow in balances\n"
     )
 }
 
+/// A name's yanks and advisories are folded by the registry client (`Registry::marks`), whose
+/// tests are in `registry.rs`; here, their form.
 #[test]
-fn the_state_folds_releases_yanks_and_advisories() {
+fn yanks_read_strictly() {
     let yank = parse_yank(&format!(
         "ita-yank/1\nsource itaty\nname acme/ledger\nversion 0.3.0\nprevious 2 {D}\n"
     ))
     .unwrap();
-    let one_key = Signers {
-        security: 1,
-        owner_threshold: false,
-    };
-    let two_keys = Signers {
-        security: 2,
-        owner_threshold: false,
-    };
-    let fix = parse_advisory(&advisory(&format!("0.3.2 {E}"))).unwrap();
-    let entries = vec![
-        release("0.3.0", D, 100),
-        release("0.3.1", D, 200),
-        Entry::Yank(yank),
-        release("0.3.2", E, 300),
-        Entry::Advisory(fix.clone(), one_key),
-    ];
-    let state = fold(&entries).unwrap();
-    let v = |t: &str| Version::parse_full(t).unwrap();
-    assert!(state[&v("0.3.0")].yanked);
-    assert_eq!(state[&v("0.3.1")].advised, ["ITA-2026-0007"]);
-    // One security key holds a release back, never hurries one in.
-    assert!(!state[&v("0.3.2")].threshold_fix);
-    let mut lifted = entries.clone();
-    lifted[4] = Entry::Advisory(fix.clone(), two_keys);
-    assert!(fold(&lifted).unwrap()[&v("0.3.2")].threshold_fix);
-    let owner = Signers {
-        security: 1,
-        owner_threshold: true,
-    };
-    lifted[4] = Entry::Advisory(fix.clone(), owner);
-    assert!(fold(&lifted).unwrap()[&v("0.3.2")].threshold_fix);
-    // An advisory signed by no security key, a second statement for a version, a yank of
-    // nothing: each is refused.
-    lifted[4] = Entry::Advisory(
-        fix,
-        Signers {
-            security: 0,
-            owner_threshold: true,
-        },
-    );
-    assert!(fold(&lifted).is_err());
-    assert!(fold(&[release("0.3.0", D, 1), release("0.3.0", E, 2)]).is_err());
-    assert_eq!(
-        audit(&state, &v("0.3.1")),
-        ["0.3.1 is named by the advisory ITA-2026-0007"]
-    );
-    // A yanked release that an advisory also names reports both (rule 41): neither hides
-    // the other.
-    assert_eq!(
-        audit(&state, &v("0.3.0")),
-        [
-            "0.3.0 is yanked",
-            "0.3.0 is named by the advisory ITA-2026-0007"
-        ]
-    );
-    assert!(audit(&state, &v("0.3.2")).is_empty());
+    assert_eq!(yank.version, Version::parse_full("0.3.0").unwrap());
+    assert_eq!(yank.previous.unwrap().index, 2);
+    assert!(parse_yank("ita-yank/1\nsource itaty\nname acme/ledger\nversion 0.3\nprevious none\n").is_err());
 }
 
 #[test]

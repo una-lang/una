@@ -171,7 +171,9 @@ fn a_raise_waits_the_cooldown_unless_now() {
             held: Some(v("2.1.1")),
         }
     );
-    assert!(held.to_string().contains("`--now`"));
+    // A raise past a yank or an advisory points to the audit, never to skipping the cooldown.
+    assert!(held.to_string().contains("`una ita audit`"));
+    assert!(!held.to_string().contains("--now"));
     let now = Policy {
         cooldown: 0,
         ..policy()

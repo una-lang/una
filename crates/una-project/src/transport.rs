@@ -12,8 +12,10 @@
 //!   plain HTTP is never used, and neither is any scheme this client does not know.
 //!
 //! **Writing.** A submission (ADR 0122 rule 43) is written through [`Transport::put`]: once per
-//! path, a second write of other bytes refused. A directory writes through a fresh private file
-//! renamed into place; an `https://` location has no transport yet, and refuses, saying so.
+//! path, a second write of other bytes refused. A directory writes a fresh private file and
+//! links it into place with a hard link, which fails when the target exists, so no two writers
+//! replace each other's file; an `https://` location has no transport yet, and refuses, saying
+//! so.
 //!
 //! No transport starts another program.
 //!
@@ -155,33 +157,57 @@ impl Transport for Directory {
         format!("the mirror `{}`", self.root.display())
     }
 
+    /// Writes once, with no check-then-write race: the bytes go into a file of this write's
+    /// own name, then are linked into place with a hard link, which fails when the target
+    /// exists, and the staged name is removed. A file already there with the same bytes is
+    /// accepted; any other is refused. A checkpoint is never written: `checkpoint`,
+    /// `checkpoint/latest` and every path below `checkpoint/` are refused.
     fn put(&self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static STAGED: AtomicU64 = AtomicU64::new(0);
+
         let parts = segments(path)?;
-        if parts == ["checkpoint"] {
-            return Err("a submission never writes the registry's checkpoint".to_owned());
+        if parts.first() == Some(&"checkpoint") {
+            return Err("a submission never writes a registry's checkpoint".to_owned());
         }
         let Some((file, parents)) = parts.split_last() else {
             return Err(format!("`{path}` is not a path of a registry"));
         };
-        match self.get(path, bytes.len() as u64) {
-            Ok(Some(there)) if there == bytes => return Ok(()),
-            Ok(Some(_)) => {
-                return Err(format!(
-                    "another file is already at `{path}` of {}",
-                    self.describe()
-                ));
-            }
-            Ok(None) => {}
-            Err(why) => {
-                return Err(format!(
-                    "`{path}` of {} cannot be compared: {why}",
-                    self.describe()
-                ));
-            }
-        }
         tree::not_a_link(&self.root)?;
         let parent = tree::make_dirs(&self.root, parents)?;
-        tree::store_file(&parent, file, bytes, true)
+        let staged = format!(
+            ".put-{}-{}",
+            std::process::id(),
+            STAGED.fetch_add(1, Ordering::Relaxed)
+        );
+        tree::store_file(&parent, &staged, bytes, true)?;
+        let linked = std::fs::hard_link(parent.join(&staged), parent.join(file));
+        let removed = std::fs::remove_file(parent.join(&staged));
+        match linked {
+            Ok(()) => removed.map_err(|error| {
+                format!(
+                    "cannot remove the staged copy of `{path}` of {}: {error}",
+                    self.describe()
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                match self.get(path, bytes.len() as u64) {
+                    Ok(Some(there)) if there == bytes => Ok(()),
+                    Ok(_) => Err(format!(
+                        "another file is already at `{path}` of {}",
+                        self.describe()
+                    )),
+                    Err(why) => Err(format!(
+                        "`{path}` of {} cannot be compared: {why}",
+                        self.describe()
+                    )),
+                }
+            }
+            Err(error) => Err(format!(
+                "cannot write `{path}` of {}: {error}",
+                self.describe()
+            )),
+        }
     }
 }
 

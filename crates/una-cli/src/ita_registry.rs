@@ -80,6 +80,8 @@ struct Prepared {
     earlier: Option<Vec<File>>,
     /// Notes of mirrors skipped.
     notes: Vec<String>,
+    /// The witness time of the checkpoint read, from which the registry's promise window runs.
+    time: u64,
 }
 
 /// Reads what a submission of `name` to `source` needs (ADR 0122 rules 8, 38, 39, 40 and 43):
@@ -157,12 +159,8 @@ fn prepare(
         .map_err(|why| at(Code::U7013, why))?;
     let earlier = match version {
         Some(version) => {
-            let statement = state
-                .statements
-                .range(..version.clone())
-                .rev()
-                .find(|(v, _)| v.line() == version.line())
-                .map(|(_, statement)| statement.clone());
+            // The highest release of the line, in log order, as rule 26 compares.
+            let statement = submit::highest_of_line(&state, version).cloned();
             match statement {
                 Some(statement) => {
                     let bytes = registry
@@ -193,6 +191,7 @@ fn prepare(
         keys,
         earlier,
         notes,
+        time: registry.point.time,
     })
 }
 
@@ -285,6 +284,7 @@ fn authority(
 pub(crate) fn publish_command(
     path: &Path,
     keys: Option<&Path>,
+    git_variable: Option<&str>,
     solving: &Solving,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
@@ -321,7 +321,15 @@ pub(crate) fn publish_command(
     }
     // Rule 43 refuses a workspace member with uncommitted changes; until that check is
     // available, a package in a git repository is refused, and no program is started to look.
-    if let Some(git) = submit::git_entry(path) {
+    // It fails closed: a probe that cannot tell, or `GIT_DIR` or `GIT_WORK_TREE` set, which
+    // can put any directory in a repository, refuses as a `.git` entry does.
+    let found = match (git_variable, submit::git_entry(path)) {
+        (Some(variable), _) => Some(format!("`{variable}` is set")),
+        (None, Ok(Some(git))) => Some(format!("found `{}`", git.display())),
+        (None, Ok(None)) => None,
+        (None, Err(why)) => Some(why),
+    };
+    if let Some(found) = found {
         diagnostics.extend(located(
             sources,
             manifest_id,
@@ -329,8 +337,7 @@ pub(crate) fn publish_command(
                 Code::U7013,
                 head,
                 format!(
-                    "the check for uncommitted changes is not available yet, so a package in a git repository is not published (found `{}`)",
-                    git.display()
+                    "the check for uncommitted changes is not available yet, so a package that may be in a git repository is not published ({found})"
                 ),
             )],
         ));
@@ -438,12 +445,13 @@ pub(crate) fn publish_command(
         read.version.as_ref().map(|v| v.value.as_str()).unwrap_or_default(),
         prepared.url
     ));
+    let record = submitted(&submission, &prepared.url, &name, prepared.time);
     send_and_record(
         "publish",
         &submission,
         prepared.target.as_ref(),
-        (&source, &prepared.url),
-        solving.itaoca.as_ref(),
+        record,
+        (&source, solving.itaoca.as_ref()),
         lines,
         (sources, manifest_id, head),
         out,
@@ -456,8 +464,8 @@ fn send_and_record(
     command: &str,
     submission: &submit::Submission,
     transport: &dyn Transport,
-    (source, url): (&str, &str),
-    itaoca: Option<&Itaoca>,
+    record: watch::Submitted,
+    (source, itaoca): (&str, Option<&Itaoca>),
     done: Vec<String>,
     (sources, file, range): (&SourceDb, FileId, std::ops::Range<usize>),
     out: Output<'_>,
@@ -474,31 +482,50 @@ fn send_and_record(
         "the log will hold the leaf {}; `una ita watch` checks the registry's promise to log it",
         submission.leaf
     ));
-    if let Some(itaoca) = itaoca
-        && let Err(why) = record_submission(itaoca, source, submission, url)
-    {
-        lines.push(format!("the submission is not recorded in Itaoca: {why}"));
+    // A submission sent but not recorded could never be judged: the command fails, saying so.
+    let recorded = match itaoca {
+        Some(itaoca) => record_submission(itaoca, source, &record),
+        None => Err("no Itaoca: set `UNA_ITAOCA` or `HOME`".to_owned()),
+    };
+    if let Err(why) = &recorded {
+        lines.push(format!(
+            "error: the submission is not recorded in Itaoca, so its promise cannot be checked: {why}"
+        ));
     }
     let written: Vec<&str> = written.iter().map(String::as_str).collect();
-    finish(command, &written, &lines, &[], sources, out)
+    let status = finish(command, &written, &lines, &[], sources, out)?;
+    match recorded {
+        Ok(()) => Ok(status),
+        Err(_) => Ok(ExitStatus::Errors),
+    }
 }
 
-/// Records a submission sent: `registry/<source>/submitted/<leaf hex>` in Itaoca holds the URL
-/// it was sent to, where its promise appears.
+/// Records a submission sent ([`watch::Submitted`]): `registry/<source>/submitted/<leaf hex>` in
+/// Itaoca holds the URL it was sent to, where its promise appears, the name whose chain its
+/// entry joins, and the witness time it was sent at, from which the promise window runs.
 fn record_submission(
     itaoca: &Itaoca,
     source: &str,
-    submission: &submit::Submission,
-    url: &str,
+    record: &watch::Submitted,
 ) -> Result<(), String> {
     vendor::check_source(source)?;
-    let leaf = submission
-        .leaf
-        .strip_prefix("sha256:")
-        .ok_or("a leaf hash is `sha256:` and hex")?;
     tree::not_a_link(&itaoca.root)?;
     let parent = tree::make_dirs(&itaoca.root, &["registry", source, "submitted"])?;
-    tree::store_file(&parent, leaf, format!("{url}\n").as_bytes(), false)
+    tree::store_file(&parent, &record.leaf, record.encode().as_bytes(), false)
+}
+
+/// The record of `submission` of `name`, sent to `url` at the witness time `time`.
+fn submitted(submission: &submit::Submission, url: &str, name: &str, time: u64) -> watch::Submitted {
+    watch::Submitted {
+        leaf: submission
+            .leaf
+            .strip_prefix("sha256:")
+            .unwrap_or_default()
+            .to_owned(),
+        url: url.to_owned(),
+        name: name.to_owned(),
+        time,
+    }
 }
 
 /// `una ita yank <version> [path]` (ADR 0122 rules 38 and 41, and its amendment of the yank
@@ -569,12 +596,13 @@ pub(crate) fn yank_command(
     };
     let mut lines = prepared.notes.clone();
     lines.push(format!("yanked {name} {version} at `{}`", prepared.url));
+    let record = submitted(&submission, &prepared.url, &name, prepared.time);
     send_and_record(
         "yank",
         &submission,
         prepared.target.as_ref(),
-        (&source, &prepared.url),
-        itaoca,
+        record,
+        (&source, itaoca),
         lines,
         (&sources, id, head),
         out,
@@ -698,71 +726,67 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
             name: locked.name.value.to_string(),
             version,
             logged: locked.logged.as_ref().map(|l| l.value),
+            digest: locked.digest.as_ref().map(|d| d.value.clone()),
             resolution,
         });
         lines_of.push(locked);
     }
     let mut lines = Vec::new();
-    match audit::audit(&packages, facts_of) {
-        Err((index, why)) => {
-            if let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index)) {
-                problems.push(problem(
-                    Code::U7010,
-                    locked.range.clone(),
-                    format!(
-                        "the state of `{}` at `{}` cannot be verified at a fresh checkpoint: {why}; the audit reports nothing as clean that it did not verify",
-                        package.name, package.source
-                    ),
-                ));
+    let result = audit::audit(&packages, facts_of);
+    for (index, why) in &result.unverified {
+        if let (Some(locked), Some(package)) = (lines_of.get(*index), packages.get(*index)) {
+            problems.push(problem(
+                Code::U7010,
+                locked.range.clone(),
+                format!(
+                    "the state of `{}` at `{}` cannot be verified at a fresh checkpoint: {why}; the audit reports nothing as clean that it did not verify",
+                    package.name, package.source
+                ),
+            ));
+        }
+    }
+    let mut by_package: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for finding in &result.findings {
+        if let Some(package) = packages.get(finding.package) {
+            by_package
+                .entry(finding.package)
+                .or_default()
+                .push(finding.text(package));
+        }
+    }
+    for (index, texts) in by_package {
+        let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index)) else {
+            continue;
+        };
+        let message = format!(
+            "`{}` ({}): {}; run `una ita update {}`",
+            package.name,
+            package.source,
+            texts.join("; "),
+            package.name
+        );
+        // At the root's need when it needs the package directly, else at its lock line.
+        let need = project.manifest.ita.as_deref().and_then(|m| {
+            m.needs
+                .iter()
+                .find(|need| need.name.value.to_string() == package.name)
+        });
+        match need {
+            Some(need) => {
+                at_needs.push(problem(Code::U7014, need.range.clone(), message));
+            }
+            None => {
+                problems.push(problem(Code::U7014, locked.range.clone(), message));
             }
         }
-        Ok(findings) => {
-            let mut by_package: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-            for finding in &findings {
-                if let Some(package) = packages.get(finding.package) {
-                    by_package
-                        .entry(finding.package)
-                        .or_default()
-                        .push(finding.text(package));
-                }
-            }
-            for (index, texts) in by_package {
-                let (Some(locked), Some(package)) = (lines_of.get(index), packages.get(index))
-                else {
-                    continue;
-                };
-                let message = format!(
-                    "`{}` ({}): {}; run `una ita update {}`",
-                    package.name,
-                    package.source,
-                    texts.join("; "),
-                    package.name
-                );
-                // At the root's need when it needs the package directly, else at its lock
-                // line.
-                let need = project.manifest.ita.as_deref().and_then(|m| {
-                    m.needs
-                        .iter()
-                        .find(|need| need.name.value.to_string() == package.name)
-                });
-                match need {
-                    Some(need) => {
-                        at_needs.push(problem(Code::U7014, need.range.clone(), message));
-                    }
-                    None => {
-                        problems.push(problem(Code::U7014, locked.range.clone(), message));
-                    }
-                }
-            }
-            if packages.is_empty() {
-                lines.push("no registry package is locked".to_owned());
-            } else if findings.is_empty() {
-                lines.push(format!(
-                    "audited {} registry packages: none is yanked, advised, or of an owner whose keys changed",
-                    packages.len()
-                ));
-            }
-        }
+    }
+    if packages.is_empty() {
+        lines.push("no registry package is locked".to_owned());
+    } else if result.findings.is_empty() && result.unverified.is_empty() {
+        lines.push(format!(
+            "audited {} registry packages: none is yanked, advised, or of an owner whose keys changed",
+            packages.len()
+        ));
     }
     let mut diagnostics = located(sources, project.manifest_id, at_needs);
     diagnostics.extend(located(sources, project.lock_id, problems));
@@ -920,7 +944,7 @@ pub(crate) fn watch_command(
     let stored = match tree::locate(&itaoca.root, &["registry", source, "watch", &position_name]) {
         Ok(Some(file)) => match tree::read_file(&file, 1 << 20)
             .and_then(|bytes| String::from_utf8(bytes).map_err(|_| "not UTF-8".to_owned()))
-            .and_then(|text| watch::Position::parse(&text))
+            .and_then(|text| watch::Position::parse(&text, source, owner))
         {
             Ok(position) => position,
             Err(why) => {
@@ -933,17 +957,8 @@ pub(crate) fn watch_command(
         Ok(None) => watch::Position::start(source, owner),
         Err(why) => return usage(out, &why),
     };
-    let log = registry.root.log.clone();
-    let promises = match recorded_promises(itaoca, source, &log) {
-        Ok(promises) => promises,
-        Err(why) => {
-            writeln!(out.stderr, "error: {why}")?;
-            return Ok(ExitStatus::Errors);
-        }
-    };
-    let time = registry.point.time;
     let mut chain = |name: &str| watch::chain_of(&mut registry, name);
-    let report = match watch::watch(&mut chain, time, &stored, names, &promises) {
+    let mut report = match watch::watch(&mut chain, &stored, names) {
         Ok(report) => report,
         Err(why) => {
             writeln!(
@@ -962,16 +977,47 @@ pub(crate) fn watch_command(
             entry.leaf
         )
     }));
-    for promise in &report.kept {
-        lines.push(format!("kept: the promise to log {} by {}", promise.leaf, promise.by));
+    // Each submission not settled yet is judged on its own: a failure is a line of its own,
+    // and never stops the others or the entries above.
+    let mut failed = false;
+    match submissions(itaoca, source) {
+        Err(why) => {
+            failed = true;
+            lines.push(format!("error: the submissions recorded cannot be read: {why}"));
+        }
+        Ok(list) => {
+            for leaf in list {
+                if report.position.settled.contains_key(&leaf) {
+                    continue;
+                }
+                match judge_submission(itaoca, source, &leaf, &mut registry) {
+                    Ok(watch::Verdict::Pending) => {
+                        lines.push(format!("pending: the submission sha256:{leaf} is not logged yet"));
+                    }
+                    Ok(watch::Verdict::Kept) => {
+                        lines.push(format!("kept: the submission sha256:{leaf} is logged as promised"));
+                        report.position.settled.insert(leaf, true);
+                    }
+                    Ok(watch::Verdict::Broken(why)) => {
+                        failed = true;
+                        lines.push(format!(
+                            "broken: the registry's promise for sha256:{leaf}: {}; publish the promise as evidence",
+                            shown(&why)
+                        ));
+                        report.position.settled.insert(leaf, false);
+                    }
+                    Err(why) => {
+                        failed = true;
+                        lines.push(format!(
+                            "error: the submission sha256:{leaf} cannot be judged: {}",
+                            shown(&why)
+                        ));
+                    }
+                }
+            }
+        }
     }
-    for promise in &report.broken {
-        lines.push(format!(
-            "broken: the registry promised to log {} by {}, and its checkpoint is later without it; publish the promise as evidence",
-            promise.leaf, promise.by
-        ));
-    }
-    if report.entries.is_empty() && report.kept.is_empty() && report.broken.is_empty() {
+    if lines.is_empty() {
         lines.push(format!("nothing new for `{owner}` at `{source}`"));
     }
     let mut written: Vec<String> = Vec::new();
@@ -986,53 +1032,83 @@ pub(crate) fn watch_command(
         });
     match stored_position {
         Ok(()) => written.push(format!("registry/{source}/watch/{position_name}")),
-        Err(why) => lines.push(format!("the position is not stored: {why}")),
+        Err(why) => {
+            failed = true;
+            lines.push(format!("error: the position is not stored: {why}"));
+        }
     }
     let written: Vec<&str> = written.iter().map(String::as_str).collect();
     let status = finish("watch", &written, &lines, &[], &sources, out)?;
-    if report.broken.is_empty() {
-        Ok(status)
-    } else {
+    if failed {
         Ok(ExitStatus::Errors)
+    } else {
+        Ok(status)
     }
 }
 
-/// The promises of the submissions recorded in Itaoca, each read from the place it was sent to
-/// and verified with the log's key `log`: a submission whose promise has not appeared yet is
-/// skipped.
-fn recorded_promises(
-    itaoca: &Itaoca,
-    source: &str,
-    log: &una_project::tlog::note::Key,
-) -> Result<Vec<submit::Promise>, String> {
+/// The hex leaf hashes of the submissions recorded in Itaoca for `source`, sorted.
+fn submissions(itaoca: &Itaoca, source: &str) -> Result<Vec<String>, String> {
     let Some(dir) = tree::locate(&itaoca.root, &["registry", source, "submitted"])? else {
         return Ok(Vec::new());
     };
     let mut leaves: Vec<String> = std::fs::read_dir(&dir)
         .map_err(|error| format!("cannot list the submissions recorded: {error}"))?
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()))
+        .filter(|name| {
+            name.len() == 64
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
         .collect();
     leaves.sort();
-    let mut promises = Vec::new();
-    for leaf in leaves {
-        let Some(file) = tree::locate(&dir, &[leaf.as_str()])? else {
-            continue;
-        };
-        let url = String::from_utf8(tree::read_file(&file, 4096)?)
-            .map_err(|_| "a recorded submission is not UTF-8".to_owned())?;
-        let transport = transport::open(&Location::parse(url.trim_end())?);
-        let Some(bytes) = transport.get(&format!("submit/{leaf}/promise"), 1 << 16)? else {
-            continue;
-        };
-        let document =
-            String::from_utf8(bytes).map_err(|_| "a promise is not UTF-8".to_owned())?;
-        promises.push(
-            submit::check_promise(&document, log, source, &format!("sha256:{leaf}"))
-                .map_err(|why| shown(&why))?,
-        );
-    }
-    Ok(promises)
+    Ok(leaves)
+}
+
+/// Judges the submission recorded as `leaf` ([`watch::judge`]): its record, its promise read
+/// from the place it was sent to and verified with the log's key of the last root, and whether
+/// its entry is in the name's verified chain at the checkpoint read, with the witness time it
+/// was logged at.
+fn judge_submission(
+    itaoca: &Itaoca,
+    source: &str,
+    leaf: &str,
+    registry: &mut Registry<'_>,
+) -> Result<watch::Verdict, String> {
+    let file = tree::locate(&itaoca.root, &["registry", source, "submitted", leaf])?
+        .ok_or("the record is gone")?;
+    let text = String::from_utf8(tree::read_file(&file, 4096)?)
+        .map_err(|_| "the record is not UTF-8".to_owned())?;
+    let record = watch::Submitted::parse(leaf, &text)?;
+    let transport = transport::open(&Location::parse(&record.url)?);
+    let promise = match transport.get(&format!("submit/{leaf}/promise"), 1 << 16)? {
+        None => None,
+        Some(bytes) => {
+            let document =
+                String::from_utf8(bytes).map_err(|_| "its promise is not UTF-8".to_owned())?;
+            Some(submit::check_promise(
+                &document,
+                &registry.root.log,
+                source,
+                &format!("sha256:{leaf}"),
+            )?)
+        }
+    };
+    let target = format!("sha256:{leaf}");
+    let index = watch::chain_of(registry, &record.name)?
+        .into_iter()
+        .find(|entry| entry.leaf == target)
+        .map(|entry| entry.index);
+    let logged_at = match index {
+        Some(index) => Some(registry.logged_at(index)?),
+        None => None,
+    };
+    Ok(watch::judge(
+        &record,
+        promise.as_ref(),
+        logged_at,
+        registry.point.time,
+    ))
 }
 
 /// The registry packages of the project's lock, as their provenance must show them; or the
@@ -1209,6 +1285,8 @@ fn bundle_source(
             let version = Version::parse_full(&one.version).map_err(fail)?;
             let release = registry.release(&one.name, &version).map_err(fail)?;
             registry.marks(&one.name).map_err(fail)?;
+            // Read so the kept checkpoints that time its entry travel in the bundle (rule 33).
+            registry.logged_at(release.index).map_err(fail)?;
             if release.index != one.logged || release.statement.digest != one.digest {
                 return Err(fail(format!(
                     "the registry's `{} {}` is not the lock's: its log index or digest differs",
@@ -1282,13 +1360,11 @@ pub(crate) fn unbundle_command(
     let Some(itaoca) = itaoca else {
         return usage(out, "no Itaoca to fill: set `UNA_ITAOCA` or `HOME`");
     };
-    let bytes = match std::fs::metadata(file) {
-        Ok(meta) if meta.len() <= bundle::MAX_BYTES => match std::fs::read(file) {
-            Ok(bytes) => bytes,
-            Err(error) => return usage(out, &format!("cannot read `{}`: {error}", file.display())),
-        },
-        Ok(_) => return usage(out, &format!("`{}` is larger than a bundle may be", file.display())),
-        Err(error) => return usage(out, &format!("cannot read `{}`: {error}", file.display())),
+    // Opened with no link followed, checked on the opened descriptor to be a regular file, and
+    // read at most one byte past the largest bundle.
+    let bytes = match tree::read_user_file(file, bundle::MAX_BYTES) {
+        Ok(read) => read.bytes,
+        Err(why) => return usage(out, &format!("cannot read the bundle: {why}")),
     };
     let project = match project(path) {
         Ok(project) => project,

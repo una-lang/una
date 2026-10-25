@@ -27,6 +27,8 @@ pub struct Locked {
     pub version: Version,
     /// Its log index, when the lock records it.
     pub logged: Option<u64>,
+    /// Its content digest, as the lock records it.
+    pub digest: Option<String>,
     /// The lock's resolution point at its source: the checkpoint's size.
     pub resolution: u64,
 }
@@ -45,6 +47,9 @@ pub struct Facts {
     pub pending: Vec<u64>,
     /// The first log positions of its owner's key changes after the lock's resolution point.
     pub key_changes: Vec<u64>,
+    /// The log indexes of the yanks of it that are void: counted only with a compromised key,
+    /// or repeating a yank.
+    pub void_yanks: Vec<u64>,
 }
 
 /// The facts of `locked` from `registry`, opened at a fresh checkpoint of its source: its name's
@@ -53,6 +58,18 @@ pub struct Facts {
 /// logged releases.
 pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refusal> {
     let release = registry.release(&locked.name, &locked.version)?;
+    // The release the registry holds is the one the lock names, by log index and digest.
+    if locked.logged.is_some_and(|logged| logged != release.index)
+        || locked
+            .digest
+            .as_ref()
+            .is_some_and(|digest| *digest != release.statement.digest)
+    {
+        return Err(format!(
+            "the registry's `{} {}` is not the one the lock names: its log index or digest differs",
+            locked.name, locked.version
+        ));
+    }
     let marks = registry.marks(&locked.name)?;
     let history = registry.history(owner_of(&locked.name))?;
     let advisories = marks
@@ -84,6 +101,12 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
             .map(|s| s.from)
             .filter(|from| *from > locked.resolution)
             .collect(),
+        void_yanks: marks
+            .voided
+            .iter()
+            .filter(|void| void.version == locked.version)
+            .map(|void| void.index)
+            .collect(),
     })
 }
 
@@ -110,6 +133,9 @@ pub enum Kind {
     PendingRecovery(u64),
     /// A key change of its owner since the resolution point, from this log position.
     KeyChange(u64),
+    /// A yank of its release at this log index that is void: it does not stand, yet it shows
+    /// that someone holding a compromised key, or its owner again, tried to yank it.
+    VoidYank(u64),
 }
 
 /// A finding: the package, by its index among the packages audited, and what was found.
@@ -146,6 +172,9 @@ impl Finding {
                 "the keys of the owner `{}` changed after the lock's resolution point (from log position {index})",
                 owner_of(&locked.name)
             ),
+            Kind::VoidYank(index) => format!(
+                "a yank of {version} at log entry {index} is void: it counts only with a key revoked as compromised, or repeats a yank"
+            ),
         }
     }
 }
@@ -169,23 +198,37 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
     }
     kinds.extend(facts.pending.iter().map(|index| Kind::PendingRecovery(*index)));
     kinds.extend(facts.key_changes.iter().map(|from| Kind::KeyChange(*from)));
+    kinds.extend(facts.void_yanks.iter().map(|index| Kind::VoidYank(*index)));
     kinds
         .into_iter()
         .map(|kind| Finding { package, kind })
         .collect()
 }
 
-/// Audits `packages`, each with the facts `facts_of` gives, which a verified client reads.
-/// `Err` names the package whose facts could not be had, verified, and why: nothing is
-/// reported as clean that was not verified.
+/// The result of an audit: the findings, and each package whose facts could not be had,
+/// verified, with why.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Audit {
+    /// The findings, by package, in the order audited.
+    pub findings: Vec<Finding>,
+    /// The packages not verified, by index, and why: none of them is called clean.
+    pub unverified: Vec<(usize, Refusal)>,
+}
+
+/// Audits `packages`, each with the facts `facts_of` gives, which a verified client reads. A
+/// package whose facts cannot be had verified is listed in [`Audit::unverified`], and the audit
+/// goes on with the next: nothing is reported as clean that was not verified, and one failure
+/// hides no finding of another. O(P) calls of `facts_of`.
 pub fn audit(
     packages: &[Locked],
     facts_of: &mut dyn FnMut(&Locked) -> Result<Facts, Refusal>,
-) -> Result<Vec<Finding>, (usize, Refusal)> {
-    let mut out = Vec::new();
+) -> Audit {
+    let mut out = Audit::default();
     for (index, locked) in packages.iter().enumerate() {
-        let facts = facts_of(locked).map_err(|why| (index, why))?;
-        out.extend(findings(index, &facts));
+        match facts_of(locked) {
+            Ok(facts) => out.findings.extend(findings(index, &facts)),
+            Err(why) => out.unverified.push((index, why)),
+        }
     }
-    Ok(out)
+    out
 }

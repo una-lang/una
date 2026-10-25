@@ -37,10 +37,11 @@
 //!
 //! - **a name's yanks and advisories** (rule 41, [`Registry::marks`]): a yank stands only when
 //!   the owner's threshold of keys valid at its position signs it, and names a release logged
-//!   before it; an advisory only when a security key of the root signs it, and it names the
-//!   releases it affects; it lifts the cooldown for the fix it names by digest only with a
-//!   second security key or the owner's threshold besides. Resolution reads them through
-//!   [`Registry::state`].
+//!   before it; one that counts only with a compromised key, or that repeats a yank, is void and
+//!   ignored. An advisory stands only when a security key of the root signs it, and it names
+//!   the releases it affects; it lifts the cooldown for the fix it names by digest only with
+//!   the root's security threshold of security keys, never fewer than two, or one and the
+//!   owner's threshold. Resolution reads them through [`Registry::state`].
 //!
 //! A failure is a refusal, U7010 where `una ita` reports it, naming the registry and what failed.
 //! An entry of a kind this client does not read yet (a transfer) refuses the name, so nothing is
@@ -367,6 +368,20 @@ pub struct Marks {
     pub advisories: BTreeMap<String, (u64, Advisory)>,
     /// The releases that an advisory lifting the cooldown names, by digest, as its fix.
     pub threshold_fix: BTreeSet<Version>,
+    /// The yanks that do not stand and are ignored, in log order: one that counts only with a
+    /// key compromised before it, and a second yank of a version already yanked.
+    pub voided: Vec<Void>,
+}
+
+/// A yank ignored as void (rule 41): its log index, the version it names, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Void {
+    /// Its log index.
+    pub index: u64,
+    /// The version it names.
+    pub version: Version,
+    /// Why it does not stand.
+    pub why: String,
 }
 
 /// One registry, read through one transport, at one checkpoint.
@@ -968,15 +983,21 @@ impl<'t> Registry<'t> {
         Ok(out)
     }
 
-    /// The yanks and advisories of `name` at the point (rule 41), each verified, in log order:
-    /// a yank of this source and name, of a release logged before it, signed by the owner's
-    /// threshold of keys valid at its position after the cascade of compromises
-    /// ([`History::signed`]), a yank that counts only with a compromised key being void and
-    /// ignored; the owner's threshold counts toward an advisory only on the same terms; an advisory of this source and name, signed by at
-    /// least one security key of the root, naming releases logged before it, which lifts the
-    /// cooldown for the fix it names by digest only with a second security key or the owner's
-    /// threshold besides. Any other refuses the name: it is evidence that the registry logged
-    /// what it must not. O(E) after the chain.
+    /// The yanks and advisories of `name` at the point (rule 41), each verified, in log order.
+    ///
+    /// - A yank of this source and name, of a release logged before it, stands when the owner's
+    ///   threshold of keys valid at its position, after the cascade of compromises
+    ///   ([`History::signed`]), signs it. One that reaches the threshold only with a key
+    ///   compromised before its position, and a second yank of a version already yanked, are
+    ///   void: ignored, and listed in [`Marks::voided`] for `una ita audit`.
+    /// - An advisory of this source and name stands when at least one security key of the root
+    ///   signs it, and names releases logged before it; it lifts the cooldown for the fix it
+    ///   names by digest only with the root's security threshold of security keys, never fewer
+    ///   than two, or one security key and the owner's threshold ([`Signers::lifts_cooldown`]).
+    ///   An identifier given twice refuses the name.
+    ///
+    /// Any other refuses the name: it is evidence that the registry logged what it must not.
+    /// O(E) after the chain.
     pub fn marks(&mut self, name: &str) -> Result<Marks, Refusal> {
         if let Some(marks) = self.marks.get(name) {
             return Ok(marks.clone());
@@ -985,6 +1006,7 @@ impl<'t> Registry<'t> {
         let releases = self.releases(name)?;
         let history = self.history(owner_of(name))?;
         let security = self.root.security.keys.clone();
+        let security_threshold = self.root.security.threshold;
         let logged = |version: &Version, before: u64| {
             releases
                 .iter()
@@ -1014,6 +1036,12 @@ impl<'t> Registry<'t> {
                     if let Err(why) = history.signed(&entry.note, index) {
                         let threshold = history.at(index).map_or(usize::MAX, |s| s.threshold);
                         if history.signers(&entry.note, index).len() >= threshold {
+                            marks.voided.push(Void {
+                                index,
+                                version: yank.version.clone(),
+                                why: "it counts only with a key revoked as compromised before it"
+                                    .to_owned(),
+                            });
                             continue;
                         }
                         return Err(self.refuse(format!(
@@ -1021,7 +1049,15 @@ impl<'t> Registry<'t> {
                             yank.version
                         )));
                     }
-                    marks.yanked.entry(yank.version.clone()).or_insert(index);
+                    if marks.yanked.contains_key(&yank.version) {
+                        marks.voided.push(Void {
+                            index,
+                            version: yank.version.clone(),
+                            why: "the version is yanked already".to_owned(),
+                        });
+                        continue;
+                    }
+                    marks.yanked.insert(yank.version.clone(), index);
                 }
                 Kind::Advisory(advisory) => {
                     if advisory.source != self.source || advisory.name != name {
@@ -1060,7 +1096,7 @@ impl<'t> Registry<'t> {
                             .push(advisory.id.clone());
                     }
                     if let Some(fix) = &advisory.fixed
-                        && signers.lifts_cooldown()
+                        && signers.lifts_cooldown(security_threshold)
                     {
                         fixes.push(fix.clone());
                     }

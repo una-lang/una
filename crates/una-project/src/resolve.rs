@@ -136,7 +136,8 @@ pub enum Problem {
     /// A release needs its own identity.
     SelfNeed(Identity),
     /// A selection must be raised, and no release qualifies; `held` is the newest candidate
-    /// the cooldown holds back, which `--now` takes.
+    /// the cooldown holds back. A raise past a yank or an advisory is no reason to skip the
+    /// cooldown, so the message points to `una ita audit`, not to `--now`.
     NoRaise {
         /// The identity.
         identity: Identity,
@@ -166,7 +167,7 @@ impl fmt::Display for Problem {
                 held: Some(held),
             } => write!(
                 f,
-                "{identity} must be raised past {from}, and {held} is within the cooldown; `--now` takes it"
+                "{identity} must be raised past {from}, which is yanked, under an advisory or avoided, and the release that would replace it, {held}, is within the cooldown; run `una ita audit` to see why {from} is left, and wait out the cooldown or name another release"
             ),
             Problem::NoRaise {
                 identity,

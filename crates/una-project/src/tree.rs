@@ -400,6 +400,66 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     read_exactly(&handle, size, path)
 }
 
+/// A file the user names, as [`read_user_file`] read it.
+#[derive(Debug)]
+pub struct UserFile {
+    /// Its bytes.
+    pub bytes: Vec<u8>,
+    /// Whether its permission bits, read from the opened descriptor, grant nothing to the group
+    /// or to others.
+    pub private: bool,
+}
+
+/// Reads a file the user names, such as a bundle or a key file, of at most `limit` bytes: opened
+/// with no link followed at its last component, checked on the opened descriptor to be the
+/// regular file listed, and read through it, at most `limit + 1` bytes, so a file that grows
+/// while it is read is refused rather than read without bound. Its permission bits are read
+/// from the same descriptor.
+pub fn read_user_file(path: &Path, limit: u64) -> Result<UserFile, Refusal> {
+    let flags = flags()?;
+    let (handle, size) = open_regular(path, flags, flags.no_follow, false)?;
+    let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
+    if size > limit {
+        return Err(format!(
+            "`{}` holds more than {limit} bytes",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    Read::take(&handle, limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| cannot("read", path, &e))?;
+    if !u64::try_from(bytes.len()).is_ok_and(|read| read <= limit) {
+        return Err(format!(
+            "`{}` holds more than {limit} bytes",
+            path.display()
+        ));
+    }
+    Ok(UserFile {
+        bytes,
+        private: private(&opened),
+    })
+}
+
+/// Whether `path` is a directory, not a link, whose permission bits grant nothing to the group
+/// or to others: a directory of secrets, such as `~/.una/keys`.
+pub fn private_dir(path: &Path) -> Result<(), Refusal> {
+    let meta = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(format!(
+            "`{}` is not a directory, or is a link",
+            path.display()
+        ));
+    }
+    if !private(&meta) {
+        return Err(format!(
+            "`{}` can be read or entered by others; make it its owner's only (mode 0700)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// A file [`list`] found: its path in the package, on disk, its identity and its size.
 #[derive(Clone, Debug)]
 struct Listed {

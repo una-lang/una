@@ -21,10 +21,11 @@
 //! by 1900003600
 //! ```
 //!
-//! `by` is the registry's own commitment: the entry is logged by then. A promise is broken when
-//! a checkpoint whose witness time is past `by` does not include the entry; it is evidence
-//! against the registry, which `una ita watch` reports and the owner can publish. No rule takes
-//! `by` as a time of anything but that commitment.
+//! `by` is the registry's own commitment: the entry is logged by then. Kept means logged by
+//! `by`; a promise is broken when the entry is not, when its `by` is past the window the
+//! submission allows, and a submission with no promise within the window is broken too
+//! ([`crate::registry::watch::judge`]); it is evidence against the registry, which
+//! `una ita watch` reports and the owner can publish.
 //!
 //! Costs: O(B) to build and hash the archive of B bytes, O(f log f) to list its f files, one
 //! signature per key, and O(c log c) for rule 26 over c capabilities.
@@ -49,13 +50,26 @@ use crate::version::Version;
 /// The `.git` entry, a directory or a file, of `dir` or of the nearest of its ancestors up to
 /// the file system's root, if any. Publishing from inside a git repository is refused while the
 /// check for uncommitted changes (rule 43) is not available, and no program is started to look:
-/// only the entries' presence is read. O(d) for a path of d components.
-pub fn git_entry(dir: &Path) -> Option<PathBuf> {
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    canonical
-        .ancestors()
-        .map(|ancestor| ancestor.join(".git"))
-        .find(|entry| std::fs::symlink_metadata(entry).is_ok())
+/// only the entries' presence is read. It fails closed: a directory that cannot be resolved, and
+/// an entry that cannot be probed for any reason but its absence, are `Err`, which refuses the
+/// publication as a git repository does. O(d) for a path of d components.
+pub fn git_entry(dir: &Path) -> Result<Option<PathBuf>, Refusal> {
+    let canonical = std::fs::canonicalize(dir)
+        .map_err(|error| format!("cannot resolve `{}`: {error}", dir.display()))?;
+    for ancestor in canonical.ancestors() {
+        let entry = ancestor.join(".git");
+        match std::fs::symlink_metadata(&entry) {
+            Ok(_) => return Ok(Some(entry)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot tell whether `{}` exists: {error}",
+                    entry.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The declaration of `source` for the package at `dir` (rules 8 and 43): only the root and
@@ -212,12 +226,14 @@ impl NameState {
     }
 }
 
-/// The highest release of `version`'s line below it in `state`, whose statement rule 26
-/// compares against. O(log R) for R releases.
-fn earlier<'s>(state: &'s NameState, version: &Version) -> Option<&'s Statement> {
+/// The highest release of `version`'s line that `state` holds, whose statement rule 26 compares
+/// a new release against: every release of the name is logged before the new one, so this is the
+/// highest release of the identity logged before it, as the client compares in log order
+/// (`spec/30 §14` rule 6), whether it is above or below the new version. O(R) for R releases.
+pub fn highest_of_line<'s>(state: &'s NameState, version: &Version) -> Option<&'s Statement> {
     state
         .statements
-        .range(..version.clone())
+        .iter()
         .rev()
         .find(|(v, _)| v.line() == version.line())
         .map(|(_, statement)| statement)
@@ -293,7 +309,7 @@ pub fn release(
     )
     .map_err(|refusal| vec![refusal])?;
     let statement = release::parse_statement(&text).map_err(|refusal| vec![refusal])?;
-    if let Some(earlier) = earlier(state, &version) {
+    if let Some(earlier) = highest_of_line(state, &version) {
         release::within(&statement, earlier).map_err(|refusal| {
             vec![format!(
                 "{refusal}; authority grows only in a new major version (rule 26)"
@@ -307,6 +323,21 @@ pub fn release(
         archive: Some(archive),
         digest: Some(digest),
     })
+}
+
+/// The text of a yank of `version` of `name` at `source`, after `previous`, the head of the
+/// name's chain: `ita-yank/1`, `source`, `name`, `version` and `previous`, each on its line.
+pub fn yank_text(
+    source: &str,
+    name: &str,
+    version: &Version,
+    previous: Option<(u64, &str)>,
+) -> String {
+    let previous = match previous {
+        Some((index, leaf)) => format!("{index} {leaf}"),
+        None => "none".to_owned(),
+    };
+    format!("ita-yank/1\nsource {source}\nname {name}\nversion {version}\nprevious {previous}\n")
 }
 
 /// Builds the submission of a yank of `version`, which `state` holds, signed by `keys`
@@ -329,7 +360,7 @@ pub fn yank(
         return Err("no signing key is given; a yank is signed by the owner's keys".to_owned());
     }
     let head = state.head.as_ref().map(|(index, leaf)| (*index, leaf.as_str()));
-    let text = super::entries::yank_text(&state.source, &state.name, version, head);
+    let text = yank_text(&state.source, &state.name, version, head);
     let entry = sign_note(&text, keys)?;
     Ok(Submission {
         leaf: leaf_of(&entry),
@@ -420,10 +451,4 @@ pub fn check_promise(
         by,
         document: document.to_owned(),
     })
-}
-
-/// Whether `promise` is broken at a checkpoint of witness time `checkpoint_time` that does not
-/// include its entry, which `logged` says: its time `by` has passed, and the entry is not logged.
-pub fn broken(promise: &Promise, checkpoint_time: u64, logged: bool) -> bool {
-    !logged && checkpoint_time > promise.by
 }

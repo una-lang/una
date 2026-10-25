@@ -89,16 +89,27 @@ impl SigningKey {
             .next()
             .and_then(|line| line.strip_prefix("name "))
             .ok_or("a key file's second line is `name <key name>`")?;
-        let secret: [u8; 32] = lines
+        let mut decoded = lines
             .next()
             .and_then(|line| line.strip_prefix("secret "))
             .and_then(base64)
-            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            .ok_or("a key file's third line is `secret` and 32 bytes of base64")?;
-        if lines.next().is_some() {
-            return Err("a key file has three lines".to_owned());
+            .unwrap_or_default();
+        let mut secret = [0u8; 32];
+        let fits = decoded.len() == secret.len();
+        if fits {
+            secret.copy_from_slice(&decoded);
         }
-        SigningKey::from_secret(name, &secret)
+        wipe(&mut decoded);
+        if !fits {
+            return Err("a key file's third line is `secret` and 32 bytes of base64".to_owned());
+        }
+        let key = if lines.next().is_some() {
+            Err("a key file has three lines".to_owned())
+        } else {
+            SigningKey::from_secret(name, &secret)
+        };
+        wipe(&mut secret);
+        key
     }
 
     /// The key file of this key, in the form [`SigningKey::parse`] reads.
@@ -152,35 +163,42 @@ pub fn sign_note(text: &str, keys: &[&SigningKey]) -> Result<String, String> {
     Ok(note)
 }
 
+/// Overwrites `bytes`, a copy of a secret, with zeros once it is no longer needed: a best effort
+/// in safe code only, `fill(0)` then [`std::hint::black_box`] so the writes are not optimized
+/// away. It cannot reach copies the allocator or the signing library made, which is why a key
+/// file encrypted with a passphrase is the default of rule 38.
+pub fn wipe(bytes: &mut [u8]) {
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+}
+
 /// The most bytes of a key file.
 pub const MAX_KEY_FILE: u64 = 4096;
 
-/// Reads the key file at `path`: a regular file, not a link, of at most [`MAX_KEY_FILE`] bytes,
-/// and on Unix readable and writable by its owner only (rule 38), in the form
-/// [`SigningKey::parse`] reads.
+/// Reads the key file at `path` (rule 38): opened with no link followed, and checked on the
+/// opened descriptor to be a regular file of at most [`MAX_KEY_FILE`] bytes, read through it at
+/// most one byte more, and on Unix readable and writable by its owner only; in the form
+/// [`SigningKey::parse`] reads. Every copy of the file's bytes is wiped ([`wipe`]).
 pub fn read_key_file(path: &Path) -> Result<SigningKey, String> {
     let shown = path.display();
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("cannot read the key file `{shown}`: {error}"))?;
-    if !meta.is_file() {
-        return Err(format!("the key file `{shown}` is not a regular file"));
+    let file = crate::tree::read_user_file(path, MAX_KEY_FILE)
+        .map_err(|why| format!("the key file `{shown}`: {why}"))?;
+    if !file.private {
+        let mut bytes = file.bytes;
+        wipe(&mut bytes);
+        return Err(format!(
+            "the key file `{shown}` can be read by others; make it readable by its owner only (mode 0600)"
+        ));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o077 != 0 {
-            return Err(format!(
-                "the key file `{shown}` can be read by others; make it readable by its owner only (mode 0600)"
-            ));
-        }
-    }
-    if meta.len() > MAX_KEY_FILE {
-        return Err(format!("the key file `{shown}` is too long"));
-    }
-    let bytes = crate::tree::read_unlinked(path)?;
-    let text =
-        String::from_utf8(bytes).map_err(|_| format!("the key file `{shown}` is not UTF-8"))?;
-    SigningKey::parse(&text).map_err(|why| format!("the key file `{shown}`: {why}"))
+    let text = String::from_utf8(file.bytes).map_err(|error| {
+        let mut bytes = error.into_bytes();
+        wipe(&mut bytes);
+        format!("the key file `{shown}` is not UTF-8")
+    })?;
+    let key = SigningKey::parse(&text).map_err(|why| format!("the key file `{shown}`: {why}"));
+    let mut bytes = text.into_bytes();
+    wipe(&mut bytes);
+    key
 }
 
 /// The keys of `owner` in `dir`, `~/.una/keys/`, that sign for it (rule 38), read strictly:
@@ -202,16 +220,17 @@ pub fn owner_keys(
     threshold: usize,
 ) -> Result<Vec<SigningKey>, String> {
     let prefix = format!("{owner}-");
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
+    match std::fs::symlink_metadata(dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
                 "`{}` holds no key of `{owner}`; a release is signed by the owner's keys",
                 dir.display()
             ));
         }
-        Err(error) => return Err(format!("cannot list `{}`: {error}", dir.display())),
-    };
+        _ => crate::tree::private_dir(dir)?,
+    }
+    let entries =
+        std::fs::read_dir(dir).map_err(|error| format!("cannot list `{}`: {error}", dir.display()))?;
     let mut names: Vec<String> = entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .filter(|name| {

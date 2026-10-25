@@ -1162,7 +1162,17 @@ fn run_command(
                         let solving = solving(DEFAULT_WALLCLOCK.as_secs());
                         let home = variable(environment, "HOME");
                         let keys = ita_registry::keys_dir(home.as_deref());
-                        ita_registry::publish_command(&path, keys.as_deref(), &solving, output)
+                        let git_variable = ["GIT_DIR", "GIT_WORK_TREE"]
+                            .into_iter()
+                            // Set at all, even to a value that is not UTF-8.
+                            .find(|name| !matches!(environment(name), Ok(None)));
+                        ita_registry::publish_command(
+                            &path,
+                            keys.as_deref(),
+                            git_variable,
+                            &solving,
+                            output,
+                        )
                     }
                     ItaCommand::Yank { version, path } => {
                         let store = itaoca(environment);
