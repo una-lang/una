@@ -24,7 +24,7 @@ pub fn root() -> PathBuf {
 pub fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let mut args = vec!["build", "--quiet", "-p", "una-rt"];
+        let mut args = vec!["build", "--quiet", "--locked", "-p", "una-rt"];
         if !cfg!(debug_assertions) {
             args.push("--release");
         }

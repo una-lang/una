@@ -13,8 +13,9 @@
 //! - the release gate `timing-channels` of `scripts/release-gates.sh` (`docs/release-gates.md`).
 //!
 //! Both run `cargo test --release --locked -p una-cli --test timing_channels -- --ignored
-//! --test-threads=1`. They run in release form, `una` and the runtime both release builds
-//! (`common/native_build.rs` builds the release runtime under `--release`): timings of the
+//! --test-threads=1 --nocapture`, so every run's time and outcome is recorded. They run in
+//! release form, `una` and the runtime both release builds (`common/native_build.rs` builds
+//! the release runtime under `--release`): timings of the
 //! debug runtime, with its checks of reference counts, are not meaningful. Each oracle follows
 //! ADR 0116, amendment §G: a deadline over `public` work, two inputs compared with each other,
 //! 20 runs of each, alternating.
