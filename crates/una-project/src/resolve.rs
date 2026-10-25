@@ -105,6 +105,10 @@ pub struct Bounds {
     pub needs: usize,
     /// Releases read for one name.
     pub releases: usize,
+    /// Visits over every pass of rule 22 together, each pass's visits counted again: a pass
+    /// run again visits nothing new for `visited`, so this caps how many passes a graph can
+    /// force.
+    pub total: usize,
 }
 
 impl Default for Bounds {
@@ -114,6 +118,7 @@ impl Default for Bounds {
             packages: 10_000,
             needs: 1_000,
             releases: 10_000,
+            total: 400_000,
         }
     }
 }
@@ -231,7 +236,9 @@ pub struct Resolution {
 /// Costs: O(N + R) per pass, plus O(log K) per visit to find a release and O(S) per raise for
 /// the S releases it examines; a pass is repeated only when it discovers a pre-release named
 /// beyond the root, at most once per such identity, and the bound of releases visited counts
-/// each distinct release once over every pass, so no input does more than the bounds allow.
+/// each distinct release once over every pass; a second bound caps the visits of every pass
+/// together, so a chain of pre-releases each naming the next, which forces a pass per link, is
+/// refused rather than walked quadratically. No input does more than the bounds allow.
 /// A need that names a pre-release admits pre-releases of its identity itself, in every pass.
 /// A pass that fails and admits no new identity reports its least failure by identity and
 /// version; one that admits a new identity is run again, since the failure may be a need that
@@ -261,6 +268,7 @@ pub fn resolve(
             .map(Need::identity)
             .collect(),
         visited: HashSet::new(),
+        visits: 0,
         work: 0,
     };
     let named = loop {
@@ -432,6 +440,8 @@ struct Resolver<'a> {
     pre_allowed: HashSet<Identity>,
     /// Each (identity, version) visited, over every pass, for the bound of rule 23.
     visited: HashSet<(Identity, Version)>,
+    /// Visits over every pass together, for the bound `total`.
+    visits: usize,
     /// Visits, need edges, lookups and releases examined by raises, for the scaling test.
     work: usize,
 }
@@ -460,6 +470,13 @@ impl Resolver<'_> {
         let mut dirty: BTreeSet<Identity> = BTreeSet::new();
         loop {
             while let Some((identity, version)) = work.pop() {
+                self.visits += 1;
+                if self.visits > self.bounds.total {
+                    return Err(Problem::Bound(format!(
+                        "more than {} visits of releases over every pass, which pre-releases named one beyond another force",
+                        self.bounds.total
+                    )));
+                }
                 self.work += 1;
                 let release = match self.release(&identity, &version) {
                     Ok(release) => release,

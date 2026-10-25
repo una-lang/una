@@ -980,6 +980,13 @@ pub fn store_file_once(
 /// store of the user's own, and the same inode shows the entry is the stored file's own
 /// second link, so nothing else is touched. Then the file must have one link; otherwise the
 /// refusal says so. O(e) for the e entries of its directory, only when a stray is there.
+///
+/// Two limits, both failing closed. The calls go by path, so a process of the same user that
+/// swaps a `.una-fresh-*` directory between the check and the removal could have a link
+/// elsewhere removed; a sibling change to `una-sys` moves this onto calls relative to the
+/// directory's descriptor (`unlinkat`), which close that window. And a reader that runs while
+/// another process is storing the same file can clear the link that process is about to
+/// remove itself, which then fails its store: a false failure, never a wrong file.
 pub fn clear_stray_links(path: &Path) -> Result<(), Refusal> {
     let meta = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
     if !meta.is_file() || links(&meta) <= 1 {

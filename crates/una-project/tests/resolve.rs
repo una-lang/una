@@ -316,19 +316,20 @@ fn resolution_is_linear_in_the_graph() {
         let mut rng = XorShift(0x2545_f491_4f6c_dd1d);
         let mut r = Registry::default();
         let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
-        for i in 0..n {
+        for name in &names {
             let needs: Vec<(&str, &str)> = (0..5)
                 .map(|_| names[rng.below(n)].as_str())
-                .filter(|name| *name != names[i])
-                .map(|name| (name, "1.0"))
+                .filter(|other| *other != name.as_str())
+                .map(|other| (other, "1.0"))
                 .collect();
-            r.add(&names[i], "1.0.0", &needs);
+            r.add(name, "1.0.0", &needs);
         }
         let root: Vec<Need> = (0..n).step_by(97).map(|i| need(&names[i], "1.0")).collect();
         let unbounded = Bounds {
             visited: usize::MAX,
             packages: usize::MAX,
             needs: usize::MAX,
+            total: usize::MAX,
             ..Bounds::default()
         };
         let mut best = f64::MAX;
@@ -369,14 +370,14 @@ fn pre_releases_and_raises_cost_nothing_per_skipped_release() {
         let mut r = Registry::default();
         let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
         let versions: Vec<String> = (1..=5).map(|patch| format!("1.0.{patch}")).collect();
-        for i in 0..n {
+        for (i, name) in names.iter().enumerate() {
             let next = names[(i + 1) % n].as_str();
             let at = versions[i % versions.len()].as_str();
-            r.add(&names[i], "1.0.0", &[(next, at)]).yanked = true;
+            r.add(name, "1.0.0", &[(next, at)]).yanked = true;
             for k in 0..pre {
-                r.add(&names[i], &format!("1.1.0-p.{k}"), &[]);
+                r.add(name, &format!("1.1.0-p.{k}"), &[]);
             }
-            r.add(&names[i], "1.1.0", &[(next, at)]);
+            r.add(name, "1.1.0", &[(next, at)]);
         }
         let root: Vec<Need> = names.iter().map(|name| need(name, "1.0")).collect();
         let resolution = resolve(&root, &r, &policy(), Bounds::default()).unwrap();
@@ -449,6 +450,63 @@ fn a_pass_run_again_does_not_eat_the_bound() {
         resolve(&root, &r, &policy(), bounds(2)),
         Err(Problem::Bound(_))
     ));
+}
+
+/// A chain of pre-releases, each reached only once its identity admits pre-releases and naming
+/// the next identity's, forces a pass per link: the visits of every pass together are capped,
+/// and the chain is refused at the cap rather than walked quadratically, while it resolves
+/// under the default bounds and a two-pass graph stays well under a small cap.
+#[test]
+fn passes_forced_by_a_chain_of_pre_releases_are_capped() {
+    let links = 50;
+    let mut r = Registry::default();
+    let names: Vec<String> = (0..links).map(|i| format!("c{i}")).collect();
+    for (i, name) in names.iter().enumerate() {
+        r.add(name, "1.0.5-rc.1", &[]);
+        let next: Vec<(&str, &str)> = names
+            .get(i + 1)
+            .map(|next| vec![(next.as_str(), "1.0.5-rc.1")])
+            .unwrap_or_default();
+        r.add(name, "1.1.0-rc.1", &next);
+        r.add(name, "1.2.0", &[]);
+    }
+    // `c0 1.0.5-rc.1` admits c0, whose `1.0.6` need then reaches its `1.1.0-rc.1`, which names
+    // c1, admitted in the next pass, and so on.
+    let mut root = vec![need("c0", "1.0.5-rc.1")];
+    root.extend(names.iter().map(|name| need(name, "1.0.6")));
+    let resolution = resolve(&root, &r, &policy(), Bounds::default()).unwrap();
+    assert!(
+        resolution
+            .list
+            .values()
+            .all(|version| *version == v("1.1.0-rc.1")),
+        "{:?}",
+        resolution.list
+    );
+    let capped = Bounds {
+        total: 1_000,
+        ..Bounds::default()
+    };
+    let refused = resolve(&root, &r, &policy(), capped);
+    assert!(
+        matches!(
+            &refused,
+            Err(Problem::Bound(message)) if message.contains("more than 1000 visits")
+        ),
+        "{refused:?}"
+    );
+    // Two passes over three releases: six visits, under a cap of twelve.
+    let mut two = Registry::default();
+    two.add("x", "1.0.0", &[("a", "1.1.0-beta")]);
+    two.add("a", "1.1.0-beta", &[]);
+    two.add("a", "1.2.0", &[]);
+    let small = Bounds {
+        visited: 3,
+        total: 12,
+        ..Bounds::default()
+    };
+    let root = [need("a", "1.0"), need("x", "1.0")];
+    assert!(resolve(&root, &two, &policy(), small).is_ok());
 }
 
 /// A pass that fails reports its least failure, by identity and version, whatever the order of
