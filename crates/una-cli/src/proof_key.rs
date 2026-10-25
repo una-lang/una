@@ -3,8 +3,9 @@
 //! random bytes and readable by the user only. Each entry of a package's cache carries a tag
 //! under this key, so the cache leaves the Trusted zone and the key joins it instead.
 //!
-//! An existing key file is used only when it is a regular file, not a symbolic link, owned by
-//! the user who runs `una` and neither readable nor writable by anyone else. When there is no
+//! An existing key file is used only when it is a regular file, not a symbolic link, with one
+//! link, owned by the user who runs `una`, of 16 to 4096 bytes, and used when its mode grants
+//! nothing to group or others. When there is no
 //! key to read or make, the cache is off: every obligation is solved, and the build report's
 //! `tcb.proof_cache_key` is `null`. That is never an error; for a key file that exists but is
 //! refused, [`resolve`] returns the reason, and the command line prints a note.
@@ -58,6 +59,8 @@ pub(crate) enum Refusal {
     Shared,
     /// The file has another hard link, a name someone else may have made for it.
     HardLinked,
+    /// The file is shorter than 16 bytes or longer than 4 KiB, so it is not a key.
+    Size,
 }
 
 impl std::fmt::Display for Refusal {
@@ -68,7 +71,21 @@ impl std::fmt::Display for Refusal {
             Refusal::NotOwned => "another user owns it",
             Refusal::Shared => "the group or others have permissions on it",
             Refusal::HardLinked => "it has another hard link",
+            Refusal::Size => "it is not 16 to 4096 bytes long",
         })
+    }
+}
+
+impl Refusal {
+    /// What the user can do about the refusal, which ends the note the command line prints.
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Refusal::Shared => "chmod 600 it",
+            Refusal::Link | Refusal::NotRegular | Refusal::NotOwned | Refusal::HardLinked => {
+                "replace it with a private regular file"
+            }
+            Refusal::Size => "remove it, and a new key is made",
+        }
     }
 }
 
@@ -79,9 +96,9 @@ pub(crate) struct Refused {
     pub(crate) reason: Refusal,
 }
 
-/// The key, read or made; `Ok(None)` when there is none to use, as when there is no home or
-/// the key is too short; and the refusal of a key file that exists but is not a private
-/// regular file of the user, which the command line reports. This function prints nothing.
+/// The key, read or made; `Ok(None)` when there is none to use, as when there is no home; and
+/// the refusal of a key file that exists but is not a private regular file of the user of 16 to
+/// 4096 bytes, which the command line reports. This function prints nothing.
 pub(crate) fn resolve(environment: Environment<'_>) -> Result<Option<ProofKey>, Refused> {
     let (path, shown) = match crate::variable(environment, OVERRIDE)
         .filter(|value| !value.is_empty())
@@ -101,7 +118,13 @@ pub(crate) fn resolve(environment: Environment<'_>) -> Result<Option<ProofKey>, 
         Ok(None) => return Ok(None),
         Err(reason) => return Err(Refused { shown, reason }),
     };
-    Ok((secret.len() >= MINIMUM).then_some(ProofKey { secret, shown }))
+    if secret.len() < MINIMUM {
+        return Err(Refused {
+            shown,
+            reason: Refusal::Size,
+        });
+    }
+    Ok(Some(ProofKey { secret, shown }))
 }
 
 /// The bytes of the key file at `path`, made first when it does not exist; an existing file is
@@ -210,10 +233,7 @@ fn read_private(path: &Path) -> std::io::Result<Result<Vec<u8>, Refusal>> {
     let mut bytes = Vec::new();
     file.take(MAXIMUM + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAXIMUM {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "the proof cache key file is larger than 4 KiB",
-        ));
+        return Ok(Err(Refusal::Size));
     }
     Ok(Ok(bytes))
 }
@@ -342,12 +362,12 @@ mod tests {
         }
         assert_eq!(key_of(&environment).unwrap(), made);
         assert!(!format!("{made:?}").contains(&format!("{:?}", made.secret)));
-        // A key too short, or no home and no override, is no key.
+        // A key too short is refused; no home and no override is no key.
         let other = dir.join("other.key");
         write_private(&other, b"short");
         let other_name = other.to_str().unwrap().to_owned();
         let overriding = move |name: &str| Ok((name == OVERRIDE).then(|| other_name.clone()));
-        assert_eq!(resolve(&overriding), Ok(None));
+        assert_eq!(refusal(&overriding), Some(Refusal::Size));
         assert_eq!(resolve(&|_: &str| Ok(None)), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -389,14 +409,14 @@ mod tests {
         write_private(&writable, &[7u8; 32]);
         std::fs::set_permissions(&writable, std::fs::Permissions::from_mode(0o620)).unwrap();
         assert_eq!(refusal(&named(&writable)), Some(Refusal::Shared));
-        // A key with a second link, or longer than 4 KiB, is not used.
+        // A key with a second link, or longer than 4 KiB, is refused.
         let linked = dir.join("linked-twice.key");
         write_private(&linked, &[7u8; 32]);
         std::fs::hard_link(&linked, dir.join("second-name.key")).unwrap();
         assert_eq!(refusal(&named(&linked)), Some(Refusal::HardLinked));
         let long = dir.join("long.key");
         write_private(&long, &[7u8; 4097]);
-        assert_eq!(resolve(&named(&long)), Ok(None));
+        assert_eq!(refusal(&named(&long)), Some(Refusal::Size));
         let longest = dir.join("longest.key");
         write_private(&longest, &[7u8; 4096]);
         assert_eq!(key_of(&named(&longest)).unwrap().secret.len(), 4096);

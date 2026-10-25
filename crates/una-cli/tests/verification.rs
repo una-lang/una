@@ -1018,9 +1018,17 @@ fn a_planted_proof_cache_entry_never_proves_a_false_contract_1164() {
             named.to_str().unwrap()
         );
         assert!(stderr(&output).contains(&note), "{}", stderr(&output));
+        // Under `--json` stderr stays empty, and stdout is one valid document.
+        let output = run(None, Some(named.as_path()), &["--json", "check"]);
+        assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+        assert_eq!(stderr(&output), "");
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(document["schema"], "una.diagnostics/1");
         let output = run(None, Some(link.as_path()), &["check"]);
         assert!(
-            stderr(&output).contains("(it is a symbolic link); the proof cache is off"),
+            stderr(&output).contains(
+                "(it is a symbolic link); the proof cache is off (replace it with a private regular file)\n"
+            ),
             "{}",
             stderr(&output)
         );

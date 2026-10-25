@@ -298,15 +298,21 @@ where
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
     // never makes one. A key file that exists but is not a private regular file of the user
     // turns the cache off, with a note (#1164).
-    let resolve_key = |stderr: &mut dyn Write| match proof_key::resolve(environment) {
+    let resolve_key = |stderr: &mut dyn Write, json: bool| match proof_key::resolve(environment) {
         Ok(key) => key,
         Err(refused) => {
-            // A note that cannot be written changes nothing about the command.
-            let _ = writeln!(
-                stderr,
-                "note: the proof cache key `{}` is not a private regular file of the user ({}); the proof cache is off (chmod 600 it)",
-                refused.shown, refused.reason
-            );
+            // Under `--json` stderr stays empty (`spec/13 §5`, ADR 0015): the report's
+            // `tcb.proof_cache_key: null` is the signal there. A note that cannot be written
+            // changes nothing about the command.
+            if !json {
+                let _ = writeln!(
+                    stderr,
+                    "note: the proof cache key `{}` is not a private regular file of the user ({}); the proof cache is off ({})",
+                    refused.shown,
+                    refused.reason,
+                    refused.reason.hint()
+                );
+            }
             None
         }
     };
@@ -320,7 +326,7 @@ where
             } => {
                 // Tier 0 never verifies, so it needs no key.
                 let key = if matches!(tier, TierArg::One) {
-                    resolve_key(stderr)
+                    resolve_key(stderr, cli.json)
                 } else {
                     None
                 };
@@ -342,7 +348,7 @@ where
                 requirement,
                 solver_wallclock,
             } => {
-                let key = resolve_key(stderr);
+                let key = resolve_key(stderr, cli.json);
                 let options = trace::TraceOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
@@ -357,7 +363,7 @@ where
                 path,
                 solver_wallclock,
             } => {
-                let key = resolve_key(stderr);
+                let key = resolve_key(stderr, cli.json);
                 let options = report::ReportOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
@@ -372,7 +378,7 @@ where
                 path,
                 solver_wallclock,
             } => {
-                let key = resolve_key(stderr);
+                let key = resolve_key(stderr, cli.json);
                 let options = verification::ObligationsOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
@@ -401,7 +407,7 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
-                let key = resolve_key(stderr);
+                let key = resolve_key(stderr, cli.json);
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
@@ -420,7 +426,7 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
-                let key = resolve_key(stderr);
+                let key = resolve_key(stderr, cli.json);
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
