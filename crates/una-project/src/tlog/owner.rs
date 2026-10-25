@@ -524,6 +524,9 @@ struct Request {
     /// Whether it never takes effect, whatever its cancellations: it competed, the chain froze
     /// before it took effect, or it is a co-signer change that a recovery or a dispute ended.
     ended: bool,
+    /// Whether its cosigners overruled a cancellation of it: later cancellations by owner keys
+    /// do not count.
+    overruled: bool,
 }
 
 impl History {
@@ -673,6 +676,49 @@ impl History {
     }
 }
 
+/// Evidence that a registry logged an owner's chain that does not settle (`spec/30 §14` rule 5):
+/// its claims of compromise change at every replay up to the pass cap. A valid chain always
+/// settles within it, so a registry that follows the rules never logs such a chain; a client
+/// refuses the owner's names (U7010) and reports this against the registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unsettled {
+    /// The owner whose chain does not settle.
+    pub owner: String,
+    /// The first log index whose claim differs between the last two replays: where the
+    /// oscillation shows.
+    pub index: u64,
+    /// The replays made: the pass cap.
+    pub passes: usize,
+}
+
+/// Why [`replay`] refuses an owner's chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayError {
+    /// The chain breaks a rule of the owners' entries, or its effects could not be read: why.
+    Refused(String),
+    /// The chain does not settle within the pass cap: registry misbehavior.
+    Unsettled(Unsettled),
+}
+
+impl From<String> for ReplayError {
+    fn from(why: String) -> ReplayError {
+        ReplayError::Refused(why)
+    }
+}
+
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplayError::Refused(why) => f.write_str(why),
+            ReplayError::Unsettled(unsettled) => write!(
+                f,
+                "the chain of `{}` does not settle within {} replays of its claims of compromise, first at the log index {}",
+                unsettled.owner, unsettled.passes, unsettled.index
+            ),
+        }
+    }
+}
+
 /// The most keys an owner's chain may name over its whole history, owner keys and recovery
 /// cosigners, applied or void: a bound on what each entry's signatures are checked against.
 pub const MAX_KNOWN: usize = 1024;
@@ -690,6 +736,21 @@ fn verified(note: &Note, key: &Key) -> bool {
 #[cfg(test)]
 fn verified(note: &Note, key: &Key) -> bool {
     model::modeled(note, key).unwrap_or_else(|| note.signed_by(key))
+}
+
+/// Whether the rules that end the race of a last-moment cancellation hold: an overruling counts
+/// after a recovery's seven days, binds against later cancellations, and the cosigners may claim
+/// the owner's last key. Every build but this crate's own unit tests has them, always.
+#[cfg(not(test))]
+fn race_fixed() -> bool {
+    true
+}
+
+/// Whether the rules that end the race of a last-moment cancellation hold: in this crate's unit
+/// tests, a test may turn them off for its own thread, to show the model finds the race.
+#[cfg(test)]
+fn race_fixed() -> bool {
+    model::race_fixed()
 }
 
 /// Whether `key` signs `note`, one verification counted in `checks`.
@@ -733,7 +794,9 @@ type Claim = ([u8; 32], u64);
 /// keys are compromised and a later recovery or dispute, which needs no owner key, cures the
 /// chain. Any other claim is dropped: a thief's lone claim, signed with a key the owner claimed,
 /// never stands. The chain is replayed until the claims settle, which a valid chain does within
-/// the pass cap; one that does not is refused.
+/// the pass cap; one that does not stops at the cap, the same on every run, and is refused as
+/// [`ReplayError::Unsettled`], naming the first log index whose claim differs between the last
+/// two replays.
 ///
 /// **Void entries.** An entry whose required signatures are met only with a compromised key is
 /// void, and changes nothing; so is a later entry that is not signed as required once the void
@@ -753,7 +816,7 @@ pub fn replay(
     entries: &[Logged<'_>],
     log: &Key,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
-) -> Result<History, String> {
+) -> Result<History, ReplayError> {
     // The owner key each name brought in, and the index that brought it: registrations,
     // additions, recoveries and disputes, never cosigners.
     let mut introduced: BTreeMap<&str, Claim> = BTreeMap::new();
@@ -770,28 +833,16 @@ pub fn replay(
         }
     }
     let mut checks = 0u64;
-    // The `since` of each revocation that states one, by its index. A revocation that the key
-    // it names signs is that key's own word, which whoever holds the key, a thief included, can
-    // give: it states nothing of the past, and its `since` is taken as no earlier than its own
-    // index.
-    let mut sinces: BTreeMap<u64, u64> = BTreeMap::new();
-    for logged in entries {
-        if let Event::Revoke {
-            name,
-            since: Some(since),
-        } = &logged.entry.event
-        {
-            let own = introduced.get(name.as_str()).is_some_and(|(public, _)| {
-                let key = Key {
-                    name: name.clone(),
-                    public: *public,
-                };
-                signs(logged.note, &key, &mut checks)
-            });
-            let floor = if own { logged.index } else { 0 };
-            sinces.insert(logged.index, (*since).max(floor));
-        }
-    }
+    // The `since` of each revocation that states one, by its index.
+    let sinces: BTreeMap<u64, u64> = entries
+        .iter()
+        .filter_map(|logged| match &logged.entry.event {
+            Event::Revoke {
+                since: Some(since), ..
+            } => Some((logged.index, *since)),
+            _ => None,
+        })
+        .collect();
     let mut claims: BTreeMap<u64, Claim> = entries
         .iter()
         .filter_map(|logged| match &logged.entry.event {
@@ -813,6 +864,8 @@ pub fn replay(
     // valid chain settles within twice the number of claims plus two passes. A chain that does
     // not is refused rather than read half-settled.
     let cap = 2 * claims.len() + 2;
+    // The first index whose claim the last pass changed.
+    let mut last_change: Option<u64> = None;
     for _ in 0..cap {
         let mut compromised: BTreeMap<[u8; 32], u64> = BTreeMap::new();
         for (public, since) in claims.values() {
@@ -831,23 +884,33 @@ pub fn replay(
         checks += history.checks;
         history.checks = checks;
         // The claims that stand, each resolved in this pass to the key its revocation removed
-        // and that key's own introduction.
+        // and that key's own introduction; one that counts only with the signature of the key
+        // it names starts no earlier than its own index.
         let next: BTreeMap<u64, Claim> = claims
             .keys()
             .filter_map(|index| {
-                let (public, at) = standing.get(index)?;
+                let ((public, at), own) = standing.get(index)?;
                 let since = sinces.get(index)?;
-                Some((*index, (*public, (*since).max(*at))))
+                let floor = if *own { *index } else { 0 };
+                Some((*index, (*public, (*since).max(*at).max(floor))))
             })
             .collect();
         if next == claims {
             return Ok(history);
         }
+        last_change = claims
+            .keys()
+            .chain(next.keys())
+            .filter(|index| claims.get(index) != next.get(index))
+            .min()
+            .copied();
         claims = next;
     }
-    Err(format!(
-        "the chain of `{owner}` does not settle within {cap} replays of its claims of compromise"
-    ))
+    Err(ReplayError::Unsettled(Unsettled {
+        owner: owner.to_owned(),
+        index: last_change.unwrap_or_default(),
+        passes: cap,
+    }))
 }
 
 /// The state of an owner while its chain is replayed.
@@ -896,12 +959,17 @@ struct Revocation {
     target: Option<Claim>,
     /// The owner keys that signed it.
     signers: Vec<[u8; 32]>,
+    /// Whether it meets its requirement only with the signature of the key it names: that
+    /// key's own word, which a thief holding it can give, so its claim states nothing of the
+    /// past.
+    own: bool,
 }
 
 /// One replay of the chain with the keys `compromised` taken as compromised since their
 /// positions. Returns the history and, for each revocation with `since` that stands in this
 /// pass (applied, or void only because its signers are compromised), the key it removes or
-/// names and that key's introduction index.
+/// names and that key's introduction index, and whether only that key's own signature met the
+/// revocation's requirement.
 #[allow(clippy::too_many_lines)]
 fn replay_once(
     owner: &str,
@@ -911,7 +979,7 @@ fn replay_once(
     compromised: &BTreeMap<[u8; 32], u64>,
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
-) -> Result<(History, BTreeMap<u64, Claim>), String> {
+) -> Result<(History, BTreeMap<u64, (Claim, bool)>), String> {
     let mut state = Owner {
         keys: Vec::new(),
         threshold: 1,
@@ -980,6 +1048,24 @@ fn replay_once(
         };
         let by_log = signs(note, log, &mut checks);
         let threshold = state.threshold;
+        // A revocation with `since` that meets its requirement only with the signature of the
+        // key it names: without it, the other sound signers and the cosigners fall short.
+        let own = match &entry.event {
+            Event::Revoke {
+                name,
+                since: Some(_),
+            } => target(&state, name).is_some_and(|(named, _)| {
+                let others: Vec<Key> = sound_signing
+                    .iter()
+                    .filter(|key| key.public != named)
+                    .cloned()
+                    .collect();
+                signing.iter().any(|key| key.public == named)
+                    && count_distinct(&others) < threshold
+                    && !by_cosigners
+            }),
+            _ => false,
+        };
         let decision = match &entry.event {
             Event::Register { keys: registered, .. } => {
                 if at != 0 || entry.previous.is_some() {
@@ -1014,12 +1100,12 @@ fn replay_once(
                         "asks a recovery of Itaúna, whose keys only the root changes",
                     ));
                 }
-                if dispute && state.cosigners.is_some() && frozen.is_none() {
-                    return Err(refuse(
-                        "is a dispute of an owner with recovery cosigners, who recover it instead",
-                    ));
-                }
-                let met = by_log && (dispute || state.cosigners.is_none() || by_cosigners);
+                // A dispute of an owner with cosigners in effect is not signed as its kind
+                // requires: they recover it instead.
+                let barred = dispute && state.cosigners.is_some() && frozen.is_none();
+                let met = !barred
+                    && by_log
+                    && (dispute || state.cosigners.is_none() || by_cosigners);
                 verdict(met, met)
             }
             Event::Cancel(_) => verdict(owners_sound >= 1, owners_all >= 1),
@@ -1043,9 +1129,17 @@ fn replay_once(
         // names signs it, since it may depend on that entry; refused otherwise. The keys the
         // chain names are checked only here.
         let decision = match decision {
-            Verdict::Refuse if !voided.is_empty() || state.overflowed => {
-                let mut by_known = false;
-                for key in &state.known {
+            // A request not yet in effect may be one whose effect a place delayed, up to the
+            // resolution point: what depends on it is void, never a refusal of the chain.
+            Verdict::Refuse
+                if !voided.is_empty()
+                    || state.overflowed
+                    || requests.values().any(|r| !r.applied && !r.ended) =>
+            {
+                // A recovery or a dispute the log's key signed may depend on such a request too.
+                let mut by_known =
+                    by_log && matches!(entry.event, Event::Recover(_) | Event::Dispute(_));
+                for key in state.known.iter().filter(|_| !by_known) {
                     if signs(note, key, &mut checks) {
                         by_known = true;
                         break;
@@ -1088,6 +1182,7 @@ fn replay_once(
                         applied: false,
                         target: target(&state, name),
                         signers: signing.iter().map(|k| k.public).collect(),
+                        own,
                     });
                 }
                 continue;
@@ -1108,6 +1203,7 @@ fn replay_once(
                     applied: true,
                     target: target(&state, name),
                     signers: signing.iter().map(|k| k.public).collect(),
+                    own,
                 }),
                 Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => state.know([key]),
                 Event::Cosigners(Some((_, list))) => state.know(list.iter()),
@@ -1178,8 +1274,19 @@ fn replay_once(
                     applied: true,
                     target: target(&state, name),
                     signers: signing.iter().map(|k| k.public).collect(),
+                    own,
                 };
-                if let Some(position) = state.keys.iter().position(|k| k.name == *name) {
+                // The cosigners' claim on the owner's last key: a claim only, since an owner
+                // keeps at least one key; what that key signed after `p` no longer counts.
+                let last_claimed = race_fixed()
+                    && since.is_some()
+                    && by_cosigners
+                    && state.keys.len() == 1
+                    && state.keys.iter().any(|k| k.name == *name);
+                if last_claimed {
+                    unchanged(entry.threshold, state.threshold)?;
+                    revocations.push(record);
+                } else if let Some(position) = state.keys.iter().position(|k| k.name == *name) {
                     if entry.threshold > state.keys.len() - 1 {
                         return Err(refuse("sets a threshold above the owner's keys"));
                     }
@@ -1227,6 +1334,7 @@ fn replay_once(
                         guard: state.cosigners.clone(),
                         applied: false,
                         ended: false,
+                        overruled: false,
                     },
                 );
             }
@@ -1285,15 +1393,17 @@ fn replay_once(
                         guard: state.cosigners.clone(),
                         applied: false,
                         ended: competes,
+                        overruled: false,
                     },
                 );
             }
             Event::Cancel(request) => {
                 unchanged(entry.threshold, state.threshold)?;
-                // A cancellation of a dispute, of a request in effect, or of none, changes
-                // nothing.
+                // A cancellation of a dispute, of a request in effect, of a recovery whose
+                // cosigners overruled a cancellation of it, or of none, changes nothing.
                 if let Some(pending) = requests.get_mut(request)
                     && !matches!(pending.ask, Ask::Dispute(_))
+                    && !(race_fixed() && pending.overruled)
                     && pending.effect.is_none_or(|effect| index < effect)
                 {
                     pending.cancelled_by.insert(index);
@@ -1303,14 +1413,28 @@ fn replay_once(
             Event::Overrule(cancel) => {
                 unchanged(entry.threshold, state.threshold)?;
                 // An overruling lifts one cancellation of a recovery; the recovery stands again
-                // only when every cancellation of it is overruled. A cancellation of a
-                // co-signer change cannot be overruled.
-                if let Some(recovery) = cancels.get(cancel)
-                    && let Some(request) = requests.get_mut(recovery)
+                // only when every cancellation of it is overruled. It counts whenever it is
+                // logged before the recovery took effect, after its seven days included: the
+                // recovery then takes effect from the entry after the overruling. A
+                // cancellation of a co-signer change cannot be overruled.
+                let fixed = race_fixed();
+                if let Some(recovery) = cancels.get(cancel).copied()
+                    && let Some(request) = requests.get_mut(&recovery)
                     && matches!(request.ask, Ask::Recover(_))
-                    && request.effect.is_none_or(|effect| index < effect)
+                    && !request.applied
+                    && !request.ended
+                    && (fixed || request.effect.is_none_or(|effect| index < effect))
                 {
                     request.cancelled_by.remove(cancel);
+                    if fixed {
+                        request.overruled = true;
+                        if request.cancelled_by.is_empty()
+                            && request.effect.is_some_and(|effect| effect <= index)
+                        {
+                            request.effect = Some(index + 1);
+                            scheduled.entry(index + 1).or_default().push(recovery);
+                        }
+                    }
                 }
             }
         }
@@ -1324,7 +1448,7 @@ fn replay_once(
     // only for want of a sound key, only when the key it names itself signed a revocation,
     // applied or so void, of one of its signers: revocations that cancel each other. A thief's
     // lone claim, signed by a key the owner claimed, does not stand.
-    let mut standing: BTreeMap<u64, Claim> = BTreeMap::new();
+    let mut standing: BTreeMap<u64, (Claim, bool)> = BTreeMap::new();
     for record in revocations.iter().filter(|r| r.claims) {
         let Some(claim) = record.target else {
             continue;
@@ -1337,7 +1461,7 @@ fn replay_once(
                     && other.signers.contains(&claim.0)
             });
         if stands {
-            standing.insert(record.index, claim);
+            standing.insert(record.index, (claim, record.own));
         }
     }
     let pending = requests
@@ -1493,5 +1617,7 @@ fn apply(
     });
 }
 
+/// The exhaustive model of the replay, and its hooks: only in this crate's test build, the
+/// extension point for checks of package-chain events against owners' keys.
 #[cfg(test)]
-mod model;
+pub(crate) mod model;

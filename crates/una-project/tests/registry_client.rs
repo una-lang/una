@@ -1871,3 +1871,136 @@ fn a_claim_signed_by_the_key_it_names_states_nothing_of_the_past() {
     let releases = client.releases("acme/ledger").unwrap();
     assert!(releases[0].compromised && !releases[1].compromised);
 }
+
+/// A chain that does not settle, which a registry must never log, fed directly: `A` adds the
+/// thief's `T`, then `T` alone claims `A` compromised since 0. Assuming the claim voids `T`'s
+/// addition and so the claim; dropping it brings both back. The replay stops at its pass cap,
+/// the same on every run, refuses the owner's names, and records the registry's misbehavior.
+#[test]
+fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
+    let a = keypair(60, "acme.a");
+    let t = keypair(66, "acme.t");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.owner_event("acme", &format!("add {}", key_text(&t.1)), 1, &[&a, &t]);
+    let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[&t]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&t]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let refusal = |client: &mut Registry<'_>| client.history("acme").unwrap_err();
+    let mut client = open(&memory, &registry).unwrap();
+    let first = refusal(&mut client);
+    assert!(
+        first.contains("logged an owner chain that does not settle")
+            && first.contains("registry misbehavior")
+            && first.contains("`acme`")
+            && first.contains(&format!("first at the log index {claim}")),
+        "{first}"
+    );
+    // The same stop on every run, and on a client of its own.
+    assert_eq!(refusal(&mut client), first);
+    let mut again = open(&memory, &registry).unwrap();
+    assert_eq!(refusal(&mut again), first);
+    assert!(client.releases("acme/ledger").is_err());
+    assert_eq!(
+        client.misbehavior(),
+        &[owner::Unsettled {
+            owner: "acme".to_owned(),
+            index: claim,
+            passes: 4,
+        }]
+    );
+    assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
+}
+
+/// The last-moment cancellation: a thief holding the owner's only key cancels its recovery just
+/// before the seven days end, and the effect checkpoint follows before the cosigners can
+/// overrule it. The overruling still counts, after the seven days, and the recovery takes effect
+/// from the entry after it.
+#[test]
+fn an_overruling_after_the_seven_days_still_counts() {
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a], 1, &[&x], 1);
+    registry.checkpoint(NOW - 30 * DAY);
+    let recovery = registry.recover("acme", "recover", &n.1, &[&x]);
+    registry.checkpoint(NOW - 29 * DAY);
+    let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
+    registry.checkpoint(NOW - 22 * DAY - 12 * 3600);
+    registry.append("other", "filler");
+    let effect = registry.checkpoint(NOW - 21 * DAY);
+    let overrule = registry.owner_event("acme", &format!("overrule {cancel}"), 1, &[&x]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&n]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert_eq!(client.recovery_effect(recovery).unwrap(), Some(effect));
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.took_effect.get(&recovery), Some(&(overrule + 1)));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(!releases[0].compromised);
+}
+
+/// Once the cosigners overruled a cancellation of a recovery, a later cancellation by an owner
+/// key does not count, and the recovery takes effect at its seven days.
+#[test]
+fn a_cancellation_after_an_overruling_does_not_count() {
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a], 1, &[&x], 1);
+    registry.checkpoint(NOW - 30 * DAY);
+    let recovery = registry.recover("acme", "recover", &n.1, &[&x]);
+    registry.checkpoint(NOW - 29 * DAY);
+    let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
+    registry.owner_event("acme", &format!("overrule {cancel}"), 1, &[&x]);
+    let again = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
+    registry.append("other", "filler");
+    let effect = registry.checkpoint(NOW - 21 * DAY);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&n]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.took_effect.get(&recovery), Some(&effect));
+    assert!(
+        history
+            .cancellations
+            .get(&recovery)
+            .is_some_and(|c| !c.contains(&again) && c.is_empty()),
+        "{:?}",
+        history.cancellations
+    );
+    assert!(!client.releases("acme/ledger").unwrap()[0].compromised);
+}
+
+/// The cosigners' threshold claims the owner's last key compromised, as a claim only: the key
+/// stays, and the release it signed after the claimed position is skipped.
+#[test]
+fn the_cosigners_claim_the_last_key_and_void_the_thiefs_releases() {
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a], 1, &[&x], 1);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&x]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&0));
+    assert_eq!(history.snapshots.last().unwrap().keys, vec![a.1.clone()]);
+    assert!(client.releases("acme/ledger").unwrap()[0].compromised);
+}

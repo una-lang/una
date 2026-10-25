@@ -63,7 +63,7 @@ use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Checkpoint, Key, Note};
-use crate::tlog::owner::{self, History, Standing};
+use crate::tlog::owner::{self, History, ReplayError, Standing, Unsettled};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
 use crate::tlog::state::{self, Advisory, Signers, Yank};
@@ -437,6 +437,8 @@ pub struct Registry<'t> {
     kept: BTreeMap<u64, Option<Kept>>,
     seen: Vec<Cosigned>,
     histories: BTreeMap<String, History>,
+    /// The owner chains seen not to settle, evidence against the registry, in the order seen.
+    misbehavior: Vec<Unsettled>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
     chains: BTreeMap<String, Vec<ChainEntry>>,
     marks: BTreeMap<String, Marks>,
@@ -581,6 +583,7 @@ impl<'t> Registry<'t> {
             point: accepted,
             kept: BTreeMap::new(),
             histories: BTreeMap::new(),
+            misbehavior: Vec::new(),
             releases: BTreeMap::new(),
             chains: BTreeMap::new(),
             marks: BTreeMap::new(),
@@ -907,6 +910,13 @@ impl<'t> Registry<'t> {
         Ok(Some(self.first_timed(low)?.0))
     }
 
+    /// The registry misbehavior this client has seen: each owner chain the registry logged that
+    /// does not settle ([`owner::Unsettled`]), whose names it refused (U7010), for `una ita
+    /// audit` to report as evidence against the registry.
+    pub fn misbehavior(&self) -> &[Unsettled] {
+        &self.misbehavior
+    }
+
     /// The keys of `owner` over the log up to the point, replayed from its chain; Itaúna's are
     /// the root's (rule 38.1).
     pub fn history(&mut self, owner_name: &str) -> Result<History, Refusal> {
@@ -939,8 +949,24 @@ impl<'t> Registry<'t> {
             let log = self.root.log.clone();
             let source = self.source.clone();
             let mut effect = |index: u64| self.recovery_effect(index);
-            owner::replay(owner_name, &source, &logged, &log, &mut effect)
-                .map_err(|why| format!("the registry `{source}`: {}", shown(&why)))?
+            let replayed = owner::replay(owner_name, &source, &logged, &log, &mut effect);
+            match replayed {
+                Ok(history) => history,
+                Err(ReplayError::Refused(why)) => {
+                    return Err(format!("the registry `{source}`: {}", shown(&why)));
+                }
+                Err(ReplayError::Unsettled(unsettled)) => {
+                    let message = format!(
+                        "the registry `{source}` logged an owner chain that does not settle, which is registry misbehavior: the claims of compromise of `{}` change at every replay, first at the log index {}",
+                        shown(&unsettled.owner),
+                        unsettled.index
+                    );
+                    if !self.misbehavior.contains(&unsettled) {
+                        self.misbehavior.push(unsettled);
+                    }
+                    return Err(message);
+                }
+            }
         };
         self.histories
             .insert(owner_name.to_owned(), history.clone());
