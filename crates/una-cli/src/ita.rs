@@ -890,8 +890,9 @@ fn resolve_and_lock(
         let effect_line = old_registry
             .and_then(|registry| registry.effects.iter().find(|a| a.owner.value == owner));
         // A recorded index counts only when it is below the old resolution point and is, there,
-        // a recovery or a dispute of the owner's chain: pending for an `accepted` index, in
-        // effect for an `effect` one. Any other is U7009 at its line, and counts for nothing.
+        // a recovery, a dispute or a co-signer change of the owner's chain: pending for an
+        // `accepted` index, in effect for an `effect` one. Any other is U7009 at its line, and
+        // counts for nothing.
         let old_size = locked_point(&identity.source).map_or(0, |(size, _)| size);
         let mut recorded: BTreeSet<u64> = BTreeSet::new();
         let mut recorded_effects: BTreeSet<u64> = BTreeSet::new();
@@ -903,13 +904,7 @@ fn resolve_and_lock(
                     continue;
                 }
             };
-            let in_effect_at = |i: u64| {
-                history
-                    .snapshots
-                    .iter()
-                    .find(|s| s.by == i && history.requests.contains_key(&i))
-                    .map(|s| s.from)
-            };
+            let in_effect_at = |i: u64| history.took_effect.get(&i).copied();
             for (line, effect) in [(accepted_line, false), (effect_line, true)] {
                 let Some(line) = line else {
                     continue;
@@ -939,7 +934,7 @@ fn resolve_and_lock(
                             code: Code::U7009,
                             range: index.range.clone(),
                             message: format!(
-                                "the {} index {i} of `{owner}` is not a recovery or a dispute of its chain {} at the lock's resolution point; run `una ita lock`",
+                                "the {} index {i} of `{owner}` is not a recovery, a dispute or a co-signer change of its chain {} at the lock's resolution point; run `una ita lock`",
                                 if effect { "effect" } else { "accepted" },
                                 if effect { "in effect" } else { "pending" }
                             ),
@@ -1026,9 +1021,10 @@ fn resolve_and_lock(
                 }
             }
         }
-        // A pending recovery or dispute of the owner (rule 38.1): reported, and consented to
-        // only with `--accept-key`, as a key change is; the consent is recorded in the lock, so
-        // a later lock, and `--check`, take it as given until a new entry is pending.
+        // A pending recovery, dispute or co-signer change of the owner (rule 38.1): reported,
+        // and consented to only with `--accept-key`, as a key change is; the consent is
+        // recorded in the lock, so a later lock, and `--check`, take it as given until a new
+        // entry is pending.
         let flagged = options.accept_key.contains(&identity.name);
         match registry.history(una_project::client::owner_of(&identity.name)) {
             Ok(history)
@@ -1041,14 +1037,7 @@ fn resolve_and_lock(
                     .pending
                     .iter()
                     .filter(|p| !recorded.contains(&p.index))
-                    .map(|p| {
-                        format!(
-                            "{} logged at {} naming the key `{}`",
-                            if p.dispute { "a dispute" } else { "a recovery" },
-                            p.index,
-                            una_project::client::shown(&p.key.name)
-                        )
-                    })
+                    .map(pending_change)
                     .collect();
                 found.push(problem(
                     Code::U7014,
@@ -1069,12 +1058,10 @@ fn resolve_and_lock(
                 if flagged && old_registry.is_some() {
                     effects.extend(
                         history
-                            .snapshots
+                            .took_effect
                             .iter()
-                            .filter(|s| {
-                                s.from > old_size && history.requests.contains_key(&s.by)
-                            })
-                            .map(|s| s.by),
+                            .filter(|(_, from)| **from > old_size)
+                            .map(|(by, _)| *by),
                     );
                 }
                 if !effects.is_empty() {
@@ -2681,4 +2668,35 @@ fn archive_authority(
         ));
     }
     Ok(crate::report::authority_under(&analysis, ""))
+}
+
+/// A pending key change of an owner's chain as U7014 names it: what it is, where it was
+/// logged, and what it names, each name escaped (rule 38.1).
+fn pending_change(pending: &una_project::tlog::owner::Pending) -> String {
+    use una_project::client::shown;
+    use una_project::tlog::owner::Change;
+    let index = pending.index;
+    match &pending.change {
+        Change::Recovery(key) => format!(
+            "a recovery logged at {index} naming the key `{}`",
+            shown(&key.name)
+        ),
+        Change::Dispute(key) => format!(
+            "a dispute logged at {index} naming the key `{}`",
+            shown(&key.name)
+        ),
+        Change::Cosigners(Some((k, keys))) => {
+            let names: Vec<String> = keys
+                .iter()
+                .map(|key| format!("`{}`", shown(&key.name)))
+                .collect();
+            format!(
+                "a co-signer change logged at {index} designating {} with a threshold of {k}",
+                names.join(", ")
+            )
+        }
+        Change::Cosigners(None) => {
+            format!("a co-signer change logged at {index} removing the recovery cosigners")
+        }
+    }
 }

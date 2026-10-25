@@ -29,23 +29,34 @@
 //! | --- | --- | --- |
 //! | `add <name> <base64>` | the owner's threshold of current keys, and the key added | 1 to the keys after |
 //! | `revoke <name>` or `revoke <name> since <p>` | the owner's threshold, or the cosigners' threshold | 1 to the keys after |
-//! | `cosigners <k> <name> <base64> …` or `cosigners none` | the owner's threshold | the current one |
+//! | `cosigners <k> <name> <base64> …` or `cosigners none`: a pending co-signer change | the owner's threshold | the current one |
 //! | `recover <name> <base64>` | the log's key, and the cosigners' threshold when the owner has cosigners | 1 |
-//! | `cancel <index>` | any one current key of the owner | the current one |
-//! | `overrule <index>` | the cosigners' threshold | the current one |
-//! | `dispute <name> <base64>` | the log's key; only for an owner with no cosigners | 1 |
+//! | `cancel <index>`: of a pending recovery or co-signer change | any one current key of the owner | the current one |
+//! | `overrule <index>`: of a cancellation of a recovery | the threshold of the cosigners in effect when the recovery was logged | the current one |
+//! | `dispute <name> <base64>` | the log's key; only for an owner with no cosigners in effect | 1 |
 //!
 //! A key's name and public key are each held once in an owner's whole history: a key added is
 //! never one it held or holds.
 //!
 //! **Positions.** An event takes effect at its log position: it governs the entries logged after
-//! it (rule 36.3). A recovery or a dispute takes effect only at the first checkpoint whose
-//! witness time is at least seven days after the witness time of the checkpoint that first
-//! included the request, and governs the entries logged after that checkpoint; the client gives
-//! that position ([`replay`]'s `effect`). A recovery cancelled before it takes effect, by a
-//! cancellation that the cosigners did not overrule, never takes effect; a dispute cannot be
-//! cancelled. A recovery or a dispute that takes effect makes the new key the owner's only key,
-//! with a threshold of one, and is a key change like any other.
+//! it (rule 36.3). A recovery, a dispute or a co-signer change waits: it takes effect only at
+//! the first checkpoint whose witness time is at least seven days after the time it was
+//! logged, and governs the entries logged after that checkpoint; the client gives that position
+//! ([`replay`]'s `effect`). Until then the cosigners in effect are the ones before it. A
+//! recovery or a co-signer change cancelled before it takes effect never takes effect, unless,
+//! for a recovery, the cosigners in effect when it was logged overruled every cancellation of
+//! it; a dispute cannot be cancelled. A recovery or a dispute that takes effect makes the new
+//! key the owner's only key, with a threshold of one, leaves the cosigners in effect when a
+//! recovery was logged, or none after a dispute, ends every co-signer change still waiting, and
+//! is a key change like any other.
+//!
+//! **Competing requests.** A dispute logged while another recovery or dispute waits, or a
+//! recovery logged while a dispute waits, competes: none of them takes effect, and the chain is
+//! frozen from that entry ([`History::frozen`]). A recovery waits even when cancelled, unless
+//! it was logged with no cosigners in effect, so that nothing can overrule the cancellation. A
+//! frozen chain never thaws: no later entry changes the owner's keys, though a revocation with
+//! `since` still makes its claim; releases logged from there on do not count, and the owner's
+//! names are not resolved.
 //!
 //! **Revocations.** A revoked key is not valid after the revocation. One revoked `since <p>` is
 //! compromised: not valid after the log position `p` either, so a statement it signed after `p`
@@ -401,16 +412,40 @@ pub struct Snapshot {
     pub by: u64,
 }
 
-/// A recovery or a dispute not yet in effect at the resolution point (U7014 where `una ita`
-/// reports it).
+/// A key change that waits seven days of witness time ([`RECOVERY_DELAY`]) before it takes
+/// effect: what it changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// A recovery naming the new key.
+    Recovery(Key),
+    /// A registry dispute naming the new key.
+    Dispute(Key),
+    /// A change of the recovery cosigners: the new set, or none.
+    Cosigners(Option<Cosigners>),
+}
+
+/// A recovery, a dispute or a co-signer change not yet in effect at the resolution point and
+/// not cancelled (U7014 where `una ita` reports it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
     /// The request's log index.
     pub index: u64,
-    /// The key it names.
-    pub key: Key,
-    /// Whether it is a dispute.
-    pub dispute: bool,
+    /// What it changes.
+    pub change: Change,
+}
+
+/// How a release statement logged at a position stands with its owner's keys (rule 6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// Signed by the owner's threshold of sound keys valid there: it counts. Its sound signers,
+    /// sorted by fingerprint.
+    Counts(Vec<Key>),
+    /// Signed by the threshold only with a key compromised before it or one that only void
+    /// entries bring in, or logged once the chain was frozen: skipped as a yanked release is.
+    /// Its signers valid there, sorted by fingerprint.
+    Skipped(Vec<Key>),
+    /// Not signed by the owner's threshold even with those keys.
+    Unsigned,
 }
 
 /// The keys of one owner over the log, up to the resolution point.
@@ -422,7 +457,8 @@ pub struct History {
     pub snapshots: Vec<Snapshot>,
     /// Keys revoked as compromised, by public key, with the position since which.
     pub compromised: BTreeMap<[u8; 32], u64>,
-    /// Recoveries and disputes not in effect at the resolution point and not cancelled.
+    /// Recoveries, disputes and co-signer changes not in effect at the resolution point, not
+    /// cancelled, and not ended by a freeze or a recovery.
     pub pending: Vec<Pending>,
     /// The log index of every entry of the owner's chain, applied or void.
     pub entries: Vec<u64>,
@@ -432,13 +468,25 @@ pub struct History {
     /// The keys that only void entries add or name: what they sign is skipped as a yanked
     /// release is, never taken.
     pub void_keys: Vec<Key>,
-    /// Each recovery and dispute applied, by its log index, with the position it governs from,
-    /// or `None` when it is not in effect at the resolution point.
+    /// Each recovery, dispute and co-signer change applied, by its log index, with the first
+    /// position its seven days allow it to govern, or `None` when they have not passed at the
+    /// resolution point. Whether it took effect is [`History::took_effect`].
     pub requests: BTreeMap<u64, Option<u64>>,
+    /// Each recovery, dispute and co-signer change that took effect, by its log index, with the
+    /// first position it governs.
+    pub took_effect: BTreeMap<u64, u64>,
     /// The signature verifications the replay made, every pass counted, for the scaling test.
     pub checks: u64,
-    /// For each recovery and dispute, the cancellations of it that stand, not overruled.
+    /// For each recovery, dispute and co-signer change, the cancellations of it that stand, not
+    /// overruled.
     pub cancellations: BTreeMap<u64, BTreeSet<u64>>,
+    /// The recovery cosigners in effect at the resolution point.
+    pub cosigners: Option<Cosigners>,
+    /// The log index from which the chain is frozen by competing requests (a dispute logged
+    /// while another recovery or dispute waited, or a recovery logged while a dispute waited):
+    /// from there no entry changes the owner's keys, no release counts, and its names are not
+    /// resolved.
+    pub frozen: Option<u64>,
 }
 
 /// An entry of an owner's chain, with its log index and its signed note.
@@ -451,13 +499,29 @@ pub struct Logged<'a> {
     pub entry: &'a Entry,
 }
 
-/// A recovery or a dispute being replayed.
+/// What a request being replayed asks.
+#[derive(Clone)]
+enum Ask {
+    Recover(Key),
+    Dispute(Key),
+    Cosigners(Option<Cosigners>),
+}
+
+/// A recovery, a dispute or a co-signer change being replayed.
 struct Request {
-    key: Key,
-    dispute: bool,
+    ask: Ask,
+    /// The first position its seven days allow it to govern, if they passed.
     effect: Option<u64>,
-    /// The cancellations not overruled; the recovery stands only when there is none.
+    /// The cancellations not overruled; it takes effect only when there is none.
     cancelled_by: BTreeSet<u64>,
+    /// The cosigners in effect when it was logged: those who may overrule a cancellation of a
+    /// recovery, and those a recovery leaves in effect.
+    guard: Option<Cosigners>,
+    /// Whether it took effect.
+    applied: bool,
+    /// Whether it never takes effect, whatever its cancellations: it competed, the chain froze
+    /// before it took effect, or it is a co-signer change that a recovery or a dispute ended.
+    ended: bool,
 }
 
 impl History {
@@ -477,8 +541,11 @@ impl History {
             voided: Vec::new(),
             void_keys: Vec::new(),
             requests: BTreeMap::new(),
+            took_effect: BTreeMap::new(),
             checks: 0,
             cancellations: BTreeMap::new(),
+            cosigners: None,
+            frozen: None,
         }
     }
 
@@ -504,12 +571,43 @@ impl History {
         let mut signers: Vec<Key> = snapshot
             .keys
             .iter()
-            .filter(|key| note.signed_by(key))
+            .filter(|key| verified(note, key))
             .cloned()
             .collect();
         signers.sort_by_key(|key| fingerprint(&key.public));
         signers.dedup_by(|a, b| a.public == b.public);
         signers
+    }
+
+    /// How a release statement `note`, logged at `position`, stands (rule 6): skipped whatever
+    /// signs it when the chain was frozen by then; otherwise it counts when its sound signers
+    /// valid there reach the threshold, is skipped when they reach it only with keys
+    /// compromised before it or keys that only void entries bring in, and is unsigned
+    /// otherwise.
+    pub fn judge(&self, note: &Note, position: u64) -> Standing {
+        let signers = self.signers(note, position);
+        let threshold = self.at(position).map_or(usize::MAX, |s| s.threshold);
+        let sound: Vec<Key> = signers
+            .iter()
+            .filter(|key| self.sound(key, position))
+            .cloned()
+            .collect();
+        let tainted = self
+            .void_keys
+            .iter()
+            .filter(|key| verified(note, key))
+            .count();
+        // From a freeze on, nothing an owner's key signs counts, and nothing refuses the name
+        // the releases before it stand on.
+        if self.frozen.is_some_and(|from| position >= from) {
+            Standing::Skipped(signers)
+        } else if sound.len() >= threshold {
+            Standing::Counts(sound)
+        } else if signers.len().saturating_add(tainted) >= threshold {
+            Standing::Skipped(signers)
+        } else {
+            Standing::Unsigned
+        }
     }
 
     /// Whether `note`, logged at `position`, is signed by the owner's threshold of keys valid
@@ -547,15 +645,15 @@ impl History {
     /// Whether the owner's keys may have changed since `position`, a resolution point (rule 25:
     /// a key change): any entry of the owner's chain logged at or after it, whatever it does (a
     /// key added or revoked, cosigners, a cancellation, an overruling, a pending recovery or a
-    /// dispute), or a recovery or a dispute that took effect after it.
+    /// dispute), or a recovery, a dispute or a co-signer change that took effect after it.
     pub fn changed_after(&self, position: u64) -> bool {
         self.changed_after_except(position, &BTreeSet::new(), &BTreeSet::new())
     }
 
     /// [`History::changed_after`], leaving out what a lock records as consented to: the
-    /// entries of `pending`, recoveries and disputes whose pending state was consented to, and
-    /// the effects of those of `effects`, whose taking effect was. A consent to a pending
-    /// recovery or dispute never covers its effect: when it takes effect, that is a key change
+    /// entries of `pending`, recoveries, disputes and co-signer changes whose pending state was
+    /// consented to, and the effects of those of `effects`, whose taking effect was. A consent
+    /// to a pending change never covers its effect: when it takes effect, that is a key change
     /// of its own.
     pub fn changed_after_except(
         &self,
@@ -567,9 +665,9 @@ impl History {
             .iter()
             .any(|index| *index >= position && !pending.contains(index))
             || self
-                .snapshots
+                .took_effect
                 .iter()
-                .any(|s| s.from > position && !effects.contains(&s.by))
+                .any(|(by, from)| *from > position && !effects.contains(by))
     }
 }
 
@@ -577,10 +675,25 @@ impl History {
 /// cosigners, applied or void: a bound on what each entry's signatures are checked against.
 pub const MAX_KNOWN: usize = 1024;
 
+/// Whether `key` signs `note`, by the strict Ed25519 rule ([`Note::signed_by`]). Every build
+/// but this crate's own unit tests has only this form.
+#[cfg(not(test))]
+fn verified(note: &Note, key: &Key) -> bool {
+    note.signed_by(key)
+}
+
+/// Whether `key` signs `note`: in this crate's unit tests, a test that turned the model of
+/// signatures on for its thread ([`model`]) is answered by the model, and every other check is
+/// Ed25519's.
+#[cfg(test)]
+fn verified(note: &Note, key: &Key) -> bool {
+    model::modeled(note, key).unwrap_or_else(|| note.signed_by(key))
+}
+
 /// Whether `key` signs `note`, one verification counted in `checks`.
 fn signs(note: &Note, key: &Key, checks: &mut u64) -> bool {
     *checks += 1;
-    note.signed_by(key)
+    verified(note, key)
 }
 
 /// How many distinct keys of `set` sign `note`.
@@ -600,8 +713,9 @@ type Claim = ([u8; 32], u64);
 
 /// Replays the chain of `owner`, its entries in log order, and returns the keys valid at each
 /// position (rules 38 and 38.1). `log` is the registry's log key, which signs recoveries and
-/// disputes. `effect` gives, for a recovery or a dispute logged at an index, the first log
-/// position it governs, or `None` when it is not in effect at the resolution point.
+/// disputes. `effect` gives, for a recovery, a dispute or a co-signer change logged at an
+/// index, the first log position its seven days allow it to govern, or `None` when they have
+/// not passed at the resolution point.
 ///
 /// **Compromise, a greatest fixpoint.** Every `revoke <key> since <p>` of the chain is a claim
 /// that the key's signatures at positions after `p` do not count. The claim names the key the
@@ -800,6 +914,7 @@ fn replay_once(
     let mut voided: Vec<u64> = Vec::new();
     let mut void_keys: Vec<Key> = Vec::new();
     let mut revocations: Vec<Revocation> = Vec::new();
+    let mut frozen: Option<u64> = None;
 
     for (at, logged) in entries.iter().enumerate() {
         let index = logged.index;
@@ -810,11 +925,11 @@ fn replay_once(
         }
         last = Some(index);
         indices.push(index);
-        // Recoveries that took effect before this entry.
+        // Requests that took effect before this entry, by position, then in log order.
         let due: Vec<u64> = scheduled.range(..=index).map(|(at, _)| *at).collect();
         for position in due {
             for request in scheduled.remove(&position).unwrap_or_default() {
-                apply(&requests, request, position, &mut state, &mut snapshots);
+                apply(&mut requests, request, position, &mut state, &mut snapshots);
             }
         }
         let entry = logged.entry;
@@ -880,7 +995,7 @@ fn replay_once(
                         "asks a recovery of Itaúna, whose keys only the root changes",
                     ));
                 }
-                if dispute && state.cosigners.is_some() {
+                if dispute && state.cosigners.is_some() && frozen.is_none() {
                     return Err(refuse(
                         "is a dispute of an owner with recovery cosigners, who recover it instead",
                     ));
@@ -889,7 +1004,21 @@ fn replay_once(
                 verdict(met, met)
             }
             Event::Cancel(_) => verdict(owners_sound >= 1, owners_all >= 1),
-            Event::Overrule(_) => verdict(by_cosigners, by_cosigners),
+            Event::Overrule(cancel) => {
+                // The cosigners in effect when the recovery whose cancellation it overrules was
+                // logged; for any other cancellation, those in effect now.
+                let guard = cancels
+                    .get(cancel)
+                    .and_then(|recovery| requests.get(recovery))
+                    .filter(|request| matches!(request.ask, Ask::Recover(_)))
+                    .map(|request| request.guard.clone());
+                let met = match &guard {
+                    Some(Some((k, set))) => signers_of(note, set.as_slice(), &mut checks) >= *k,
+                    Some(None) => false,
+                    None => by_cosigners,
+                };
+                verdict(met, met)
+            }
         };
         // Not signed as required: void when an earlier entry was void and some key the chain
         // names signs it, since it may depend on that entry; refused otherwise. The keys the
@@ -919,9 +1048,15 @@ fn replay_once(
             }
             Verdict::VoidCompromised | Verdict::VoidDependent => {
                 voided.push(index);
-                if let Event::Add(key) | Event::Recover(key) | Event::Dispute(key) = &entry.event {
-                    void_keys.push(key.clone());
-                    state.know([key]);
+                match &entry.event {
+                    Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => {
+                        void_keys.push(key.clone());
+                        state.know([key]);
+                    }
+                    // The cosigners a void change names are named by the chain, so what they
+                    // sign later is void, never a refusal of the chain.
+                    Event::Cosigners(Some((_, list))) => state.know(list.iter()),
+                    _ => {}
                 }
                 // A revocation void only for want of a sound key may still make its claim, in
                 // the mutual case alone ([`replay`]).
@@ -939,6 +1074,27 @@ fn replay_once(
                 continue;
             }
             Verdict::Apply => {}
+        }
+        if frozen.is_some() {
+            // A frozen chain: no entry changes the owner's keys, its cosigners or its
+            // requests. A revocation with `since` still makes its claim, so a key's compromise
+            // can still be stated, and the keys any entry names are named.
+            match &entry.event {
+                Event::Revoke {
+                    name,
+                    since: Some(_),
+                } => revocations.push(Revocation {
+                    index,
+                    claims: true,
+                    applied: true,
+                    target: target(&state, name),
+                    signers: signing.iter().map(|k| k.public).collect(),
+                }),
+                Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => state.know([key]),
+                Event::Cosigners(Some((_, list))) => state.know(list.iter()),
+                _ => {}
+            }
+            continue;
         }
         let unchanged = |given: usize, current: usize| -> Result<(), String> {
             if given == current {
@@ -1030,11 +1186,30 @@ fn replay_once(
                 }
             }
             Event::Cosigners(designated) => {
+                // A co-signer change waits as a recovery does; until it takes effect, the
+                // cosigners in effect are the ones before it.
                 unchanged(entry.threshold, state.threshold)?;
-                state.cosigners.clone_from(designated);
                 if let Some((_, list)) = designated {
                     state.know(list.iter());
                 }
+                let position = effect_at(index, effects, effect)?;
+                if position.is_some_and(|position| position <= index) {
+                    return Err(refuse("would take effect before it was logged"));
+                }
+                if let Some(position) = position {
+                    scheduled.entry(position).or_default().push(index);
+                }
+                requests.insert(
+                    index,
+                    Request {
+                        ask: Ask::Cosigners(designated.clone()),
+                        effect: position,
+                        cancelled_by: BTreeSet::new(),
+                        guard: state.cosigners.clone(),
+                        applied: false,
+                        ended: false,
+                    },
+                );
             }
             Event::Recover(key) | Event::Dispute(key) => {
                 let dispute = matches!(entry.event, Event::Dispute(_));
@@ -1046,48 +1221,76 @@ fn replay_once(
                 state.publics.insert(key.public);
                 state.introduced.insert(key.public, index);
                 state.know([key]);
-                let position = match effects.get(&index) {
-                    Some(position) => *position,
-                    None => {
-                        let position = effect(index)?;
-                        effects.insert(index, position);
-                        position
+                let position = effect_at(index, effects, effect)?;
+                if position.is_some_and(|position| position <= index) {
+                    return Err(refuse("would take effect before it was logged"));
+                }
+                // Competing requests: a dispute logged while another recovery or dispute waits,
+                // or a recovery logged while a dispute waits. A recovery waits even when
+                // cancelled, since its cosigners may overrule that, unless it was logged with no
+                // cosigners in effect: then nothing can, and it never takes effect. Competing
+                // requests never take effect, and the chain is frozen from here: nothing can
+                // tell the owner from whoever took its account over.
+                let competes = requests.values().any(|request| {
+                    !request.applied
+                        && !request.ended
+                        && request.effect.is_none_or(|effect| effect > index)
+                        && match request.ask {
+                            Ask::Dispute(_) => true,
+                            Ask::Recover(_) => {
+                                dispute
+                                    && (request.guard.is_some()
+                                        || request.cancelled_by.is_empty())
+                            }
+                            Ask::Cosigners(_) => false,
+                        }
+                });
+                if competes {
+                    frozen = Some(index);
+                    for request in requests.values_mut() {
+                        if !request.applied {
+                            request.ended = true;
+                        }
                     }
-                };
-                if let Some(position) = position {
-                    if position <= index {
-                        return Err(refuse("would take effect before it was logged"));
-                    }
+                } else if let Some(position) = position {
                     scheduled.entry(position).or_default().push(index);
                 }
                 requests.insert(
                     index,
                     Request {
-                        key: key.clone(),
-                        dispute,
+                        ask: if dispute {
+                            Ask::Dispute(key.clone())
+                        } else {
+                            Ask::Recover(key.clone())
+                        },
                         effect: position,
                         cancelled_by: BTreeSet::new(),
+                        guard: state.cosigners.clone(),
+                        applied: false,
+                        ended: competes,
                     },
                 );
             }
-            Event::Cancel(recovery) => {
+            Event::Cancel(request) => {
                 unchanged(entry.threshold, state.threshold)?;
-                // A cancellation of a dispute, of a recovery in effect, or of none, changes
+                // A cancellation of a dispute, of a request in effect, or of none, changes
                 // nothing.
-                if let Some(request) = requests.get_mut(recovery)
-                    && !request.dispute
-                    && request.effect.is_none_or(|effect| index < effect)
+                if let Some(pending) = requests.get_mut(request)
+                    && !matches!(pending.ask, Ask::Dispute(_))
+                    && pending.effect.is_none_or(|effect| index < effect)
                 {
-                    request.cancelled_by.insert(index);
-                    cancels.insert(index, *recovery);
+                    pending.cancelled_by.insert(index);
+                    cancels.insert(index, *request);
                 }
             }
             Event::Overrule(cancel) => {
                 unchanged(entry.threshold, state.threshold)?;
-                // An overruling lifts one cancellation; the recovery stands again only when
-                // every cancellation of it is overruled.
+                // An overruling lifts one cancellation of a recovery; the recovery stands again
+                // only when every cancellation of it is overruled. A cancellation of a
+                // co-signer change cannot be overruled.
                 if let Some(recovery) = cancels.get(cancel)
                     && let Some(request) = requests.get_mut(recovery)
+                    && matches!(request.ask, Ask::Recover(_))
                     && request.effect.is_none_or(|effect| index < effect)
                 {
                     request.cancelled_by.remove(cancel);
@@ -1097,7 +1300,7 @@ fn replay_once(
     }
     for (position, due) in std::mem::take(&mut scheduled) {
         for request in due {
-            apply(&requests, request, position, &mut state, &mut snapshots);
+            apply(&mut requests, request, position, &mut state, &mut snapshots);
         }
     }
     // The claims that stand in this pass: every applied revocation with `since`; and one void
@@ -1122,12 +1325,20 @@ fn replay_once(
     }
     let pending = requests
         .iter()
-        .filter(|(_, r)| r.effect.is_none() && r.cancelled_by.is_empty())
+        .filter(|(_, r)| r.effect.is_none() && r.cancelled_by.is_empty() && !r.ended)
         .map(|(index, r)| Pending {
             index: *index,
-            key: r.key.clone(),
-            dispute: r.dispute,
+            change: match &r.ask {
+                Ask::Recover(key) => Change::Recovery(key.clone()),
+                Ask::Dispute(key) => Change::Dispute(key.clone()),
+                Ask::Cosigners(set) => Change::Cosigners(set.clone()),
+            },
         })
+        .collect();
+    let took_effect = requests
+        .iter()
+        .filter(|(_, r)| r.applied)
+        .filter_map(|(index, r)| r.effect.map(|position| (*index, position)))
         .collect();
     Ok((
         History {
@@ -1139,14 +1350,32 @@ fn replay_once(
             voided,
             void_keys,
             requests: requests.iter().map(|(index, r)| (*index, r.effect)).collect(),
+            took_effect,
             cancellations: requests
                 .iter()
                 .map(|(index, r)| (*index, r.cancelled_by.clone()))
                 .collect(),
             checks,
+            cosigners: state.cosigners.clone(),
+            frozen,
         },
         standing,
     ))
+}
+
+/// The first position the request logged at `index` may govern, by `effect`, asked once per
+/// request across passes.
+fn effect_at(
+    index: u64,
+    effects: &mut BTreeMap<u64, Option<u64>>,
+    effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
+) -> Result<Option<u64>, String> {
+    if let Some(position) = effects.get(&index) {
+        return Ok(*position);
+    }
+    let position = effect(index)?;
+    effects.insert(index, position);
+    Ok(position)
 }
 
 /// The key a revocation of `name` names in `state`, an owner key held or held before, never a
@@ -1197,33 +1426,55 @@ fn count_distinct(keys: &[Key]) -> usize {
     seen.len()
 }
 
-/// A recovery or a dispute taking effect at `position`, unless it was cancelled: its key
-/// becomes the owner's only key, the keys held before become former keys.
+/// A request taking effect at `position`, unless it was cancelled or ended. A co-signer change
+/// sets the cosigners. A recovery or a dispute makes its key the owner's only key, with a
+/// threshold of one, the keys held before become former keys, and the cosigners are those in
+/// effect when a recovery was logged, or none after a dispute; every co-signer change logged
+/// before `position` and not in effect never takes effect, since keys it replaces signed it.
 fn apply(
-    requests: &BTreeMap<u64, Request>,
-    request: u64,
+    requests: &mut BTreeMap<u64, Request>,
+    index: u64,
     position: u64,
     state: &mut Owner,
     snapshots: &mut Vec<Snapshot>,
 ) {
-    let by = request;
-    let Some(request) = requests.get(&request) else {
-        return;
+    let (key, cosigners) = {
+        let Some(request) = requests.get_mut(&index) else {
+            return;
+        };
+        if request.ended || request.applied || !request.cancelled_by.is_empty() {
+            return;
+        }
+        request.applied = true;
+        match &request.ask {
+            Ask::Cosigners(set) => {
+                state.cosigners.clone_from(set);
+                return;
+            }
+            Ask::Recover(key) => (key.clone(), request.guard.clone()),
+            Ask::Dispute(key) => (key.clone(), None),
+        }
     };
-    if !request.cancelled_by.is_empty() {
-        return;
-    }
     for old in std::mem::take(&mut state.keys) {
         state.former.insert(old.name.clone(), old);
     }
-    state.keys = vec![request.key.clone()];
+    state.keys = vec![key];
     state.threshold = 1;
+    state.cosigners = cosigners;
+    for (logged, request) in requests.iter_mut() {
+        if *logged < position && !request.applied && matches!(request.ask, Ask::Cosigners(_)) {
+            request.ended = true;
+        }
+    }
     // Two snapshots from one position: the later one governs.
     snapshots.retain(|s| s.from != position);
     snapshots.push(Snapshot {
         from: position,
         threshold: 1,
         keys: state.keys.clone(),
-        by,
+        by: index,
     });
 }
+
+#[cfg(test)]
+mod model;

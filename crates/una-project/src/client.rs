@@ -55,7 +55,7 @@ use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Checkpoint, Key, Note};
-use crate::tlog::owner::{self, History};
+use crate::tlog::owner::{self, History, Standing};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
 use crate::tlog::tile::Tiles;
@@ -926,27 +926,18 @@ impl<'t> Registry<'t> {
                 )));
             }
             let index = entry.index;
-            let signers = history.signers(&entry.note, index);
-            let threshold = history.at(index).map_or(usize::MAX, |s| s.threshold);
-            let sound: Vec<Key> = signers
-                .iter()
-                .filter(|key| history.sound(key, index))
-                .cloned()
-                .collect();
-            // Keys that only void entries of the owner's chain bring in: what they sign is
-            // skipped as a compromised key's is.
-            let tainted = history
-                .void_keys
-                .iter()
-                .filter(|key| entry.note.signed_by(key))
-                .count();
-            let compromised = sound.len() < threshold;
-            if compromised && signers.len() + tainted < threshold {
-                return Err(self.refuse(format!(
-                    "`{name} {}` is not signed by the threshold of its owner's keys valid at its log position {index}",
-                    statement.version
-                )));
-            }
+            // Keys compromised before it, keys that only void entries of the owner's chain
+            // bring in, and a chain frozen by then: what they sign is skipped, never counted.
+            let (signers, compromised) = match history.judge(&entry.note, index) {
+                Standing::Counts(sound) => (sound, false),
+                Standing::Skipped(signers) => (signers, true),
+                Standing::Unsigned => {
+                    return Err(self.refuse(format!(
+                        "`{name} {}` is not signed by the threshold of its owner's keys valid at its log position {index}",
+                        statement.version
+                    )));
+                }
+            };
             // Rule 26, against the highest release of the identity logged before it. A release
             // skipped as compromised is neither checked nor counted: what a thief signs cannot
             // refuse the name.
@@ -971,7 +962,7 @@ impl<'t> Registry<'t> {
                 index,
                 document: entry.document,
                 statement,
-                signers: if compromised { signers } else { sound },
+                signers,
                 compromised,
             });
         }
@@ -981,9 +972,18 @@ impl<'t> Registry<'t> {
 
     /// The releases of the identity `name` on `line` as resolution reads them (rules 23 and 24):
     /// each version, skipped as yanked when signed after its key's stated compromise, with the
-    /// time it was logged. Yanks and advisories are entries this client does not read yet, and
-    /// refuse the name ([`read_entry`]).
+    /// time it was logged. A name whose owner's chain is frozen is refused. Yanks and
+    /// advisories are entries this client does not read yet, and refuse the name
+    /// ([`read_entry`]).
     pub fn state(&mut self, name: &str, line: Line) -> Result<Vec<Release>, Refusal> {
+        // A chain frozen by competing recoveries or disputes resolves to no one (rule 38.1).
+        let history = self.history(owner_of(name))?;
+        if let Some(from) = history.frozen {
+            return Err(self.refuse(format!(
+                "the chain of the owner `{}` is frozen from the log position {from} by competing recoveries or disputes, so `{name}` is not resolved; the owner registers again under a new owner name",
+                history.owner
+            )));
+        }
         let releases = self.releases(name)?;
         let mut out = Vec::new();
         for release in releases.iter().filter(|r| r.statement.version.line() == line) {
