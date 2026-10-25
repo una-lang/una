@@ -27,6 +27,85 @@ out="$root/target/release-archives"
 )
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# Each command that runs the packed `una` or what it builds runs under a time limit, so that a
+# hang fails the check in minutes instead of holding the leg for days (#1133). Under emulation
+# (the x86_64 leg on an arm64 Mac, through Rosetta), a multithreaded `una` that starts several
+# solver processes at once can deadlock inside the translator; the leg sets
+# UNA_RELEASE_CHECK_RETRY=1, and a command that runs out of time is then tried once more, after a
+# dump of its threads and its children's, with the retry and its cause in the log
+# (docs/release-gates.md).
+dump_threads() {
+    echo "-- threads of $1 and its children, at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ps -o pid,ppid,stat,command -p "$1" 2>/dev/null || true
+    for pid in "$1" $(pgrep -P "$1" 2>/dev/null || true); do
+        [ -d "/proc/$pid/task" ] || continue
+        for task in "/proc/$pid/task"/*; do
+            echo "pid $pid tid ${task##*/} $(cat "$task/comm" 2>/dev/null) wchan=$(cat "$task/wchan" 2>/dev/null) syscall=$(cut -d' ' -f1 "$task/syscall" 2>/dev/null)"
+        done
+    done
+}
+# bounded SECONDS OUT COMMAND...: runs COMMAND with its stdout in OUT and its stderr in OUT.err;
+# exits with COMMAND's status, or 124 when it is still running after SECONDS, then dumped and
+# killed with its children.
+bounded() {
+    limit=$1 into=$2
+    shift 2
+    "$@" > "$into" 2> "$into.err" &
+    pid=$!
+    ticks=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$ticks" -ge $((limit * 5)) ]; then
+            dump_threads "$pid" >&2
+            pkill -9 -P "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 0.2
+        ticks=$((ticks + 1))
+    done
+    wait "$pid"
+}
+# limited SECONDS OUT COMMAND...: `bounded`, tried once more under UNA_RELEASE_CHECK_RETRY=1 when
+# the first try ran out of time. A second timeout, or a timeout without the retry, is reported and
+# leaves "$tmp/timed-out", which the check reads after every command, even one run inside `$(...)`.
+limited() {
+    status=0
+    bounded "$@" || status=$?
+    if [ "$status" = 124 ] && [ "${UNA_RELEASE_CHECK_RETRY:-}" = 1 ]; then
+        echo "retry: \`$3\` ran out of its $1 s; emulator deadlock suspected (#1133); trying it once more" >&2
+        status=0
+        bounded "$@" || status=$?
+    fi
+    if [ "$status" = 124 ]; then
+        seconds=$1
+        shift 2
+        echo "error: \`$*\` ran out of its time limit of $seconds s (#1133)" >&2
+        : > "$tmp/timed-out"
+    fi
+    return "$status"
+}
+# timed_out: fails the check when a command ran out of its time limit.
+timed_out() {
+    if [ -e "$tmp/timed-out" ]; then
+        exit 1
+    fi
+}
+# shown DIR SECONDS COMMAND...: what `$(cd DIR && COMMAND 2>/dev/null || echo "exit $?")` gives,
+# under the time limit: COMMAND's stdout, and `exit N` on a line of its own when it fails.
+shown() {
+    place=$1 seconds=$2
+    shift 2
+    code=0
+    (cd "$place" && limited "$seconds" "$tmp/shown" "$@") || code=$?
+    if [ "$code" = 124 ]; then
+        return 124
+    fi
+    cat "$tmp/shown"
+    if [ "$code" != 0 ]; then
+        echo "exit $code"
+    fi
+}
 tar -xzf "$out/$name.tar.gz" -C "$tmp"
 # Every entry is owned by 0:0 with no user or group name, so the archive does not carry the
 # account that built it (#679). The listing's owner columns differ between the two tars.
@@ -75,9 +154,10 @@ if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
     exit 1
 fi
 una="$tmp/$name/una"
-"$una" check examples/events
-"$una" test examples/events > /dev/null
-greeting=$("$una" run examples/hello)
+limited 300 "$tmp/step" "$una" check examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
+limited 300 "$tmp/step" "$una" test examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
+limited 300 "$tmp/step" "$una" run examples/hello || { cat "$tmp/step.err" >&2; exit 1; }
+greeting=$(cat "$tmp/step")
 if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
@@ -88,9 +168,11 @@ for example in examples/*/; do
     example=${example%/}
     dir="$tmp/native-$(basename "$example")"
     cp -R "$example" "$dir"
-    expected=$(cd "$dir" && "$una" run . 2>/dev/null || echo "exit $?")
-    "$una" build "$dir" --out "$dir/native-exe" > /dev/null
-    native=$(cd "$dir" && ./native-exe 2>/dev/null || echo "exit $?")
+    expected=$(shown "$dir" 300 "$una" run .) || true
+    timed_out
+    limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
+    native=$(shown "$dir" 120 ./native-exe) || true
+    timed_out
     if [ "$native" != "$expected" ]; then
         echo "error: the natively built $example printed \"$native\"; una run printed \"$expected\"" >&2
         exit 1
@@ -104,7 +186,7 @@ cp -R examples/hello "$tmp/placed"
 for install in "$tmp/install-one" "$tmp/a-second-install-elsewhere"; do
     mkdir -p "$install"
     cp -R "$tmp/$name/." "$install/"
-    "$install/una" build "$tmp/placed" --out "$install/out/hello" > /dev/null
+    limited 600 "$tmp/step" "$install/una" build "$tmp/placed" --out "$install/out/hello" || { cat "$tmp/step.err" >&2; exit 1; }
 done
 if ! cmp -s "$tmp/install-one/out/hello" "$tmp/a-second-install-elsewhere/out/hello"; then
     echo "error: examples/hello built by $name in two places gives two different executables" >&2
