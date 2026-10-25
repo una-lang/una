@@ -1071,6 +1071,7 @@ fn run_command(
                     ItaCommand::Lock {
                         path,
                         check,
+                        fresh,
                         accept_authority,
                         accept_trust,
                         accept_key,
@@ -1078,6 +1079,7 @@ fn run_command(
                     } => ita::lock_command(
                         &path,
                         ita::LockOptions {
+                            fresh,
                             accept_key: &accept_key,
                             itaoca: store.as_ref(),
                             now: clock,

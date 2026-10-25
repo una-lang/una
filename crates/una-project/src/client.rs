@@ -291,6 +291,10 @@ pub enum Point {
         /// The local clock.
         now: u64,
     },
+    /// The newest checkpoint a place serves, with no freshness: what `una ita lock --check`
+    /// reads, beside the lock's point, to find an owner whose chain froze after it, since a
+    /// frozen chain never thaws and a later checkpoint showing it is evidence enough.
+    Served,
     /// A lock's resolution point: its size and root hash, `sha256:` and hex. No freshness.
     At {
         /// The checkpoint's size.
@@ -491,6 +495,8 @@ pub struct Registry<'t> {
     histories: BTreeMap<String, History>,
     /// The owner chains seen not to settle, evidence against the registry, in the order seen.
     misbehavior: Vec<Unsettled>,
+    /// The documents no place served since [`Registry::take_omitted`] was last called.
+    omitted: Vec<String>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
     chains: BTreeMap<String, Vec<ChainEntry>>,
     marks: BTreeMap<String, Marks>,
@@ -592,7 +598,7 @@ impl<'t> Registry<'t> {
         }
         // The checkpoint.
         let path = match point {
-            Point::Latest { .. } => "checkpoint".to_owned(),
+            Point::Latest { .. } | Point::Served => "checkpoint".to_owned(),
             Point::At { size, .. } => format!("checkpoint/{size}"),
         };
         let document =
@@ -622,6 +628,7 @@ impl<'t> Registry<'t> {
                 }
                 Ok(true) => {}
             },
+            Point::Served => {}
         }
         // The last root has not expired at the checkpoint's witness time.
         let last = root::walk(&pinned, &next, accepted.time).map_err(refused)?;
@@ -636,6 +643,7 @@ impl<'t> Registry<'t> {
             kept: BTreeMap::new(),
             histories: BTreeMap::new(),
             misbehavior: Vec::new(),
+            omitted: Vec::new(),
             releases: BTreeMap::new(),
             chains: BTreeMap::new(),
             marks: BTreeMap::new(),
@@ -768,9 +776,17 @@ impl<'t> Registry<'t> {
             return Err(self.refuse("its checkpoint carries no name map"));
         };
         let transport = self.transport;
-        let mut fetch = |path: &str| transport.get(path, map::MAX_TILE as u64);
-        let (head, proof) =
-            map::prove_from_tiles(&root, name, &mut fetch).map_err(|why| self.refuse(why))?;
+        let mut missing: Vec<String> = Vec::new();
+        let mut fetch = |path: &str| {
+            let read = transport.get(path, map::MAX_TILE as u64);
+            if matches!(read, Ok(None)) {
+                missing.push(path.to_owned());
+            }
+            read
+        };
+        let proved = map::prove_from_tiles(&root, name, &mut fetch);
+        self.omitted.extend(missing);
+        let (head, proof) = proved.map_err(|why| self.refuse(why))?;
         if !map::verify(&root, name, head.as_ref(), &proof) {
             return Err(self.refuse(format!(
                 "the map's tiles for `{name}` do not prove its head against the checkpoint's map"
@@ -836,13 +852,18 @@ impl<'t> Registry<'t> {
             return Ok(kept.clone());
         }
         let path = format!("checkpoint/{size}");
+        // A registry keeps the checkpoint of every size it signed, each size up to the point:
+        // one no place serves is an omission, which makes what needs it unavailable, never a
+        // checkpoint that does not exist.
         let Some(bytes) = self
             .transport
             .get(&path, note::MAX_NOTE as u64)
             .map_err(|why| self.refuse(why))?
         else {
-            self.kept.insert(size, None);
-            return Ok(None);
+            self.omitted.push(path.clone());
+            return Err(self.refuse(format!(
+                "no place serves `{path}`, a checkpoint below the point that a registry keeps"
+            )));
         };
         let document =
             String::from_utf8(bytes).map_err(|_| self.refuse(format!("`{path}` is not UTF-8")))?;
@@ -934,9 +955,9 @@ impl<'t> Registry<'t> {
     /// The first log position a recovery or a dispute logged at `index` governs (rule 38.1): the
     /// size of the first kept checkpoint whose witness time is at least seven days after the
     /// time the request was logged ([`Registry::logged_at`]); `None` when no checkpoint up to the
-    /// point is. A place can delay the effect, by not serving kept checkpoints, up to the point,
-    /// and never advance it. By binary search over sizes, since witness times never decrease as the log grows:
-    /// O(log L) probes of at most [`MAX_SCAN`] checkpoints each.
+    /// point is. A kept checkpoint that no place serves makes it unavailable, never later: a
+    /// registry keeps one for every size. By binary search over sizes, since witness times never
+    /// decrease as the log grows: O(log L) probes of at most [`MAX_SCAN`] checkpoints each.
     pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         let point = self.point.checkpoint.size;
         if index >= point {
@@ -960,6 +981,16 @@ impl<'t> Registry<'t> {
             }
         }
         Ok(Some(self.first_timed(low)?.0))
+    }
+
+    /// The documents no place served since the last call: each one made the result that
+    /// needed it unavailable, never a different result (`spec/30 §14` rule 1). A caller that
+    /// meets an error and finds an omission here reports the source as unserved (U7013),
+    /// otherwise as a copy that does not verify (U7010).
+    pub fn take_omitted(&mut self) -> Vec<String> {
+        let mut omitted = std::mem::take(&mut self.omitted);
+        omitted.extend(self.tiles.take_missing());
+        omitted
     }
 
     /// The registry misbehavior this client has seen: each owner chain the registry logged that
@@ -1286,10 +1317,13 @@ impl<'t> Registry<'t> {
             .ok_or_else(|| self.refuse(format!("`{digest}` is not a digest")))?;
         let path = format!("blobs/sha256/{hex}");
         let limit = crate::content::MAX_BYTES + MAX_DOCUMENT;
-        self.transport
-            .get(&path, limit)
-            .map_err(|why| self.refuse(why))?
-            .ok_or_else(|| self.refuse(format!("it has no `{path}`")))
+        match self.transport.get(&path, limit).map_err(|why| self.refuse(why))? {
+            Some(bytes) => Ok(bytes),
+            None => {
+                self.omitted.push(path.clone());
+                Err(self.refuse(format!("no place serves `{path}`")))
+            }
+        }
     }
 
     /// The provenance of `release` at the point, as Itaoca and the vendor directory store it

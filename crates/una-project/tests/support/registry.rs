@@ -380,6 +380,25 @@ impl TestRegistry {
             .map(|(name, head)| (name.clone(), *head))
             .collect();
         let (map_root, tiles) = build_tiles(&heads);
+        // A registry signs a checkpoint after every entry, and witnesses cosign some of them:
+        // every size below this one that has none gets one the log signs, with no
+        // cosignature, as a registry keeps it. A client reads it for its consistency only.
+        for kept in 1..size {
+            let path = format!("checkpoint/{kept}");
+            if self.files.contains_key(&path) {
+                continue;
+            }
+            let prefix = leaves.get(..kept as usize).unwrap_or_default();
+            let text = format!(
+                "{}\n{kept}\n{}\nita-map {}\n",
+                self.keys.log.1.name,
+                encode_base64(&tree_root(prefix)),
+                encode_base64(&map_root)
+            );
+            let line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
+            self.files
+                .insert(path, format!("{text}\n{line}").into_bytes());
+        }
         let text = format!(
             "{}\n{size}\n{}\nita-map {}\n",
             self.keys.log.1.name,

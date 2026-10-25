@@ -1129,17 +1129,9 @@ fn replay_once(
         // names signs it, since it may depend on that entry; refused otherwise. The keys the
         // chain names are checked only here.
         let decision = match decision {
-            // A request not yet in effect may be one whose effect a place delayed, up to the
-            // resolution point: what depends on it is void, never a refusal of the chain.
-            Verdict::Refuse
-                if !voided.is_empty()
-                    || state.overflowed
-                    || requests.values().any(|r| !r.applied && !r.ended) =>
-            {
-                // A recovery or a dispute the log's key signed may depend on such a request too.
-                let mut by_known =
-                    by_log && matches!(entry.event, Event::Recover(_) | Event::Dispute(_));
-                for key in state.known.iter().filter(|_| !by_known) {
+            Verdict::Refuse if !voided.is_empty() || state.overflowed => {
+                let mut by_known = false;
+                for key in &state.known {
                     if signs(note, key, &mut checks) {
                         by_known = true;
                         break;
@@ -1417,13 +1409,20 @@ fn replay_once(
                 // logged before the recovery took effect, after its seven days included: the
                 // recovery then takes effect from the entry after the overruling. A
                 // cancellation of a co-signer change cannot be overruled.
+                // It counts only within seven days of witness time after the cancellation it
+                // overrules, so a cancelled recovery cannot be revived at any later time.
                 let fixed = race_fixed();
+                let window = match cancels.get(cancel) {
+                    Some(_) if fixed => effect_at(*cancel, effects, effect)?,
+                    _ => None,
+                };
                 if let Some(recovery) = cancels.get(cancel).copied()
                     && let Some(request) = requests.get_mut(&recovery)
                     && matches!(request.ask, Ask::Recover(_))
                     && !request.applied
                     && !request.ended
                     && (fixed || request.effect.is_none_or(|effect| index < effect))
+                    && window.is_none_or(|end| index < end)
                 {
                     request.cancelled_by.remove(cancel);
                     if fixed {
@@ -1579,7 +1578,7 @@ fn apply(
     state: &mut Owner,
     snapshots: &mut Vec<Snapshot>,
 ) {
-    let (key, cosigners) = {
+    let (ask, guard) = {
         let Some(request) = requests.get_mut(&index) else {
             return;
         };
@@ -1587,14 +1586,28 @@ fn apply(
             return;
         }
         request.applied = true;
-        match &request.ask {
-            Ask::Cosigners(set) => {
-                state.cosigners.clone_from(set);
-                return;
+        (request.ask.clone(), request.guard.clone())
+    };
+    let (key, cosigners) = match ask {
+        Ask::Cosigners(set) => {
+            // A cancelled recovery whose guarding cosigners are replaced ends: no one who may
+            // overrule it is left.
+            if race_fixed() {
+                for other in requests.values_mut() {
+                    if matches!(other.ask, Ask::Recover(_))
+                        && !other.applied
+                        && !other.cancelled_by.is_empty()
+                        && other.guard != set
+                    {
+                        other.ended = true;
+                    }
+                }
             }
-            Ask::Recover(key) => (key.clone(), request.guard.clone()),
-            Ask::Dispute(key) => (key.clone(), None),
+            state.cosigners = set;
+            return;
         }
+        Ask::Recover(key) => (key, guard),
+        Ask::Dispute(key) => (key, None),
     };
     for old in std::mem::take(&mut state.keys) {
         state.former.insert(old.name.clone(), old);
@@ -1602,8 +1615,15 @@ fn apply(
     state.keys = vec![key];
     state.threshold = 1;
     state.cosigners = cosigners;
+    // Every co-signer change logged before this position and still waiting ends, and so does
+    // every cancelled recovery: a later recovery or dispute took effect.
+    let fixed = race_fixed();
     for (logged, request) in requests.iter_mut() {
-        if *logged < position && !request.applied && matches!(request.ask, Ask::Cosigners(_)) {
+        let waiting_change = *logged < position && matches!(request.ask, Ask::Cosigners(_));
+        let cancelled = fixed
+            && matches!(request.ask, Ask::Recover(_))
+            && !request.cancelled_by.is_empty();
+        if !request.applied && (waiting_change || cancelled) {
             request.ended = true;
         }
     }

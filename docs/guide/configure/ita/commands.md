@@ -70,7 +70,7 @@ pub greet() -> Text = shout("hello")
 ## Forms
 
 ```text
-una ita lock [path] [--check] [--dry-run] [--accept-authority] [--accept-trust <package>]
+una ita lock [path] [--check [--fresh]] [--dry-run] [--accept-authority] [--accept-trust <package>]
 una ita update [<name>...] [--cooldown <hours>] [--now] [--dry-run] [--accept-authority] [--accept-trust <package>]
 una ita add <name> [<version>] [--as <local>] [--from <source>] [--now] [--dry-run]
 una ita remove <name> [path]
@@ -86,7 +86,7 @@ una ita bundle <file> [path]
 una ita unbundle <file> [path]
 ```
 
-- **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009).
+- **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009), and fails on a registry package whose owner's chain froze since the lock (U7010), as far as the newest checkpoint a place serves shows, which a note states; `--check --fresh` requires that checkpoint to be less than 24 hours old, and fails without one (U7013). CI runs `--check --fresh` (see [the lock](lock.md#in-ci)).
 - **`update`** raises the named needs, or all, and writes the lock. A path dependency is always locked as its directory holds it, so `update` locks it again. `--cooldown` and `--now` set how long a release must have been logged before it is taken: 72 hours by default.
 - **`add`** adds a need to `ita.una` and locks; both files are written only when the resolution succeeds. It writes no `may` and no `trust` line.
 - **`remove`** takes a need out of `ita.una`, then writes the lock.

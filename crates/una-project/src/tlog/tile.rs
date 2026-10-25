@@ -128,6 +128,8 @@ pub struct Tiles<'t> {
     hashes: BTreeMap<(u64, u64), Vec<Hash>>,
     entries: BTreeMap<u64, Vec<Vec<u8>>>,
     reads: usize,
+    /// The files no transport served: omissions, which make a result unavailable.
+    missing: Vec<String>,
 }
 
 impl<'t> Tiles<'t> {
@@ -139,7 +141,14 @@ impl<'t> Tiles<'t> {
             hashes: BTreeMap::new(),
             entries: BTreeMap::new(),
             reads: 0,
+            missing: Vec::new(),
         }
+    }
+
+    /// The files no transport served since the last call, which made a result unavailable:
+    /// an omission never changes a result (`spec/30 §14` rule 1).
+    pub fn take_missing(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.missing)
     }
 
     /// How many files were read, for the scaling test.
@@ -182,6 +191,7 @@ impl<'t> Tiles<'t> {
                 return Ok((bytes, true));
             }
         }
+        self.missing.push(exact.to_owned());
         Err(format!(
             "{} has no `{exact}`",
             self.transport.describe()

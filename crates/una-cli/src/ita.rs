@@ -111,6 +111,9 @@ pub(crate) struct LockOptions<'a> {
     pub(crate) command: &'static str,
     /// `--check`: write nothing, and report where the lock is not the one written (U7009).
     pub(crate) check: bool,
+    /// `--fresh`, with `--check`: also require a checkpoint less than 24 hours old by the
+    /// witnesses' time, extending the lock's point, to find an owner whose chain froze since.
+    pub(crate) fresh: bool,
     /// `--dry-run`: print the review, and write nothing.
     pub(crate) dry_run: bool,
     /// `--accept-authority`: record a ceiling wider than the one the lock records.
@@ -144,6 +147,7 @@ impl<'a> LockOptions<'a> {
         LockOptions {
             command: "lock",
             check,
+            fresh: false,
             dry_run,
             accept_authority,
             accept_trust,
@@ -719,16 +723,20 @@ fn resolve_and_lock(
             };
             let state = cell
                 .try_borrow_mut()
-                .map_err(|_| "a registry is read twice at once".to_owned())
-                .and_then(|mut registry| registry.state(&identity.name, identity.line));
+                .map_err(|_| (Code::U7010, "a registry is read twice at once".to_owned()))
+                .and_then(|mut registry| {
+                    registry
+                        .state(&identity.name, identity.line)
+                        .map_err(|message| (crate::registry::code_of(&mut registry), message))
+                });
             let releases = match state {
                 Ok(releases) => releases,
-                Err(message) => {
+                Err((code, message)) => {
                     diagnostics.extend(located(
                         sources,
                         manifest_id,
                         vec![ProjectError {
-                            code: Code::U7010,
+                            code,
                             range: need.range.clone(),
                             message,
                         }],
@@ -793,7 +801,13 @@ fn resolve_and_lock(
             };
             // A registry that fails verification while it is read is U7010; every other
             // problem is no resolution.
+            // A document no place serves makes the resolution unavailable (U7013).
+            let omitted = online.registries.values().any(|cell| {
+                cell.try_borrow_mut()
+                    .is_ok_and(|mut registry| !registry.take_omitted().is_empty())
+            });
             let code = match &problem {
+                Problem::Index(_) if omitted => Code::U7013,
                 Problem::Index(why) if why.starts_with("the registry `") => Code::U7010,
                 _ => Code::U7013,
             };
@@ -859,7 +873,7 @@ fn resolve_and_lock(
         let release = match registry.release(&identity.name, version) {
             Ok(release) => release,
             Err(message) => {
-                found.push(problem(Code::U7010, message));
+                found.push(problem(crate::registry::code_of(&mut registry), message));
                 continue;
             }
         };
@@ -904,7 +918,7 @@ fn resolve_and_lock(
             let history = match registry.history(&owner) {
                 Ok(history) => history,
                 Err(message) => {
-                    found.push(problem(Code::U7010, message));
+                    found.push(problem(crate::registry::code_of(&mut registry), message));
                     continue;
                 }
             };
@@ -991,7 +1005,7 @@ fn resolve_and_lock(
                         }
                     }
                     Err(message) => {
-                        found.push(problem(Code::U7010, message));
+                        found.push(problem(crate::registry::code_of(&mut registry), message));
                         continue;
                     }
                 }
@@ -1020,7 +1034,7 @@ fn resolve_and_lock(
                 }
                 Ok(_) => {}
                 Err(message) => {
-                    found.push(problem(Code::U7010, message));
+                    found.push(problem(crate::registry::code_of(&mut registry), message));
                     continue;
                 }
             }
@@ -1086,7 +1100,7 @@ fn resolve_and_lock(
                 }
             }
             Err(message) => {
-                found.push(problem(Code::U7010, message));
+                found.push(problem(crate::registry::code_of(&mut registry), message));
                 continue;
             }
         }
@@ -1186,6 +1200,115 @@ fn resolve_and_lock(
         text.push_str(&entry.block);
     }
     if options.check {
+        // A freeze after the lock's resolution point (spec/30 §14 rule 5): a frozen chain
+        // never thaws, so the newest checkpoint a place serves, fresh or not, that extends the
+        // lock's point is evidence enough, and a locked release of a frozen owner fails.
+        let mut check_notes: Vec<String> = Vec::new();
+        if let Some((lock_id, lock, _)) = &existing {
+            for (source, list) in &places {
+                let declared = crate::registry::declared(read, source);
+                let (Some(declared), Some(old)) = (declared, locked_point(source)) else {
+                    continue;
+                };
+                let owners: BTreeMap<String, (String, std::ops::Range<usize>)> = lock
+                    .read
+                    .packages
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p.from.as_ref().map(|f| &f.value),
+                            Some(ita::LockOrigin::Source(s)) if s == source
+                        )
+                    })
+                    .map(|p| {
+                        let name = p.name.value.to_string();
+                        let owner = una_project::client::owner_of(&name).to_owned();
+                        (owner, (name, p.name.range.clone()))
+                    })
+                    .collect();
+                if owners.is_empty() {
+                    continue;
+                }
+                // `--fresh`: a checkpoint less than 24 hours old by the witnesses' time, as a
+                // resolution needs; plain `--check`: the newest one a place serves, any age.
+                let newest_point = if options.fresh {
+                    Point::Latest { now: options.now }
+                } else {
+                    Point::Served
+                };
+                let mut fail = |code: Code, range: std::ops::Range<usize>, message: String| {
+                    diagnostics.extend(located(
+                        sources,
+                        *lock_id,
+                        vec![ProjectError {
+                            code,
+                            range,
+                            message,
+                        }],
+                    ));
+                };
+                let lock_range = owners
+                    .values()
+                    .next()
+                    .map_or(0..0, |(_, range)| range.clone());
+                match crate::registry::open_first(declared, list, &newest_point, None, Some(&old)) {
+                    Ok((mut newest, _)) => {
+                        let time = crate::registry::utc(newest.point.time);
+                        let mut checked = true;
+                        for (owner, (name, range)) in &owners {
+                            match newest.history(owner) {
+                                Ok(history) => {
+                                    if let Some(from) = history.frozen {
+                                        fail(
+                                            Code::U7010,
+                                            range.clone(),
+                                            format!(
+                                                "the chain of the owner `{}` of `{}` is frozen from the log position {from} by competing recoveries or disputes, so its names are not resolved; its owner registers again under a new owner name",
+                                                una_project::client::shown(owner),
+                                                una_project::client::shown(name)
+                                            ),
+                                        );
+                                    }
+                                }
+                                Err(message) => {
+                                    let code = crate::registry::code_of(&mut newest);
+                                    if code == Code::U7013 && !options.fresh {
+                                        checked = false;
+                                    } else {
+                                        fail(code, range.clone(), message);
+                                    }
+                                }
+                            }
+                        }
+                        if !options.fresh {
+                            check_notes.push(if checked {
+                                format!(
+                                    "note: `{source}`: a later freeze was checked at a checkpoint of witness time {time}"
+                                )
+                            } else {
+                                format!(
+                                    "note: `{source}`: a later freeze was not checked, since a place omits what the check reads"
+                                )
+                            });
+                        }
+                    }
+                    Err((code, why)) if options.fresh => fail(
+                        code,
+                        lock_range,
+                        if code == Code::U7013 {
+                            format!(
+                                "`--fresh` needs a reachable place or mirror of `{source}` that serves a checkpoint less than 24 hours old extending the lock's: {why}"
+                            )
+                        } else {
+                            why
+                        },
+                    ),
+                    Err(_) => check_notes.push(format!(
+                        "note: `{source}`: a later freeze was not checked, since no place serves a checkpoint newer than the lock's"
+                    )),
+                }
+            }
+        }
         let same = existing
             .as_ref()
             .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
@@ -1201,7 +1324,7 @@ fn resolve_and_lock(
             let at = existing.as_ref().map_or(manifest_id, |(id, _, _)| *id);
             diagnostics.extend(located(sources, at, vec![error]));
         }
-        return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
+        return finish_resolved(command, &[], &[], &check_notes, &diagnostics, sources, out);
     }
     let unchanged = edited.is_none()
         && existing
@@ -2049,9 +2172,10 @@ fn newest_release(
         lock_floor,
     )
     .map_err(|(code, message)| refuse(code, message))?;
-    let releases = registry
-        .releases(name)
-        .map_err(|message| refuse(Code::U7010, message))?;
+    let releases = match registry.releases(name) {
+        Ok(releases) => releases,
+        Err(message) => return Err(refuse(crate::registry::code_of(&mut registry), message)),
+    };
     let now = registry.point.time;
     let mut newest: Option<Version> = None;
     let mut held: Option<Version> = None;
@@ -2060,9 +2184,12 @@ fn newest_release(
         if release.compromised || version.is_pre() {
             continue;
         }
-        let logged = registry
-            .logged_at(release.index)
-            .map_err(|message| refuse(Code::U7010, message))?;
+        let logged = match registry.logged_at(release.index) {
+            Ok(logged) => logged,
+            Err(message) => {
+                return Err(refuse(crate::registry::code_of(&mut registry), message));
+            }
+        };
         let candidate = if logged.saturating_add(options.cooldown) <= now {
             &mut newest
         } else {
@@ -2504,7 +2631,7 @@ pub(crate) fn fetch_command(
                 "fetched {} {}",
                 expected.name, expected.version
             )),
-            Err(message) => refuse(Code::U7010, message),
+            Err(message) => refuse(crate::registry::code_of(registry), message),
         }
     }
     // Each registry's floors were stored when its point was accepted (`registry::open`).

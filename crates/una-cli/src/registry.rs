@@ -76,20 +76,40 @@ fn transport_for(location: &Location) -> Result<Box<dyn Transport>, String> {
     }
 }
 
-/// The places of `source`, in the order they are tried: its mirrors, then its own URL.
+/// The places of `source`, in the order they are tried: its mirrors, then its own URL. Each
+/// place reads, behind it, from the other places that have a transport, for any document it
+/// omits below its checkpoint ([`transport::Fallback`]).
 pub(crate) fn places_of(source: &ita::Source, mirrors: &Mirrors) -> Vec<Place> {
     let name = &source.name.value;
-    let mut places: Vec<Place> = mirrors
+    let own = &source.url.value;
+    let mut locations: Vec<(String, Result<Location, String>)> = mirrors
         .of(name)
         .iter()
-        .map(|mirror| (mirror.url.clone(), transport_for(&mirror.location)))
+        .map(|mirror| (mirror.url.clone(), Ok(mirror.location.clone())))
         .collect();
-    let own = &source.url.value;
-    places.push((
-        own.clone(),
-        Location::parse(own).and_then(|location| transport_for(&location)),
-    ));
-    places
+    locations.push((own.clone(), Location::parse(own)));
+    let transports = |except: usize| -> Vec<Box<dyn Transport>> {
+        locations
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| *at != except)
+            .filter_map(|(_, (_, location))| location.as_ref().ok())
+            .filter_map(|location| transport_for(location).ok())
+            .collect()
+    };
+    locations
+        .iter()
+        .enumerate()
+        .map(|(at, (from, location))| {
+            let first = location
+                .clone()
+                .and_then(|location| transport_for(&location));
+            let place = first.map(|first| -> Box<dyn Transport> {
+                Box::new(transport::Fallback::new(first, transports(at)))
+            });
+            (from.clone(), place)
+        })
+        .collect()
 }
 
 /// Opens `source` at `point` from the first of `places` whose root metadata and checkpoint
@@ -166,6 +186,40 @@ pub(crate) fn open_first<'t>(
     }
 }
 
+/// The code of a failure `registry` just met (`spec/30 §14` rule 1): U7013 when a document
+/// that no place serves made the result unavailable, U7010 when what was served does not
+/// verify. Read from the registry's record of omissions, never from the message.
+pub(crate) fn code_of(registry: &mut Registry<'_>) -> Code {
+    if registry.take_omitted().is_empty() {
+        Code::U7010
+    } else {
+        Code::U7013
+    }
+}
+
+/// A witness time, seconds since the Unix epoch, as a UTC date and time:
+/// `YYYY-MM-DDTHH:MM:SSZ` (the proleptic Gregorian calendar, by days since the epoch).
+pub(crate) fn utc(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let rest = seconds % 86_400;
+    // Days since the epoch to a civil date, by eras of 400 years from March 1, year 0.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
+}
+
 /// The digest of the root metadata that `source` pins.
 pub(crate) fn pin_of(source: &ita::Source) -> Result<&str, String> {
     source
@@ -217,7 +271,7 @@ pub(crate) fn open<'t>(
         root_version,
     };
     let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
-    if let Point::Latest { .. } = point {
+    if matches!(point, Point::Latest { .. } | Point::Served) {
         let size = registry.point.checkpoint.size;
         if floor.as_deref().is_some_and(|stored| registry.below(stored)) {
             return Err(OpenError::Refused(format!(
