@@ -66,7 +66,9 @@ fn finish(
     sources: &SourceDb,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
-    let status = if diagnostics.is_empty() {
+    let status = if diagnostics.iter().any(|d| d.code == Code::U8001) {
+        ExitStatus::Internal
+    } else if diagnostics.is_empty() {
         ExitStatus::Success
     } else {
         ExitStatus::Errors
@@ -250,6 +252,9 @@ struct ResolveDocument<'a> {
     written: &'a [&'a str],
     changes: &'a [ChangeDoc],
     diagnostics: &'a [Diagnostic],
+    /// Why the command failed outside its diagnostics: a file it could not write, or an
+    /// internal error; `null` otherwise.
+    error: Option<&'a str>,
 }
 
 /// A path dependency as the resolution locks it.
@@ -447,12 +452,16 @@ fn resolve_and_lock(
     };
     let sources = &package.sources;
     let Some(manifest_id) = package.manifest else {
-        writeln!(
-            out.stderr,
-            "internal compiler error (U8001): `{}` was loaded without its ita.una; please report it",
-            path.display()
-        )?;
-        return Ok(ExitStatus::Internal);
+        return fail_resolved(
+            command,
+            &[],
+            &format!(
+                "internal compiler error (U8001): `{}` was loaded without its ita.una; please report it",
+                path.display()
+            ),
+            ExitStatus::Internal,
+            out,
+        );
     };
     let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
     let mut diagnostics = located(sources, manifest_id, errors);
@@ -475,6 +484,36 @@ fn resolve_and_lock(
         .as_ref()
         .map(|name| name.value.to_string())
         .unwrap_or_default();
+    // Each consent flag names a need of `ita.una`, and one value per package (rule 25).
+    let needed: BTreeSet<String> = read.needs.iter().map(|n| n.name.value.to_string()).collect();
+    for name in options.accept_authority {
+        if !needed.contains(name) {
+            writeln!(
+                out.stderr,
+                "error: `--accept-authority {name}` names no need of ita.una"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
+    let mut consented_to: BTreeMap<&str, &str> = BTreeMap::new();
+    for (name, digest) in &trust_consents {
+        if !needed.contains(*name) {
+            writeln!(
+                out.stderr,
+                "error: `--accept-trust {name}@{digest}` names no need of ita.una"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+        if let Some(other) = consented_to.insert(*name, *digest)
+            && other != *digest
+        {
+            writeln!(
+                out.stderr,
+                "error: `--accept-trust` names `{name}` twice, with {other} and {digest}; consent to one content"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
     // The releases held offline, the root's needs on them, and the avoided versions.
     let mut index = Offline::default();
     let mut root_needs: Vec<Need> = Vec::new();
@@ -885,6 +924,7 @@ fn resolve_and_lock(
         &package,
         existing.as_ref().map(|(_, lock, _)| lock),
         &entries,
+        &root,
     );
     let mut lines: Vec<String> = changes.iter().map(ChangeDoc::line).collect();
     if !consent.is_empty() {
@@ -902,64 +942,67 @@ fn resolve_and_lock(
         return finish_resolved(command, &[], &changes, &lines, &diagnostics, sources, out);
     }
     let mut written: Vec<&str> = Vec::new();
-    // The lock as it was, to put back if `ita.una` cannot be written after it.
-    let previous: Option<Vec<u8>> = if options.edited.is_some() && !lock_unchanged {
-        match std::fs::read(&lock_path) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => {
-                writeln!(
-                    out.stderr,
-                    "error: cannot read `{}` to keep it: {error}; nothing was written",
-                    lock_path.display()
-                )?;
-                return Ok(ExitStatus::Errors);
+    // The lock as it was loaded, to put back, byte for byte, if `ita.una` cannot be written
+    // after it. The helper that writes takes text, so a lock that is not UTF-8 is not replaced
+    // by an edit at all.
+    let previous: Option<&str> = match (&options.edited, lock_unchanged, &package.lock_bytes) {
+        (Some(_), false, Some(bytes)) => match std::str::from_utf8(bytes) {
+            Ok(text) => Some(text),
+            Err(_) => {
+                return fail_resolved(
+                    command,
+                    &[],
+                    &format!(
+                        "`{}` is not UTF-8, so it could not be put back if ita.una could not be written; nothing was written",
+                        lock_path.display()
+                    ),
+                    ExitStatus::Errors,
+                    out,
+                );
             }
-        }
-    } else {
-        None
+        },
+        _ => None,
     };
     if !lock_unchanged {
         if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
-            writeln!(
-                out.stderr,
-                "error: cannot write `{}`: {error}; nothing was written",
-                lock_path.display()
-            )?;
-            return Ok(ExitStatus::Errors);
+            return fail_resolved(
+                command,
+                &[],
+                &format!(
+                    "cannot write `{}`: {error}; nothing was written",
+                    lock_path.display()
+                ),
+                ExitStatus::Errors,
+                out,
+            );
         }
         written.push("ita.lock");
         lines.push("wrote ita.lock".to_owned());
     }
     if let Some(edited) = &options.edited {
         if let Err(error) = crate::write_through_rename(&manifest_path, edited) {
-            writeln!(
-                out.stderr,
-                "error: cannot write `{}`: {error}",
-                manifest_path.display()
-            )?;
+            let mut message = format!("cannot write `{}`: {error}", manifest_path.display());
+            let mut left: Vec<&str> = Vec::new();
             if !lock_unchanged {
-                let restored = match &previous {
-                    Some(bytes) => crate::write_through_rename_or_create(
-                        &lock_path,
-                        &String::from_utf8_lossy(bytes),
-                    ),
+                let restored = match previous {
+                    Some(bytes) => crate::write_through_rename_or_create(&lock_path, bytes),
                     None => std::fs::remove_file(&lock_path),
                 };
                 match restored {
-                    Ok(()) => writeln!(
-                        out.stderr,
-                        "error: `{}` was put back as it was; nothing was changed",
+                    Ok(()) => message.push_str(&format!(
+                        "; `{}` was put back as it was, so nothing was changed",
                         lock_path.display()
-                    )?,
-                    Err(error) => writeln!(
-                        out.stderr,
-                        "error: `{}` could not be put back as it was: {error}; it is the lock of the edit that was not written, so run `una ita lock`",
-                        lock_path.display()
-                    )?,
+                    )),
+                    Err(error) => {
+                        left.push("ita.lock");
+                        message.push_str(&format!(
+                            "; `{}` could not be put back as it was: {error}; it is the lock of the edit that was not written, so run `una ita lock`",
+                            lock_path.display()
+                        ));
+                    }
                 }
             }
-            return Ok(ExitStatus::Errors);
+            return fail_resolved(command, &left, &message, ExitStatus::Errors, out);
         }
         written.push("ita.una");
         lines.push("wrote ita.una".to_owned());
@@ -983,6 +1026,7 @@ fn review(
     package: &crate::package::Package,
     existing: Option<&una_project::ita::ItaLock>,
     entries: &[Locked],
+    root: &str,
 ) -> Vec<ChangeDoc> {
     struct Old {
         version: String,
@@ -1000,10 +1044,11 @@ fn review(
             Some(ita::LockOrigin::Source(source)) => source.clone(),
             None => String::new(),
         };
+        // The ceiling the root grants it, as the new lock writes it.
         let ceiling = locked
             .granted
             .iter()
-            .find(|g| g.identity.is_none())
+            .find(|g| g.identity.is_none() && g.by.value.to_string() == root)
             .map(|g| canonical_ceiling(&g.may))
             .unwrap_or_default();
         let mut trusted: Vec<String> = locked.trusted.iter().map(|m| m.value.clone()).collect();
@@ -1137,6 +1182,7 @@ fn finish_resolved(
             written,
             changes,
             diagnostics,
+            error: None,
         };
         match serde_json::to_string(&document) {
             Ok(text) => writeln!(out.stdout, "{text}")?,
@@ -1155,6 +1201,43 @@ fn finish_resolved(
         for line in lines {
             writeln!(out.stdout, "{line}")?;
         }
+    }
+    Ok(status)
+}
+
+/// Ends a command that resolves with a failure outside its diagnostics: a file it could not
+/// write, or an internal error (`message` then starts with `internal compiler error (U8001)`).
+/// With `--json`, one `una.ita/1` document with the message as `error` and the files left
+/// written as `written`; otherwise the message on stderr. Exit code `status`: 1 for a write,
+/// 3 for an internal error (`spec/13 §5`).
+fn fail_resolved(
+    command: &str,
+    written: &[&str],
+    message: &str,
+    status: ExitStatus,
+    out: Output<'_>,
+) -> io::Result<ExitStatus> {
+    if out.json {
+        let document = ResolveDocument {
+            schema: "una.ita/1",
+            command,
+            written,
+            changes: &[],
+            diagnostics: &[],
+            error: Some(message),
+        };
+        match serde_json::to_string(&document) {
+            Ok(text) => writeln!(out.stdout, "{text}")?,
+            Err(error) => {
+                writeln!(out.stderr, "internal compiler error (U8001): {error}")?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+        out.stdout.flush()?;
+    } else if status == ExitStatus::Internal {
+        writeln!(out.stderr, "{message}")?;
+    } else {
+        writeln!(out.stderr, "error: {message}")?;
     }
     Ok(status)
 }
@@ -1350,13 +1433,18 @@ pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatu
     Ok(status)
 }
 
-/// Reports an internal error of an edit of `ita.una` (U8001), exit code 3.
+/// Reports an internal error of an edit of `ita.una` (U8001), exit code 3, as
+/// [`fail_resolved`] does.
 fn internal_error(out: Output<'_>, what: &str) -> io::Result<ExitStatus> {
-    writeln!(
-        out.stderr,
-        "internal compiler error (U8001): {what} in ita.una, though it parsed; please report it"
-    )?;
-    Ok(ExitStatus::Internal)
+    fail_resolved(
+        "remove",
+        &[],
+        &format!(
+            "internal compiler error (U8001): {what} in ita.una, though it parsed; please report it"
+        ),
+        ExitStatus::Internal,
+        out,
+    )
 }
 
 /// `una ita remove <name> [path]` (ADR 0122 rule 57): removes the need of `name` from

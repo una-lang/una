@@ -566,17 +566,75 @@ fn a_write_that_fails_exits_1_and_changes_nothing() {
     let bound = std::fs::write(&probe, b"x").is_err();
     let _ = std::fs::remove_file(&probe);
     let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    let (json_code, json, _) = una(&["una", "--json", "ita", "remove", "util", path(&dir)]);
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     if bound {
         assert_eq!(code, 1, "{err}");
         assert!(err.contains("cannot write"), "{err}");
         assert!(!out.contains("wrote"), "{out}");
+        // With `--json`, one document with the error.
+        assert_eq!(json_code, 1);
+        let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(document["schema"], "una.ita/1");
+        assert_eq!(document["command"], "remove");
+        assert_eq!(document["written"], serde_json::json!([]));
+        assert!(
+            document["error"]
+                .as_str()
+                .unwrap()
+                .contains("cannot write"),
+            "{json}"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("ita.una")).unwrap(),
             manifest
         );
         assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), lock);
     }
+}
+
+/// When the lock is written and `ita.una` then cannot be, the lock is put back, byte for byte,
+/// and the command exits with code 1. `ita.una` is a link to a file in a directory that cannot
+/// be written, which the write either refuses as a link or fails to write beside its target.
+#[cfg(unix)]
+#[test]
+fn the_lock_is_put_back_when_ita_una_cannot_be_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = with_two_dependencies("restore", "\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    // The lock with bytes `una ita lock` would not write, a comment, which must come back.
+    let lock = format!(
+        "-- kept as written\n{}",
+        std::fs::read_to_string(dir.join("ita.lock")).unwrap()
+    );
+    std::fs::write(dir.join("ita.lock"), &lock).unwrap();
+    let held = dir.join("held");
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::rename(dir.join("ita.una"), held.join("ita.una")).unwrap();
+    std::os::unix::fs::symlink(held.join("ita.una"), dir.join("ita.una")).unwrap();
+    let manifest = std::fs::read_to_string(held.join("ita.una")).unwrap();
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = held.join("probe");
+    let bound = std::fs::write(&probe, b"x").is_err();
+    let _ = std::fs::remove_file(&probe);
+    let (code, _, remove_err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if code == 0 {
+        // Only a user the permissions do not bind, such as root, writes through the link.
+        assert!(!bound, "{remove_err}");
+        return;
+    }
+    assert_eq!(code, 1, "{remove_err}");
+    assert!(
+        remove_err.contains("cannot write") && remove_err.contains("was put back as it was"),
+        "{remove_err}"
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), lock);
+    assert_eq!(
+        std::fs::read_to_string(held.join("ita.una")).unwrap(),
+        manifest
+    );
 }
 
 #[test]
@@ -660,8 +718,9 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
     assert!(out.contains("to accept, after reviewing: una ita lock "), "{out}");
     assert!(!dir.join("ita.lock").exists());
     let flag = trust_flag(&err);
-    // Consent to another package accepts nothing.
-    let (code, _, _) = una(&[
+    // Consent to a package the root does not need is a usage error, and so is consent to two
+    // contents of one package.
+    let (code, _, err) = una(&[
         "una",
         "ita",
         "lock",
@@ -671,7 +730,21 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
         &format!("other@sha256:{}", "0".repeat(64)),
         path(&dir),
     ]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
+    assert!(err.contains("names no need"), "{err}");
+    let (code, _, err) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-trust",
+        &flag,
+        "--accept-trust",
+        &format!("util@sha256:{}", "0".repeat(64)),
+        path(&dir),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("names `util` twice"), "{err}");
+    assert!(!dir.join("ita.lock").exists());
     // A flag that names no digest is a usage error.
     let (code, _, err) = una(&[
         "una",
@@ -845,16 +918,21 @@ fn consent_is_reviewed_before_it_is_given_and_names_each_package() {
     let document: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(document["changes"][0]["package"], "util");
     assert_eq!(document["written"], serde_json::json!([]));
-    // Accepting another package's authority accepts nothing for this one.
-    let (code, _, _) = una(&[
+    // Accepting the authority of a package the root does not need is a usage error.
+    let (code, out, err) = una(&[
         "una",
+        "--json",
         "ita",
         "lock",
         "--accept-authority",
         "other",
         path(&dir),
     ]);
-    assert_eq!(code, 1);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(
+        err.contains("`--accept-authority other` names no need"),
+        "{err}"
+    );
     assert!(!dir.join("ita.lock").exists());
     // A bare flag is refused: it must name the package.
     let (code, _, err) = una(&["una", "ita", "lock", "--accept-authority"]);

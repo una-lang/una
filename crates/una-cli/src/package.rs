@@ -29,6 +29,9 @@ pub struct Package {
     pub manifest: Option<FileId>,
     /// `verification.lock` or `ita.lock`, when the package has one.
     pub lock: Option<FileId>,
+    /// The lock's bytes exactly as they were read, which `una ita add` and `remove` put back
+    /// when `ita.una` cannot be written after the lock.
+    pub lock_bytes: Option<Vec<u8>>,
     /// The modules, in path order.
     pub modules: Vec<FileId>,
     /// Where each file is on disk, for `una fmt`.
@@ -107,6 +110,7 @@ pub fn load_in(
         both_manifests: loaded.both_manifests,
         manifest: None,
         lock: None,
+        lock_bytes: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
         dependencies: Vec::new(),
@@ -117,7 +121,10 @@ pub fn load_in(
         package.disk_paths.insert(id, file.path);
         match file.role {
             Role::Manifest => package.manifest = Some(id),
-            Role::Lock => package.lock = Some(id),
+            Role::Lock => {
+                package.lock = Some(id);
+                package.lock_bytes = Some(file.bytes);
+            }
             Role::Module => package.modules.push(id),
         }
     }

@@ -260,6 +260,7 @@ fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
         both_manifests: false,
         manifest: Some(manifest_id),
         lock: Some(lock_id),
+        lock_bytes: Some(lock.as_bytes().to_vec()),
         modules,
         disk_paths,
         dependencies: Vec::new(),
