@@ -21,6 +21,7 @@ fn repository() -> PathBuf {
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository().join(dir))
         .output()
@@ -1465,6 +1466,7 @@ fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
     );
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "run"])
         .env("UNA_SECRET_TOKEN", "hunter2")
         .current_dir(&root)
@@ -1700,6 +1702,7 @@ fn una_closed(fd: u8, args: &[&str]) -> Output {
         .arg(env!("CARGO_BIN_EXE_una"))
         .args(args)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .current_dir(repository())
         .output()
         .unwrap()
@@ -1766,6 +1769,7 @@ fn a_reader_that_went_away_is_a_failed_write() {
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["run", floods.to_str().unwrap(), "--grant", "console"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
