@@ -291,6 +291,10 @@ pub enum Verdict {
     Broken(String),
     /// Not logged yet, and its time has not passed.
     Pending,
+    /// It would be kept, but a promise could not be read or did not verify, and a promise
+    /// with an earlier `by` would break it: what a place failed to give may only leave the
+    /// verdict unavailable, never make it kept. Judged again on a later run: why.
+    Unavailable(String),
 }
 
 /// Judges `submitted` (rule 36.2), at a checkpoint of witness time `now`: `promise`, its
@@ -379,8 +383,13 @@ fn verified(
 /// for it; `log` is the log's key of the last root; `logged_at` and `now` are as [`judge`] takes
 /// them.
 ///
+/// - No promise served (the place has none) is judged as no promise, by the window
+///   ([`judge`]).
 /// - A promise served that does not verify (a bad signature, another source or leaf, a text
-///   that does not read) is reported, and counts as none.
+///   that does not read), one the place could not serve, and a stored one that does not
+///   verify are reported. They count as none only toward a broken verdict: a verdict that
+///   would be kept is [`Verdict::Unavailable`] instead, since the promise missed could have
+///   named an earlier `by`.
 /// - The first verified promise is kept ([`Assessment::first`]); a later one whose text differs
 ///   from it is a replaced promise, reported as evidence ([`Assessment::replaced`]).
 /// - The judgment takes the earliest `by` of every verified promise seen, so a registry cannot
@@ -397,12 +406,15 @@ pub fn assess(
     now: u64,
 ) -> Assessment {
     let mut notes = Vec::new();
+    // Why a promise may be missing from the judgment: one unread, or that does not verify.
+    let mut missed: Option<String> = None;
     let leaf = format!("sha256:{}", submitted.leaf);
     let first = match stored.map(|bytes| verified(bytes, log, source, &leaf)) {
         Some(Ok(promise)) => Some(promise),
         Some(Err(why)) => {
+            missed = Some("the promise stored does not verify".to_owned());
             notes.push(format!(
-                "the promise stored for {leaf} does not verify, and counts as none: {}",
+                "the promise stored for {leaf} does not verify, and counts as none, never toward a kept verdict: {}",
                 crate::client::shown(&why)
             ));
             None
@@ -414,16 +426,18 @@ pub fn assess(
         Ok(Some(bytes)) => match verified(bytes, log, source, &leaf) {
             Ok(promise) => Some(promise),
             Err(why) => {
+                missed = Some("the promise served does not verify".to_owned());
                 notes.push(format!(
-                    "the promise served for {leaf} does not verify, and counts as none: {}",
+                    "the promise served for {leaf} does not verify, and counts as none, never toward a kept verdict: {}",
                     crate::client::shown(&why)
                 ));
                 None
             }
         },
         Err(why) => {
+            missed = Some("the promise cannot be read".to_owned());
             notes.push(format!(
-                "the promise for {leaf} cannot be read, and counts as none: {}",
+                "the promise for {leaf} cannot be read, and counts as none, never toward a kept verdict: {}",
                 crate::client::shown(&why)
             ));
             None
@@ -443,8 +457,14 @@ pub fn assess(
         .into_iter()
         .flatten()
         .min_by_key(|promise| promise.by);
+    let verdict = match (judge(submitted, earliest.as_ref(), logged_at, now), missed) {
+        (Verdict::Kept, Some(why)) => Verdict::Unavailable(format!(
+            "{why}, and a promise with an earlier `by` would break it; it is judged again on a later run"
+        )),
+        (verdict, _) => verdict,
+    };
     Assessment {
-        verdict: judge(submitted, earliest.as_ref(), logged_at, now),
+        verdict,
         notes,
         first: store,
         replaced,

@@ -1388,7 +1388,15 @@ fn a_bad_promise_is_reported_and_counts_as_none() {
         (&elsewhere, promise_of(&elsewhere, &log, "other")),
         (&forged, b"not a promise".to_vec()),
     ] {
-        let bad = assess(&record(leaf), Ok(Some(served)), None, log.key(), "acme", None, now);
+        let bad = assess(
+            &record(leaf),
+            Ok(Some(served)),
+            None,
+            log.key(),
+            "acme",
+            None,
+            now,
+        );
         assert_eq!(bad.notes.len(), 1, "{bad:?}");
         assert!(bad.notes[0].contains("counts as none"));
         // Judged as no promise: past the window, not logged, broken.
@@ -1827,4 +1835,84 @@ fn the_audit_reports_an_unsettled_chain_as_evidence() {
             && text.contains(&format!("first at the log index {claim}")),
         "{text}"
     );
+}
+
+/// What a place failed to give never makes a verdict kept: a promise that does not verify, or
+/// cannot be read, leaves a verdict that would be kept unavailable; a place that serves no
+/// promise is judged by the window, as ruled; a broken verdict stays broken.
+#[test]
+fn a_promise_missed_never_makes_a_verdict_kept() {
+    let log = key(20, "acme.example/log");
+    let stranger = key(21, "acme.example/other");
+    let leaf = "aa".repeat(32);
+    let record = Submitted {
+        leaf: leaf.clone(),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/ledger".to_owned(),
+        time: 1000,
+        sent: 1000,
+    };
+    let forged = sign_note(
+        &format!("ita-promise/1\nsource acme\nleaf sha256:{leaf}\nby 2000\n"),
+        &[&stranger],
+    )
+    .unwrap()
+    .into_bytes();
+    let now = 10_000;
+    // Logged within the window: kept with no promise served, unavailable with one missed.
+    let none = assess(
+        &record,
+        Ok(None),
+        None,
+        log.key(),
+        "acme",
+        Some(1500),
+        now,
+    );
+    assert_eq!(none.verdict, Verdict::Kept);
+    let bad = assess(
+        &record,
+        Ok(Some(forged.clone())),
+        None,
+        log.key(),
+        "acme",
+        Some(1500),
+        now,
+    );
+    assert!(matches!(bad.verdict, Verdict::Unavailable(_)), "{bad:?}");
+    let unread = assess(
+        &record,
+        Err("no https transport yet".to_owned()),
+        None,
+        log.key(),
+        "acme",
+        Some(1500),
+        now,
+    );
+    assert!(matches!(unread.verdict, Verdict::Unavailable(_)), "{unread:?}");
+    let stored = assess(
+        &record,
+        Ok(None),
+        Some(forged),
+        log.key(),
+        "acme",
+        Some(1500),
+        now,
+    );
+    assert!(matches!(stored.verdict, Verdict::Unavailable(_)), "{stored:?}");
+    // An unavailable verdict is not settled.
+    let mut position = Position::start("acme", "acme");
+    position.settle(&leaf, &unread.verdict).unwrap();
+    assert!(position.settled.is_empty());
+    // Not logged past the window: broken, whatever promise was missed.
+    let broken = assess(
+        &record,
+        Err("no https transport yet".to_owned()),
+        None,
+        log.key(),
+        "acme",
+        None,
+        now,
+    );
+    assert!(matches!(broken.verdict, Verdict::Broken(_)), "{broken:?}");
 }

@@ -1091,6 +1091,14 @@ pub(crate) fn watch_command(
                     watch::Verdict::Pending => {
                         lines.push(format!("pending: the submission sha256:{leaf} is not logged yet"));
                     }
+                    watch::Verdict::Unavailable(why) => {
+                        // What a place failed to give never makes a verdict: not settled, judged
+                        // again on the next run.
+                        failed = true;
+                        lines.push(format!(
+                            "unavailable: the submission sha256:{leaf} cannot be judged kept: {why}"
+                        ));
+                    }
                     watch::Verdict::Kept => {
                         lines.push(format!("kept: the submission sha256:{leaf} is logged as promised"));
                     }
