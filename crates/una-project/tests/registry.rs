@@ -2257,7 +2257,7 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         places: vec![place.clone()],
         places_agreeing: 1,
     };
-    assert_eq!(audit::evidence(&client), [gap.clone()]);
+    assert_eq!(audit::evidence(&client), std::slice::from_ref(&gap));
     assert!(!gap.attributed());
     let text = gap.text("acme");
     assert!(

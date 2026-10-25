@@ -1087,9 +1087,8 @@ pub(crate) fn watch_command(
     // watching's own, a chain shorter than the count seen, is evidence (U7010).
     let mut failed_read: Option<Code> = None;
     let mut chain = |name: &str| {
-        watch::chain_of(&mut registry, name).map_err(|why| {
+        watch::chain_of(&mut registry, name).inspect_err(|_| {
             failed_read = Some(crate::registry::code_of(&mut registry));
-            why
         })
     };
     let followed = watch::watch(&mut chain, &stored, names);
