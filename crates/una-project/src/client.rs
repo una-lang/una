@@ -46,8 +46,9 @@
 //! **Costs.** Opening: O(R) root versions and one checkpoint, O(log L) hashes for its consistency
 //! proof in a log of L entries. An entry: O(log L) hashes and tiles. A name: at most 32 map tiles
 //! and O(256 + 8 k) hashes for its head, and O(E log L) for its E entries. A logged time: at most
-//! [`MAX_SCAN`] kept checkpoints; a recovery's effect: O(W) kept checkpoints for the W sizes
-//! from the request to its deadline, by one linear scan of the running maximum of witness time.
+//! [`MAX_SCAN`] kept checkpoints; a recovery's effect: O(W/64 + 64) kept checkpoints for the W
+//! sizes from the request to its deadline, the pinned multiples of [`CADENCE`] and then the
+//! sizes up to the deadline, at most [`MAX_DEADLINE_SPAN`] sizes.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -74,6 +75,14 @@ pub const FRESHNESS: u64 = 24 * 3600;
 pub const SKEW: u64 = 3600;
 /// The most kept checkpoints read to find an entry's logged time.
 pub const MAX_SCAN: usize = 64;
+/// The sizes a registry cosigns by the witness threshold whatever else it does: every multiple
+/// of this (`spec/30 §14` rule 1, the pinned cadence).
+pub const CADENCE: u64 = 64;
+/// The most sizes past a request that the search for its deadline reads (`spec/30 §14` rule
+/// 1): 2^23, at least ten times a week of a large registry at 10^5 entries a day
+/// (7 * 10^5 * 10 = 7 * 10^6 < 2^23 = 8,388,608), so at most 2^17 pinned checkpoints and 64
+/// more are read. Past it, the result is unavailable ([`Omission::ScanCap`]).
+pub const MAX_DEADLINE_SPAN: u64 = 1 << 23;
 
 /// A checkpoint accepted under a root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -259,6 +268,14 @@ fn threshold_of(named: &Root, chain: &[(Root, String)]) -> usize {
     named.witnesses.threshold.max(last.witnesses.threshold)
 }
 
+/// The first size after the multiple of [`CADENCE`] below `end`, at least 1: where the scan
+/// for a deadline at or before `end` reads every size.
+fn bracket_low(end: u64) -> u64 {
+    (end.saturating_sub(1) / CADENCE)
+        .saturating_mul(CADENCE)
+        .saturating_add(1)
+}
+
 /// The prefix proof of a lock's point that names an older root version: what [`prefix_proof`]
 /// found.
 enum Proof {
@@ -281,7 +298,9 @@ fn prefix_proof(
     size: u64,
     hash: &str,
 ) -> Result<Proof, Refusal> {
-    let missing = |why: &str| Ok(Proof::Missing(Vec::new(), why.to_owned()));
+    let missing = |why: &str| -> Result<Proof, Refusal> {
+        Ok(Proof::Missing(Vec::new(), why.to_owned()))
+    };
     let latest = match transport.get("checkpoint", note::MAX_NOTE as u64) {
         Ok(Some(bytes)) => bytes,
         Ok(None) | Err(_) => return missing("no place serves the latest checkpoint"),
@@ -467,6 +486,15 @@ pub enum Omission {
     /// checkpoint, which retired witnesses need to count on it: a checkpoint or a tile of it
     /// served by no place. The lock point's size.
     PrefixProof(u64),
+    /// The search for a request's deadline reached [`MAX_DEADLINE_SPAN`] sizes past it, from
+    /// `from`, the size after the request, to `to`, without one: a log that grew faster than
+    /// any honest registry's in seven days, or a cap set lower; the result is unavailable.
+    ScanCap {
+        /// The size after the request.
+        from: u64,
+        /// The pinned size the search stopped at.
+        to: u64,
+    },
     /// No checkpoint of the witness threshold among these sizes, every place's copy merged,
     /// short of the point: the registry's cadence of one per 64 sizes is broken, or withheld.
     Cadence {
@@ -712,6 +740,9 @@ pub struct Registry<'t> {
     unproven: (Vec<Omission>, String),
     /// The deadlines found, by request index and target ([`Registry::deadline`]).
     deadlines: BTreeMap<(u64, u64), (Option<u64>, Option<u64>)>,
+    /// The most sizes past a request its deadline search reads: [`MAX_DEADLINE_SPAN`], or
+    /// lower ([`Registry::lower_scan_cap`]).
+    scan_cap: u64,
     /// The threshold that counts the point's cosignatures: the larger of the version it names
     /// and the last root's.
     point_k: usize,
@@ -927,6 +958,7 @@ impl<'t> Registry<'t> {
             retired,
             unproven: (unproven, unproven_why),
             deadlines: BTreeMap::new(),
+            scan_cap: MAX_DEADLINE_SPAN,
             point_k,
             chain,
             tiles: Tiles::new(transport, accepted.checkpoint.size),
@@ -1342,48 +1374,74 @@ impl<'t> Registry<'t> {
             .map_err(|problem| self.refuse(witness_problem(&problem)))
     }
 
-    /// The deadline of a wait from the entry at `index` that ends at witness time `target`:
-    /// the first kept checkpoint above it, read by size up to the point, whose witness time is
-    /// at least `target`, with the size of the last one before it that has a witness time, or
-    /// `None` for each when there is none. Its size is the first at which the running maximum
-    /// of witness time over sizes reaches `target`: a checkpoint's witness time, the k-th latest
-    /// of the cosignatures counted, need not grow with the size when the witnesses cosigning
-    /// differ, so no search that assumes it does is used. More than [`MAX_SCAN`] sizes in a row
-    /// with no witness time, short of the point, every place's copy merged, is an omission
-    /// ([`Omission::Cadence`]), never the point's time. A linear scan, O(W) kept checkpoints
-    /// for W sizes from the entry to its deadline, each read once and cached; the result is
-    /// cached by `index` and `target`.
+    /// Lowers the most sizes past a request that its deadline search reads to `sizes`, never
+    /// above [`MAX_DEADLINE_SPAN`]: for an audit that bounds its reads, and for tests.
+    pub fn lower_scan_cap(&mut self, sizes: u64) {
+        self.scan_cap = sizes.min(MAX_DEADLINE_SPAN);
+        self.deadlines.clear();
+    }
+
+    /// The deadline of a wait from the entry at `index` that ends at witness time `target`,
+    /// with the size of the last checkpoint read before it that has a witness time, or `None`
+    /// for each when no checkpoint up to the point reaches `target`. A registry cosigns every
+    /// multiple of [`CADENCE`] by the threshold, so the scan reads those, from the request on,
+    /// up to the first whose witness time reaches `target`, or to the point, and then each size
+    /// after the multiple below that one, up to the first whose witness time reaches `target`:
+    /// the deadline, where the deadline and pre-deadline checkpoints a registry must keep are.
+    /// So the first crossing found is the first among the pinned checkpoints; a later one that
+    /// dips below `target` is never read, and one between them never changes it. A pinned
+    /// checkpoint without a witness time, every place's copy merged, is an omission
+    /// ([`Omission::Cadence`]); a pinned size [`MAX_DEADLINE_SPAN`] past the request, or the
+    /// lowered cap, is one too ([`Omission::ScanCap`]). O(W/64 + 64) kept checkpoints for W
+    /// sizes from the request to its deadline, each read once and cached; the result is cached
+    /// by `index` and `target`.
     fn deadline(&mut self, index: u64, target: u64) -> Result<(Option<u64>, Option<u64>), Refusal> {
         if let Some(found) = self.deadlines.get(&(index, target)) {
             return Ok(*found);
         }
         let point = self.point.checkpoint.size;
+        let from = index.saturating_add(1);
         let mut previous: Option<u64> = None;
-        let mut gap_from = index.saturating_add(1);
-        let mut agreeing = usize::MAX;
-        let mut found = (None, None);
-        for size in index.saturating_add(1)..=point {
-            match self.kept(size)? {
+        let mut end = point;
+        let mut pinned = from.div_ceil(CADENCE).saturating_mul(CADENCE);
+        while pinned < point {
+            if pinned.saturating_sub(from) >= self.scan_cap {
+                self.omitted.push(Omission::ScanCap { from, to: pinned });
+                return Err(self.refuse(format!(
+                    "the search for the deadline of the request at {index} reached size {pinned}, {} sizes past it, without one",
+                    self.scan_cap
+                )));
+            }
+            match self.kept(pinned)? {
                 Some(Kept {
                     time: Some(time), ..
                 }) => {
+                    if time >= target {
+                        end = pinned;
+                        break;
+                    }
+                    previous = Some(pinned);
+                }
+                Some(kept) => return Err(self.cadence(pinned, pinned, kept.agreeing)),
+                None => return Err(self.cadence(pinned, pinned, usize::MAX)),
+            }
+            pinned = pinned.saturating_add(CADENCE);
+        }
+        let mut found = (None, None);
+        if end != point || self.point.time >= target {
+            let low = from.max(bracket_low(end));
+            for size in low..=end {
+                if let Some(Kept {
+                    time: Some(time), ..
+                }) = self.kept(size)?
+                {
                     if time >= target {
                         found = (Some(size), previous);
                         break;
                     }
                     previous = Some(size);
-                    gap_from = size.saturating_add(1);
-                    agreeing = usize::MAX;
                 }
-                Some(kept) => agreeing = agreeing.min(kept.agreeing),
-                None => {}
             }
-            if size.saturating_sub(gap_from) >= MAX_SCAN as u64 {
-                return Err(self.cadence(gap_from, size, agreeing));
-            }
-        }
-        if found.0.is_none() {
-            found.1 = previous;
         }
         self.deadlines.insert((index, target), found);
         Ok(found)
@@ -1408,10 +1466,10 @@ impl<'t> Registry<'t> {
     /// The earliest position the seven days of the request logged at `index` could allow,
     /// whatever cosignatures a place withholds, which can only lower a checkpoint's witness
     /// time or leave it without one: one past the last kept checkpoint with a witness time
-    /// before the deadline of a wait from the request's start ([`Registry::deadline`]), the
-    /// same scan, over the same sizes, as [`Registry::recovery_effect`], when that is before
-    /// its effect; its effect otherwise. O(W) kept checkpoints, W the sizes from the request
-    /// to its deadline.
+    /// before the deadline of a wait from the request's start, found by the same scan, over
+    /// the same sizes, as [`Registry::recovery_effect`], when that is before its effect; its
+    /// effect otherwise. O(W/64 + 64) kept checkpoints, W the sizes from the request to its
+    /// deadline.
     pub fn earliest_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         let effect = self.recovery_effect(index)?;
         let point = self.point.checkpoint.size;
@@ -1425,15 +1483,19 @@ impl<'t> Registry<'t> {
         let target = start.saturating_add(owner::RECOVERY_DELAY);
         // Why this agrees with the served effect for an honest registry, whatever k up to n:
         // both read a checkpoint's witness time by the same order statistic, the k-th latest of
-        // its counted cosignatures, and find the deadline D by the same scan, the first
-        // checkpoint whose witness time reaches the target, the running maximum of witness time
-        // first reaching it there. Withheld cosignatures can only lower a checkpoint's witness
-        // time or leave it without one, so the deadline of the served copies is D or later, and
-        // the earliest position is one past the last checkpoint with a witness time before D:
-        // the registry cosigns the one just before D by the threshold, so for an honest
-        // registry that is D itself. A checkpoint before D cosigned later than D by a witness
-        // they share changes neither: its witness time is still below the target, else it
-        // would be D.
+        // its counted cosignatures, and find the deadline D by the same scan over the same
+        // sizes. An honest registry cosigns every multiple of 64, and every checkpoint it
+        // cosigns, by all its witnesses as time passes, so those witness times grow with the
+        // size: the first pinned multiple P whose witness time reaches the target is the first multiple
+        // at or after D, D lies after the multiple below P, and the scan of those sizes finds
+        // it. The registry cosigns the checkpoint just before D by the threshold, below the
+        // target (else it would be D), so the earliest position, one past the last checkpoint
+        // with a witness time read before D, is D itself. Withheld cosignatures can only lower
+        // a checkpoint's witness time or leave it without one, so the served D is that one or
+        // later, and a pinned one left without one is an omission of the cadence. A checkpoint
+        // before D cosigned later than D by a witness they share changes neither: its witness
+        // time is still below the target. A pinned checkpoint that reaches the target before a
+        // later one dips below it bounds the scan there, so the first crossing is the one found.
         let (deadline, previous) = self.deadline(index, target)?;
         if deadline.is_none() {
             return Ok(effect);
@@ -1470,9 +1532,12 @@ impl<'t> Registry<'t> {
     /// size of the first kept checkpoint whose witness time is at least seven days after the
     /// time the request was logged ([`Registry::logged_at`]); `None` when no checkpoint up to the
     /// point is. A kept checkpoint that no place serves makes it unavailable, never later: a
-    /// registry keeps one for every size. By the running maximum of witness time over sizes
-    /// ([`Registry::deadline`]), the same scan as [`Registry::earliest_effect`]: O(W) kept
-    /// checkpoints, W the sizes from the request to its deadline.
+    /// registry keeps one for every size. Found by one scan, the same as
+    /// [`Registry::earliest_effect`]'s: the multiples of [`CADENCE`], which a registry cosigns
+    /// by the threshold, from the request up to the first whose witness time reaches the
+    /// target, then each size after the multiple below it, up to the first that does. O(W/64 +
+    /// 64) kept checkpoints, W the sizes from the request to its deadline; past
+    /// [`MAX_DEADLINE_SPAN`] sizes, unavailable ([`Omission::ScanCap`]).
     pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         let point = self.point.checkpoint.size;
         if index >= point {
@@ -1513,8 +1578,9 @@ impl<'t> Registry<'t> {
 
     /// Records a missing deadline checkpoint for the request of `owner` at `index` when its
     /// earliest and served timings differ, every place having been read, with the fewest
-    /// places agreeing on a checkpoint of its whole deadline range, from its start checkpoint
-    /// to its served effect, or the point.
+    /// places agreeing on a checkpoint the deadline search read: the pinned multiples of
+    /// [`CADENCE`] from the request on, then the sizes after the multiple below its served
+    /// effect, or the point, up to it. O(W/64 + 64) kept checkpoints, read once and cached.
     fn missing_deadline(&mut self, owner: &str, index: u64) -> Result<(), Refusal> {
         let earliest = self.earliest_effect(index)?;
         let served = self.recovery_effect(index)?;
@@ -1522,9 +1588,16 @@ impl<'t> Registry<'t> {
             return Ok(());
         }
         let target = self.logged_at(index)?.saturating_add(owner::RECOVERY_DELAY);
+        // The sizes the deadline search read: the pinned ones, then every size after the
+        // multiple below the served effect, or the point.
         let end = served.unwrap_or(self.point.checkpoint.size);
+        let from = index.saturating_add(1);
+        let low = from.max(bracket_low(end));
+        let pinned = (from.div_ceil(CADENCE)..)
+            .map(|at| at.saturating_mul(CADENCE))
+            .take_while(|size| *size < low);
         let mut agreeing = usize::MAX;
-        for size in index.saturating_add(1)..=end {
+        for size in pinned.chain(low..=end) {
             if let Some(kept) = self.kept(size)? {
                 agreeing = agreeing.min(kept.agreeing);
             }

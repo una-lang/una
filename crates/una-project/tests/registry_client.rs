@@ -2924,3 +2924,161 @@ fn a_pre_deadline_checkpoint_cosigned_late_keeps_the_owner_available() {
     assert!(client.take_omitted().is_empty());
     assert!(client.misbehavior().is_empty());
 }
+
+/// A transport over files in memory that counts the kept checkpoints read.
+struct Counting {
+    memory: Memory,
+    reads: std::cell::Cell<usize>,
+}
+
+impl Transport for Counting {
+    fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
+        if path.starts_with("checkpoint/") {
+            self.reads.set(self.reads.get() + 1);
+        }
+        self.memory.get(path, limit)
+    }
+
+    fn describe(&self) -> String {
+        self.memory.describe()
+    }
+}
+
+/// A sparse log of a few thousand sizes over forty days, with a dispute near its start: the
+/// registry and the dispute's index.
+fn long_log() -> (TestRegistry, u64) {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.sparse = true;
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 40 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    for at in 0..3000 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    (registry, dispute)
+}
+
+/// The deadline of a request W sizes into a long log is found by reading the pinned multiples
+/// of 64 and then the sizes up to it: O(W/64 + 64) kept checkpoints, never W, and the honest
+/// sparse rendering stays available.
+#[test]
+fn a_deadline_reads_pinned_checkpoints_and_one_bracket() {
+    let (registry, dispute) = long_log();
+    let counting = Counting {
+        memory: Memory {
+            files: registry.files.clone(),
+        },
+        reads: std::cell::Cell::new(0),
+    };
+    let mut client = open(&counting, &registry).unwrap();
+    counting.reads.set(0);
+    let effect = client.recovery_effect(dispute).unwrap().unwrap();
+    let reads = counting.reads.get() as u64;
+    let w = effect - dispute;
+    assert!(w > 256, "{w}");
+    // The pinned ones, one bracket of at most 64, and the logged time's scan of at most 64.
+    assert!(reads <= w / 64 + 2 * 64 + 2, "{reads} reads for {w} sizes");
+    assert!(reads < w / 2, "{reads} reads for {w} sizes");
+    assert_eq!(client.earliest_effect(dispute).unwrap(), Some(effect));
+    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A deadline search that reaches the cap of sizes past the request without a deadline: an
+/// omission of its own kind, unavailable (U7013), never a later or absent effect.
+#[test]
+fn a_deadline_past_the_scan_cap_is_unavailable() {
+    let (registry, dispute) = long_log();
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    client.lower_scan_cap(128);
+    assert!(client.recovery_effect(dispute).is_err());
+    let omitted = client.take_omitted();
+    assert!(
+        omitted
+            .iter()
+            .any(|omission| matches!(omission, Omission::ScanCap { .. })),
+        "{omitted:?}"
+    );
+    assert!(client.misbehavior().is_empty());
+}
+
+/// The dip: a pinned checkpoint whose witness time reaches a dispute's target, then a later one,
+/// cosigned by another witness, whose witness time is below it. The first crossing is found,
+/// by both timings alike, reading the pinned checkpoints up to it and one bracket.
+#[test]
+fn a_dip_after_the_first_crossing_keeps_the_first() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let t0 = NOW - 40 * DAY;
+    let mut registry = TestRegistry::with_witness_threshold("acme", 1);
+    registry.register("acme", &a);
+    registry.checkpoint(t0);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    let fill = |registry: &mut TestRegistry, to: u64| {
+        while (registry.entries.len() as u64) < to {
+            let at = registry.entries.len();
+            registry.append("other", &format!("filler {at}"));
+        }
+    };
+    fill(&mut registry, 128);
+    registry.checkpoint(t0 + DAY);
+    fill(&mut registry, 192);
+    registry.checkpoint_with(&[Some(t0 + 9 * DAY), None, None]);
+    fill(&mut registry, 256);
+    registry.checkpoint_with(&[None, Some(t0 + 2 * DAY), None]);
+    fill(&mut registry, 300);
+    registry.checkpoint(NOW);
+    let counting = Counting {
+        memory: Memory {
+            files: registry.files.clone(),
+        },
+        reads: std::cell::Cell::new(0),
+    };
+    let mut client = open(&counting, &registry).unwrap();
+    counting.reads.set(0);
+    assert_eq!(client.recovery_effect(dispute).unwrap(), Some(129));
+    assert!(counting.reads.get() <= 8, "{} reads", counting.reads.get());
+    assert_eq!(client.earliest_effect(dispute).unwrap(), Some(129));
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A root version that lists as a witness a key an earlier version revoked: the chain is
+/// refused (U7010), a revoked key never vouching again.
+#[test]
+fn a_revoked_witness_key_is_never_a_witness_again() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.rotate_witnesses(1, true);
+    registry.keys.witnesses[2] = keypair(32, "witness.32");
+    let roots = [
+        &registry.keys.roots[0].1,
+        &registry.keys.roots[1].1,
+        &registry.keys.roots[2].1,
+    ];
+    let (keys, expires) = (&registry.keys, registry::EXPIRES);
+    let text = registry::root_text_with("acme", 3, expires, keys, &roots, 2, &[]);
+    let document = registry::signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
+    registry
+        .files
+        .insert("root/3".to_owned(), document.clone().into_bytes());
+    registry.roots.push(document);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    match open(&memory, &registry) {
+        Err(why) => assert!(why.contains("an earlier version revoked"), "{why}"),
+        Ok(_) => panic!("a revoked witness key accepted again"),
+    }
+}

@@ -238,12 +238,16 @@ pub fn trust_first(document: &str, pin: &str) -> Result<Root, String> {
 
 /// Walks the chain from `known` through `next`, versions `n + 1`, `n + 2`, … in order (rule 35):
 /// each is accepted only if signed by the threshold of the previous version's root keys and by
-/// the threshold of its own. Versions passed may have expired; the last one MUST NOT have, at
-/// `now`, the witness time of rule 36.4.
+/// the threshold of its own, and none lists as a witness a key an earlier version revoked.
+/// Versions passed may have expired; the last one MUST NOT have, at `now`, the witness time of
+/// rule 36.4.
 pub fn walk(known: &Root, next: &[&str], now: u64) -> Result<Root, String> {
     let mut current = known.clone();
+    let mut revoked: Vec<String> = known.witnesses_revoked.clone();
     for document in next {
         let (root, note) = parse(document)?;
+        not_readded(&root, &revoked)?;
+        revoked.extend(root.witnesses_revoked.iter().cloned());
         if root.source != current.source {
             return Err(format!(
                 "root metadata of `{}` follows one of `{}`",
@@ -292,7 +296,28 @@ pub fn walk_all(known: &Root, next: &[&str], now: u64) -> Result<Vec<Root>, Stri
     if next.is_empty() && known.expires <= now {
         walk(known, &[], now)?;
     }
+    let mut revoked: Vec<String> = Vec::new();
+    for root in &walked {
+        not_readded(root, &revoked)?;
+        revoked.extend(root.witnesses_revoked.iter().cloned());
+    }
     Ok(walked)
+}
+
+/// Refuses `root` when a witness of it is one an earlier root of the chain revoked, `revoked`
+/// their fingerprints: a key revoked is never a witness again (`spec/30 §11` rule 8). O(W R)
+/// for its W witnesses and R fingerprints revoked.
+fn not_readded(root: &Root, revoked: &[String]) -> Result<(), String> {
+    for key in &root.witnesses.keys {
+        let fingerprint = super::owner::fingerprint(&key.public);
+        if revoked.contains(&fingerprint) {
+            return Err(format!(
+                "root version {} lists the witness `{}`, whose key {fingerprint} an earlier version revoked",
+                root.version, key.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The prefix of the checkpoint extension line that names the root metadata a checkpoint was
