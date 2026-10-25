@@ -979,7 +979,10 @@ fn every_owner_entry_after_a_point_is_a_key_change() {
     let mut client = open(&memory, &registry).unwrap();
     let history = client.history("acme").unwrap();
     assert_eq!(history.pending.len(), 1);
-    assert!(matches!(history.pending[0].change, owner::Change::Dispute(_)));
+    assert!(matches!(
+        history.pending[0].change,
+        owner::Change::Dispute(_)
+    ));
     assert!(history.changed_after(1));
 }
 
@@ -1800,16 +1803,17 @@ fn a_dispute_after_the_freeze_changes_nothing() {
     let n = keypair(63, "acme.n");
     let p = keypair(64, "acme.p");
     let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
     let mut registry = TestRegistry::new("acme");
-    registry.register("acme", &a);
+    registry.register_keys("acme", &[&a, &b], 1, &[], 0);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
     registry.checkpoint(NOW - 40 * DAY);
     registry.recover("acme", "dispute", &m.1, &[]);
     let second = registry.recover("acme", "dispute", &n.1, &[]);
     registry.checkpoint(NOW - 39 * DAY);
     let third = registry.recover("acme", "dispute", &p.1, &[]);
-    registry.owner_event("acme", &format!("add {}", key_text(&b.1)), 1, &[&a, &b]);
-    registry.owner_event("acme", "revoke acme.a since 1", 1, &[&a]);
+    registry.owner_event("acme", &format!("add {}", key_text(&c.1)), 1, &[&a, &c]);
+    registry.owner_event("acme", "revoke acme.a since 1", 1, &[&b]);
     registry.checkpoint(NOW - 38 * DAY);
     registry.append("other", "filler");
     registry.checkpoint(NOW);
@@ -1824,9 +1828,46 @@ fn a_dispute_after_the_freeze_changes_nothing() {
     assert!(history.took_effect.is_empty());
     assert!(history.pending.is_empty());
     let keys = &history.snapshots.last().unwrap().keys;
-    assert_eq!(keys, &vec![a.1.clone()]);
+    assert_eq!(keys, &vec![a.1.clone(), b.1.clone()]);
     assert_eq!(history.compromised.get(&a.1.public), Some(&1));
     let releases = client.releases("acme/ledger").unwrap();
     assert_eq!(releases.len(), 1);
     assert!(!releases[0].compromised);
+}
+
+/// A revocation that the key it names signs is that key's own word, which a thief holding it can
+/// give: it states nothing of the past, so what the key signed before it still counts. The same
+/// claim signed by another key reaches back.
+#[test]
+fn a_claim_signed_by_the_key_it_names_states_nothing_of_the_past() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let build = |signer: &(ed25519_dalek::SigningKey, una_project::tlog::note::Key)| {
+        let mut registry = TestRegistry::new("acme");
+        registry.register_keys("acme", &[&a, &b], 1, &[], 0);
+        registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+        registry.checkpoint(NOW - DAY);
+        let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[signer]);
+        registry.release("acme/ledger", "0.3.2", "none", "none", &[&b]);
+        registry.checkpoint(NOW);
+        (registry, claim)
+    };
+    let (registry, claim) = build(&a);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&claim));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(!releases[0].compromised && !releases[1].compromised);
+    let (registry, _) = build(&b);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&0));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised && !releases[1].compromised);
 }

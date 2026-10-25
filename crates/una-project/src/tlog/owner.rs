@@ -50,13 +50,13 @@
 //! recovery was logged, or none after a dispute, ends every co-signer change still waiting, and
 //! is a key change like any other.
 //!
-//! **Competing requests.** A dispute logged while another recovery or dispute waits, or a
-//! recovery logged while a dispute waits, competes: none of them takes effect, and the chain is
-//! frozen from that entry ([`History::frozen`]). A recovery waits even when cancelled, unless
-//! it was logged with no cosigners in effect, so that nothing can overrule the cancellation. A
-//! frozen chain never thaws: no later entry changes the owner's keys, though a revocation with
-//! `since` still makes its claim; releases logged from there on do not count, and the owner's
-//! names are not resolved.
+//! **Competing requests.** A recovery or a dispute logged while a dispute waits, and a dispute
+//! logged while a recovery that cosigners signed waits, cancelled or not, compete: none of them
+//! takes effect, and the chain is frozen from that entry ([`History::frozen`]). A dispute
+//! logged while a recovery logged with no cosigners in effect waits does not compete: both take
+//! effect in turn, and the later one governs. A frozen chain never thaws: no later entry
+//! changes the owner's keys, though a revocation with `since` still makes its claim; releases
+//! logged from there on do not count, and the owner's names are not resolved.
 //!
 //! **Revocations.** A revoked key is not valid after the revocation. One revoked `since <p>` is
 //! compromised: not valid after the log position `p` either, so a statement it signed after `p`
@@ -482,10 +482,10 @@ pub struct History {
     pub cancellations: BTreeMap<u64, BTreeSet<u64>>,
     /// The recovery cosigners in effect at the resolution point.
     pub cosigners: Option<Cosigners>,
-    /// The log index from which the chain is frozen by competing requests (a dispute logged
-    /// while another recovery or dispute waited, or a recovery logged while a dispute waited):
-    /// from there no entry changes the owner's keys, no release counts, and its names are not
-    /// resolved.
+    /// The log index from which the chain is frozen by competing requests (a recovery or a
+    /// dispute logged while a dispute waited, or a dispute while a recovery that cosigners
+    /// signed waited): from there no entry changes the owner's keys, no release counts, and its
+    /// names are not resolved.
     pub frozen: Option<u64>,
 }
 
@@ -721,9 +721,11 @@ type Claim = ([u8; 32], u64);
 /// that the key's signatures at positions after `p` do not count. The claim names the key the
 /// revocation removes, an owner key held then or held before (never a recovery cosigner), and a
 /// `p` below the index of the entry that brought that key in is taken as that index, so a
-/// registration is never undone by a compromise. Claims are kept by the index of their
-/// revocation; all are first assumed to hold and the chain replayed, each claim's key resolved
-/// again in every pass. A claim stands when its revocation applied; when it is void only for
+/// registration is never undone by a compromise; and a `p` of a revocation that the key it
+/// names itself signs is taken as no earlier than the revocation's own index, so a key's own
+/// word, which a thief holding it can give, states nothing of the past. Claims are kept by the
+/// index of their revocation; all are first assumed to hold and the chain replayed, each claim's
+/// key resolved again in every pass. A claim stands when its revocation applied; when it is void only for
 /// want of a sound key, it stands only if the key it names itself signed a revocation, applied
 /// or so void, of one of its signers: revocations that cancel each other, both kept, so both
 /// keys are compromised and a later recovery or dispute, which needs no owner key, cures the
@@ -765,30 +767,45 @@ pub fn replay(
                 .or_insert((key.public, logged.index));
         }
     }
-    // The `since` of each revocation that states one, by its index.
-    let sinces: BTreeMap<u64, u64> = entries
-        .iter()
-        .filter_map(|logged| match &logged.entry.event {
-            Event::Revoke {
-                since: Some(since), ..
-            } => Some((logged.index, *since)),
-            _ => None,
-        })
-        .collect();
+    let mut checks = 0u64;
+    // The `since` of each revocation that states one, by its index. A revocation that the key
+    // it names signs is that key's own word, which whoever holds the key, a thief included, can
+    // give: it states nothing of the past, and its `since` is taken as no earlier than its own
+    // index.
+    let mut sinces: BTreeMap<u64, u64> = BTreeMap::new();
+    for logged in entries {
+        if let Event::Revoke {
+            name,
+            since: Some(since),
+        } = &logged.entry.event
+        {
+            let own = introduced.get(name.as_str()).is_some_and(|(public, _)| {
+                let key = Key {
+                    name: name.clone(),
+                    public: *public,
+                };
+                signs(logged.note, &key, &mut checks)
+            });
+            let floor = if own { logged.index } else { 0 };
+            sinces.insert(logged.index, (*since).max(floor));
+        }
+    }
     let mut claims: BTreeMap<u64, Claim> = entries
         .iter()
         .filter_map(|logged| match &logged.entry.event {
             Event::Revoke {
                 name,
-                since: Some(since),
-            } => introduced
-                .get(name.as_str())
-                .map(|(public, at)| (logged.index, (*public, (*since).max(*at)))),
+                since: Some(_),
+            } => {
+                let since = sinces.get(&logged.index)?;
+                introduced
+                    .get(name.as_str())
+                    .map(|(public, at)| (logged.index, (*public, (*since).max(*at))))
+            }
             _ => None,
         })
         .collect();
     let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
-    let mut checks = 0u64;
     // Each pass keeps the claims by the index of their revocation, drops some, or only
     // re-resolves their keys; a key a claim names changes at most once per claim dropped, so a
     // valid chain settles within twice the number of claims plus two passes. A chain that does
@@ -1225,23 +1242,21 @@ fn replay_once(
                 if position.is_some_and(|position| position <= index) {
                     return Err(refuse("would take effect before it was logged"));
                 }
-                // Competing requests: a dispute logged while another recovery or dispute waits,
-                // or a recovery logged while a dispute waits. A recovery waits even when
-                // cancelled, since its cosigners may overrule that, unless it was logged with no
-                // cosigners in effect: then nothing can, and it never takes effect. Competing
-                // requests never take effect, and the chain is frozen from here: nothing can
-                // tell the owner from whoever took its account over.
+                // Competing requests: a recovery or a dispute logged while a dispute waits, and a
+                // dispute logged while a recovery waits that cosigners signed. Whether one waits
+                // never depends on a cancellation, which a claim of compromise can void: a
+                // dispute cannot be cancelled, and a recovery that cosigners signed waits even
+                // when cancelled, since they may overrule that. A recovery logged with no
+                // cosigners in effect does not compete with a dispute: both take effect in turn.
+                // Competing requests never take effect, and the chain is frozen from here:
+                // nothing can tell the owner from whoever took its account over.
                 let competes = requests.values().any(|request| {
                     !request.applied
                         && !request.ended
                         && request.effect.is_none_or(|effect| effect > index)
                         && match request.ask {
                             Ask::Dispute(_) => true,
-                            Ask::Recover(_) => {
-                                dispute
-                                    && (request.guard.is_some()
-                                        || request.cancelled_by.is_empty())
-                            }
+                            Ask::Recover(_) => dispute && request.guard.is_some(),
                             Ask::Cosigners(_) => false,
                         }
                 });
