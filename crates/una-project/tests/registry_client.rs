@@ -2218,7 +2218,15 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
         files: registry.files.clone(),
     };
     let mut client = open(&memory, &registry).unwrap();
-    client.logged_at(release).unwrap();
+    // Never the point's time: the logged time is unavailable, an omission of the cadence.
+    assert!(client.logged_at(release).is_err());
+    assert_eq!(
+        client.take_omitted(),
+        vec![Omission::Cadence {
+            from: release + 1,
+            to: release + 64,
+        }]
+    );
     assert_eq!(
         client.misbehavior(),
         &[Misbehavior::CadenceGap {
@@ -2237,7 +2245,7 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
     };
     let both = una_project::transport::Fallback::new(Box::new(first), vec![Box::new(second)]);
     let mut client = open(&both, &registry).unwrap();
-    client.logged_at(release).unwrap();
+    assert!(client.logged_at(release).is_err());
     assert_eq!(
         client.misbehavior(),
         &[Misbehavior::CadenceGap {
@@ -2528,4 +2536,196 @@ fn a_withheld_eligibility_delay_is_observed_and_merging_ends_it() {
     assert_eq!(client.logged_at(fix).unwrap(), NOW - 4 * DAY);
     assert_eq!(newest_eligible(&mut client), fixed);
     assert!(client.observations().is_empty());
+}
+
+/// A place that withholds the cosignatures of the cadence checkpoint after a fix release does
+/// not delay the fix without bound: no checkpoint of the threshold within 64 sizes makes the
+/// release's logged time unavailable, never the point's time, so the older version is never
+/// chosen in the fix's place.
+#[test]
+fn withholding_the_cadence_after_a_fix_is_unavailable() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.sparse = true;
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 30 * DAY);
+    let (fix, _) = registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    for at in 0..100 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&honest, &registry).unwrap();
+    let now = client.point.time;
+    let eligible: Vec<Version> = client
+        .state("acme/ledger", Line::Zero(3))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.logged_at + una_project::resolve::COOLDOWN <= now)
+        .map(|r| r.version)
+        .collect();
+    assert!(eligible.contains(&Version::parse_full("0.3.2").unwrap()));
+    // The cadence checkpoint of size 64 served with no cosignature.
+    let path = "checkpoint/64".to_owned();
+    let text = text_of(&registry.files[&path]);
+    let mut withholding = Memory {
+        files: registry.files.clone(),
+    };
+    withholding
+        .files
+        .insert(path, resigned(&registry, &text, &[], 0));
+    let mut client = open(&withholding, &registry).unwrap();
+    assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
+    assert!(
+        client
+            .take_omitted()
+            .iter()
+            .any(|o| matches!(o, Omission::Cadence { from, .. } if *from == fix + 1)),
+    );
+}
+
+/// With three witnesses all needed, honest cosignatures straddling a dispute's seven-day
+/// target: the earliest and the served effect read a checkpoint's witness time by the same
+/// order statistic, so they agree, the owner stays available, and nothing is recorded.
+#[test]
+fn straddling_cosignatures_with_every_witness_needed_keep_the_owner_available() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::with_witness_threshold("acme", 3);
+    registry.sparse = true;
+    registry.spread = 2 * 3600;
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 40 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    for at in 0..150 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&n]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&n]);
+    for at in 0..70 {
+        registry.append("other", &format!("later filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert_eq!(
+        client.earliest_effect(dispute).unwrap(),
+        client.recovery_effect(dispute).unwrap()
+    );
+    assert!(!client.releases("acme/ledger").unwrap()[1].compromised);
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A rotation that leaves fewer than the threshold of the old witnesses: their cosignatures on
+/// the checkpoints below the point, which a consistency proof binds to it, still count with the
+/// threshold of the version those checkpoints name, so older history stays usable, and an
+/// older lock's point verifies once proven a prefix of the latest checkpoint.
+#[test]
+fn retired_witnesses_keep_older_history_usable() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let older = registry.checkpoint(NOW - 10 * DAY);
+    let older_hash = hash_hex(&una_project::tlog::merkle::root(
+        &registry
+            .entries
+            .iter()
+            .map(|e| una_project::tlog::merkle::leaf_hash(e))
+            .collect::<Vec<_>>(),
+    ));
+    registry.rotate_witnesses(2, false);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert_eq!(client.logged_at(1).unwrap(), NOW - 10 * DAY);
+    assert_eq!(client.releases("acme/ledger").unwrap().len(), 2);
+    assert!(client.history("acme").is_ok());
+    // The older lock's point, signed under root 1 and cosigned mostly by retired witnesses.
+    let at = Point::At {
+        size: older,
+        hash: older_hash,
+    };
+    let opened = Registry::open_with("acme", &memory, &registry.pin(), &at, &Floors::default());
+    assert!(opened.is_ok(), "{:?}", opened.err());
+}
+
+/// Retired witnesses cosigning a checkpoint off the log, not a prefix of the point: rejected.
+#[test]
+fn retired_witnesses_cannot_cosign_a_forged_branch() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.rotate_witnesses(2, false);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW);
+    // A checkpoint of size 2 over other leaves, under root 1, cosigned by the retired ones.
+    let older = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    let forged_root = una_project::tlog::merkle::root(&[
+        una_project::tlog::merkle::leaf_hash(b"another first entry"),
+        una_project::tlog::merkle::leaf_hash(b"another second entry"),
+    ]);
+    let text = format!(
+        "{}\n2\n{}\nita-map {}\n{older}\n",
+        registry.keys.log.1.name,
+        una_project::tlog::note::encode_base64(&forged_root),
+        una_project::tlog::note::encode_base64(&forged_root)
+    );
+    let retired = [keypair(31, "witness.31"), keypair(32, "witness.32")];
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    place.files.insert(
+        "checkpoint/2".to_owned(),
+        resigned(&registry, &text, &retired, NOW - 20 * DAY),
+    );
+    let mut client = open(&place, &registry).unwrap();
+    assert!(client.logged_at(1).is_err());
+    assert!(client.take_omitted().is_empty());
+}
+
+/// A witness a later root revokes counts for nothing at any version: its back-dated line on an
+/// older checkpoint is ignored, and the logged time is the one the others give.
+#[test]
+fn a_revoked_witness_counts_for_nothing() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint_with(&[Some(NOW - 10 * DAY), None, None]);
+    registry.rotate_witnesses(1, true);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 5 * DAY);
+    registry.append("other", "another filler");
+    registry.checkpoint(NOW);
+    let revoked = keypair(32, "witness.32");
+    let mut document = String::from_utf8(registry.files["checkpoint/2"].clone()).unwrap();
+    let text = text_of(document.as_bytes());
+    let line = registry::cosign_line(&revoked.0, &revoked.1, &text, NOW - 20 * DAY);
+    document.push_str(&line);
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    place
+        .files
+        .insert("checkpoint/2".to_owned(), document.into_bytes());
+    let mut client = open(&place, &registry).unwrap();
+    assert_eq!(client.logged_at(1).unwrap(), NOW - 5 * DAY);
 }
