@@ -85,6 +85,8 @@ const STATE_WITNESSES: &str = "state/witnesses";
 const STATE_NOTICES: &str = "state/notices";
 /// The store path of the cancellations that are timed, one index per line.
 const STATE_TIMED_CANCELS: &str = "state/timed-cancels";
+/// The store path of the times co-signer changes were logged: `<index> <seconds>` per line.
+const STATE_COSIGNER_CHANGES: &str = "state/cosigner-changes";
 /// The store path of each timed request's deadline checkpoint, the service's own state: the
 /// clock at which a checkpoint was signed is in no checkpoint, so it is kept here.
 const STATE_DEADLINES: &str = "state/deadlines";
@@ -463,6 +465,9 @@ pub struct Registry {
     /// The cancellations the client's replay records as cancelling a waiting request, kept in
     /// `state/timed-cancels`: the cancellations that are timed.
     timed_cancels: BTreeSet<u64>,
+    /// When each co-signer change was logged, by the service's clock, by index, kept in
+    /// `state/cosigner-changes`: the per-owner cap counts them by it.
+    cosigner_logged: BTreeMap<u64, u64>,
     /// The early lines held back on a checkpoint that may still become a deadline, by size
     /// (`crate::timing::holds`), kept in `state/held`, never served.
     held: BTreeMap<u64, Vec<HeldLine>>,
@@ -564,6 +569,7 @@ impl Registry {
             requests: BTreeMap::new(),
             active: BTreeSet::new(),
             timed_cancels: BTreeSet::new(),
+            cosigner_logged: BTreeMap::new(),
             held: BTreeMap::new(),
             bucket: Bucket::full(0),
             notifier,
@@ -612,6 +618,17 @@ impl Registry {
                 let index =
                     decimal(line).ok_or("state/timed-cancels has a line of the wrong form")?;
                 self.timed_cancels.insert(index);
+            }
+        }
+        if let Some(bytes) = self.store.get(STATE_COSIGNER_CHANGES, MAX_DOCUMENT)? {
+            let text =
+                String::from_utf8(bytes).map_err(|_| "state/cosigner-changes is not UTF-8")?;
+            for line in text.lines() {
+                let (index, time) = line
+                    .split_once(' ')
+                    .and_then(|(index, time)| Some((decimal(index)?, decimal(time)?)))
+                    .ok_or("state/cosigner-changes has a line of the wrong form")?;
+                self.cosigner_logged.insert(index, time);
             }
         }
         let size = match self.store.get(STATE_SIZE, 32)? {
@@ -704,6 +721,7 @@ impl Registry {
         // A timed cancellation recorded for an index the log never reached, as after a crash
         // between writing `state/timed-cancels` and `state/size`, names no entry: dropped.
         self.timed_cancels.retain(|index| *index < size);
+        self.cosigner_logged.retain(|index, _| *index < size);
         self.load_timing()?;
         self.sign_checkpoint()?;
         Ok(())
@@ -1993,7 +2011,8 @@ impl Registry {
                         ),
                     ));
                 }
-                // At most two co-signer changes per owner in seven days, cancelled ones counted.
+                // At most two co-signer changes per owner in seven days, cancelled ones counted,
+                // by when each was logged: one whose start never got fixed ages out as well.
                 let now = self.clock.now();
                 let recent = self
                     .requests
@@ -2001,9 +2020,14 @@ impl Registry {
                     .filter(|request| {
                         request.owner == owner_name
                             && request.kind == TimedKind::Cosigners
-                            && request.start.is_none_or(|start| {
-                                start.saturating_add(owner::RECOVERY_DELAY) > now
-                            })
+                            && self
+                                .cosigner_logged
+                                .get(&request.index)
+                                .copied()
+                                .or(request.start)
+                                .is_some_and(|logged| {
+                                    logged.saturating_add(owner::RECOVERY_DELAY) > now
+                                })
                     })
                     .count();
                 if recent >= COSIGNER_CHANGES_PER_WEEK {
@@ -2496,6 +2520,15 @@ impl Registry {
                     .collect();
                 self.store.put(STATE_TIMED_CANCELS, cancels.as_bytes())?;
             }
+            if logging.throttled {
+                let changes: String = self
+                    .cosigner_logged
+                    .iter()
+                    .chain(std::iter::once((&index, &now)))
+                    .map(|(index, time)| format!("{index} {time}\n"))
+                    .collect();
+                self.store.put(STATE_COSIGNER_CHANGES, changes.as_bytes())?;
+            }
             self.store.put(STATE_SIZE, size.to_string().as_bytes())?;
             self.sign_checkpoint()
         })();
@@ -2509,6 +2542,7 @@ impl Registry {
             self.timed_cancels.insert(index);
         }
         if logging.throttled {
+            self.cosigner_logged.insert(index, now);
             self.bucket.take(now);
         }
         self.apply(&entry);

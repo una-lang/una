@@ -1892,3 +1892,39 @@ fn held_lines_count_toward_a_deadline_only_as_clients_count_them() {
     f.cosign_at(size, 1, target + 10).unwrap();
     assert_eq!(f.registry.deadline_of(first), Some(size));
 }
+
+#[test]
+fn a_co_signer_change_counts_toward_the_cap_by_when_it_was_logged() {
+    let mut f = Fixture::new("cap-logged");
+    let a = keypair(60, "acme.a");
+    let o = keypair(67, "orbit.o");
+    let x = keypair(70, "trustee.x");
+    let orbit = f.register("orbit", &[&o], &[]);
+    f.register("acme", &[&a], &[]);
+    let change = format!("cosigners 1 {}", key_text(&x.1));
+    let mut starts = Vec::new();
+    for _ in 0..2 {
+        let asked = f.submit("acme", &change, 1, &[&a]).unwrap();
+        f.cosign(&[0, 1], NOW);
+        starts.push(asked + 1);
+        f.submit("acme", &format!("cancel {asked}"), 1, &[&a])
+            .unwrap();
+        f.cosign(&[0, 1], NOW);
+    }
+    // Their start checkpoints lose their cosignatures: their starts are never fixed.
+    for start in &starts {
+        strip(&f.dir, *start);
+    }
+    f.registry = f.reopen();
+    assert_eq!(
+        f.submit("acme", &change, 1, &[&a]).unwrap_err().cause(),
+        Some(&Cause::CosignerChangeCap)
+    );
+    // Seven days after they were logged, they no longer count.
+    let later = NOW + RECOVERY_DELAY + 100;
+    f.set_time(later);
+    f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+        .unwrap();
+    f.cosign(&[0, 1], later);
+    f.submit("acme", &change, 1, &[&a]).unwrap();
+}
