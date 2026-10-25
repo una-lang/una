@@ -1253,11 +1253,23 @@ impl Registry {
     /// Logs a recovery or a dispute (ADR 0122 rule 38.1), which only the operator asks, after
     /// verifying the account by the checks of registration: the registry signs it with the
     /// log's key, which both need, beside the cosigners' threshold that a recovery of an owner
-    /// with cosigners carries already. Every check of an owner's entry applies.
+    /// with cosigners carries already. `bytes` is the signed note, or, for an entry no one but
+    /// the log signs, as a dispute, its text alone. Every check of an owner's entry applies.
     pub fn request(&mut self, bytes: &[u8]) -> Result<Receipt, Refusal> {
         self.ready()?;
-        let sent = parse_entry(bytes).map_err(invalid)?;
-        let asked = sent
+        let document = std::str::from_utf8(bytes).map_err(|_| invalid("an entry is not UTF-8"))?;
+        let signed = if document.contains("\n\n") {
+            let sent = parse_entry(bytes).map_err(invalid)?;
+            if sent.note.signed_by(&self.root.log) {
+                document.to_owned()
+            } else {
+                format!("{document}{}", self.log.line(&sent.note.text))
+            }
+        } else {
+            format!("{document}\n{}", self.log.line(document))
+        };
+        let entry = parse_entry(signed.as_bytes()).map_err(invalid)?;
+        let asked = entry
             .owner_entry()
             .is_some_and(|read| matches!(read.event, Event::Recover(_) | Event::Dispute(_)));
         if !asked {
@@ -1265,13 +1277,6 @@ impl Registry {
                 "an operator's request is an `ita-key/1` recovery or dispute",
             ));
         }
-        let document = std::str::from_utf8(bytes).map_err(|_| invalid("an entry is not UTF-8"))?;
-        let signed = if sent.note.signed_by(&self.root.log) {
-            document.to_owned()
-        } else {
-            format!("{document}{}", self.log.line(&sent.note.text))
-        };
-        let entry = parse_entry(signed.as_bytes()).map_err(invalid)?;
         self.admit(&entry)?;
         self.check_owner_entry(&entry)?;
         self.append(entry, None)
