@@ -264,12 +264,14 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         check: bool,
 
-        /// Record a ceiling wider than the one the lock records: an authority change
-        #[arg(long)]
-        accept_authority: bool,
-
-        /// Record consent to the trusted modules of this package as its content is now
+        /// Record the ceiling of this package wider than the one the lock records: an
+        /// authority change; repeat it for each package
         #[arg(long, value_name = "PACKAGE")]
+        accept_authority: Vec<String>,
+
+        /// Record consent to the trusted modules of this package for the content of this
+        /// digest, which the review prints; repeat it for each package
+        #[arg(long, value_name = "PACKAGE@DIGEST")]
         accept_trust: Vec<String>,
 
         /// Print the review of the changes, and write nothing
@@ -290,12 +292,14 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         now: bool,
 
-        /// Record a ceiling wider than the one the lock records: an authority change
-        #[arg(long)]
-        accept_authority: bool,
-
-        /// Record consent to the trusted modules of this package as its content is now
+        /// Record the ceiling of this package wider than the one the lock records: an
+        /// authority change; repeat it for each package
         #[arg(long, value_name = "PACKAGE")]
+        accept_authority: Vec<String>,
+
+        /// Record consent to the trusted modules of this package for the content of this
+        /// digest, which the review prints; repeat it for each package
+        #[arg(long, value_name = "PACKAGE@DIGEST")]
         accept_trust: Vec<String>,
 
         /// Print the review of the changes, and write nothing

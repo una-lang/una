@@ -99,7 +99,7 @@ fn finish(
     Ok(status)
 }
 
-/// What `una ita lock`, `update` and `add` ask of a resolution (ADR 0122 rule 25).
+/// What `una ita lock`, `update`, `add` and `remove` ask of a resolution (ADR 0122 rule 25).
 pub(crate) struct LockOptions<'a> {
     /// The command, as `una.ita/1` names it.
     pub(crate) command: &'static str,
@@ -107,14 +107,19 @@ pub(crate) struct LockOptions<'a> {
     pub(crate) check: bool,
     /// `--dry-run`: print the review, and write nothing.
     pub(crate) dry_run: bool,
-    /// `--accept-authority`: record a ceiling wider than the one the lock records.
-    pub(crate) accept_authority: bool,
-    /// `--accept-trust <package>`: record consent to the trust of these packages.
+    /// `--accept-authority <package>`, repeated: the packages whose ceiling may be recorded wider
+    /// than the lock records it.
+    pub(crate) accept_authority: &'a [String],
+    /// `--accept-trust <package>@sha256:<hex>`, repeated: consent to the trust of a package for
+    /// exactly the content of that digest.
     pub(crate) accept_trust: &'a [String],
     /// The cooldown of rule 25, in seconds: 72 hours by default, 0 with `--now`.
     pub(crate) cooldown: u64,
-    /// `ita.una` as `una ita add` edits it: read in place of the file, and written, with the
-    /// lock, only when the resolution succeeds.
+    /// `una ita update <name>…`: the needs to raise. Every other need that the lock records
+    /// keeps what it records. `None`: every need.
+    pub(crate) only: Option<&'a [String]>,
+    /// `ita.una` as `una ita add` or `remove` edits it: read in place of the file, and written,
+    /// after the lock, only when the resolution succeeds.
     pub(crate) edited: Option<String>,
 }
 
@@ -123,7 +128,7 @@ impl<'a> LockOptions<'a> {
     pub(crate) fn lock(
         check: bool,
         dry_run: bool,
-        accept_authority: bool,
+        accept_authority: &'a [String],
         accept_trust: &'a [String],
     ) -> LockOptions<'a> {
         LockOptions {
@@ -133,6 +138,7 @@ impl<'a> LockOptions<'a> {
             accept_authority,
             accept_trust,
             cooldown: una_project::resolve::COOLDOWN,
+            only: None,
             edited: None,
         }
     }
@@ -154,6 +160,12 @@ struct ChangeDoc {
     /// The ceiling the root grants it, before and after.
     ceiling_from: String,
     ceiling_to: String,
+    /// Its trusted modules the lock records consent to, before and after.
+    trusted_from: Vec<String>,
+    trusted_to: Vec<String>,
+    /// The content digest that consent is pinned to, before and after.
+    consented_from: Option<String>,
+    consented_to: Option<String>,
     /// What its code uses in the new graph, checked at tier 0: the union of the `uses` of its
     /// functions and handlers.
     authority: Vec<String>,
@@ -161,7 +173,8 @@ struct ChangeDoc {
 
 impl ChangeDoc {
     /// The review line: `add util 0.2.0 (path deps/util): digest sha256:...; may Console[print];
-    /// uses Console[print]`.
+    /// uses Console[print]`, then `; trust keys; consented sha256:...` for a package with
+    /// trusted modules before or after.
     fn line(&self) -> String {
         let version = match (&self.version_from, &self.version_to) {
             (Some(from), Some(to)) if from != to => format!("{from} -> {to}"),
@@ -199,6 +212,32 @@ impl ChangeDoc {
             self.authority.join(", ")
         };
         line.push_str(&format!(": digest {digest}; may {ceiling}; uses {uses}"));
+        if !self.trusted_from.is_empty() || !self.trusted_to.is_empty() {
+            let modules = |list: &[String]| {
+                if list.is_empty() {
+                    "none".to_owned()
+                } else {
+                    list.join(", ")
+                }
+            };
+            let trust = if self.change == "change" && self.trusted_from != self.trusted_to {
+                format!(
+                    "{} -> {}",
+                    modules(&self.trusted_from),
+                    modules(&self.trusted_to)
+                )
+            } else {
+                modules(&self.trusted_to)
+            };
+            let consented = match (&self.consented_from, &self.consented_to) {
+                (Some(from), Some(to)) if from != to => format!("{from} -> {to}"),
+                (None, Some(to)) if self.change == "change" => format!("none -> {to}"),
+                (_, Some(to)) => to.clone(),
+                (Some(from), None) => format!("{from} -> none"),
+                (None, None) => "none".to_owned(),
+            };
+            line.push_str(&format!("; trust {trust}; consented {consented}"));
+        }
         line
     }
 }
@@ -220,17 +259,115 @@ struct Locked {
     dir: String,
     digest: String,
     ceiling: String,
-    block: String,
+    /// The trusted modules consented to, sorted, and the digest the consent is pinned to.
+    trusted: Vec<String>,
+    consented: Option<String>,
 }
 
-/// `una ita lock [--check] [--dry-run] [--accept-authority] [--accept-trust <p>] [path]`
-/// (ADR 0122 rules 14 to 17, 23 and 25).
+impl Locked {
+    /// Its block of `ita.lock`, granted by `root`.
+    fn block(&self, root: &str) -> String {
+        let mut block = format!(
+            "\npackage {} {}\n  from path {}\n  digest \"{}\"\n",
+            self.name,
+            self.version,
+            text(&self.dir),
+            self.digest
+        );
+        if !self.ceiling.is_empty() {
+            block.push_str(&format!("  granted by {root} may {}\n", self.ceiling));
+        }
+        if let Some(consented) = &self.consented {
+            block.push_str(&format!(
+                "  consented \"{consented}\"\n  trusted modules {}\n",
+                self.trusted.join(", ")
+            ));
+        }
+        block
+    }
+}
+
+/// The locked package of `lock` that `need`, a path need of the directory `dir`, names: by name
+/// and origin (ADR 0122 rule 25).
+fn locked_path<'l>(
+    lock: &'l una_project::ita::ItaLock,
+    need: &ita::Need,
+    dir: &str,
+) -> Option<&'l ita::LockPackage> {
+    lock.read.packages.iter().find(|p| {
+        p.name.value == need.name.value
+            && matches!(
+                p.from.as_ref().map(|f| &f.value),
+                Some(ita::LockOrigin::Path(locked)) if locked.trim_end_matches('/') == dir
+            )
+    })
+}
+
+/// What `lock` records for the path need `need` of `dir`, kept as it is by `una ita update`
+/// for a need it is not asked to raise: its version, digest, the ceiling `root` grants it, and
+/// its consented trust. `None` when the lock records no complete entry for it.
+fn kept_entry(
+    lock: &una_project::ita::ItaLock,
+    need: &ita::Need,
+    dir: &str,
+    root: &str,
+) -> Option<Locked> {
+    let package = locked_path(lock, need, dir)?;
+    let version = Version::parse_full(&package.version.value).ok()?;
+    let digest = package.digest.as_ref()?.value.clone();
+    let ceiling = package
+        .granted
+        .iter()
+        .find(|g| g.identity.is_none() && g.by.value.to_string() == root)
+        .map(|g| canonical_ceiling(&g.may))
+        .unwrap_or_default();
+    let mut trusted: Vec<String> = package.trusted.iter().map(|m| m.value.clone()).collect();
+    trusted.sort();
+    Some(Locked {
+        name: need.name.value.to_string(),
+        version,
+        dir: dir.to_owned(),
+        digest,
+        ceiling,
+        trusted,
+        consented: package.consented.as_ref().map(|c| c.value.clone()),
+    })
+}
+
+/// A digest as `una ita` writes it: `sha256:` and 64 lowercase hexadecimal digits.
+fn is_digest(text: &str) -> bool {
+    text.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// `--accept-trust <package>@sha256:<hex>`: the package and the digest, when it has that form.
+fn trust_consent(flag: &str) -> Option<(&str, &str)> {
+    let (name, digest) = flag.rsplit_once('@')?;
+    (!name.is_empty() && is_digest(digest)).then_some((name, digest))
+}
+
+/// `una ita lock [--check] [--dry-run] [--accept-authority <p>] [--accept-trust <p>@<digest>]
+/// [path]` (ADR 0122 rules 14 to 17, 23 and 25).
 pub(crate) fn lock_command(
     path: &Path,
     options: LockOptions<'_>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     resolve_and_lock(path, options, out)
+}
+
+/// The internal error of a need the resolution would otherwise drop: an invariant that the
+/// checks before it hold, reported (U8001) rather than leaving the need out of the lock.
+fn dropped(range: std::ops::Range<usize>, what: String) -> ProjectError {
+    ProjectError {
+        code: Code::U8001,
+        range,
+        message: format!("internal error: {what}; please report it"),
+    }
 }
 
 /// Resolves the package at `path` and writes `ita.lock` through a temporary file and a rename.
@@ -240,18 +377,22 @@ pub(crate) fn lock_command(
 /// registry cannot be resolved offline in this release, since the per-name state of a
 /// resolution point is not held (U7013): no registry is resolved against a partial view. A
 /// workspace member is not loaded (U7008). An avoided version that no later release replaces,
-/// and a bound of rule 23 exceeded, are U7013.
+/// and a bound of rule 23 exceeded, are U7013. `una ita update <name>…` resolves only the named
+/// needs again; each other need the lock records keeps its entry as recorded.
 ///
 /// The lock's solver section is the existing lock's, or the release's default; then each path
 /// dependency, with its version, directory, content digest, and the ceiling the root grants
-/// it. Consent (rule 25): a ceiling wider than the one the lock records needs
-/// `--accept-authority`, and a trust that no consent covers for the package's content as it is
-/// now needs `--accept-trust <package>`; each refusal writes nothing. Every change is printed
-/// as a review before it is written: per package, its origin, old and new version and digest,
-/// its ceiling, and what its code uses in the new graph, checked at tier 0. `--dry-run` prints
-/// the review and writes nothing; `--check` writes nothing and reports where the lock is not
-/// the one this command writes (U7009). Costs: O(bytes of the dependencies) for their digests,
-/// and O((n + p) log p) for n needs and p packages to resolve and sort.
+/// it. Consent (rule 25), each flag naming what it accepts: a ceiling wider than the one the
+/// lock records needs `--accept-authority <package>`, and a trust that no consent covers for
+/// the package's content as it is now needs `--accept-trust <package>@<digest>`, the digest of
+/// that content. Every change is printed as a review before it is written, and when consent is
+/// missing too, with the flags to accept it, and nothing is written: per package, its origin,
+/// old and new version and digest, its ceiling, its consented trust, and what its code uses in
+/// the new graph, checked at tier 0. `--dry-run` prints the review and writes nothing; `--check`
+/// writes nothing and reports where the lock is not the one this command writes (U7009).
+/// `ita.una`, when `add` or `remove` edits it, is written after the lock, and the lock is put
+/// back when it cannot be. Costs: O(bytes of the dependencies) for their digests, and
+/// O((n + p) log p) for n needs and p packages to resolve and sort.
 fn resolve_and_lock(
     path: &Path,
     options: LockOptions<'_>,
@@ -273,6 +414,26 @@ fn resolve_and_lock(
         )?;
         return Ok(ExitStatus::Usage);
     }
+    for name in options.accept_authority {
+        if name.is_empty() || name.starts_with('-') {
+            writeln!(
+                out.stderr,
+                "error: `--accept-authority` names the package whose wider ceiling it accepts, as `--accept-authority util`, which the review prints"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
+    let mut trust_consents: Vec<(&str, &str)> = Vec::new();
+    for flag in options.accept_trust {
+        let Some(consent) = trust_consent(flag) else {
+            writeln!(
+                out.stderr,
+                "error: `--accept-trust {flag}` does not name a package and a digest; write `--accept-trust <package>@sha256:<hex>` with the digest of the content reviewed, which the review prints"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        trust_consents.push(consent);
+    }
     let mut overlay: BTreeMap<PathBuf, String> = BTreeMap::new();
     if let Some(edited) = &options.edited {
         overlay.insert(manifest_path.clone(), edited.clone());
@@ -286,7 +447,12 @@ fn resolve_and_lock(
     };
     let sources = &package.sources;
     let Some(manifest_id) = package.manifest else {
-        return Ok(ExitStatus::Usage);
+        writeln!(
+            out.stderr,
+            "internal compiler error (U8001): `{}` was loaded without its ita.una; please report it",
+            path.display()
+        )?;
+        return Ok(ExitStatus::Internal);
     };
     let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
     let mut diagnostics = located(sources, manifest_id, errors);
@@ -319,12 +485,16 @@ fn resolve_and_lock(
         avoid: BTreeMap::new(),
     };
     let mut entries: Vec<Locked> = Vec::new();
+    // Consent missing (rule 25): reported after the review, with the flags that accept it.
+    let mut consent: Vec<ProjectError> = Vec::new();
+    let mut accept: Vec<String> = Vec::new();
     for (index_of_need, need) in read.needs.iter().enumerate() {
         let refuse = |code: Code, message: String| ProjectError {
             code,
             range: need.range.clone(),
             message,
         };
+        let name = need.name.value.to_string();
         let source = match need.origin.as_ref().map(|origin| &origin.value) {
             Some(ita::Origin::Path(_)) => None,
             Some(ita::Origin::Workspace) => {
@@ -334,8 +504,7 @@ fn resolve_and_lock(
                     vec![refuse(
                         Code::U7008,
                         format!(
-                            "this release does not load workspace members, so `{}` cannot be locked",
-                            need.name.value
+                            "this release does not load workspace members, so `{name}` cannot be locked"
                         ),
                     )],
                 ));
@@ -348,8 +517,7 @@ fn resolve_and_lock(
             // Rule 23 reads a registry's releases from its per-name state at a resolution
             // point, which this release does not hold: refused, never resolved from a part.
             let reason = format!(
-                "`{}` cannot be resolved offline, since the per-name state of `{source}` at a resolution point is not held; this release resolves path dependencies only",
-                need.name.value
+                "`{name}` cannot be resolved offline, since the per-name state of `{source}` at a resolution point is not held; this release resolves path dependencies only"
             );
             index.refuse(&source, reason.clone());
             diagnostics.extend(located(
@@ -364,6 +532,14 @@ fn resolve_and_lock(
             .iter()
             .find(|d| d.need == index_of_need)
         else {
+            diagnostics.extend(located(
+                sources,
+                manifest_id,
+                vec![dropped(
+                    need.range.clone(),
+                    format!("the path dependency of `{name}` was not loaded"),
+                )],
+            ));
             continue;
         };
         if let Some(reason) = &dependency.error {
@@ -381,6 +557,17 @@ fn resolve_and_lock(
             continue;
         }
         let Some(dependency_manifest) = dependency.manifest else {
+            diagnostics.extend(located(
+                sources,
+                manifest_id,
+                vec![dropped(
+                    need.range.clone(),
+                    format!(
+                        "the path dependency `{}` was loaded without its ita.una",
+                        dependency.dir
+                    ),
+                )],
+            ));
             continue;
         };
         let (settings, errors) = parse_ita_manifest(sources.file(dependency_manifest).text());
@@ -391,158 +578,185 @@ fn resolve_and_lock(
             diagnostics.extend(located(sources, manifest_id, problems));
             continue;
         }
-        let Some(version) = settings
-            .version
-            .as_ref()
-            .and_then(|v| Version::parse_full(&v.value).ok())
-        else {
-            continue;
-        };
-        // The digest of the files as they are on disk, read again in their bytes (rule 28).
-        let digest = match crate::package::dependency_digest(&package, dependency) {
-            Ok(digest) => digest,
-            Err(reason) => {
+        // `una ita update <name>…`: a need it is not asked to raise keeps what the lock
+        // records, its consents included.
+        let kept = options
+            .only
+            .filter(|only| !only.contains(&name))
+            .and_then(|_| existing.as_ref())
+            .and_then(|(_, lock, _)| kept_entry(lock, need, &dependency.dir, &root));
+        let entry = if let Some(kept) = kept {
+            kept
+        } else {
+            // `version` is required, and a full version, or `ita.una` reported an error above.
+            let Some(version) = settings
+                .version
+                .as_ref()
+                .and_then(|v| Version::parse_full(&v.value).ok())
+            else {
                 diagnostics.extend(located(
                     sources,
                     manifest_id,
-                    vec![refuse(
-                        Code::U7008,
+                    vec![dropped(
+                        need.range.clone(),
                         format!(
-                            "the path dependency `{}` holds what a package may not: {reason}",
+                            "the path dependency `{}` has no version, though its ita.una read without an error",
                             dependency.dir
                         ),
                     )],
                 ));
                 continue;
+            };
+            // The digest of exactly the bytes loaded, which the checks read (rule 28).
+            let digest = match crate::package::dependency_digest(dependency) {
+                Ok(digest) => digest,
+                Err(reason) => {
+                    diagnostics.extend(located(
+                        sources,
+                        manifest_id,
+                        vec![refuse(
+                            Code::U7008,
+                            format!(
+                                "the path dependency `{}` holds what a package may not: {reason}",
+                                dependency.dir
+                            ),
+                        )],
+                    ));
+                    continue;
+                }
+            };
+            let ceiling = canonical_ceiling(&need.may);
+            // Consent (rule 25): a ceiling wider than the recorded one needs the flag that
+            // names this package.
+            if !options.accept_authority.contains(&name) {
+                let flag = format!("--accept-authority {name}");
+                if let Some((_, lock, _)) = &existing {
+                    let origin = need.origin.as_ref().map(|origin| &origin.value);
+                    let recorded = recorded_ceiling(lock, &need.name.value, origin, &root);
+                    for cap in &need.may {
+                        let wider: Vec<&str> = cap
+                            .ops
+                            .iter()
+                            .map(|op| op.value.as_str())
+                            .filter(|op| {
+                                !recorded
+                                    .get(cap.capability.as_str())
+                                    .is_some_and(|ops| ops.contains(op))
+                            })
+                            .collect();
+                        if !wider.is_empty() {
+                            consent.push(ProjectError {
+                                code: Code::U7009,
+                                range: cap.range.clone(),
+                                message: format!(
+                                    "the ceiling of `{name}` widens to `{}[{}]`; review what it grants and run `una ita {repair} {flag}`",
+                                    cap.capability,
+                                    wider.join(", ")
+                                ),
+                            });
+                            if !accept.contains(&flag) {
+                                accept.push(flag.clone());
+                            }
+                        }
+                    }
+                } else if !need.may.is_empty() {
+                    consent.push(ProjectError {
+                        code: Code::U7009,
+                        range: need.range.clone(),
+                        message: format!(
+                            "the ceiling of `{name}` is not recorded yet; review what it grants and run `una ita {repair} {flag}`"
+                        ),
+                    });
+                    accept.push(flag);
+                }
             }
-        };
-        let mut block = format!(
-            "\npackage {} {version}\n  from path {}\n  digest \"{digest}\"\n",
-            need.name.value,
-            text(&dependency.dir)
-        );
-        let ceiling = canonical_ceiling(&need.may);
-        if !ceiling.is_empty() {
-            block.push_str(&format!("  granted by {root} may {ceiling}\n"));
-        }
-        // Consent (rule 25): a ceiling wider than the recorded one needs the flag.
-        if !options.accept_authority
-            && let Some((_, lock, _)) = &existing
-        {
-            let recorded = recorded_ceiling(lock, &need.name.value, &root);
-            for cap in &need.may {
-                let wider: Vec<&str> = cap
-                    .ops
-                    .iter()
-                    .map(|op| op.value.as_str())
-                    .filter(|op| {
-                        !recorded
-                            .get(cap.capability.as_str())
-                            .is_some_and(|ops| ops.contains(op))
-                    })
-                    .collect();
-                if !wider.is_empty() {
+            // Trust (rules 10, 25 and 53): consent to a dependency's trusted modules is pinned
+            // to its whole content, and recorded only by a flag that names that content.
+            let mut trusted: Vec<String> = Vec::new();
+            let mut consented = None;
+            if !settings.trusted.is_empty() {
+                trusted = settings.trusted.iter().map(|t| t.value.clone()).collect();
+                trusted.sort_unstable();
+                let line = crate::package::trust_line(
+                    read,
+                    need,
+                    settings.version.as_ref().map(|v| v.value.as_str()),
+                );
+                let covered = line.is_some_and(|line| {
+                    trusted
+                        .iter()
+                        .all(|t| line.modules.iter().any(|m| m.value == *t))
+                });
+                if !covered {
                     diagnostics.extend(located(
                         sources,
                         manifest_id,
                         vec![ProjectError {
-                            code: Code::U7009,
-                            range: cap.range.clone(),
+                            code: Code::U7012,
+                            range: need.range.clone(),
                             message: format!(
-                                "the ceiling of `{}` widens to `{}[{}]`; review what it grants and run `una ita {repair} --accept-authority`",
-                                need.name.value,
-                                cap.capability,
-                                wider.join(", ")
+                                "`{name}` has trusted modules, which no trust line of the root names; write `trust` with `{name} modules {}` after reviewing them",
+                                trusted.join(", ")
                             ),
                         }],
                     ));
+                    continue;
                 }
-            }
-        } else if !options.accept_authority && !need.may.is_empty() {
-            diagnostics.extend(located(
-                sources,
-                manifest_id,
-                vec![ProjectError {
-                    code: Code::U7009,
-                    range: need.range.clone(),
-                    message: format!(
-                        "the ceiling of `{}` is not recorded yet; review what it grants and run `una ita {repair} --accept-authority`",
-                        need.name.value
-                    ),
-                }],
-            ));
-        }
-        // Trust (rules 10, 25 and 53): consent to a dependency's trusted modules is pinned to
-        // its whole content, and recorded only with `--accept-trust <name>`.
-        if !settings.trusted.is_empty() {
-            let name = need.name.value.to_string();
-            let mut trusted: Vec<&str> =
-                settings.trusted.iter().map(|t| t.value.as_str()).collect();
-            trusted.sort_unstable();
-            let line = crate::package::trust_line(
-                read,
-                need,
-                settings.version.as_ref().map(|v| v.value.as_str()),
-            );
-            let covered = line.is_some_and(|line| {
-                trusted
+                let recorded = existing.as_ref().is_some_and(|(_, lock, _)| {
+                    locked_path(lock, need, &dependency.dir).is_some_and(|p| {
+                        p.consented.as_ref().is_some_and(|c| c.value == digest)
+                            && trusted
+                                .iter()
+                                .all(|t| p.trusted.iter().any(|m| m.value == *t))
+                    })
+                });
+                let accepted = trust_consents
                     .iter()
-                    .all(|t| line.modules.iter().any(|m| m.value == *t))
-            });
-            let consented = existing.as_ref().is_some_and(|(_, lock, _)| {
-                lock.read.packages.iter().any(|p| {
-                    p.name.value == need.name.value
-                        && p.consented.as_ref().is_some_and(|c| c.value == digest)
-                        && trusted
-                            .iter()
-                            .all(|t| p.trusted.iter().any(|m| m.value == *t))
-                })
-            });
-            if !covered {
-                diagnostics.extend(located(
-                    sources,
-                    manifest_id,
-                    vec![ProjectError {
+                    .any(|(consented, at)| *consented == name && *at == digest);
+                if !recorded && !accepted {
+                    let flag = format!("--accept-trust {name}@{digest}");
+                    let stale = trust_consents
+                        .iter()
+                        .find(|(consented, _)| *consented == name)
+                        .map(|(_, at)| *at);
+                    let message = match stale {
+                        Some(at) => format!(
+                            "`--accept-trust {name}@{at}` consents to other content than `{name}` holds now, {digest}; review its trusted modules and the code they run again, then run `una ita {repair} {flag}`"
+                        ),
+                        None => format!(
+                            "the trust of `{name}` is not consented for its content as it is now, {digest}; review its trusted modules and the code they run, then run `una ita {repair} {flag}`"
+                        ),
+                    };
+                    consent.push(ProjectError {
                         code: Code::U7012,
                         range: need.range.clone(),
-                        message: format!(
-                            "`{name}` has trusted modules, which no trust line of the root names; write `trust` with `{name} modules {}` after reviewing them",
-                            trusted.join(", ")
-                        ),
-                    }],
-                ));
-                continue;
+                        message,
+                    });
+                    accept.push(flag);
+                }
+                consented = Some(digest.clone());
             }
-            if !consented && !options.accept_trust.contains(&name) {
-                diagnostics.extend(located(
-                    sources,
-                    manifest_id,
-                    vec![ProjectError {
-                        code: Code::U7012,
-                        range: need.range.clone(),
-                        message: format!(
-                            "the trust of `{name}` is not consented for its content as it is now; review its trusted modules and the code they run, then run `una ita {repair} --accept-trust {name}`"
-                        ),
-                    }],
-                ));
-                continue;
+            Locked {
+                name: name.clone(),
+                version,
+                dir: dependency.dir.clone(),
+                digest,
+                ceiling,
+                trusted,
+                consented,
             }
-            block.push_str(&format!(
-                "  consented \"{digest}\"\n  trusted modules {}\n",
-                trusted.join(", ")
-            ));
-        }
-        // One release of the identity, as the directory holds it; its own needs are refused
-        // by `dependency_problems` in this release, so it has none.
+        };
+        // One release of the identity, as the directory holds it or the lock records it; its
+        // own needs are refused by `dependency_problems` in this release, so it has none.
         let identity = Identity {
             source: format!("path {}", dependency.dir),
-            name: need.name.value.to_string(),
-            line: version.line(),
+            name: name.clone(),
+            line: entry.version.line(),
         };
         index.add(
             identity.clone(),
             Release {
-                version: version.clone(),
+                version: entry.version.clone(),
                 yanked: false,
                 advised: false,
                 threshold_fix: false,
@@ -562,19 +776,13 @@ fn resolve_and_lock(
         root_needs.push(Need {
             source: identity.source.clone(),
             name: identity.name.clone(),
-            version: version.clone(),
+            version: entry.version.clone(),
         });
         need_ranges.push((identity, need.range.clone()));
-        entries.push(Locked {
-            name: need.name.value.to_string(),
-            version,
-            dir: dependency.dir.clone(),
-            digest,
-            ceiling,
-            block,
-        });
+        entries.push(entry);
     }
     if !diagnostics.is_empty() {
+        diagnostics.extend(located(sources, manifest_id, consent));
         return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     }
     // Minimal version selection over what is held (rules 23 and 24), within its bounds.
@@ -601,7 +809,8 @@ fn resolve_and_lock(
         }
     };
     // Every root need is in the build list, at the version its directory holds: a path
-    // package has one release.
+    // package has one release. One that is not would be dropped from the lock: an internal
+    // error, never a lock without it.
     let selected: BTreeSet<(String, String, String)> = resolution
         .list
         .iter()
@@ -613,41 +822,55 @@ fn resolve_and_lock(
             )
         })
         .collect();
-    entries.retain(|entry| {
-        selected.contains(&(
-            entry.name.clone(),
-            format!("path {}", entry.dir),
-            entry.version.to_string(),
-        ))
-    });
+    let missing: Vec<ProjectError> = entries
+        .iter()
+        .zip(&need_ranges)
+        .filter(|(entry, _)| {
+            !selected.contains(&(
+                entry.name.clone(),
+                format!("path {}", entry.dir),
+                entry.version.to_string(),
+            ))
+        })
+        .map(|(entry, (_, range))| {
+            dropped(
+                range.clone(),
+                format!(
+                    "`{} {}` is not in the build list of its own need",
+                    entry.name, entry.version
+                ),
+            )
+        })
+        .collect();
+    if !missing.is_empty() {
+        diagnostics.extend(located(sources, manifest_id, missing));
+        return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
+    }
     entries.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
     let mut text = write_lock(&solver);
     for entry in &entries {
-        text.push_str(&entry.block);
+        text.push_str(&entry.block(&root));
     }
+    let lock_unchanged = existing
+        .as_ref()
+        .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
     if options.check {
-        let same = existing
-            .as_ref()
-            .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
-        if !same {
+        if !lock_unchanged {
             let error = match &existing {
                 None => missing_lock(),
                 Some(_) => ProjectError {
                     code: Code::U7009,
                     range: 0..0,
-                    message: "ita.lock is not the lock of ita.una and its dependencies: a version, a digest or a ceiling changed; run `una ita lock`".to_owned(),
+                    message: "ita.lock is not the lock of ita.una and its dependencies: a version, a digest, a ceiling or a consent changed; run `una ita lock`".to_owned(),
                 },
             };
             let at = existing.as_ref().map_or(manifest_id, |(id, _, _)| *id);
             diagnostics.extend(located(sources, at, vec![error]));
         }
+        diagnostics.extend(located(sources, manifest_id, consent));
         return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     }
-    let unchanged = options.edited.is_none()
-        && existing
-            .as_ref()
-            .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
-    if unchanged {
+    if options.edited.is_none() && lock_unchanged && consent.is_empty() {
         return finish_resolved(
             command,
             &[],
@@ -664,11 +887,50 @@ fn resolve_and_lock(
         &entries,
     );
     let mut lines: Vec<String> = changes.iter().map(ChangeDoc::line).collect();
+    if !consent.is_empty() {
+        // The review is printed, then the flags that accept what it shows: nothing is written.
+        lines.push(format!(
+            "to accept, after reviewing: una ita {repair} {}",
+            accept.join(" ")
+        ));
+        lines.push("nothing written".to_owned());
+        diagnostics.extend(located(sources, manifest_id, consent));
+        return finish_resolved(command, &[], &changes, &lines, &diagnostics, sources, out);
+    }
     if options.dry_run {
         lines.push("--dry-run: nothing written".to_owned());
         return finish_resolved(command, &[], &changes, &lines, &diagnostics, sources, out);
     }
     let mut written: Vec<&str> = Vec::new();
+    // The lock as it was, to put back if `ita.una` cannot be written after it.
+    let previous: Option<Vec<u8>> = if options.edited.is_some() && !lock_unchanged {
+        match std::fs::read(&lock_path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                writeln!(
+                    out.stderr,
+                    "error: cannot read `{}` to keep it: {error}; nothing was written",
+                    lock_path.display()
+                )?;
+                return Ok(ExitStatus::Errors);
+            }
+        }
+    } else {
+        None
+    };
+    if !lock_unchanged {
+        if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
+            writeln!(
+                out.stderr,
+                "error: cannot write `{}`: {error}; nothing was written",
+                lock_path.display()
+            )?;
+            return Ok(ExitStatus::Errors);
+        }
+        written.push("ita.lock");
+        lines.push("wrote ita.lock".to_owned());
+    }
     if let Some(edited) = &options.edited {
         if let Err(error) = crate::write_through_rename(&manifest_path, edited) {
             writeln!(
@@ -676,25 +938,31 @@ fn resolve_and_lock(
                 "error: cannot write `{}`: {error}",
                 manifest_path.display()
             )?;
-            return Ok(ExitStatus::Usage);
+            if !lock_unchanged {
+                let restored = match &previous {
+                    Some(bytes) => crate::write_through_rename_or_create(
+                        &lock_path,
+                        &String::from_utf8_lossy(bytes),
+                    ),
+                    None => std::fs::remove_file(&lock_path),
+                };
+                match restored {
+                    Ok(()) => writeln!(
+                        out.stderr,
+                        "error: `{}` was put back as it was; nothing was changed",
+                        lock_path.display()
+                    )?,
+                    Err(error) => writeln!(
+                        out.stderr,
+                        "error: `{}` could not be put back as it was: {error}; it is the lock of the edit that was not written, so run `una ita lock`",
+                        lock_path.display()
+                    )?,
+                }
+            }
+            return Ok(ExitStatus::Errors);
         }
         written.push("ita.una");
         lines.push("wrote ita.una".to_owned());
-    }
-    let lock_unchanged = existing
-        .as_ref()
-        .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
-    if !lock_unchanged {
-        if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
-            writeln!(
-                out.stderr,
-                "error: cannot write `{}`: {error}",
-                lock_path.display()
-            )?;
-            return Ok(ExitStatus::Usage);
-        }
-        written.push("ita.lock");
-        lines.push("wrote ita.lock".to_owned());
     }
     finish_resolved(
         command,
@@ -708,7 +976,8 @@ fn resolve_and_lock(
 }
 
 /// The review of rule 25: each package the new lock adds, changes or drops against the lock it
-/// replaces, compared by name and origin. What each one's code uses comes from the new graph,
+/// replaces, compared by name and origin, a change of its version, digest, ceiling, trusted
+/// modules or consented digest included. What each one's code uses comes from the new graph,
 /// checked at tier 0, only when something changed. O(p log p) for p packages, plus the check.
 fn review(
     package: &crate::package::Package,
@@ -719,6 +988,8 @@ fn review(
         version: String,
         digest: Option<String>,
         ceiling: String,
+        trusted: Vec<String>,
+        consented: Option<String>,
     }
     // The packages of the lock it replaces, by name and origin.
     let mut old: BTreeMap<(String, String), Old> = BTreeMap::new();
@@ -735,12 +1006,16 @@ fn review(
             .find(|g| g.identity.is_none())
             .map(|g| canonical_ceiling(&g.may))
             .unwrap_or_default();
+        let mut trusted: Vec<String> = locked.trusted.iter().map(|m| m.value.clone()).collect();
+        trusted.sort();
         old.insert(
             (locked.name.value.to_string(), origin),
             Old {
                 version: locked.version.value.clone(),
                 digest: locked.digest.as_ref().map(|d| d.value.clone()),
                 ceiling,
+                trusted,
+                consented: locked.consented.as_ref().map(|c| c.value.clone()),
             },
         );
     }
@@ -760,12 +1035,18 @@ fn review(
                 digest_to: Some(entry.digest.clone()),
                 ceiling_from: String::new(),
                 ceiling_to: entry.ceiling.clone(),
+                trusted_from: Vec::new(),
+                trusted_to: entry.trusted.clone(),
+                consented_from: None,
+                consented_to: entry.consented.clone(),
                 authority: Vec::new(),
             },
             Some(before) => {
                 let same = before.version == version
                     && before.digest.as_deref() == Some(entry.digest.as_str())
-                    && before.ceiling == entry.ceiling;
+                    && before.ceiling == entry.ceiling
+                    && before.trusted == entry.trusted
+                    && before.consented == entry.consented;
                 if same {
                     continue;
                 }
@@ -779,6 +1060,10 @@ fn review(
                     digest_to: Some(entry.digest.clone()),
                     ceiling_from: before.ceiling,
                     ceiling_to: entry.ceiling.clone(),
+                    trusted_from: before.trusted,
+                    trusted_to: entry.trusted.clone(),
+                    consented_from: before.consented,
+                    consented_to: entry.consented.clone(),
                     authority: Vec::new(),
                 }
             }
@@ -796,6 +1081,10 @@ fn review(
             digest_to: None,
             ceiling_from: before.ceiling,
             ceiling_to: String::new(),
+            trusted_from: before.trusted,
+            trusted_to: Vec::new(),
+            consented_from: before.consented,
+            consented_to: None,
             authority: Vec::new(),
         });
     }
@@ -834,7 +1123,9 @@ fn finish_resolved(
     sources: &SourceDb,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
-    let status = if diagnostics.is_empty() {
+    let status = if diagnostics.iter().any(|d| d.code == Code::U8001) {
+        ExitStatus::Internal
+    } else if diagnostics.is_empty() {
         ExitStatus::Success
     } else {
         ExitStatus::Errors
@@ -1059,9 +1350,20 @@ pub(crate) fn tree_command(path: &Path, out: Output<'_>) -> io::Result<ExitStatu
     Ok(status)
 }
 
+/// Reports an internal error of an edit of `ita.una` (U8001), exit code 3.
+fn internal_error(out: Output<'_>, what: &str) -> io::Result<ExitStatus> {
+    writeln!(
+        out.stderr,
+        "internal compiler error (U8001): {what} in ita.una, though it parsed; please report it"
+    )?;
+    Ok(ExitStatus::Internal)
+}
+
 /// `una ita remove <name> [path]` (ADR 0122 rule 57): removes the need of `name` from
-/// `ita.una`, its indented lines with it, and the `needs` section when it empties, through a
-/// temporary file and a rename; then writes the lock as `una ita lock` does. A name the root
+/// `ita.una`, its indented lines with it, and the `needs` section when it empties; then
+/// resolves as `una ita lock` does, and writes the lock, then `ita.una`, only when the
+/// resolution succeeds, each through a temporary file and a rename. The edit is made on the
+/// decoded text, `\r\n` read as `\n`, which the ranges of the grammar index. A name the root
 /// does not need is a usage error. No network.
 pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
@@ -1086,12 +1388,14 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         return Ok(ExitStatus::Usage);
     };
     let lines = ita::lines(&text);
+    // The ranges of the grammar index the decoded text, so the edit is made on it.
+    let text = lines.text.as_str();
     let Some(section) = lines.lines.iter().find(|line| {
         line.tokens
             .first()
             .is_some_and(|t| t.item == ita::Item::Word("needs".to_owned()))
     }) else {
-        return Ok(ExitStatus::Usage);
+        return internal_error(out, "the need was found but not its `needs` section");
     };
     // The byte range of whole lines to remove: the need's line and its children, or the whole
     // section when the need is its only one.
@@ -1127,26 +1431,31 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
             .iter()
             .find(|c| c.range.start == need.range.start)
         else {
-            return Ok(ExitStatus::Usage);
+            return internal_error(out, "the need's line was not found under `needs`");
         };
         (line_start(child.range.start), line_end(last_of(child)))
     };
     let mut edited = String::with_capacity(text.len());
     edited.push_str(text.get(..from).unwrap_or(""));
     edited.push_str(text.get(to..).unwrap_or(""));
-    if let Err(error) = crate::write_through_rename(&manifest_path, &edited) {
-        writeln!(
-            out.stderr,
-            "error: cannot write `{}`: {error}",
-            manifest_path.display()
-        )?;
-        return Ok(ExitStatus::Usage);
+    // The edit removes exactly this need, and nothing else.
+    let (after, _) = ita::parse_manifest(&edited);
+    let kept: Vec<String> = read
+        .needs
+        .iter()
+        .map(|n| n.name.value.to_string())
+        .filter(|n| n != name)
+        .collect();
+    let left: Vec<String> = after.needs.iter().map(|n| n.name.value.to_string()).collect();
+    if left != kept {
+        return internal_error(out, "removing the need would change other lines");
     }
-    lock_command(
+    resolve_and_lock(
         path,
         LockOptions {
             command: "remove",
-            ..LockOptions::lock(false, false, false, &[])
+            edited: Some(edited),
+            ..LockOptions::lock(false, false, &[], &[])
         },
         out,
     )
@@ -1253,15 +1562,17 @@ pub(crate) fn vendor_command(
 }
 
 /// `una ita update [<name>…] [--cooldown <hours>] [--now] [--dry-run] [--accept-…] [path]`
-/// (ADR 0122 rules 25 and 57): raises the named needs, or all, and writes the lock. A name the
-/// root does not need, or an `ita.una` that does not parse, is a usage error. In this release
-/// a path package is always locked as its directory holds it, so `update` locks it again with
-/// the review of rule 25; a registry need cannot be raised offline, since the per-name state of
-/// a resolution point is not held (U7013), and nothing is written. No network.
-pub(crate) fn update_command(
-    names: &[String],
+/// (ADR 0122 rules 25 and 57): raises the named needs, or all, and writes the lock. A named
+/// need is resolved again; every other need that the lock records keeps its entry as recorded,
+/// its consents included. A name the root does not need, or an `ita.una` that does not parse,
+/// is a usage error. In this release a path package is locked as its directory holds it, so
+/// `update` locks it again with the review of rule 25; a registry need cannot be raised
+/// offline, since the per-name state of a resolution point is not held (U7013), and nothing is
+/// written. No network.
+pub(crate) fn update_command<'a>(
+    names: &'a [String],
     path: &Path,
-    options: LockOptions<'_>,
+    options: LockOptions<'a>,
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
@@ -1289,7 +1600,8 @@ pub(crate) fn update_command(
             }
         }
     }
-    resolve_and_lock(path, options, out)
+    let only = (!names.is_empty()).then_some(names);
+    resolve_and_lock(path, LockOptions { only, ..options }, out)
 }
 
 /// Whether `word` is a lower-case identifier of a project file: `[a-z][a-z0-9_]*`, at most 64
@@ -1488,10 +1800,14 @@ pub(crate) fn add_command(
 
 /// `una ita verify [path]` (ADR 0122 rule 57): re-verifies each registry package of `ita.lock`
 /// in the vendor directory and in Itaoca, wherever it is, against the lock and the provenance
-/// stored beside it (rule 17): its files read again with no link followed, their digest, and
-/// the stored statement, checkpoint and root. A copy that does not verify is U7010, a package
-/// in neither place U7011; nothing is written or repaired. Path packages are the root author's
-/// working tree, which `una ita lock --check` compares. No network. O(bytes of the packages).
+/// stored beside it (rule 17): first its presence (U7011 when it is in neither place), then
+/// its files read again with no link followed, their digest, and the stored statement,
+/// checkpoint and root (U7010 for a copy that does not verify). Even when every copy checks,
+/// the package is not reported verified: the owner's key chain and its name map proof, which
+/// show that the signing key was valid (rules 36.1 and 36.3), are not held until the registry
+/// client supplies them, so each package is unavailable (U7013) and the command exits with
+/// code 1. Nothing is written or repaired. Path packages are the root author's working tree,
+/// which `una ita lock --check` compares. No network. O(bytes of the packages).
 pub(crate) fn verify_command(
     path: &Path,
     itaoca: Option<&una_project::itaoca::Itaoca>,
@@ -1516,7 +1832,12 @@ pub(crate) fn verify_command(
     };
     let sources = &package.sources;
     let Some(manifest_id) = package.manifest else {
-        return Ok(ExitStatus::Usage);
+        writeln!(
+            out.stderr,
+            "internal compiler error (U8001): `{}` was loaded without its ita.una; please report it",
+            path.display()
+        )?;
+        return Ok(ExitStatus::Internal);
     };
     let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
     let mut diagnostics = located(sources, manifest_id, errors);
@@ -1531,6 +1852,7 @@ pub(crate) fn verify_command(
     }
     let mut lines: Vec<String> = Vec::new();
     let mut problems: Vec<ProjectError> = Vec::new();
+    let mut registry_packages = 0usize;
     for locked in &lock.read.packages {
         if !matches!(
             &locked.from,
@@ -1541,6 +1863,7 @@ pub(crate) fn verify_command(
         ) {
             continue;
         }
+        registry_packages += 1;
         let what = format!("{} {}", locked.name.value, locked.version.value);
         let mut refuse = |code: Code, message: String| {
             problems.push(ProjectError {
@@ -1549,6 +1872,23 @@ pub(crate) fn verify_command(
                 message,
             });
         };
+        // Presence first, as every load checks it (rule 17): in neither place is U7011.
+        match vendor::present(path, itaoca, locked) {
+            Ok(true) => {}
+            Ok(false) => {
+                refuse(
+                    Code::U7011,
+                    format!(
+                        "the locked package `{what}` is in neither the vendor directory nor Itaoca"
+                    ),
+                );
+                continue;
+            }
+            Err(Problem::Refused(message) | Problem::Absent(message)) => {
+                refuse(Code::U7010, message);
+                continue;
+            }
+        }
         let expected = match vendor::expected(&lock.read, manifest.ita.as_deref(), locked) {
             Ok(expected) => expected,
             Err(message) => {
@@ -1576,19 +1916,30 @@ pub(crate) fn verify_command(
                 }
             }
         }
-        if places.is_empty() && !failed {
+        if failed {
+            continue;
+        }
+        if places.is_empty() {
             refuse(
                 Code::U7011,
                 format!(
                     "the locked package `{what}` is in neither the vendor directory nor Itaoca"
                 ),
             );
-        } else if !places.is_empty() {
-            lines.push(format!("verified {what} in {}", places.join(" and ")));
+            continue;
         }
+        // Every copy checks against the lock, and still the package is not verified: the key
+        // that signed its statement is not shown valid (rules 36.1 and 36.3).
+        refuse(
+            Code::U7013,
+            format!(
+                "`{what}` is not verified: its files and provenance in {} match the lock, but the owner's key chain and its name map proof are not held until the registry client supplies them",
+                places.join(" and ")
+            ),
+        );
     }
     diagnostics.extend(located(sources, lock_id, problems));
-    if lines.is_empty() && diagnostics.is_empty() {
+    if registry_packages == 0 && diagnostics.is_empty() {
         lines.push("no registry package is locked".to_owned());
     }
     finish("verify", &[], &lines, &diagnostics, sources, out)

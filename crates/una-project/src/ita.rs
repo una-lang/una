@@ -1096,7 +1096,7 @@ pub fn check_lock_consistency(
 /// The consent check of `ita.lock` (ADR 0122 rule 17): every `may` line of the root is within
 /// the ceiling the lock records as granted by the root (`granted by <root> may ...`). A wider
 /// one is U7009 at the `may` line, an authority change that only `una ita lock
-/// --accept-authority` records, never `una fix`. The lock is a control of visibility: a
+/// --accept-authority <package>` records, never `una fix`. The lock is a control of visibility: a
 /// widening shows in its diff. O(c log c) for the c capabilities written.
 pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Vec<ProjectError> {
     let mut errors = Vec::new();
@@ -1119,10 +1119,11 @@ pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Ve
                     Code::U7009,
                     cap.range.clone(),
                     format!(
-                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority`",
+                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority {}`",
                         need.name.value,
                         cap.capability,
-                        wider.join(", ")
+                        wider.join(", "),
+                        need.name.value
                     ),
                 ));
             }

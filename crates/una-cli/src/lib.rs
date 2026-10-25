@@ -1045,7 +1045,7 @@ fn run_command(
                         dry_run,
                     } => ita::lock_command(
                         &path,
-                        ita::LockOptions::lock(check, dry_run, accept_authority, &accept_trust),
+                        ita::LockOptions::lock(check, dry_run, &accept_authority, &accept_trust),
                         output,
                     ),
                     ItaCommand::Update {
@@ -1068,7 +1068,7 @@ fn run_command(
                             ..ita::LockOptions::lock(
                                 false,
                                 dry_run,
-                                accept_authority,
+                                &accept_authority,
                                 &accept_trust,
                             )
                         };
@@ -1089,7 +1089,7 @@ fn run_command(
                             } else {
                                 una_project::resolve::COOLDOWN
                             },
-                            ..ita::LockOptions::lock(false, dry_run, false, &[])
+                            ..ita::LockOptions::lock(false, dry_run, &[], &[])
                         };
                         ita::add_command(
                             &name,
