@@ -32,7 +32,7 @@ RUN = re.compile(
     r"(Docker version [0-9]+\.[0-9]+\.[0-9]+, build [0-9a-f]+|Docker unavailable)"
 )
 GATES = ["clone", "build", "deps", "mac", "linux", "linux-arm64", "release", "reproducible",
-         "determinism", "native", "sanitize", "site", "formal", "hunt"]
+         "determinism", "native", "timing-channels", "sanitize", "site", "formal", "hunt"]
 GATE_ROW = re.compile(r"\| ([a-z0-9-]+) \| (PASS|FAIL) \| ([0-9]+) \| `[0-9a-f]{64}` \|")
 ARCHIVE_ROW = re.compile(r"\| `(una-[0-9A-Za-z._-]+\.tar\.gz)` \| `([0-9a-f]{64})` \|")
 # The target part of an archive's name, after `una-<version>-`.
