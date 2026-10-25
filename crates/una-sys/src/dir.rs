@@ -1,15 +1,20 @@
-//! Directory handles, and creation and renaming relative to them (#1094): the writes of
-//! vendoring and of the Itaoca store create every file and directory relative to the
+//! Directory handles, and creation, renaming and removal relative to them (#1094): the writes
+//! of vendoring and of the Itaoca store create every file and directory relative to the
 //! descriptor of a fresh private directory, and rename it relative to its parent's, so a path
 //! swapped for a link while they write redirects nothing.
 //!
-//! Why not std: the standard library opens, creates and renames by path only; it has no
-//! `openat`, `mkdirat`, `renameat`, `renameat2`, `renameatx_np` or `geteuid`. What std does
-//! have is used: opening the first directory by path, and reading, protecting and syncing
-//! through an open descriptor. Every name is one path component, refused before any call when
-//! it is empty, `.`, `..`, or holds `/` or a NUL byte. The `libc` crate gives the declarations
-//! only (ADR 0116 Appendix A). No call falls back to a weaker one: a file system that cannot
-//! rename without replacing refuses the rename.
+//! Why not std: the standard library opens, creates, renames and removes by path only; it has
+//! no `openat`, `mkdirat`, `renameat`, `renameat2`, `renameatx_np`, `unlinkat` or `geteuid`.
+//! What std does have is used: opening the first directory by path, and reading, protecting and
+//! syncing through an open descriptor. Every name is one path component, refused before any
+//! call when it is empty, `.`, `..`, or holds `/` or a NUL byte. The `libc` crate gives the
+//! declarations only (ADR 0116 Appendix A). No call falls back to a weaker one: a file system
+//! that cannot rename without replacing refuses the rename.
+//!
+//! A directory is opened with `O_RDONLY`, so it needs read permission, not only search
+//! permission: the handle is also synced and protected (`fsync`, `fchmod`), which a Linux
+//! `O_PATH` descriptor refuses with `EBADF`, and macOS's `O_SEARCH` opens for execution only.
+//! A directory that grants search but not read refuses the write, which fails closed.
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
@@ -19,8 +24,13 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-/// A directory open as a descriptor, with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`: what the
-/// functions of this module create, open and rename relative to.
+#[cfg(target_os = "linux")]
+use libc::{RENAME_NOREPLACE as EXCLUSIVE, renameat2 as rename_flags};
+#[cfg(target_os = "macos")]
+use libc::{RENAME_EXCL as EXCLUSIVE, renameatx_np as rename_flags};
+
+/// A directory open as a descriptor, with `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`:
+/// what the functions of this module create, open, rename and remove relative to.
 #[derive(Debug)]
 pub struct DirHandle(File);
 
@@ -70,17 +80,6 @@ fn component(name: &str) -> io::Result<CString> {
     CString::new(name).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a NUL byte"))
 }
 
-/// The descriptor `fd` that `openat` returned, owned, or the error it set.
-fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` is a descriptor that `openat` just opened, which nothing else owns; the
-    // `OwnedFd` closes it once.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    Ok(fd)
-}
-
 /// `0` as success, any other result as the error the call set.
 fn done(result: libc::c_int) -> io::Result<()> {
     if result == 0 {
@@ -90,15 +89,14 @@ fn done(result: libc::c_int) -> io::Result<()> {
     }
 }
 
-/// Creates the file `name` in `dir`, write only, with `mode` (less the umask): `openat` with
-/// `O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC`, so anything already at the name, a link
-/// included, refuses it. Why not std: std creates by path only.
-pub fn create_file_at(dir: &DirHandle, name: &str, mode: u32) -> io::Result<File> {
+/// The one binding of `openat`: opens `name` in `dir` with `flags`, which always gain
+/// `O_NOFOLLOW | O_CLOEXEC`, and `mode` when `O_CREAT` is among them.
+fn openat(dir: &DirHandle, name: &str, flags: libc::c_int, mode: u32) -> io::Result<OwnedFd> {
     let name = component(name)?;
-    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    // SAFETY: `dir` holds an open descriptor for the length of the call and `name` is a valid
-    // C string it outlives; the mode is passed as the `c_uint` the variadic argument promotes
-    // to. Nothing else is read or written.
+    let flags = flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: `dir` holds an open descriptor and `name` is a valid C string, both alive for the
+    // call; the mode is passed as the `c_uint` the variadic argument promotes to, and is read
+    // only with `O_CREAT`. Nothing else is read or written.
     let fd = unsafe {
         libc::openat(
             dir.0.as_raw_fd(),
@@ -107,7 +105,21 @@ pub fn create_file_at(dir: &DirHandle, name: &str, mode: u32) -> io::Result<File
             mode as libc::c_uint,
         )
     };
-    owned(fd).map(File::from)
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a descriptor that `openat` just opened, which nothing else owns; the
+    // `OwnedFd` closes it once.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    Ok(fd)
+}
+
+/// Creates the file `name` in `dir`, write only, with `mode` (less the umask): `openat` with
+/// `O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC`, so anything already at the name, a link
+/// included, refuses it. Why not std: std creates by path only.
+pub fn create_file_at(dir: &DirHandle, name: &str, mode: u32) -> io::Result<File> {
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL;
+    openat(dir, name, flags, mode).map(File::from)
 }
 
 /// Creates the directory `name` in `dir` with `mode` (less the umask): `mkdirat`, which
@@ -120,50 +132,36 @@ pub fn mkdir_at(dir: &DirHandle, name: &str, mode: u32) -> io::Result<()> {
     done(result)
 }
 
-/// Opens the directory `name` in `dir`: `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
-/// so a link or anything but a directory at the name refuses it. Why not std: std opens by
-/// path only.
+/// Opens the directory `name` in `dir`: `openat` with `O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+/// O_CLOEXEC`, so a link or anything but a directory at the name refuses it. Why not std: std
+/// opens by path only.
 pub fn open_dir_at(dir: &DirHandle, name: &str) -> io::Result<DirHandle> {
-    let name = component(name)?;
-    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    // SAFETY: `dir` holds an open descriptor and `name` is a valid C string, both alive for
-    // the call; no mode is passed, since `O_CREAT` is not set.
-    let fd = unsafe { libc::openat(dir.0.as_raw_fd(), name.as_ptr(), flags) };
-    owned(fd).map(|fd| DirHandle(File::from(fd)))
+    let fd = openat(dir, name, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+    Ok(DirHandle(File::from(fd)))
 }
 
 /// Renames `from` in `from_dir` to `to` in `to_dir`, refusing (`AlreadyExists`) when anything
 /// is at `to`: `renameat2` with `RENAME_NOREPLACE` on Linux, `renameatx_np` with `RENAME_EXCL`
 /// on macOS, atomic either way. A file system that does not support the flag refuses the
-/// rename; nothing falls back to a rename that replaces. Why not std: std renames by path
-/// only, and always replaces.
+/// rename (`Unsupported`, with a message that says so); nothing falls back to a rename that
+/// replaces. Why not std: std renames by path only, and always replaces.
 pub fn rename_at(from_dir: &DirHandle, from: &str, to_dir: &DirHandle, to: &str) -> io::Result<()> {
     let (from, to) = (component(from)?, component(to)?);
     let (from_fd, to_fd) = (from_dir.0.as_raw_fd(), to_dir.0.as_raw_fd());
     // SAFETY: both handles hold open descriptors and both names are valid C strings, all alive
     // for the call, which reads nothing else.
-    #[cfg(target_os = "linux")]
-    let result = unsafe {
-        libc::renameat2(
-            from_fd,
-            from.as_ptr(),
-            to_fd,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    // SAFETY: as above.
-    #[cfg(target_os = "macos")]
-    let result = unsafe {
-        libc::renameatx_np(
-            from_fd,
-            from.as_ptr(),
-            to_fd,
-            to.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    done(result)
+    let result = unsafe { rename_flags(from_fd, from.as_ptr(), to_fd, to.as_ptr(), EXCLUSIVE) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this file system has no exclusive rename; the store or vendor directory must be on a local file system that supports it",
+        )),
+        _ => Err(error),
+    }
 }
 
 /// Renames `from` in `from_dir` to `to` in `to_dir`, atomically replacing what is at `to`:
@@ -184,9 +182,22 @@ pub fn replace_at(
     done(result)
 }
 
+/// Removes `name` from `dir`: `unlinkat`, with `AT_REMOVEDIR` when `directory`, which removes
+/// only an empty directory. A link at the name is removed itself, never followed. Why not std:
+/// std removes by path only.
+pub fn unlink_at(dir: &DirHandle, name: &str, directory: bool) -> io::Result<()> {
+    let name = component(name)?;
+    let flags = if directory { libc::AT_REMOVEDIR } else { 0 };
+    // SAFETY: `dir` holds an open descriptor and `name` is a valid C string, both alive for
+    // the call, which reads nothing else.
+    let result = unsafe { libc::unlinkat(dir.0.as_raw_fd(), name.as_ptr(), flags) };
+    done(result)
+}
+
 /// The effective user id of the process, which owns every file and directory it creates: a
-/// fresh directory opened after `mkdir_at` that another user owns was put in its place. Why
-/// not std: std has no `geteuid`.
+/// fresh directory opened after `mkdir_at` that another user owns was put in its place. The
+/// one binding of `geteuid` in this crate, which any other check of the process's identity
+/// calls. Why not std: std has no `geteuid`.
 pub fn effective_uid() -> u32 {
     // SAFETY: `geteuid` takes no argument, touches no memory and always succeeds.
     unsafe { libc::geteuid() }

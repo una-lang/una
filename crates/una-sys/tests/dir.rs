@@ -160,3 +160,31 @@ fn a_rename_never_replaces_and_a_replace_never_follows() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_removal_is_relative_to_the_handle_and_never_follows_a_link() {
+    let dir = scratch("unlink");
+    let handle = DirHandle::open(&dir).unwrap();
+    mkdir_at(&handle, "sub", 0o700).unwrap();
+    let sub = open_dir_at(&handle, "sub").unwrap();
+    create_file_at(&sub, "f", 0o600).unwrap();
+    // A directory that is not empty, or a file named as a directory, is not removed.
+    assert!(unlink_at(&handle, "sub", true).is_err());
+    assert!(unlink_at(&sub, "f", true).is_err());
+    assert!(dir.join("sub/f").is_file());
+    // The handle still reaches its directory after the path moves.
+    std::fs::rename(dir.join("sub"), dir.join("moved")).unwrap();
+    unlink_at(&sub, "f", false).unwrap();
+    assert!(!dir.join("moved/f").exists());
+    // A link is removed itself; its target stays.
+    symlink(dir.join("moved"), dir.join("link")).unwrap();
+    assert!(unlink_at(&handle, "link", true).is_err());
+    unlink_at(&handle, "link", false).unwrap();
+    assert!(dir.join("moved").is_dir() && std::fs::symlink_metadata(dir.join("link")).is_err());
+    unlink_at(&handle, "moved", true).unwrap();
+    assert!(!dir.join("moved").exists());
+    for name in BAD {
+        assert!(invalid(unlink_at(&handle, name, false)), "{name:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

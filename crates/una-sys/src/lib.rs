@@ -1,8 +1,9 @@
-//! The code with `unsafe` that the native runtime (`una-rt`) and the interpreter (`una-interp`)
-//! share (ADR 0116 rule 18, and the amendment of ADR 0058 in its Appendix A): the handlers of
-//! SIGINT and SIGTERM, and the attention words that check points read; and, for the writes of
-//! vendoring and the Itaoca store (#1094), directory handles with creation and renaming
-//! relative to them.
+//! The code with `unsafe` that calls the operating system for the rest of the repository
+//! (ADR 0116 rule 18, and the amendment of ADR 0058 in its Appendix A): the handlers of SIGINT
+//! and SIGTERM and the attention words that check points read, for the native runtime
+//! (`una-rt`) and the interpreter (`una-interp`); and directory handles with creation, renaming
+//! and removal relative to them, for the writes of vendoring and the Itaoca store in
+//! `una-project`, and through it `una-check` (#1094).
 //!
 //! The crate stays under 800 lines and depends on no crate of the repository. Every change to
 //! it gets a security review before it merges. Only `signals` and `dir` hold `unsafe` code, each
