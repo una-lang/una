@@ -19,6 +19,7 @@ pub mod migrate;
 pub mod names;
 mod package;
 pub mod provenance;
+pub mod registry;
 pub mod resolve;
 pub mod tlog;
 pub mod tree;
