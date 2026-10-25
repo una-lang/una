@@ -25,9 +25,6 @@ const LENGTH: usize = 32;
 /// A key shorter than this is not used.
 const MINIMUM: usize = 16;
 
-/// A key file longer than this is not a key, and is not read past it.
-const MAXIMUM: u64 = 4096;
-
 /// The user's key: its bytes, and its file as the build report shows it.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ProofKey {
@@ -59,13 +56,14 @@ pub(crate) fn resolve(environment: Environment<'_>) -> Option<ProofKey> {
     (secret.len() >= MINIMUM).then_some(ProofKey { secret, shown })
 }
 
-/// The bytes of the key file at `path`, made first when it does not exist. Two processes that
-/// make it at once agree: each writes its key to a file of its own, then links it to `path`,
-/// which succeeds only when `path` is absent; the loser reads the winner's. The link is atomic,
-/// so `path` never shows a key half written.
+/// The bytes of the key file at `path`, made first when it does not exist; an existing file is
+/// used only when it is private ([`read_private`]). Two processes that make it at once agree:
+/// each writes its key to a file of its own, then links it to `path`, which succeeds only when
+/// `path` is absent; the loser reads the winner's. The link is atomic, so `path` never shows a
+/// key half written.
 fn read_or_make(path: &Path) -> Option<Vec<u8>> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => return read_private(path),
+    match read_private(path) {
+        Ok(bytes) => return Some(bytes),
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return None,
         Err(_) => {}
     }
@@ -98,92 +96,108 @@ fn read_or_make(path: &Path) -> Option<Vec<u8>> {
     let _ = std::fs::remove_file(&staged);
     match linked {
         Ok(()) => Some(secret),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_private(path),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_private(path).ok(),
         Err(_) => None,
     }
 }
 
-/// The bytes of the existing key file at `path`, when it is private to the user: checked on
-/// its name without following a link, then read through the file opened after the check,
-/// whose own metadata is checked again and must be the same file.
-fn read_private(path: &Path) -> Option<Vec<u8>> {
-    let named = std::fs::symlink_metadata(path).ok()?;
-    if !private(&named) {
-        return None;
+/// The bytes of the key file at `path` when it is a private regular file of the user (#1164),
+/// and an error otherwise: `NotFound` when there is no file, `PermissionDenied` when there is
+/// one this module does not use.
+///
+/// The file is checked by `symlink_metadata`, which never follows a link, then opened, and the
+/// opened file is checked again and must be the one checked first (same device and inode), so
+/// a file swapped in between is not read.
+fn read_private(path: &Path) -> std::io::Result<Vec<u8>> {
+    let refused = || {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the proof cache key is not a private regular file of the user",
+        )
+    };
+    let checked = std::fs::symlink_metadata(path)?;
+    let user = effective_uid();
+    if !private(&checked, user) {
+        return Err(refused());
     }
-    let file = std::fs::File::open(path).ok()?;
-    let opened = file.metadata().ok()?;
-    if !private(&opened) || !same_file(&named, &opened) {
-        return None;
+    let mut file = std::fs::File::open(path)?;
+    let opened = file.metadata()?;
+    if !private(&opened, user) || !same_file(&checked, &opened) {
+        return Err(refused());
     }
     let mut bytes = Vec::new();
-    file.take(MAXIMUM + 1).read_to_end(&mut bytes).ok()?;
-    (u64::try_from(bytes.len()).ok()? <= MAXIMUM).then_some(bytes)
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
-/// Whether `metadata` is of a regular file (a symbolic link's own metadata is not) that, on
-/// Unix, the effective user owns and no one else can read or write (`mode & 0o077 == 0`).
-fn private(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_file() && owned_by_user_only(metadata)
-}
-
-/// Whether the effective user owns the file and no one else can read or write it.
-#[cfg(unix)]
-fn owned_by_user_only(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    effective_uid() == Some(metadata.uid()) && (metadata.mode() & 0o077) == 0
-}
-
-/// Without Unix owners and modes, a regular file is the user's.
-#[cfg(not(unix))]
-fn owned_by_user_only(_: &std::fs::Metadata) -> bool {
+/// Whether `metadata` is that of a regular file, not a link, and on Unix one owned by `user`
+/// with no permission for the group or others.
+fn private(metadata: &std::fs::Metadata, user: Option<u32>) -> bool {
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if user != Some(metadata.uid()) || metadata.mode() & 0o077 != 0 {
+            return false;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = user;
     true
 }
 
-/// Whether two metadata are of the same file.
-#[cfg(unix)]
-fn same_file(named: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    named.dev() == opened.dev() && named.ino() == opened.ino()
+/// Whether `first` and `second` are the metadata of the same file.
+fn same_file(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        first.dev() == second.dev() && first.ino() == second.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (first, second);
+        true
+    }
 }
 
-/// Whether two metadata are of the same file, as far as they tell without Unix inodes.
-#[cfg(not(unix))]
-fn same_file(named: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
-    named.len() == opened.len()
-}
-
-/// The effective user id of the process, without `unsafe`: the owner of a fresh file that the
-/// process creates in the temporary directory, which it removes at once.
+/// The effective user of this process, without `unsafe` or a foreign call: the user that owns
+/// a file it creates. The file is made exclusively in the system's temporary directory, under a
+/// name unique to this process and probe, mode 0600, and removed at once. A file a process
+/// creates is owned by its effective user (its file-system user on Linux, which equals it),
+/// whichever directory it is in. `None` when no such file can be made, and the key is then not
+/// used.
 #[cfg(unix)]
 fn effective_uid() -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
-    use std::sync::OnceLock;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::sync::atomic::{AtomicU64, Ordering};
-    static UID: OnceLock<Option<u32>> = OnceLock::new();
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    *UID.get_or_init(|| {
-        let dir = std::env::temp_dir();
-        let process = std::process::id();
-        for _ in 0..16 {
-            let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-            let probe = dir.join(format!(".una-uid.{process}.{serial}"));
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            match options.open(&probe) {
-                Ok(file) => {
-                    let owner = file.metadata().ok().map(|metadata| metadata.uid());
-                    drop(file);
-                    let _ = std::fs::remove_file(&probe);
-                    return owner;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(_) => return None,
+    let dir = std::env::temp_dir();
+    for _ in 0..16 {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let probe = dir.join(format!(".una-uid.{}.{serial}", std::process::id()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        match options.open(&probe) {
+            Ok(file) => {
+                let user = file.metadata().map(|metadata| metadata.uid()).ok();
+                // The name was created by this probe alone, so removing it removes no one
+                // else's file.
+                let _ = std::fs::remove_file(&probe);
+                return user;
             }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
         }
-        None
-    })
+    }
+    None
+}
+
+/// No user to compare off Unix: only the file's type is checked there.
+#[cfg(not(unix))]
+fn effective_uid() -> Option<u32> {
+    None
 }
 
 #[cfg(test)]

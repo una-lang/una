@@ -7,7 +7,6 @@
 //! one written before this format, is not an answer: the query is solved again. So a cache
 //! that anyone can write cannot forge a proof.
 
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -15,12 +14,12 @@ use sha2::{Digest, Sha256};
 
 use crate::solver::{Answer, Status};
 
-/// The directories of the cache under the package root, outermost first.
-const LAYOUT: [&str; 3] = [".una", "cache", "proofs"];
-
 /// A proof cache: its directory, and the secret key that authenticates its entries.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProofCache {
+    /// The package directory: no entry is written outside it, through a link or otherwise
+    /// (#1160).
+    pub root: PathBuf,
     /// The directory, `.una/cache/proofs` of the package.
     pub dir: PathBuf,
     /// The user's secret key.
@@ -31,6 +30,7 @@ impl std::fmt::Debug for ProofCache {
     // The key never appears in output.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProofCache")
+            .field("root", &self.root)
             .field("dir", &self.dir)
             .finish_non_exhaustive()
     }
@@ -73,11 +73,9 @@ pub(crate) fn get(cache: &ProofCache, key: &str) -> Option<Answer> {
 /// runs never read a partial entry. An `unknown` from the wall-clock guard depends on time and
 /// is not stored.
 ///
-/// The entry is stored only when the cache's directory is `<root>/.una/cache/proofs` and each
-/// of those three directories, a symbolic link included, resolves inside the package root: a
-/// cloned repository can commit `.una` as a link leading anywhere (#1160). The temporary file
-/// is created with `create_new` (`O_CREAT|O_EXCL`, which never follows a link at its name), so
-/// nothing already at that name is written through.
+/// The directory and the entry are written only inside the package root (#1160): when `.una`,
+/// `.una/cache` or `.una/cache/proofs` is a link that leads outside it, or the entry's name is
+/// one, nothing is stored and the query is solved again next time.
 pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     if answer.status == Status::Unknown && answer.reason.as_deref() == Some("wallclock") {
         return;
@@ -91,17 +89,18 @@ pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     }) else {
         return;
     };
-    let Some(dir) = inside_root(&cache.dir) else {
+    let Ok(dir) = una_diag::safe_write::create_dir_inside(&cache.root, &cache.dir) else {
         return;
     };
-    let name = format!("{key}.json");
-    let Ok((temporary, file)) = fresh_temporary(&dir, &name) else {
-        return;
-    };
-    if fill_and_rename(file, &temporary, &dir.join(&name), &text).is_err() {
-        // The name was created by this write alone, so removing it removes no one else's file.
-        let _ = std::fs::remove_file(&temporary);
-    }
+    // A failed store only means the query is solved again. No fsync: the cache is best-effort,
+    // and an entry torn by a crash fails its tag and is solved again.
+    let _ = una_diag::safe_write::write_atomically(
+        &cache.root,
+        &entry(&dir, key),
+        text.as_bytes(),
+        true,
+        false,
+    );
 }
 
 /// The tag of an entry: the hex HMAC-SHA-256 under `secret` of the entry's key, a NUL byte and
@@ -145,87 +144,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The cache directory `dir`, resolved, after creating what is missing of it, when it is
-/// `<root>/.una/cache/proofs` and every one of its three directories resolves inside `root`;
-/// `None` otherwise, and then nothing is stored.
-fn inside_root(dir: &Path) -> Option<PathBuf> {
-    let mut levels = Vec::with_capacity(LAYOUT.len());
-    let mut current = dir;
-    for expected in LAYOUT.iter().rev() {
-        if current.file_name()? != *expected {
-            return None;
-        }
-        levels.push(current.to_path_buf());
-        current = current.parent()?;
-    }
-    let root = if current.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        current
-    };
-    let root = std::fs::canonicalize(root).ok()?;
-    for level in levels.iter().rev() {
-        if !directory_inside(level, &root) {
-            return None;
-        }
-    }
-    let resolved = std::fs::canonicalize(dir).ok()?;
-    resolved.starts_with(&root).then_some(resolved)
-}
-
-/// Whether `path` is a directory, or a symbolic link to one, that resolves inside `root`,
-/// creating it as a directory when nothing is there.
-fn directory_inside(path: &Path, root: &Path) -> bool {
-    if let Err(error) = std::fs::symlink_metadata(path) {
-        if error.kind() != io::ErrorKind::NotFound {
-            return false;
-        }
-        // A parallel run may create it first; what is there is checked below either way.
-        if let Err(error) = std::fs::create_dir(path)
-            && error.kind() != io::ErrorKind::AlreadyExists
-        {
-            return false;
-        }
-    }
-    match std::fs::canonicalize(path) {
-        Ok(resolved) => resolved.starts_with(root) && resolved.is_dir(),
-        Err(_) => false,
-    }
-}
-
-/// Creates a new temporary file in `directory` for an entry `name`: exclusively, so nothing
-/// already at the chosen name is opened, retrying a few unique names before giving up.
-fn fresh_temporary(directory: &Path, name: &str) -> io::Result<(PathBuf, std::fs::File)> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let process = std::process::id();
-    let mut last = None;
-    for _ in 0..16 {
-        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".{name}.{process}.{serial}.una-tmp"));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        match options.open(&temporary) {
-            Ok(file) => return Ok((temporary, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = Some(error),
-            Err(error) => return Err(error),
-        }
-    }
-    Err(last.unwrap_or_else(|| io::Error::other("no fresh temporary name")))
-}
-
-/// Writes `text` into the fresh `file` and renames it from `temporary` onto `destination`.
-fn fill_and_rename(
-    mut file: std::fs::File,
-    temporary: &Path,
-    destination: &Path,
-    text: &str,
-) -> io::Result<()> {
-    file.write_all(text.as_bytes())?;
-    drop(file);
-    std::fs::rename(temporary, destination)
-}
-
 fn entry(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{key}.json"))
 }
@@ -242,9 +160,10 @@ mod tests {
         }
     }
 
-    /// A cache in `dir` under a fixed test key.
+    /// A cache in `dir`, `<root>/.una/cache/proofs`, under a fixed test key.
     fn mine(dir: &Path) -> ProofCache {
         ProofCache {
+            root: dir.ancestors().nth(3).unwrap().to_path_buf(),
             dir: dir.to_path_buf(),
             key: b"0123456789abcdef0123456789abcdef".to_vec(),
         }
@@ -278,10 +197,16 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_that_is_not_the_cache_layout_stores_nothing() {
+    fn a_directory_outside_the_root_stores_nothing() {
         let scratch = scratch("layout");
         let dir = scratch.join("elsewhere");
-        put(&mine(&dir), &key("lock", "(check-sat)"), &proven());
+        std::fs::create_dir_all(scratch.join("package")).unwrap();
+        let cache = ProofCache {
+            root: scratch.join("package"),
+            dir: dir.clone(),
+            key: b"0123456789abcdef0123456789abcdef".to_vec(),
+        };
+        put(&cache, &key("lock", "(check-sat)"), &proven());
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -344,6 +269,11 @@ mod tests {
         std::os::unix::fs::symlink(&victim, dir.join(format!(".{query}.{pid}.tmp"))).unwrap();
         put(&mine(&dir), &query, &proven());
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+        // The entry's own name planted as a link to a file outside: refused, left as it was.
+        std::os::unix::fs::symlink(&victim, entry(&dir, &query)).unwrap();
+        put(&mine(&dir), &query, &proven());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+        assert_eq!(std::fs::read_link(entry(&dir, &query)).unwrap(), victim);
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -382,6 +312,7 @@ mod tests {
         assert_eq!(get(&mine, &query), Some(proven()));
         // Another user's key does not authenticate the entry.
         let theirs = ProofCache {
+            root: mine.root.clone(),
             dir: dir.clone(),
             key: b"fedcba9876543210fedcba9876543210".to_vec(),
         };

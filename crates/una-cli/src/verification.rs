@@ -131,6 +131,7 @@ pub(crate) fn settings(package: &Package, solving: Solving<'_>) -> Settings {
             .zip(solving.proof_key)
             .map(|(root, key)| una_verify::ProofCache {
                 dir: root.join(".una").join("cache").join("proofs"),
+                root,
                 key: key.secret.clone(),
             }),
     }
