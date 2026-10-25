@@ -970,7 +970,9 @@ impl<'t> Registry<'t> {
 
     /// The yanks and advisories of `name` at the point (rule 41), each verified, in log order:
     /// a yank of this source and name, of a release logged before it, signed by the owner's
-    /// threshold of keys valid at its position; an advisory of this source and name, signed by at
+    /// threshold of keys valid at its position after the cascade of compromises
+    /// ([`History::signed`]), a yank that counts only with a compromised key being void and
+    /// ignored; the owner's threshold counts toward an advisory only on the same terms; an advisory of this source and name, signed by at
     /// least one security key of the root, naming releases logged before it, which lifts the
     /// cooldown for the fix it names by digest only with a second security key or the owner's
     /// threshold besides. Any other refuses the name: it is evidence that the registry logged
@@ -1006,12 +1008,19 @@ impl<'t> Registry<'t> {
                             yank.version
                         )));
                     }
-                    history.signed(&entry.note, index).map_err(|why| {
-                        self.refuse(format!(
+                    // The owner's keys valid at its position, after the cascade of compromises
+                    // (`History::signed`): a yank that reaches the threshold only with a key
+                    // compromised before it is void, as such a release is, and is ignored.
+                    if let Err(why) = history.signed(&entry.note, index) {
+                        let threshold = history.at(index).map_or(usize::MAX, |s| s.threshold);
+                        if history.signers(&entry.note, index).len() >= threshold {
+                            continue;
+                        }
+                        return Err(self.refuse(format!(
                             "the yank of `{name} {}` at log entry {index} does not stand: {why}",
                             yank.version
-                        ))
-                    })?;
+                        )));
+                    }
                     marks.yanked.entry(yank.version.clone()).or_insert(index);
                 }
                 Kind::Advisory(advisory) => {

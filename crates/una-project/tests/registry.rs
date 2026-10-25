@@ -589,6 +589,52 @@ fn the_client_reads_yanks_and_advisories() {
     assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
 }
 
+/// A yank that counts only with a key compromised before it is void, as such a release is: it
+/// is ignored, never applied and never a refusal of the name.
+#[test]
+fn a_yank_signed_after_its_keys_compromise_is_void() {
+    let mut test = TestRegistry::new("acme");
+    let first = keypair(60, "acme.laptop");
+    let second = keypair(62, "acme.desktop");
+    test.register("acme", &first);
+    test.owner_event(
+        "acme",
+        &format!("add {}", support::key_text(&second.1)),
+        1,
+        &[&first, &second],
+    );
+    let (good, _) = test.release("acme/ledger", "0.3.0", "none", "none", &[&first]);
+    let yank = format!(
+        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
+        test.previous("acme/ledger")
+    );
+    let document = support::signed(&yank, &[&first]);
+    test.append("acme/ledger", &document);
+    test.owner_event(
+        "acme",
+        &format!("revoke {} since {good}", first.1.name),
+        1,
+        &[&second],
+    );
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let marks = client.marks("acme/ledger").unwrap();
+    assert!(marks.yanked.is_empty(), "{marks:?}");
+    let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
+    assert!(!state[0].yanked);
+}
+
 #[test]
 fn header_advice_names_public_headers_removed_or_changed() {
     let earlier = files("ita acme/ledger\n  version 0.3.0\n  edition 0.4\n");
@@ -698,6 +744,7 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     // What was stored loads verified, as every load does, and the checkpoint is the floor.
     assert!(una_project::vendor::stored(&store, &b.expected).unwrap().is_some());
     assert!(store.load_checkpoint("acme").unwrap().is_some());
+    assert_eq!(store.load_root_version("acme").unwrap(), Some(1));
 }
 
 /// A bundle is trusted for nothing: a tampered archive, provenance or registry file, or a
@@ -752,6 +799,24 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
     // A path the bundle does not name is refused when writing.
     assert!(bundle::write(vec![("../x".to_owned(), Vec::new())]).is_err());
     assert!(bundle::write(vec![("packages/zz".to_owned(), Vec::new())]).is_err());
+}
+
+/// Unbundling respects the root version stored as a floor (rule 39): a bundle whose root chain
+/// stops below it is refused, and nothing is written.
+#[test]
+fn unbundling_respects_the_root_version_floor() {
+    let b = bundled();
+    let store = Itaoca {
+        root: scratch("unbundle-root-floor"),
+    };
+    store.store_root_version("acme", 2).unwrap();
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let (_, problem) = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected))
+        .unwrap_err();
+    assert!(matches!(problem, Problem::Refused(_)), "{problem:?}");
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    assert_eq!(store.load_root_version("acme").unwrap(), Some(2));
+    assert!(store.load_checkpoint("acme").unwrap().is_none());
 }
 
 /// Unbundling never moves the checkpoint stored for a source backwards (rule 39).

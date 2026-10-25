@@ -23,7 +23,7 @@ use una_project::content::{self, File};
 use una_project::ita::{ItaLock, parse_ita_lock, parse_ita_manifest};
 use una_project::itaoca::Itaoca;
 use una_project::provenance::Expected;
-use una_project::client::{Point, Registry, owner_of};
+use una_project::client::{OpenError, Point, Registry, owner_of, shown};
 use una_project::registry::keyfile::{self, SigningKey};
 use una_project::registry::submit::NameState;
 use una_project::registry::{audit, bundle, submit, watch};
@@ -186,10 +186,6 @@ fn prepare(
         }
         None => None,
     };
-    if let Some(itaoca) = itaoca {
-        // The checkpoint read is the source's floor from now on (rule 39).
-        let _ = itaoca.store_checkpoint(source, &registry.point.document);
-    }
     Ok(Prepared {
         target,
         url,
@@ -409,7 +405,7 @@ pub(crate) fn publish_command(
         lines.extend(
             submit::header_advice(earlier, &files)
                 .into_iter()
-                .map(|advice| format!("advice: {advice}")),
+                .map(|advice| format!("advice: {}", shown(&advice))),
         );
     }
     let (project, _) = crate::package::project(&package);
@@ -813,11 +809,25 @@ pub(crate) fn audit_command(
     let point = Point::Latest {
         now: crate::local_clock(),
     };
+    // The fresh checkpoint must extend the lock's resolution point of each source (rule 39).
+    let lock_points: BTreeMap<String, (u64, String)> = project
+        .lock
+        .read
+        .registries
+        .iter()
+        .map(|r| {
+            (
+                r.source.value.clone(),
+                (r.checkpoint_size.value, r.checkpoint_hash.value.clone()),
+            )
+        })
+        .collect();
     let mut opened: BTreeMap<String, Result<Registry<'_>, String>> = BTreeMap::new();
     for (source, (declared, list)) in &places {
-        let registry = crate::registry::open_first(declared, list, &point, itaoca, None)
-            .map(|(registry, _)| registry)
-            .map_err(|(_, why)| why);
+        let registry =
+            crate::registry::open_first(declared, list, &point, itaoca, lock_points.get(source))
+                .map(|(registry, _)| registry)
+                .map_err(|(_, why)| why);
         opened.insert(source.clone(), registry);
     }
     let mut facts_of = |locked: &audit::Locked| match opened.get_mut(&locked.source) {
@@ -947,7 +957,9 @@ pub(crate) fn watch_command(
     lines.extend(report.entries.iter().map(|(name, entry)| {
         format!(
             "{name}: {} at log entry {} ({})",
-            entry.format, entry.index, entry.leaf
+            shown(&entry.format),
+            entry.index,
+            entry.leaf
         )
     }));
     for promise in &report.kept {
@@ -1015,12 +1027,10 @@ fn recorded_promises(
         };
         let document =
             String::from_utf8(bytes).map_err(|_| "a promise is not UTF-8".to_owned())?;
-        promises.push(submit::check_promise(
-            &document,
-            log,
-            source,
-            &format!("sha256:{leaf}"),
-        )?);
+        promises.push(
+            submit::check_promise(&document, log, source, &format!("sha256:{leaf}"))
+                .map_err(|why| shown(&why))?,
+        );
     }
     Ok(promises)
 }
@@ -1168,6 +1178,9 @@ fn bundle_source(
     };
     let places = crate::registry::places_of(declared, mirrors);
     let mut reasons: Vec<String> = Vec::new();
+    // Whether a place served a copy that does not verify: evidence (U7010), told apart from a
+    // place that did not serve by the client's typed error, never by a message.
+    let mut refused = false;
     for (from, place) in &places {
         let transport = match place {
             Ok(transport) => transport.as_ref(),
@@ -1180,7 +1193,12 @@ fn bundle_source(
         let mut registry = match crate::registry::open(declared, &recording, &point, itaoca, None)
         {
             Ok(registry) => registry,
-            Err(why) => {
+            Err(OpenError::Unavailable(why)) => {
+                reasons.push(format!("`{from}`: {why}"));
+                continue;
+            }
+            Err(OpenError::Refused(why)) => {
+                refused = true;
                 reasons.push(format!("`{from}`: {why}"));
                 continue;
             }
@@ -1211,9 +1229,10 @@ fn bundle_source(
                     ))
                 })?;
             let provenance = registry.provenance(&release, &key).map_err(fail)?;
-            una_project::provenance::verify(&provenance, one).map_err(fail)?;
+            una_project::provenance::verify(&provenance, one)
+                .map_err(|why| fail(shown(&why)))?;
             let archive = registry.archive(&one.digest).map_err(fail)?;
-            let tree = VerifiedTree::from_archive(&archive).map_err(fail)?;
+            let tree = VerifiedTree::from_archive(&archive).map_err(|why| fail(shown(&why)))?;
             if tree.digest() != one.digest {
                 return Err(fail(format!(
                     "the archive of `{} {}` is not the lock's",
@@ -1239,7 +1258,7 @@ fn bundle_source(
         return Ok((out, files));
     }
     Err((
-        Code::U7013,
+        if refused { Code::U7010 } else { Code::U7013 },
         0,
         format!(
             "no place of the source `{}` serves its registry at the lock's resolution point: {}",

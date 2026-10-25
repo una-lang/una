@@ -29,10 +29,12 @@
 //! its archive's digest against the lock and its provenance as every load does (rule 17); and
 //! opens each source's copy ([`Memory`]) with the registry client at the lock's resolution point
 //! (rules 35 to 39): the root chain from the pin of `ita.una`, the checkpoint's log signature and
-//! witnesses, the consistency with the checkpoint Itaoca stores for the source, the name's whole
+//! witnesses, the consistency with the checkpoint Itaoca stores for the source and with the
+//! lock's own point, the root version stored as a floor, the name's whole
 //! chain with its yanks and advisories, and the owner's keys. The release the client reads MUST
 //! be the lock's: its log index and digest. Only when every package verifies is anything
-//! written; then the source's checkpoint is stored as its floor, which never moves backwards. No
+//! written; then the source's checkpoint and root version are stored as its floors, through
+//! Itaoca's floor lock, so neither ever moves backwards. No
 //! clock freshness is asked: the lock's digests and the proofs decide.
 //!
 //! Costs: O(B) for a bundle of B bytes, read and hashed once, with memory O(B); O(e log e) to
@@ -45,7 +47,7 @@ use std::ops::Range;
 use sha2::{Digest, Sha256};
 
 use super::{decimal, digest_hex, hex};
-use crate::client::{Point, Registry};
+use crate::client::{Floors, Point, Registry, shown};
 use crate::content::check_path;
 use crate::itaoca::Itaoca;
 use crate::provenance::{self, Expected};
@@ -379,7 +381,8 @@ fn verify_held(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed,
         .get(&provenance_path)
         .and_then(|range| bytes.get(range.clone()))
         .ok_or_else(|| refused(format!("the bundle holds {what} without its provenance")))?;
-    verify_parts(archive, provenance, &what, expected).map_err(refused)
+    // What the bundle served is quoted as a message may show it.
+    verify_parts(archive, provenance, &what, expected).map_err(|why| refused(shown(&why)))
 }
 
 fn verify_parts(
@@ -416,15 +419,17 @@ fn verify_parts(
 }
 
 /// Opens `copy` with the registry client at the resolution point of the packages of its source
-/// among `expected`, with `floor` as the stored checkpoint (rules 35 to 39, no freshness), and
-/// checks that each of those packages is the release the client reads there, by log index and
-/// digest, and that its name's yanks and advisories verify. Returns the checkpoint read, to
-/// store as the source's floor; `Err` gives the package's index and why.
+/// among `expected`, against `floors`, the checkpoint and the root version Itaoca stores (rules
+/// 35 to 39, no freshness), proves that the point extends the lock's ([`Registry::extends`]),
+/// and checks that each of those packages is the release the client reads there, by log index
+/// and digest, and that its name's yanks and advisories verify. Returns the checkpoint read and
+/// the last root version, to store as the source's floors; `Err` gives the package's index and
+/// why.
 fn verify_source(
     copy: &Memory,
     expected: &[Expected],
-    floor: Option<&str>,
-) -> Result<String, (usize, String)> {
+    floors: &Floors<'_>,
+) -> Result<(String, u64), (usize, String)> {
     let mut opened: Option<Registry<'_>> = None;
     for (index, package) in expected.iter().enumerate() {
         if package.source != copy.source {
@@ -435,7 +440,11 @@ fn verify_source(
                 size: package.checkpoint_size,
                 hash: package.checkpoint_hash.clone(),
             };
-            let registry = Registry::open(&copy.source, copy, &package.root, &point, floor)
+            let mut registry =
+                Registry::open_with(&copy.source, copy, &package.root, &point, floors)
+                    .map_err(|error| (index, error.message()))?;
+            registry
+                .extends(package.checkpoint_size, &package.checkpoint_hash)
                 .map_err(|why| (index, why))?;
             opened = Some(registry);
         }
@@ -465,7 +474,7 @@ fn verify_source(
         registry.marks(&package.name).map_err(|why| (index, why))?;
     }
     opened
-        .map(|registry| registry.point.document.clone())
+        .map(|registry| (registry.point.document.clone(), registry.root.version))
         .ok_or_else(|| (0, format!("no package of `{}` is locked", copy.source)))
 }
 
@@ -503,7 +512,7 @@ pub fn unbundle(
     }
     // Each source's copy, opened by the client at the lock's resolution point, against the
     // floor Itaoca stores: the releases are the lock's, and their names' states verify.
-    let mut floors: Vec<(String, String)> = Vec::new();
+    let mut floors: Vec<(String, String, u64)> = Vec::new();
     let sources: BTreeSet<&str> = expected.iter().map(|e| e.source.as_str()).collect();
     for source in sources {
         let copy = memory(bytes, &read, source);
@@ -522,9 +531,16 @@ pub fn unbundle(
         let floor = itaoca
             .load_checkpoint(source)
             .map_err(|why| (first, Problem::Refused(why)))?;
-        let document = verify_source(&copy, expected, floor.as_deref())
+        let root_version = itaoca
+            .load_root_version(source)
+            .map_err(|why| (first, Problem::Refused(why)))?;
+        let stored = Floors {
+            checkpoint: floor.as_deref(),
+            root_version,
+        };
+        let (document, version) = verify_source(&copy, expected, &stored)
             .map_err(|(index, why)| (Some(index), Problem::Refused(why)))?;
-        floors.push((source.to_owned(), document));
+        floors.push((source.to_owned(), document, version));
     }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
@@ -548,9 +564,13 @@ pub fn unbundle(
             })?;
         stored.push(format!("{} {}", package.name, package.version));
     }
-    for (source, document) in &floors {
+    // Through the floor lock, each only forward (rule 39).
+    for (source, document, version) in &floors {
         itaoca
             .store_checkpoint(source, document)
+            .map_err(|why| (None, Problem::Refused(why)))?;
+        itaoca
+            .store_root_version(source, *version)
             .map_err(|why| (None, Problem::Refused(why)))?;
     }
     let unused = read

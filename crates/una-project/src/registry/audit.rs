@@ -11,7 +11,7 @@
 //! Costs: per package, one verified state of its name and one of its owner, each cached by the
 //! client, then O(A + K) for its A advisories and its owner's K key events.
 
-use crate::client::{Registry, owner_of};
+use crate::client::{Registry, owner_of, shown};
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
 use crate::version::Version;
@@ -122,7 +122,8 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// One clause, lowercase, no trailing period: `0.3.1 is yanked`.
+    /// One clause, lowercase, no trailing period: `0.3.1 is yanked`. What a registry served, an
+    /// advisory's text, is quoted as a message may show it ([`shown`]).
     pub fn text(&self, locked: &Locked) -> String {
         let version = &locked.version;
         match &self.kind {
@@ -131,7 +132,9 @@ impl Finding {
                 id,
                 severity,
                 summary,
-            } => format!("{version} is named by the advisory {id} ({severity}): {summary}"),
+            } => shown(&format!(
+                "{version} is named by the advisory {id} ({severity}): {summary}"
+            )),
             Kind::Compromised { since } => format!(
                 "{version} was signed by a key revoked as compromised since log entry {since}"
             ),
