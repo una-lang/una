@@ -582,6 +582,8 @@ impl Registry {
         for size in stale {
             registry.release_held(size)?;
         }
+        // A deadline its newest checkpoint reached before a crash cut short its writing.
+        registry.fix_deadlines(newest)?;
         registry.load_notices()?;
         Ok(registry)
     }
@@ -697,6 +699,9 @@ impl Registry {
             let text = String::from_utf8(bytes).map_err(|_| "the checkpoint is not UTF-8")?;
             self.published = Some(parse_checkpoint(&parse_note(&text)?.text)?.size);
         }
+        // A timed cancellation recorded for an index the log never reached, as after a crash
+        // between writing `state/timed-cancels` and `state/size`, names no entry: dropped.
+        self.timed_cancels.retain(|index| *index < size);
         self.load_timing()?;
         self.sign_checkpoint()?;
         Ok(())
@@ -2092,7 +2097,7 @@ impl Registry {
                 format!("{document}{}", self.log.line(&sent.note.text))
             }
         } else {
-            format!("{document}\n{}", self.log.line(document))
+            note(document, &[&self.log])
         };
         let entry = parse_entry(signed.as_bytes()).map_err(invalid)?;
         let asked = entry

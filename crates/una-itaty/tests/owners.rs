@@ -1714,3 +1714,27 @@ fn one_owner_asks_two_co_signer_changes_a_week_and_a_cancelled_recovery_never_wa
         .unwrap();
     assert!(f.registry.request_timing(cancel).is_some());
 }
+
+#[test]
+fn opening_recomputes_a_deadline_and_drops_a_phantom_cancellation() {
+    let mut f = Fixture::new("reopen-state");
+    let a = keypair(60, "acme.a");
+    let (disputed, target) = disputed_zenith(&mut f);
+    f.set_time(target + 10);
+    f.cosign(&[0, 1], target + 10);
+    assert_eq!(f.registry.deadline_of(disputed), Some(3));
+    // A crash after the cosignature and before `state/deadlines`: opening fixes D again.
+    f.store.put("state/deadlines", b"").unwrap();
+    f.registry = f.reopen();
+    assert_eq!(f.registry.deadline_of(disputed), Some(3));
+    // A crash after `state/timed-cancels` named the next index and before `state/size`.
+    f.register("acme", &[&a], &[]);
+    let next = f.registry.size();
+    f.store
+        .put("state/timed-cancels", format!("{next}\n").as_bytes())
+        .unwrap();
+    f.registry = f.reopen();
+    let cancel = f.submit("acme", "cancel 3", 1, &[&a]).unwrap();
+    assert_eq!(cancel, next);
+    assert!(f.registry.request_timing(cancel).is_none());
+}
