@@ -1777,7 +1777,7 @@ fn competing_disputes_freeze_the_chain() {
     registry.append("other", "filler");
     registry.checkpoint(NOW - 20 * DAY);
     registry.release("acme/ledger", "0.3.2", "none", "none", &[&m]);
-    let last = registry.release("acme/ledger", "0.3.3", "none", "none", &[&n]);
+    let (last, _) = registry.release("acme/ledger", "0.3.3", "none", "none", &[&n]);
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),
@@ -2202,7 +2202,7 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
     let mut registry = TestRegistry::new("acme");
     registry.register("acme", &a);
     registry.checkpoint(NOW - 30 * DAY);
-    let release = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let (release, _) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
     for at in 0..70 {
         registry.append("other", &format!("filler {at}"));
     }
