@@ -77,7 +77,7 @@ fn lock_writes_the_default_solver_then_is_up_to_date() {
 }
 
 /// #1160: links planted at the temporary names `una ita lock` used to write are never written
-/// through, and a lock that is a link leading outside the package is refused.
+/// through, and a lock that is a link leading outside the package is replaced, not followed.
 #[cfg(unix)]
 #[test]
 fn lock_never_writes_through_a_planted_link() {
@@ -103,12 +103,49 @@ fn lock_never_writes_through_a_planted_link() {
     std::fs::write(&outside, pinned).unwrap();
     std::fs::remove_file(dir.join("ita.lock")).unwrap();
     std::os::unix::fs::symlink(&outside, dir.join("ita.lock")).unwrap();
+    // `ita.lock` belongs to the toolchain: the link is replaced by a regular file, never
+    // followed, and the file outside keeps its bytes.
     let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
-    assert_ne!(code, 0);
-    assert!(err.contains("outside the package"), "{err}");
+    assert_eq!(code, 0, "{err}");
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), pinned);
+    assert!(
+        std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
     let _ = std::fs::remove_file(&victim);
     let _ = std::fs::remove_file(&outside);
+}
+
+/// An `ita.lock` that is a link to another file inside the package is replaced by a regular
+/// file, and the other file is untouched: the lock is the toolchain's, so a link at its name
+/// is never followed, wherever it leads.
+#[cfg(unix)]
+#[test]
+fn a_lock_that_is_a_link_inside_the_package_is_replaced() {
+    let dir = package("lock-link-inside", MANIFEST);
+    let pinned = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 7\n  seed 3\n";
+    std::fs::write(dir.join("other.lock"), pinned).unwrap();
+    std::os::unix::fs::symlink(dir.join("other.lock"), dir.join("ita.lock")).unwrap();
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert!(
+        std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
+    // The solver section was read through the link and kept; the other file is untouched.
+    assert!(
+        std::fs::read_to_string(dir.join("ita.lock"))
+            .unwrap()
+            .contains("  steps 7\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("other.lock")).unwrap(),
+        pinned
+    );
 }
 
 /// #1160: `una fmt ita.una` never writes through a link planted at its old temporary name.

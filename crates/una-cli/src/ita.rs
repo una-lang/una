@@ -947,8 +947,7 @@ fn resolve_and_lock(
     }
     let mut written: Vec<&str> = Vec::new();
     // The lock as it was loaded, to put back, byte for byte, if `ita.una` cannot be written
-    // after it. The helper that writes takes text, so a lock that is not UTF-8 is not replaced
-    // by an edit at all.
+    // after it. A lock that is not UTF-8 is not replaced by an edit at all.
     let previous: Option<&str> = match (&options.edited, lock_unchanged, &package.lock_bytes) {
         (Some(_), false, Some(bytes)) => match std::str::from_utf8(bytes) {
             Ok(text) => Some(text),
@@ -968,7 +967,11 @@ fn resolve_and_lock(
         _ => None,
     };
     if !lock_unchanged {
-        if let Err(error) = crate::write_through_rename_or_create(path, &lock_path, &text) {
+        // `ita.lock` belongs to the toolchain: a link at its name is replaced, never followed,
+        // as build outputs are. `ita.una`, the author's, is written as sources are.
+        if let Err(error) =
+            una_diag::safe_write::write_new_name(path, &lock_path, text.as_bytes(), true)
+        {
             return fail_resolved(
                 command,
                 &[],
@@ -989,7 +992,12 @@ fn resolve_and_lock(
             let mut left: Vec<&str> = Vec::new();
             if !lock_unchanged {
                 let restored = match previous {
-                    Some(bytes) => crate::write_through_rename_or_create(path, &lock_path, bytes),
+                    Some(bytes) => una_diag::safe_write::write_new_name(
+                        path,
+                        &lock_path,
+                        bytes.as_bytes(),
+                        true,
+                    ),
                     None => std::fs::remove_file(&lock_path),
                 };
                 match restored {
