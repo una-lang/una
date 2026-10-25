@@ -19,6 +19,7 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,11 +34,12 @@ use una_itaty::registry::{
 };
 use una_itaty::store::{FileStore, Store};
 use una_itaty::timing::Obligation;
-use una_project::client::{Point, Registry as Client};
+use una_project::client::{Failure, Point, Registry as Client};
 use una_project::tlog::note::{Key, parse_note};
 use una_project::tlog::owner::{History, RECOVERY_DELAY, fingerprint};
 use una_project::tlog::root::digest as root_digest;
 use una_project::transport::Directory;
+use una_project::transport::Fallback;
 
 use support::{EXPIRES, Keys, NOW, cosign_line, key_text, keypair, root_text_with, sign_line};
 
@@ -198,6 +200,24 @@ impl Fixture {
         self.logged(&owner_chain(owner), receipt)
     }
 
+    /// [`Fixture::register`] as the operator does once it reviewed a name held for its
+    /// distance to a popular owner.
+    fn register_reviewed(&mut self, owner: &str, key: &Pair) -> u64 {
+        let text = self.registration(owner, &[key], 1, &[]);
+        let receipt = self
+            .registry
+            .register(note_of(&text, &[key]).as_bytes(), true)
+            .unwrap();
+        self.logged(&owner_chain(owner), receipt)
+    }
+
+    /// The operator logs a dispute of `owner` naming `key`.
+    fn dispute(&mut self, owner: &str, key: &Pair) -> Result<u64, Refusal> {
+        let text = self.event(owner, &format!("dispute {}", key_text(&key.1)), 1);
+        let receipt = self.registry.request(text.as_bytes(), false)?;
+        Ok(self.logged(&owner_chain(owner), receipt))
+    }
+
     /// The text of a key event of `owner`.
     fn event(&self, owner: &str, action: &str, threshold: usize) -> String {
         format!(
@@ -216,6 +236,16 @@ impl Fixture {
         let text = self.event(owner, action, threshold);
         let receipt = self.registry.submit(note_of(&text, signers).as_bytes())?;
         Ok(self.logged(&owner_chain(owner), receipt))
+    }
+
+    /// The stored checkpoint of `size`, as served.
+    fn checkpoint_note(&self, size: u64) -> una_project::tlog::note::Note {
+        let bytes = self
+            .store
+            .get(&checkpoint_path(size), 1 << 20)
+            .unwrap()
+            .unwrap();
+        parse_note(&String::from_utf8(bytes).unwrap()).unwrap()
     }
 
     /// The text of the newest checkpoint, or of the one of `size`.
@@ -312,13 +342,47 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
         .unwrap_err();
     assert_eq!(early.cause(), Some(&Cause::ReliesOnPending(2)), "{early:?}");
 
-    // Seven days of witness time later, the next checkpoint the log signs is the deadline of
-    // both requests. A late cosignature of the checkpoint before it is fine while fewer than
-    // the threshold are late.
+    // The early cosignatures of the dispute's start checkpoint were held back, since it may
+    // have become the recovery's deadline; they count for its obligation.
+    assert!(
+        f.checkpoint_note(4)
+            .cosignature(&f.keys.witnesses[0].1)
+            .is_none()
+    );
+    // Seven days of witness time later, a late cosignature of that checkpoint is taken.
     let later = t0 + 30 + RECOVERY_DELAY + 100;
     f.set_time(later);
     f.cosign_at(4, 2, later).unwrap();
     assert_eq!(f.register("orbit", &[&o], &[]), 4);
+    // The log grew past it: its held lines are published, and the dispute's start is fixed.
+    assert!(
+        f.checkpoint_note(4)
+            .cosignature(&f.keys.witnesses[0].1)
+            .is_some()
+    );
+    assert_eq!(
+        f.registry
+            .request_timing(disputed)
+            .and_then(|timed| timed.start),
+        Some(t0 + 30)
+    );
+    // The newest checkpoint may now be both deadlines, or the one before them: it carries the
+    // threshold before the log grows.
+    assert_eq!(
+        (
+            f.registry.deadline_of(recovery),
+            f.registry.deadline_of(disputed)
+        ),
+        (None, None)
+    );
+    let waiting = f.submit("orbit", "cancel 4", 1, &[&o]).unwrap_err();
+    assert_eq!(
+        waiting.cause(),
+        Some(&Cause::Obligation(Obligation::BeforeDeadline(2))),
+        "{waiting:?}"
+    );
+    // The threshold of late cosignatures makes it the deadline of both, as they arrive.
+    f.cosign(&[0, 1], later);
     assert_eq!(
         (
             f.registry.deadline_of(recovery),
@@ -326,19 +390,6 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
         ),
         (Some(5), Some(5))
     );
-    // The deadline checkpoint takes no cosignature before the target, and must carry the
-    // threshold before the log grows: until then, every submission waits.
-    let early = f.cosign_at(5, 0, t0 + 20 + RECOVERY_DELAY).unwrap_err();
-    assert_eq!(early.cause(), Some(&Cause::CrossesTarget), "{early:?}");
-    let waiting = f
-        .submit("acme", &format!("add {}", key_text(&s.1)), 1, &[&r, &s])
-        .unwrap_err();
-    assert_eq!(
-        waiting.cause(),
-        Some(&Cause::Obligation(Obligation::Deadline(2))),
-        "{waiting:?}"
-    );
-    f.cosign(&[0, 1], later);
 
     // From the deadline on, the new keys govern.
     assert_eq!(
@@ -636,82 +687,6 @@ fn a_service_starts_only_with_a_named_outbox() {
     let _ = std::fs::remove_file(&outbox);
 }
 
-/// The logged recovery of `acme` by its cosigner, its start cosigned at `start` by `witnesses`,
-/// then the registration of `zenith` and, at `at`, its dispute, whose start checkpoint (size 4)
-/// is signed just before the recovery's target. Returns the recovery's target.
-fn dispute_just_before_a_target(f: &mut Fixture, witnesses: &[usize]) -> u64 {
-    let a = keypair(60, "acme.a");
-    let c = keypair(61, "trustee.c");
-    let z = keypair(62, "zenith.z");
-    let r = keypair(63, "acme.r");
-    let d = keypair(64, "zenith.d");
-    f.register("acme", &[&a], &[&c]);
-    let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
-    let receipt = f
-        .registry
-        .request(note_of(&recover, &[&c]).as_bytes(), false)
-        .unwrap();
-    assert_eq!(f.logged(&owner_chain("acme"), receipt), 1);
-    f.cosign(witnesses, NOW + 10);
-    let target = NOW + 10 + RECOVERY_DELAY;
-    f.register("zenith", &[&z], &[]);
-    f.set_time(target - 60);
-    let dispute = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
-    let receipt = f.registry.request(dispute.as_bytes(), false).unwrap();
-    assert_eq!(f.logged(&owner_chain("zenith"), receipt), 3);
-    // The dispute's start checkpoint owes the threshold: until then, the log waits.
-    assert_eq!(
-        f.registry.owed().map(|(obligation, _)| obligation),
-        Some(Obligation::Start(3))
-    );
-    target
-}
-
-#[test]
-fn a_start_checkpoint_signed_just_before_a_target_never_freezes_the_log() {
-    // With a threshold of one, no cosignature at or after the recovery's target may land on a
-    // checkpoint signed before it, so the dispute's start checkpoint can never be cosigned
-    // once the target passes.
-    let mut f = Fixture::with_k("freeze-k1", 1);
-    let target = dispute_just_before_a_target(&mut f, &[0]);
-    let o = keypair(67, "orbit.o");
-    let orbit = f.registration("orbit", &[&o], 1, &[]);
-    assert_eq!(
-        f.registry
-            .register(note_of(&orbit, &[&o]).as_bytes(), false)
-            .unwrap_err()
-            .cause(),
-        Some(&Cause::Obligation(Obligation::Start(3)))
-    );
-    f.set_time(target + 10);
-    assert_eq!(
-        f.cosign_at(4, 0, target + 10).unwrap_err().cause(),
-        Some(&Cause::CrossesTarget)
-    );
-    // Uncompletable: the log grows, and its next checkpoint is the recovery's deadline.
-    assert_eq!(f.registry.owed(), None);
-    assert_eq!(f.register("orbit", &[&o], &[]), 4);
-    assert_eq!(f.registry.deadline_of(1), Some(5));
-    // The dispute's start never carried the threshold: it never takes effect here, and every
-    // client finds its start an omission.
-    assert_eq!(f.registry.deadline_of(3), None);
-}
-
-#[test]
-fn an_outage_across_a_target_lets_the_log_grow_past_an_uncompletable_checkpoint() {
-    let mut f = Fixture::new("outage");
-    let target = dispute_just_before_a_target(&mut f, &[0, 1]);
-    // While the target has not passed, the log keeps waiting for its witnesses.
-    f.set_time(target - 1);
-    assert!(f.registry.owed().is_some());
-    // Past it, with no cosignature before it, at most one more can come: never two.
-    f.set_time(target + 10);
-    assert_eq!(f.registry.owed(), None);
-    let o = keypair(67, "orbit.o");
-    assert_eq!(f.register("orbit", &[&o], &[]), 4);
-    assert_eq!(f.registry.deadline_of(1), Some(5));
-}
-
 #[test]
 fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines() {
     let mut f = Fixture::new("rotation-start");
@@ -780,8 +755,9 @@ fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines(
     let later = t0 + 30 + RECOVERY_DELAY + 100;
     f.set_time(later);
     f.submit("orbit", "cancel 3", 1, &[&o]).unwrap();
-    assert_eq!(f.registry.deadline_of(recovery), Some(5));
+    assert_eq!(f.registry.deadline_of(recovery), None);
     f.cosign(&[0, 2], later);
+    assert_eq!(f.registry.deadline_of(recovery), Some(5));
 
     // Opened again, the registry keeps its starts and deadlines; the client agrees.
     let reopened = f.reopen();
@@ -914,9 +890,11 @@ fn settled_requests_leave_the_scans() {
     assert_eq!(f.registry.active_requests_count(), 1);
     let later = NOW + RECOVERY_DELAY + 100;
     f.set_time(later);
-    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
-    let deadline = f.registry.deadline_of(disputed).unwrap();
+    // The newest checkpoint reaches the target with late cosignatures: it is the deadline.
     f.cosign(&[0, 1], later);
+    let deadline = f.registry.deadline_of(disputed).unwrap();
+    assert_eq!(deadline, 3);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
     // The deadline is fixed, but its pinned multiple of 64 is still ahead: it stays active.
     assert_eq!(f.registry.active_requests_count(), 1);
     while f.registry.size() < 64 {
@@ -1019,4 +997,472 @@ fn owner_checks_refuse_by_their_cause() {
         Some(&Cause::CosignerIsOwnKey)
     );
     assert_eq!(f.registry.size(), 1);
+}
+
+/// A key of its own for each `n`, beyond the shared builder's seeds.
+fn keypair_n(n: u32, name: &str) -> Pair {
+    let mut seed = [7u8; 32];
+    seed[..4].copy_from_slice(&n.to_be_bytes());
+    let pair = SigningKey::from_bytes(&seed);
+    let public = pair.verifying_key().to_bytes();
+    (
+        pair,
+        Key {
+            name: name.to_owned(),
+            public,
+        },
+    )
+}
+
+/// An owner name for `n`, of letters no skeleton confuses.
+fn owner_name(n: usize) -> String {
+    let letters: Vec<char> = "acdefhjkpx".chars().collect();
+    let mut name = String::from("t");
+    let mut rest = n;
+    for _ in 0..3 {
+        name.push(letters[rest % letters.len()]);
+        rest /= letters.len();
+    }
+    name
+}
+
+/// A deterministic generator of numbers below a bound, for schedules.
+struct Schedule(u64);
+
+impl Schedule {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % bound.max(1)
+    }
+}
+
+/// The keys an owner holds at each of `positions`.
+fn keys_at(history: &History, positions: &[u64]) -> Vec<Vec<String>> {
+    positions
+        .iter()
+        .map(|at| {
+            history
+                .at(*at)
+                .map(|snapshot| snapshot.keys.iter().map(|key| key.name.clone()).collect())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// A request of `zenith` (a dispute) and a publisher, `orbit`: the dispute's start cosigned
+/// at `NOW` by every witness. Returns the dispute's index and its target.
+fn disputed_zenith(f: &mut Fixture) -> (u64, u64) {
+    let z = keypair(62, "zenith.z");
+    let d = keypair(64, "zenith.d");
+    let o = keypair(67, "orbit.o");
+    f.register("zenith", &[&z], &[]);
+    let disputed = f.dispute("zenith", &d).unwrap();
+    f.cosign(&[0, 1, 2], NOW);
+    f.register("orbit", &[&o], &[]);
+    (disputed, NOW + RECOVERY_DELAY)
+}
+
+/// A cadence checkpoint signed one second before a target, with every witness cosigning one
+/// second after it, by clocks `skew` from the registry's, on a registry whose clock is
+/// `behind` the witnesses': it reaches the threshold, it is the deadline, and the log grows.
+fn cadence_just_before_a_target(k: usize, skew: u64, behind: u64) {
+    let mut f = Fixture::with_k(&format!("cadence-{k}-{skew}-{behind}"), k);
+    let o = keypair(67, "orbit.o");
+    let (disputed, target) = disputed_zenith(&mut f);
+    while f.registry.size() < 63 {
+        f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    }
+    f.set_time(target - 1);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    assert_eq!(f.registry.size(), 64);
+    f.set_time(target + 1 - behind);
+    f.cosign(&[0, 1, 2], target + 1 + skew);
+    assert_eq!(f.registry.deadline_of(disputed), Some(64));
+    assert_eq!(f.registry.owed(), None);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+}
+
+#[test]
+fn a_cadence_checkpoint_just_before_a_target_never_freezes_the_log() {
+    for k in [1, 2] {
+        cadence_just_before_a_target(k, 0, 0);
+    }
+    // A witness clock an hour fast; the registry's clock an hour behind.
+    cadence_just_before_a_target(2, 3600, 0);
+    cadence_just_before_a_target(2, 0, 3600);
+}
+
+#[test]
+fn a_start_checkpoint_just_before_a_target_never_freezes_the_log() {
+    for k in [1, 2] {
+        let mut f = Fixture::with_k(&format!("start-{k}"), k);
+        let (disputed, target) = disputed_zenith(&mut f);
+        // Another request's start checkpoint is signed one second before the target.
+        f.set_time(target - 1);
+        let other = f.dispute("orbit", &keypair(68, "orbit.d")).unwrap();
+        assert_eq!(
+            f.registry.owed().map(|(obligation, _)| obligation),
+            Some(Obligation::Start(other))
+        );
+        // Cosigned one second after the target, it reaches it: the first request's deadline,
+        // and the second's start.
+        f.set_time(target + 1);
+        f.cosign(&[0, 1, 2], target + 1);
+        assert_eq!(f.registry.deadline_of(disputed), Some(other + 1));
+        assert_eq!(
+            f.registry
+                .request_timing(other)
+                .and_then(|timed| timed.start),
+            Some(target + 1)
+        );
+        assert_eq!(f.registry.owed(), None);
+        let p = keypair(69, "papa.p");
+        f.register("papa", &[&p], &[]);
+    }
+}
+
+#[test]
+fn no_schedule_freezes_the_log() {
+    let mut schedule = Schedule(0x1144);
+    for round in 0..6u64 {
+        let k = 1 + (round % 3) as usize;
+        let mut f = Fixture::with_k(&format!("property-{round}"), k);
+        let o = keypair(67, "orbit.o");
+        disputed_zenith(&mut f);
+        let mut now = NOW;
+        let mut last = [NOW; 3];
+        for _ in 0..60 {
+            now += schedule.below(6 * 3600);
+            f.set_time(now);
+            // Witnesses cosign the newest checkpoint by their own clocks, an hour fast or slow.
+            let size = f.registry.size();
+            for (witness, seen) in last.iter_mut().enumerate() {
+                let skew = schedule.below(7200);
+                let at = (now + skew).saturating_sub(3600).max(*seen);
+                if at <= now + 3600 && f.cosign_at(size, witness, at).is_ok() {
+                    *seen = at;
+                }
+            }
+            // The log tries to grow: only an obligation owed may refuse it.
+            if let Err(refusal) = f.submit("orbit", "cancel 2", 1, &[&o]) {
+                assert!(
+                    matches!(refusal.cause(), Some(Cause::Obligation(_))),
+                    "{refusal:?}"
+                );
+                // With the witnesses' clocks caught up, two rounds always complete it.
+                for _ in 0..2 {
+                    now += 2 * 3600;
+                    f.set_time(now);
+                    let size = f.registry.size();
+                    for (witness, seen) in last.iter_mut().enumerate() {
+                        let at = now.max(*seen);
+                        if f.cosign_at(size, witness, at).is_ok() {
+                            *seen = at;
+                        }
+                    }
+                }
+                assert_eq!(f.registry.owed(), None, "round {round}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_early_line_on_a_checkpoint_that_may_become_the_deadline_is_not_served() {
+    let mut f = Fixture::new("held");
+    let o = keypair(67, "orbit.o");
+    let (disputed, target) = disputed_zenith(&mut f);
+    f.set_time(target - 10);
+    // The newest checkpoint is above the dispute, whose deadline is not fixed: an early line
+    // is taken, but neither published nor served.
+    f.cosign_at(3, 0, target - 10).unwrap();
+    assert!(
+        f.checkpoint_note(3)
+            .cosignature(&f.keys.witnesses[0].1)
+            .is_none()
+    );
+    // A late line is published, and with one more, the checkpoint would be the deadline; the
+    // early line counts for its obligations.
+    f.set_time(target + 10);
+    f.cosign_at(3, 1, target + 10).unwrap();
+    assert!(
+        f.checkpoint_note(3)
+            .cosignature(&f.keys.witnesses[1].1)
+            .is_some()
+    );
+    assert_eq!(f.registry.owed(), None);
+    // The log grows: the checkpoint is not the deadline, and its held line is published.
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    assert!(
+        f.checkpoint_note(3)
+            .cosignature(&f.keys.witnesses[0].1)
+            .is_some()
+    );
+    assert_eq!(f.registry.deadline_of(disputed), None);
+    // It carries an early line now: rule 1 refuses the late line that would make it reach
+    // the target.
+    assert_eq!(
+        f.cosign_at(3, 2, target + 10).unwrap_err().cause(),
+        Some(&Cause::CrossesTarget(
+            una_itaty::timing::Crossing::EarlyThenLate
+        ))
+    );
+}
+
+#[test]
+fn no_owner_stalls_the_registry_and_the_bucket_spares_owners_own_requests() {
+    let mut f = Fixture::new("stall");
+    let o = keypair(67, "orbit.o");
+    let trustee = keypair(70, "trustee.x");
+    let orbit = f.register("orbit", &[&o], &[]);
+    let owners: Vec<(String, Pair)> = (0..233)
+        .map(|n| {
+            let name = owner_name(n);
+            let key = keypair_n(n as u32, &format!("{name}.a"));
+            (name, key)
+        })
+        .collect();
+    for (name, key) in &owners {
+        f.register_reviewed(name, key);
+    }
+    let change = format!("cosigners 1 {}", key_text(&trustee.1));
+    let mut now = NOW;
+    let mut changes: Vec<u64> = Vec::new();
+    // 200 owners each ask a co-signer change, 30 seconds apart, between a publisher's entries.
+    for (name, key) in owners.iter().take(200) {
+        now += 30;
+        f.set_time(now);
+        let index = f.submit(name, &change, 1, &[key]).unwrap();
+        changes.push(index);
+        // The publisher waits only for the newest checkpoint's own obligation.
+        let refusal = f
+            .submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+            .unwrap_err();
+        assert_eq!(
+            refusal.cause(),
+            Some(&Cause::Obligation(Obligation::Start(index)))
+        );
+        f.cosign(&[0, 1], now);
+        f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+            .unwrap();
+        f.cosign(&[0, 1], now);
+    }
+    // At once, 32 more co-signer changes drain the bucket; the 33rd waits, its sender alone.
+    for (name, key) in owners.iter().skip(200).take(32) {
+        f.submit(name, &change, 1, &[key]).unwrap();
+        f.cosign(&[0, 1], now);
+    }
+    let (name, key) = &owners[232];
+    assert_eq!(
+        f.submit(name, &change, 1, &[key]).unwrap_err().cause(),
+        Some(&Cause::RateLimited)
+    );
+    f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+        .unwrap();
+    f.cosign(&[0, 1], now);
+    // The bucket drained, owners still get a dispute and a recovery through the operator.
+    let disputed = f
+        .dispute(&owners[0].0, &keypair_n(1_000, "t.disputed"))
+        .unwrap();
+    f.cosign(&[0, 1], now);
+    let recover = f.event(
+        &owners[1].0,
+        &format!("recover {}", key_text(&keypair_n(1_001, "t.recovered").1)),
+        1,
+    );
+    let receipt = f.registry.request(recover.as_bytes(), false).unwrap();
+    f.logged(&owner_chain(&owners[1].0), receipt);
+    f.cosign(&[0, 1], now);
+    assert!(f.registry.request_timing(disputed).is_some());
+    // Two hours before the first change's target, its owner's entries wait; no other's do.
+    let first = f
+        .registry
+        .request_timing(changes[0])
+        .and_then(|timed| timed.target())
+        .unwrap();
+    f.set_time(first - 3600);
+    let (name, key) = &owners[0];
+    assert_eq!(
+        f.submit(name, &format!("cancel {}", changes[0]), 1, &[key])
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::OwnerHold(changes[0]))
+    );
+    f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+        .unwrap();
+}
+
+/// Copies the files of a store directory.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Leaves only the log's signature on the checkpoint of `size` in the store directory `dir`.
+fn strip(dir: &Path, size: u64) {
+    let path = dir.join("checkpoint").join(size.to_string());
+    let document = std::fs::read_to_string(&path).unwrap();
+    let (text, lines) = document.split_once("\n\n").unwrap();
+    let log = lines.lines().next().unwrap();
+    std::fs::write(&path, format!("{text}\n\n{log}\n")).unwrap();
+}
+
+#[test]
+fn itaty_and_the_client_agree_on_every_deadline() {
+    let mut schedule = Schedule(0x0d0e);
+    for k in 1..=3usize {
+        let mut f = Fixture::with_k(&format!("agree-{k}"), k);
+        let o = keypair(67, "orbit.o");
+        let names = ["bravo", "delta", "hotel", "kilo"];
+        let keys: Vec<Pair> = (0..4u32)
+            .map(|n| keypair_n(2_000 + n, &format!("{}.a", names[n as usize])))
+            .collect();
+        for (name, key) in names.iter().zip(&keys) {
+            f.register(name, &[key], &[]);
+        }
+        let orbit = f.register("orbit", &[&o], &[]);
+        let mut disputes: Vec<(usize, u64)> = Vec::new();
+        let mut now = NOW;
+        let mut last = [NOW; 3];
+        let mut step = 0;
+        while disputes.len() < names.len()
+            || disputes
+                .iter()
+                .any(|(_, index)| f.registry.deadline_of(*index).is_none())
+        {
+            step += 1;
+            assert!(step < 400, "the schedule does not end");
+            now += schedule.below(12 * 3600);
+            f.set_time(now);
+            let logged = if disputes.len() < names.len() && schedule.below(3) == 0 {
+                let at = disputes.len();
+                let key = keypair_n(3_000 + at as u32, &format!("{}.d", names[at]));
+                f.dispute(names[at], &key)
+                    .map(|index| disputes.push((at, index)))
+            } else {
+                f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+                    .map(|_| ())
+            };
+            if let Err(refusal) = logged {
+                assert!(
+                    matches!(refusal.cause(), Some(Cause::Obligation(_))),
+                    "{refusal:?}"
+                );
+            }
+            let size = f.registry.size();
+            for (witness, seen) in last.iter_mut().enumerate() {
+                let at = (now + schedule.below(1200)).saturating_sub(600).max(*seen);
+                if f.cosign_at(size, witness, at).is_ok() {
+                    *seen = at;
+                }
+            }
+            // Reopened mid-schedule, the registry keeps its starts and deadlines.
+            if step == 40 {
+                let before: Vec<_> = disputes
+                    .iter()
+                    .map(|(_, index)| f.registry.request_timing(*index).cloned())
+                    .collect();
+                f.registry = f.reopen();
+                let after: Vec<_> = disputes
+                    .iter()
+                    .map(|(_, index)| f.registry.request_timing(*index).cloned())
+                    .collect();
+                assert_eq!(before, after);
+            }
+        }
+        // One more entry and its checkpoint, so every deadline is below the point.
+        loop {
+            now += 3600;
+            f.set_time(now);
+            if f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+                .is_ok()
+            {
+                break;
+            }
+            let size = f.registry.size();
+            for (witness, seen) in last.iter_mut().enumerate() {
+                let at = now.max(*seen);
+                if f.cosign_at(size, witness, at).is_ok() {
+                    *seen = at;
+                }
+            }
+        }
+        let size = f.registry.size();
+        for (witness, seen) in last.iter_mut().enumerate() {
+            let at = now.max(*seen);
+            f.cosign_at(size, witness, at).unwrap();
+            *seen = at;
+        }
+        let directory = Directory::new(&f.dir);
+        let mut client = Client::open("itaty", &directory, &f.pin, &Point::Served, None).unwrap();
+        for (_, index) in &disputes {
+            let ours = f.registry.deadline_of(*index);
+            assert_eq!(
+                client.recovery_effect(*index).unwrap(),
+                ours,
+                "k {k}, {index}"
+            );
+            assert_eq!(
+                client.earliest_effect(*index).unwrap(),
+                ours,
+                "k {k}, {index}"
+            );
+        }
+        for name in names {
+            let theirs = client.history(name).unwrap();
+            let ours = f.registry.owner_history(name).unwrap();
+            assert_eq!(verdicts(&theirs), verdicts(&ours), "k {k}, {name}");
+        }
+        assert!(client.misbehavior().is_empty());
+
+        // A mirror that strips every line from each deadline and the first pinned checkpoint
+        // after it: read beside the registry, the same verdicts; alone, the same keys, or
+        // unavailable.
+        let stripped = temp_dir(&format!("stripped-{k}"));
+        copy_dir(&f.dir, &stripped);
+        for (_, index) in &disputes {
+            let deadline = f.registry.deadline_of(*index).unwrap();
+            strip(&stripped, deadline);
+            let pinned = deadline.div_ceil(64) * 64;
+            if pinned < size {
+                strip(&stripped, pinned);
+            }
+        }
+        let beside = Fallback::new(
+            Box::new(Directory::new(&stripped)),
+            vec![Box::new(Directory::new(&f.dir))],
+        );
+        let mut merged = Client::open("itaty", &beside, &f.pin, &Point::Served, None).unwrap();
+        for (_, index) in &disputes {
+            assert_eq!(
+                merged.recovery_effect(*index).unwrap(),
+                f.registry.deadline_of(*index)
+            );
+        }
+        let alone = Directory::new(&stripped);
+        let mut lone = Client::open("itaty", &alone, &f.pin, &Point::Served, None).unwrap();
+        for name in names {
+            let ours = f.registry.owner_history(name).unwrap();
+            match lone.history(name) {
+                Ok(theirs) => assert_eq!(
+                    keys_at(&theirs, &[size]),
+                    keys_at(&ours, &[size]),
+                    "k {k}, {name}"
+                ),
+                Err(_) => assert_eq!(lone.take_failure(), Some(Failure::Unserved)),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&stripped);
+    }
 }
