@@ -333,6 +333,11 @@ fn a_tampered_mirror_is_refused() {
         let mirror = Directory::new(&dir);
         let mut client = open(&mirror, &registry).unwrap();
         assert!(client.releases("acme/ledger").is_err());
+        // A file the mirror cannot read is one it does not serve: an omission (U7013), never
+        // evidence against the registry.
+        assert_eq!(client.take_failure(), Some(Failure::Unserved));
+        let path = format!("tile/entries/000.p/{size}");
+        assert!(client.take_omitted().contains(&Omission::Document(path)));
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -3201,11 +3206,11 @@ fn a_mirror_lacking_a_document_with_an_https_place_behind_is_unserved() {
     let both = una_project::transport::Fallback::new(Box::new(mirror), vec![Box::new(https)]);
     let mut client = open(&both, &registry).unwrap();
     assert!(client.entry(0).is_err());
-    assert_eq!(client.last_failure(), Some(Failure::Unserved));
+    assert_eq!(client.take_failure(), Some(Failure::Unserved));
     let omitted = client.take_omitted();
     assert!(omitted.iter().any(is_tile), "{omitted:?}");
     assert!(client.logged_at(0).is_err());
-    assert_eq!(client.last_failure(), Some(Failure::Unserved));
+    assert_eq!(client.take_failure(), Some(Failure::Unserved));
     assert_eq!(
         client.take_omitted(),
         vec![Omission::Document("checkpoint/1".to_owned())]
@@ -3231,11 +3236,18 @@ fn a_bad_signature_after_an_omission_is_a_refusal() {
     place.files.insert("checkpoint/2".to_owned(), unsigned);
     let mut client = open(&place, &registry).unwrap();
     assert!(client.logged_at(2).is_err());
-    assert_eq!(client.last_failure(), Some(Failure::Unserved));
+    assert_eq!(client.take_failure(), Some(Failure::Unserved));
     assert!(client.logged_at(1).is_err());
-    assert_eq!(client.last_failure(), Some(Failure::Refused));
+    assert_eq!(client.take_failure(), Some(Failure::Refused));
     // The earlier omission is still recorded; the code comes from the failure's own kind.
     assert!(!client.take_omitted().is_empty());
+    // The reverse: a refusal, then an omission; each failure's kind is its own, taken once.
+    let mut client = open(&place, &registry).unwrap();
+    assert!(client.logged_at(1).is_err());
+    assert_eq!(client.take_failure(), Some(Failure::Refused));
+    assert_eq!(client.take_failure(), None);
+    assert!(client.logged_at(2).is_err());
+    assert_eq!(client.take_failure(), Some(Failure::Unserved));
 }
 
 /// Whether `omission` is of a tile or an entry bundle.

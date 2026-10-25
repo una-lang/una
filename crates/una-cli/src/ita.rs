@@ -2633,7 +2633,7 @@ pub(crate) fn fetch_command(
                 "fetched {} {}",
                 expected.name, expected.version
             )),
-            Err(message) => refuse(crate::registry::code_of(registry), message),
+            Err((code, message)) => refuse(code, message),
         }
     }
     // Each registry's floors were stored when its point was accepted (`registry::open`).
@@ -2644,82 +2644,96 @@ pub(crate) fn fetch_command(
     finish("fetch", &[], &lines, &diagnostics, sources, out)
 }
 
-/// Fetches one locked release into Itaoca, verified as [`fetch_command`] states.
+/// Fetches one locked release into Itaoca, verified as [`fetch_command`] states. Its failure
+/// carries its code, from where it arose: a registry operation's by the kind the registry
+/// recorded for it ([`crate::registry::code_of`]); a lock that does not parse, U7009; a release
+/// signed after a stated compromise, or an archive, an authority or a provenance that does not
+/// verify against the statement and the lock, U7010; and a failure to store it in Itaoca, a
+/// local failure, U7011, the package not in Itaoca.
 fn fetch_one(
     registry: &mut una_project::client::Registry<'_>,
     itaoca: &una_project::itaoca::Itaoca,
     expected: &una_project::vendor::Expected,
-) -> Result<(), String> {
+) -> Result<(), (Code, String)> {
     use una_project::provenance;
     use una_project::tlog::release::{self, check_archive};
     use una_project::tree::VerifiedTree;
 
+    let refused = |message: String| (Code::U7010, message);
+    let local = |message: String| (Code::U7011, message);
     let what = format!("{} {}", expected.name, expected.version);
-    let version = Version::parse_full(&expected.version)?;
-    let release = registry.release(&expected.name, &version)?;
+    let version =
+        Version::parse_full(&expected.version).map_err(|message| (Code::U7009, message))?;
+    let release = registry
+        .release(&expected.name, &version)
+        .map_err(|message| (crate::registry::code_of(registry), message))?;
     if release.compromised {
-        return Err(format!(
+        return Err(refused(format!(
             "{what} counts as signed only with a key of its owner revoked as compromised before it was logged, so it is not fetched"
-        ));
+        )));
     }
     if release.index != expected.logged {
-        return Err(format!(
+        return Err(refused(format!(
             "the release statement of {what} is logged at {}, not at the lock's {}",
             release.index, expected.logged
-        ));
+        )));
     }
     if release.statement.digest != expected.digest {
-        return Err(format!(
+        return Err(refused(format!(
             "the release statement of {what} gives the digest {}, not the lock's {}",
             release.statement.digest, expected.digest
-        ));
+        )));
     }
     let key = release
         .signers
         .iter()
         .find(|key| provenance::signed_name(&expected.name, &key.public) == expected.signed)
         .ok_or_else(|| {
-            format!(
+            refused(format!(
                 "{what} is not signed by `{}`, the key the lock names",
                 expected.signed
-            )
+            ))
         })?
         .clone();
-    let bytes = registry.archive(&expected.digest)?;
-    let tree = VerifiedTree::from_archive(&bytes)?;
+    let bytes = registry
+        .archive(&expected.digest)
+        .map_err(|message| (crate::registry::code_of(registry), message))?;
+    let tree = VerifiedTree::from_archive(&bytes).map_err(refused)?;
     // Rule 37: the archive's `ita.una`, needs and trust, and what its code uses, agree with the
     // statement. The code is checked at tier 0 from the verified bytes.
-    check_archive(&release.statement, &tree, None)?;
-    let used = archive_authority(&tree)?;
+    check_archive(&release.statement, &tree, None).map_err(refused)?;
+    let used = archive_authority(&tree).map_err(refused)?;
     let mut computed: release::Authority = BTreeMap::new();
     for (capability, op) in used {
         computed.entry(capability).or_default().insert(op);
     }
-    check_archive(&release.statement, &tree, Some(&computed))?;
-    let document = registry.provenance(&release, &key)?;
-    provenance::verify(&document, expected)?;
-    let stored = itaoca.store(&bytes)?;
+    check_archive(&release.statement, &tree, Some(&computed)).map_err(refused)?;
+    let document = registry
+        .provenance(&release, &key)
+        .map_err(|message| (crate::registry::code_of(registry), message))?;
+    provenance::verify(&document, expected).map_err(refused)?;
+    let stored = itaoca.store(&bytes).map_err(local)?;
     if stored != expected.digest {
-        return Err(format!(
+        return Err(refused(format!(
             "the archive of {what} stored as {stored}, not the lock's {}",
             expected.digest
-        ));
+        )));
     }
-    itaoca.store_provenance(
-        &expected.source,
-        &expected.name,
-        &expected.version,
-        expected.checkpoint_size,
-        &document.encode(),
-    )?;
+    itaoca
+        .store_provenance(
+            &expected.source,
+            &expected.name,
+            &expected.version,
+            expected.checkpoint_size,
+            &document.encode(),
+        )
+        .map_err(local)?;
     // Loaded again as every command loads it.
     match una_project::vendor::stored(itaoca, expected) {
         Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(format!("{what} is not in Itaoca after it was stored")),
-        Err(
-            una_project::vendor::Problem::Refused(message)
-            | una_project::vendor::Problem::Absent(message),
-        ) => Err(message),
+        Ok(None) => Err(local(format!("{what} is not in Itaoca after it was stored"))),
+        Err(una_project::vendor::Problem::Refused(message)) => Err(refused(message)),
+        Err(una_project::vendor::Problem::Absent(message)) => Err(local(message)),
     }
 }
 
