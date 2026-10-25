@@ -4,7 +4,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsRawFd, RawFd};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::grant::{Grant, Method, Url, allowed};
@@ -175,10 +175,6 @@ pub struct Cover {
     pub instant: Option<Instant>,
 }
 
-/// How often a wait for a connection looks at the interruption: an abandon wakes it at once,
-/// through its hook, and a host stop, which writes no channel, is seen within one slice.
-const CONNECT_SLICE: Duration = Duration::from_millis(100);
-
 /// No interruption: every wait is left to the socket's own timeouts, and a wait at a limit to
 /// the request's deadline and its [`crate::limit::Abandon`]. The engines use it for a request
 /// outside the body of a `for ever` (ADR 0116 rule 12).
@@ -273,16 +269,19 @@ pub fn send_governed(
 /// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
 /// write and step of the TLS handshake that would block waits through `interrupt` instead, and
 /// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
-/// Name resolution and the TCP connection run on a thread of their own, and the request waits
-/// for them in slices of 100 ms, so a stop is seen within one slice; the thread ends
-/// alone, within the deadline, or when the host's resolver answers.
+/// Name resolution and the TCP connection run on the calling thread, which for an engine is the
+/// request's helper of the bounded I/O pool: the client starts no thread of its own, so `N`
+/// requests in flight never take more threads than the pool has (#1148). Each is one step: the
+/// host's resolver has no timeout, so a resolution runs to its end and the deadline, a stop and
+/// an abandon are seen once it returns; a connection attempt is bounded by the time left.
 ///
 /// **A cancelled task** (ADR 0116 P9, ADR 0117 rule 4, #1148). `abandon` reaches the exchange
-/// too, whether `interrupt` waits or not: the wait for a connection ends at once, a step that
-/// waits on the socket ends when the abandon shuts the socket down, and the exchange checks the
-/// flag after each I/O step and before it parses or decodes the response, so an abandoned
-/// exchange does at most one I/O step more: one read or write, one step of the TLS handshake,
-/// or a resolution of a name already in progress on its own thread. It then fails with
+/// too, whether `interrupt` waits or not, with no polling: a step that waits on the socket ends
+/// when the abandon's hook shuts the socket down, a resolution or a connection attempt in
+/// progress finishes its one step and then sees the flag, and the exchange checks the flag after
+/// each I/O step and before it parses or decodes the response. So an abandoned exchange does at
+/// most one I/O step more: one read or write, one step of the TLS handshake, the resolution of
+/// a name, or one connection attempt, bounded by the request's deadline. It then fails with
 /// `Interrupted`, which the engine drops, and its connection is closed.
 ///
 /// **The covering deadline** `cover` bounds the exchange's deadline as an instant, so a request
@@ -440,62 +439,37 @@ fn left(deadline: Instant) -> Result<Duration, Error> {
     Ok(deadline - now)
 }
 
-/// What the thread of [`reach`] sends: its connection, or the wake of an abandon.
-enum Reached {
-    Done(Result<TcpStream, Error>),
-    Abandoned,
-}
-
-/// A TCP connection to `host` and `port`, within the deadline (#1148): the system resolves the
-/// name and connects on a thread of its own, since the resolver has no timeout and `connect`
-/// cannot return to look at an interruption, and the request waits for it here, in slices of
-/// [`CONNECT_SLICE`], unless `abandon` wakes the wait at once. A thread whose request gave up
-/// ends alone: its connection, when it comes, is dropped and closed.
+/// A TCP connection to `host` and `port`, within the deadline, made on the calling thread, the
+/// request's helper (#1148): no thread per request. The resolution of the name is one step,
+/// which nothing in the process can cut and which the host's resolver bounds; then the
+/// deadline, a stop and an abandon are looked at, before each connection attempt, each bounded by
+/// the time left. An abandon during a step is seen when the step returns.
 fn reach(
     host: &str,
     port: u16,
     deadline: Instant,
     interrupt: &dyn Interrupt,
-    abandon: &Abandon,
 ) -> Result<TcpStream, Error> {
-    let name = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_owned();
-    let (sender, receiver) = mpsc::channel();
-    let waker = sender.clone();
-    abandon.on_abandon(Box::new(move || {
-        let _ = waker.send(Reached::Abandoned);
-    }));
-    std::thread::Builder::new()
-        .name("una-http-connect".to_owned())
-        .spawn(move || {
-            let reached = match (name.as_str(), port).to_socket_addrs() {
-                Ok(addrs) => connect_any(addrs, deadline),
-                Err(_) => Err(Error::Unreachable),
-            };
-            let _ = sender.send(Reached::Done(reached));
-        })
-        .map_err(|_| Error::Unreachable)?;
-    loop {
-        if interrupt.stopped() {
-            return Err(Error::Interrupted);
-        }
-        match receiver.recv_timeout(left(deadline)?.min(CONNECT_SLICE)) {
-            Ok(Reached::Done(reached)) => return reached,
-            Ok(Reached::Abandoned) => return Err(Error::Interrupted),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Error::Unreachable),
-        }
+    let name = host.trim_start_matches('[').trim_end_matches(']');
+    let addrs = (name, port).to_socket_addrs();
+    if interrupt.stopped() {
+        return Err(Error::Interrupted);
     }
+    left(deadline)?;
+    let addrs = addrs.map_err(|_| Error::Unreachable)?;
+    connect_any(addrs, deadline, interrupt)
 }
 
 /// The first of `addrs` that accepts a connection within the deadline.
 fn connect_any(
     addrs: impl Iterator<Item = SocketAddr>,
     deadline: Instant,
+    interrupt: &dyn Interrupt,
 ) -> Result<TcpStream, Error> {
     for addr in addrs {
+        if interrupt.stopped() {
+            return Err(Error::Interrupted);
+        }
         match TcpStream::connect_timeout(&addr, left(deadline)?) {
             Ok(connected) => return Ok(connected),
             Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
@@ -752,12 +726,14 @@ fn connect(
     interrupt: &dyn Interrupt,
     abandon: &Abandon,
 ) -> Result<Connection, Error> {
-    let stream = reach(&url.host, url.port, deadline, interrupt, abandon)?;
-    if let Ok(socket) = stream.try_clone() {
-        abandon.on_abandon(Box::new(move || {
-            let _ = socket.shutdown(std::net::Shutdown::Both);
-        }));
-    }
+    let stream = reach(&url.host, url.port, deadline, interrupt)?;
+    // The abandon's hook holds a second handle of the socket, which it shuts down, so a wait on
+    // it ends at once, with no polling. A socket whose handle cannot be made, as when the
+    // process is out of descriptors, is not used: its waits could not be woken.
+    let socket = stream.try_clone().map_err(|_| Error::Unreachable)?;
+    abandon.on_abandon(Box::new(move || {
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    }));
     if interrupt.stopped() {
         return Err(Error::Interrupted);
     }

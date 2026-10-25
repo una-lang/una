@@ -125,9 +125,9 @@ impl Parker {
     }
 }
 
-/// What ends the I/O step an exchange waits in when its request is abandoned (#1148): a wake of
-/// the connection's wait, or the shutdown of its socket, set by the client for each step that can
-/// wait and run once by [`Abandon::abandon`].
+/// What ends the I/O step an exchange waits in when its request is abandoned (#1148): the
+/// shutdown of its socket, set by the client once it is connected and run once by
+/// [`Abandon::abandon`].
 type Hook = Box<dyn FnOnce() + Send>;
 
 /// The hook slot of an [`Abandon`]: at most one, since a request's hops run one at a time.
@@ -157,8 +157,8 @@ struct AbandonInner {
 /// 0116 P9, #1148). A request still waiting at a limit leaves the queues at once and is never
 /// sent. One whose exchange has begun stops at its next I/O step: the client sees the flag as an
 /// interruption ([`crate::client::send_covered`]), and its hook wakes the step that waits, by
-/// shutting down the connection's socket or waking the wait for a connection. A clone shares the
-/// flag.
+/// shutting down the connection's socket, with no polling; a resolution or a connection attempt
+/// in progress sees the flag when it returns. A clone shares the flag.
 #[derive(Clone, Debug, Default)]
 pub struct Abandon(Arc<AbandonInner>);
 

@@ -1480,6 +1480,91 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn requests_four_times_the_pool_never_take_more_threads_than_its_helpers() {
+        // #1148: a request resolves its name and connects on its helper, the client starting
+        // no thread of its own, so `N` requests in flight take at most the pool's `--io-threads`
+        // threads, whatever `N`. Eight tasks request a server that never answers, through a
+        // pool of 2: only the 2 helpers run the client, the pool starts no more, and the server
+        // never holds more than 2 connections at once.
+        use std::io::Read;
+        const POOL: usize = 2;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let open = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        let (counted, highest) = (Arc::clone(&open), Arc::clone(&most));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (counted, highest) = (Arc::clone(&counted), Arc::clone(&highest));
+                std::thread::spawn(move || {
+                    let now = counted.fetch_add(1, Ordering::SeqCst) + 1;
+                    highest.fetch_max(now, Ordering::SeqCst);
+                    let mut stream = stream;
+                    let mut buffer = [0u8; 1024];
+                    // Reads until the client closes the connection, and never answers.
+                    while matches!(stream.read(&mut buffer), Ok(n) if n > 0) {}
+                    counted.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        let sched = Scheduler::new(settings(2, POOL, 1));
+        let grant =
+            una_http::grant::Grant::parse(&format!("http:http://127.0.0.1:{port}:get")).unwrap();
+        let governor = Arc::new(una_http::limit::Governor::new(vec![grant]));
+        let threads: Arc<Mutex<std::collections::BTreeSet<String>>> = Arc::default();
+        let url = format!("http://127.0.0.1:{port}/");
+        let (results, outcomes) = std::sync::mpsc::channel();
+        let tasks: Vec<Receiver<()>> = (0..4 * POOL)
+            .map(|part| {
+                let (governor, threads, url) =
+                    (Arc::clone(&governor), Arc::clone(&threads), url.clone());
+                let results = results.clone();
+                start(&sched, part, move || {
+                    let result = blocking(Pool::Io, move || {
+                        lock(&threads).insert(format!("{:?}", std::thread::current().id()));
+                        let request = una_http::client::Request {
+                            method: una_http::grant::Method::Get,
+                            url: &url,
+                            headers: &[],
+                            body: &[],
+                            bearer: None,
+                        };
+                        let settings = una_http::client::Settings {
+                            limits: una_http::parse::Limits::default(),
+                            timeout: std::time::Duration::from_millis(200),
+                        };
+                        una_http::client::send_covered(
+                            &request,
+                            &governor,
+                            &settings,
+                            &una_http::client::Uninterrupted,
+                            &una_http::limit::Abandon::new(),
+                            una_http::client::Cover::default(),
+                        )
+                    });
+                    let _ = results.send(result);
+                })
+            })
+            .collect();
+        for task in tasks {
+            assert_eq!(task.recv(), Some(()));
+        }
+        drop(results);
+        let outcomes: Vec<_> = outcomes.iter().collect();
+        assert_eq!(outcomes.len(), 4 * POOL);
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| *outcome == Err(una_http::client::Error::TimedOut)),
+            "{outcomes:?}"
+        );
+        assert!(lock(&threads).len() <= POOL, "{:?}", lock(&threads));
+        assert!(most.load(Ordering::SeqCst) <= POOL);
+        assert!(sched.started().2 <= POOL, "{:?}", sched.started());
+    }
+
+    #[test]
     fn two_jobs_queued_at_once_never_share_one_idle_helper() {
         // Review of S1, finding 4: with one idle helper, two blocking jobs submitted back to
         // back both run at once, the second on a new helper, while the pool has room.

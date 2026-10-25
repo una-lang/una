@@ -504,9 +504,14 @@ fn http_error_index(error: una_http::client::Error) -> i64 {
 /// stops at its next I/O step. A host stop interrupts it only in the body of a `for ever`
 /// (`stop`), through the wake pipe, as `una_interp::stopping::OpInterrupt` does.
 ///
-/// Each wait is one `poll` of at most `SLICE`: the abandon of a cancelled task shuts the socket
-/// down, which ends the wait at once, and the slices bound the wait for a cancellation that
-/// could not shut it down, or a host stop the pipe cannot tell. O(1) per slice.
+/// **No polling for a cancellation.** Outside a `for ever` body a wait is one `poll` of the
+/// socket for the whole time left: the abandon of a cancelled task shuts the socket down, which
+/// makes it ready and ends the wait at once, and the deadline ends it otherwise. Inside a `for
+/// ever` body a host stop also ends it: the wake pipe tells it at once, and, as for every
+/// interruptible wait of ADR 0116 rule 12, the wait looks at the run's stop state every
+/// `stopping::SLICE` (100 ms) for a stop the pipe cannot tell, such as one after another run of
+/// the process made the pipe readable. That slice is the host stop's, not a cancellation's.
+/// O(1) per `poll`.
 struct HelperWait {
     stop: Option<&'static una_interp::stopping::RunStop>,
     /// Whether the wake pipe was found readable without a stop of this run, as after another
@@ -543,7 +548,11 @@ impl una_http::client::Interrupt for HelperWait {
                 return Waited::TimedOut;
             }
             let pipe = self.stop.is_some() && !self.stale.get();
-            let slice = left.min(una_interp::stopping::SLICE);
+            let slice = if self.stop.is_some() {
+                left.min(una_interp::stopping::SLICE)
+            } else {
+                left
+            };
             match una_sys::signals::wait(Some(socket), write, pipe, slice) {
                 Readiness::Ready => return Waited::Ready,
                 Readiness::Failed => return Waited::Failed,
