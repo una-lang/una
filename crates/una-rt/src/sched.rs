@@ -774,27 +774,28 @@ mod tests {
 
     #[test]
     fn a_yield_lets_the_jobs_queued_before_it_run_first() {
-        // Two parked tasks are woken in turn; the first yields once it runs, so the second
-        // runs before the first goes on, on one worker, first in, first out.
+        // A parked task is woken, wakes a second one, whose resume is queued, then yields:
+        // the second runs before the first goes on, on one worker, first in, first out.
         let sched = Scheduler::new(settings(1, 1, 1));
         let order = Arc::new(Mutex::new(Vec::new()));
         let (wake_a, gate_a) = channel::<()>();
         let (wake_b, gate_b) = channel::<()>();
         let seen = Arc::clone(&order);
-        let a = start(&sched, move || {
-            assert_eq!(gate_a.recv(), Some(()));
-            lock(&seen).push("a1");
-            yield_now();
-            lock(&seen).push("a2");
-        });
-        let seen = Arc::clone(&order);
         let b = start(&sched, move || {
             assert_eq!(gate_b.recv(), Some(()));
             lock(&seen).push("b");
         });
+        let seen = Arc::clone(&order);
+        let a = start(&sched, move || {
+            assert_eq!(gate_a.recv(), Some(()));
+            lock(&seen).push("a1");
+            wake_b.send(());
+            yield_now();
+            lock(&seen).push("a2");
+        });
+        // Both tasks park first.
         std::thread::sleep(std::time::Duration::from_millis(50));
         wake_a.send(());
-        wake_b.send(());
         assert_eq!(a.recv(), Some(()));
         assert_eq!(b.recv(), Some(()));
         assert_eq!(*lock(&order), ["a1", "b", "a2"]);
