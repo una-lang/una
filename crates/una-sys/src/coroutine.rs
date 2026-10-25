@@ -15,8 +15,9 @@
 //! - The float control state is switched on x86-64 (MXCSR, x87) but not on AArch64 (FPCR): every
 //!   task writes the one environment of ADR 0114 rule 6.4; a per-task one must switch FPCR.
 //! - In AddressSanitizer builds only (`--cfg una_asan`, `scripts/sanitize.sh`), every switch is
-//!   announced through the sanitizer's own fiber interface ([`fiber`]); no other build refers to
-//!   it (ADR 0117 amendment of 2026-10-25).
+//!   announced through the sanitizer's own fiber interface (the private module `fiber`), and a
+//!   stack's usable region is unpoisoned when a task gets it or gives it back; no other build
+//!   refers to these functions (ADR 0117 amendment of 2026-10-25).
 //!
 //! ```compile_fail
 //! let local = vec![1];
@@ -122,6 +123,10 @@ impl Stack {
     /// pooled stack holds no memory and no data of the task that used it. On failure, the
     /// caller drops the stack instead of pooling it.
     pub fn discard(&mut self) -> Result<(), StackError> {
+        // ASan's shadow of the stack, which `madvise` does not clear on Linux, is cleared too:
+        // the frames of a coroutine's `entry` never return, so their redzones stay poisoned.
+        #[cfg(una_asan)]
+        fiber::unpoison(self.top() - self.usable(), self.usable());
         let usable = self
             .base
             .as_ptr()
@@ -272,6 +277,9 @@ impl Coroutine<'_> {
         let Some(stack) = &self.stack else {
             return;
         };
+        // A pooled stack may hold the poisoned redzones of an earlier task's frames (ASan only).
+        #[cfg(una_asan)]
+        fiber::unpoison(stack.top() - stack.usable(), stack.usable());
         let top = stack.top() & !15;
         let entry = entry as extern "C" fn(*const Shared) as usize;
         let slots = arch::initial_frame(self.shared.as_ptr().addr(), entry);
@@ -426,9 +434,10 @@ mod fiber {
     use std::cell::Cell;
     use std::ffi::c_void;
 
-    // SAFETY: the two functions of the sanitizer's public interface
-    // (`sanitizer/common_interface_defs.h`), with its C signatures; the ASan runtime that
-    // `-Zsanitizer=address` links defines them.
+    // SAFETY: functions of the sanitizer's public interface, with their C signatures: the two
+    // of `sanitizer/common_interface_defs.h` and `__asan_unpoison_memory_region` of
+    // `sanitizer/asan_interface.h` (its `void const volatile *` is a `*const c_void` here). The
+    // ASan runtime that `-Zsanitizer=address` links defines them.
     unsafe extern "C" {
         fn __sanitizer_start_switch_fiber(
             save: *mut *mut c_void,
@@ -440,6 +449,7 @@ mod fiber {
             bottom_old: *mut *const c_void,
             size_old: *mut usize,
         );
+        fn __asan_unpoison_memory_region(addr: *const c_void, size: usize);
     }
 
     /// A coroutine's two sides as ASan sees them: the bounds (lowest address and size) of the
@@ -467,6 +477,9 @@ mod fiber {
 
     /// Announces a switch to the stack `to`; `save` keeps the fake stack of the side left, or is
     /// `None` when that side never runs again, so ASan frees it.
+    // Inlined, so that after the last `start`, which frees the fake stack, no epilogue of a
+    // wrapper's own frame can write to it.
+    #[inline(always)]
     pub(super) fn start(save: Option<&Cell<*mut c_void>>, to: (usize, usize)) {
         let save = save.map_or(std::ptr::null_mut(), Cell::as_ptr);
         let bottom = std::ptr::with_exposed_provenance::<c_void>(to.0);
@@ -477,12 +490,22 @@ mod fiber {
 
     /// Completes a switch on the stack landed on: `saved` is the fake stack this side kept when
     /// it left, or null on its first landing. The bounds of the stack left.
+    #[inline(always)]
     pub(super) fn finish(saved: *mut c_void) -> (usize, usize) {
         let (mut bottom, mut size) = (std::ptr::null::<c_void>(), 0usize);
         // SAFETY: `saved` came from this side's `start`, or is null; the two out-pointers are
         // locals of this frame.
         unsafe { __sanitizer_finish_switch_fiber(saved, &raw mut bottom, &raw mut size) };
         (bottom.addr(), size)
+    }
+
+    /// Clears ASan's shadow of the `size` bytes from `bottom`, a stack's usable region, which
+    /// no code runs on at that moment.
+    pub(super) fn unpoison(bottom: usize, size: usize) {
+        let addr = std::ptr::with_exposed_provenance::<c_void>(bottom);
+        // SAFETY: `bottom .. bottom + size` is the usable region of a mapped stack that no frame
+        // uses now: one about to be given to a task, or given back; ASan only writes its shadow.
+        unsafe { __asan_unpoison_memory_region(addr, size) }
     }
 }
 

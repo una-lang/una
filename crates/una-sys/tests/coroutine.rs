@@ -278,10 +278,11 @@ fn child_panics_in_a_body() {
 }
 
 #[test]
-fn sanitizer_interface_is_absent_outside_asan_builds() {
-    // #1145: the switch is announced to AddressSanitizer only in builds with `--cfg una_asan`,
-    // which only scripts/sanitize.sh sets, and that script never runs this test. Every other
-    // build, the ordinary tests and every release, has no reference to the sanitizer's
-    // interface; scripts/check-release.sh checks the packed binary and runtime for the symbols.
+fn asan_builds_are_off_in_ordinary_test_runs() {
+    // #1145: the switch is announced to AddressSanitizer, and stacks are unpoisoned, only in
+    // builds with `--cfg una_asan`, which only scripts/sanitize.sh sets, and that script never
+    // runs this test. This checks that an ordinary test run is not such a build;
+    // scripts/check-release.sh is the guard of the shipped artifacts, the packed `una` and
+    // `libuna_rt.a`, which it checks for the sanitizer's symbols.
     assert!(!cfg!(una_asan));
 }

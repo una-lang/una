@@ -57,12 +57,15 @@ for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
         exit 1
     fi
 done
-# AddressSanitizer's fiber interface is declared only in builds with `--cfg una_asan`, which
-# scripts/sanitize.sh alone sets (#1145): no shipped `una` or `libuna_rt.a` may refer to it.
+# AddressSanitizer's fiber interface and its unpoisoning are declared only in builds with
+# `--cfg una_asan`, which scripts/sanitize.sh alone sets (#1145): no shipped `una` or
+# `libuna_rt.a` may refer to them, by symbol or by bytes.
+asan_symbols="-e __sanitizer_start_switch_fiber -e __sanitizer_finish_switch_fiber -e __asan_unpoison_memory_region"
 for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
-    if nm -a "$artifact" 2>/dev/null | grep -q -e __sanitizer_start_switch_fiber -e __sanitizer_finish_switch_fiber \
-        || LC_ALL=C grep -a -q '__sanitizer_start_switch_fiber' "$artifact"; then
-        echo "error: $artifact refers to AddressSanitizer's fiber interface (#1145)" >&2
+    # shellcheck disable=SC2086 # the patterns are split on purpose
+    if nm -a "$artifact" 2>/dev/null | grep -q $asan_symbols \
+        || LC_ALL=C grep -a -q $asan_symbols "$artifact"; then
+        echo "error: $artifact refers to AddressSanitizer's interface (#1145)" >&2
         exit 1
     fi
 done
