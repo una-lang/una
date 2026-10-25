@@ -773,6 +773,36 @@ mod tests {
     }
 
     #[test]
+    fn a_yield_lets_the_jobs_queued_before_it_run_first() {
+        // Two parked tasks are woken in turn; the first yields once it runs, so the second
+        // runs before the first goes on, on one worker, first in, first out.
+        let sched = Scheduler::new(settings(1, 1, 1));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (wake_a, gate_a) = channel::<()>();
+        let (wake_b, gate_b) = channel::<()>();
+        let seen = Arc::clone(&order);
+        let a = start(&sched, move || {
+            assert_eq!(gate_a.recv(), Some(()));
+            lock(&seen).push("a1");
+            yield_now();
+            lock(&seen).push("a2");
+        });
+        let seen = Arc::clone(&order);
+        let b = start(&sched, move || {
+            assert_eq!(gate_b.recv(), Some(()));
+            lock(&seen).push("b");
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        wake_a.send(());
+        wake_b.send(());
+        assert_eq!(a.recv(), Some(()));
+        assert_eq!(b.recv(), Some(()));
+        assert_eq!(*lock(&order), ["a1", "b", "a2"]);
+        // Outside a task's coroutine, a yield does nothing.
+        yield_now();
+    }
+
+    #[test]
     fn a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once() {
         // ADR 0117 rule 4: a race that decides wakes a loser parked on a request at once,
         // while the request's helper still waits; its result is dropped there later.
