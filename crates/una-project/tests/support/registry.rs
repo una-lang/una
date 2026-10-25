@@ -110,6 +110,19 @@ impl Keys {
 /// The text of root metadata of `version`, with root keys `roots` (threshold 2), the log key,
 /// three witnesses (threshold 2), one security key and one key of Itaúna.
 pub fn root_text(source: &str, version: u64, expires: u64, keys: &Keys, roots: &[&Key]) -> String {
+    root_text_with(source, version, expires, keys, roots, 2, &[])
+}
+
+/// [`root_text`] with the witness threshold `k` and the witnesses `revoked`.
+pub fn root_text_with(
+    source: &str,
+    version: u64,
+    expires: u64,
+    keys: &Keys,
+    roots: &[&Key],
+    k: usize,
+    revoked: &[String],
+) -> String {
     let mut text = format!(
         "ita-root/1\nsource {source}\nversion {version}\nexpires {expires}\nroot 2\n"
     );
@@ -117,9 +130,12 @@ pub fn root_text(source: &str, version: u64, expires: u64, keys: &Keys, roots: &
         text.push_str(&format!("key {}\n", key_text(key)));
     }
     text.push_str(&format!("log {}\n", key_text(&keys.log.1)));
-    text.push_str("witnesses 2\n");
+    text.push_str(&format!("witnesses {k}\n"));
     for (_, key) in &keys.witnesses {
         text.push_str(&format!("key {}\n", key_text(key)));
+    }
+    if !revoked.is_empty() {
+        text.push_str(&format!("witnesses-revoked {}\n", revoked.join(" ")));
     }
     text.push_str(&format!(
         "security 1\nkey {}\nitauna 1\nkey {}",
@@ -156,12 +172,31 @@ pub struct TestRegistry {
     sparse_texts: BTreeMap<u64, String>,
     sparse_last: Option<(u64, u64)>,
     sparse_deadlines: Vec<(u64, bool)>,
+    /// In the sparse mode, how far apart in time the witnesses cosign one checkpoint: the
+    /// first this much before, the last this much after.
+    pub spread: u64,
+    /// The witness threshold of the root versions it signs.
+    pub witness_k: usize,
 }
 
 impl TestRegistry {
     /// A registry of `source` with its first root metadata.
     pub fn new(source: &str) -> TestRegistry {
         TestRegistry::with_keys(source, Keys::new(source))
+    }
+
+    /// A registry of `source` whose root metadata asks `k` witnesses of its three.
+    pub fn with_witness_threshold(source: &str, k: usize) -> TestRegistry {
+        let mut registry = TestRegistry::new(source);
+        let roots: Vec<&Key> = registry.keys.roots.iter().map(|(_, key)| key).collect();
+        let text = root_text_with(source, 1, EXPIRES, &registry.keys, &roots, k, &[]);
+        let document = signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
+        registry
+            .files
+            .insert("root/1".to_owned(), document.clone().into_bytes());
+        registry.roots = vec![document];
+        registry.witness_k = k;
+        registry
     }
 
     /// A registry of `source` with its first root metadata under `keys`.
@@ -184,6 +219,8 @@ impl TestRegistry {
             sparse_texts: BTreeMap::new(),
             sparse_last: None,
             sparse_deadlines: Vec::new(),
+            spread: 0,
+            witness_k: 2,
         };
         registry
             .files
@@ -203,12 +240,35 @@ impl TestRegistry {
     /// keys of the current one and of its own: the checkpoints signed from then on name it and
     /// carry the new witness's cosignature.
     pub fn rotate_witness(&mut self) {
+        self.rotate_witnesses(1, false);
+    }
+
+    /// Rotates the last `count` witnesses to new keys by the next root version, which lists
+    /// them as revoked when `revoke`.
+    pub fn rotate_witnesses(&mut self, count: usize, revoke: bool) {
         let version = self.roots.len() as u64 + 1;
-        if let Some(witness) = self.keys.witnesses.last_mut() {
-            *witness = keypair(90 + version as u8, &format!("witness.rotated.{version}"));
+        let mut revoked = Vec::new();
+        let n = self.keys.witnesses.len();
+        for (at, witness) in self.keys.witnesses.iter_mut().enumerate() {
+            if at + count >= n {
+                revoked.push(witness.1.name.clone());
+                let seed = 90 + (version as u8) * 4 + at as u8;
+                *witness = keypair(seed, &format!("witness.rotated.{version}.{at}"));
+            }
+        }
+        if !revoke {
+            revoked.clear();
         }
         let roots: Vec<&Key> = self.keys.roots.iter().map(|(_, key)| key).collect();
-        let text = root_text(&self.source, version, EXPIRES, &self.keys, &roots);
+        let text = root_text_with(
+            &self.source,
+            version,
+            EXPIRES,
+            &self.keys,
+            &roots,
+            self.witness_k,
+            &revoked,
+        );
         let document = signed(&text, &[&self.keys.roots[0], &self.keys.roots[1]]);
         self.files
             .insert(format!("root/{version}"), document.clone().into_bytes());
@@ -523,12 +583,22 @@ impl TestRegistry {
             if kept % 64 == 0 {
                 cosign.push(kept);
             }
+            let times = self.witness_times(at);
             if self.requests.contains(&(kept - 1)) {
                 cosign.push(kept);
-                self.sparse_deadlines.push((at + 7 * 24 * 3600, false));
+                // The start: the k-th earliest of its cosignatures.
+                let start = times.get(self.witness_k - 1).copied().unwrap_or(at);
+                self.sparse_deadlines.push((start + 7 * 24 * 3600, false));
             }
+            // The witness time: the k-th latest of its cosignatures.
+            let witness_time = times
+                .iter()
+                .rev()
+                .nth(self.witness_k - 1)
+                .copied()
+                .unwrap_or(at);
             for (target, done) in &mut self.sparse_deadlines {
-                if !*done && at >= *target {
+                if !*done && witness_time >= *target {
                     *done = true;
                     cosign.push(kept);
                     cosign.push(kept - 1);
@@ -545,6 +615,15 @@ impl TestRegistry {
         self.sparse_last = Some((size, time));
     }
 
+    /// The times the witnesses cosign a checkpoint of time `at` in the sparse mode, in their
+    /// order, ascending: `spread` apart around it.
+    fn witness_times(&self, at: u64) -> Vec<u64> {
+        let n = self.keys.witnesses.len() as u64;
+        (0..n)
+            .map(|i| (at + i * self.spread).saturating_sub((n - 1) * self.spread / 2))
+            .collect()
+    }
+
     /// Writes the sparse mode's kept checkpoint of `size`, cosigned at its time when asked.
     fn write_sparse(&mut self, size: u64, cosigned: bool) {
         let (Some(text), Some(at)) = (self.sparse_texts.get(&size), self.sparse_times.get(&size))
@@ -556,8 +635,9 @@ impl TestRegistry {
             sign_line(&self.keys.log.0, &self.keys.log.1, text)
         );
         if cosigned {
-            for (pair, key) in &self.keys.witnesses {
-                document.push_str(&cosign_line(pair, key, text, *at));
+            let times = self.witness_times(*at);
+            for ((pair, key), time) in self.keys.witnesses.iter().zip(times) {
+                document.push_str(&cosign_line(pair, key, text, time));
             }
         }
         self.files

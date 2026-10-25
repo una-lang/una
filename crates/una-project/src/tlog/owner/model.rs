@@ -1350,7 +1350,46 @@ impl Search<'_, '_> {
         let (registry, now, requests) = render(self.keys, chain);
         let pin = registry.pin();
         let point = registry.entries.len() as u64;
-        let (full, _) = client_view(&Files(registry.files.clone()), &pin, now);
+        let (full, full_omitted) = client_view(&Files(registry.files.clone()), &pin, now);
+        // Honest older history stays usable after a rotation that leaves fewer than the
+        // threshold of the old witnesses: no omission makes the honest rendering unavailable.
+        if !full_omitted.is_empty() {
+            self.fail(
+                "an honest rendering is not available",
+                chain,
+                &format!("{full:?}"),
+            );
+        }
+        // Retired witnesses cosigning a checkpoint off the log, the registration's size over
+        // other leaves under the first root: rejected, never a different verdict.
+        let forged_root = crate::tlog::merkle::root(&[crate::tlog::merkle::leaf_hash(
+            b"another registration",
+        )]);
+        let text = format!(
+            "{}\n1\n{}\nita-map {}\nita-root 1 {}\n",
+            registry.keys.log.1.name,
+            crate::tlog::note::encode_base64(&forged_root),
+            crate::tlog::note::encode_base64(&forged_root),
+            crate::tlog::root::digest(&registry.roots[0])
+        );
+        let mut forged = format!(
+            "{text}\n{}",
+            support::sign_line(&registry.keys.log.0, &registry.keys.log.1, &text)
+        );
+        for (seed, name) in [(31, "witness.31"), (32, "witness.32")] {
+            let (pair, key) = support::keypair(seed, name);
+            forged.push_str(&support::cosign_line(&pair, &key, &text, now - 90 * DAY));
+        }
+        let mut files = registry.files.clone();
+        files.insert("checkpoint/1".to_owned(), forged.into_bytes());
+        let (reading, _) = client_view(&Files(files), &pin, now);
+        if reading.is_ok() && reading != full {
+            self.fail(
+                "retired witnesses' forged branch changed the result",
+                chain,
+                &format!("{reading:?} against {full:?}"),
+            );
+        }
         let kept = |path: &str| {
             path.strip_prefix("checkpoint/")
                 .and_then(|size| size.parse::<u64>().ok())
@@ -1688,8 +1727,9 @@ fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64, Vec<u64>)
         registry.checkpoint(time);
     }
     // Two releases, one the stolen key signs and one every other owner key signs, whose
-    // verdicts the adversarial place compares; then the witnesses rotate, by a second root
-    // version, which the last checkpoint names.
+    // verdicts the adversarial place compares; then two of the three witnesses rotate, by a
+    // second root version, which the last checkpoint names, leaving fewer than the threshold
+    // of the old ones.
     let stolen = pair(K::A);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&stolen]);
     let others: Vec<(SigningKey, Key)> = [K::B, K::C, K::N1, K::N2, K::R]
@@ -1700,7 +1740,7 @@ fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64, Vec<u64>)
     registry.release("acme/ledger", "0.3.2", "none", "none", &others);
     time += HOUR;
     registry.checkpoint(time);
-    registry.rotate_witness();
+    registry.rotate_witnesses(2, false);
     time += WEEK;
     registry.append("other", "a week passes at the end\n");
     registry.checkpoint(time);

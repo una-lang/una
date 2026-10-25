@@ -13,6 +13,7 @@
 //! log itaty.log <base64 key>
 //! witnesses 3
 //! key witness.a <base64 key>           (one line per witness)
+//! witnesses-revoked witness.old …       (optional: witnesses whose cosignatures never count)
 //! security 2
 //! key security.a <base64 key>          (one line per security key)
 //! itauna 2
@@ -55,6 +56,8 @@ pub struct Root {
     pub log: Key,
     /// The witnesses, and how many co-signatures a checkpoint needs.
     pub witnesses: Keys,
+    /// The witnesses revoked, by name: their cosignatures count for nothing at any version.
+    pub witnesses_revoked: Vec<String>,
     /// The security keys that sign advisories, and how many lift a cooldown (rule 41).
     pub security: Keys,
     /// The keys of Itaúna, the official set (rule 38.1).
@@ -123,6 +126,29 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
     let root = set("root", &mut next)?;
     let log = key_line(&next("log")?)?;
     let witnesses = set("witnesses", &mut next)?;
+    // Optional: `witnesses-revoked <name> …`, each a key name, at least one, none twice, none a
+    // witness of this version.
+    let witnesses_revoked: Vec<String> = match next("witnesses-revoked") {
+        Ok(value) => {
+            let names: Vec<String> = value.split(' ').map(str::to_owned).collect();
+            for (at, name) in names.iter().enumerate() {
+                let valid = !name.is_empty()
+                    && !name.contains('+')
+                    && !name.chars().any(|c| c.is_whitespace() || c.is_control());
+                if !valid {
+                    return Err(format!("`{name}` is not a witness's key name"));
+                }
+                if names.iter().take(at).any(|other| other == name) {
+                    return Err(format!("the witness `{name}` is revoked twice"));
+                }
+                if witnesses.keys.iter().any(|key| key.name == *name) {
+                    return Err(format!("the witness `{name}` is both a witness and revoked"));
+                }
+            }
+            names
+        }
+        Err(_) => Vec::new(),
+    };
     let security = set("security", &mut next)?;
     let itauna = set("itauna", &mut next)?;
     if at != lines.len() {
@@ -152,6 +178,7 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
             root,
             log,
             witnesses,
+            witnesses_revoked,
             security,
             itauna,
             digest: digest(document),
