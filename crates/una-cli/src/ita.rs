@@ -833,8 +833,11 @@ fn resolve_and_lock(
     // Per source and owner, the pending entries whose key change the new lock records as
     // consented to.
     let mut accepted_out: BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> = BTreeMap::new();
+    let mut effects_out: BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> = BTreeMap::new();
     // Problems of the lock it replaces, at their lines of it.
     let mut lock_errors: Vec<ProjectError> = Vec::new();
+    // Each bad index of an owner is reported once, whatever number of its packages are locked.
+    let mut reported: BTreeSet<(String, String, u64)> = BTreeSet::new();
     for (identity, version) in &resolution.list {
         let Some(cell) = online.registries.get(&identity.source) else {
             continue;
@@ -880,46 +883,72 @@ fn resolve_and_lock(
         let mut block = crate::registry::package_block(&release, &signed);
         // The entries of the owner's chain whose key change the lock it replaces consented to.
         let owner = una_project::client::owner_of(&identity.name).to_owned();
-        let accepted_line = existing_lock
-            .and_then(|lock| {
-                lock.read
-                    .registries
-                    .iter()
-                    .find(|r| r.source.value == identity.source)
-            })
+        let old_registry = existing_lock.and_then(|lock| {
+            lock.read
+                .registries
+                .iter()
+                .find(|r| r.source.value == identity.source)
+        });
+        let accepted_line = old_registry
             .and_then(|registry| registry.accepted.iter().find(|a| a.owner.value == owner));
-        // A recorded index counts only when it is below the old resolution point and is an
-        // entry of the owner's chain there: a recovery or a dispute pending at that point, or
-        // another key event. Any other is U7009 at its line, and counts for nothing.
+        let effect_line = old_registry
+            .and_then(|registry| registry.effects.iter().find(|a| a.owner.value == owner));
+        // A recorded index counts only when it is below the old resolution point and is, there,
+        // a recovery or a dispute of the owner's chain: pending for an `accepted` index, in
+        // effect for an `effect` one. Any other is U7009 at its line, and counts for nothing.
+        let old_size = locked_point(&identity.source).map_or(0, |(size, _)| size);
         let mut recorded: BTreeSet<u64> = BTreeSet::new();
-        if let Some(line) = accepted_line {
-            let old_size = locked_point(&identity.source).map_or(0, |(size, _)| size);
-            match registry.history(&owner) {
-                Ok(history) => {
-                    for index in &line.indices {
-                        let i = index.value;
-                        let valid = i < old_size
-                            && history.entries.contains(&i)
-                            && history
-                                .requests
-                                .get(&i)
-                                .is_none_or(|effect| effect.is_none_or(|at| at > old_size));
-                        if valid {
-                            recorded.insert(i);
-                        } else {
-                            lock_errors.push(ProjectError {
-                                code: Code::U7009,
-                                range: index.range.clone(),
-                                message: format!(
-                                    "the accepted index {i} of `{owner}` is not an entry of its chain pending or logged before the lock's resolution point; run `una ita lock`"
-                                ),
-                            });
-                        }
-                    }
-                }
+        let mut recorded_effects: BTreeSet<u64> = BTreeSet::new();
+        if accepted_line.is_some() || effect_line.is_some() {
+            let history = match registry.history(&owner) {
+                Ok(history) => history,
                 Err(message) => {
                     found.push(problem(Code::U7010, message));
                     continue;
+                }
+            };
+            let in_effect_at = |i: u64| {
+                history
+                    .snapshots
+                    .iter()
+                    .find(|s| s.by == i && history.requests.contains_key(&i))
+                    .map(|s| s.from)
+            };
+            for (line, effect) in [(accepted_line, false), (effect_line, true)] {
+                let Some(line) = line else {
+                    continue;
+                };
+                for index in &line.indices {
+                    let i = index.value;
+                    let request = i < old_size && history.requests.contains_key(&i);
+                    // A pending one not cancelled before the old point, by a cancellation that
+                    // stands.
+                    let cancelled = history
+                        .cancellations
+                        .get(&i)
+                        .is_some_and(|cancels| cancels.iter().any(|c| *c < old_size));
+                    let valid = if effect {
+                        request && in_effect_at(i).is_some_and(|at| at <= old_size)
+                    } else {
+                        request && !cancelled && in_effect_at(i).is_none_or(|at| at > old_size)
+                    };
+                    if valid {
+                        if effect {
+                            recorded_effects.insert(i);
+                        } else {
+                            recorded.insert(i);
+                        }
+                    } else if reported.insert((identity.source.clone(), owner.clone(), i)) {
+                        lock_errors.push(ProjectError {
+                            code: Code::U7009,
+                            range: index.range.clone(),
+                            message: format!(
+                                "the {} index {i} of `{owner}` is not a recovery or a dispute of its chain {} at the lock's resolution point; run `una ita lock`",
+                                if effect { "effect" } else { "accepted" },
+                                if effect { "in effect" } else { "pending" }
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -982,6 +1011,7 @@ fn resolve_and_lock(
                 old_point,
                 &signed,
                 &recorded,
+                &recorded_effects,
             ) {
                 Ok(true) if !options.accept_key.contains(&identity.name) => {
                     found.push(problem(
@@ -1037,6 +1067,28 @@ fn resolve_and_lock(
                 continue;
             }
             Ok(history) => {
+                // The effects consented to: those recorded, and, with `--accept-key`, those
+                // that took effect since the lock it replaces.
+                let mut effects = recorded_effects.clone();
+                if flagged && old_registry.is_some() {
+                    effects.extend(
+                        history
+                            .snapshots
+                            .iter()
+                            .filter(|s| {
+                                s.from > old_size && history.requests.contains_key(&s.by)
+                            })
+                            .map(|s| s.by),
+                    );
+                }
+                if !effects.is_empty() {
+                    effects_out
+                        .entry(identity.source.clone())
+                        .or_default()
+                        .entry(owner.clone())
+                        .or_default()
+                        .extend(effects);
+                }
                 if !history.pending.is_empty() {
                     accepted_out
                         .entry(identity.source.clone())
@@ -1138,8 +1190,9 @@ fn resolve_and_lock(
             continue;
         };
         let accepted = accepted_out.get(source).cloned().unwrap_or_default();
+        let effects = effects_out.get(source).cloned().unwrap_or_default();
         text.push_str(&crate::registry::registry_block(
-            source, pin, &registry, &accepted,
+            source, pin, &registry, &accepted, &effects,
         ));
     }
     for entry in &entries {
