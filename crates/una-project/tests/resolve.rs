@@ -171,7 +171,12 @@ fn a_raise_waits_the_cooldown_unless_now() {
             held: Some(v("2.1.1")),
         }
     );
-    assert!(held.to_string().contains("`--now`"));
+    // The message points to the audit and to the need, never to a flag that skips the wait.
+    let message = held.to_string();
+    assert!(
+        !message.contains("--now") && message.contains("`una ita audit`"),
+        "{message}"
+    );
     let now = Policy {
         cooldown: 0,
         ..policy()
@@ -300,12 +305,14 @@ impl XorShift {
 }
 
 /// Random graphs of n releases, one package per release, five needs each: the work counted is
-/// within a constant factor of N + R at every size, and the time per edge stays within a
-/// constant factor across sizes (ADR 0122, Costs).
+/// within a constant factor of N + R at every size, and the time, the least of three runs, at
+/// most 3 times as long for each doubling of the graph, with a small allowance for a shared
+/// machine's noise: quadratic work would take four times as long (ADR 0122, Costs).
 #[test]
 fn resolution_is_linear_in_the_graph() {
-    let mut per_edge = Vec::new();
-    for n in [1_000usize, 10_000, 100_000] {
+    let sizes = [5_000usize, 10_000, 20_000, 40_000];
+    let mut times = Vec::new();
+    for n in sizes {
         let mut rng = XorShift(0x2545_f491_4f6c_dd1d);
         let mut r = Registry::default();
         let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
@@ -318,30 +325,164 @@ fn resolution_is_linear_in_the_graph() {
             r.add(&names[i], "1.0.0", &needs);
         }
         let root: Vec<Need> = (0..n).step_by(97).map(|i| need(&names[i], "1.0")).collect();
-        let started = Instant::now();
         let unbounded = Bounds {
             visited: usize::MAX,
             packages: usize::MAX,
             needs: usize::MAX,
             ..Bounds::default()
         };
-        let resolution = resolve(&root, &r, &policy(), unbounded).unwrap();
-        let elapsed = started.elapsed().as_secs_f64();
-        let edges = 5 * n;
-        assert!(
-            resolution.work <= 2 * (n + edges),
-            "{n}: {} units of work for {} releases and edges",
-            resolution.work,
-            n + edges
-        );
-        per_edge.push(elapsed / (n + edges) as f64);
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let started = Instant::now();
+            let resolution = resolve(&root, &r, &policy(), unbounded).unwrap();
+            best = best.min(started.elapsed().as_secs_f64());
+            let edges = 5 * n;
+            assert!(
+                resolution.work <= 2 * (n + edges),
+                "{n}: {} units of work for {} releases and edges",
+                resolution.work,
+                n + edges
+            );
+        }
+        times.push(best);
     }
-    // Hash maps and the generous factor absorb a shared machine's noise; quadratic work
-    // would grow the time per edge a hundred times from the first size to the last.
-    assert!(
-        per_edge[2] < per_edge[0] * 10.0,
-        "time per edge grew: {per_edge:?}"
+    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
+        assert!(
+            pair[1] <= 3.0 * pair[0] + 0.05,
+            "{} took {}s, {} took {}s",
+            sizes_pair[1],
+            pair[1],
+            sizes_pair[0],
+            pair[0]
+        );
+    }
+}
+
+/// Many releases per name, nearly all pre-releases that no need names, with a raise past a
+/// yanked release for every name and lookups that land before a run of pre-releases: the work
+/// does not grow with the pre-releases, so a scan of them per visit or per raise, which would
+/// make it grow with visits times pre-releases, fails here.
+#[test]
+fn pre_releases_and_raises_cost_nothing_per_skipped_release() {
+    let n = 200;
+    let work_with = |pre: usize| {
+        let mut r = Registry::default();
+        let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+        let versions: Vec<String> = (1..=5).map(|patch| format!("1.0.{patch}")).collect();
+        for i in 0..n {
+            let next = names[(i + 1) % n].as_str();
+            let at = versions[i % versions.len()].as_str();
+            r.add(&names[i], "1.0.0", &[(next, at)]).yanked = true;
+            for k in 0..pre {
+                r.add(&names[i], &format!("1.1.0-p.{k}"), &[]);
+            }
+            r.add(&names[i], "1.1.0", &[(next, at)]);
+        }
+        let root: Vec<Need> = names.iter().map(|name| need(name, "1.0")).collect();
+        let resolution = resolve(&root, &r, &policy(), Bounds::default()).unwrap();
+        assert!(
+            resolution
+                .list
+                .values()
+                .all(|version| *version == v("1.1.0")),
+            "{:?}",
+            resolution.list
+        );
+        resolution.work
+    };
+    let few = work_with(4);
+    let many = work_with(2_000);
+    assert_eq!(few, many, "the work grew with the pre-releases skipped");
+    assert!(few <= 20 * n, "{few} units of work for {n} names");
+}
+
+/// The case of rule 22 whose answer depended on the order of the root's needs: `x 1.0.0` needs
+/// `a 1.1.0-beta`, so a pre-release of `a` is admitted, and `a 1.0` reaches `1.1.0-beta`
+/// whichever need is walked first.
+#[test]
+fn pre_release_admission_does_not_depend_on_the_order_of_needs() {
+    let mut r = Registry::default();
+    r.add("x", "1.0.0", &[("a", "1.1.0-beta")]);
+    r.add("a", "1.1.0-beta", &[]);
+    r.add("a", "1.2.0", &[]);
+    let expected = ["a 1.1.0-beta", "x 1.0.0"];
+    assert_eq!(
+        list(&[need("x", "1.0"), need("a", "1.0")], &r, &policy()),
+        expected
     );
+    assert_eq!(
+        list(&[need("a", "1.0"), need("x", "1.0")], &r, &policy()),
+        expected
+    );
+}
+
+/// A fixed random graph with pre-releases, pre-release needs and yanked releases, resolved with
+/// its root's needs, each release's needs and the order of each name's releases shuffled by a
+/// fixed seed: every order gives the same result, a build list or the same refusal (rule 23).
+#[test]
+fn a_shuffled_graph_resolves_the_same() {
+    let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+    let n = 40;
+    let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+    let versions = [
+        "1.0.0",
+        "1.1.0-beta.1",
+        "1.1.0",
+        "1.2.0-rc.1",
+        "1.2.0-rc.2",
+        "1.2.0",
+        "1.3.0",
+    ];
+    // Per name, its releases: the version, whether it is yanked, and its needs.
+    let mut graph: Vec<Vec<(&str, bool, Vec<(usize, &str)>)>> = Vec::new();
+    for i in 0..n {
+        let mut releases = Vec::new();
+        for (at, version) in versions.iter().enumerate() {
+            // The last release is never yanked, so every raise has somewhere to go.
+            let yanked = at + 1 < versions.len() && rng.below(5) == 0;
+            let needs: Vec<(usize, &str)> = (0..3)
+                .map(|_| (rng.below(n), versions[rng.below(versions.len())]))
+                .filter(|(to, _)| *to != i)
+                .collect();
+            releases.push((*version, yanked, needs));
+        }
+        graph.push(releases);
+    }
+    let root: Vec<Need> = (0..n)
+        .step_by(3)
+        .map(|i| need(&names[i], versions[rng.below(versions.len())]))
+        .collect();
+    let mut shuffle = |len: usize| -> Vec<usize> {
+        let mut order: Vec<usize> = (0..len).collect();
+        for at in (1..len).rev() {
+            order.swap(at, rng.below(at + 1));
+        }
+        order
+    };
+    let mut results = Vec::new();
+    for round in 0..12 {
+        let mut r = Registry::default();
+        for i in shuffle(n) {
+            for at in shuffle(graph[i].len()) {
+                let (version, yanked, needs) = &graph[i][at];
+                let mut order: Vec<(&str, &str)> = needs
+                    .iter()
+                    .map(|(to, version)| (names[*to].as_str(), *version))
+                    .collect();
+                if round > 0 {
+                    order.reverse();
+                }
+                r.add(&names[i], version, &order).yanked = *yanked;
+            }
+        }
+        let order = shuffle(root.len());
+        let shuffled: Vec<Need> = order.iter().map(|at| root[*at].clone()).collect();
+        let result = resolve(&shuffled, &r, &policy(), Bounds::default()).map(|r| r.list);
+        results.push(result);
+    }
+    for result in &results[1..] {
+        assert_eq!(result, &results[0]);
+    }
 }
 
 fn release(version: &str) -> Release {

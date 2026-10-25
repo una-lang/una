@@ -584,6 +584,7 @@ fn resolve_and_lock(
             let at = match &problem {
                 Problem::NoRelease { identity, .. }
                 | Problem::NoRaise { identity, .. }
+                | Problem::PreRelease { identity, .. }
                 | Problem::SelfNeed(identity) => need_ranges
                     .iter()
                     .find(|(id, _)| id == identity)
