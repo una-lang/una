@@ -20,6 +20,7 @@ fn repository() -> PathBuf {
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository())
         .output()
@@ -422,6 +423,7 @@ fn every_example_package_is_canonical_verified_and_tested() {
             // `examples/journal` copies its entry only when `JOURNAL_COPY` is set.
             let run = Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(["run", &path])
                 .env_remove("JOURNAL_COPY")
                 .current_dir(repository())
