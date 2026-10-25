@@ -338,6 +338,73 @@ pub(crate) enum ItaCommand {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Check, build, sign and send a release of the package to the registry it names
+    Publish {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// A key file of the owner; give one per key of the owner's threshold
+        #[arg(long = "key", value_name = "FILE")]
+        keys: Vec<PathBuf>,
+
+        /// Where to send it: a `file:///` URL of the registry's directory
+        #[arg(long, value_name = "URL")]
+        upload: Option<String>,
+    },
+    /// Yank a release of the package: new resolutions skip it, and existing locks keep it
+    Yank {
+        /// The version to yank, a full version
+        version: String,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// A key file of the owner; give one per key of the owner's threshold
+        #[arg(long = "key", value_name = "FILE")]
+        keys: Vec<PathBuf>,
+
+        /// Where to send it: a `file:///` URL of the registry's directory
+        #[arg(long, value_name = "URL")]
+        upload: Option<String>,
+    },
+    /// Check each locked registry package for yanks, advisories and key changes (U7014)
+    Audit {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Print the new entries of an owner's chains, and any promise its registry broke
+    Watch {
+        /// The owner's name
+        owner: String,
+
+        /// More package names to follow besides those the registry lists for the owner
+        names: Vec<String>,
+
+        /// The source the owner belongs to
+        #[arg(long, value_name = "SOURCE", default_value = "itaty")]
+        from: String,
+    },
+    /// Write each locked registry package, with its provenance, into one file
+    Bundle {
+        /// The file to write
+        file: PathBuf,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Verify a bundle against the lock, and store its packages in Itaoca
+    Unbundle {
+        /// The bundle to read
+        file: PathBuf,
+
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// The values of `--tier` (`spec/12 §1`).

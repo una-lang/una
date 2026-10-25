@@ -42,7 +42,11 @@ pub(crate) struct Output<'a> {
 }
 
 /// The diagnostics of `errors`, located in the file `id` of `sources`.
-fn located(sources: &SourceDb, id: FileId, errors: Vec<ProjectError>) -> Vec<Diagnostic> {
+pub(crate) fn located(
+    sources: &SourceDb,
+    id: FileId,
+    errors: Vec<ProjectError>,
+) -> Vec<Diagnostic> {
     errors
         .into_iter()
         .map(|error| {
@@ -58,7 +62,7 @@ fn located(sources: &SourceDb, id: FileId, errors: Vec<ProjectError>) -> Vec<Dia
 /// Prints the result of a command: one `una.ita/1` document with `--json`, with `schema`
 /// first; otherwise the diagnostics on stderr and `lines` on stdout. Exit code 1 when a
 /// diagnostic is an error (`spec/13 §5`).
-fn finish(
+pub(crate) fn finish(
     command: &str,
     written: &[&str],
     lines: &[String],
@@ -1438,6 +1442,26 @@ pub(crate) fn add_command(
         )?;
         return Ok(ExitStatus::Usage);
     }
+    // Rule 42: an owner that a source of the root serves resolves only there, so `add` names
+    // that source itself; another `--from` is refused.
+    let serving = name.split_once('/').and_then(|(owner, _)| {
+        before
+            .sources
+            .iter()
+            .find(|source| source.owners.iter().any(|o| o.value == owner))
+            .map(|source| source.name.value.clone())
+    });
+    let from = match (from, serving.as_deref()) {
+        (Some(given), Some(serving)) if given != serving => {
+            writeln!(
+                out.stderr,
+                "error: the owner of `{name}` is served by the source `{serving}`, so the need is `from {serving}`, never `from {given}`"
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+        (None, Some(serving)) => Some(serving),
+        (from, _) => from,
+    };
     let Some(version) = version else {
         // Rule 25 takes the newest release of the newest major past the cooldown, which only
         // the per-name state of a resolution point tells.

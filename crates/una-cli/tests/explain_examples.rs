@@ -110,6 +110,11 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
             dir.clone()
         }
     };
+    // U7014 comes from `una ita audit` alone (ADR 0122 rule 41), never from `una check`: its
+    // examples are audited against the registry state their text states.
+    if code == Code::U7014 {
+        return una_cli::audit_codes(&target, &StatedRegistry);
+    }
     // Runtime codes come from `una run`, whose JSON document lists them with the diagnostics
     // of the checks.
     if code.domain() == Domain::Runtime {
@@ -145,6 +150,64 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
         .iter()
         .map(|diagnostic| diagnostic.code)
         .collect()
+}
+
+/// The registry state that the text of U7014 states, as a verified client would give it: at
+/// `acme`, `acme/ledger 0.3.1` is yanked and `0.3.2` is released, neither advised, and its
+/// owner has no key event.
+struct StatedRegistry;
+
+impl una_project::registry::view::Registry for StatedRegistry {
+    fn name(
+        &self,
+        source: &str,
+        name: &str,
+        _held: u64,
+    ) -> Result<una_project::registry::view::NameState, una_project::registry::view::Failure> {
+        let mut state = una_project::registry::view::NameState {
+            source: source.to_owned(),
+            name: name.to_owned(),
+            ..Default::default()
+        };
+        if source == "acme" && name == "acme/ledger" {
+            for (version, yanked) in [("0.3.1", true), ("0.3.2", false)] {
+                state.releases.insert(
+                    una_project::version::Version::parse_full(version).unwrap(),
+                    una_project::tlog::state::ReleaseState {
+                        digest: format!("sha256:{}", "3b".repeat(32)),
+                        logged_at: 1,
+                        yanked,
+                        advised: Vec::new(),
+                        threshold_fix: false,
+                    },
+                );
+            }
+        }
+        Ok(state)
+    }
+
+    fn owner(
+        &self,
+        source: &str,
+        owner: &str,
+        _held: u64,
+    ) -> Result<una_project::registry::view::OwnerState, una_project::registry::view::Failure>
+    {
+        Ok(una_project::registry::view::OwnerState {
+            source: source.to_owned(),
+            owner: owner.to_owned(),
+            ..Default::default()
+        })
+    }
+
+    fn log_key(
+        &self,
+        _source: &str,
+    ) -> Result<una_project::tlog::note::Key, una_project::registry::view::Failure> {
+        Err(una_project::registry::view::Failure::Unavailable(
+            "the examples need no promise".to_owned(),
+        ))
+    }
 }
 
 #[test]

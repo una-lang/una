@@ -20,9 +20,10 @@ use una_project::registry::submit::{self, Promise, broken, check_promise};
 use una_project::registry::transport::{Directory, Failure as TransportFailure, Location, Transport, location};
 use una_project::registry::view::{ChainEntry, Failure, NameState, OwnerState, Registry};
 use una_project::registry::watch::{Position, watch};
-use una_project::tlog::note::parse_note;
+use una_project::tlog::note::{Key, parse_note};
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::{Advisory, ReleaseState};
+use una_project::vendor::Problem;
 use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
 
@@ -462,6 +463,10 @@ impl Registry for Fake {
         state.entries = state.entries.split_off((held as usize).min(state.entries.len()));
         Ok(state)
     }
+
+    fn log_key(&self, _source: &str) -> Result<Key, Failure> {
+        Ok(key(20, "acme.example/log").key().clone())
+    }
 }
 
 fn entry(index: u64, format: &str) -> ChainEntry {
@@ -571,6 +576,9 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
         }
         fn owner(&self, _: &str, _: &str, _: u64) -> Result<OwnerState, Failure> {
             Err(Failure::Unavailable("no checkpoint".to_owned()))
+        }
+        fn log_key(&self, _: &str) -> Result<Key, Failure> {
+            Err(Failure::Unavailable("no root".to_owned()))
         }
     }
     assert_eq!(
@@ -789,23 +797,33 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
     let store = Itaoca {
         root: scratch("unbundle-tampered"),
     };
-    let (at, why) = bundle::unbundle(&write(&other, &provenance), &store, std::slice::from_ref(&expected))
-        .unwrap_err();
+    let refused = |bytes: &[u8]| -> (Option<usize>, String) {
+        match bundle::unbundle(bytes, &store, std::slice::from_ref(&expected)).unwrap_err() {
+            (at, Problem::Refused(why)) => (at, why),
+            (at, Problem::Absent(why)) => (at, format!("absent: {why}")),
+        }
+    };
+    let (at, why) = refused(&write(&other, &provenance));
     assert_eq!(at, Some(0));
     assert!(why.contains("not the lock's"), "{why}");
     // A provenance whose statement was edited: its signature no longer verifies.
     let edited = String::from_utf8(provenance.clone())
         .unwrap()
         .replace("authority none", "authority nope");
-    let (_, why) = bundle::unbundle(&write(&archive, edited.as_bytes()), &store, std::slice::from_ref(&expected))
-        .unwrap_err();
+    let (_, why) = refused(&write(&archive, edited.as_bytes()));
     assert!(why.contains("provenance"), "{why}");
     // A byte of the bundle changed: its listing's hash refuses it.
     let mut bytes = write(&archive, &provenance);
     let last = bytes.len() - 1;
     bytes[last] ^= 1;
-    let (at, _) = bundle::unbundle(&bytes, &store, std::slice::from_ref(&expected)).unwrap_err();
+    let (at, _) = refused(&bytes);
     assert_eq!(at, None);
+    // A bundle without the package: absent, not refused.
+    let empty = bundle::write(Vec::new()).unwrap();
+    assert!(matches!(
+        bundle::unbundle(&empty, &store, std::slice::from_ref(&expected)),
+        Err((Some(0), Problem::Absent(_)))
+    ));
     // Nothing was written by any of them.
     assert!(!store.contains(&expected.digest).unwrap());
     // A path the bundle does not name is refused when writing and reading.

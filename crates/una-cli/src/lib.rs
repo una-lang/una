@@ -12,6 +12,7 @@ mod contract;
 mod core_json;
 mod fix;
 mod ita;
+mod ita_registry;
 mod lsp;
 mod migrate;
 mod package;
@@ -673,6 +674,13 @@ pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca
     una_project::itaoca::Itaoca::at(dir.as_deref(), home.as_deref().map(Path::new))
 }
 
+/// The codes `una ita audit` reports for the package at `path` against `registry`, the states
+/// a verified registry client gives (ADR 0122 rule 41, U7014): for the explain examples of
+/// U7014 and the tests, which state a registry's state without a network.
+pub fn audit_codes(path: &Path, registry: &dyn una_project::registry::view::Registry) -> Vec<Code> {
+    ita_registry::audit_codes(path, registry)
+}
+
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.
 #[derive(Clone, Copy)]
@@ -778,7 +786,12 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
                 | ItaCommand::Tree { path }
                 | ItaCommand::Vendor { path }
                 | ItaCommand::Verify { path }
-                | ItaCommand::Remove { path, .. },
+                | ItaCommand::Remove { path, .. }
+                | ItaCommand::Publish { path, .. }
+                | ItaCommand::Yank { path, .. }
+                | ItaCommand::Audit { path }
+                | ItaCommand::Bundle { path, .. }
+                | ItaCommand::Unbundle { path, .. },
         }) => Some(path.clone()),
         // `una ita add` and `update` work on the package in the current directory.
         Some(Command::Ita {
@@ -1107,6 +1120,71 @@ fn run_command(
                     ItaCommand::Verify { path } => {
                         ita::verify_command(&path, itaoca(environment).as_ref(), output)
                     }
+                    ItaCommand::Publish { path, keys, upload } => {
+                        let solving = solving(DEFAULT_WALLCLOCK.as_secs());
+                        let registry = ita_registry::client(solving.itaoca.as_ref());
+                        let signing = ita_registry::Signing {
+                            keys: &keys,
+                            upload: upload.as_deref(),
+                        };
+                        ita_registry::publish_command(
+                            &path,
+                            signing,
+                            &solving,
+                            registry.as_deref(),
+                            output,
+                        )
+                    }
+                    ItaCommand::Yank {
+                        version,
+                        path,
+                        keys,
+                        upload,
+                    } => {
+                        let store = itaoca(environment);
+                        let registry = ita_registry::client(store.as_ref());
+                        let signing = ita_registry::Signing {
+                            keys: &keys,
+                            upload: upload.as_deref(),
+                        };
+                        ita_registry::yank_command(
+                            &version,
+                            &path,
+                            signing,
+                            store.as_ref(),
+                            registry.as_deref(),
+                            output,
+                        )
+                    }
+                    ItaCommand::Audit { path } => {
+                        let store = itaoca(environment);
+                        let registry = ita_registry::client(store.as_ref());
+                        ita_registry::audit_command(&path, registry.as_deref(), output)
+                    }
+                    ItaCommand::Watch { owner, names, from } => {
+                        let store = itaoca(environment);
+                        let registry = ita_registry::client(store.as_ref());
+                        ita_registry::watch_command(
+                            &owner,
+                            &names,
+                            &from,
+                            store.as_ref(),
+                            registry.as_deref(),
+                            output,
+                        )
+                    }
+                    ItaCommand::Bundle { file, path } => ita_registry::bundle_command(
+                        &file,
+                        &path,
+                        itaoca(environment).as_ref(),
+                        output,
+                    ),
+                    ItaCommand::Unbundle { file, path } => ita_registry::unbundle_command(
+                        &file,
+                        &path,
+                        itaoca(environment).as_ref(),
+                        output,
+                    ),
                 }
             }
             Command::Fmt { path, check } => {

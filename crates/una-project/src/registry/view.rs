@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::tlog::note::Key;
 use crate::tlog::release::Statement;
 use crate::tlog::state::{Advisory, ReleaseState};
 use crate::version::Version;
@@ -105,6 +106,10 @@ pub trait Registry {
     /// The key events of `owner` at `source`, at a checkpoint fresh by rule 39, with the entries
     /// of its chain after the first `held`.
     fn owner(&self, source: &str, owner: &str, held: u64) -> Result<OwnerState, Failure>;
+
+    /// The log's key of `source`, from its last root metadata, verified (rule 35): the key
+    /// that signs checkpoints and the registry's promises (rule 36.2).
+    fn log_key(&self, source: &str) -> Result<Key, Failure>;
 }
 
 /// The owner of a package's name: the part before `/`, or `itauna` for a name without one

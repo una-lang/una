@@ -42,7 +42,7 @@ use crate::content::check_path;
 use crate::itaoca::Itaoca;
 use crate::provenance::{self, Expected};
 use crate::tree::VerifiedTree;
-use crate::vendor::check_source;
+use crate::vendor::{Problem, check_source};
 
 /// The first line of a bundle.
 pub const FORMAT: &str = "ita-bundle/1";
@@ -253,18 +253,40 @@ pub fn entries(
 
 /// Verifies the package `expected` names from the bundle `bytes` that `read` read: its archive's
 /// digest is the lock's, and its provenance verifies against the lock and the archive's
-/// `ita.una` (rule 17). Returns the archive and the provenance, verified.
-pub fn verify_package(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed, String> {
+/// `ita.una` (rule 17). Returns the archive and the provenance, verified; a package the bundle
+/// does not hold is [`Problem::Absent`], any other failure [`Problem::Refused`].
+pub fn verify_package(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed, Problem> {
+    verify_held(bytes, read, expected).map_err(|(absent, why)| {
+        if absent {
+            Problem::Absent(why)
+        } else {
+            Problem::Refused(why)
+        }
+    })
+}
+
+fn verify_held(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed, (bool, String)> {
     let what = format!("`{} {}`", expected.name, expected.version);
+    let refused = |why: String| (false, why);
     let archive_path = package_path(&expected.digest)
-        .ok_or_else(|| format!("the digest of {what} is not a digest"))?;
+        .ok_or_else(|| refused(format!("the digest of {what} is not a digest")))?;
     let provenance_path =
         provenance_path(&expected.source, &expected.digest, expected.checkpoint_size)
-            .ok_or_else(|| format!("the source of {what} is not a source"))?;
+            .ok_or_else(|| refused(format!("the source of {what} is not a source")))?;
     let entry = |path: &str| -> Option<&[u8]> { bytes.get(read.entries.get(path)?.clone()) };
-    let archive = entry(&archive_path).ok_or_else(|| format!("the bundle does not hold {what}"))?;
+    let archive = entry(&archive_path)
+        .ok_or_else(|| (true, format!("the bundle does not hold {what}")))?;
     let provenance = entry(&provenance_path)
-        .ok_or_else(|| format!("the bundle holds {what} without its provenance"))?;
+        .ok_or_else(|| refused(format!("the bundle holds {what} without its provenance")))?;
+    verify_parts(archive, provenance, &what, expected).map_err(refused)
+}
+
+fn verify_parts(
+    archive: &[u8],
+    provenance: &[u8],
+    what: &str,
+    expected: &Expected,
+) -> Result<Packed, String> {
     let tree = VerifiedTree::from_archive(archive)
         .map_err(|refusal| format!("the archive of {what} in the bundle: {refusal}"))?;
     if tree.digest() != expected.digest {
@@ -310,8 +332,8 @@ pub fn unbundle(
     bytes: &[u8],
     itaoca: &Itaoca,
     expected: &[Expected],
-) -> Result<Unbundled, (Option<usize>, String)> {
-    let read = read(bytes).map_err(|refusal| (None, refusal))?;
+) -> Result<Unbundled, (Option<usize>, Problem)> {
+    let read = read(bytes).map_err(|refusal| (None, Problem::Refused(refusal)))?;
     let mut verified = Vec::with_capacity(expected.len());
     let mut used: BTreeSet<String> = BTreeSet::new();
     for (index, package) in expected.iter().enumerate() {
@@ -326,7 +348,7 @@ pub fn unbundle(
     }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
-        let fail = |why: String| (Some(index), why);
+        let fail = |why: String| (Some(index), Problem::Refused(why));
         itaoca
             .store(&packed.archive)
             .map_err(|why| fail(format!("cannot store `{}`: {why}", package.name)))?;
