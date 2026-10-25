@@ -14,7 +14,7 @@ use una_project::provenance::Expected;
 use una_project::registry::audit::{self, Kind, Locked};
 use una_project::registry::bundle;
 use una_project::registry::entries::{check_advisory, check_yank, cooled, releases, yank_text};
-use una_project::registry::keyfile::{SigningKey, sign_note};
+use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
 use una_project::registry::mirrors::{self, first_verified};
 use una_project::registry::submit::{self, Promise, broken, check_promise};
 use una_project::registry::transport::{Directory, Failure as TransportFailure, Location, Transport, location};
@@ -72,7 +72,11 @@ fn only_https_and_file_urls_are_read() {
         let refusal = location(url).unwrap_err();
         assert!(refusal.contains(part), "{url}: {refusal}");
     }
-    assert!(Directory::of("https://ita.acme.example").unwrap_err().contains("no network transport"));
+    assert!(
+        Directory::of("https://ita.acme.example")
+            .unwrap_err()
+            .contains("no https transport yet")
+    );
 }
 
 #[test]
@@ -848,4 +852,100 @@ fn bundles_read_in_linear_time() {
     }
     // Time per entry may vary with caches, never by the factor quadratic growth would give.
     assert!(per_entry[2] < per_entry[0] * 20.0 + 50_000.0, "{per_entry:?}");
+}
+
+// --- The owner's key files, the source's URL and git (rules 8, 38 and 43) --------------------
+
+/// Writes `key` as the file `name` of `dir`, readable by its owner only.
+fn write_key(dir: &std::path::Path, name: &str, text: &str) {
+    let file = dir.join(name);
+    std::fs::write(&file, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+#[test]
+fn the_owners_registered_keys_sign_at_least_its_threshold() {
+    let dir = scratch("keys");
+    let a = key(80, "acme.a");
+    let b = key(81, "acme.b");
+    let unregistered = key(82, "acme.c");
+    let other = key(83, "other.a");
+    write_key(&dir, "acme-4f9c.key", &a.encode());
+    write_key(&dir, "acme-0a.key", &b.encode());
+    write_key(&dir, "acme-ff.key", &unregistered.encode());
+    write_key(&dir, "other-1.key", &other.encode());
+    // A file that is not named as a key file of the owner is not read.
+    write_key(&dir, "acme-notes.txt", "not a key");
+    let registered = [a.key().clone(), b.key().clone()];
+    let chosen = owner_keys(&dir, "acme", &registered, 2).unwrap();
+    let names: Vec<&str> = chosen.iter().map(|k| k.key().name.as_str()).collect();
+    assert_eq!(names, ["acme.b", "acme.a"], "by file name, registered keys only");
+    let refusal = owner_keys(&dir, "acme", &registered, 3).unwrap_err();
+    assert!(refusal.contains("fewer than its threshold of 3"), "{refusal}");
+    // A key registered under another name does not sign: its line would carry another key hash.
+    let renamed = [una_project::tlog::note::Key {
+        name: "acme.renamed".to_owned(),
+        public: a.key().public,
+    }];
+    assert!(owner_keys(&dir, "acme", &renamed, 1).is_err());
+    // An encrypted key file of the owner refuses the whole choice, never skipped.
+    write_key(&dir, "acme-1.key", "ita-key-encrypted/1\nopaque\n");
+    let refusal = owner_keys(&dir, "acme", &registered, 1).unwrap_err();
+    assert!(refusal.contains("not implemented yet"), "{refusal}");
+    std::fs::remove_file(dir.join("acme-1.key")).unwrap();
+    // So does one that others can read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.join("acme-0a.key"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let refusal = owner_keys(&dir, "acme", &registered, 1).unwrap_err();
+        assert!(refusal.contains("readable by its owner only"), "{refusal}");
+    }
+    assert!(owner_keys(&dir.join("none"), "acme", &registered, 1).is_err());
+}
+
+#[test]
+fn a_git_entry_in_the_directory_or_an_ancestor_is_found() {
+    let base = scratch("git");
+    let package = base.join("a/b");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(base.join(".git"), "gitdir: elsewhere\n").unwrap();
+    assert_eq!(submit::git_entry(&package), Some(base.join(".git")));
+    std::fs::create_dir(package.join(".git")).unwrap();
+    assert_eq!(submit::git_entry(&package), Some(package.join(".git")));
+}
+
+#[test]
+fn a_published_source_is_the_one_its_workspace_declares() {
+    let workspace = scratch("workspace");
+    let package = workspace.join("pkg");
+    std::fs::create_dir_all(&package).unwrap();
+    assert!(
+        submit::declared_source(&package, "acme")
+            .unwrap_err()
+            .contains("declared by no `itaty.una`")
+    );
+    std::fs::write(
+        workspace.join("itaty.una"),
+        format!(
+            "itaty\n  members\n    \"pkg\"\n\nsources\n  acme \"https://ita.acme.example\"\n    root \"sha256:{}\"\n    owners acme\n",
+            "5e".repeat(32)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        submit::declared_source(&package, "acme").unwrap(),
+        "https://ita.acme.example"
+    );
+    assert!(submit::declared_source(&package, "other").unwrap_err().contains("not a source"));
+    assert!(
+        submit::declared_source(&package, "itaty")
+            .unwrap_err()
+            .contains("no https transport yet")
+    );
 }

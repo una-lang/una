@@ -1,9 +1,11 @@
 //! `una ita publish`, `yank`, `audit`, `watch`, `bundle` and `unbundle` (ADR 0122 rules 33, 36,
 //! 36.2 and 40 to 43; `spec/30 §14`).
 //!
-//! A submission goes out only through a transport, and this release has only the directory
-//! transport: `--upload` takes a `file:///` URL, and an `https://` one is refused as having no
-//! transport, plain `http://` as never used. What a command needs to know of a registry (a name's
+//! A submission goes to the source the head's `publish to` names, at the URL that source is
+//! declared with, through a transport. This release has only the directory transport, and a
+//! source's URL is `https://`, so `publish` and `yank` stop there with a diagnostic saying that
+//! there is no https transport yet; plain `http://` is never used. The owner's keys come from
+//! `~/.una/keys/` ([`keyfile::owner_keys`]). What a command needs to know of a registry (a name's
 //! chain head, its releases, yanks and advisories, an owner's key events) comes from the verified
 //! registry client ([`client`]), never from a transport's word; until that client joins, those
 //! commands stop before sending anything, and `audit` reports every registry package as not
@@ -21,9 +23,9 @@ use una_project::content::{self, File};
 use una_project::ita::{ItaLock, parse_ita_lock, parse_ita_manifest};
 use una_project::itaoca::Itaoca;
 use una_project::provenance::Expected;
-use una_project::registry::keyfile::SigningKey;
+use una_project::registry::keyfile::{self, SigningKey};
 use una_project::registry::transport::{Directory, Failure as TransportFailure, Transport};
-use una_project::registry::view::{Failure, Registry};
+use una_project::registry::view::{Failure, Registry, owner_of};
 use una_project::registry::{audit, bundle, submit, watch};
 use una_project::version::Version;
 use una_project::{tree, vendor};
@@ -36,9 +38,6 @@ use crate::verification::Solving;
 /// Why a command that needs the verified registry client stops in this release.
 const NO_CLIENT: &str =
     "this release has no registry client to verify a registry's roots, checkpoints, name map and chains";
-
-/// The most bytes of a key file.
-const MAX_KEY_FILE: u64 = 4096;
 
 /// The verified registry client (ADR 0122 rules 35 to 39) that publishing, yanks, audit and
 /// watch read through. It joins with the verification of roots, checkpoints, the name map and
@@ -70,58 +69,67 @@ fn problem(code: Code, range: std::ops::Range<usize>, message: String) -> Projec
     }
 }
 
-/// Reads a publisher's key file (ADR 0122 rule 38): a regular file, not a link, of at most
-/// [`MAX_KEY_FILE`] bytes, and on Unix readable by its owner only.
-fn read_key(path: &Path) -> Result<SigningKey, String> {
-    let shown = path.display();
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("cannot read the key file `{shown}`: {error}"))?;
-    if !meta.is_file() {
-        return Err(format!("the key file `{shown}` is not a regular file"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o077 != 0 {
-            return Err(format!(
-                "the key file `{shown}` can be read by others; make it readable by its owner only (mode 0600)"
-            ));
-        }
-    }
-    if meta.len() > MAX_KEY_FILE {
-        return Err(format!("the key file `{shown}` is too long"));
-    }
-    let bytes = tree::read_unlinked(path)?;
-    let text =
-        String::from_utf8(bytes).map_err(|_| format!("the key file `{shown}` is not UTF-8"))?;
-    SigningKey::parse(&text).map_err(|why| format!("the key file `{shown}`: {why}"))
+/// The directory of the owner's key files, `.una/keys` in `HOME` (ADR 0122 rule 38).
+pub(crate) fn keys_dir(home: Option<&str>) -> Option<PathBuf> {
+    home.filter(|home| !home.is_empty())
+        .map(|home| Path::new(home).join(".una").join("keys"))
 }
 
-/// What `publish` and `yank` sign with and send to.
-pub(crate) struct Signing<'a> {
-    /// `--key <file>`, each a key of the owner, in order.
-    pub(crate) keys: &'a [PathBuf],
-    /// `--upload <url>`: a `file:///` URL of the registry's directory.
-    pub(crate) upload: Option<&'a str>,
+/// The transport of the source a submission goes to, or the problem at `range` (U7013): a
+/// source declared nowhere, or served over HTTPS, which has no transport yet.
+fn target(
+    path: &Path,
+    source: &str,
+    range: std::ops::Range<usize>,
+) -> Result<Directory, ProjectError> {
+    submit::declared_source(path, source)
+        .and_then(|url| Directory::of(&url))
+        .map_err(|why| {
+            problem(
+                Code::U7013,
+                range,
+                format!("the submission cannot be sent to `{source}`: {why}; nothing is sent"),
+            )
+        })
 }
 
-impl Signing<'_> {
-    /// The keys read and the transport, or the usage error.
-    fn open(&self) -> Result<(Vec<SigningKey>, Directory), String> {
-        let upload = self.upload.ok_or(
-            "this release sends a submission only to a directory: give `--upload file:///<dir>`",
-        )?;
-        let transport = Directory::of(upload)?;
-        if self.keys.is_empty() {
-            return Err("give the owner's signing keys with `--key <file>`".to_owned());
-        }
-        let keys = self
-            .keys
-            .iter()
-            .map(|path| read_key(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((keys, transport))
-    }
+/// The owner's keys that sign for `name` at `source`: the owner's key files of `keys`, chosen
+/// against the owner's keys and threshold in its verified state ([`keyfile::owner_keys`]); or
+/// the problem at `range`, U7013, or U7010 for a state that does not verify.
+fn signing_keys(
+    registry: &dyn Registry,
+    keys: Option<&Path>,
+    source: &str,
+    name: &str,
+    range: std::ops::Range<usize>,
+) -> Result<Vec<SigningKey>, ProjectError> {
+    let owner = owner_of(name);
+    let state = registry
+        .owner(source, owner, 0)
+        .map_err(|failure| match failure {
+            Failure::Refused(why) => problem(
+                Code::U7010,
+                range.clone(),
+                format!("the keys of `{owner}` at `{source}` do not verify: {why}"),
+            ),
+            Failure::Unavailable(why) => problem(
+                Code::U7013,
+                range.clone(),
+                format!(
+                    "the keys of `{owner}` at `{source}` cannot be had: {why}; nothing is sent"
+                ),
+            ),
+        })?;
+    let Some(keys) = keys else {
+        return Err(problem(
+            Code::U7013,
+            range,
+            "no key directory: set `HOME`, whose `.una/keys` holds the owner's key files"
+                .to_owned(),
+        ));
+    };
+    keyfile::owner_keys(keys, owner, &state.keys, state.threshold)
+        .map_err(|why| problem(Code::U7013, range, why))
 }
 
 /// The files a package publishes: its `ita.una` and modules, as checked, and its `README.md`,
@@ -233,16 +241,17 @@ fn name_state(
     })
 }
 
-/// `una ita publish [path] --key <file>... --upload <url>` (ADR 0122 rule 43): refuses what
-/// rule 43 names, checks the package at tier 1 and refuses any diagnostic, builds its archive
-/// (rule 27), writes the release statement against the verified state of its name (rule 26
-/// against the highest earlier release of its line), signs it with the keys given, and sends the
-/// archive and the statement through the directory transport. The submission is recorded in
-/// Itaoca, so `una ita watch` can check the registry's promise for it. Costs: the check, and
-/// O(B) for the B bytes of the package.
+/// `una ita publish [path]` (ADR 0122 rule 43): refuses what rule 43 names, and a package in a
+/// git repository while the check for uncommitted changes is not available; checks the package
+/// at tier 1 and refuses any diagnostic; builds its archive (rule 27); resolves the source the
+/// head's `publish to` names and its transport; writes the release statement against the
+/// verified state of its name (rule 26 against the highest earlier release of its line); signs
+/// it with the owner's keys of `~/.una/keys/`; and sends the archive and the statement. The
+/// submission is recorded in Itaoca, so `una ita watch` can check the registry's promise for
+/// it. Costs: the check, and O(B) for the B bytes of the package.
 pub(crate) fn publish_command(
     path: &Path,
-    signing: Signing<'_>,
+    keys: Option<&Path>,
     solving: &Solving,
     registry: Option<&dyn Registry>,
     out: Output<'_>,
@@ -250,10 +259,6 @@ pub(crate) fn publish_command(
     if !path.join("ita.una").is_file() {
         return usage(out, &not_a_package(path));
     }
-    let (keys, transport) = match signing.open() {
-        Ok(opened) => opened,
-        Err(message) => return usage(out, &message),
-    };
     let package = match crate::package::load_in(path, &BTreeMap::new(), solving.itaoca.as_ref()) {
         Ok(package) => package,
         Err(error) => return usage(out, &error.to_string()),
@@ -280,6 +285,23 @@ pub(crate) fn publish_command(
         .collect();
     if !refusals.is_empty() {
         diagnostics.extend(located(sources, manifest_id, refusals));
+        return finish("publish", &[], &[], &diagnostics, sources, out);
+    }
+    // Rule 43 refuses a workspace member with uncommitted changes; until that check is
+    // available, a package in a git repository is refused, and no program is started to look.
+    if let Some(git) = submit::git_entry(path) {
+        diagnostics.extend(located(
+            sources,
+            manifest_id,
+            vec![problem(
+                Code::U7013,
+                head,
+                format!(
+                    "the check for uncommitted changes is not available yet, so a package in a git repository is not published (found `{}`)",
+                    git.display()
+                ),
+            )],
+        ));
         return finish("publish", &[], &[], &diagnostics, sources, out);
     }
     // `una check` at tier 1: any diagnostic, an obligation not proven included, refuses.
@@ -326,8 +348,25 @@ pub(crate) fn publish_command(
         .as_ref()
         .map(|n| n.value.to_string())
         .unwrap_or_default();
+    let transport = match target(path, &source, head.clone()) {
+        Ok(transport) => transport,
+        Err(refusal) => {
+            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
+            return finish("publish", &[], &[], &diagnostics, sources, out);
+        }
+    };
     let state = match name_state(registry, &source, &name, head.clone()) {
         Ok(state) => state,
+        Err(refusal) => {
+            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
+            return finish("publish", &[], &[], &diagnostics, sources, out);
+        }
+    };
+    let keys = match registry
+        .ok_or_else(|| problem(Code::U7013, head.clone(), NO_CLIENT.to_owned()))
+        .and_then(|registry| signing_keys(registry, keys, &source, &name, head.clone()))
+    {
+        Ok(keys) => keys,
         Err(refusal) => {
             diagnostics.extend(located(sources, manifest_id, vec![refusal]));
             return finish("publish", &[], &[], &diagnostics, sources, out);
@@ -427,14 +466,15 @@ fn record_submission(
     tree::store_file(&parent, leaf, format!("{url}\n").as_bytes(), false)
 }
 
-/// `una ita yank <version> [path] --key <file>... --upload <url>` (ADR 0122 rule 41): writes a
-/// yank of a release of the package at `path`, against the verified state of its name, signs it
-/// with the keys given, which must be the owner's threshold for it to stand, and sends it
-/// through the directory transport.
+/// `una ita yank <version> [path]` (ADR 0122 rules 38 and 41, and its amendment of the yank
+/// command): writes a yank of a release of the package at `path`, against the verified state of
+/// its name, signs it with the owner's keys of `~/.una/keys/`, at least the owner's threshold,
+/// and sends it to the source the head's `publish to` names, through the same transport as
+/// `publish`.
 pub(crate) fn yank_command(
     version: &str,
     path: &Path,
-    signing: Signing<'_>,
+    keys: Option<&Path>,
     itaoca: Option<&Itaoca>,
     registry: Option<&dyn Registry>,
     out: Output<'_>,
@@ -445,10 +485,6 @@ pub(crate) fn yank_command(
     }
     let Ok(version) = Version::parse_full(version) else {
         return usage(out, &format!("`{version}` is not a full version, such as `0.3.1`"));
-    };
-    let (keys, transport) = match signing.open() {
-        Ok(opened) => opened,
-        Err(message) => return usage(out, &message),
     };
     let text = match std::fs::read_to_string(&manifest_path) {
         Ok(text) => text,
@@ -478,8 +514,25 @@ pub(crate) fn yank_command(
         ));
         return finish("yank", &[], &[], &diagnostics, &sources, out);
     };
+    let transport = match target(path, &source, head.clone()) {
+        Ok(transport) => transport,
+        Err(refusal) => {
+            diagnostics.extend(located(&sources, id, vec![refusal]));
+            return finish("yank", &[], &[], &diagnostics, &sources, out);
+        }
+    };
     let state = match name_state(registry, &source, &name, head.clone()) {
         Ok(state) => state,
+        Err(refusal) => {
+            diagnostics.extend(located(&sources, id, vec![refusal]));
+            return finish("yank", &[], &[], &diagnostics, &sources, out);
+        }
+    };
+    let keys = match registry
+        .ok_or_else(|| problem(Code::U7013, head.clone(), NO_CLIENT.to_owned()))
+        .and_then(|registry| signing_keys(registry, keys, &source, &name, head.clone()))
+    {
+        Ok(keys) => keys,
         Err(refusal) => {
             diagnostics.extend(located(&sources, id, vec![refusal]));
             return finish("yank", &[], &[], &diagnostics, &sources, out);

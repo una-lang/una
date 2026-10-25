@@ -130,7 +130,7 @@ impl Directory {
         match location(url)? {
             Location::Directory(base) => Ok(Directory::new(&base, url)),
             Location::Https(_) => Err(format!(
-                "`{url}` is served over HTTPS, and this release has no network transport; give a `file:///` URL of a directory"
+                "`{url}` is served over HTTPS, and there is no https transport yet"
             )),
         }
     }

@@ -225,132 +225,123 @@ fn with_registry(name: &str, stored: bool) -> (PathBuf, PathBuf) {
 
 // --- publish and yank ------------------------------------------------------------------------
 
-fn published(extra: &str) -> String {
+fn published(target: &str) -> String {
     format!(
-        "ita acme/demo\n  version 0.1.0\n  edition 0.4\n  about \"A demo\"\n  license \"Apache-2.0\"\n  publish to acme\n{extra}"
+        "ita acme/demo\n  version 0.1.0\n  edition 0.4\n  about \"A demo\"\n  license \"Apache-2.0\"\n  publish to {target}\n"
     )
 }
 
-/// A key file of the owner, readable by its owner only.
-fn key_file(dir: &Path) -> PathBuf {
-    let key = una_project::registry::keyfile::SigningKey::from_secret("acme.publisher", &[50; 32])
-        .unwrap();
-    let file = dir.join("publisher.key");
-    std::fs::write(&file, key.encode()).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    file
+/// A fresh directory outside any git repository: below the system's temporary directory, which
+/// the test checks holds no `.git` on its way to the root.
+fn outside_git(name: &str) -> PathBuf {
+    let base = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("una-ita-registry-{}", std::process::id()))
+        .join(name);
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    assert_eq!(
+        una_project::registry::submit::git_entry(&base),
+        None,
+        "the temporary directory is inside a git repository"
+    );
+    base
 }
 
-#[test]
-fn publish_takes_only_a_directory_transport_and_never_plain_http() {
-    let dir = package("publish-urls", &published(""));
-    let keys = scratch("ita-registry-keys", "urls");
-    let key = key_file(&keys);
-    let store = scratch("ita-registry-store", "urls");
-    let run = |upload: Option<&str>| {
-        let mut args = vec!["una", "ita", "publish", path(&dir), "--key", path(&key)];
-        if let Some(upload) = upload {
-            args.extend(["--upload", upload]);
-        }
-        una_in(&args, &store)
-    };
-    let (status, _, err) = run(None);
-    assert_eq!(status, 2);
-    assert!(err.contains("--upload file:///"), "{err}");
-    let (status, _, err) = run(Some("http://ita.acme.example"));
-    assert_eq!(status, 2);
-    assert!(err.contains("plain HTTP"), "{err}");
-    let (status, _, err) = run(Some("https://ita.acme.example"));
-    assert_eq!(status, 2);
-    assert!(err.contains("no network transport"), "{err}");
-    let (status, _, err) = run(Some("ftp://ita.acme.example"));
-    assert_eq!(status, 2);
-    assert!(err.contains("scheme `ftp`"), "{err}");
+/// A package `pkg` in a fresh directory outside any git repository.
+fn package_outside_git(name: &str, manifest: &str) -> PathBuf {
+    let dir = outside_git(name).join("pkg");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    std::fs::write(dir.join("src/demo.una"), MODULE).unwrap();
+    dir
 }
 
 #[test]
 fn publish_refuses_what_rule_43_names_and_sends_nothing() {
-    let upload_dir = scratch("ita-registry-upload", "refusals");
-    let upload = format!("file://{}", path(&upload_dir));
-    let keys = scratch("ita-registry-keys", "refusals");
-    let key = key_file(&keys);
     let store = scratch("ita-registry-store", "refusals");
     for (name, manifest, part) in [
         ("no-target", MANIFEST.to_owned(), "publish to"),
         (
             "path-need",
-            published("\nneeds\n  util from path \"deps/util\"\n    accept name\n"),
+            format!(
+                "{}\nneeds\n  util from path \"deps/util\"\n    accept name\n",
+                published("acme")
+            ),
             "path dependency",
         ),
     ] {
         let dir = package(&format!("publish-{name}"), &manifest);
-        let (status, out, _) = una_in(
-            &["una", "--json", "ita", "publish", path(&dir), "--key", path(&key), "--upload", &upload],
-            &store,
-        );
+        let (status, out, _) = una_in(&["una", "--json", "ita", "publish", path(&dir)], &store);
         assert_eq!(status, 1, "{name}");
         assert!(codes_of(&out).contains(&"U7013".to_owned()), "{name}: {out}");
         assert!(out.contains(part), "{name}: {out}");
     }
     // A package that does not check is refused too.
-    let dir = package("publish-unchecked", &published(""));
-    std::fs::write(dir.join("src/demo.una"), "module demo\n\npub one() -> Int = \"one\"\n").unwrap();
-    let (status, out, _) = una_in(
-        &["una", "--json", "ita", "publish", path(&dir), "--key", path(&key), "--upload", &upload],
-        &store,
-    );
+    let dir = package_outside_git("unchecked", &published("itaty"));
+    std::fs::write(
+        dir.join("src/demo.una"),
+        "module demo\n\npub one() -> Int = \"one\"\n",
+    )
+    .unwrap();
+    let (status, out, _) = una_in(&["una", "--json", "ita", "publish", path(&dir)], &store);
     assert_eq!(status, 1);
     assert!(out.contains("checks at tier 1 with none"), "{out}");
-    // A package that checks still needs its name's verified chain, which this release cannot
-    // read: nothing is sent.
-    let dir = package("publish-no-client", &published(""));
-    let (status, out, _) = una_in(
-        &["una", "--json", "ita", "publish", path(&dir), "--key", path(&key), "--upload", &upload],
-        &store,
-    );
-    assert_eq!(status, 1);
-    assert_eq!(codes_of(&out), ["U7013"]);
-    assert!(out.contains("registry client"), "{out}");
-    assert_eq!(std::fs::read_dir(&upload_dir).unwrap().count(), 0);
 }
 
-#[cfg(unix)]
+/// Until the check for uncommitted changes is available, a package with a `.git` entry in its
+/// directory or an ancestor is not published; no program is started to look.
 #[test]
-fn a_key_file_readable_by_others_is_refused() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = package("publish-open-key", &published(""));
-    let keys = scratch("ita-registry-keys", "open");
-    let key = key_file(&keys);
-    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let upload = format!("file://{}", path(&scratch("ita-registry-upload", "open")));
-    let (status, _, err) = una_in(
-        &["una", "ita", "publish", path(&dir), "--key", path(&key), "--upload", &upload],
-        &keys,
-    );
-    assert_eq!(status, 2);
-    assert!(err.contains("readable by its owner only"), "{err}");
+fn publish_refuses_a_package_in_a_git_repository() {
+    let store = scratch("ita-registry-store", "git");
+    let refused = |dir: &Path| {
+        let (status, out, _) = una_in(&["una", "--json", "ita", "publish", path(dir)], &store);
+        status == 1 && out.contains("uncommitted changes is not available yet")
+    };
+    // This repository's own checkout holds the test's target directory.
+    assert!(refused(&package("publish-in-repository", &published("acme"))));
+    let dir = package_outside_git("git-dir", &published("acme"));
+    assert!(!refused(&dir));
+    std::fs::create_dir(dir.join(".git")).unwrap();
+    assert!(refused(&dir), "a `.git` directory");
+    let dir = package_outside_git("git-file", &published("acme"));
+    std::fs::write(dir.join(".git"), "gitdir: ../elsewhere\n").unwrap();
+    assert!(refused(&dir), "a `.git` file");
+    let dir = package_outside_git("git-above", &published("acme"));
+    std::fs::create_dir(dir.parent().unwrap().join(".git")).unwrap();
+    assert!(refused(&dir), "a `.git` in an ancestor");
 }
 
+/// A submission goes to the source the head names, at the URL it is declared with; an https
+/// source has no transport yet, and nothing is sent.
 #[test]
-fn yank_needs_the_names_verified_chain() {
-    let dir = package("yank", &published(""));
-    let keys = scratch("ita-registry-keys", "yank");
-    let key = key_file(&keys);
-    let upload = format!("file://{}", path(&scratch("ita-registry-upload", "yank")));
-    let (status, out, _) = una_in(
-        &["una", "--json", "ita", "yank", "0.1.0", path(&dir), "--key", path(&key), "--upload", &upload],
-        &keys,
+fn publish_and_yank_send_only_where_the_source_is_declared() {
+    let store = scratch("ita-registry-store", "sources");
+    let codes_and = |args: &[&str], part: &str| {
+        let (status, out, _) = una_in(args, &store);
+        assert_eq!(status, 1, "{out}");
+        assert_eq!(codes_of(&out), ["U7013"], "{out}");
+        assert!(out.contains(part), "{part}: {out}");
+    };
+    let itaty = package_outside_git("itaty", &published("itaty"));
+    codes_and(&["una", "--json", "ita", "publish", path(&itaty)], "no https transport yet");
+    codes_and(
+        &["una", "--json", "ita", "yank", "0.1.0", path(&itaty)],
+        "no https transport yet",
     );
-    assert_eq!(status, 1);
-    assert_eq!(codes_of(&out), ["U7013"]);
-    let (status, _, err) = una_in(
-        &["una", "ita", "yank", "0.1", path(&dir), "--key", path(&key), "--upload", &upload],
-        &keys,
-    );
+    let lone = package_outside_git("lone", &published("acme"));
+    codes_and(&["una", "--json", "ita", "publish", path(&lone)], "declared by no");
+    let member = package_outside_git("member", &published("acme"));
+    std::fs::write(
+        member.parent().unwrap().join("itaty.una"),
+        format!(
+            "itaty\n  members\n    \"pkg\"\n\nsources\n  acme \"https://ita.acme.example\"\n    root \"sha256:{}\"\n    owners acme\n",
+            "5e".repeat(32)
+        ),
+    )
+    .unwrap();
+    codes_and(&["una", "--json", "ita", "publish", path(&member)], "no https transport yet");
+    let (status, _, err) = una_in(&["una", "ita", "yank", "0.1", path(&member)], &store);
     assert_eq!(status, 2);
     assert!(err.contains("full version"), "{err}");
 }

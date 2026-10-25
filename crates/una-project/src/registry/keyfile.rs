@@ -9,13 +9,15 @@
 //! secret <base64 of the 32-byte Ed25519 secret>
 //! ```
 //!
-//! A key file encrypted with a passphrase, the default of rule 38, needs a key derivation
-//! function and a cipher that are not yet in the trusted base; [`SigningKey::parse`] refuses it
-//! by its first line, `ita-key-encrypted/1`, naming why, and never reads it as clear. A key is
-//! accepted only when its public key passes the strict rule ([`crate::tlog::ed25519`]) on a
-//! signature of its own. Signing is O(1) per signature, about 20 µs.
+//! A key file encrypted with a passphrase, the default of rule 38, is not read yet:
+//! [`SigningKey::parse`] refuses it by its first line, `ita-key-encrypted/1`, saying that
+//! passphrase encryption is not implemented yet, and never reads it as clear. A key is accepted
+//! only when its public key passes the strict rule ([`crate::tlog::ed25519`]) on a signature of
+//! its own. [`owner_keys`] chooses, among the files of `~/.una/keys/`, the owner's keys that
+//! sign. Signing is O(1) per signature, about 20 µs; choosing is O(f log f) for f files.
 
 use std::fmt;
+use std::path::Path;
 
 use ed25519_dalek::Signer as _;
 
@@ -72,7 +74,7 @@ impl SigningKey {
     pub fn parse(text: &str) -> Result<SigningKey, String> {
         if text.starts_with(ENCRYPTED) {
             return Err(
-                "the key file is encrypted with a passphrase, which this release cannot read yet; use a key written with `--no-passphrase` on a machine whose disk is protected otherwise"
+                "the key file is encrypted with a passphrase, and passphrase encryption is not implemented yet; use a key written with `--no-passphrase` on a machine whose disk is protected otherwise"
                     .to_owned(),
             );
         }
@@ -148,4 +150,97 @@ pub fn sign_note(text: &str, keys: &[&SigningKey]) -> Result<String, String> {
         ));
     }
     Ok(note)
+}
+
+/// The most bytes of a key file.
+pub const MAX_KEY_FILE: u64 = 4096;
+
+/// Reads the key file at `path`: a regular file, not a link, of at most [`MAX_KEY_FILE`] bytes,
+/// and on Unix readable and writable by its owner only (rule 38), in the form
+/// [`SigningKey::parse`] reads.
+pub fn read_key_file(path: &Path) -> Result<SigningKey, String> {
+    let shown = path.display();
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot read the key file `{shown}`: {error}"))?;
+    if !meta.is_file() {
+        return Err(format!("the key file `{shown}` is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "the key file `{shown}` can be read by others; make it readable by its owner only (mode 0600)"
+            ));
+        }
+    }
+    if meta.len() > MAX_KEY_FILE {
+        return Err(format!("the key file `{shown}` is too long"));
+    }
+    let bytes = crate::tree::read_unlinked(path)?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| format!("the key file `{shown}` is not UTF-8"))?;
+    SigningKey::parse(&text).map_err(|why| format!("the key file `{shown}`: {why}"))
+}
+
+/// The keys of `owner` in `dir`, `~/.una/keys/`, that sign for it (rule 38), read strictly:
+///
+/// - the owner's key files are the regular files named `<owner>-<id>.key`, `<id>` lowercase
+///   hexadecimal, as `una ita key new` writes them; every one of them must read
+///   ([`read_key_file`]): one that is a link, can be read by others, is encrypted or does not
+///   parse refuses the whole choice, so no key is silently left out or taken;
+/// - a key signs only when its name and public key are those of a key of `registered`, the
+///   owner's keys valid at the head of its chain, so its signature line carries the name and
+///   key hash a client looks for (`spec/30 §11` rule 3); the others are not used;
+/// - at least `threshold` distinct registered keys must be found, and every one found signs.
+///
+/// Returns the keys in the order of their file names.
+pub fn owner_keys(
+    dir: &Path,
+    owner: &str,
+    registered: &[Key],
+    threshold: usize,
+) -> Result<Vec<SigningKey>, String> {
+    let prefix = format!("{owner}-");
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "`{}` holds no key of `{owner}`; a release is signed by the owner's keys",
+                dir.display()
+            ));
+        }
+        Err(error) => return Err(format!("cannot list `{}`: {error}", dir.display())),
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(".key"))
+                .is_some_and(|id| {
+                    !id.is_empty()
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+        })
+        .collect();
+    names.sort();
+    let mut chosen: Vec<SigningKey> = Vec::new();
+    for name in names {
+        let key = read_key_file(&dir.join(&name))?;
+        let is_registered = registered.contains(key.key());
+        let seen = chosen.iter().any(|c| c.key().public == key.key().public);
+        if is_registered && !seen {
+            chosen.push(key);
+        }
+    }
+    if threshold == 0 || chosen.len() < threshold {
+        return Err(format!(
+            "`{}` holds {} of the keys registered for `{owner}`, fewer than its threshold of {threshold}",
+            dir.display(),
+            chosen.len()
+        ));
+    }
+    Ok(chosen)
 }

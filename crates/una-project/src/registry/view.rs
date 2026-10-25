@@ -69,6 +69,11 @@ pub struct OwnerState {
     pub checkpoint_time: u64,
     /// The owner's count of entries in the map.
     pub count: u64,
+    /// The owner's keys valid at the head of its chain, each with the name its signature lines
+    /// carry (for `itauna`, the keys of the root metadata).
+    pub keys: Vec<Key>,
+    /// How many of them must sign a release, a yank or a key event (rule 38).
+    pub threshold: usize,
     /// Keys revoked with "compromised since log entry p": the key's `signed` form,
     /// `ed25519:<owner>:<fingerprint>`, and p.
     pub compromised: Vec<(String, u64)>,

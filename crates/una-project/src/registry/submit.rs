@@ -30,6 +30,7 @@
 //! signature per key, and O(c log c) for rule 26 over c capabilities.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use una_syntax::ita;
 
@@ -44,6 +45,65 @@ use crate::tlog::note::{self, Key};
 use crate::tlog::publish::{self, Release};
 use crate::tlog::release::{self, Statement};
 use crate::version::Version;
+
+/// The `.git` entry, a directory or a file, of `dir` or of the nearest of its ancestors up to
+/// the file system's root, if any. Publishing from inside a git repository is refused while the
+/// check for uncommitted changes (rule 43) is not available, and no program is started to look:
+/// only the entries' presence is read. O(d) for a path of d components.
+pub fn git_entry(dir: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    canonical
+        .ancestors()
+        .map(|ancestor| ancestor.join(".git"))
+        .find(|entry| std::fs::symlink_metadata(entry).is_ok())
+}
+
+/// The base URL of `source` for the package at `dir` (rules 8 and 43): only the root and
+/// `itaty.una` declare sources, and a published package has no `sources` section, so it is the
+/// URL that the `sources` of the nearest workspace listing the package as a member gives.
+/// `itaty`, whose URL is built into `una` with its root, is served over HTTPS. Refused: a
+/// source no such workspace declares, and an `itaty.una` that does not read. O(d) for a path of
+/// d components, and the workspace's size.
+pub fn declared_source(dir: &Path, source: &str) -> Result<String, String> {
+    if source == crate::ita::ITATY {
+        return Err("`itaty` is served over HTTPS, and there is no https transport yet".to_owned());
+    }
+    let package = std::fs::canonicalize(dir)
+        .map_err(|error| format!("cannot resolve `{}`: {error}", dir.display()))?;
+    for ancestor in package.ancestors() {
+        let file = ancestor.join("itaty.una");
+        if !file.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file)
+            .map_err(|error| format!("cannot read `{}`: {error}", file.display()))?;
+        let (workspace, errors) = crate::ita::parse_workspace(&text);
+        if let Some(error) = errors.first() {
+            return Err(format!("`{}` does not read: {}", file.display(), error.message));
+        }
+        let member = workspace.members.iter().any(|member| {
+            std::fs::canonicalize(ancestor.join(member.value.trim_end_matches('/')))
+                .is_ok_and(|path| path == package)
+        });
+        if !member {
+            continue;
+        }
+        return workspace
+            .sources
+            .iter()
+            .find(|declared| declared.name.value == source)
+            .map(|declared| declared.url.value.clone())
+            .ok_or_else(|| {
+                format!(
+                    "`{source}` is not a source of `{}`, the workspace of the package",
+                    file.display()
+                )
+            });
+    }
+    Err(format!(
+        "`{source}` is declared by no `itaty.una` of a workspace that lists the package; a source a package is published to is `itaty` or one its workspace declares"
+    ))
+}
 
 /// The format line of a promise.
 pub const PROMISE: &str = "ita-promise/1";

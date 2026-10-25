@@ -1123,37 +1123,28 @@ fn run_command(
                     ItaCommand::Verify { path } => {
                         ita::verify_command(&path, itaoca(environment).as_ref(), output)
                     }
-                    ItaCommand::Publish { path, keys, upload } => {
+                    ItaCommand::Publish { path } => {
                         let solving = solving(DEFAULT_WALLCLOCK.as_secs());
                         let registry = ita_registry::client(solving.itaoca.as_ref());
-                        let signing = ita_registry::Signing {
-                            keys: &keys,
-                            upload: upload.as_deref(),
-                        };
+                        let home = variable(environment, "HOME");
+                        let keys = ita_registry::keys_dir(home.as_deref());
                         ita_registry::publish_command(
                             &path,
-                            signing,
+                            keys.as_deref(),
                             &solving,
                             registry.as_deref(),
                             output,
                         )
                     }
-                    ItaCommand::Yank {
-                        version,
-                        path,
-                        keys,
-                        upload,
-                    } => {
+                    ItaCommand::Yank { version, path } => {
                         let store = itaoca(environment);
                         let registry = ita_registry::client(store.as_ref());
-                        let signing = ita_registry::Signing {
-                            keys: &keys,
-                            upload: upload.as_deref(),
-                        };
+                        let home = variable(environment, "HOME");
+                        let keys = ita_registry::keys_dir(home.as_deref());
                         ita_registry::yank_command(
                             &version,
                             &path,
-                            signing,
+                            keys.as_deref(),
                             store.as_ref(),
                             registry.as_deref(),
                             output,

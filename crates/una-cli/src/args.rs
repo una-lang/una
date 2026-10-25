@@ -343,14 +343,6 @@ pub(crate) enum ItaCommand {
         /// The package directory
         #[arg(default_value = ".")]
         path: PathBuf,
-
-        /// A key file of the owner; give one per key of the owner's threshold
-        #[arg(long = "key", value_name = "FILE")]
-        keys: Vec<PathBuf>,
-
-        /// Where to send it: a `file:///` URL of the registry's directory
-        #[arg(long, value_name = "URL")]
-        upload: Option<String>,
     },
     /// Yank a release of the package: new resolutions skip it, and existing locks keep it
     Yank {
@@ -360,14 +352,6 @@ pub(crate) enum ItaCommand {
         /// The package directory
         #[arg(default_value = ".")]
         path: PathBuf,
-
-        /// A key file of the owner; give one per key of the owner's threshold
-        #[arg(long = "key", value_name = "FILE")]
-        keys: Vec<PathBuf>,
-
-        /// Where to send it: a `file:///` URL of the registry's directory
-        #[arg(long, value_name = "URL")]
-        upload: Option<String>,
     },
     /// Check each locked registry package for yanks, advisories and key changes (U7014)
     Audit {

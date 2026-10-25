@@ -9,7 +9,7 @@ codes: [U7013, U7014]
 
 ## What it does
 
-`una ita` is the package manager, part of the `una` binary. The same binary run under the name `ita` behaves as `una ita`: `ita lock` is `una ita lock`. No command of this release opens a network connection, and none ever starts another program: a submission and a bundle go through a directory.
+`una ita` is the package manager, part of the `una` binary. The same binary run under the name `ita` behaves as `una ita`: `ita lock` is `una ita lock`. No command of this release opens a network connection, and none ever starts another program: a bundle goes through a file, and a submission waits for an https transport.
 
 `ita.una`
 
@@ -77,8 +77,8 @@ una ita remove <name> [path]
 una ita tree [path]
 una ita vendor [path]
 una ita verify [path]
-una ita publish [path] --key <file>... --upload <url>
-una ita yank <version> [path] --key <file>... --upload <url>
+una ita publish [path]
+una ita yank <version> [path]
 una ita audit [path]
 una ita watch <owner> [<name>...] [--from <source>]
 una ita bundle <file> [path]
@@ -91,9 +91,9 @@ una ita unbundle <file> [path]
 - **`remove`** takes a need out of `ita.una`, then writes the lock.
 - **`tree`** prints each package of the program, with its source, version, the ceiling granted, what it uses and the trust it adds.
 - **`vendor`** copies each locked registry package from Itaoca into `vendor/ita/`, and **`verify`** verifies each one again wherever it is, in `vendor/ita/` and in Itaoca.
-- **`publish`** refuses a package without `publish to`, `about` or `license`, with a `sources`, `replace` or `trust` section, or with a need of a path, a workspace member or another registry, and one that does not check at tier 1 with no diagnostic. It builds the archive of `ita.una`, the modules, `README.md`, `CHANGELOG.md` and the license files, writes the release statement against the verified state of the name, refusing authority that grows within a major line, signs it with each `--key`, and sends both to `--upload`. **`yank`** sends a signed yank of one version: new resolutions skip it, and existing locks keep it.
-- **`--upload`** is a `file:///` URL of the registry's directory in this release. An `https://` URL has no transport yet, and plain `http://` is never used: it is refused wherever a URL is read, in `sources`, in `mirrors.una` and on the command line.
-- **Key files** are read only when no one but their owner can read them, and only in the form written without a passphrase in this release.
+- **`publish`** refuses a package without `publish to`, `about` or `license`, with a `sources`, `replace` or `trust` section, or with a need of a path, a workspace member or another registry; a package in a git repository, since the check for uncommitted changes is not available yet; and one that does not check at tier 1 with no diagnostic. It builds the archive of `ita.una`, the modules, `README.md`, `CHANGELOG.md` and the license files, writes the release statement against the verified state of the name, refusing authority that grows within a major line, signs it with the owner's keys, and sends both to the source that `publish to` names. **`yank`** sends a yank of one version, signed by the owner's keys, through the same transport: new resolutions skip it, and existing locks keep it.
+- **Where it goes.** A source other than `itaty` is the one the `itaty.una` of the package's workspace declares. A source is served over HTTPS, and there is no https transport yet, so `publish` and `yank` stop there and send nothing. Plain `http://` is never used: it is refused wherever a URL is read, in `sources` and in `mirrors.una`.
+- **The owner's keys** are the files `<owner>-<id>.key` in `~/.una/keys/`. Each must be readable by its owner only and written without a passphrase, since passphrase encryption is not implemented yet. The keys registered for the owner sign, and they must reach the owner's threshold.
 - **`audit`** checks each locked registry package against the verified state of its name and owner: a yanked release, an advisory, a key revoked as compromised, a pending recovery, a key change or a transfer is U7014, once per package, and the exit code is 1. It is the command a release gate runs; `una build` never runs it.
 - **`watch`** prints the new entries of an owner's chains since the position it keeps in Itaoca, and reports a registry's promise to log a submission that it did not keep.
 - **`bundle`** writes the lock's registry packages, with their provenance, into one file, and **`unbundle`** on an air-gapped machine verifies all of it against `ita.una` and `ita.lock`, then fills Itaoca. A bundle is trusted for nothing: one changed byte refuses it whole, and nothing is written.
