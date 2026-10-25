@@ -635,6 +635,7 @@ pub(crate) fn limit_labels(
             *slot = Some((*cap, op.as_str()));
         }
     }
+    let ops_start = functions + handlers + capabilities;
     let name = |node: usize| -> String {
         let qualified = |module: usize, name: &str| {
             match env.modules.get(module).map(|m| m.path.as_str()) {
@@ -642,22 +643,25 @@ pub(crate) fn limit_labels(
                 _ => format!("`{name}`"),
             }
         };
-        if node < functions {
-            env.functions
-                .get(node)
-                .map_or_else(String::new, |def| qualified(def.module, def.name))
-        } else if node < functions + handlers {
-            env.handlers.get(node - functions).map_or_else(String::new, |h| {
-                format!(
-                    "the handler {}",
-                    qualified(h.module, env.text(h.module, h.ast.name.name))
-                )
-            })
-        } else if node == lambda {
-            "a call of a function value".to_owned()
-        } else {
-            op_of
-                .get(node.saturating_sub(functions + handlers + capabilities))
+        match node {
+            f if f < functions => env
+                .functions
+                .get(f)
+                .map_or_else(String::new, |def| qualified(def.module, def.name)),
+            h if h < functions + handlers => {
+                env.handlers.get(h - functions).map_or_else(String::new, |h| {
+                    format!(
+                        "the handler {}",
+                        qualified(h.module, env.text(h.module, h.ast.name.name))
+                    )
+                })
+            }
+            c if c < ops_start => env
+                .capabilities
+                .get(c - functions - handlers)
+                .map_or_else(String::new, |c| format!("the capability `{}`", c.name)),
+            o if o < lambda => op_of
+                .get(o - ops_start)
                 .copied()
                 .flatten()
                 .and_then(|(cap, op)| {
@@ -665,7 +669,8 @@ pub(crate) fn limit_labels(
                         .get(cap)
                         .map(|c| format!("the operation `{}.{op}`", c.name))
                 })
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            _ => "functions called as values".to_owned(),
         }
     };
     let mut sites = Vec::new();
