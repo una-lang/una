@@ -1,5 +1,5 @@
 -- test: a generic fold accepts an explicitly supplied combining function and adds the list to 6
--- spec: spec/20 §1, §2, §3
+-- spec: spec/14 §1, spec/20 §1
 -- grant: console
 -- expect: run-output "6"
 module fold

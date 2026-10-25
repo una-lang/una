@@ -3,7 +3,7 @@
 ## Reading order
 
 1. `00-charter.md`: thesis, principles, proof boundary, and v0.1 scope. Read first, then identify the package edition and its terms in `spec/13 §7` before selecting normative rules.
-2. `spec/`: the normative language definition, in numeric order. Read the chapters that apply to the package edition; `spec/13 §7` lists the edition terms and preview ledger.
+2. `spec/`: the normative language definition, in numeric order. Read the chapters that apply to the package edition; `spec/13 §7` states the edition terms.
 3. `compiler/`: how the reference compiler is built.
 4. `adr/`: why key decisions were made.
 5. `plan/`: roadmap, v0.1 milestones, deferred backlog.
@@ -40,21 +40,21 @@
 | `spec/13-diagnostics-and-abi.md` | Diagnostic codes, JSON schemas, CLI, build report |
 | `spec/14-standard-library.md` | Prelude and host capabilities available in v0.1 |
 | `spec/15-canonical-form.md` | The canonical form: lines, spacing, blank lines, comments, U7001 |
-| `spec/16-native-backend.md` | Native executable generation and runtime contract |
-| `spec/17-memory-model.md` | Editable values, ownership, `edit` and `take` |
+| `spec/16-native-backend.md` | The native backend: `una build` and native executables |
+| `spec/17-memory-model.md` | Mutable value semantics: `let edit`, `edit` and `take` parameters, `for` loops |
 | `spec/18-fixed-width-integers.md` | Fixed-width integer types and overflow obligations |
-| `spec/19-structured-concurrency.md` | `together` tasks, cancellation and traces |
+| `spec/19-structured-concurrency.md` | Structured concurrency: `together` blocks and `together for` |
 | `spec/20-constraints-on-generics.md` | Built-in constraints on type parameters |
-| `spec/21-maps.md` | Ordered maps and their operations |
-| `spec/22-text.md` | Text operations and their contracts |
+| `spec/21-maps.md` | `Map[K, V]`, ordered by its keys |
+| `spec/22-text.md` | Text operations of the prelude |
 | `spec/23-json.md` | JSON values, parsing and serialization |
-| `spec/24-http.md` | The HTTP capability |
-| `spec/25-units-of-measure.md` | Units and measured integer types in edition 0.3 |
-| `spec/26-long-running-programs.md` | Host-driven steps and long-running programs |
-| `spec/28-collections.md` | Standard collections in edition 0.4 |
-| `spec/29-numerics.md` | F64 in 0.3; numeric foundation additions in 0.4 |
-| `spec/30-packages.md` | Package and dependency rules in edition 0.4 |
-| `spec/31-http-servers.md` | HTTP servers in edition 0.4 |
+| `spec/24-http.md` | The HTTP client capability `Http` |
+| `spec/25-units-of-measure.md` | Units of measure, edition `0.3` |
+| `spec/26-long-running-programs.md` | Long-running programs, edition `0.4` |
+| `spec/28-collections.md` | Collections, edition `0.4` |
+| `spec/29-numerics.md` | Numerics: `F64` in edition `0.3`, the numeric foundation in edition `0.4` |
+| `spec/30-packages.md` | Packages and dependencies: `ita.una` and `ita.lock`, edition `0.4` |
+| `spec/31-http-servers.md` | HTTP servers, edition `0.4` |
 
 ## Starting a contribution
 

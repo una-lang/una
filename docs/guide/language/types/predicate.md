@@ -1,7 +1,7 @@
 ---
 construct: "predicate: reflect and opaque"
 editions: ["0.1", "0.2", "0.3"]
-spec: ["spec/03 §3", "spec/03 §4", "spec/02 §3", "spec/06 §6", "spec/05 §2"]
+spec: ["spec/03 §3", "spec/03 §4", "spec/02 §3", "spec/06 §6", "spec/05 §2", "spec/13 §7"]
 codes: [U2014, U2015, U2016, U7003]
 ---
 
@@ -122,7 +122,7 @@ example "invalid"
   expect fails WrongArea
 ```
 
-The two examples pass under `una test` in 0.3.16. The solver knows only the predicate's name; it does not prove or learn the square equation. Keep opaque checks pure and total, budget each `checked`, and do not apply this recipe to labeled data where a failure could reveal a secret.
+The solver knows only the predicate's name; it does not prove or learn the square equation. Each `checked` counts against the module's budget.
 
 ## Edge cases
 
@@ -191,7 +191,7 @@ Further rules:
 
 ## Edition
 
-Predicates are the same in editions `0.1` and `0.2`.
+Predicates are the same in editions `0.1` and `0.2`, and editions `0.3` and `0.4` keep the rules of edition `0.2` (`spec/13 §7`).
 
 ## Normative source
 

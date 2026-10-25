@@ -136,13 +136,13 @@ Further rules:
 
 Read the report fields separately:
 
-- `proven` counts proof obligations discharged for this checked program and its assumptions. It does not establish that the requirement is complete or that an external system behaves as declared.
-- `assumptions` lists capability operations and their declared `ensures`; those contracts are assumptions about the external implementation.
-- `escapes` lists run-time `checked` tests and their budget.
-- `tcb` lists trusted modules and line counts, host capabilities, solver and proof-cache details. Line counts help locate code for human review; they are not a security score or evidence that a policy's purpose is appropriate.
-- `out_of_model` lists channels outside the information-flow guarantee, including timing, termination, resource consumption, hard links, and external systems beyond declared signatures.
+- `proven` gives the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. A proof shows that the program keeps its contracts, not that the contracts capture the whole requirement or that an external system behaves as declared.
+- `assumptions` lists every capability the package declares, with its operations and their `ensures` clauses; those clauses are assumed of the implementation, not proven.
+- `escapes.checked` lists every module that uses `checked`, with its count and its budget.
+- `tcb` lists the trusted modules with their line counts, the host capabilities, the solver and the proof cache with its key. Line counts locate the code to review; they do not say whether a policy's purpose is appropriate.
+- `out_of_model` lists the channels outside the information-flow guarantee, such as timing, termination and divergence, resource consumption, hard links, and external systems beyond their declared signatures.
 
-A human reviewer still needs to compare policy purpose and owner with the source requirement and inspect the assumptions and excluded channels. These fields are defined in `spec/13 §6`; the information-flow scope is in `spec/07 §1`.
+A review of the report still compares each policy's purpose and owner with the requirement, and reads the assumptions and the excluded channels. These fields are defined in `spec/13 §6`; the information-flow scope is in `spec/07 §1`.
 
 ## Diagnostics
 

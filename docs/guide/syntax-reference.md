@@ -35,7 +35,7 @@
 Una is a verification-first language for machine-generated software. Its design follows a few visible rules:
 
 - **A function is an equation.** The header is the contract; `=` separates it from the body, the implementation.
-- **`@` marks direct capability operations.** Every direct interaction with the outside world goes through a capability written `@name`. Calls may also perform the effects declared by their callees. Inspect the function contract for transitive authority.
+- **`@` marks direct capability operations.** Every direct interaction with the outside world goes through a capability written `@name`. A call performs the effects of the function it calls, which the caller's `uses` cover, so a header lists everything its body may do.
 - **Words over symbols:** `and`, `or`, `not`, `implies`, `mod`, `if error fail`.
 - **One canonical form:** significant indentation of 2 spaces, one formatter, and non-canonical source is an error.
 - **Nothing implicit.** No exceptions, no null, no implicit conversions, no ambient authority, no shared mutable state.
@@ -2446,9 +2446,9 @@ These are planned or deliberately absent. Using a reserved word gives U0103 (§1
 | Units of measure | edition `0.3` preview ([spec/25](../spec/25-units-of-measure.md), [ADR 0104](../adr/0104-units-of-measure.md)) |
 | Pipeline operator (`\|>`) | not added; method-call chains already cover this form ([ADR 0110](../adr/0110-pipelines-and-shorthand-lambdas.md)) |
 | Foreign code and FFI | not permitted in any edition ([ADR 0121](../adr/0121-the-terms-of-a-preview-edition.md), rule 17) |
-| Quantified laws and property tests | not in this edition; tiers 2 and 3 are deferred ([spec/12](../spec/12-verification.md), [roadmap](../plan/roadmap.md)) |
-| Semantic diff | planned for v0.3, not available yet ([roadmap](../plan/roadmap.md)) |
-| Cost contracts | deferred to v0.3 or later ([roadmap](../plan/roadmap.md)) |
+| Quantified laws and property tests | deferred: verification tiers 2 and 3 ([spec/12](../spec/12-verification.md), [backlog](../plan/backlog.md)) |
+| Semantic diff | planned for v0.3 ([roadmap](../plan/roadmap.md)) |
+| Cost contracts | v0.3 or later ([backlog](../plan/backlog.md)) |
 | External state semantics (idempotency, delivery, `observe`), durable effect journal | v0.4 |
 | Services, data access, infrastructure generation | v0.4 |
 | Exceptions, null, inheritance, operator overloading, macros, implicit conversions, global mutable state, ambient authority | never |

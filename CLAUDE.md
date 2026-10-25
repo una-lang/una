@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Una is a verification-first programming language for machine-generated software. This repository contains its reference compiler, written in Rust. Edition `0.1` is stable, edition `0.2` is the systems edition, edition `0.3` is a preview with explicit exceptions, and edition `0.4` is an opt-in preview governed by ADR 0121. Read `docs/00-charter.md`, identify the package edition, and read its applicable chapters in `docs/spec/` and accepted ADRs before any task.
+Una is a verification-first programming language for machine-generated software. This repository contains its reference compiler, written in Rust. Editions `0.1` and `0.2` are stable, edition `0.3` is a preview, and edition `0.4` is a preview under the terms of ADR 0121, declared in `ita.una` (`docs/spec/13-diagnostics-and-abi.md` §7). Read `docs/00-charter.md`, identify the package edition, and read its applicable chapters in `docs/spec/` and accepted ADRs before any task.
 
 ## Source of truth
 
@@ -15,10 +15,10 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 
 ## Scope guard
 
-- In scope: the charter's v0.1 scope (§5) and v0.2 scope (§5b), plus work for editions `0.3` and `0.4` assigned by issue. Follow the edition terms in `docs/spec/13 §7` and the applicable accepted ADRs. Edition `0.4` is an opt-in preview governed by ADR 0121; editions `0.1` to `0.3` keep their stated terms.
+- In scope: the charter's v0.1 scope (§5) and v0.2 scope (§5b), plus work for editions `0.3` and `0.4` assigned by issue. Follow the edition terms of `spec/13 §7` and the applicable accepted ADRs.
 - Everything else in `docs/plan/backlog.md` is out of scope, even when it looks easy.
 - Do not add syntax, keywords, diagnostics codes, CLI commands or standard library items that the spec does not define.
-- Keywords reserved for another edition (`docs/spec/01-lexical-structure.md`) must be rejected with U0103, not half-implemented. Edition-specific syntax is available only when the selected edition admits it under `docs/spec/13 §7`; edition `0.1` keeps its own keyword table.
+- Keywords reserved for another edition (`docs/spec/01-lexical-structure.md`) must be rejected with U0103, not half-implemented. Edition-specific syntax is available only in the editions that `spec/13 §7` and the construct's chapter admit it in; edition `0.1` keeps its own keyword table.
 
 ## How to work
 

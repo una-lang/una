@@ -9,7 +9,7 @@ codes: [U1002, U3001, U3002, U3003, U3004]
 
 ## What it does
 
-`uses @x: C[ops]` is the header clause that gives a function authority (the right to act outside the program): inside its body, `@x` names a [capability](capability.md) `C`, and the body may perform the operations `ops` on it. There is no ambient authority (no power that code has just by existing, such as a global file system), so a function's capability context is exactly its `uses` clauses. Direct capability operations use `@`; calls may also perform the effects declared by their callees. Inspect a function's contract for transitive authority.
+`uses @x: C[ops]` is the header clause that gives a function authority (the right to act outside the program): inside its body, `@x` names a [capability](capability.md) `C`, and the body may perform the operations `ops` on it. There is no ambient authority (no power that code has just by existing, such as a global file system), so a function's capability context is exactly its `uses` clauses. A line acts outside the program only through an `@` operation, or through a call of a function that has `uses`.
 
 Learn more: [Declaring what a function may do: uses in full](/learn/capabilities/declaring-what-a-function-may-do-uses-in-full/).
 
@@ -25,7 +25,7 @@ pub note(line: Text) -> Unit
   @log.write(line)
 ```
 
-A call may perform an effect even when its line has no `@`. Here, `emit` performs `@console.print`, and `main` calls it. Both public contracts declare the transitive authority. The existing negative example below shows that omitting it from a public caller is U3003.
+A call may perform an effect even when its line has no `@`. Here, `emit` performs `@console.print`, and `main` calls it. Both public headers declare `Console[print]`. A public caller that leaves it out is U3003, as an example below shows.
 
 ```una
 module shop

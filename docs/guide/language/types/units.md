@@ -1,7 +1,7 @@
 ---
 construct: units of measure
 editions: ["0.3"]
-spec: ["spec/02 §3", "spec/03 §2", "spec/13 §7", "spec/18", "spec/25 §1", "spec/25 §2", "spec/25 §3", "spec/25 §5", "spec/25 §8"]
+spec: ["spec/02 §1", "spec/03 §2", "spec/13 §7", "spec/18", "spec/25 §1", "spec/25 §2", "spec/25 §3", "spec/25 §5", "spec/25 §8"]
 codes: [U2028, U2030]
 ---
 
@@ -37,8 +37,8 @@ unit_term    = upper_ident | "(" unit_expr ")" | integer_literal ;
 
 - A declaration without `=` introduces a base unit. A declaration with `=` defines a derived unit using declared units and positive integer factors.
 - `of` follows an integer type, including fixed-width integer types. For example, `Int of Meter`, `I64 of Second`, and `Int of Meter / Second`.
-- Arithmetic and comparisons that require matching values require the same unit. Multiplication combines units; division divides them.
-- `measured()` gives a unitless integer the unit required by its expected type. `magnitude()` deliberately drops a measured value's unit. `convert()` converts to the expected unit when it has the same dimension and the source-to-target scale ratio is an integer.
+- `+`, `-`, `mod`, the comparisons and `in` need one unit on both sides. `*` multiplies the operands' units, and `/` divides them.
+- `measured()` gives a unitless integer the unit required by its expected type. `magnitude()` deliberately drops a measured value's unit. `convert()` converts to the expected unit when it has the same dimension and the ratio of the scales, source over target, is a positive integer.
 
 ## Examples
 
@@ -112,10 +112,10 @@ pub convert_without_target(distance: Int of Kilometer) -> Bool
 
 ## Edition
 
-Units are a preview construct in edition `0.3`. They are rejected in editions `0.1` and `0.2`. Edition `0.4` includes edition `0.3` constructs under the cumulative edition rules. See `spec/13 §7`.
+Edition `0.3`, a preview. In editions `0.1` and `0.2`, a `measure` declaration and `of` after a type are syntax errors (U0101). Edition `0.4` has every construct of edition `0.3` (`spec/13 §7`).
 
 ## Normative source
 
 - `spec/25 §1`: declarations; `§2`: measured types; `§3`: arithmetic and comparison; `§5`: conversions; `§8`: diagnostics.
-- `spec/02 §3`: type syntax; `spec/03 §2`: kinds and types; `spec/18`: integer types and their built-in methods.
+- `spec/02 §1`: the grammar of `measure` and `of`; `spec/03 §2`: kinds; `spec/18`: the fixed-width integer types, which may carry a unit.
 - Decision record: [ADR 0104](../../../adr/0104-units-of-measure.md), which targets units to edition `0.3` as a preview construct.
