@@ -275,3 +275,133 @@ pub fn walk(
     }
     Ok(links)
 }
+
+/// The format line of a map proof document.
+pub const PROOF_FORMAT: &str = "ita-map-proof/1";
+
+/// The most bytes of a map proof document: 256 siblings and their lines fit well within it.
+pub const MAX_PROOF_DOCUMENT: usize = 32 << 10;
+
+/// A map proof document, as a registry serves it at `map/<size>/<hex of the name's key>`: the
+/// name's head at the checkpoint of that size, or none, and the proof.
+///
+/// ```text
+/// ita-map-proof/1
+/// head <index> <base64 leaf hash> <count>     (or `head none`)
+/// bitmap <base64 of 32 bytes>
+/// sibling <base64 hash>                       (one line per bit set, from height 0 up)
+/// ```
+///
+/// It is read strictly, in its one encoding, and verified against the map's root of the
+/// checkpoint ([`verify`]); nothing in it is trusted before that. O(n) to read.
+pub fn parse_proof(document: &[u8]) -> Result<(Option<Head>, Proof), String> {
+    use super::note::base64;
+
+    if document.len() > MAX_PROOF_DOCUMENT {
+        return Err(format!(
+            "a map proof is longer than {MAX_PROOF_DOCUMENT} bytes"
+        ));
+    }
+    let text = std::str::from_utf8(document).map_err(|_| "a map proof is not UTF-8")?;
+    let body = text
+        .strip_suffix('\n')
+        .ok_or("a map proof ends with a line feed")?;
+    let mut lines = body.split('\n');
+    if lines.next() != Some(PROOF_FORMAT) {
+        return Err(format!("a map proof starts with `{PROOF_FORMAT}`"));
+    }
+    let hash = |text: &str| -> Option<Hash> {
+        base64(text).and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    };
+    let decimal = |text: &str| -> Option<u64> {
+        let valid = !text.is_empty()
+            && text.len() <= 20
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && (text == "0" || !text.starts_with('0'));
+        valid.then(|| text.parse().ok()).flatten()
+    };
+    let head_line = lines
+        .next()
+        .and_then(|line| line.strip_prefix("head "))
+        .ok_or("a map proof has no `head` line")?;
+    let head = if head_line == "none" {
+        None
+    } else {
+        let parts: Vec<&str> = head_line.split(' ').collect();
+        let [index, leaf, count] = parts.as_slice() else {
+            return Err("a map proof's head is `<index> <leaf hash> <count>`".to_owned());
+        };
+        let head = Head {
+            index: decimal(index).ok_or("a map head's index is not a decimal")?,
+            leaf: hash(leaf).ok_or("a map head's leaf hash is not 32 bytes of base64")?,
+            count: decimal(count)
+                .filter(|count| *count >= 1)
+                .ok_or("a map head's count is a decimal from 1")?,
+        };
+        Some(head)
+    };
+    let bitmap: [u8; 32] = lines
+        .next()
+        .and_then(|line| line.strip_prefix("bitmap "))
+        .and_then(hash)
+        .ok_or("a map proof has no `bitmap` line of 32 bytes")?;
+    let mut siblings = Vec::new();
+    for line in lines {
+        let sibling = line
+            .strip_prefix("sibling ")
+            .and_then(hash)
+            .ok_or("a map proof's sibling is not 32 bytes of base64")?;
+        siblings.push(sibling);
+    }
+    let set: u32 = bitmap.iter().map(|byte| byte.count_ones()).sum();
+    if siblings.len() != set as usize {
+        return Err(format!(
+            "a map proof's bitmap sets {set} bits for {} siblings",
+            siblings.len()
+        ));
+    }
+    let proof = Proof { bitmap, siblings };
+    if encode_proof(head.as_ref(), &proof).as_bytes() != document {
+        return Err("a map proof is not in its one encoding".to_owned());
+    }
+    Ok((head, proof))
+}
+
+/// The one encoding of a map proof document ([`parse_proof`]).
+pub fn encode_proof(head: Option<&Head>, proof: &Proof) -> String {
+    use super::note::encode_base64;
+
+    let mut out = format!("{PROOF_FORMAT}\n");
+    match head {
+        Some(head) => out.push_str(&format!(
+            "head {} {} {}\n",
+            head.index,
+            encode_base64(&head.leaf),
+            head.count
+        )),
+        None => out.push_str("head none\n"),
+    }
+    out.push_str(&format!("bitmap {}\n", encode_base64(&proof.bitmap)));
+    for sibling in &proof.siblings {
+        out.push_str(&format!("sibling {}\n", encode_base64(sibling)));
+    }
+    out
+}
+
+/// The hex of a name's key, as the path of its map proof writes it.
+pub fn key_hex(name: &str) -> String {
+    key(name).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The map's root that a checkpoint carries in its extension line `ita-map <base64 root>`, if
+/// it carries exactly one.
+pub fn root_of(extensions: &[String]) -> Option<Hash> {
+    let mut found = extensions
+        .iter()
+        .filter_map(|line| line.strip_prefix("ita-map "));
+    let first = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    super::note::base64(first).and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+}
