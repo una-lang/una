@@ -26,7 +26,7 @@ mod verification;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
@@ -882,10 +882,30 @@ fn run_command(
     heap: Heap<'_>,
 ) -> ExitStatus {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
-    // never makes one (ADR 0064).
-    let solving = |seconds: u64| Solving {
+    // never makes one (ADR 0064). A key file that exists but is refused turns the cache off,
+    // with a note on stderr (#1164), except under `--json`, whose stderr stays empty
+    // (`spec/13 §5`, ADR 0015 rule 3): the report's `tcb.proof_cache_key: null` is the signal.
+    let solving = |seconds: u64, json: bool, stderr: &mut dyn Write| Solving {
         wallclock: Duration::from_secs(seconds),
-        proof_key: proof_key::resolve(environment),
+        proof_key: match proof_key::resolve(environment) {
+            Ok(key) => key,
+            Err(refused) => {
+                if !json {
+                    let hint = refused
+                        .reason
+                        .hint()
+                        .map(|hint| format!(" ({hint})"))
+                        .unwrap_or_default();
+                    // A note that cannot be written changes nothing about the command.
+                    let _ = writeln!(
+                        stderr,
+                        "note: the proof cache key `{}` is not used, since {}; the proof cache is off{hint}",
+                        refused.shown, refused.reason
+                    );
+                }
+                None
+            }
+        },
     };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) if cli.version => version_command(cli.json, stdout),
@@ -917,7 +937,7 @@ fn run_command(
                     },
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -939,7 +959,7 @@ fn run_command(
                 let options = trace::TraceOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
@@ -950,7 +970,7 @@ fn run_command(
                 let options = report::ReportOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
@@ -961,7 +981,7 @@ fn run_command(
                 let options = verification::ObligationsOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -979,7 +999,7 @@ fn run_command(
                     dry_run,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                 };
                 fix::fix_command(&path, options, stdout, stderr)
             }
@@ -1051,7 +1071,7 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                     stop_after: stop_after_iterations,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
@@ -1065,7 +1085,7 @@ fn run_command(
                     out,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                     environment,
                 };
                 build::build_command(&path, &options, stdout, stderr)
@@ -1085,13 +1105,13 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, json, stderr),
                     stop_after: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, json, stdout, stderr),
-            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs())),
+            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs(), false, stderr)),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {
@@ -1366,9 +1386,10 @@ struct FmtOptions {
 /// `una fmt [path]` and `una fmt --check [path]` (`spec/13 §5`, ADR 0020).
 ///
 /// Files with syntax errors are reported and left untouched; the others are
-/// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
-/// printed on success. `--check` reports U7001 instead of writing.
+/// rewritten when they differ from their canonical form, each through a fresh temporary file
+/// and a rename onto the file itself or, for a symbolic link that resolves inside the package,
+/// onto its resolved target (a link leading outside it is refused), and nothing is printed on
+/// success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
@@ -1407,7 +1428,7 @@ fn fmt_command(
         let Some(target) = package.disk_paths.get(&id) else {
             continue;
         };
-        if let Err(error) = write_through_rename(target, &canonical) {
+        if let Err(error) = write_through_rename(&write_root(path), target, &canonical) {
             writeln!(
                 stderr,
                 "error: cannot write `{}`: {error}",
@@ -1426,44 +1447,44 @@ fn fmt_command(
     )
 }
 
-/// Writes `text` to `target` through a hidden temporary file and a rename, whether or not
-/// `target` exists yet, so a reader never sees a partial file (ADR 0122 rule 14).
-fn write_through_rename_or_create(target: &Path, text: &str) -> io::Result<()> {
-    if std::fs::symlink_metadata(target).is_ok() {
-        return write_through_rename(target, text);
-    }
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = target.with_file_name(format!(".{name}.tmp"));
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, target)
+/// Writes `text` to `target`, which need not exist yet, through a fresh temporary file and a
+/// rename, so a reader never sees a partial file (ADR 0122 rule 14). `root` is the package
+/// directory the command works on; see [`write_through_rename`] for the rules on links.
+pub(crate) fn write_through_rename_or_create(
+    root: &Path,
+    target: &Path,
+    text: &str,
+) -> io::Result<()> {
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), true, true)
 }
 
-/// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so
-/// that an interrupted write never leaves a truncated source.
+/// Replaces the file `target` with `text` through a fresh temporary file and a rename, so an
+/// interrupted write never leaves a truncated file, as [`una_diag::safe_write::write_atomically`]
+/// writes it.
 ///
-/// A symbolic link is resolved first, so the rename lands on the file the link points to and
-/// the link itself is kept (review finding R-024).
-fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
-    let resolved;
-    let target = if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
-        resolved = std::fs::canonicalize(target)?;
-        resolved.as_path()
-    } else {
-        target
-    };
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = target.with_file_name(format!(".{name}.fmt-tmp"));
-    std::fs::write(&temporary, text)?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        std::fs::set_permissions(&temporary, metadata.permissions())?;
+/// The temporary file is created next to the destination with `create_new` (`O_CREAT|O_EXCL`,
+/// which never follows a symbolic link at its name), under a name unique to this process and
+/// write, with mode 0600 on Unix until it takes the destination's permissions. Anything already
+/// at that name, a planted link included, is never written through (#1160).
+///
+/// A symbolic link at `target` is written through onto the file it resolves to (review finding
+/// R-024) only when that file, and the directory it lives in, resolve inside `root`. Otherwise
+/// the write is refused, naming the link and where it leads: a cloned repository can choose a
+/// target link as easily as a temporary one.
+pub(crate) fn write_through_rename(root: &Path, target: &Path, text: &str) -> io::Result<()> {
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), false, true)
+}
+
+/// The package directory a command given `path` writes in: `path` itself, or the directory of a
+/// single file.
+pub(crate) fn write_root(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        return path.to_path_buf();
     }
-    std::fs::rename(&temporary, target)
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
 }
 
 /// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current
