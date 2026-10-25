@@ -1,4 +1,5 @@
-//! A witness (ADR 0122 rules 36 and 36.1): before it cosigns a checkpoint, it replays every
+//! A witness (ADR 0122 rules 36 and 36.1): before it cosigns a checkpoint, it checks that the
+//! checkpoint names the root metadata it is signed under (`ita-root`), replays every
 //! entry since the last checkpoint it cosigned, checks that the log was only appended to, that
 //! each entry's `previous` is its name's head just before it and that its name's count rises by
 //! one, recomputes the name map, and compares both roots with the checkpoint's. Its timestamps
@@ -91,6 +92,8 @@ impl Witness {
         }
         let map_root =
             map_root_of(&checkpoint).ok_or("the checkpoint carries no `ita-map` line")?;
+        // The root metadata it is signed under, named exactly once (`spec/30 §11` rule 9).
+        una_project::tlog::root::named(&checkpoint.extensions)?;
         let mut tree = self.tree.clone();
         let mut map = self.map.clone();
         let mut heads = self.heads.clone();

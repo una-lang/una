@@ -542,28 +542,64 @@ impl Registry {
         tree_root(&mut self.tree, size)
     }
 
-    /// The text of the checkpoint of the log as it is.
+    /// The text of the checkpoint of the log as it is (`spec/30 §11` rules 4 and 9): the log's
+    /// name, its size, its root, the name map's root on `ita-map`, and on `ita-root` the version
+    /// and digest of the root metadata it is signed under, exactly once, inside the signed text,
+    /// so the log's signature and every cosignature cover it.
     fn checkpoint_text(&mut self) -> Result<String, String> {
         let root = self.root_hash()?;
         Ok(format!(
-            "{}\n{}\n{}\n{} {}\n",
+            "{}\n{}\n{}\n{} {}\n{}{} {}\n",
             self.root.log.name,
             self.tree.size(),
             encode_base64(&root),
             map::EXTENSION,
-            encode_base64(&self.map.root())
+            encode_base64(&self.map.root()),
+            roots::CHECKPOINT_ROOT,
+            self.root.version,
+            self.root.digest
         ))
     }
 
+    /// Whether `stored`, the text of a checkpoint kept in the store, is the checkpoint of
+    /// `text`, the log as it is, signed under an earlier root version of the chain: the same
+    /// log, size, roots and extensions but its `ita-root` line, which names that version with
+    /// its digest. A rotation keeps every checkpoint signed before it, with its original
+    /// cosignatures; the log signs the next size under the new root.
+    fn kept_under_older_root(&self, stored: &str, text: &str) -> bool {
+        let (Ok(stored), Ok(current)) = (parse_checkpoint(stored), parse_checkpoint(text)) else {
+            return false;
+        };
+        let others = |extensions: &[String]| -> Vec<String> {
+            extensions
+                .iter()
+                .filter(|line| !line.starts_with(roots::CHECKPOINT_ROOT))
+                .cloned()
+                .collect()
+        };
+        let older = roots::named(&stored.extensions).is_ok_and(|(version, digest)| {
+            version < self.root.version
+                && self
+                    .chain
+                    .iter()
+                    .any(|(root, walked)| root.version == version && *walked == digest)
+        });
+        older
+            && (stored.origin.as_str(), stored.size, stored.root)
+                == (current.origin.as_str(), current.size, current.root)
+            && others(&stored.extensions) == others(&current.extensions)
+    }
+
     /// Signs the checkpoint of the log as it is, unless it is already stored, and serves it to
-    /// witnesses.
+    /// witnesses. A stored one signed under an earlier root version is kept as it is.
     fn sign_checkpoint(&mut self) -> Result<(), String> {
         let text = self.checkpoint_text()?;
         let path = checkpoint_path(self.tree.size());
         let document = match self.store.get(&path, MAX_DOCUMENT)? {
             Some(bytes) => {
                 let document = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
-                if parse_note(&document)?.text != text {
+                let stored = parse_note(&document)?.text;
+                if stored != text && !self.kept_under_older_root(&stored, &text) {
                     return Err(format!(
                         "the stored {path} is not the log's: the store was changed"
                     ));
