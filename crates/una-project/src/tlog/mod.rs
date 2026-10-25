@@ -3,6 +3,7 @@
 //! time. Each part is a pure function of the bytes it is given; fetching is the client's.
 
 pub mod ed25519;
+pub mod map;
 pub mod merkle;
 pub mod note;
 pub mod release;
