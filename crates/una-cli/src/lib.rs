@@ -764,31 +764,24 @@ fn run_command(
     heap: Heap<'_>,
 ) -> ExitStatus {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
-    // never makes one (ADR 0064). A key file that exists but is not a private regular file of
-    // the user, or not 16 to 4096 bytes long, turns the cache off, with a note outside `--json`
-    // (#1164). Under `--json`, stderr stays empty (`spec/13 §5`), and the report's
-    // `tcb.proof_cache_key: null` is the signal.
+    // never makes one (ADR 0064). A key file that exists but is refused turns the cache off,
+    // with a note on stderr (#1164), except under `--json`, whose stderr stays empty
+    // (`spec/13 §5`, ADR 0015 rule 3): the report's `tcb.proof_cache_key: null` is the signal.
     let solving = |seconds: u64, json: bool, stderr: &mut dyn Write| Solving {
         wallclock: Duration::from_secs(seconds),
         proof_key: match proof_key::resolve(environment) {
             Ok(key) => key,
             Err(refused) => {
                 if !json {
-                    let what = if refused.reason == proof_key::Refusal::Size {
-                        "is not a key"
-                    } else {
-                        "is not a private regular file of the user"
-                    };
-                    // Only permissions are fixed by `chmod`.
-                    let hint = if refused.reason == proof_key::Refusal::Shared {
-                        " (chmod 600 it)"
-                    } else {
-                        ""
-                    };
+                    let hint = refused
+                        .reason
+                        .hint()
+                        .map(|hint| format!(" ({hint})"))
+                        .unwrap_or_default();
                     // A note that cannot be written changes nothing about the command.
                     let _ = writeln!(
                         stderr,
-                        "note: the proof cache key `{}` {what} ({}); the proof cache is off{hint}",
+                        "note: the proof cache key `{}` is not used, since {}; the proof cache is off{hint}",
                         refused.shown, refused.reason
                     );
                 }
