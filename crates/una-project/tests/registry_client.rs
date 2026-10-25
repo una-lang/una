@@ -3082,3 +3082,99 @@ fn a_revoked_witness_key_is_never_a_witness_again() {
         Ok(_) => panic!("a revoked witness key accepted again"),
     }
 }
+
+/// An honest registry where a checkpoint between two multiples of 64, cosigned late by one
+/// witness, reaches a dispute's target, and the next multiple, cosigned by another, dips below
+/// it: the deadline is found from the first multiple that reaches the target, as the registry
+/// finds it, so both timings agree and the owner stays available.
+#[test]
+fn a_late_cosigned_checkpoint_between_multiples_is_not_the_deadline() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let t0 = NOW - 40 * DAY;
+    let mut registry = TestRegistry::with_witness_threshold("acme", 1);
+    registry.register("acme", &a);
+    registry.checkpoint(t0);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    let fill = |registry: &mut TestRegistry, to: u64| {
+        while (registry.entries.len() as u64) < to {
+            let at = registry.entries.len();
+            registry.append("other", &format!("filler {at}"));
+        }
+    };
+    fill(&mut registry, 128);
+    registry.checkpoint(t0 + DAY);
+    // N: sizes 129 to 150, one witness late, past the target of t0 + 8 days.
+    fill(&mut registry, 150);
+    registry.checkpoint_with(&[Some(t0 + 9 * DAY), None, None]);
+    // The multiple 192, another witness, below it.
+    fill(&mut registry, 192);
+    registry.checkpoint_with(&[None, Some(t0 + 2 * DAY), None]);
+    // The multiple 256, every witness, past it.
+    fill(&mut registry, 256);
+    registry.checkpoint(t0 + 10 * DAY);
+    fill(&mut registry, 300);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert_eq!(client.recovery_effect(dispute).unwrap(), Some(193));
+    assert_eq!(client.earliest_effect(dispute).unwrap(), Some(193));
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.took_effect.get(&dispute), Some(&193));
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// The deadline checkpoint signed at or after the target, every witness cosigning it then: a
+/// place that strips one cosignature leaves k, so the effect does not move; one that strips
+/// all but one leaves fewer than k, so the two timings differ and the name is unavailable,
+/// never a later effect taken unseen.
+#[test]
+fn stripping_the_deadline_cannot_move_the_effect_unseen() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 30 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 29 * DAY);
+    registry.append("other", "filler");
+    let effect = registry.checkpoint(NOW - 20 * DAY);
+    registry.append("other", "another filler");
+    registry.checkpoint(NOW);
+    let full = history_of(&registry).unwrap();
+    assert_eq!(full.took_effect.get(&dispute), Some(&effect));
+    let path = format!("checkpoint/{effect}");
+    let log = registry.keys.log.1.name.clone();
+    let last = registry.keys.witnesses[2].1.name.clone();
+    // One line stripped: k remain, all at or after the target.
+    let document = String::from_utf8(registry.files[&path].clone()).unwrap();
+    let stripped: Vec<&str> = document
+        .lines()
+        .filter(|line| !line.starts_with(&format!("\u{2014} {last} ")))
+        .collect();
+    let mut one = Memory {
+        files: registry.files.clone(),
+    };
+    let stripped = format!("{}\n", stripped.join("\n")).into_bytes();
+    one.files.insert(path.clone(), stripped);
+    let mut client = open(&one, &registry).unwrap();
+    assert_eq!(client.history("acme").unwrap(), full);
+    assert!(client.take_omitted().is_empty());
+    // All but one stripped: fewer than k, the timings differ, the name is unavailable.
+    let kept = registry.keys.witnesses[0].1.name.clone();
+    let mut most = Memory {
+        files: registry.files.clone(),
+    };
+    let withheld = withhold(&registry.files[&path], &log, &kept);
+    most.files.insert(path, withheld);
+    let mut client = open(&most, &registry).unwrap();
+    assert!(client.history("acme").is_err());
+    assert!(!client.take_omitted().is_empty());
+    assert_ne!(
+        client.earliest_effect(dispute).unwrap(),
+        client.recovery_effect(dispute).unwrap()
+    );
+}

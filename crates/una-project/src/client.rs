@@ -1378,7 +1378,11 @@ impl<'t> Registry<'t> {
     /// above [`MAX_DEADLINE_SPAN`]: for an audit that bounds its reads, and for tests.
     pub fn lower_scan_cap(&mut self, sizes: u64) {
         self.scan_cap = sizes.min(MAX_DEADLINE_SPAN);
+        // Every result a deadline went into is read again under the new cap.
         self.deadlines.clear();
+        self.histories.clear();
+        self.eager.clear();
+        self.releases.clear();
     }
 
     /// The deadline of a wait from the entry at `index` that ends at witness time `target`,
@@ -1387,7 +1391,8 @@ impl<'t> Registry<'t> {
     /// multiple of [`CADENCE`] by the threshold, so the scan reads those, from the request on,
     /// up to the first whose witness time reaches `target`, or to the point, and then each size
     /// after the multiple below that one, up to the first whose witness time reaches `target`:
-    /// the deadline, where the deadline and pre-deadline checkpoints a registry must keep are.
+    /// the deadline, where the deadline and pre-deadline checkpoints a registry must keep are:
+    /// the deadline D as `spec/30 §14` rule 5 defines it, which the registry finds alike.
     /// So the first crossing found is the first among the pinned checkpoints; a later one that
     /// dips below `target` is never read, and one between them never changes it. A pinned
     /// checkpoint without a witness time, every place's copy merged, is an omission
