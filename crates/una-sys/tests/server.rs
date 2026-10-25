@@ -29,6 +29,7 @@ fn the_open_flags_keep_a_fifo_from_blocking() {
     let _ = std::fs::remove_file(&path);
     let made = std::process::Command::new("mkfifo").arg(&path).status();
     if !made.is_ok_and(|status| status.success()) {
+        eprintln!("note: `mkfifo` is not available here; the FIFO case is not checked");
         return;
     }
     // Without `O_NONBLOCK`, this open would wait for a writer forever.
@@ -46,8 +47,33 @@ fn the_descriptor_limit_rises_or_says_where_it_stays() {
     let now = raise_descriptor_limit(0).unwrap();
     assert!(now > 0);
     assert!(raise_descriptor_limit(now + 1).unwrap() >= now);
-    // Far above any hard limit: the limit in force is returned, below what was asked.
-    assert!(raise_descriptor_limit(u64::MAX / 2).unwrap() < u64::MAX / 2);
+    // Far above any reachable limit, yet below `RLIM_INFINITY` (`u64::MAX / 2` on macOS):
+    // the limit read back is returned, at least what it was and below what was asked; on
+    // macOS, the reachable `OPEN_MAX` is tried.
+    let far = 1 << 40;
+    let got = raise_descriptor_limit(far).unwrap();
+    assert!(got >= now && got < far, "{now} {got}");
+    #[cfg(target_os = "macos")]
+    assert!(got <= 10_240 || got == now, "{now} {got}");
+}
+
+#[test]
+fn a_listener_is_not_inherited_by_a_child() {
+    use std::os::fd::AsRawFd;
+    let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
+    let fd = listener.as_raw_fd();
+    let open_in_child = |fd: i32| {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("[ -e /dev/fd/{fd} ]"))
+            .status()
+            .unwrap()
+            .success()
+    };
+    // The control: the child's own standard input is seen.
+    assert!(open_in_child(0));
+    // `FD_CLOEXEC` is set, so the listener is closed in the child.
+    assert!(!open_in_child(fd), "descriptor {fd} was inherited");
 }
 
 #[test]
@@ -92,9 +118,18 @@ fn a_second_listener_on_the_same_address_and_port_is_refused() {
 #[test]
 fn an_ipv6_listener_is_v6_only() {
     let any = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0));
-    let Ok(six) = listen(any, 16) else {
-        // A machine without IPv6 has nothing to check.
-        return;
+    let six = match listen(any, 16) {
+        // Only a machine without IPv6 skips; any other error fails.
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EAFNOSUPPORT | libc::EADDRNOTAVAIL)
+            ) =>
+        {
+            eprintln!("note: IPv6 is not available here ({error}); the case is not checked");
+            return;
+        }
+        other => other.unwrap(),
     };
     let port = six.local_addr().unwrap().port();
     // With `IPV6_V6ONLY`, the IPv4 wildcard on the same port stays free.

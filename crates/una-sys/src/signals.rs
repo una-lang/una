@@ -86,6 +86,16 @@ fn handler_action(handler: libc::sighandler_t) -> libc::sigaction {
     action
 }
 
+/// The crate's one binding of `fcntl`, for commands whose argument is an integer.
+///
+/// # Safety
+///
+/// `fd` is a descriptor the caller owns, and `cmd` reads no memory through `arg`.
+pub(crate) unsafe fn fcntl(fd: libc::c_int, cmd: libc::c_int, arg: libc::c_int) -> libc::c_int {
+    // SAFETY: the caller's contract above.
+    unsafe { libc::fcntl(fd, cmd, arg) }
+}
+
 /// The two ends of a new pipe, non-blocking and close-on-exec, at descriptors of [`HIGH_FD`] or
 /// above; on failure, nothing stays open.
 fn wake_pipe() -> Result<[libc::c_int; 2], InstallError> {
@@ -107,11 +117,11 @@ fn wake_pipe() -> Result<[libc::c_int; 2], InstallError> {
         // duplicates it close-on-exec at the lowest free descriptor from `HIGH_FD`, and
         // `F_GETFL`/`F_SETFL` read and set its status flags; no memory is touched.
         *high = unsafe {
-            let duplicate = libc::fcntl(*fd, libc::F_DUPFD_CLOEXEC, HIGH_FD);
-            let status = libc::fcntl(*fd, libc::F_GETFL);
+            let duplicate = fcntl(*fd, libc::F_DUPFD_CLOEXEC, HIGH_FD);
+            let status = fcntl(*fd, libc::F_GETFL, 0);
             if duplicate >= 0
                 && status >= 0
-                && libc::fcntl(duplicate, libc::F_SETFL, status | libc::O_NONBLOCK) == 0
+                && fcntl(duplicate, libc::F_SETFL, status | libc::O_NONBLOCK) == 0
             {
                 duplicate
             } else {
