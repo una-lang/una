@@ -416,6 +416,10 @@ fn pre_release_admission_does_not_depend_on_the_order_of_needs() {
     );
 }
 
+/// A release of [`a_shuffled_graph_resolves_the_same`]: its version, whether it is yanked, and
+/// its needs, each the index of a name and a version.
+type Shuffled = (&'static str, bool, Vec<(usize, &'static str)>);
+
 /// A fixed random graph with pre-releases, pre-release needs and yanked releases, resolved with
 /// its root's needs, each release's needs and the order of each name's releases shuffled by a
 /// fixed seed: every order gives the same result, a build list or the same refusal (rule 23).
@@ -434,7 +438,7 @@ fn a_shuffled_graph_resolves_the_same() {
         "1.3.0",
     ];
     // Per name, its releases: the version, whether it is yanked, and its needs.
-    let mut graph: Vec<Vec<(&str, bool, Vec<(usize, &str)>)>> = Vec::new();
+    let mut graph: Vec<Vec<Shuffled>> = Vec::new();
     for i in 0..n {
         let mut releases = Vec::new();
         for (at, version) in versions.iter().enumerate() {
