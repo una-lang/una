@@ -298,7 +298,7 @@ fn a_client_publishes_and_verifies_every_proof() {
         pin: pin.clone(),
         log_seed: [20; 32],
     };
-    let registry = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
+    let registry = Registry::open(Arc::clone(&store), &config, clock.clone(), recording()).unwrap();
     let outbox = temp_dir("e2e-outbox");
     let service = Arc::new(
         Service::new(
@@ -576,7 +576,7 @@ fn a_client_publishes_and_verifies_every_proof() {
     );
 
     // Opened again on the same store, the registry replays the same log.
-    let reopened = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
+    let reopened = Registry::open(Arc::clone(&store), &config, clock.clone(), recording()).unwrap();
     assert_eq!(reopened.size(), 5);
     assert_eq!(reopened.map_root(), map_root);
 
@@ -599,11 +599,11 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
         pin: root_digest(&root_doc),
         log_seed: [20; 32],
     };
-    let registry = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
+    let registry = Registry::open(Arc::clone(&store), &config, clock.clone(), recording()).unwrap();
     // A registry is never served without a notifier: no outbox named, no service.
     let refused = Service::new(Arc::clone(&store), registry, ServerConfig::default()).unwrap_err();
-    assert!(refused.contains("ServerConfig::outbox"), "{refused}");
-    let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    assert_eq!(refused, una_itaty::http::StartError::NoNotifier);
+    let registry = Registry::open(Arc::clone(&store), &config, clock, recording()).unwrap();
     let service = Arc::new(Service::unnotified_for_tests(
         Arc::clone(&store),
         registry,
@@ -644,13 +644,13 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
         log_seed: [20; 32],
     };
     let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
-    assert!(Registry::open(Arc::clone(&store), &wrong, clock.clone()).is_err());
+    assert!(Registry::open(Arc::clone(&store), &wrong, clock.clone(), recording()).is_err());
     // A log key that is not the root's refuses to open.
     let wrong = Config {
         pin: root_digest(&root_doc),
         log_seed: [21; 32],
     };
-    assert!(Registry::open(store, &wrong, clock).is_err());
+    assert!(Registry::open(store, &wrong, clock, recording()).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -665,7 +665,7 @@ fn rule_26_is_checked_against_the_highest_release_logged_before_as_the_client_do
         pin: root_digest(&root_doc),
         log_seed: [20; 32],
     };
-    let mut registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let mut registry = Registry::open(Arc::clone(&store), &config, clock, recording()).unwrap();
     let acme = signer("acme.a", 60);
     let registration = format!(
         "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\n{}\n",
@@ -724,7 +724,7 @@ fn an_advisory_identifier_is_given_once_per_name() {
         pin: root_digest(&root_doc),
         log_seed: [20; 32],
     };
-    let mut registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let mut registry = Registry::open(Arc::clone(&store), &config, clock, recording()).unwrap();
     let acme = signer("acme.a", 60);
     let registration = format!(
         "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\n{}\n",
@@ -752,4 +752,9 @@ fn an_advisory_identifier_is_given_once_per_name() {
         Some(&Cause::AdvisoryIdRepeated),
         "{repeated:?}"
     );
+}
+
+/// A notifier that records notices in memory, which every registry needs.
+fn recording() -> Arc<una_itaty::notify::Recording> {
+    Arc::new(una_itaty::notify::Recording::new())
 }

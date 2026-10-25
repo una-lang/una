@@ -61,7 +61,7 @@ use crate::authority::interface;
 use crate::entry::{Entry, Kind, parse_entry, previous_text};
 use crate::namemap::NameMap;
 use crate::names::{self, Names};
-use crate::notify::{Notice, Notifier, Recording};
+use crate::notify::{Notice, Notifier};
 use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
@@ -79,6 +79,8 @@ pub use rotation::Rotation;
 const STATE_SIZE: &str = "state/size";
 /// The store path of each witness's last cosignature, the service's own state.
 const STATE_WITNESSES: &str = "state/witnesses";
+/// The store path of the notices' state: the cursor, the failures and the last error.
+const STATE_NOTICES: &str = "state/notices";
 /// The store path of each timed request's deadline checkpoint, the service's own state: the
 /// clock at which a checkpoint was signed is in no checkpoint, so it is kept here.
 const STATE_DEADLINES: &str = "state/deadlines";
@@ -250,12 +252,75 @@ pub struct Receipt {
     pub promise: String,
 }
 
+/// The state of the notices to owners (`spec/30 §16` rule 11), kept in `state/notices`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoticeStatus {
+    /// The index of the last entry whose notice the notifier took, every one before it taken
+    /// too: the cursor after which notices are sent again on opening.
+    pub notified: Option<u64>,
+    /// How many notices the notifier could not take.
+    pub failures: u64,
+    /// The last error of the notifier.
+    pub last_error: Option<String>,
+    /// Whether a notice failed since opening: the cursor stays until the next opening.
+    pub behind: bool,
+}
+
+impl NoticeStatus {
+    /// Its text: `notified <index>` or `notified none`, `failures <n>`, and `last <hex of the
+    /// error>` or `last none`, one per line.
+    pub fn text(&self) -> String {
+        let notified = self
+            .notified
+            .map_or_else(|| "none".to_owned(), |index| index.to_string());
+        let last = self
+            .last_error
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), |why| hex(why.as_bytes()));
+        format!(
+            "notified {notified}\nfailures {}\nlast {last}\n",
+            self.failures
+        )
+    }
+
+    /// Reads its text back; `behind` starts false.
+    pub fn parse(text: &str) -> Result<NoticeStatus, String> {
+        let wrong = || "state/notices has a line of the wrong form".to_owned();
+        let mut lines = text.lines();
+        let mut field = |name: &str| -> Result<String, String> {
+            lines
+                .next()
+                .and_then(|line| line.strip_prefix(name))
+                .and_then(|rest| rest.strip_prefix(' '))
+                .map(str::to_owned)
+                .ok_or_else(wrong)
+        };
+        let notified = match field("notified")?.as_str() {
+            "none" => None,
+            index => Some(decimal(index).ok_or_else(wrong)?),
+        };
+        let failures = decimal(&field("failures")?).ok_or_else(wrong)?;
+        let last_error = match field("last")?.as_str() {
+            "none" => None,
+            encoded => Some(unhex(encoded).ok_or_else(wrong)?),
+        };
+        Ok(NoticeStatus {
+            notified,
+            failures,
+            last_error,
+            behind: false,
+        })
+    }
+}
+
 /// An entry of an owner's chain, as logged: what the client's replay reads.
 #[derive(Clone, Debug)]
 struct Recorded {
     index: u64,
     note: Note,
     entry: owner::Entry,
+    /// The entry's leaf hash, which its notice names.
+    leaf: Hash,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -305,8 +370,8 @@ pub struct Registry {
     requests: BTreeMap<u64, Timed>,
     /// Where notices to owners go (`crate::notify`).
     notifier: Arc<dyn Notifier>,
-    /// How many notices the notifier could not take.
-    notice_failures: u64,
+    /// The notices' state, kept in `state/notices`.
+    notices: NoticeStatus,
 }
 
 impl std::fmt::Debug for Registry {
@@ -354,10 +419,16 @@ impl Registry {
     /// Opens the registry in `store`: reads and verifies its root metadata, checks that the
     /// log's key is the one it names, and replays the log from the store, checking it against
     /// the checkpoint it signed.
+    ///
+    /// Notices go to `notifier`, which a registry MUST have (`spec/30 §16` rule 11). Every
+    /// notice of an `ita-key/1` entry after the last one the notifier took, by the cursor in
+    /// `state/notices`, is sent again on opening, so an entry logged before a crash is notified
+    /// at least once; a notice names its index, by which the sender drops a repeat.
     pub fn open(
         store: Arc<dyn Store>,
         config: &Config,
         clock: Arc<dyn Clock>,
+        notifier: Arc<dyn Notifier>,
     ) -> Result<Registry, String> {
         let chain = read_chain(store.as_ref(), &config.pin, clock.now())?;
         let root = chain
@@ -386,10 +457,12 @@ impl Registry {
             published: None,
             broken: None,
             requests: BTreeMap::new(),
-            notifier: Arc::new(Recording::new()),
-            notice_failures: 0,
+            notifier,
+            notices: NoticeStatus::default(),
         };
         registry.replay()?;
+        registry.load_notices()?;
+        registry.renotify();
         Ok(registry)
     }
 
@@ -697,22 +770,83 @@ impl Registry {
         ))
     }
 
-    /// Sends the notices of every `ita-key/1` entry logged from now on to `notifier`; until it
-    /// is called, they are recorded in memory ([`Recording`]). Serving requires an outbox
-    /// (`crate::http::ServerConfig::outbox`).
+    /// Sends the notices of every `ita-key/1` entry logged from now on to `notifier`, in place
+    /// of the one given at opening, as the service's outbox (`crate::http::Service::new`).
     pub fn set_notifier(&mut self, notifier: Arc<dyn Notifier>) {
         self.notifier = notifier;
     }
 
     /// How many notices the notifier could not take: each was logged all the same.
     pub fn notice_failures(&self) -> u64 {
-        self.notice_failures
+        self.notices.failures
     }
 
-    /// The notice of an entry logged at `index`, when it is an `ita-key/1` entry: every key
-    /// event, co-signer change, recovery or dispute logged against an owner's chain.
-    fn notice(&self, entry: &Entry, index: u64) -> Option<Notice> {
-        let read = entry.owner_entry()?;
+    /// The notices' state: the cursor, the failures and the last error, for the operator.
+    pub fn notice_status(&self) -> &NoticeStatus {
+        &self.notices
+    }
+
+    /// Reads `state/notices`.
+    fn load_notices(&mut self) -> Result<(), String> {
+        if let Some(bytes) = self.store.get(STATE_NOTICES, MAX_DOCUMENT)? {
+            let text = String::from_utf8(bytes).map_err(|_| "state/notices is not UTF-8")?;
+            self.notices = NoticeStatus::parse(&text)?;
+        }
+        Ok(())
+    }
+
+    /// Writes `state/notices`; a failure to write it is counted, never a failure of logging.
+    fn save_notices(&mut self) {
+        if let Err(why) = self
+            .store
+            .put(STATE_NOTICES, self.notices.text().as_bytes())
+        {
+            self.notices.failures = self.notices.failures.saturating_add(1);
+            self.notices.last_error = Some(why);
+        }
+    }
+
+    /// Hands `notice` to the notifier: on success, the cursor moves to it unless a notice
+    /// before it failed since opening, so that one is sent again on the next opening; on
+    /// failure, the failure is counted, its error kept, and a failure record handed to the
+    /// notifier, which an outbox appends when it can. Sending never conditions logging.
+    fn deliver(&mut self, notice: &Notice) {
+        match self.notifier.notify(notice) {
+            Ok(()) => {
+                if !self.notices.behind {
+                    self.notices.notified = Some(notice.index);
+                }
+            }
+            Err(why) => {
+                self.notices.behind = true;
+                self.notices.failures = self.notices.failures.saturating_add(1);
+                let _ = self.notifier.record_failure(notice.index, &why);
+                self.notices.last_error = Some(why);
+            }
+        }
+        self.save_notices();
+    }
+
+    /// Sends again the notice of every `ita-key/1` entry after the cursor, in log order.
+    fn renotify(&mut self) {
+        let after = self.notices.notified;
+        let mut due: Vec<Notice> = self
+            .owners
+            .values()
+            .flatten()
+            .filter(|recorded| after.is_none_or(|cursor| recorded.index > cursor))
+            .filter_map(|recorded| self.notice_of(&recorded.entry, recorded.index, &recorded.leaf))
+            .collect();
+        due.sort_by_key(|notice| notice.index);
+        for notice in due {
+            self.deliver(&notice);
+        }
+    }
+
+    /// The notice of `read`, an owner's entry logged at `index` with the leaf hash `leaf`,
+    /// when it is an `ita-key/1` entry: every key event, co-signer change, recovery or dispute
+    /// logged against an owner's chain.
+    fn notice_of(&self, read: &owner::Entry, index: u64, leaf: &Hash) -> Option<Notice> {
         let kind = match &read.event {
             Event::Register { .. } => return None,
             Event::Add(_) => "add",
@@ -728,7 +862,7 @@ impl Registry {
             owner: read.owner.clone(),
             index,
             kind: kind.to_owned(),
-            leaf: digest_string(&entry.leaf()),
+            leaf: digest_string(leaf),
             link: entry_bundle_path(index / WIDTH, WIDTH),
         })
     }
@@ -1720,6 +1854,7 @@ impl Registry {
                     index,
                     note: entry.note.clone(),
                     entry: read.as_ref().clone(),
+                    leaf: entry.leaf(),
                 });
             }
         }
@@ -1815,10 +1950,11 @@ impl Registry {
         self.apply(&entry);
         // The owner is notified at once, after the entry is logged: sending never delays or
         // conditions logging, and a notice the notifier cannot take is only counted.
-        if let Some(notice) = self.notice(&entry, index)
-            && self.notifier.notify(&notice).is_err()
+        if let Some(notice) = entry
+            .owner_entry()
+            .and_then(|read| self.notice_of(read, index, &leaf))
         {
-            self.notice_failures = self.notice_failures.saturating_add(1);
+            self.deliver(&notice);
         }
         let text = format!(
             "ita-promise/1\nsource {}\nindex {index}\nleaf {}\nby {}\n",

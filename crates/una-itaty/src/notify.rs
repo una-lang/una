@@ -55,6 +55,13 @@ impl Notice {
 pub trait Notifier: Send + Sync {
     /// Hands `notice` on for delivery; an error says why it could not be.
     fn notify(&self, notice: &Notice) -> Result<(), String>;
+
+    /// Records that the notice of the entry at `index` could not be handed on, and why, where
+    /// the operator's sender sees it; by default nowhere.
+    fn record_failure(&self, index: u64, why: &str) -> Result<(), String> {
+        let _ = (index, why);
+        Ok(())
+    }
 }
 
 /// A notifier that keeps every notice in memory, in order: for tools and tests.
@@ -117,6 +124,20 @@ impl Outbox {
 }
 
 impl Notifier for Outbox {
+    fn record_failure(&self, index: u64, why: &str) -> Result<(), String> {
+        let why: String = why
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "the outbox is unavailable".to_owned())?;
+        file.write_all(format!("ita-notice-failure/1 {index} {why}\n").as_bytes())
+            .and_then(|()| file.sync_data())
+            .map_err(|e| format!("cannot append to the outbox {}: {e}", self.path.display()))
+    }
+
     fn notify(&self, notice: &Notice) -> Result<(), String> {
         let mut file = self
             .file

@@ -16,7 +16,9 @@
 //! - `/request`: an owner's recovery or dispute (`recover` or `dispute`), only with the
 //!   operator's bearer token, after the operator verified the account; the registry signs it
 //!   with the log's key;
-//! - `/cosign`: a checkpoint's size in decimal, a line feed, and a witness's cosignature line.
+//! - `/cosign`: a checkpoint's size in decimal, a line feed, and a witness's cosignature line;
+//! - `/notices`: the notices' state (`registry::NoticeStatus`), only with the operator's
+//!   bearer token: the cursor, the failures and the last error.
 //!
 //! **Limits, before allocation.** A request's head is at most 16 KiB and 64 header lines, read
 //! within 30 seconds; a body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
@@ -84,6 +86,28 @@ impl Default for ServerConfig {
             head_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(60),
             outbox: None,
+        }
+    }
+}
+
+/// Why the service does not start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartError {
+    /// No outbox is named: Itaty serves only with a notifier, the outbox file of notices to
+    /// owners in [`ServerConfig::outbox`], which the operator's sender delivers to each owner's
+    /// verified contact (`spec/30 §14` rule 5).
+    NoNotifier,
+    /// The outbox named cannot be opened: why.
+    Outbox(String),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartError::NoNotifier => f.write_str(
+                "Itaty serves only with a notifier: name the outbox file of notices to owners in `ServerConfig::outbox`, which the operator's sender delivers to each owner's verified contact (spec/30 §14 rule 5)",
+            ),
+            StartError::Outbox(why) => f.write_str(why),
         }
     }
 }
@@ -223,11 +247,11 @@ impl Service {
         store: Arc<dyn Store>,
         mut registry: Registry,
         config: ServerConfig,
-    ) -> Result<Service, String> {
+    ) -> Result<Service, StartError> {
         let Some(path) = &config.outbox else {
-            return Err("Itaty serves only with a notifier: name the outbox file of notices to owners in `ServerConfig::outbox`, which the operator's sender delivers to each owner's verified contact (spec/30 §14 rule 5)".to_owned());
+            return Err(StartError::NoNotifier);
         };
-        registry.set_notifier(Arc::new(Outbox::open(path)?));
+        registry.set_notifier(Arc::new(Outbox::open(path).map_err(StartError::Outbox)?));
         Ok(Service::unnotified_for_tests(store, registry, config))
     }
 
@@ -258,7 +282,7 @@ impl Service {
     fn body_limit(method: &str, path: &str) -> Option<usize> {
         match (method, path) {
             ("POST", "publish") => Some(MAX_PUBLISH_BODY),
-            ("POST", "submit" | "register" | "request") => Some(MAX_NOTE_BODY),
+            ("POST", "submit" | "register" | "request" | "notices") => Some(MAX_NOTE_BODY),
             ("POST", "cosign") => Some(MAX_COSIGN_BODY),
             _ => None,
         }
@@ -306,6 +330,22 @@ impl Service {
         }
     }
 
+    /// Whether `request` carries the operator's bearer token; the response that refuses it.
+    fn operator(&self, request: &Request) -> Result<(), Response> {
+        let Some(token) = &self.config.register_token else {
+            return Err(text(403, "the operator's endpoints are closed"));
+        };
+        let given = request
+            .header("authorization")
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or_default();
+        if same_secret(given.as_bytes(), token.as_bytes()) {
+            Ok(())
+        } else {
+            Err(text(401, "this endpoint needs the operator's token"))
+        }
+    }
+
     fn locked(&self) -> Result<std::sync::MutexGuard<'_, Registry>, Response> {
         self.registry
             .lock()
@@ -346,6 +386,15 @@ impl Service {
                 match registry.submit(&request.body) {
                     Ok(receipt) => text(200, receipt.promise.trim_end().to_owned()),
                     Err(refusal) => Service::refused(&refusal),
+                }
+            }
+            "notices" => {
+                if let Err(response) = self.operator(&request) {
+                    return response;
+                }
+                match self.locked() {
+                    Ok(registry) => text(200, registry.notice_status().text().trim_end()),
+                    Err(response) => response,
                 }
             }
             "register" | "request" => {

@@ -26,8 +26,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::SigningKey;
 use una_itaty::digest_string;
 use una_itaty::entry::owner_chain;
-use una_itaty::http::{ServerConfig, Service};
-use una_itaty::notify::Recording;
+use una_itaty::http::{ServerConfig, Service, StartError};
+use una_itaty::notify::{Notice, Notifier, Recording};
 use una_itaty::registry::{
     Cause, Clock, Config, Receipt, Refusal, Registry, Rotation, checkpoint_path,
 };
@@ -104,17 +104,17 @@ impl Fixture {
         let pin = root_digest(&document);
         let clock = Arc::new(TestClock(AtomicU64::new(NOW)));
         let shared: Arc<dyn Store> = store.clone();
-        let mut registry = Registry::open(
+        let recording = Arc::new(Recording::new());
+        let registry = Registry::open(
             shared,
             &Config {
                 pin: pin.clone(),
                 log_seed: [20; 32],
             },
             clock.clone(),
+            recording.clone(),
         )
         .unwrap();
-        let recording = Arc::new(Recording::new());
-        registry.set_notifier(recording.clone());
         Fixture {
             dir,
             store,
@@ -129,6 +129,11 @@ impl Fixture {
 
     /// The registry opened again on the same store, as after a restart.
     fn reopen(&self) -> Registry {
+        self.reopen_with(Arc::new(Recording::new()))
+    }
+
+    /// [`Fixture::reopen`], its notices going to `notifier`.
+    fn reopen_with(&self, notifier: Arc<dyn Notifier>) -> Registry {
         let shared: Arc<dyn Store> = self.store.clone();
         Registry::open(
             shared,
@@ -137,6 +142,7 @@ impl Fixture {
                 log_seed: [20; 32],
             },
             self.clock.clone(),
+            notifier,
         )
         .unwrap()
     }
@@ -577,15 +583,21 @@ fn a_service_starts_only_with_a_named_outbox() {
     };
     let refused = Service::new(
         shared.clone(),
-        Registry::open(shared.clone(), &config, f.clock.clone()).unwrap(),
+        Registry::open(
+            shared.clone(),
+            &config,
+            f.clock.clone(),
+            f.recording.clone(),
+        )
+        .unwrap(),
         ServerConfig::default(),
     )
     .unwrap_err();
-    assert!(refused.contains("notifier"), "{refused}");
+    assert_eq!(refused, StartError::NoNotifier);
     let outbox = temp_dir("outbox-file");
     let service = Service::new(
         shared.clone(),
-        Registry::open(shared, &config, f.clock.clone()).unwrap(),
+        Registry::open(shared, &config, f.clock.clone(), f.recording.clone()).unwrap(),
         ServerConfig {
             outbox: Some(outbox.clone()),
             ..ServerConfig::default()
@@ -771,4 +783,43 @@ fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines(
     assert_eq!(client.recovery_effect(recovery).unwrap(), Some(5));
     assert_eq!(client.earliest_effect(recovery).unwrap(), Some(5));
     assert!(client.misbehavior().is_empty());
+}
+
+/// A notifier that takes nothing, as an outbox that cannot be written.
+struct Failing;
+
+impl Notifier for Failing {
+    fn notify(&self, _: &Notice) -> Result<(), String> {
+        Err("the outbox cannot be written".to_owned())
+    }
+}
+
+#[test]
+fn notices_not_taken_before_a_crash_are_sent_again_on_reopening() {
+    let mut f = Fixture::new("crash");
+    let a = keypair(60, "acme.a");
+    f.register("acme", &[&a], &[]);
+    f.submit("acme", "cancel 0", 1, &[&a]).unwrap();
+    assert_eq!(f.registry.notice_status().notified, Some(1));
+    // The next two entries are logged, but their notices are not taken.
+    f.registry.set_notifier(Arc::new(Failing));
+    f.submit("acme", "cancel 0", 1, &[&a]).unwrap();
+    f.submit("acme", "cancel 0", 1, &[&a]).unwrap();
+    let status = f.registry.notice_status().clone();
+    assert_eq!(
+        (status.notified, status.failures, status.behind),
+        (Some(1), 2, true)
+    );
+    assert!(status.last_error.is_some());
+    // Opened again, as after a crash: each notice after the cursor is sent, once more.
+    let recording = Arc::new(Recording::new());
+    let reopened = f.reopen_with(recording.clone());
+    let indices: Vec<u64> = recording
+        .notices()
+        .iter()
+        .map(|notice| notice.index)
+        .collect();
+    assert_eq!(indices, vec![2, 3]);
+    let status = reopened.notice_status();
+    assert_eq!((status.notified, status.failures), (Some(3), 2));
 }

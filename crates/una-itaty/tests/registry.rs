@@ -53,7 +53,7 @@ fn open() -> (Arc<MemoryStore>, Registry, Config, Vec<Signer>) {
         log_seed: [2; 32],
     };
     let shared: Arc<dyn Store> = store.clone();
-    let registry = Registry::open(shared, &config, Arc::new(Fixed(1_000))).unwrap();
+    let registry = Registry::open(shared, &config, Arc::new(Fixed(1_000)), recording()).unwrap();
     (store, registry, config, witnesses)
 }
 
@@ -264,7 +264,8 @@ fn a_store_changed_by_hand_refuses_to_open() {
     let b = signer("zenith.a", 11);
     register(&mut registry, "zenith", &[&b], 1);
     let shared: Arc<dyn Store> = store.clone();
-    let reopened = Registry::open(shared.clone(), &config, Arc::new(Fixed(1_000))).unwrap();
+    let reopened =
+        Registry::open(shared.clone(), &config, Arc::new(Fixed(1_000)), recording()).unwrap();
     assert_eq!(
         (reopened.size(), reopened.map_root()),
         (registry.size(), registry.map_root())
@@ -275,5 +276,10 @@ fn a_store_changed_by_hand_refuses_to_open() {
     let mut swapped = bundle[first_len..].to_vec();
     swapped.extend_from_slice(&bundle[..first_len]);
     store.put("tile/entries/000.p/2", &swapped).unwrap();
-    assert!(Registry::open(shared, &config, Arc::new(Fixed(1_000))).is_err());
+    assert!(Registry::open(shared, &config, Arc::new(Fixed(1_000)), recording()).is_err());
+}
+
+/// A notifier that records notices in memory, which every registry needs.
+fn recording() -> Arc<una_itaty::notify::Recording> {
+    Arc::new(una_itaty::notify::Recording::new())
 }
