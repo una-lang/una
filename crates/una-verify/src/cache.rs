@@ -304,6 +304,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
         // The entry's own name planted as a link to a file outside: the link itself is replaced
         // by the entry, and the file it led to is left as it was.
+        std::fs::remove_file(entry(&dir, &query)).unwrap();
         std::os::unix::fs::symlink(&victim, entry(&dir, &query)).unwrap();
         put(&mine(&dir), &query, &proven());
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
