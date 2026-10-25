@@ -167,6 +167,55 @@ impl Transport for Unavailable {
     }
 }
 
+/// A place with the other places of its source behind it (`spec/30 §14` rule 1): the root
+/// metadata and the latest `checkpoint` are read from the place alone, since they choose it;
+/// every other document, verified against that checkpoint by its hash, signature or proof
+/// wherever it comes from, is read from the place, or, when the place omits it or cannot
+/// serve it, from the next place that serves it. So an omission by one place never changes a
+/// result, and makes it unavailable only when no place serves the document.
+pub struct Fallback {
+    /// The place, then the others, in their order.
+    places: Vec<Box<dyn Transport>>,
+}
+
+impl Fallback {
+    /// The place `first`, then `others`, in their order.
+    pub fn new(first: Box<dyn Transport>, others: Vec<Box<dyn Transport>>) -> Fallback {
+        let mut places = vec![first];
+        places.extend(others);
+        Fallback { places }
+    }
+}
+
+impl Transport for Fallback {
+    fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
+        let chooses = path == "checkpoint" || path.starts_with("root/");
+        let mut failure: Option<Refusal> = None;
+        for (at, place) in self.places.iter().enumerate() {
+            if chooses && at > 0 {
+                break;
+            }
+            match place.get(path, limit) {
+                Ok(Some(bytes)) => return Ok(Some(bytes)),
+                Ok(None) => {}
+                Err(why) => {
+                    failure.get_or_insert(why);
+                }
+            }
+        }
+        match failure {
+            Some(why) => Err(why),
+            None => Ok(None),
+        }
+    }
+
+    fn describe(&self) -> String {
+        self.places
+            .first()
+            .map_or_else(String::new, |place| place.describe())
+    }
+}
+
 /// The transport of a location.
 pub fn open(location: &Location) -> Box<dyn Transport> {
     match location {

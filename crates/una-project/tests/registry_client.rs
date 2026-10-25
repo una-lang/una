@@ -2004,3 +2004,113 @@ fn the_cosigners_claim_the_last_key_and_void_the_thiefs_releases() {
     assert_eq!(history.snapshots.last().unwrap().keys, vec![a.1.clone()]);
     assert!(client.releases("acme/ledger").unwrap()[0].compromised);
 }
+
+/// A cancelled recovery ends when its guarding cosigners are replaced: an overruling by them
+/// afterwards revives nothing.
+#[test]
+fn a_cancelled_recovery_ends_when_its_cosigners_are_replaced() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let x = keypair(70, "trustee.x");
+    let y = keypair(71, "trustee.y");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &b], 1, &[&x], 1);
+    registry.checkpoint(NOW - 30 * DAY);
+    let recovery = registry.recover("acme", "recover", &n.1, &[&x]);
+    let designation = registry.owner_event(
+        "acme",
+        &format!("cosigners 1 {}", key_text(&y.1)),
+        1,
+        &[&b],
+    );
+    registry.checkpoint(NOW - 29 * DAY);
+    let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
+    registry.checkpoint(NOW - 23 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 21 * DAY);
+    registry.owner_event("acme", &format!("overrule {cancel}"), 1, &[&x]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&b]);
+    registry.checkpoint(NOW);
+    let history = history_of(&registry).unwrap();
+    assert!(history.took_effect.contains_key(&designation));
+    assert!(!history.took_effect.contains_key(&recovery));
+    assert_eq!(history.cosigners, Some((1, vec![y.1.clone()])));
+    assert_eq!(
+        history.snapshots.last().unwrap().keys,
+        vec![a.1.clone(), b.1.clone()]
+    );
+}
+
+/// An overruling counts only within seven days of witness time after the cancellation it
+/// overrules: later, the cancelled recovery stays cancelled.
+#[test]
+fn an_overruling_counts_only_within_seven_days_of_its_cancellation() {
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a], 1, &[&x], 1);
+    registry.checkpoint(NOW - 40 * DAY);
+    let recovery = registry.recover("acme", "recover", &n.1, &[&x]);
+    registry.checkpoint(NOW - 39 * DAY);
+    let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
+    registry.checkpoint(NOW - 38 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 30 * DAY);
+    registry.owner_event("acme", &format!("overrule {cancel}"), 1, &[&x]);
+    registry.checkpoint(NOW);
+    let history = history_of(&registry).unwrap();
+    assert!(!history.took_effect.contains_key(&recovery));
+    assert!(
+        history
+            .cancellations
+            .get(&recovery)
+            .is_some_and(|c| c.contains(&cancel))
+    );
+    assert_eq!(history.snapshots.last().unwrap().keys, vec![a.1.clone()]);
+}
+
+/// A kept checkpoint that the place omits is read from the next place; with no place serving
+/// it, the result is unavailable, never an effect that did not happen (`spec/30 §14` rule 1).
+#[test]
+fn an_omitted_kept_checkpoint_is_unavailable_never_a_later_effect() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 30 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 29 * DAY);
+    registry.append("other", "filler");
+    let effect = registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&n]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    // The full view: the dispute takes effect, the claim stands, the thief's release is
+    // skipped.
+    let full = history_of(&registry).unwrap();
+    assert!(full.took_effect.contains_key(&dispute));
+    // A place that omits the checkpoint of the effect, alone: unavailable.
+    let mut omitting = Memory {
+        files: registry.files.clone(),
+    };
+    omitting.files.remove(&format!("checkpoint/{effect}"));
+    let mut client = open(&omitting, &registry).unwrap();
+    assert!(client.history("acme").is_err());
+    assert_eq!(
+        client.take_omitted(),
+        vec![format!("checkpoint/{effect}")]
+    );
+    // Behind it, a place that serves it: the full view.
+    let full_place = Memory {
+        files: registry.files.clone(),
+    };
+    let both = una_project::transport::Fallback::new(
+        Box::new(omitting),
+        vec![Box::new(full_place)],
+    );
+    let mut client = open(&both, &registry).unwrap();
+    assert_eq!(client.history("acme").unwrap(), full);
+    assert!(client.take_omitted().is_empty());
+}

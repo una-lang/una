@@ -264,6 +264,11 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         check: bool,
 
+        /// With --check: also read a checkpoint less than 24 hours old from a place or a
+        /// mirror, and fail on a package whose owner's chain froze since the lock was written
+        #[arg(long, requires = "check")]
+        fresh: bool,
+
         /// Record a ceiling wider than the one the lock records: an authority change
         #[arg(long)]
         accept_authority: bool,
