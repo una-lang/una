@@ -2543,7 +2543,7 @@ pub(crate) fn fetch_command(
     let mut problems: Vec<ProjectError> = Vec::new();
     // What the lock says of each registry release, and the places of each source, first: the
     // registries opened below borrow their transports.
-    let mut wanted: Vec<(&ita::LockPackage, vendor::Expected)> = Vec::new();
+    let mut wanted: Vec<(&ita::LockPackage, una_project::provenance::Expected)> = Vec::new();
     let mut places: BTreeMap<String, Vec<crate::registry::Place>> = BTreeMap::new();
     for locked in &lock.read.packages {
         if !matches!(
@@ -2658,7 +2658,7 @@ pub(crate) fn fetch_command(
 fn fetch_one(
     registry: &mut una_project::client::Registry<'_>,
     itaoca: &una_project::itaoca::Itaoca,
-    expected: &una_project::vendor::Expected,
+    expected: &una_project::provenance::Expected,
 ) -> Result<(), (Code, String)> {
     use una_project::provenance;
     use una_project::tlog::release::{self, check_archive};
