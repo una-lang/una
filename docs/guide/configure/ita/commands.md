@@ -128,6 +128,7 @@ change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:… -> sha256:…; ma
 - **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing.
 - **Registry needs.** `lock`, `update`, `add` and `fetch` read a source of `sources` from the first of its places whose copy verifies: the mirrors listed for it in Itaoca's `mirrors.una`, then its own URL. They verify everything they read, from the root its `sources` entry pins to each release's signature and its owner's keys, and skip a mirror that serves a bad copy, naming it (U7010). This release has no https transport, so a source needs a mirror directory, listed as a `file://` URL; with none it is U7013. A `http://` location is refused: plain HTTP is never used. A need of `itaty`, whose root is not built into this release, is U7013.
 - **Keys.** A change of a locked package's owner's keys, a key added or revoked or a recovery that took effect, is U7014 until `--accept-key <package>` records it.
+- **Owners' keys.** An owner of packages should use a threshold above one, or designate recovery co-signers: with one key and no co-signers, a single stolen key can harm the owner's packages until a recovery or a dispute takes effect (`spec/30 §14` rule 5).
 - **No network.** No command of this release opens a network connection. `fetch` fills Itaoca with the locked releases from the mirror, verified. `audit`, `watch` and `bundle` read a source the same way; `publish` and `yank` send to the source's own URL, which is served over https, so they stop before they send anything until there is an https transport.
 
 ## Diagnostics
@@ -143,4 +144,4 @@ Edition `0.4` only, a preview.
 
 ## Normative source
 
-- `spec/30 §6`: commands; `spec/30 §10`: resolution, the review, `update`, `add` and `verify`; `spec/30 §12`: path dependencies and the lock; `spec/30 §14`: the registry client and mirrors; `spec/30 §15`: publishing, yanks, audit, watch and bundles.
+- `spec/30 §6`: commands; `spec/30 §10`: resolution, the review, `update`, `add` and `verify`; `spec/30 §12`: path dependencies and the lock; `spec/30 §14`: the registry client, mirrors and owners' keys; `spec/30 §15`: publishing, yanks, audit, watch and bundles.

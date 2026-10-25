@@ -250,7 +250,10 @@ impl Itaoca {
                     return Err("another run held the floor lock for five seconds".to_owned());
                 }
                 Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(format!("cannot take the floor lock: {error}"));
+                    return Err(format!(
+                        "the file system of `{}` takes no lock ({error}), so rollback floors are not stored on it",
+                        path.display()
+                    ));
                 }
             }
         }

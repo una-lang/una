@@ -833,6 +833,8 @@ fn resolve_and_lock(
     // Per source and owner, the pending entries whose key change the new lock records as
     // consented to.
     let mut accepted_out: BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> = BTreeMap::new();
+    // Problems of the lock it replaces, at their lines of it.
+    let mut lock_errors: Vec<ProjectError> = Vec::new();
     for (identity, version) in &resolution.list {
         let Some(cell) = online.registries.get(&identity.source) else {
             continue;
@@ -878,16 +880,49 @@ fn resolve_and_lock(
         let mut block = crate::registry::package_block(&release, &signed);
         // The entries of the owner's chain whose key change the lock it replaces consented to.
         let owner = una_project::client::owner_of(&identity.name).to_owned();
-        let recorded: BTreeSet<u64> = existing_lock
+        let accepted_line = existing_lock
             .and_then(|lock| {
                 lock.read
                     .registries
                     .iter()
                     .find(|r| r.source.value == identity.source)
             })
-            .and_then(|registry| registry.accepted.iter().find(|a| a.owner.value == owner))
-            .map(|accepted| accepted.indices.iter().map(|i| i.value).collect())
-            .unwrap_or_default();
+            .and_then(|registry| registry.accepted.iter().find(|a| a.owner.value == owner));
+        // A recorded index counts only when it is below the old resolution point and is an
+        // entry of the owner's chain there: a recovery or a dispute pending at that point, or
+        // another key event. Any other is U7009 at its line, and counts for nothing.
+        let mut recorded: BTreeSet<u64> = BTreeSet::new();
+        if let Some(line) = accepted_line {
+            let old_size = locked_point(&identity.source).map_or(0, |(size, _)| size);
+            match registry.history(&owner) {
+                Ok(history) => {
+                    for index in &line.indices {
+                        let i = index.value;
+                        let valid = i < old_size
+                            && history.entries.contains(&i)
+                            && history
+                                .requests
+                                .get(&i)
+                                .is_none_or(|effect| effect.is_none_or(|at| at > old_size));
+                        if valid {
+                            recorded.insert(i);
+                        } else {
+                            lock_errors.push(ProjectError {
+                                code: Code::U7009,
+                                range: index.range.clone(),
+                                message: format!(
+                                    "the accepted index {i} of `{owner}` is not an entry of its chain pending or logged before the lock's resolution point; run `una ita lock`"
+                                ),
+                            });
+                        }
+                    }
+                }
+                Err(message) => {
+                    found.push(problem(Code::U7010, message));
+                    continue;
+                }
+            }
+        }
         let ceiling = need.map(|need| canonical_ceiling(&need.may)).unwrap_or_default();
         if !ceiling.is_empty() {
             block.push_str(&format!("  granted by {root} may {ceiling}\n"));
@@ -1083,6 +1118,9 @@ fn resolve_and_lock(
         });
     }
     diagnostics.extend(located(sources, manifest_id, found));
+    if let Some((lock_id, _, _)) = &existing {
+        diagnostics.extend(located(sources, *lock_id, lock_errors));
+    }
     if !diagnostics.is_empty() {
         return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     }
@@ -2429,8 +2467,7 @@ pub(crate) fn fetch_command(
             Err(message) => refuse(Code::U7010, message),
         }
     }
-    // Each registry's resolution point became its floor, under its registry's identity, when
-    // `open_first` accepted it (`crate::registry::open`), a failure there being a note.
+    // Each registry's floors were stored when its point was accepted (`registry::open`).
     diagnostics.extend(located(sources, lock_id, problems));
     if lines.is_empty() && diagnostics.is_empty() {
         lines.push("no registry package is locked".to_owned());

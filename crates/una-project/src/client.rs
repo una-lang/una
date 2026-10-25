@@ -249,6 +249,20 @@ fn hidden(c: char) -> bool {
         )
 }
 
+/// `text` with every [`hidden`] character written as `\u{…}`, and no cap: for what is not
+/// served, such as a mirror's path, which must still not disguise a message.
+pub fn escaped(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if hidden(c) {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// `text`, part of a message, as it may be shown: every [`hidden`] character written as
 /// `\u{…}`, and at most [`MAX_MESSAGE`] characters of `text`, so what a registry served can
 /// never disguise or flood a diagnostic. Callers pass only the part that may quote what was
@@ -459,7 +473,7 @@ impl<'t> Registry<'t> {
         point: &Point,
         floors: &Floors<'_>,
     ) -> Result<Registry<'t>, OpenError> {
-        let described = transport.describe();
+        let described = escaped(&transport.describe());
         let says = |why: String| {
             format!("the registry `{source}` ({described}): {}", shown(&why))
         };
@@ -657,7 +671,7 @@ impl<'t> Registry<'t> {
         format!(
             "the registry `{}` ({}): {}",
             self.source,
-            self.transport.describe(),
+            escaped(&self.transport.describe()),
             shown(&why.to_string())
         )
     }

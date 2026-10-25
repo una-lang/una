@@ -643,3 +643,34 @@ fn an_archive_that_understates_its_authority_is_not_fetched() {
     assert!(err.contains("U7010"), "{err}");
     assert!(!itaoca.join("packages").exists());
 }
+
+/// An `accepted` index the lock's resolution point cannot have reached, or one that is no
+/// entry of the owner's chain there, is U7009 at its line, and consents to nothing.
+#[test]
+fn a_forged_accepted_index_is_refused() {
+    let (registry, _) = acme();
+    let (dir, _, itaoca) = project("forged-accepted", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let checkpoint_line = lock
+        .lines()
+        .find(|line| line.starts_with("  checkpoint "))
+        .unwrap()
+        .to_owned();
+    // 999, a future entry; 1, a release, not an entry of the owner's chain.
+    for forged in ["999", "1"] {
+        std::fs::write(
+            dir.join("ita.lock"),
+            lock.replacen(
+                &checkpoint_line,
+                &format!("{checkpoint_line}\n  accepted acme {forged}"),
+                1,
+            ),
+        )
+        .unwrap();
+        let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+        assert_eq!(code, 1, "{forged}");
+        assert!(err.contains("U7009") && err.contains("accepted index"), "{forged}: {err}");
+    }
+}
