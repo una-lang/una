@@ -1304,22 +1304,136 @@ fn the_thiefs_revocation_does_not_stand() {
     assert_eq!(client.releases("acme/ledger").unwrap().len(), 1);
 }
 
-/// Two keys each revoke the other as compromised since before the other's revocation: the
-/// claims cancel each other, and the name is refused, its remedy a recovery.
+/// Two keys each revoke the other as compromised since before the other's revocation: both
+/// claims stand, so both keys are compromised, the owner has no sound key, and what either
+/// signed after its point is skipped; the chain is not refused.
 #[test]
-fn revocations_that_cancel_each_other_refuse_the_chain() {
+fn revocations_that_cancel_each_other_compromise_both_keys() {
     let a = keypair(60, "acme.a");
     let d = keypair(61, "acme.d");
     let mut registry = TestRegistry::new("acme");
     registry.register_keys("acme", &[&a, &d], 1, &[], 0);
     registry.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
     registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),
     };
     let mut client = open(&memory, &registry).unwrap();
-    assert!(client.history("acme").is_err());
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.len(), 2);
+    assert_eq!(history.voided, vec![1, 2]);
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised);
+}
+
+/// After revocations that cancel each other, a recovery, which needs no owner key, takes effect
+/// seven days on and cures the chain: the new key's releases count.
+#[test]
+fn a_recovery_cures_revocations_that_cancel_each_other() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let recovered = keypair(63, "acme.new");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+    registry.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.recover("acme", "recover", &recovered.1, &[]);
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&recovered]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 1);
+    assert!(!releases[0].compromised);
+}
+
+/// After a recovery, the owner revokes its former key as compromised since a position: the keys
+/// held do not change, and what the former key signed after that position is skipped.
+#[test]
+fn a_former_key_can_be_revoked_as_compromised() {
+    let a = keypair(60, "acme.a");
+    let recovered = keypair(63, "acme.new");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 30 * DAY);
+    // The key is stolen: the thief publishes with it, and the owner asks a recovery.
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.recover("acme", "recover", &recovered.1, &[]);
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 1", 1, &[&recovered]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&1));
+    assert_eq!(history.at(10).unwrap().keys, vec![recovered.1.clone()]);
+    let marks: Vec<(String, bool)> = client
+        .releases("acme/ledger")
+        .unwrap()
+        .iter()
+        .map(|r| (r.statement.version.to_string(), r.compromised))
+        .collect();
+    assert_eq!(
+        marks,
+        vec![("0.3.1".to_owned(), false), ("0.3.2".to_owned(), true)]
+    );
+}
+
+/// A revocation names an owner key, never a recovery cosigner of the same name.
+#[test]
+fn a_claim_never_names_a_cosigner() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let namesake = keypair(70, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[&namesake], 1);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&0));
+    assert!(!history.compromised.contains_key(&namesake.1.public));
+}
+
+/// The replay's work grows linearly with a chain padded with void entries: the keys the chain
+/// names are checked only for an entry not signed as required after a void one.
+#[test]
+fn replay_stays_linear_with_void_entries() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let mut per_entry = Vec::new();
+    for n in [50u64, 200, 800] {
+        let mut registry = TestRegistry::new("acme");
+        registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+        for _ in 0..n {
+            registry.owner_event("acme", "cosigners none", 1, &[&a]);
+        }
+        registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+        registry.checkpoint(NOW);
+        let memory = Memory {
+            files: registry.files.clone(),
+        };
+        let mut client = open(&memory, &registry).unwrap();
+        let history = client.history("acme").unwrap();
+        assert_eq!(history.voided.len() as u64, n);
+        per_entry.push(history.checks as f64 / n as f64);
+    }
+    assert!(per_entry[2] <= per_entry[0] * 2.0, "{per_entry:?}");
 }
 
 /// After a void entry, an entry signed by no key the chain names still refuses the chain.
