@@ -39,3 +39,36 @@ The workspace forbids `unsafe` (`unsafe_code = "forbid"`, `conventions.md §1`).
 ## Amendment (2026-10-18, ADRs 0116 and 0117)
 
 A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's comments and lint settings. It holds only the installation of the handlers of SIGINT and SIGTERM with their async-signal-safe bodies (ADR 0116 rule 18), and the stack switch of coroutines with the mapping of their stacks with guard pages (ADR 0117 rule 2), which both the native runtime and the interpreter use. It stays under 800 lines, depends on no crate of the repository, and every change to it gets a security review before it merges. `una-rt`, `una-interp` and `una-cli` depend on it, and stay free of `unsafe` outside `ffi.rs`.
+
+## Amendment (2026-10-25): what `una-sys` holds, and how its size is counted
+
+The amendment of 2026-10-18 limits `una-sys` to the signal handlers and the coroutine stacks. The concurrency, server and package-store records need more bindings to the operating system than those two. Each is written in the crate's own Rust, through the declarations of the `libc` crate (ADR 0116, amendment of 2026-10-19): no foreign code, and no binding to a system library beyond the C library.
+
+**What it may hold.** Bindings to the operating system that the standard library cannot provide, in these modules:
+
+| Module | Purpose | Record | C library functions |
+| --- | --- | --- | --- |
+| `signals.rs`, `attention.rs` | Signal handlers, the wake pipe, attention words | ADR 0116 rule 18 | `sigaction`, `sigemptyset`, `sigaddset`, `pthread_sigmask`, `raise`, `pipe`, `pipe2`, `write`, `close`, `fcntl`, `_exit`, and the errno accessor (`__errno_location` on Linux, `__error` on macOS) |
+| `coroutine.rs` | Coroutine stacks with guard pages, and the stack switch | ADR 0117 rule 2 | `mmap`, `mprotect`, `madvise`, `munmap`, `sysconf`; the switch is assembly in Rust, with no library call |
+| `io.rs`, `poll.rs` | The readiness poller, and the descriptor limit | ADR 0117 rule 3 | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` on Linux, `kqueue`, `kevent` on macOS, `getrlimit` |
+| `server.rs` | Listening sockets, the run's identity, raising the descriptor limit | ADR 0123 | `socket`, `setsockopt`, `bind`, `listen`, `getegid`, `getgroups`, `setrlimit` |
+| `dir.rs` | Descriptor-relative file operations for the package store | ADR 0122 | `openat`, `mkdirat`, `renameat2` with `RENAME_NOREPLACE` on Linux, `renameatx_np` with `RENAME_EXCL` on macOS, `renameat`, `unlinkat`, `geteuid` |
+
+**Rules that every binding meets.**
+- It has a safe wrapper, with a doc comment that names why the standard library cannot do it.
+- It has its own test, in `crates/una-sys/tests/`.
+- Every `unsafe` block carries a `// SAFETY:` comment.
+- Each function of the C library is bound once. Every caller in the crate goes through that one wrapper; for example `geteuid` lives in `dir.rs`, and `server.rs` calls it there. A helper used by several modules, such as the errno accessor or `fcntl`, is one private function.
+- Every change to the crate gets an independent security review before it merges.
+
+**What stays the same.**
+- `una-sys` depends on no crate of the repository, and on no external crate but `libc`.
+- The crates that may depend on it are `una-rt`, `una-interp`, `una-cli`, `una-http` and `una-project`, and through `una-project`, `una-check`. They stay free of `unsafe`, except `una-rt`'s `ffi.rs`.
+
+**How its size is counted.** The size of `una-sys` is the number of physical lines, comments and blank lines included, of the Rust files under `crates/una-sys/src/`. The tests under `crates/una-sys/tests/` do not count. The count is what this command prints at the root of the repository:
+
+```sh
+find crates/una-sys/src -name '*.rs' -exec cat {} + | wc -l
+```
+
+On `main` at the time of this amendment the count is 363. This amendment does not change the cap. A later amendment sets it at the exact count of the merged slices, with at most 5% of headroom, and replaces every earlier number. Each pull request that changes the crate states its count, by this command, in its description.

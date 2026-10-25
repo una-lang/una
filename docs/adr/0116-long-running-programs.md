@@ -674,3 +674,7 @@ Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`
 ## Amendment (2026-10-19): statements after `stop` or `skip`
 
 Rule 6 does not say what a statement after an unconditional `stop` or `skip` in the same block means. Such a statement never runs, and code that never runs is almost always a mistake. It is an error: U2040, "a statement after `stop` or `skip` in the same block, which never runs", at the first such statement, with a repair that removes the statements after the exit. `stop when c` is conditional, so the statements after it stay legal, and so do the statements after the block that holds the exit, which run on the paths that do not take it.
+
+## Amendment (2026-10-25): the scope of `una-sys`
+
+Rule 18 says `una-sys` holds only the signal handlers and the stack switch, and Appendix A repeats the 2026-10-18 amendment of ADR 0058 that says so. ADR 0058's amendment of 2026-10-25 now defines what the crate holds: the poller, listening sockets, the run's identity and the descriptor-relative file operations, besides the two named here. It also defines which crates may depend on it, and how its size is counted. Where this record and that amendment differ on the crate's contents, its dependents or its size, that amendment applies.
