@@ -323,7 +323,7 @@ fn run(keys: &Keys, built: &Built) -> Result<History, String> {
     let mut effect = |index: u64| -> Result<Option<u64>, String> {
         Ok(built.effects.get(index as usize).copied().flatten())
     };
-    replay("acme", "model", &logged, keys.key(K::Log), &mut effect)
+    replay("acme", "model", &logged, keys.key(K::Log), &mut effect).map_err(|why| why.to_string())
 }
 
 /// Whether a release logged at `position`, signed by `signers`, counts.

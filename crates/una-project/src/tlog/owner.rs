@@ -673,6 +673,49 @@ impl History {
     }
 }
 
+/// Evidence that a registry logged an owner's chain that does not settle (`spec/30 §14` rule 5):
+/// its claims of compromise change at every replay up to the pass cap. A valid chain always
+/// settles within it, so a registry that follows the rules never logs such a chain; a client
+/// refuses the owner's names (U7010) and reports this against the registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unsettled {
+    /// The owner whose chain does not settle.
+    pub owner: String,
+    /// The first log index whose claim differs between the last two replays: where the
+    /// oscillation shows.
+    pub index: u64,
+    /// The replays made: the pass cap.
+    pub passes: usize,
+}
+
+/// Why [`replay`] refuses an owner's chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplayError {
+    /// The chain breaks a rule of the owners' entries, or its effects could not be read: why.
+    Refused(String),
+    /// The chain does not settle within the pass cap: registry misbehavior.
+    Unsettled(Unsettled),
+}
+
+impl From<String> for ReplayError {
+    fn from(why: String) -> ReplayError {
+        ReplayError::Refused(why)
+    }
+}
+
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplayError::Refused(why) => f.write_str(why),
+            ReplayError::Unsettled(unsettled) => write!(
+                f,
+                "the chain of `{}` does not settle within {} replays of its claims of compromise, first at the log index {}",
+                unsettled.owner, unsettled.passes, unsettled.index
+            ),
+        }
+    }
+}
+
 /// The most keys an owner's chain may name over its whole history, owner keys and recovery
 /// cosigners, applied or void: a bound on what each entry's signatures are checked against.
 pub const MAX_KNOWN: usize = 1024;
@@ -733,7 +776,9 @@ type Claim = ([u8; 32], u64);
 /// keys are compromised and a later recovery or dispute, which needs no owner key, cures the
 /// chain. Any other claim is dropped: a thief's lone claim, signed with a key the owner claimed,
 /// never stands. The chain is replayed until the claims settle, which a valid chain does within
-/// the pass cap; one that does not is refused.
+/// the pass cap; one that does not stops at the cap, the same on every run, and is refused as
+/// [`ReplayError::Unsettled`], naming the first log index whose claim differs between the last
+/// two replays.
 ///
 /// **Void entries.** An entry whose required signatures are met only with a compromised key is
 /// void, and changes nothing; so is a later entry that is not signed as required once the void
@@ -753,7 +798,7 @@ pub fn replay(
     entries: &[Logged<'_>],
     log: &Key,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
-) -> Result<History, String> {
+) -> Result<History, ReplayError> {
     // The owner key each name brought in, and the index that brought it: registrations,
     // additions, recoveries and disputes, never cosigners.
     let mut introduced: BTreeMap<&str, Claim> = BTreeMap::new();
@@ -813,6 +858,8 @@ pub fn replay(
     // valid chain settles within twice the number of claims plus two passes. A chain that does
     // not is refused rather than read half-settled.
     let cap = 2 * claims.len() + 2;
+    // The first index whose claim the last pass changed.
+    let mut last_change: Option<u64> = None;
     for _ in 0..cap {
         let mut compromised: BTreeMap<[u8; 32], u64> = BTreeMap::new();
         for (public, since) in claims.values() {
@@ -843,11 +890,19 @@ pub fn replay(
         if next == claims {
             return Ok(history);
         }
+        last_change = claims
+            .keys()
+            .chain(next.keys())
+            .filter(|index| claims.get(index) != next.get(index))
+            .min()
+            .copied();
         claims = next;
     }
-    Err(format!(
-        "the chain of `{owner}` does not settle within {cap} replays of its claims of compromise"
-    ))
+    Err(ReplayError::Unsettled(Unsettled {
+        owner: owner.to_owned(),
+        index: last_change.unwrap_or_default(),
+        passes: cap,
+    }))
 }
 
 /// The state of an owner while its chain is replayed.

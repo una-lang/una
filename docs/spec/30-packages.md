@@ -366,7 +366,7 @@ A registry is a set of static files below a base (ADR 0122 rule 34). `una ita lo
    1. once the owner responded, no release counts whose signatures reach the threshold only with a key compromised before its position;
    2. against a key-only attacker, once the owner responded, the owner's names resolve and its chain is not frozen, its keys sign releases that count, and every release that counted when it was logged, signed by the owner's keys other than the stolen one, or by the stolen one before it was stolen, still counts;
    3. against a key-only attacker, an owner whose current keys other than the stolen one meet its threshold can log its claim, and an owner below it can log a recovery or a dispute and, once that takes effect, its claim;
-   4. two replays of one chain give the same history, and a replay settles within its pass cap;
+   4. two replays of one chain give the same history, and a replay settles within its pass cap. A client MUST NOT rely on the registry for this: a chain that does not settle within the cap MUST stop at the cap, with the same result on every run, and the owner's names MUST be refused (U7010) as registry misbehavior, naming the owner and the first log index whose claim differs between the last two replays, recorded in a typed form that `una ita audit` reports as evidence against the registry;
    5. the result depends only on the entries in log order, and not on the order of a note's signature lines.
 
    Against a key-and-account attacker, the attacker's keys MUST NOT sign a release that counts once the owner responded: competing requests freeze the chain rather than give it the keys.

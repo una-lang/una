@@ -1871,3 +1871,46 @@ fn a_claim_signed_by_the_key_it_names_states_nothing_of_the_past() {
     let releases = client.releases("acme/ledger").unwrap();
     assert!(releases[0].compromised && !releases[1].compromised);
 }
+
+/// A chain that does not settle, which a registry must never log, fed directly: `A` adds the
+/// thief's `T`, then `T` alone claims `A` compromised since 0. Assuming the claim voids `T`'s
+/// addition and so the claim; dropping it brings both back. The replay stops at its pass cap,
+/// the same on every run, refuses the owner's names, and records the registry's misbehavior.
+#[test]
+fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
+    let a = keypair(60, "acme.a");
+    let t = keypair(66, "acme.t");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.owner_event("acme", &format!("add {}", key_text(&t.1)), 1, &[&a, &t]);
+    let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[&t]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&t]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let refusal = |client: &mut Registry<'_>| client.history("acme").unwrap_err();
+    let mut client = open(&memory, &registry).unwrap();
+    let first = refusal(&mut client);
+    assert!(
+        first.contains("logged an owner chain that does not settle")
+            && first.contains("registry misbehavior")
+            && first.contains("`acme`")
+            && first.contains(&format!("first at the log index {claim}")),
+        "{first}"
+    );
+    // The same stop on every run, and on a client of its own.
+    assert_eq!(refusal(&mut client), first);
+    let mut again = open(&memory, &registry).unwrap();
+    assert_eq!(refusal(&mut again), first);
+    assert!(client.releases("acme/ledger").is_err());
+    assert_eq!(
+        client.misbehavior(),
+        &[owner::Unsettled {
+            owner: "acme".to_owned(),
+            index: claim,
+            passes: 4,
+        }]
+    );
+    assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
+}
