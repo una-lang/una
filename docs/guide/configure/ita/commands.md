@@ -115,7 +115,7 @@ change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:… -> sha256:…; ma
 - **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing.
 - **Registry needs.** `lock`, `update`, `add` and `fetch` read a source of `sources` from the first of its places whose copy verifies: the mirrors listed for it in Itaoca's `mirrors.una`, then its own URL. They verify everything they read, from the root its `sources` entry pins to each release's signature and its owner's keys, and skip a mirror that serves a bad copy, naming it (U7010). This release has no https transport, so a source needs a mirror directory, listed as a `file://` URL; with none it is U7013. A `http://` location is refused: plain HTTP is never used. A need of `itaty`, whose root is not built into this release, is U7013.
 - **Keys.** A change of a locked package's owner's keys, a key added or revoked or a recovery that took effect, is U7014 until `--accept-key <package>` records it.
-- **Owners' keys.** An owner of packages should use a threshold above one, or designate recovery co-signers: with one key and no co-signers, a single stolen key can harm the owner's packages until a recovery or a dispute takes effect (`spec/30 §14` rule 5).
+- **Owners' keys.** An owner of packages should use a threshold above one, or designate recovery co-signers: with one key and no co-signers, a single stolen key can harm the owner's packages until a recovery or a dispute takes effect and the owner logs its claim on the stolen key (`spec/30 §14` rule 5).
 - **No network.** No command of this release opens a network connection. `fetch` fills Itaoca with the locked releases from the mirror, verified; `audit` and `publish` come later.
 
 ## Diagnostics

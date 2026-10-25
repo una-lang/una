@@ -437,6 +437,8 @@ pub struct History {
     pub requests: BTreeMap<u64, Option<u64>>,
     /// The signature verifications the replay made, every pass counted, for the scaling test.
     pub checks: u64,
+    /// For each recovery and dispute, the cancellations of it that stand, not overruled.
+    pub cancellations: BTreeMap<u64, BTreeSet<u64>>,
 }
 
 /// An entry of an owner's chain, with its log index and its signed note.
@@ -476,6 +478,7 @@ impl History {
             void_keys: Vec::new(),
             requests: BTreeMap::new(),
             checks: 0,
+            cancellations: BTreeMap::new(),
         }
     }
 
@@ -604,23 +607,28 @@ type Claim = ([u8; 32], u64);
 /// that the key's signatures at positions after `p` do not count. The claim names the key the
 /// revocation removes, an owner key held then or held before (never a recovery cosigner), and a
 /// `p` below the index of the entry that brought that key in is taken as that index, so a
-/// registration is never undone by a compromise. All claims are first assumed to hold and the
-/// chain replayed; a claim whose revocation is then neither applied nor void only for want of a
-/// sound key (it is signed by no key the owner held then) is dropped, and the chain replayed
-/// again, until no claim changes. The claims only shrink, so this ends. Claims that void each
-/// other both stand: both keys are compromised from their points, the owner may be left with no
-/// sound key, and a later recovery or dispute, which needs none, cures the chain.
+/// registration is never undone by a compromise. Claims are kept by the index of their
+/// revocation; all are first assumed to hold and the chain replayed, each claim's key resolved
+/// again in every pass. A claim stands when its revocation applied; when it is void only for
+/// want of a sound key, it stands only if the key it names itself signed a revocation, applied
+/// or so void, of one of its signers: revocations that cancel each other, both kept, so both
+/// keys are compromised and a later recovery or dispute, which needs no owner key, cures the
+/// chain. Any other claim is dropped: a thief's lone claim, signed with a key the owner claimed,
+/// never stands. The chain is replayed until the claims settle, which a valid chain does within
+/// the pass cap; one that does not is refused.
 ///
 /// **Void entries.** An entry whose required signatures are met only with a compromised key is
 /// void, and changes nothing; so is a later entry that is not signed as required once the void
 /// ones are left out but is signed by a key the chain names, since it may depend on one. A key
-/// that only void entries bring in signs nothing that counts ([`History::void_keys`]). An entry
-/// with no signature by any key the chain names, a registration not signed by each key it
-/// registers, or a chain that names more than [`MAX_KNOWN`] keys, refuses the chain, as
-/// evidence that the registry logged what it must not.
+/// that only void entries bring in signs nothing that counts ([`History::void_keys`]), and a
+/// revocation of it changes nothing. Past [`MAX_KNOWN`] keys named, no more are recorded, and an
+/// entry the recorded keys cannot account for is void, never a refusal. An entry with no
+/// signature by any key the chain names, or a registration not signed by each key it registers,
+/// refuses the chain, as evidence that the registry logged what it must not.
 ///
-/// O(R · E · K) for E entries, R claims and K keys held at once (at most 32); the keys the chain
-/// names are checked only when an entry is not signed as required after a void one.
+/// O(P · E · K) for P passes, E entries and K keys held at once (at most 32), plus O(R²) per pass
+/// for R revocations; the keys the chain names are checked only when an entry is not signed as
+/// required after a void one.
 pub fn replay(
     owner: &str,
     source: &str,
@@ -667,9 +675,12 @@ pub fn replay(
         .collect();
     let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
     let mut checks = 0u64;
-    // Each pass drops a claim or changes none; a cap keeps a pathological chain bounded.
-    let mut passes = claims.len() + 2;
-    loop {
+    // Each pass keeps the claims by the index of their revocation, drops some, or only
+    // re-resolves their keys; a key a claim names changes at most once per claim dropped, so a
+    // valid chain settles within twice the number of claims plus two passes. A chain that does
+    // not is refused rather than read half-settled.
+    let cap = 2 * claims.len() + 2;
+    for _ in 0..cap {
         let mut compromised: BTreeMap<[u8; 32], u64> = BTreeMap::new();
         for (public, since) in claims.values() {
             let slot = compromised.entry(*public).or_insert(u64::MAX);
@@ -696,12 +707,14 @@ pub fn replay(
                 Some((*index, (*public, (*since).max(*at))))
             })
             .collect();
-        passes -= 1;
-        if next == claims || passes == 0 {
+        if next == claims {
             return Ok(history);
         }
         claims = next;
     }
+    Err(format!(
+        "the chain of `{owner}` does not settle within {cap} replays of its claims of compromise"
+    ))
 }
 
 /// The state of an owner while its chain is replayed.
@@ -716,25 +729,40 @@ struct Owner {
     /// Every name and public key held, so a key is never held twice.
     names: BTreeSet<String>,
     publics: BTreeSet<[u8; 32]>,
-    /// Every key the chain names, applied entries and the keys void ones bring in.
+    /// Every key the chain names, applied entries and the keys void ones bring in, at most
+    /// [`MAX_KNOWN`].
     known: Vec<Key>,
+    /// Whether a key the chain names was left out of `known`, past its cap.
+    overflowed: bool,
 }
 
 impl Owner {
-    /// Adds `keys` to the keys the chain names, at most [`MAX_KNOWN`].
-    fn know<'k>(&mut self, keys: impl IntoIterator<Item = &'k Key>) -> Result<(), String> {
+    /// Adds `keys` to the keys the chain names; past [`MAX_KNOWN`], a key is not recorded, and
+    /// the chain is marked as having named more.
+    fn know<'k>(&mut self, keys: impl IntoIterator<Item = &'k Key>) {
         for key in keys {
             if !self.known.iter().any(|k| k.public == key.public) {
                 if self.known.len() >= MAX_KNOWN {
-                    return Err(format!(
-                        "the chain names more than {MAX_KNOWN} keys"
-                    ));
+                    self.overflowed = true;
+                } else {
+                    self.known.push(key.clone());
                 }
-                self.known.push(key.clone());
             }
         }
-        Ok(())
     }
+}
+
+/// A revocation as one pass replayed it, for the claims it may make.
+struct Revocation {
+    index: u64,
+    /// Whether it states `since`.
+    claims: bool,
+    /// Whether it applied, rather than being void only for want of a sound key.
+    applied: bool,
+    /// The owner key it names, and that key's introduction index.
+    target: Option<Claim>,
+    /// The owner keys that signed it.
+    signers: Vec<[u8; 32]>,
 }
 
 /// One replay of the chain with the keys `compromised` taken as compromised since their
@@ -760,6 +788,7 @@ fn replay_once(
         names: BTreeSet::new(),
         publics: BTreeSet::new(),
         known: Vec::new(),
+        overflowed: false,
     };
     let mut checks = 0u64;
     let mut snapshots: Vec<Snapshot> = Vec::new();
@@ -770,7 +799,7 @@ fn replay_once(
     let mut indices: Vec<u64> = Vec::new();
     let mut voided: Vec<u64> = Vec::new();
     let mut void_keys: Vec<Key> = Vec::new();
-    let mut standing: BTreeMap<u64, Claim> = BTreeMap::new();
+    let mut revocations: Vec<Revocation> = Vec::new();
 
     for (at, logged) in entries.iter().enumerate() {
         let index = logged.index;
@@ -866,7 +895,7 @@ fn replay_once(
         // names signs it, since it may depend on that entry; refused otherwise. The keys the
         // chain names are checked only here.
         let decision = match decision {
-            Verdict::Refuse if !voided.is_empty() => {
+            Verdict::Refuse if !voided.is_empty() || state.overflowed => {
                 let mut by_known = false;
                 for key in &state.known {
                     if signs(note, key, &mut checks) {
@@ -874,7 +903,9 @@ fn replay_once(
                         break;
                     }
                 }
-                if by_known {
+                // Past the cap, a key the chain names may be unrecorded: such an entry is void,
+                // never a refusal of the chain.
+                if by_known || state.overflowed {
                     Verdict::VoidDependent
                 } else {
                     Verdict::Refuse
@@ -890,14 +921,20 @@ fn replay_once(
                 voided.push(index);
                 if let Event::Add(key) | Event::Recover(key) | Event::Dispute(key) = &entry.event {
                     void_keys.push(key.clone());
-                    state.know([key])?;
+                    state.know([key]);
                 }
-                // A revocation void only for want of a sound key still makes its claim.
-                if let (Verdict::VoidCompromised, Event::Revoke { name, since: Some(_) }) =
+                // A revocation void only for want of a sound key may still make its claim, in
+                // the mutual case alone ([`replay`]).
+                if let (Verdict::VoidCompromised, Event::Revoke { name, since }) =
                     (&decision, &entry.event)
-                    && let Some(claim) = target(&state, name)
                 {
-                    standing.insert(index, claim);
+                    revocations.push(Revocation {
+                        index,
+                        claims: since.is_some(),
+                        applied: false,
+                        target: target(&state, name),
+                        signers: signing.iter().map(|k| k.public).collect(),
+                    });
                 }
                 continue;
             }
@@ -928,9 +965,9 @@ fn replay_once(
                     state.publics.insert(key.public);
                     state.introduced.insert(key.public, index);
                 }
-                state.know(registered.iter())?;
+                state.know(registered.iter());
                 if let Some((_, list)) = designated {
-                    state.know(list.iter())?;
+                    state.know(list.iter());
                 }
                 snapshots.push(Snapshot {
                     from: index + 1,
@@ -950,7 +987,7 @@ fn replay_once(
                 state.publics.insert(key.public);
                 state.introduced.insert(key.public, index);
                 state.keys.push(key.clone());
-                state.know([key])?;
+                state.know([key]);
                 state.threshold = entry.threshold;
                 snapshots.push(Snapshot {
                     from: index + 1,
@@ -960,15 +997,18 @@ fn replay_once(
                 });
             }
             Event::Revoke { name, since } => {
+                let record = Revocation {
+                    index,
+                    claims: since.is_some(),
+                    applied: true,
+                    target: target(&state, name),
+                    signers: signing.iter().map(|k| k.public).collect(),
+                };
                 if let Some(position) = state.keys.iter().position(|k| k.name == *name) {
                     if entry.threshold > state.keys.len() - 1 {
                         return Err(refuse("sets a threshold above the owner's keys"));
                     }
-                    if since.is_some()
-                        && let Some(claim) = target(&state, name)
-                    {
-                        standing.insert(index, claim);
-                    }
+                    revocations.push(record);
                     let removed = state.keys.remove(position);
                     state.former.insert(removed.name.clone(), removed);
                     state.threshold = entry.threshold;
@@ -982,9 +1022,9 @@ fn replay_once(
                     // A key held before and no more, as one a recovery replaced: the revocation
                     // is a claim of compromise only, and the keys held do not change.
                     unchanged(entry.threshold, state.threshold)?;
-                    if let Some(claim) = target(&state, name) {
-                        standing.insert(index, claim);
-                    }
+                    revocations.push(record);
+                } else if void_keys.iter().any(|k| k.name == *name) {
+                    // A key that only void entries brought in: revoking it changes nothing.
                 } else {
                     return Err(refuse("revokes a key the owner does not hold or held"));
                 }
@@ -993,7 +1033,7 @@ fn replay_once(
                 unchanged(entry.threshold, state.threshold)?;
                 state.cosigners.clone_from(designated);
                 if let Some((_, list)) = designated {
-                    state.know(list.iter())?;
+                    state.know(list.iter());
                 }
             }
             Event::Recover(key) | Event::Dispute(key) => {
@@ -1005,7 +1045,7 @@ fn replay_once(
                 state.names.insert(key.name.clone());
                 state.publics.insert(key.public);
                 state.introduced.insert(key.public, index);
-                state.know([key])?;
+                state.know([key]);
                 let position = match effects.get(&index) {
                     Some(position) => *position,
                     None => {
@@ -1060,6 +1100,26 @@ fn replay_once(
             apply(&requests, request, position, &mut state, &mut snapshots);
         }
     }
+    // The claims that stand in this pass: every applied revocation with `since`; and one void
+    // only for want of a sound key, only when the key it names itself signed a revocation,
+    // applied or so void, of one of its signers: revocations that cancel each other. A thief's
+    // lone claim, signed by a key the owner claimed, does not stand.
+    let mut standing: BTreeMap<u64, Claim> = BTreeMap::new();
+    for record in revocations.iter().filter(|r| r.claims) {
+        let Some(claim) = record.target else {
+            continue;
+        };
+        let stands = record.applied
+            || revocations.iter().any(|other| {
+                other
+                    .target
+                    .is_some_and(|(public, _)| record.signers.contains(&public))
+                    && other.signers.contains(&claim.0)
+            });
+        if stands {
+            standing.insert(record.index, claim);
+        }
+    }
     let pending = requests
         .iter()
         .filter(|(_, r)| r.effect.is_none() && r.cancelled_by.is_empty())
@@ -1079,6 +1139,10 @@ fn replay_once(
             voided,
             void_keys,
             requests: requests.iter().map(|(index, r)| (*index, r.effect)).collect(),
+            cancellations: requests
+                .iter()
+                .map(|(index, r)| (*index, r.cancelled_by.clone()))
+                .collect(),
             checks,
         },
         standing,

@@ -832,6 +832,8 @@ fn resolve_and_lock(
     let mut effects_out: BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> = BTreeMap::new();
     // Problems of the lock it replaces, at their lines of it.
     let mut lock_errors: Vec<ProjectError> = Vec::new();
+    // Each bad index of an owner is reported once, whatever number of its packages are locked.
+    let mut reported: BTreeSet<(String, String, u64)> = BTreeSet::new();
     for (identity, version) in &resolution.list {
         let Some(cell) = online.registries.get(&identity.source) else {
             continue;
@@ -915,10 +917,16 @@ fn resolve_and_lock(
                 for index in &line.indices {
                     let i = index.value;
                     let request = i < old_size && history.requests.contains_key(&i);
+                    // A pending one not cancelled before the old point, by a cancellation that
+                    // stands.
+                    let cancelled = history
+                        .cancellations
+                        .get(&i)
+                        .is_some_and(|cancels| cancels.iter().any(|c| *c < old_size));
                     let valid = if effect {
                         request && in_effect_at(i).is_some_and(|at| at <= old_size)
                     } else {
-                        request && in_effect_at(i).is_none_or(|at| at > old_size)
+                        request && !cancelled && in_effect_at(i).is_none_or(|at| at > old_size)
                     };
                     if valid {
                         if effect {
@@ -926,7 +934,7 @@ fn resolve_and_lock(
                         } else {
                             recorded.insert(i);
                         }
-                    } else {
+                    } else if reported.insert((identity.source.clone(), owner.clone(), i)) {
                         lock_errors.push(ProjectError {
                             code: Code::U7009,
                             range: index.range.clone(),
