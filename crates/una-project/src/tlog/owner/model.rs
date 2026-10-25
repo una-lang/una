@@ -1347,10 +1347,10 @@ impl Search<'_, '_> {
     /// recorded, or exactly the full reading: an omission never changes a result.
     fn adversarial(&mut self, chain: &[Step]) {
         self.stats.adversarial += 1;
-        let (registry, now) = render(self.keys, chain);
+        let (registry, now, requests) = render(self.keys, chain);
         let pin = registry.pin();
         let point = registry.entries.len() as u64;
-        let (full, _) = client_view(registry.files.clone(), &pin, now);
+        let (full, _) = client_view(&Files(registry.files.clone()), &pin, now);
         let kept = |path: &str| {
             path.strip_prefix("checkpoint/")
                 .and_then(|size| size.parse::<u64>().ok())
@@ -1404,16 +1404,45 @@ impl Search<'_, '_> {
             }
             omissions.push((what.to_owned(), files));
         }
+        // Selective withholding: every cosignature of the first one, two or three kept
+        // checkpoints after each request.
+        for request in &requests {
+            for j in 1..=3_u64 {
+                let mut files = registry.files.clone();
+                for size in request + 1..=request + j {
+                    if size < point
+                        && let Some(bytes) = files.get_mut(&format!("checkpoint/{size}"))
+                    {
+                        *bytes = withhold(bytes, &log, None);
+                    }
+                }
+                omissions.push((format!("{j} checkpoints after {request} withheld"), files));
+            }
+        }
+        // Each reading, alone and with an honest place behind it, is unavailable, with its
+        // omission recorded, or exactly the full one: the owner's history and the verdict of
+        // every release of its name.
         for (what, files) in omissions {
-            let (reading, omitted) = client_view(files, &pin, now);
-            let same = reading == full;
-            let unavailable = reading.is_err() && !omitted.is_empty();
-            if !same && !unavailable {
-                self.fail(
-                    "an omission changed the client's result",
-                    chain,
-                    &format!("{what} omitted: {reading:?} against {full:?}"),
-                );
+            let alone = Files(files.clone());
+            let behind = crate::transport::Fallback::new(
+                Box::new(Files(files)),
+                vec![Box::new(Files(registry.files.clone()))],
+            );
+            for (how, place) in [
+                ("alone", &alone as &dyn crate::transport::Transport),
+                ("with an honest place behind it", &behind),
+            ] {
+                let (reading, omitted) = client_view(place, &pin, now);
+                let same = reading == full;
+                let failed = matches!(reading, Err(_) | Ok((_, Err(_))));
+                let unavailable = failed && !omitted.is_empty();
+                if !same && !unavailable {
+                    self.fail(
+                        "an omission changed the client's result",
+                        chain,
+                        &format!("{what} omitted, {how}: {reading:?} against {full:?}"),
+                    );
+                }
             }
         }
     }
@@ -1582,7 +1611,7 @@ impl crate::transport::Transport for Files {
 /// a checkpoint after each entry, cosigned at its time, and, for a step's wait, an entry of
 /// another name and a checkpoint at the time the wait ends; a week after the last entry, the
 /// last checkpoint. Returns the registry and the witness time of its last checkpoint.
-fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64) {
+fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64, Vec<u64>) {
     let mut registry = support::TestRegistry::new("model");
     let pair = |k: K| (keys.pairs[k as usize].clone(), keys.key(k).clone());
     let mut index_of: Vec<u64> = Vec::new();
@@ -1656,10 +1685,35 @@ fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64) {
         index_of.push(index);
         registry.checkpoint(time);
     }
+    // Two releases, one the stolen key signs and one every other owner key signs, whose
+    // verdicts the adversarial place compares; then the witnesses rotate, by a second root
+    // version, which the last checkpoint names.
+    let stolen = pair(K::A);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&stolen]);
+    let others: Vec<(SigningKey, Key)> = [K::B, K::C, K::N1, K::N2, K::R]
+        .into_iter()
+        .map(pair)
+        .collect();
+    let others: Vec<&(SigningKey, Key)> = others.iter().collect();
+    registry.release("acme/ledger", "0.3.2", "none", "none", &others);
+    time += HOUR;
+    registry.checkpoint(time);
+    registry.rotate_witness();
     time += WEEK;
     registry.append("other", "a week passes at the end\n");
     registry.checkpoint(time);
-    (registry, time)
+    let requests = chain
+        .iter()
+        .zip(&index_of)
+        .filter(|(step, _)| {
+            matches!(
+                step.act,
+                Act::Recover(_) | Act::Dispute(_) | Act::Cosigners(..)
+            )
+        })
+        .map(|(_, index)| *index)
+        .collect();
+    (registry, time, requests)
 }
 
 /// A checkpoint's document with the cosignature lines of every witness but `keep` withheld:
@@ -1682,23 +1736,27 @@ fn withhold(document: &[u8], log: &str, keep: Option<&str>) -> Vec<u8> {
     format!("{body}\n\n{}\n", kept.join("\n")).into_bytes()
 }
 
-/// What the client makes of a place's files: the owner's history, or its failure and the
-/// documents it found omitted.
+/// What the client reads: the owner's history and the releases of its name, each as it comes.
+type Reading = Result<(History, Result<Vec<crate::client::LoggedRelease>, String>), String>;
+
+/// What the client makes of a place: the owner's history and its name's releases, or the
+/// failure, and the omissions it met.
 fn client_view(
-    files: std::collections::BTreeMap<String, Vec<u8>>,
+    place: &dyn crate::transport::Transport,
     pin: &str,
     now: u64,
-) -> (Result<History, String>, Vec<crate::client::Omission>) {
-    let place = Files(files);
+) -> (Reading, Vec<crate::client::Omission>) {
     let floors = crate::client::Floors {
         checkpoint: None,
         root_version: None,
     };
     let point = crate::client::Point::Latest { now: now + 60 };
-    match crate::client::Registry::open_with("model", &place, pin, &point, &floors) {
+    match crate::client::Registry::open_with("model", place, pin, &point, &floors) {
         Ok(mut registry) => {
-            let history = registry.history("acme");
-            (history, registry.take_omitted())
+            let reading = registry
+                .history("acme")
+                .map(|history| (history, registry.releases("acme/ledger")));
+            (reading, registry.take_omitted())
         }
         Err(crate::client::OpenError::Unavailable(why)) => (
             Err(why),

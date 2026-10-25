@@ -943,6 +943,9 @@ fn a_recovery_wait_starts_at_its_logged_time() {
     assert_eq!(client.logged_at(1).unwrap(), NOW - 20 * DAY);
     // Seven days after that is reached only at the last checkpoint, after the release.
     assert_eq!(client.recovery_effect(1).unwrap(), Some(4));
+    // The earliest position no place can move: the start is the k-th earliest cosignature on
+    // the start checkpoint, so the back-dater does not make it earlier.
+    assert_eq!(client.earliest_effect(1).unwrap(), Some(4));
     assert!(client.releases("acme/ledger").is_err());
 }
 
@@ -1777,7 +1780,7 @@ fn competing_disputes_freeze_the_chain() {
     registry.append("other", "filler");
     registry.checkpoint(NOW - 20 * DAY);
     registry.release("acme/ledger", "0.3.2", "none", "none", &[&m]);
-    let last = registry.release("acme/ledger", "0.3.3", "none", "none", &[&n]);
+    let (last, _) = registry.release("acme/ledger", "0.3.3", "none", "none", &[&n]);
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),
@@ -2181,8 +2184,9 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
         client.take_omitted(),
         vec![Omission::Cosignatures("acme".to_owned())]
     );
-    // Its only place read, the request has no deadline checkpoint: evidence against the
-    // registry, with the request's index and its target witness time.
+    // Its only place read, the request has no deadline checkpoint: evidence from an absence,
+    // with the request's index, its target witness time and the place read, not attributed to
+    // the registry, since one place may withhold.
     let target = client.logged_at(dispute).unwrap() + owner::RECOVERY_DELAY;
     assert_eq!(
         client.misbehavior(),
@@ -2190,6 +2194,8 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
             owner: "acme".to_owned(),
             index: dispute,
             target,
+            places: vec!["memory".to_owned()],
+            attributed: false,
         }]
     );
 }
@@ -2200,9 +2206,10 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
 fn a_cadence_gap_is_recorded_as_misbehavior() {
     let a = keypair(60, "acme.a");
     let mut registry = TestRegistry::new("acme");
+    registry.bare = true;
     registry.register("acme", &a);
     registry.checkpoint(NOW - 30 * DAY);
-    let release = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let (release, _) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
     for at in 0..70 {
         registry.append("other", &format!("filler {at}"));
     }
@@ -2217,6 +2224,85 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
         &[Misbehavior::CadenceGap {
             from: release + 1,
             to: release + 64,
+            places: vec!["memory".to_owned()],
+            attributed: false,
         }]
     );
+    // Two places serving the same view: attributed to the registry.
+    let first = Memory {
+        files: registry.files.clone(),
+    };
+    let second = Memory {
+        files: registry.files.clone(),
+    };
+    let both = una_project::transport::Fallback::new(Box::new(first), vec![Box::new(second)]);
+    let mut client = open(&both, &registry).unwrap();
+    client.logged_at(release).unwrap();
+    assert_eq!(
+        client.misbehavior(),
+        &[Misbehavior::CadenceGap {
+            from: release + 1,
+            to: release + 64,
+            places: vec!["memory".to_owned(), "memory".to_owned()],
+            attributed: true,
+        }]
+    );
+}
+
+/// Every checkpoint names, inside its signed text, the root version it was signed under: a
+/// place that hides the newer root makes the client's result unavailable, never decided under
+/// the older key set; a checkpoint without the line, or with another digest, is refused.
+#[test]
+fn a_checkpoint_names_its_root_and_a_hidden_newer_root_is_unavailable() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - DAY);
+    registry.rotate_witness();
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let floors = Floors::default();
+    let point = Point::Latest { now: NOW + 60 };
+    let full = Memory {
+        files: registry.files.clone(),
+    };
+    let client = Registry::open_with("acme", &full, &registry.pin(), &point, &floors).unwrap();
+    assert_eq!(client.root.version, 2);
+    // Root version 2 hidden: unavailable.
+    let mut hiding = Memory {
+        files: registry.files.clone(),
+    };
+    hiding.files.remove("root/2");
+    let opened = Registry::open_with("acme", &hiding, &registry.pin(), &point, &floors);
+    assert!(
+        matches!(opened, Err(OpenError::Unavailable(_))),
+        "{:?}",
+        opened.err()
+    );
+    // The latest checkpoint re-signed without the line, and with another digest: refused.
+    let document = String::from_utf8(registry.files["checkpoint"].clone()).unwrap();
+    let text = document.split_once("\n\n").unwrap().0.to_owned() + "\n";
+    let root_line = registry.root_line();
+    let resign = |text: &str| {
+        let mut out = format!(
+            "{text}\n{}",
+            registry::sign_line(&registry.keys.log.0, &registry.keys.log.1, text)
+        );
+        for (pair, key) in &registry.keys.witnesses {
+            out.push_str(&registry::cosign_line(pair, key, text, NOW));
+        }
+        out.into_bytes()
+    };
+    for altered in [
+        text.replace(&format!("{root_line}\n"), ""),
+        text.replace(&root_line, &format!("ita-root 2 sha256:{}", "0".repeat(64))),
+        text.replace(&root_line, &format!("{root_line}\n{root_line}")),
+    ] {
+        let mut place = Memory {
+            files: registry.files.clone(),
+        };
+        place.files.insert("checkpoint".to_owned(), resign(&altered));
+        let opened = Registry::open_with("acme", &place, &registry.pin(), &point, &floors);
+        assert!(matches!(opened, Err(OpenError::Refused(_))), "{altered}");
+    }
 }

@@ -138,6 +138,10 @@ pub struct TestRegistry {
     pub heads: BTreeMap<String, Head>,
     pub files: BTreeMap<String, Vec<u8>>,
     pub sizes: Vec<u64>,
+    /// Whether the checkpoints signed below a checkpoint's size go without cosignatures, as a
+    /// registry that breaks the cadence rule leaves them; by default they carry the same
+    /// cosignatures as the checkpoint that follows them.
+    pub bare: bool,
 }
 
 impl TestRegistry {
@@ -159,12 +163,36 @@ impl TestRegistry {
             heads: BTreeMap::new(),
             files: BTreeMap::new(),
             sizes: Vec::new(),
+            bare: false,
         };
         registry
             .files
             .insert("root/1".to_owned(), document.clone().into_bytes());
         registry.roots.push(document);
         registry
+    }
+
+    /// The extension line of a checkpoint naming the newest root metadata, which it is
+    /// signed under: `ita-root <version> sha256:<hex>`.
+    pub fn root_line(&self) -> String {
+        let document = self.roots.last().map_or("", String::as_str);
+        format!("ita-root {} {}", self.roots.len(), digest(document))
+    }
+
+    /// Rotates the witness of seed 32 to a new key, by the next root version, signed by two root
+    /// keys of the current one and of its own: the checkpoints signed from then on name it and
+    /// carry the new witness's cosignature.
+    pub fn rotate_witness(&mut self) {
+        let version = self.roots.len() as u64 + 1;
+        if let Some(witness) = self.keys.witnesses.last_mut() {
+            *witness = keypair(90 + version as u8, &format!("witness.rotated.{version}"));
+        }
+        let roots: Vec<&Key> = self.keys.roots.iter().map(|(_, key)| key).collect();
+        let text = root_text(&self.source, version, EXPIRES, &self.keys, &roots);
+        let document = signed(&text, &[&self.keys.roots[0], &self.keys.roots[1]]);
+        self.files
+            .insert(format!("root/{version}"), document.clone().into_bytes());
+        self.roots.push(document);
     }
 
     /// The digest of the first root metadata: the pin of `sources`.
@@ -380,9 +408,9 @@ impl TestRegistry {
             .map(|(name, head)| (name.clone(), *head))
             .collect();
         let (map_root, tiles) = build_tiles(&heads);
-        // A registry signs a checkpoint after every entry, and witnesses cosign some of them:
-        // every size below this one that has none gets one the log signs, with no
-        // cosignature, as a registry keeps it. A client reads it for its consistency only.
+        // A registry signs a checkpoint after every entry: every size below this one that has
+        // none gets one the log signs, cosigned as this one is, the witnesses cosigning them
+        // together; with `bare`, cosigned by none.
         for kept in 1..size {
             let path = format!("checkpoint/{kept}");
             if self.files.contains_key(&path) {
@@ -390,20 +418,29 @@ impl TestRegistry {
             }
             let prefix = leaves.get(..kept as usize).unwrap_or_default();
             let text = format!(
-                "{}\n{kept}\n{}\nita-map {}\n",
+                "{}\n{kept}\n{}\nita-map {}\n{}\n",
                 self.keys.log.1.name,
                 encode_base64(&tree_root(prefix)),
-                encode_base64(&map_root)
+                encode_base64(&map_root),
+                self.root_line()
             );
             let line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
-            self.files
-                .insert(path, format!("{text}\n{line}").into_bytes());
+            let mut document = format!("{text}\n{line}");
+            if !self.bare {
+                for ((pair, key), time) in self.keys.witnesses.iter().zip(times) {
+                    if let Some(time) = time {
+                        document.push_str(&cosign_line(pair, key, &text, *time));
+                    }
+                }
+            }
+            self.files.insert(path, document.into_bytes());
         }
         let text = format!(
-            "{}\n{size}\n{}\nita-map {}\n",
+            "{}\n{size}\n{}\nita-map {}\n{}\n",
             self.keys.log.1.name,
             encode_base64(&top),
-            encode_base64(&map_root)
+            encode_base64(&map_root),
+            self.root_line()
         );
         let log_line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
         let mut document = format!("{text}\n{log_line}");

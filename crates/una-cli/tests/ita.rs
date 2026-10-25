@@ -662,7 +662,11 @@ mod registry {
             leaf_hash(statement.as_bytes()),
         ];
         let top = tree_root(&leaves);
-        let checkpoint_text = format!("{LOG}\n2\n{}\n", encode_base64(&top));
+        let checkpoint_text = format!(
+            "{LOG}\n2\n{}\nita-root 1 {}\n",
+            encode_base64(&top),
+            una_project::tlog::root::digest(&root_document)
+        );
         let checkpoint = format!(
             "{checkpoint_text}\n{}{}",
             sign_line(&log_pair, &log, &checkpoint_text),

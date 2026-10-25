@@ -240,3 +240,57 @@ pub fn walk(known: &Root, next: &[&str], now: u64) -> Result<Root, String> {
     }
     Ok(current)
 }
+
+/// Every version of the root chain from `known`, the ones of `next` walked as [`walk`] walks
+/// them, in order, `known` first. The last must not have expired at `now`.
+pub fn walk_all(known: &Root, next: &[&str], now: u64) -> Result<Vec<Root>, String> {
+    let mut walked = vec![known.clone()];
+    for at in 0..next.len() {
+        let last = walked.last().cloned().unwrap_or_else(|| known.clone());
+        let step = next.get(at..=at).unwrap_or_default();
+        let after = walk(&last, step, if at + 1 == next.len() { now } else { 0 })?;
+        walked.push(after);
+    }
+    if next.is_empty() && known.expires <= now {
+        walk(known, &[], now)?;
+    }
+    Ok(walked)
+}
+
+/// The prefix of the checkpoint extension line that names the root metadata a checkpoint was
+/// signed under (`spec/30 §11`).
+pub const CHECKPOINT_ROOT: &str = "ita-root ";
+
+/// The root metadata a checkpoint names, from its extension lines: exactly one line
+/// `ita-root <version> sha256:<hex>`, inside the signed text, so the log's signature and every
+/// cosignature cover it. Its version and its digest.
+pub fn named(extensions: &[String]) -> Result<(u64, String), String> {
+    let mut lines = extensions
+        .iter()
+        .filter(|line| line.starts_with(CHECKPOINT_ROOT.trim_end()));
+    let line = lines
+        .next()
+        .ok_or("the checkpoint names no root metadata: it has no `ita-root` line")?;
+    if lines.next().is_some() {
+        return Err("the checkpoint has two `ita-root` lines".to_owned());
+    }
+    let value = line
+        .strip_prefix(CHECKPOINT_ROOT)
+        .ok_or("the `ita-root` line is not `ita-root <version> sha256:<hex>`")?;
+    let (version, digest) = value
+        .split_once(' ')
+        .ok_or("the `ita-root` line is not `ita-root <version> sha256:<hex>`")?;
+    let valid = !version.is_empty()
+        && version.len() <= 20
+        && version.bytes().all(|b| b.is_ascii_digit())
+        && !version.starts_with('0');
+    let version: u64 = version
+        .parse()
+        .ok()
+        .filter(|_| valid)
+        .ok_or("the `ita-root` version is not a decimal from 1 without a leading zero")?;
+    if !crate::ita::is_digest(digest) {
+        return Err("the `ita-root` digest is not `sha256:` and 64 lowercase hex digits".to_owned());
+    }
+    Ok((version, digest.to_owned()))
+}

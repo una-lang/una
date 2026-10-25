@@ -1130,8 +1130,19 @@ fn replay_once(
         // chain names are checked only here.
         let decision = match decision {
             Verdict::Refuse if !voided.is_empty() || state.overflowed => {
+                // A key that a recovery or a dispute not yet in effect names makes nothing void:
+                // what only it signs is refused, and the client's comparison of timings makes
+                // the name unavailable when the request may be in effect earlier.
+                let waiting: Vec<[u8; 32]> = requests
+                    .values()
+                    .filter(|request| !request.applied)
+                    .filter_map(|request| match &request.ask {
+                        Ask::Recover(key) | Ask::Dispute(key) => Some(key.public),
+                        Ask::Cosigners(_) => None,
+                    })
+                    .collect();
                 let mut by_known = false;
-                for key in &state.known {
+                for key in state.known.iter().filter(|k| !waiting.contains(&k.public)) {
                     if signs(note, key, &mut checks) {
                         by_known = true;
                         break;

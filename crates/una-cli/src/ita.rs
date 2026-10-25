@@ -1292,7 +1292,9 @@ fn resolve_and_lock(
                             });
                         }
                     }
-                    Err((code, why)) if options.fresh => fail(
+                    // A newer checkpoint that does not extend the lock's point is a fork:
+                    // evidence, a failure with or without `--fresh`.
+                    Err((code, why)) if options.fresh || code == Code::U7010 => fail(
                         code,
                         lock_range,
                         if code == Code::U7013 {

@@ -52,6 +52,12 @@ pub trait Transport {
         let _ = bytes;
         Err(format!("{} cannot be written to", self.describe()))
     }
+
+    /// Every place the transport reads from, in order, for evidence: the one it describes,
+    /// for a single place.
+    fn describe_all(&self) -> Vec<String> {
+        vec![self.describe()]
+    }
 }
 
 /// Where a registry or a mirror is (rule 40).
@@ -297,7 +303,7 @@ impl Transport for Fallback {
         // Each place's own copies: a bundle's copy carries every place's copy it recorded.
         for place in &self.places {
             match place.get_all(path, limit) {
-                Ok(found) => copies.extend(found),
+                Ok(served) => copies.extend(served),
                 Err(why) => {
                     failure.get_or_insert(why);
                 }
@@ -314,6 +320,13 @@ impl Transport for Fallback {
             .first()
             .map_or_else(String::new, |place| place.describe())
     }
+
+    fn describe_all(&self) -> Vec<String> {
+        self.places
+            .iter()
+            .flat_map(|place| place.describe_all())
+            .collect()
+    }
 }
 
 /// The transport of a location.
@@ -321,5 +334,40 @@ pub fn open(location: &Location) -> Box<dyn Transport> {
     match location {
         Location::Https(url) => Box::new(Unavailable { url: url.clone() }),
         Location::Directory(dir) => Box::new(Directory::new(dir)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Fallback, Refusal, Transport};
+
+    /// A place that serves `copies` of every file.
+    struct Copies(Vec<Vec<u8>>);
+
+    impl Transport for Copies {
+        fn get(&self, _path: &str, _limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
+            Ok(self.0.first().cloned())
+        }
+
+        fn get_all(&self, _path: &str, _limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
+            Ok(self.0.clone())
+        }
+
+        fn describe(&self) -> String {
+            "copies".to_owned()
+        }
+    }
+
+    #[test]
+    fn fallback_passes_every_copy_of_every_place_through() {
+        let first = Copies(vec![b"one".to_vec(), b"two".to_vec()]);
+        let second = Copies(vec![b"three".to_vec()]);
+        let empty = Copies(Vec::new());
+        let fallback = Fallback::new(Box::new(first), vec![Box::new(empty), Box::new(second)]);
+        assert_eq!(
+            fallback.get_all("checkpoint/3", 64),
+            Ok(vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()])
+        );
+        assert_eq!(fallback.get("checkpoint/3", 64), Ok(Some(b"one".to_vec())));
     }
 }
