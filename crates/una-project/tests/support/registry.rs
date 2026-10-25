@@ -196,6 +196,35 @@ impl TestRegistry {
         self.append(&chain, &document)
     }
 
+    /// Registers `owner` with the keys of `pairs` and `threshold`, and the recovery cosigners
+    /// `cosigners` with their threshold `k` when there are any, signed by every key registered.
+    pub fn register_keys(
+        &mut self,
+        owner: &str,
+        pairs: &[&(SigningKey, Key)],
+        threshold: usize,
+        cosigners: &[&(SigningKey, Key)],
+        k: usize,
+    ) -> u64 {
+        let chain = owner_chain(owner);
+        let mut text = format!(
+            "ita-owner/1\nsource {}\nowner {owner}\n{}\nthreshold {threshold}",
+            self.source,
+            self.previous(&chain)
+        );
+        for (_, key) in pairs {
+            text.push_str(&format!("\nkey {}", key_text(key)));
+        }
+        for (_, key) in cosigners {
+            text.push_str(&format!("\ncosigner {}", key_text(key)));
+        }
+        if !cosigners.is_empty() {
+            text.push_str(&format!("\ncosigners {k}"));
+        }
+        let document = signed(&text, pairs);
+        self.append(&chain, &document)
+    }
+
     /// A key event of `owner`: its action line, and the threshold after it, signed by
     /// `signers`.
     pub fn owner_event(
@@ -267,12 +296,26 @@ impl TestRegistry {
         signers: &[&(SigningKey, Key)],
     ) -> (u64, String) {
         let module = name.rsplit('/').next().unwrap();
-        let manifest_text = format!("ita {name}\n  version {version}\n  edition 0.4\n");
         let module_text = format!("module {module}\n\npub answer() -> Int = 42\n");
+        self.release_with(name, version, authority, trust, &module_text, signers)
+    }
+
+    /// [`TestRegistry::release`] whose one module is `module_text`.
+    pub fn release_with(
+        &mut self,
+        name: &str,
+        version: &str,
+        authority: &str,
+        trust: &str,
+        module_text: &str,
+        signers: &[&(SigningKey, Key)],
+    ) -> (u64, String) {
+        let module = name.rsplit('/').next().unwrap();
+        let manifest_text = format!("ita {name}\n  version {version}\n  edition 0.4\n");
         let source_path = format!("src/{module}.una");
         let (content, manifest) = self.blob(&[
             ("ita.una", manifest_text.as_str()),
-            (source_path.as_str(), module_text.as_str()),
+            (source_path.as_str(), module_text),
         ]);
         let text = format!(
             "ita-release/1\nsource {}\nname {name}\nversion {version}\n{}\ndigest {content}\nmanifest {manifest}\nedition 0.4\nauthority {authority}\ntrust {trust}",

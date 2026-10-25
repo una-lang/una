@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use registry::{NOW, TestRegistry, hash_hex, keypair, key_text};
-use una_project::client::{LoggedRelease, Point, Registry, owner_of};
+use una_project::client::{Floors, LoggedRelease, OpenError, Point, Registry, owner_of, shown};
 use una_project::provenance::{Expected, signed_name, verify};
 use una_project::tlog::merkle::{
     Hash, consistency_proof, inclusion_proof, leaf_hash, node_hash, root as tree_root,
@@ -182,11 +182,10 @@ fn locations_never_use_plain_http() {
         Location::parse("file:///srv/mirror").unwrap(),
         Location::Directory(PathBuf::from("/srv/mirror"))
     );
-    assert_eq!(
-        Location::parse("mirrors/acme").unwrap(),
-        Location::Directory(PathBuf::from("mirrors/acme"))
-    );
     for refused in [
+        "mirrors/acme",
+        "/srv/mirror",
+        "file:///srv/a%20b",
         "http://ita.acme.example",
         "HTTP://ita.acme.example",
         "ftp://ita.acme.example",
@@ -897,24 +896,280 @@ fn the_first_place_whose_copy_verifies_is_taken() {
     ];
     let pin = registry.pin();
     let fetched = first_verified(&places, &mut |transport| {
-        Registry::open(
+        Registry::open_with(
             "acme",
             transport,
             &pin,
             &Point::Latest { now: NOW + 60 },
-            None,
+            &Floors::default(),
         )
         .map(|registry| registry.point.checkpoint.size)
-        .map_err(|why| {
-            if why.contains("has no") || why.contains("no root metadata") {
-                Attempt::Unavailable(why)
-            } else {
-                Attempt::Refused(why)
-            }
+        .map_err(|error| match error {
+            OpenError::Unavailable(why) => Attempt::Unavailable(why),
+            OpenError::Refused(why) => Attempt::Refused(why),
         })
     });
     assert_eq!(fetched.value, Some((2, "file:///good".to_owned())));
     assert_eq!(fetched.refused.len(), 1);
     assert_eq!(fetched.refused[0].from, "file:///bad");
     assert_eq!(fetched.unavailable.len(), 2);
+}
+
+/// A back-dating witness, and a place that leaves an honest witness's cosignature out of the
+/// checkpoint that first includes a recovery, cannot start its wait earlier: the start is the
+/// k-th earliest cosignature, so the recovery is not in effect before seven days.
+#[test]
+fn a_recovery_wait_starts_at_its_logged_time() {
+    let lost = keypair(60, "acme.laptop");
+    let recovered = keypair(63, "acme.new");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &lost);
+    // The first witness lies about time; it does not cosign the registration's checkpoint.
+    registry.checkpoint_with(&[None, Some(NOW - 30 * DAY), Some(NOW - 30 * DAY)]);
+    registry.recover("acme", "recover", &recovered.1, &[]);
+    // The liar back-dates by a month; the third witness's cosignature is left out.
+    registry.checkpoint_with(&[Some(NOW - 60 * DAY), Some(NOW - 20 * DAY), None]);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 15 * DAY);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&recovered]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    // Logged at the second earliest of the witnesses' earliest cosignatures: twenty days ago.
+    assert_eq!(client.logged_at(1).unwrap(), NOW - 20 * DAY);
+    // Seven days after that is reached only at the last checkpoint, after the release.
+    assert_eq!(client.recovery_effect(1).unwrap(), Some(4));
+    assert!(client.releases("acme/ledger").is_err());
+}
+
+/// Any entry of an owner's chain at or after a point is a key change, and a pending recovery
+/// stays pending.
+#[test]
+fn every_owner_entry_after_a_point_is_a_key_change() {
+    let key = keypair(60, "acme.laptop");
+    let trustee = keypair(70, "trustee.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &key);
+    registry.checkpoint(NOW - DAY);
+    let point = registry.entries.len() as u64;
+    registry.owner_event(
+        "acme",
+        &format!("cosigners 1 {}", key_text(&trustee.1)),
+        1,
+        &[&key],
+    );
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert!(history.changed_after(point), "a cosigners entry");
+    assert!(!history.changed_after(point + 1));
+    // A dispute pending at the point is a pending key change.
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &key);
+    registry.recover("acme", "dispute", &keypair(64, "acme.disputed").1, &[]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.pending.len(), 1);
+    assert!(history.pending[0].dispute);
+    assert!(history.changed_after(1));
+}
+
+/// A key compromised since a position voids what it alone signed after it, and what depends
+/// on that: a key it added signs nothing.
+#[test]
+fn compromise_cascades_to_the_entries_it_signed() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let b = keypair(62, "acme.b");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+    // At 1, A adds B; at 2, D revokes A as compromised since 0.
+    let added = registry.owner_event("acme", &format!("add {}", key_text(&b.1)), 1, &[&a, &b]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&b]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&d]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.voided, vec![added]);
+    assert!(client.releases("acme/ledger").is_err(), "B was never the owner's key");
+    // Without the compromise, B signs.
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+    registry.owner_event("acme", &format!("add {}", key_text(&b.1)), 1, &[&a, &b]);
+    registry.owner_event("acme", "revoke acme.a", 1, &[&d]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&b]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    assert_eq!(open(&memory, &registry).unwrap().releases("acme/ledger").unwrap().len(), 1);
+}
+
+/// A recovery cancelled twice stands again only when both cancellations are overruled.
+#[test]
+fn an_overrule_lifts_one_cancellation() {
+    let lost = keypair(60, "acme.a");
+    let other = keypair(61, "acme.b");
+    let trustee = keypair(70, "trustee.a");
+    let recovered = keypair(63, "acme.new");
+    let build = |overrules: usize| -> TestRegistry {
+        let mut registry = TestRegistry::new("acme");
+        registry.register_keys("acme", &[&lost, &other], 1, &[&trustee], 1);
+        registry.checkpoint(NOW - 30 * DAY);
+        let request = registry.recover("acme", "recover", &recovered.1, &[&trustee]);
+        let first = registry.owner_event("acme", &format!("cancel {request}"), 1, &[&lost]);
+        let second = registry.owner_event("acme", &format!("cancel {request}"), 1, &[&other]);
+        for cancel in [first, second].into_iter().take(overrules) {
+            registry.owner_event("acme", &format!("overrule {cancel}"), 1, &[&trustee]);
+        }
+        registry.checkpoint(NOW - 20 * DAY);
+        registry.append("other", "filler");
+        registry.checkpoint(NOW - 10 * DAY);
+        registry.release("acme/ledger", "0.3.1", "none", "none", &[&recovered]);
+        registry.checkpoint(NOW);
+        registry
+    };
+    for (overrules, stands) in [(0, false), (1, false), (2, true)] {
+        let registry = build(overrules);
+        let memory = Memory {
+            files: registry.files.clone(),
+        };
+        let releases = open(&memory, &registry).unwrap().releases("acme/ledger");
+        assert_eq!(releases.is_ok(), stands, "{overrules} overrules");
+    }
+}
+
+/// A place that hides a newer root version than one already accepted is refused, and so is
+/// a point that does not extend the lock's.
+#[test]
+fn floors_refuse_an_older_root_and_a_point_off_the_lock() {
+    let mut registry = TestRegistry::new("acme");
+    let key = acme(&mut registry);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let floors = Floors {
+        checkpoint: None,
+        root_version: Some(2),
+    };
+    let refused = Registry::open_with(
+        "acme",
+        &memory,
+        &registry.pin(),
+        &Point::Latest { now: NOW + 60 },
+        &floors,
+    );
+    assert!(matches!(refused, Err(OpenError::Refused(why)) if why.contains("root version")));
+    let mut client = open(&memory, &registry).unwrap();
+    let size = client.point.checkpoint.size;
+    let own = hash_hex(&client.point.checkpoint.root);
+    assert!(client.extends(size, &own).is_ok());
+    assert!(client.extends(size, &hash_hex(&[9u8; 32])).is_err(), "another log");
+    assert!(client.extends(size + 1, &own).is_err(), "a point below the lock's");
+    let prefix = hash_hex(&tree_root(
+        &registry.entries[..1]
+            .iter()
+            .map(|e| leaf_hash(e))
+            .collect::<Vec<_>>(),
+    ));
+    assert!(client.extends(1, &prefix).is_ok());
+    // A place that does not serve is unavailable, one that serves a bad copy refused.
+    let empty = Memory {
+        files: BTreeMap::new(),
+    };
+    let missing = Registry::open_with(
+        "acme",
+        &empty,
+        &registry.pin(),
+        &Point::Latest { now: NOW + 60 },
+        &Floors::default(),
+    );
+    assert!(matches!(missing, Err(OpenError::Unavailable(_))));
+}
+
+#[test]
+fn notes_bound_their_signature_lines() {
+    use una_project::tlog::note::{MAX_SIGNATURES, parse_note};
+    let line = "\u{2014} k AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n";
+    assert!(parse_note(&format!("text\n\n{line}")).is_ok());
+    assert!(parse_note(&format!("text\n\n{line}{line}")).is_err(), "one line per key");
+    let mut many = "text\n\n".to_owned();
+    for i in 0..=MAX_SIGNATURES {
+        many.push('\u{2014}');
+        many.push_str(&format!(
+            " k{i} AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+        ));
+    }
+    assert!(parse_note(&many).is_err(), "too many lines");
+}
+
+#[test]
+fn sizes_at_the_top_of_the_range_end() {
+    use una_project::tlog::note::parse_checkpoint;
+    use una_project::tlog::tile::split;
+    assert_eq!(split(2), 1);
+    assert_eq!(split(5), 4);
+    assert_eq!(split(8), 4);
+    assert_eq!(split(u64::MAX), 1 << 63);
+    let root = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+    assert!(parse_checkpoint(&format!("log\n9223372036854775807\n{root}\n")).is_ok());
+    assert!(parse_checkpoint(&format!("log\n9223372036854775808\n{root}\n")).is_err());
+}
+
+#[test]
+fn messages_escape_and_bound_what_a_place_served() {
+    let served = format!("abc\u{202e}def\u{7}{}", "x".repeat(1000));
+    let message = shown(&served);
+    assert!(message.starts_with("abc\\u{202e}def\\u{7}"), "{message}");
+    assert!(message.chars().count() < 420);
+    assert!(!message.chars().any(char::is_control));
+}
+
+/// Two runs storing floors at once never leave a smaller one.
+#[test]
+fn floors_never_move_backwards() {
+    use una_project::itaoca::Itaoca;
+    let dir = scratch("floors");
+    let itaoca = Itaoca { root: dir.clone() };
+    let checkpoint = |size: u64| {
+        format!(
+            "log\n{size}\n47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n\n{dash} log AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+            dash = '\u{2014}'
+        )
+    };
+    std::thread::scope(|scope| {
+        for start in 0..4u64 {
+            let itaoca = &itaoca;
+            let checkpoint = &checkpoint;
+            scope.spawn(move || {
+                for step in 0..10u64 {
+                    let size = 1 + (start * 7 + step * 3) % 40;
+                    itaoca.store_checkpoint("acme", &checkpoint(size)).unwrap();
+                }
+            });
+        }
+    });
+    itaoca.store_checkpoint("acme", &checkpoint(40)).unwrap();
+    itaoca.store_checkpoint("acme", &checkpoint(3)).unwrap();
+    assert_eq!(itaoca.load_checkpoint("acme").unwrap(), Some(checkpoint(40)));
+    itaoca.store_root_version("acme", 3).unwrap();
+    itaoca.store_root_version("acme", 2).unwrap();
+    assert_eq!(itaoca.load_root_version("acme").unwrap(), Some(3));
+    assert!(!dir.join("registry/acme/floor.lock").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }

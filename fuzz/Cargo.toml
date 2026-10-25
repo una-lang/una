@@ -19,6 +19,8 @@ num-bigint = "0.4.6"
 una-core = { path = "../crates/una-core" }
 # The parsers of the documents a registry serves (ADR 0122 rules 29 to 39), in pure Rust.
 una-project = { path = "../crates/una-project" }
+# Signs fuzzed documents with fixed test keys, so the targets reach past the signatures.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
 una-rt = { path = "../crates/una-rt" }
 
 [[bin]]
@@ -108,6 +110,48 @@ bench = false
 [[bin]]
 name = "registry_mirrors"
 path = "fuzz_targets/registry_mirrors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_proofs"
+path = "fuzz_targets/registry_proofs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_map_walk"
+path = "fuzz_targets/registry_map_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_owner_replay"
+path = "fuzz_targets/registry_owner_replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_location"
+path = "fuzz_targets/registry_location.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_archive_check"
+path = "fuzz_targets/registry_archive_check.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_root_chain"
+path = "fuzz_targets/registry_root_chain.rs"
 test = false
 doc = false
 bench = false
