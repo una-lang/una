@@ -69,11 +69,6 @@ fn refusal(range: std::ops::Range<usize>, message: impl Into<String>) -> Project
 /// A mirror's location: an `https://` URL, or a `file://` URL of a local directory. Plain
 /// `http://`, every other scheme and a bare path are refused.
 pub fn location(url: &str) -> Result<Location, String> {
-    if !url.starts_with("https://") && !url.starts_with("file://") {
-        return Err(format!(
-            "`{url}` is not a mirror's location: write an `https://` URL or a `file://` URL of a directory; plain `http://` is never used"
-        ));
-    }
     Location::parse(url)
 }
 

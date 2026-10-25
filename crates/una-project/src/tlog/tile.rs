@@ -113,13 +113,11 @@ pub fn parse_entry_bundle(bytes: &[u8], width: u64, full: bool) -> Result<Vec<Ve
     Ok(entries)
 }
 
-/// The largest power of two smaller than `n`, for `n` at least 2.
-fn split(n: u64) -> u64 {
-    let mut k = 1;
-    while k << 1 < n {
-        k <<= 1;
-    }
-    k
+/// The largest power of two smaller than `n`, for `n` at least 2: from its leading zeros, so it
+/// ends for every size. O(1).
+pub fn split(n: u64) -> u64 {
+    let bits = u64::BITS - n.saturating_sub(1).leading_zeros();
+    1u64 << bits.saturating_sub(1)
 }
 
 /// The tree of a log at one size, read from its tiles through a transport. Tiles and entry

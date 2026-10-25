@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use una_diag::Code;
 use una_project::ProjectError;
-use una_project::client::{LoggedRelease, Point, Registry};
+use una_project::client::{Floors, LoggedRelease, OpenError, Point, Registry};
 use una_project::itaoca::Itaoca;
 use una_project::mirrors::{self, Attempt, Mirrors};
 use una_project::transport::{self, Location, Transport};
@@ -102,7 +102,7 @@ pub(crate) fn open_first<'t>(
     places: &'t [Place],
     point: &Point,
     itaoca: Option<&Itaoca>,
-    lock_floor: Option<u64>,
+    lock_floor: Option<&(u64, String)>,
 ) -> Result<(Registry<'t>, Vec<String>), (Code, String)> {
     let name = &source.name.value;
     let refs: Vec<mirrors::Place<'t>> = places
@@ -118,16 +118,11 @@ pub(crate) fn open_first<'t>(
         })
         .collect();
     let fetched = mirrors::first_verified(&refs, &mut |transport| {
-        open(source, transport, point, itaoca, lock_floor).map_err(|why| {
-            // Nothing served is a refusal of service; anything served that fails is evidence.
-            if why.contains("has no `")
-                || why.contains("no root metadata has the pinned digest")
-                || why.contains("cannot read")
-            {
-                Attempt::Unavailable(why)
-            } else {
-                Attempt::Refused(why)
-            }
+        // Nothing served is a refusal of service; anything served that fails is evidence. The
+        // registry client tells the two apart by where the failure arose, never by its text.
+        open(source, transport, point, itaoca, lock_floor).map_err(|error| match error {
+            OpenError::Unavailable(why) => Attempt::Unavailable(why),
+            OpenError::Refused(why) => Attempt::Refused(why),
         })
     });
     let notes: Vec<String> = fetched
@@ -183,31 +178,53 @@ pub(crate) fn declared<'m>(read: &'m ita::Manifest, name: &str) -> Option<&'m it
     read.sources.iter().find(|source| source.name.value == name)
 }
 
-/// Opens `source` through `transport` at `point`, with Itaoca's stored checkpoint as its floor
-/// (rule 39), and, for a resolution, refuses a point below that floor or below `lock_floor`, the
-/// resolution point of the lock it replaces.
+/// Opens `source` through `transport` at `point`, with Itaoca's floors (rule 39): its stored
+/// checkpoint, which the point must extend and, for a resolution, not fall below, and its
+/// highest root version accepted. For a resolution, the point must also extend `lock_floor`,
+/// the resolution point of the lock it replaces, by its size and root hash. The floors are
+/// stored again as soon as the point is accepted, whatever the command then writes.
 pub(crate) fn open<'t>(
     source: &ita::Source,
     transport: &'t dyn Transport,
     point: &Point,
     itaoca: Option<&Itaoca>,
-    lock_floor: Option<u64>,
-) -> Result<Registry<'t>, String> {
+    lock_floor: Option<&(u64, String)>,
+) -> Result<Registry<'t>, OpenError> {
     let name = &source.name.value;
-    let floor = match itaoca {
-        Some(itaoca) => itaoca.load_checkpoint(name)?,
-        None => None,
+    let local = |why: String| OpenError::Unavailable(format!("Itaoca: {why}"));
+    let (floor, root_version) = match itaoca {
+        Some(itaoca) => (
+            itaoca.load_checkpoint(name).map_err(local)?,
+            itaoca.load_root_version(name).map_err(local)?,
+        ),
+        None => (None, None),
     };
-    let registry = Registry::open(name, transport, pin_of(source)?, point, floor.as_deref())?;
+    let floors = Floors {
+        checkpoint: floor.as_deref(),
+        root_version,
+    };
+    let pin = pin_of(source).map_err(OpenError::Refused)?;
+    let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
     if let Point::Latest { .. } = point {
         let size = registry.point.checkpoint.size;
-        if floor.as_deref().is_some_and(|stored| registry.below(stored))
-            || lock_floor.is_some_and(|floor| floor > size)
-        {
-            return Err(format!(
+        if floor.as_deref().is_some_and(|stored| registry.below(stored)) {
+            return Err(OpenError::Refused(format!(
                 "the registry `{name}` serves a checkpoint of size {size}, below one this client already accepted; a registry never goes back"
-            ));
+            )));
         }
+        if let Some((size, hash)) = lock_floor {
+            registry
+                .extends(*size, hash)
+                .map_err(OpenError::Refused)?;
+        }
+    }
+    if let Some(itaoca) = itaoca {
+        itaoca
+            .store_checkpoint(name, &registry.point.document)
+            .map_err(local)?;
+        itaoca
+            .store_root_version(name, registry.root.version)
+            .map_err(local)?;
     }
     Ok(registry)
 }

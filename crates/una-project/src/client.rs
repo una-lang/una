@@ -187,6 +187,63 @@ struct Kept {
     time: Option<u64>,
 }
 
+/// The floors Itaoca stores for a source (rule 39).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Floors<'f> {
+    /// The largest checkpoint accepted, as stored.
+    pub checkpoint: Option<&'f str>,
+    /// The highest root version accepted.
+    pub root_version: Option<u64>,
+}
+
+/// Why a place does not open: it did not serve, or it served what does not verify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenError {
+    /// A document it must serve is missing, or it cannot be read: a refusal of service.
+    Unavailable(String),
+    /// What it served does not verify: evidence against it (U7010).
+    Refused(String),
+}
+
+impl OpenError {
+    /// The sentence that says why.
+    pub fn message(self) -> String {
+        match self {
+            OpenError::Unavailable(why) | OpenError::Refused(why) => why,
+        }
+    }
+}
+
+/// The most characters of a message about a registry, which may quote what a registry served.
+pub const MAX_MESSAGE: usize = 400;
+
+/// `text` as a message may show it: every control character and every character that changes
+/// the direction of text written as `\u{…}`, and at most [`MAX_MESSAGE`] characters, so what a
+/// registry served can never disguise or flood a diagnostic.
+pub fn shown(text: &str) -> String {
+    let mut out = String::new();
+    for (count, c) in text.chars().enumerate() {
+        if count == MAX_MESSAGE {
+            out.push_str("...");
+            break;
+        }
+        let bidi = matches!(
+            c,
+            '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        );
+        if c.is_control() || bidi {
+            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Which checkpoint a [`Registry`] is opened at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Point {
@@ -334,7 +391,9 @@ pub struct Registry<'t> {
 
 impl<'t> Registry<'t> {
     /// Opens the source `source` through `transport`, from the root whose digest is `pin`, at
-    /// `point`; `floor` is the checkpoint stored for the source, if any, as stored.
+    /// `point`; `floor` is the checkpoint stored for the source, if any, as stored. Its error is
+    /// one sentence; [`Registry::open_with`] tells a place that did not serve from one that
+    /// served what does not verify.
     pub fn open(
         source: &str,
         transport: &'t dyn Transport,
@@ -342,99 +401,121 @@ impl<'t> Registry<'t> {
         point: &Point,
         floor: Option<&str>,
     ) -> Result<Registry<'t>, Refusal> {
+        let floors = Floors {
+            checkpoint: floor,
+            root_version: None,
+        };
+        Registry::open_with(source, transport, pin, point, &floors).map_err(OpenError::message)
+    }
+
+    /// [`Registry::open`] with the floors Itaoca stores for the source (rule 39): its largest
+    /// checkpoint accepted, and its highest root version accepted, below which no root chain is
+    /// accepted, so a place that hides a newer root version is refused. A document the place
+    /// does not serve, or cannot read, is [`OpenError::Unavailable`]; anything served that does
+    /// not verify is [`OpenError::Refused`]. Nothing of a message is matched to tell them apart.
+    pub fn open_with(
+        source: &str,
+        transport: &'t dyn Transport,
+        pin: &str,
+        point: &Point,
+        floors: &Floors<'_>,
+    ) -> Result<Registry<'t>, OpenError> {
         let described = transport.describe();
-        let fail = |why: String| format!("the registry `{source}` ({described}): {why}");
+        let says = |why: String| shown(&format!("the registry `{source}` ({described}): {why}"));
+        let refused = |why: String| OpenError::Refused(says(why));
+        let unavailable = |why: String| OpenError::Unavailable(says(why));
+        let read = |path: &str| -> Result<Option<String>, OpenError> {
+            match transport.get(path, note::MAX_NOTE as u64) {
+                Ok(Some(bytes)) => String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| refused(format!("`{path}` is not UTF-8"))),
+                Ok(None) => Ok(None),
+                Err(why) => Err(unavailable(why)),
+            }
+        };
         // The root chain, from the pinned version.
         let mut roots: Vec<String> = Vec::new();
         let mut version = 1usize;
         let pinned = loop {
             if version > MAX_ROOTS {
-                return Err(fail(format!(
+                return Err(unavailable(format!(
                     "no root metadata among its first {MAX_ROOTS} versions has the pinned digest"
                 )));
             }
-            let Some(bytes) = transport
-                .get(&format!("root/{version}"), note::MAX_NOTE as u64)
-                .map_err(&fail)?
-            else {
-                return Err(fail("no root metadata has the pinned digest".to_owned()));
+            let Some(document) = read(&format!("root/{version}"))? else {
+                return Err(unavailable(
+                    "no root metadata it serves has the pinned digest".to_owned(),
+                ));
             };
-            let document = String::from_utf8(bytes)
-                .map_err(|_| fail("a root metadata document is not UTF-8".to_owned()))?;
             if root::digest(&document) == pin {
-                let trusted = root::trust_first(&document, pin).map_err(&fail)?;
+                let trusted = root::trust_first(&document, pin).map_err(refused)?;
                 roots.push(document);
                 break trusted;
             }
             version += 1;
         };
         if pinned.source != source {
-            return Err(fail(format!(
-                "its root metadata is of `{}`",
-                pinned.source
-            )));
+            return Err(refused(
+                "its root metadata is of another source".to_owned(),
+            ));
         }
         loop {
             if roots.len() >= MAX_ROOTS {
-                return Err(fail(format!(
+                return Err(refused(format!(
                     "it has more than {MAX_ROOTS} root versions past the pinned one"
                 )));
             }
             let next = pinned.version + roots.len() as u64;
-            match transport
-                .get(&format!("root/{next}"), note::MAX_NOTE as u64)
-                .map_err(&fail)?
-            {
-                Some(bytes) => roots.push(
-                    String::from_utf8(bytes)
-                        .map_err(|_| fail("a root metadata document is not UTF-8".to_owned()))?,
-                ),
+            match read(&format!("root/{next}"))? {
+                Some(document) => roots.push(document),
                 None => break,
             }
         }
         let next: Vec<&str> = roots.iter().skip(1).map(String::as_str).collect();
-        let last = root::walk(&pinned, &next, 0).map_err(&fail)?;
+        let last = root::walk(&pinned, &next, 0).map_err(refused)?;
+        if let Some(floor) = floors.root_version
+            && last.version < floor
+        {
+            return Err(refused(format!(
+                "it serves root version {}, below version {floor} already accepted",
+                last.version
+            )));
+        }
         // The checkpoint.
         let path = match point {
             Point::Latest { .. } => "checkpoint".to_owned(),
             Point::At { size, .. } => format!("checkpoint/{size}"),
         };
-        let bytes = transport
-            .get(&path, note::MAX_NOTE as u64)
-            .map_err(&fail)?
-            .ok_or_else(|| fail(format!("it has no `{path}`")))?;
         let document =
-            String::from_utf8(bytes).map_err(|_| fail("its checkpoint is not UTF-8".to_owned()))?;
-        let accepted = accept_checkpoint(&document, &last).map_err(&fail)?;
+            read(&path)?.ok_or_else(|| unavailable(format!("it has no `{path}`")))?;
+        let accepted = accept_checkpoint(&document, &last).map_err(refused)?;
         match point {
             Point::At { size, hash } => {
                 if accepted.checkpoint.size != *size
                     || hash_text(&accepted.checkpoint.root) != *hash
                 {
-                    return Err(fail(format!(
+                    return Err(refused(format!(
                         "its checkpoint of size {size} is not the one the lock records"
                     )));
                 }
             }
-            Point::Latest { now } => {
-                match witness::fresh(accepted.time, *now, FRESHNESS, SKEW) {
-                    Err(ahead) => {
-                        return Err(fail(format!(
-                            "the local clock is {ahead} seconds behind the witnesses' time; correct the clock"
-                        )));
-                    }
-                    Ok(false) => {
-                        return Err(fail(
-                            "its latest checkpoint was cosigned more than 24 hours ago by the witnesses' time, so it may be a frozen view; try again later or from another mirror"
-                                .to_owned(),
-                        ));
-                    }
-                    Ok(true) => {}
+            Point::Latest { now } => match witness::fresh(accepted.time, *now, FRESHNESS, SKEW) {
+                Err(ahead) => {
+                    return Err(refused(format!(
+                        "the local clock is {ahead} seconds behind the witnesses' time; correct the clock"
+                    )));
                 }
-            }
+                Ok(false) => {
+                    return Err(refused(
+                        "its latest checkpoint was cosigned more than 24 hours ago by the witnesses' time, so it may be a frozen view; try again later or from another mirror"
+                            .to_owned(),
+                    ));
+                }
+                Ok(true) => {}
+            },
         }
         // The last root has not expired at the checkpoint's witness time.
-        let last = root::walk(&pinned, &next, accepted.time).map_err(&fail)?;
+        let last = root::walk(&pinned, &next, accepted.time).map_err(refused)?;
         let mut registry = Registry {
             source: source.to_owned(),
             transport,
@@ -449,10 +530,34 @@ impl<'t> Registry<'t> {
             chains: BTreeMap::new(),
             marks: BTreeMap::new(),
         };
-        if let Some(floor) = floor {
-            registry.check_floor(floor).map_err(&fail)?;
+        if let Some(floor) = floors.checkpoint {
+            registry.check_floor(floor).map_err(refused)?;
         }
         Ok(registry)
+    }
+
+    /// Whether the point extends the checkpoint of `size` and root hash `hash` (`sha256:` and
+    /// hex), a lock's resolution point: the same log, by a consistency proof from the tiles, and
+    /// not smaller (rule 39). O(log L).
+    pub fn extends(&mut self, size: u64, hash: &str) -> Result<(), Refusal> {
+        let root = parse_hash_text(hash)
+            .ok_or_else(|| self.refuse("the lock's checkpoint hash is not a digest"))?;
+        let point = self.point.checkpoint.size;
+        if size > point {
+            return Err(self.refuse(format!(
+                "it serves a checkpoint of size {point}, below the lock's resolution point of size {size}"
+            )));
+        }
+        let proof = self
+            .tiles
+            .consistency(size)
+            .map_err(|why| self.refuse(why))?;
+        if !merkle::verify_consistency(size, point, &root, &self.point.checkpoint.root, &proof) {
+            return Err(self.refuse(format!(
+                "its checkpoint of size {point} does not extend the lock's resolution point, so the log forked"
+            )));
+        }
+        Ok(())
     }
 
     /// Rule 39's floor: the checkpoint stored for the source, `stored`, and the one accepted are
@@ -507,11 +612,11 @@ impl<'t> Registry<'t> {
     }
 
     fn refuse(&self, why: impl std::fmt::Display) -> Refusal {
-        format!(
+        shown(&format!(
             "the registry `{}` ({}): {why}",
             self.source,
             self.transport.describe()
-        )
+        ))
     }
 
     /// The entry at `index`, verified by its inclusion proof at the point: its document and its
@@ -716,20 +821,24 @@ impl<'t> Registry<'t> {
 
     /// The first log position a recovery or a dispute logged at `index` governs (rule 38.1): the
     /// size of the first kept checkpoint whose witness time is at least seven days after the
-    /// witness time of the first one that includes it; `None` when no checkpoint up to the point
-    /// is. By binary search over sizes, since witness times never decrease as the log grows:
+    /// time the request was logged ([`Registry::logged_at`]); `None` when no checkpoint up to the
+    /// point is. A place can delay the effect, by not serving kept checkpoints, up to the point,
+    /// and never advance it. By binary search over sizes, since witness times never decrease as the log grows:
     /// O(log L) probes of at most [`MAX_SCAN`] checkpoints each.
     pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         let point = self.point.checkpoint.size;
         if index >= point {
             return Ok(None);
         }
-        let (first, start) = self.first_timed(index + 1)?;
+        // The wait starts when the request was logged: the k-th EARLIEST of the witnesses'
+        // earliest cosignatures (rule 36.4), which fewer than k witnesses cannot move earlier,
+        // whatever a place leaves out. It ends at a checkpoint's witness time, the k-th LATEST.
+        let start = self.logged_at(index)?;
         let target = start.saturating_add(owner::RECOVERY_DELAY);
         if self.point.time < target {
             return Ok(None);
         }
-        let (mut low, mut high) = (first, point);
+        let (mut low, mut high) = (index + 1, point);
         while low < high {
             let middle = low + (high - low) / 2;
             if self.first_timed(middle)?.1 >= target {

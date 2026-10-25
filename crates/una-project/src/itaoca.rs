@@ -212,26 +212,113 @@ impl Itaoca {
         }
     }
 
+    /// Runs `work` holding the floor lock of `source`, `registry/<source>/floor.lock`, a file
+    /// created exclusively, so two runs never interleave a read, a compare and a write of a
+    /// floor. A lock another run holds is waited for, about a second at most; past that the
+    /// floor is not touched, and the refusal names the file to remove if no run holds it.
+    fn locked<T>(
+        &self,
+        source: &str,
+        work: impl FnOnce() -> Result<T, Refusal>,
+    ) -> Result<T, Refusal> {
+        vendor::check_source(source)?;
+        tree::not_a_link(&self.root)?;
+        let dir = tree::make_dirs(&self.root, &["registry", source])?;
+        let lock = dir.join("floor.lock");
+        let mut tries = 0;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock)
+            {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "cannot lock the floor of `{source}` ({error}); remove `{}` if no run of `una ita` holds it",
+                        lock.display()
+                    ));
+                }
+            }
+        }
+        let result = work();
+        let removed = std::fs::remove_file(&lock);
+        match (result, removed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Ok(_), Err(error)) => Err(format!(
+                "cannot remove the floor lock `{}`: {error}",
+                lock.display()
+            )),
+            (Err(refusal), _) => Err(refusal),
+        }
+    }
+
     /// Stores `document`, a checkpoint the client accepted for `source`, as its floor: only when
-    /// it is larger than the one stored, so the floor never moves backwards (rule 39). The
-    /// caller verified it, and its consistency with the one stored.
+    /// it is larger than the one stored, under the floor lock, so the floor never moves
+    /// backwards, even with runs at once (rule 39). The caller verified it, and its consistency
+    /// with the one stored.
     pub fn store_checkpoint(&self, source: &str, document: &str) -> Result<(), Refusal> {
         use crate::tlog::note;
 
-        vendor::check_source(source)?;
         let size = |text: &str| -> Result<u64, Refusal> {
             let signed = note::parse_note(text)?;
             Ok(note::parse_checkpoint(&signed.text)?.size)
         };
         let new = size(document)?;
-        if let Some(stored) = self.load_checkpoint(source)?
-            && size(&stored).is_ok_and(|old| old >= new)
-        {
-            return Ok(());
-        }
+        self.locked(source, || {
+            if let Some(stored) = self.load_checkpoint(source)?
+                && size(&stored).is_ok_and(|old| old >= new)
+            {
+                return Ok(());
+            }
+            let parent = tree::make_dirs(&self.root, &["registry", source])?;
+            tree::store_file(&parent, "checkpoint", document.as_bytes(), true)
+                .map_err(|refusal| format!("cannot store the checkpoint of `{source}`: {refusal}"))
+        })
+    }
+
+    /// The highest root version of `source` accepted, the floor of its root chain (rule 39), or
+    /// `None` when none is stored.
+    pub fn load_root_version(&self, source: &str) -> Result<Option<u64>, Refusal> {
+        vendor::check_source(source)?;
         tree::not_a_link(&self.root)?;
-        let parent = tree::make_dirs(&self.root, &["registry", source])?;
-        tree::store_file(&parent, "checkpoint", document.as_bytes(), true)
-            .map_err(|refusal| format!("cannot store the checkpoint of `{source}`: {refusal}"))
+        let Some(path) = tree::locate(&self.root, &["registry", source, "root-version"])? else {
+            return Ok(None);
+        };
+        let bytes = tree::read_file(&path, 32)?;
+        let text = String::from_utf8(bytes).map_err(|_| "a stored root version is not UTF-8")?;
+        let digits = text.trim_end_matches('\n');
+        let valid = !digits.is_empty()
+            && digits.len() <= 20
+            && digits.bytes().all(|b| b.is_ascii_digit())
+            && !digits.starts_with('0');
+        digits
+            .parse()
+            .ok()
+            .filter(|_| valid)
+            .map(Some)
+            .ok_or_else(|| format!("the root version stored for `{source}` is not a version"))
+    }
+
+    /// Stores `version`, a root version the client accepted for `source`, as the floor of its
+    /// root chain: only when it is higher than the one stored, under the floor lock.
+    pub fn store_root_version(&self, source: &str, version: u64) -> Result<(), Refusal> {
+        self.locked(source, || {
+            if self
+                .load_root_version(source)?
+                .is_some_and(|stored| stored >= version)
+            {
+                return Ok(());
+            }
+            let parent = tree::make_dirs(&self.root, &["registry", source])?;
+            tree::store_file(&parent, "root-version", format!("{version}\n").as_bytes(), true)
+                .map_err(|refusal| {
+                    format!("cannot store the root version of `{source}`: {refusal}")
+                })
+        })
     }
 }

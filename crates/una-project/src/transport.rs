@@ -6,10 +6,10 @@
 //! **Locations.** A registry or a mirror is named by a location ([`Location::parse`]):
 //! - an `https://` URL: the network location of a source. This release has no HTTPS transport,
 //!   so reading from one fails with a refusal that says so, never a silent skip;
-//! - a `file://` URL with an absolute path, or a directory path: a mirror on the local file
-//!   system, read by [`Directory`];
-//! - any other scheme, `http://` included, is refused when it is parsed: plain HTTP is never
-//!   used, and neither is any scheme this client does not know.
+//! - a `file://` URL with an absolute path, written as it is, with no percent-encoding (`%` is
+//!   refused): a mirror on the local file system, read by [`Directory`];
+//! - any other scheme, `http://` included, and a bare path are refused when they are parsed:
+//!   plain HTTP is never used, and neither is any scheme this client does not know.
 //!
 //! **Writing.** A submission (ADR 0122 rule 43) is written through [`Transport::put`]: once per
 //! path, a second write of other bytes refused. A directory writes through a fresh private file
@@ -55,10 +55,10 @@ pub enum Location {
 }
 
 impl Location {
-    /// Reads a location: an `https://` URL; a `file://` URL whose path is absolute; or, with no
-    /// scheme, a directory path. A text with any other scheme (`http:`, `ftp:`, ...), and a URL
-    /// with a host, a query, a fragment or credentials where a file URL has none, is refused,
-    /// so plain HTTP is never used.
+    /// Reads a location: an `https://` URL, or a `file://` URL whose path is absolute and holds
+    /// no `%`, `?` or `#`. Any other scheme (`http:`, `ftp:`, ...), a bare path, and a URL with
+    /// a host, a query, a fragment or credentials where a file URL has none, are refused, so
+    /// plain HTTP is never used.
     pub fn parse(text: &str) -> Result<Location, Refusal> {
         if text.is_empty() || text.chars().any(char::is_control) {
             return Err("a registry location is not empty and has no control character".to_owned());
@@ -74,8 +74,9 @@ impl Location {
             return Ok(Location::Https(text.trim_end_matches('/').to_owned()));
         }
         if let Some(rest) = text.strip_prefix("file://") {
-            // `file:///abs/path`: an empty host, then an absolute path.
-            if !rest.starts_with('/') || rest.contains(['?', '#']) {
+            // `file:///abs/path`: an empty host, then an absolute path, written as it is: no
+            // percent-encoding, so `%` is refused rather than read two ways.
+            if !rest.starts_with('/') || rest.contains(['?', '#', '%']) {
                 return Err(format!(
                     "`{text}` is not a file URL of a local directory: write `file:///absolute/path`"
                 ));
@@ -84,21 +85,12 @@ impl Location {
         }
         if let Some((scheme, _)) = text.split_once("://") {
             return Err(format!(
-                "`{scheme}://` is not a scheme a registry is read with; a location is an `https://` URL, a `file://` URL or a directory, and plain `http://` is never used"
+                "`{scheme}://` is not a scheme a registry is read with; a location is an `https://` URL or a `file://` URL of a directory, and plain `http://` is never used"
             ));
         }
-        // A scheme without `//`, as `http:example`, is refused as well: a directory path with a
-        // colon before its first `/` would be ambiguous.
-        if let Some((head, _)) = text.split_once(':')
-            && !head.contains('/')
-            && !head.contains('\\')
-            && head.len() > 1
-        {
-            return Err(format!(
-                "`{text}` names a scheme; a location is an `https://` URL, a `file://` URL or a directory"
-            ));
-        }
-        Ok(Location::Directory(PathBuf::from(text)))
+        Err(format!(
+            "`{text}` is not a location: write an `https://` URL or a `file://` URL of a directory"
+        ))
     }
 }
 
