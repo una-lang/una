@@ -91,6 +91,9 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # Their full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
+# Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
+# and the traced blocks) take no effect: those tests fork tasks onto coroutines, whose stacks and
+# switch Miri cannot run, so they are ignored under Miri with the scheduler's own tests (#1145).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
 [ "$reduced" = 16 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 16"
 
