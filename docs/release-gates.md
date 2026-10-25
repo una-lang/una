@@ -160,7 +160,9 @@ The pinned Z3 comes from `UNA_GATES_Z3`, else this checkout's `target/z3`, else 
 - A path dependency of `fuzz/Cargo.toml` that is not a workspace crate at its place under `crates/`, by `cargo metadata` (`crates/una-cli/tests/dependencies.rs`): the fuzzed code is the workspace's own.
 - A crates.io package of `fuzz/Cargo.lock` that is neither in `supply-chain/crates.tsv` nor in `supply-chain/fuzz-crates.tsv` (the `deps` gate, with cargo-deny run on `fuzz/Cargo.toml` too).
 
-At the end, the script removes the Docker volumes that `--linux` and `--linux-arm64` made for the clone's target directory, so volumes do not pile up.
+**The Docker backend** (#1082). The gates that use Docker (`linux`, `linux-arm64`, `release`, `reproducible` and `hunt-linux-arm64`) run on Docker Desktop's context `desktop-linux`. Another container runtime on the same machine can be the active context, and the gates must not run there. So when a requested gate needs Docker, the script refuses before any gate, with exit code 2, unless `DOCKER_CONTEXT`, or else the active context (`docker context show`), is `desktop-linux` and `DOCKER_HOST`, which would override the context, is unset. It then exports `DOCKER_CONTEXT=desktop-linux` for every gate, so a change of the active context during the run does not move a gate. The record names the context and the server's version (`docker version`).
+
+At the end, a run that used Docker removes the Docker volumes that `--linux` and `--linux-arm64` made for the clone's target directory, so volumes do not pile up.
 
 **The job count in the containers** (#701). By default, Cargo inside a container runs one job per CPU of the Docker VM. On a VM with 8 GB and 10 CPUs, ten rustc and linker processes at once have run it out of memory: the kernel killed the linker with signal 9, the test binaries did not link, and no test ran.
 
@@ -188,7 +190,7 @@ The script writes into `OUT`:
 - `results.tsv`: a header line, then one line per gate run, tab-separated: `gate`, `sha`, `result` (`PASS` or `FAIL`), `seconds`, `log_sha256`.
 - `logs/<gate>.log`: each gate's full output. Its SHA-256 is in `results.tsv` and in the record.
 - `record.md`, the full validation record:
-  - the commit, its subject, the run's date, platform, `rustc` and Docker, and the SHA of the script that ran;
+  - the commit, its subject, the run's date, platform, `rustc` and Docker, the Docker context and server version, and the SHA of the script that ran;
   - a table of the gates, with result, seconds and log digest;
   - the archives that the `release` gate packed, with their SHA-256;
   - the dependency audit: the `cargo-deny` version and the advisory database's commit and date that the `deps` gate used;
@@ -211,7 +213,7 @@ For a tag, `summary.md` is committed as `docs/validation/<version>.md`, unchange
 ## 4. The procedure for a release
 
 1. Merge the release pull request under rule 1, and note the SHA of `main`. The release pull request sets the version, regenerates `fuzz/Cargo.lock`, which pins the workspace's crates at that version (`cargo +<checking toolchain> metadata --manifest-path fuzz/Cargo.toml`, #766; the supply-chain test fails until it does), runs `scripts/changelog-assemble.sh`, which writes every fragment of `changelog.d/` under `## Unreleased` in a fixed order (the issue number, then the file name) and removes the fragments (#744), and renames `## Unreleased` to `## v<version>` with the release's introduction, leaving an empty `## Unreleased` above it.
-2. Run `scripts/release-gates.sh <sha> <out>` on that SHA, with Docker running and nothing else using it.
+2. Run `DOCKER_CONTEXT=desktop-linux scripts/release-gates.sh <sha> <out>` on that SHA, with Docker Desktop running and nothing else using it.
 3. If the verdict is PASS and the summary was written with `UNA_PRIVACY_PATTERN` set, commit `<out>/summary.md` as `docs/validation/<version>.md` (and, until the repository is public, `<out>/record.md` as `docs/releases/<version>-validation.md`) in a pull request that changes nothing else, under rule 1.
 4. Check rule 2 on the merged record commit: its own change is the summary, and `git diff --name-only <gated> <record commit>` lists only files under `docs/`. Once the release is approved, tag `v<version>` on the record commit and push the tag.
 5. Publish the archives from `<out>/clone/target/local-release/v<version>/`, checking that their digests match the summary's, with the `gh release create` command that `scripts/release-gates.sh` prints at its end (`scripts/release-publish.sh`). A pre-release, a version with a suffix such as `0.4.0-alpha.1`, is published with `--prerelease --latest=false`. The summary is the release's notes, followed by the `CHANGELOG.md` section, and is attached as `una-<version>-validation.md`. No command is printed for an unchecked summary, and an unchecked summary is not published.
