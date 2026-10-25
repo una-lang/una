@@ -712,3 +712,44 @@ fn rule_26_is_checked_against_the_highest_release_logged_before_as_the_client_do
     .unwrap_err();
     assert_eq!(refused.cause(), Some(&Cause::Rule26), "{refused:?}");
 }
+
+#[test]
+fn an_advisory_identifier_is_given_once_per_name() {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let store: Arc<dyn Store> = Arc::new(una_itaty::store::MemoryStore::new());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let mut registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let acme = signer("acme.a", 60);
+    let registration = format!(
+        "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\n{}\n",
+        key_line(&acme)
+    );
+    registry
+        .register(note(&registration, &[&acme]).as_bytes(), false)
+        .unwrap();
+    let release = package("1.0.0", "", "pub answer() -> Int = 42\n");
+    let (document, _) = publication(&release, None, &authority(&[]), &[&acme]);
+    let prepared = Registry::prepare(document.as_bytes(), release.archive.clone()).unwrap();
+    let mut head = registry.publish(prepared).unwrap();
+    let advisory = |previous: &una_itaty::registry::Receipt| {
+        let text = format!(
+            "ita-advisory/1\nsource itaty\nname acme/ledger\nprevious {} {}\nid ITA-2026-0007\nline 1\naffected 1.0.0\nfixed none\nseverity low\nsummary a test advisory\n",
+            previous.index,
+            digest_string(&previous.leaf)
+        );
+        note(&text, &[&keys.security[0]])
+    };
+    head = registry.submit(advisory(&head).as_bytes()).unwrap();
+    let repeated = registry.submit(advisory(&head).as_bytes()).unwrap_err();
+    assert_eq!(
+        repeated.cause(),
+        Some(&Cause::AdvisoryIdRepeated),
+        "{repeated:?}"
+    );
+}

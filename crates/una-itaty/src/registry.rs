@@ -265,6 +265,8 @@ struct Package {
     logged: Vec<(u64, Note, Version)>,
     /// The versions yanked, with the log index of their yank.
     yanked: BTreeMap<Version, u64>,
+    /// The identifiers of the advisories its chain holds: each is given once.
+    advisories: BTreeSet<String>,
 }
 
 /// A release checked against its archive, before the registry's state is consulted.
@@ -1228,6 +1230,15 @@ impl Registry {
                     .packages
                     .get(&advisory.name)
                     .ok_or_else(|| invalid(format!("`{}` has no release", advisory.name)))?;
+                if package.advisories.contains(&advisory.id) {
+                    return Err(rule(
+                        Cause::AdvisoryIdRepeated,
+                        format!(
+                            "the chain of `{}` holds an advisory `{}` already; an identifier is given once",
+                            advisory.name, advisory.id
+                        ),
+                    ));
+                }
                 if let Some(version) = advisory
                     .affected
                     .iter()
@@ -1666,7 +1677,13 @@ impl Registry {
                     .yanked
                     .insert(yank.version.clone(), self.tree.size().saturating_sub(1));
             }
-            Kind::Advisory(_) => {}
+            Kind::Advisory(advisory) => {
+                self.packages
+                    .entry(advisory.name.clone())
+                    .or_default()
+                    .advisories
+                    .insert(advisory.id.clone());
+            }
             Kind::Owner(read) => {
                 let index = self.tree.size().saturating_sub(1);
                 let owner_name = read.owner.clone();
