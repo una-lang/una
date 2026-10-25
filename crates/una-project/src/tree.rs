@@ -8,8 +8,8 @@
 //! path: only directories and regular files of one link are listed, and a symbolic or hard
 //! link, a device, a FIFO or a socket refuses the package, as does every path and bound that
 //! rule 27 refuses, before any byte is read. [`Listing::verify`] reads each listed file once,
-//! through a descriptor opened with `O_NOFOLLOW` (and on macOS `O_NOFOLLOW_ANY`, which refuses
-//! a link at any component), checked by device and inode to be the entry listed, and computes
+//! through a descriptor opened with `O_NOFOLLOW` (on macOS `O_NOFOLLOW_ANY` in its place,
+//! which refuses a link at any component, the last included), checked by device and inode to be the entry listed, and computes
 //! the content digest over the bytes read. Only when that digest is the one asked for does it
 //! return a [`VerifiedTree`]: the paths and the bytes that were hashed, the only way this crate
 //! hands out the contents of a stored or vendored package. Every later step (the provenance's
@@ -64,6 +64,19 @@ struct Flags {
     directory: i32,
     /// `O_NONBLOCK`, so that opening a FIFO swapped in never blocks.
     non_block: i32,
+}
+
+impl Flags {
+    /// The flags that refuse a link at any component where the platform can, else at the last:
+    /// `O_NOFOLLOW_ANY` alone on macOS, which also refuses a link at the last component and
+    /// which macOS refuses with `EINVAL` beside `O_NOFOLLOW`; `O_NOFOLLOW` elsewhere.
+    fn no_link(self) -> i32 {
+        if self.no_follow_any == 0 {
+            self.no_follow
+        } else {
+            self.no_follow_any
+        }
+    }
 }
 
 /// macOS: `O_NOFOLLOW` 0x100 and `O_NOFOLLOW_ANY` 0x20000000, `O_DIRECTORY` 0x100000,
@@ -379,7 +392,7 @@ fn read_exactly(handle: &fs::File, size: u64, path: &Path) -> Result<Vec<u8>, Re
 /// provenance; a package's files are read with [`list`] and [`Listing::verify`] only.
 pub fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, Refusal> {
     let flags = flags()?;
-    let (handle, size) = open_regular(path, flags, flags.no_follow | flags.no_follow_any, true)?;
+    let (handle, size) = open_regular(path, flags, flags.no_link(), true)?;
     if size > limit {
         return Err(format!(
             "`{}` holds more than {limit} bytes",
@@ -518,7 +531,7 @@ impl Listing {
     /// checked to be the entry listed, and returns the files when the content digest of the
     /// bytes read is `digest`. Nothing read is returned otherwise.
     pub fn verify(self, digest: &str) -> Result<VerifiedTree, Refusal> {
-        let refuse = self.flags.no_follow | self.flags.no_follow_any;
+        let refuse = self.flags.no_link();
         let mut files = Vec::with_capacity(self.files.len());
         for listed in self.files {
             let (handle, size) = open_regular(&listed.disk, self.flags, refuse, true)?;
@@ -760,10 +773,7 @@ impl Fresh {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         with_private_mode(&mut options);
-        with_flags(
-            &mut options,
-            self.flags.no_follow | self.flags.no_follow_any,
-        );
+        with_flags(&mut options, self.flags.no_link());
         let mut file = options
             .open(&target)
             .map_err(|e| cannot("create", &target, &e))?;
@@ -892,10 +902,7 @@ fn sync_dir(handle: &fs::File, path: &Path) -> Result<(), Refusal> {
 /// Opens the directory at `path`, just created by this process, with no link followed: it must
 /// be a directory that grants nothing to others, the same one its path names.
 fn open_private_dir(path: &Path, flags: Flags) -> Result<fs::File, Refusal> {
-    let handle = open(
-        path,
-        flags.no_follow | flags.no_follow_any | flags.directory,
-    )?;
+    let handle = open(path, flags.no_link() | flags.directory)?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
     let listed = real_directory(path)?;
     if !opened.is_dir() || !private(&opened) || identity(&opened) != identity(&listed) {
@@ -1055,10 +1062,11 @@ mod tests {
         fs::write(dir.join("real/file"), b"bytes").unwrap();
         std::os::unix::fs::symlink(dir.join("real/file"), dir.join("link")).unwrap();
         std::os::unix::fs::symlink(dir.join("real"), dir.join("dirlink")).unwrap();
-        let any = flags.no_follow | flags.no_follow_any;
+        let any = flags.no_link();
         assert!(open(&dir.join("real/file"), any | flags.non_block).is_ok());
         assert!(open(&dir.join("real"), any | flags.directory).is_ok());
         assert!(open(&dir.join("link"), flags.no_follow).is_err());
+        assert!(open(&dir.join("link"), any).is_err());
         assert!(open(&dir.join("dirlink"), flags.no_follow | flags.directory).is_err());
         assert!(open(&dir.join("real/file"), flags.no_follow | flags.directory).is_err());
         if flags.no_follow_any != 0 {
