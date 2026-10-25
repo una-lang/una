@@ -1204,7 +1204,12 @@ fn bundle_source(
                     una_project::provenance::signed_name(&one.name, &key.public) == one.signed
                 })
                 .cloned()
-                .ok_or_else(|| fail(format!("no signer of `{}` is the key the lock names", one.name)))?;
+                .ok_or_else(|| {
+                    fail(format!(
+                        "no signer of `{}` is the key the lock names",
+                        one.name
+                    ))
+                })?;
             let provenance = registry.provenance(&release, &key).map_err(fail)?;
             una_project::provenance::verify(&provenance, one).map_err(fail)?;
             let archive = registry.archive(&one.digest).map_err(fail)?;
