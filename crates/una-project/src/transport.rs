@@ -38,6 +38,12 @@ pub trait Transport {
 
     /// Where the transport reads from, for messages.
     fn describe(&self) -> String;
+
+    /// Every place the transport reads from, in order, for evidence: the one it describes,
+    /// for a single place.
+    fn describe_all(&self) -> Vec<String> {
+        vec![self.describe()]
+    }
 }
 
 /// Where a registry or a mirror is (rule 40).
@@ -237,6 +243,13 @@ impl Transport for Fallback {
         self.places
             .first()
             .map_or_else(String::new, |place| place.describe())
+    }
+
+    fn describe_all(&self) -> Vec<String> {
+        self.places
+            .iter()
+            .flat_map(|place| place.describe_all())
+            .collect()
     }
 }
 

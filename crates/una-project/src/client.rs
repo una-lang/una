@@ -177,6 +177,9 @@ fn witness_problem(problem: &witness::Problem) -> Refusal {
 struct Kept {
     cosigned: Vec<Cosigned>,
     time: Option<u64>,
+    /// Whether at least two places served copies that verify, with the same cosignatures:
+    /// what evidence from an absence needs before it counts against the registry.
+    corroborated: bool,
 }
 
 /// The floors Itaoca stores for a source (rule 39).
@@ -197,7 +200,8 @@ pub enum Misbehavior {
     Unsettled(Unsettled),
     /// A request whose deadline checkpoint no place serves: the first checkpoint at or after
     /// its seven-day target with the witness threshold of cosignatures, which a registry
-    /// MUST keep, so the request's effect cannot be decided.
+    /// MUST keep, so the request's effect cannot be decided. Evidence from an absence: the
+    /// places read may have withheld it, unless at least two of them served the same view.
     MissingDeadline {
         /// The owner whose chain holds the request.
         owner: String,
@@ -205,14 +209,24 @@ pub enum Misbehavior {
         index: u64,
         /// Its target witness time: seven days after it was logged, in seconds.
         target: u64,
+        /// The places read.
+        places: Vec<String>,
+        /// Whether at least two places served the same view of the checkpoints it rests on:
+        /// only then is it the registry's misbehavior rather than a place's.
+        attributed: bool,
     },
     /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
-    /// the 64 a registry MAY leave between two such checkpoints.
+    /// the 64 a registry MAY leave between two such checkpoints. Evidence from an absence, as
+    /// a missing deadline is.
     CadenceGap {
         /// The first size of the range.
         from: u64,
         /// The last size of the range.
         to: u64,
+        /// The places read.
+        places: Vec<String>,
+        /// Whether at least two places served the same view of every checkpoint of the range.
+        attributed: bool,
     },
 }
 
@@ -222,6 +236,9 @@ pub enum Misbehavior {
 pub enum Omission {
     /// A document no place served, by its path.
     Document(String),
+    /// The start checkpoint of the request at this log index, the first that includes it,
+    /// carries fewer than the witness threshold of cosignatures as every place serves it.
+    StartCheckpoint(u64),
     /// Witnesses' cosignatures that may be withheld: the verdict of the name, given, depends
     /// on whether a recovery, a dispute or a co-signer change of its owner is in effect at the
     /// earliest position its seven days allow, or later, as the cosignatures served say.
@@ -782,6 +799,7 @@ impl<'t> Registry<'t> {
             return Ok(Some(Kept {
                 cosigned: self.point.cosigned.clone(),
                 time: Some(self.point.time),
+                corroborated: false,
             }));
         }
         if size > self.point.checkpoint.size || size == 0 {
@@ -808,11 +826,15 @@ impl<'t> Registry<'t> {
         }
         let mut cosigned: Vec<Cosigned> = Vec::new();
         let mut verified = false;
+        let mut views: Vec<Vec<Cosigned>> = Vec::new();
         let mut failure: Option<Refusal> = None;
         for bytes in copies {
             match self.verify_kept(size, &path, bytes) {
                 Ok(lines) => {
                     verified = true;
+                    let mut view = lines.clone();
+                    view.sort_by(|a, b| (&a.witness, a.time).cmp(&(&b.witness, b.time)));
+                    views.push(view);
                     for line in lines {
                         if !cosigned.contains(&line) {
                             cosigned.push(line);
@@ -830,7 +852,12 @@ impl<'t> Registry<'t> {
         let time = witness::checkpoint_time(&cosigned, self.root.witnesses.threshold).ok();
         self.seen.extend(cosigned.iter().cloned());
         witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
-        let kept = Kept { cosigned, time };
+        let corroborated = views.len() >= 2 && views.windows(2).all(|pair| pair.first() == pair.last());
+        let kept = Kept {
+            cosigned,
+            time,
+            corroborated,
+        };
         self.kept.insert(size, Some(kept.clone()));
         Ok(Some(kept))
     }
@@ -895,9 +922,11 @@ impl<'t> Registry<'t> {
             witnesses.len()
         };
         let mut timed = false;
+        let mut corroborated = true;
         for size in index.saturating_add(1)..=last {
             if let Some(kept) = self.kept(size)? {
                 timed |= kept.time.is_some();
+                corroborated &= kept.corroborated;
                 cosigned.extend(kept.cosigned);
                 if distinct(cosigned.as_slice()) >= k {
                     break;
@@ -911,6 +940,8 @@ impl<'t> Registry<'t> {
                 self.evidence(Misbehavior::CadenceGap {
                     from: index.saturating_add(1),
                     to: last,
+                    places: self.transport.describe_all(),
+                    attributed: corroborated,
                 });
             }
             cosigned.extend(self.point.cosigned.iter().cloned());
@@ -924,16 +955,23 @@ impl<'t> Registry<'t> {
     fn first_timed(&mut self, from: u64) -> Result<(u64, u64), Refusal> {
         let point = self.point.checkpoint.size;
         let last = point.min(from.saturating_add(MAX_SCAN as u64));
+        let mut corroborated = true;
         for size in from..=last {
-            if let Some(Kept {
-                time: Some(time), ..
-            }) = self.kept(size)?
-            {
-                return Ok((size, time));
+            match self.kept(size)? {
+                Some(Kept {
+                    time: Some(time), ..
+                }) => return Ok((size, time)),
+                Some(kept) => corroborated &= kept.corroborated,
+                None => {}
             }
         }
         if last < point {
-            self.evidence(Misbehavior::CadenceGap { from, to: last });
+            self.evidence(Misbehavior::CadenceGap {
+                from,
+                to: last,
+                places: self.transport.describe_all(),
+                attributed: corroborated,
+            });
         }
         Ok((point, self.point.time))
     }
@@ -952,26 +990,10 @@ impl<'t> Registry<'t> {
         if index >= point {
             return Ok(effect);
         }
-        let last = point.min(index.saturating_add(MAX_SCAN as u64));
-        let mut start: Option<u64> = None;
-        for size in index.saturating_add(1)..=last {
-            if let Some(kept) = self.kept(size)?
-                && let Some(time) = kept.cosigned.iter().map(|c| c.time).min()
-            {
-                start = Some(time);
-                break;
-            }
-        }
-        // With no cosignature served on any checkpoint that includes it, nothing bounds when
-        // the request was logged: it could be in effect right after it.
-        let Some(start) = start else {
-            let earliest = index.saturating_add(1);
-            return Ok(match effect {
-                Some(effect) if effect <= earliest => Some(effect),
-                _ if earliest <= point => Some(earliest),
-                _ => effect,
-            });
-        };
+        // The start: the k-th earliest of the merged cosignatures on the start checkpoint, the
+        // first that includes the request, which a registry cosigns by the threshold, so fewer
+        // than k witnesses, back-dating or withheld, cannot move it.
+        let start = self.start_time(index)?;
         let target = start.saturating_add(owner::RECOVERY_DELAY);
         let end = effect.unwrap_or(point).min(point);
         let (mut low, mut high) = (index.saturating_add(1), end);
@@ -990,6 +1012,28 @@ impl<'t> Registry<'t> {
             Some(effect) if effect <= low => Some(effect),
             _ => Some(low),
         })
+    }
+
+    /// When the request logged at `index` started its wait, as no place can move it: the k-th
+    /// earliest of the merged verified cosignatures on its start checkpoint, the first kept
+    /// checkpoint that includes it. One with fewer than k is an omission
+    /// ([`Omission::StartCheckpoint`]): the result that needs it is unavailable.
+    fn start_time(&mut self, index: u64) -> Result<u64, Refusal> {
+        let size = index.saturating_add(1);
+        let k = self.root.witnesses.threshold;
+        let cosigned = match self.kept(size)? {
+            Some(kept) => kept.cosigned,
+            None => Vec::new(),
+        };
+        match witness::logged_at(index, &cosigned, k) {
+            Ok(time) => Ok(time),
+            Err(_) => {
+                self.omitted.push(Omission::StartCheckpoint(index));
+                Err(self.refuse(format!(
+                    "the checkpoint of size {size}, the first that includes the request at {index}, carries fewer cosignatures than the witness threshold as every place serves it, which a registry must not leave"
+                )))
+            }
+        }
     }
 
     /// The first log position a recovery or a dispute logged at `index` governs (rule 38.1): the
@@ -1046,6 +1090,30 @@ impl<'t> Registry<'t> {
     /// the witness threshold. For `una ita audit` to report as evidence against the registry.
     pub fn misbehavior(&self) -> &[Misbehavior] {
         &self.misbehavior
+    }
+
+    /// Records a missing deadline checkpoint for the request of `owner` at `index` when its
+    /// earliest and served timings differ, every place having been read: attributed to the
+    /// registry when at least two places served the same view of its start checkpoint and of
+    /// the checkpoint at its earliest position.
+    fn missing_deadline(&mut self, owner: &str, index: u64) -> Result<(), Refusal> {
+        let earliest = self.earliest_effect(index)?;
+        if earliest == self.recovery_effect(index)? {
+            return Ok(());
+        }
+        let target = self.logged_at(index)?.saturating_add(owner::RECOVERY_DELAY);
+        let mut attributed = true;
+        for size in [Some(index.saturating_add(1)), earliest].into_iter().flatten() {
+            attributed &= self.kept(size)?.is_some_and(|kept| kept.corroborated);
+        }
+        self.evidence(Misbehavior::MissingDeadline {
+            owner: owner.to_owned(),
+            index,
+            target,
+            places: self.transport.describe_all(),
+            attributed,
+        });
+        Ok(())
     }
 
     /// Records evidence against the registry, once.
@@ -1125,13 +1193,8 @@ impl<'t> Registry<'t> {
                             | owner::Event::Dispute(_)
                             | owner::Event::Cosigners(_)
                     );
-                    if request && self.earliest_effect(*index)? != self.recovery_effect(*index)? {
-                        let target = self.logged_at(*index)?.saturating_add(owner::RECOVERY_DELAY);
-                        self.evidence(Misbehavior::MissingDeadline {
-                            owner: owner_name.to_owned(),
-                            index: *index,
-                            target,
-                        });
+                    if request {
+                        self.missing_deadline(owner_name, *index)?;
                     }
                 }
                 self.omitted
@@ -1206,14 +1269,7 @@ impl<'t> Registry<'t> {
             {
                 let requests: Vec<u64> = eager.requests.keys().copied().collect();
                 for request in requests {
-                    if self.earliest_effect(request)? != self.recovery_effect(request)? {
-                        let target = self.logged_at(request)?.saturating_add(owner::RECOVERY_DELAY);
-                        self.evidence(Misbehavior::MissingDeadline {
-                            owner: owner_of(name).to_owned(),
-                            index: request,
-                            target,
-                        });
-                    }
+                    self.missing_deadline(owner_of(name), request)?;
                 }
                 self.omitted.push(Omission::Cosignatures(name.to_owned()));
                 return Err(self.refuse(format!(

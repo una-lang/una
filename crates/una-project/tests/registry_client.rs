@@ -943,6 +943,9 @@ fn a_recovery_wait_starts_at_its_logged_time() {
     assert_eq!(client.logged_at(1).unwrap(), NOW - 20 * DAY);
     // Seven days after that is reached only at the last checkpoint, after the release.
     assert_eq!(client.recovery_effect(1).unwrap(), Some(4));
+    // The earliest position no place can move: the start is the k-th earliest cosignature on
+    // the start checkpoint, so the back-dater does not make it earlier.
+    assert_eq!(client.earliest_effect(1).unwrap(), Some(4));
     assert!(client.releases("acme/ledger").is_err());
 }
 
@@ -2181,8 +2184,9 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
         client.take_omitted(),
         vec![Omission::Cosignatures("acme".to_owned())]
     );
-    // Its only place read, the request has no deadline checkpoint: evidence against the
-    // registry, with the request's index and its target witness time.
+    // Its only place read, the request has no deadline checkpoint: evidence from an absence,
+    // with the request's index, its target witness time and the place read, not attributed to
+    // the registry, since one place may withhold.
     let target = client.logged_at(dispute).unwrap() + owner::RECOVERY_DELAY;
     assert_eq!(
         client.misbehavior(),
@@ -2190,6 +2194,8 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
             owner: "acme".to_owned(),
             index: dispute,
             target,
+            places: vec!["memory".to_owned()],
+            attributed: false,
         }]
     );
 }
@@ -2200,6 +2206,7 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
 fn a_cadence_gap_is_recorded_as_misbehavior() {
     let a = keypair(60, "acme.a");
     let mut registry = TestRegistry::new("acme");
+    registry.bare = true;
     registry.register("acme", &a);
     registry.checkpoint(NOW - 30 * DAY);
     let (release, _) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
@@ -2217,6 +2224,27 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
         &[Misbehavior::CadenceGap {
             from: release + 1,
             to: release + 64,
+            places: vec!["memory".to_owned()],
+            attributed: false,
+        }]
+    );
+    // Two places serving the same view: attributed to the registry.
+    let first = Memory {
+        files: registry.files.clone(),
+    };
+    let second = Memory {
+        files: registry.files.clone(),
+    };
+    let both = una_project::transport::Fallback::new(Box::new(first), vec![Box::new(second)]);
+    let mut client = open(&both, &registry).unwrap();
+    client.logged_at(release).unwrap();
+    assert_eq!(
+        client.misbehavior(),
+        &[Misbehavior::CadenceGap {
+            from: release + 1,
+            to: release + 64,
+            places: vec!["memory".to_owned(), "memory".to_owned()],
+            attributed: true,
         }]
     );
 }

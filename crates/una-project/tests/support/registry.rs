@@ -138,6 +138,10 @@ pub struct TestRegistry {
     pub heads: BTreeMap<String, Head>,
     pub files: BTreeMap<String, Vec<u8>>,
     pub sizes: Vec<u64>,
+    /// Whether the checkpoints signed below a checkpoint's size go without cosignatures, as a
+    /// registry that breaks the cadence rule leaves them; by default they carry the same
+    /// cosignatures as the checkpoint that follows them.
+    pub bare: bool,
 }
 
 impl TestRegistry {
@@ -159,6 +163,7 @@ impl TestRegistry {
             heads: BTreeMap::new(),
             files: BTreeMap::new(),
             sizes: Vec::new(),
+            bare: false,
         };
         registry
             .files
@@ -380,9 +385,9 @@ impl TestRegistry {
             .map(|(name, head)| (name.clone(), *head))
             .collect();
         let (map_root, tiles) = build_tiles(&heads);
-        // A registry signs a checkpoint after every entry, and witnesses cosign some of them:
-        // every size below this one that has none gets one the log signs, with no
-        // cosignature, as a registry keeps it. A client reads it for its consistency only.
+        // A registry signs a checkpoint after every entry: every size below this one that has
+        // none gets one the log signs, cosigned as this one is, the witnesses cosigning them
+        // together; with `bare`, cosigned by none.
         for kept in 1..size {
             let path = format!("checkpoint/{kept}");
             if self.files.contains_key(&path) {
@@ -396,8 +401,15 @@ impl TestRegistry {
                 encode_base64(&map_root)
             );
             let line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
-            self.files
-                .insert(path, format!("{text}\n{line}").into_bytes());
+            let mut document = format!("{text}\n{line}");
+            if !self.bare {
+                for ((pair, key), time) in self.keys.witnesses.iter().zip(times) {
+                    if let Some(time) = time {
+                        document.push_str(&cosign_line(pair, key, &text, *time));
+                    }
+                }
+            }
+            self.files.insert(path, document.into_bytes());
         }
         let text = format!(
             "{}\n{size}\n{}\nita-map {}\n",

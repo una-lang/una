@@ -885,3 +885,42 @@ fn check_with_no_place_fails_closed() {
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("U7013"), "{err}");
 }
+
+/// A newer checkpoint a place serves that does not extend the lock's resolution point, a
+/// fork, fails plain `--check` too (U7010): the newest checkpoint must prove `extends`.
+#[test]
+fn check_fails_on_a_served_checkpoint_that_forks_from_the_lock() {
+    let (registry, _) = acme();
+    let (dir, mirror, itaoca) = project("check-fork", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    // Another log under the same keys: other entries from the first one on.
+    let mut fork = TestRegistry::new("acme");
+    let other = keypair(61, "acme.other");
+    fork.register("acme", &other);
+    for patch in 1..=5 {
+        let version = format!("0.3.{patch}");
+        fork.release("acme/ledger", &version, "none", "none", &[&other]);
+    }
+    let size = fork.entries.len();
+    fork.checkpoint(now() - 30);
+    // The place serves the lock's point as it was, and the fork's newest checkpoint with the
+    // tiles and map it needs.
+    for (path, bytes) in &fork.files {
+        let newest = path == "checkpoint"
+            || path.starts_with("map/")
+            || path.ends_with(&format!(".p/{size}"));
+        if newest {
+            let file = if path == "checkpoint" {
+                mirror.join("checkpoint").join("latest")
+            } else {
+                mirror.join(path)
+            };
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+    }
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("U7010") && err.contains("forked"), "{err}");
+}
