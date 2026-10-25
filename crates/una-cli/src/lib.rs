@@ -677,7 +677,10 @@ pub(crate) fn itaoca(environment: Environment<'_>) -> Option<una_project::itaoca
 /// The codes `una ita audit` reports for the package at `path` against `registry`, the states
 /// a verified registry client gives (ADR 0122 rule 41, U7014): for the explain examples of
 /// U7014 and the tests, which state a registry's state without a network.
-pub fn audit_codes(path: &Path, registry: &dyn una_project::registry::view::Registry) -> Vec<Code> {
+pub fn audit_codes(
+    path: &Path,
+    registry: &dyn una_project::registry::view::Registry,
+) -> Vec<Code> {
     ita_registry::audit_codes(path, registry)
 }
 

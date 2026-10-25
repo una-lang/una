@@ -34,7 +34,8 @@ use crate::ita::{Output, finish, located};
 use crate::verification::Solving;
 
 /// Why a command that needs the verified registry client stops in this release.
-const NO_CLIENT: &str = "this release has no registry client to verify a registry's roots, checkpoints, name map and chains";
+const NO_CLIENT: &str =
+    "this release has no registry client to verify a registry's roots, checkpoints, name map and chains";
 
 /// The most bytes of a key file.
 const MAX_KEY_FILE: u64 = 4096;
@@ -91,7 +92,8 @@ fn read_key(path: &Path) -> Result<SigningKey, String> {
         return Err(format!("the key file `{shown}` is too long"));
     }
     let bytes = tree::read_unlinked(path)?;
-    let text = String::from_utf8(bytes).map_err(|_| format!("the key file `{shown}` is not UTF-8"))?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| format!("the key file `{shown}` is not UTF-8"))?;
     SigningKey::parse(&text).map_err(|why| format!("the key file `{shown}`: {why}"))
 }
 
@@ -589,13 +591,16 @@ fn registry_source(locked: &ita::LockPackage) -> Option<&str> {
         Some(ita::At {
             value: ita::LockOrigin::Source(source),
             ..
-        }) => Some(source),
+        }) => Some(source.as_str()),
         _ => None,
     }
 }
 
 /// The diagnostics of `una ita audit` on `project` against `registry`, and the lines it prints.
-fn audit_project(project: &Project, registry: Option<&dyn Registry>) -> (Vec<Diagnostic>, Vec<String>) {
+fn audit_project(
+    project: &Project,
+    registry: Option<&dyn Registry>,
+) -> (Vec<Diagnostic>, Vec<String>) {
     let sources = &project.package.sources;
     let mut problems: Vec<ProjectError> = Vec::new();
     let mut at_needs: Vec<ProjectError> = Vec::new();
@@ -685,8 +690,12 @@ fn audit_project(project: &Project, registry: Option<&dyn Registry>) -> (Vec<Dia
                             .find(|need| need.name.value.to_string() == package.name)
                     });
                     match need {
-                        Some(need) => at_needs.push(problem(Code::U7014, need.range.clone(), message)),
-                        None => problems.push(problem(Code::U7014, locked.range.clone(), message)),
+                        Some(need) => {
+                            at_needs.push(problem(Code::U7014, need.range.clone(), message));
+                        }
+                        None => {
+                            problems.push(problem(Code::U7014, locked.range.clone(), message));
+                        }
                     }
                 }
                 if result.findings.is_empty() {
@@ -760,7 +769,10 @@ pub(crate) fn watch_command(
     };
     let sources = SourceDb::new();
     let Some(registry) = registry else {
-        writeln!(out.stderr, "error: the chains of `{owner}` at `{source}` cannot be followed, since {NO_CLIENT}")?;
+        writeln!(
+            out.stderr,
+            "error: the chains of `{owner}` at `{source}` cannot be followed, since {NO_CLIENT}"
+        )?;
         return Ok(ExitStatus::Errors);
     };
     let position_name = format!("{owner}.position");
@@ -770,7 +782,12 @@ pub(crate) fn watch_command(
             .and_then(|text| watch::Position::parse(&text))
         {
             Ok(position) => position,
-            Err(why) => return usage(out, &format!("the stored position of `{owner}` does not read: {why}")),
+            Err(why) => {
+                return usage(
+                    out,
+                    &format!("the stored position of `{owner}` does not read: {why}"),
+                );
+            }
         },
         Ok(None) => watch::Position::start(source, owner),
         Err(why) => return usage(out, &why),
@@ -785,14 +802,22 @@ pub(crate) fn watch_command(
     let report = match watch::watch(registry, &stored, names, &promises) {
         Ok(report) => report,
         Err(Failure::Refused(why) | Failure::Unavailable(why)) => {
-            writeln!(out.stderr, "error: the chains of `{owner}` at `{source}` cannot be followed: {why}")?;
+            writeln!(
+                out.stderr,
+                "error: the chains of `{owner}` at `{source}` cannot be followed: {why}"
+            )?;
             return Ok(ExitStatus::Errors);
         }
     };
     let mut lines: Vec<String> = report
         .entries
         .iter()
-        .map(|(name, entry)| format!("{name}: {} at log entry {} ({})", entry.format, entry.index, entry.leaf))
+        .map(|(name, entry)| {
+            format!(
+                "{name}: {} at log entry {} ({})",
+                entry.format, entry.index, entry.leaf
+            )
+        })
         .collect();
     for promise in &report.kept {
         lines.push(format!("kept: the promise to log {} by {}", promise.leaf, promise.by));
@@ -808,7 +833,14 @@ pub(crate) fn watch_command(
     }
     let mut written: Vec<String> = Vec::new();
     let stored_position = tree::make_dirs(&itaoca.root, &["registry", source, "watch"])
-        .and_then(|parent| tree::store_file(&parent, &position_name, report.position.encode().as_bytes(), false));
+        .and_then(|parent| {
+            tree::store_file(
+                &parent,
+                &position_name,
+                report.position.encode().as_bytes(),
+                false,
+            )
+        });
     match stored_position {
         Ok(()) => written.push(format!("registry/{source}/watch/{position_name}")),
         Err(why) => lines.push(format!("the position is not stored: {why}")),
@@ -953,7 +985,8 @@ pub(crate) fn bundle_command(
     let bytes = match bundle::entries(&packed, Vec::new()).and_then(bundle::write) {
         Ok(bytes) => bytes,
         Err(why) => {
-            let diagnostics = located(sources, project.lock_id, vec![problem(Code::U7010, 0..0, why)]);
+            let diagnostics =
+                located(sources, project.lock_id, vec![problem(Code::U7010, 0..0, why)]);
             return finish("bundle", &[], &[], &diagnostics, sources, out);
         }
     };

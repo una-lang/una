@@ -182,7 +182,9 @@ pub fn read(bytes: &[u8]) -> Result<Read, String> {
         let (Some(path), Some(len), Some(hash), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
         else {
-            return Err("an entry of the bundle's listing is not `path NUL length NUL hash`".to_owned());
+            return Err(
+                "an entry of the bundle's listing is not `path NUL length NUL hash`".to_owned(),
+            );
         };
         if !is_entry(path) {
             return Err(format!("`{path}` is not an entry of a bundle"));
@@ -273,10 +275,15 @@ fn verify_held(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed,
     let provenance_path =
         provenance_path(&expected.source, &expected.digest, expected.checkpoint_size)
             .ok_or_else(|| refused(format!("the source of {what} is not a source")))?;
-    let entry = |path: &str| -> Option<&[u8]> { bytes.get(read.entries.get(path)?.clone()) };
-    let archive = entry(&archive_path)
+    let archive = read
+        .entries
+        .get(&archive_path)
+        .and_then(|range| bytes.get(range.clone()))
         .ok_or_else(|| (true, format!("the bundle does not hold {what}")))?;
-    let provenance = entry(&provenance_path)
+    let provenance = read
+        .entries
+        .get(&provenance_path)
+        .and_then(|range| bytes.get(range.clone()))
         .ok_or_else(|| refused(format!("the bundle holds {what} without its provenance")))?;
     verify_parts(archive, provenance, &what, expected).map_err(refused)
 }
@@ -360,7 +367,12 @@ pub fn unbundle(
                 package.checkpoint_size,
                 &packed.provenance,
             )
-            .map_err(|why| fail(format!("cannot store the provenance of `{}`: {why}", package.name)))?;
+            .map_err(|why| {
+                fail(format!(
+                    "cannot store the provenance of `{}`: {why}",
+                    package.name
+                ))
+            })?;
         stored.push(format!("{} {}", package.name, package.version));
     }
     let unused = read

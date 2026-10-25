@@ -66,10 +66,7 @@ pub struct Submission {
 impl Submission {
     /// The directory of the submission below the registry's base: `submit/<leaf hex>`.
     pub fn dir(&self) -> String {
-        format!(
-            "submit/{}",
-            digest_hex(&self.leaf).unwrap_or_default()
-        )
+        format!("submit/{}", digest_hex(&self.leaf).unwrap_or_default())
     }
 }
 
@@ -250,7 +247,12 @@ pub struct Promise {
 
 /// Reads and verifies a promise for the entry of leaf hash `leaf` at `source`: its format, and
 /// the signature of the log's key `log`.
-pub fn check_promise(document: &str, log: &Key, source: &str, leaf: &str) -> Result<Promise, String> {
+pub fn check_promise(
+    document: &str,
+    log: &Key,
+    source: &str,
+    leaf: &str,
+) -> Result<Promise, String> {
     let signed = note::parse_note(document)?;
     if !signed.signed_by(log) {
         return Err("the promise is not signed by the log's key".to_owned());
@@ -262,7 +264,9 @@ pub fn check_promise(document: &str, log: &Key, source: &str, leaf: &str) -> Res
         .split('\n')
         .collect();
     let [format, source_line, leaf_line, by_line] = lines.as_slice() else {
-        return Err("a promise has four lines: `ita-promise/1`, `source`, `leaf` and `by`".to_owned());
+        return Err(
+            "a promise has four lines: `ita-promise/1`, `source`, `leaf` and `by`".to_owned(),
+        );
     };
     if *format != PROMISE {
         return Err(format!("a promise starts with `{PROMISE}`"));
