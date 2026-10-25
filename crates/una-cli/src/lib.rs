@@ -296,8 +296,20 @@ where
     T: Into<OsString> + Clone,
 {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
-    // never makes one (#1164).
-    let resolve_key = || proof_key::resolve(environment);
+    // never makes one. A key file that exists but is not a private regular file of the user
+    // turns the cache off, with a note (#1164).
+    let resolve_key = |stderr: &mut dyn Write| match proof_key::resolve(environment) {
+        Ok(key) => key,
+        Err(refused) => {
+            // A note that cannot be written changes nothing about the command.
+            let _ = writeln!(
+                stderr,
+                "note: the proof cache key `{}` is not a private regular file of the user ({}); the proof cache is off (chmod 600 it)",
+                refused.shown, refused.reason
+            );
+            None
+        }
+    };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             Command::Check {
@@ -308,7 +320,7 @@ where
             } => {
                 // Tier 0 never verifies, so it needs no key.
                 let key = if matches!(tier, TierArg::One) {
-                    resolve_key()
+                    resolve_key(stderr)
                 } else {
                     None
                 };
@@ -330,7 +342,7 @@ where
                 requirement,
                 solver_wallclock,
             } => {
-                let key = resolve_key();
+                let key = resolve_key(stderr);
                 let options = trace::TraceOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
@@ -345,7 +357,7 @@ where
                 path,
                 solver_wallclock,
             } => {
-                let key = resolve_key();
+                let key = resolve_key(stderr);
                 let options = report::ReportOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
@@ -360,7 +372,7 @@ where
                 path,
                 solver_wallclock,
             } => {
-                let key = resolve_key();
+                let key = resolve_key(stderr);
                 let options = verification::ObligationsOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
@@ -389,7 +401,7 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
-                let key = resolve_key();
+                let key = resolve_key(stderr);
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
@@ -408,7 +420,7 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
-                let key = resolve_key();
+                let key = resolve_key(stderr);
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,

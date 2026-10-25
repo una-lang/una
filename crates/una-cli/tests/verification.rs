@@ -974,6 +974,12 @@ fn a_planted_proof_cache_entry_never_proves_a_false_contract_1164() {
         assert_eq!(report(None, None), (solved.clone(), json!(null)));
     }
     assert!(!package.join(".una").exists());
+    // A missing key is made, with no note.
+    let fresh = scratch.join("fresh-home");
+    let output = run(Some(fresh.as_path()), None, &["check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(!stderr(&output).contains("note:"), "{}", stderr(&output));
+    assert!(fresh.join(".una/proof-cache.key").is_file());
     // (4) A key file named by `UNA_PROOF_KEY` is used while it is a private regular file;
     // through a symbolic link, or once others can read it, the cache is off.
     let named = scratch.join("team.key");
@@ -1004,6 +1010,19 @@ fn a_planted_proof_cache_entry_never_proves_a_false_contract_1164() {
         assert_eq!(
             report(None, Some(named.as_path())),
             (solved.clone(), json!(null))
+        );
+        // An existing key file that is refused is named in a note on stderr, with the reason.
+        let output = run(None, Some(named.as_path()), &["check"]);
+        let note = format!(
+            "note: the proof cache key `{}` is not a private regular file of the user (the group or others have permissions on it); the proof cache is off (chmod 600 it)\n",
+            named.to_str().unwrap()
+        );
+        assert!(stderr(&output).contains(&note), "{}", stderr(&output));
+        let output = run(None, Some(link.as_path()), &["check"]);
+        assert!(
+            stderr(&output).contains("(it is a symbolic link); the proof cache is off"),
+            "{}",
+            stderr(&output)
         );
     }
     let _ = std::fs::remove_dir_all(&scratch);
