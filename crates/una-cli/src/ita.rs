@@ -626,8 +626,10 @@ fn resolve_and_lock(
             .find(|(identity, _)| identity.source == source)
             .map_or(0..0, |(_, range)| range.clone())
     };
-    let registry_sources: BTreeSet<String> =
-        direct.keys().map(|identity| identity.source.clone()).collect();
+    let registry_sources: BTreeSet<String> = direct
+        .keys()
+        .map(|identity| identity.source.clone())
+        .collect();
     let mut places: BTreeMap<String, Vec<crate::registry::Place>> = BTreeMap::new();
     for source in &registry_sources {
         match crate::registry::declared(read, source) {
@@ -744,8 +746,7 @@ fn resolve_and_lock(
                     continue;
                 }
             };
-            let Some(need_entry) = root_needs.iter_mut().find(|n| n.identity() == *identity)
-            else {
+            let Some(need_entry) = root_needs.iter_mut().find(|n| n.identity() == *identity) else {
                 continue;
             };
             let named_pre = need_entry.version.is_pre();
@@ -970,7 +971,9 @@ fn resolve_and_lock(
                 }
             }
         }
-        let ceiling = need.map(|need| canonical_ceiling(&need.may)).unwrap_or_default();
+        let ceiling = need
+            .map(|need| canonical_ceiling(&need.may))
+            .unwrap_or_default();
         if !ceiling.is_empty() {
             block.push_str(&format!("  granted by {root} may {ceiling}\n"));
         }
@@ -1195,8 +1198,7 @@ fn resolve_and_lock(
         ) else {
             continue;
         };
-        let (Ok(registry), Ok(pin)) = (cell.try_borrow(), crate::registry::pin_of(declared))
-        else {
+        let (Ok(registry), Ok(pin)) = (cell.try_borrow(), crate::registry::pin_of(declared)) else {
             continue;
         };
         let accepted = accepted_out.get(source).cloned().unwrap_or_default();
@@ -2161,12 +2163,7 @@ fn newest_release(
         errors
             .into_iter()
             .next()
-            .unwrap_or_else(|| {
-                refuse(
-                    Code::U7008,
-                    "Itaoca's mirrors.una does not read".to_owned(),
-                )
-            })
+            .unwrap_or_else(|| refuse(Code::U7008, "Itaoca's mirrors.una does not read".to_owned()))
     })?;
     let declared = crate::registry::declared(read, source).ok_or_else(|| {
         refuse(
@@ -2313,7 +2310,9 @@ pub(crate) fn add_command(
         None => {
             // Rule 25: the newest release of the newest major line past the cooldown, from the
             // registry's verified state.
-            let source = from.clone().unwrap_or_else(|| una_project::ita::ITATY.to_owned());
+            let source = from
+                .clone()
+                .unwrap_or_else(|| una_project::ita::ITATY.to_owned());
             // The lock's resolution point of the source, which the new point must extend.
             let lock_floor = std::fs::read_to_string(path.join("ita.lock"))
                 .ok()
@@ -2638,10 +2637,7 @@ pub(crate) fn fetch_command(
             continue;
         };
         match fetch_one(registry, itaoca, expected) {
-            Ok(()) => lines.push(format!(
-                "fetched {} {}",
-                expected.name, expected.version
-            )),
+            Ok(()) => lines.push(format!("fetched {} {}", expected.name, expected.version)),
             Err((code, message)) => refuse(code, message),
         }
     }
@@ -2740,7 +2736,9 @@ fn fetch_one(
     // Loaded again as every command loads it.
     match una_project::vendor::stored(itaoca, expected) {
         Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(local(format!("{what} is not in Itaoca after it was stored"))),
+        Ok(None) => Err(local(format!(
+            "{what} is not in Itaoca after it was stored"
+        ))),
         Err(una_project::vendor::Problem::Refused(message)) => Err(refused(message)),
         Err(una_project::vendor::Problem::Absent(message)) => Err(local(message)),
     }
@@ -2774,11 +2772,11 @@ fn archive_authority(
     if let Some(id) = package.manifest {
         let (read, _) = una_syntax::ita::parse_manifest(package.sources.file(id).text());
         for need in &read.needs {
-            need_lines.push(
-                package
-                    .sources
-                    .location(Span::new(id, need.range.start, need.range.end)),
-            );
+            need_lines.push(package.sources.location(Span::new(
+                id,
+                need.range.start,
+                need.range.end,
+            )));
             locals.push(una_project::ita::local_name(need).value);
         }
     }
@@ -2795,11 +2793,11 @@ fn archive_authority(
                 let first = path.split('.').next().unwrap_or_default();
                 if locals.iter().any(|local| local == first) {
                     let start = offset + "import ".len();
-                    import_paths.push(
-                        package
-                            .sources
-                            .location(Span::new(*id, start, start + path.len())),
-                    );
+                    import_paths.push(package.sources.location(Span::new(
+                        *id,
+                        start,
+                        start + path.len(),
+                    )));
                 }
             }
             offset += line.len();

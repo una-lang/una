@@ -1067,9 +1067,13 @@ fn replay_once(
             _ => false,
         };
         let decision = match &entry.event {
-            Event::Register { keys: registered, .. } => {
+            Event::Register {
+                keys: registered, ..
+            } => {
                 if at != 0 || entry.previous.is_some() {
-                    return Err(refuse("registers the owner, which only its first entry does"));
+                    return Err(refuse(
+                        "registers the owner, which only its first entry does",
+                    ));
                 }
                 // A registration is never undone by a compromise: every key it registers signs.
                 if registered.iter().all(|key| signs(note, key, &mut checks)) {
@@ -1079,7 +1083,9 @@ fn replay_once(
                 }
             }
             _ if at == 0 => {
-                return Err(refuse("is the chain's first entry and does not register it"));
+                return Err(refuse(
+                    "is the chain's first entry and does not register it",
+                ));
             }
             Event::Add(key) => {
                 let own = signs(note, key, &mut checks);
@@ -1103,9 +1109,8 @@ fn replay_once(
                 // A dispute of an owner with cosigners in effect is not signed as its kind
                 // requires: they recover it instead.
                 let barred = dispute && state.cosigners.is_some() && frozen.is_none();
-                let met = !barred
-                    && by_log
-                    && (dispute || state.cosigners.is_none() || by_cosigners);
+                let met =
+                    !barred && by_log && (dispute || state.cosigners.is_none() || by_cosigners);
                 verdict(met, met)
             }
             Event::Cancel(_) => verdict(owners_sound >= 1, owners_all >= 1),
@@ -1252,7 +1257,9 @@ fn replay_once(
             }
             Event::Add(key) => {
                 if !fresh(&state, key) || state.keys.len() >= MAX_KEYS {
-                    return Err(refuse("adds a key the owner holds or held, or one too many"));
+                    return Err(refuse(
+                        "adds a key the owner holds or held, or one too many",
+                    ));
                 }
                 if entry.threshold > state.keys.len() + 1 {
                     return Err(refuse("sets a threshold above the owner's keys"));
@@ -1500,7 +1507,10 @@ fn replay_once(
             entries: indices,
             voided,
             void_keys,
-            requests: requests.iter().map(|(index, r)| (*index, r.effect)).collect(),
+            requests: requests
+                .iter()
+                .map(|(index, r)| (*index, r.effect))
+                .collect(),
             took_effect,
             cancellations: requests
                 .iter()
@@ -1631,9 +1641,8 @@ fn apply(
     let fixed = race_fixed();
     for (logged, request) in requests.iter_mut() {
         let waiting_change = *logged < position && matches!(request.ask, Ask::Cosigners(_));
-        let cancelled = fixed
-            && matches!(request.ask, Ask::Recover(_))
-            && !request.cancelled_by.is_empty();
+        let cancelled =
+            fixed && matches!(request.ask, Ask::Recover(_)) && !request.cancelled_by.is_empty();
         if !request.applied && (waiting_change || cancelled) {
             request.ended = true;
         }

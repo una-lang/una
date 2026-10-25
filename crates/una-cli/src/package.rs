@@ -245,7 +245,9 @@ fn mount_registry(
             let id = package.sources.add(format!("{dir}/ita.una"), &file.bytes);
             dependency.manifest = Some(id);
         } else if file.path.starts_with("src/") && file.path.ends_with(".una") {
-            let id = package.sources.add(format!("{dir}/{}", file.path), &file.bytes);
+            let id = package
+                .sources
+                .add(format!("{dir}/{}", file.path), &file.bytes);
             dependency.modules.push(id);
         }
     }

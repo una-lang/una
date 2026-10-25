@@ -221,11 +221,7 @@ impl Itaoca {
     /// of a floor, and a file left by a run that ended blocks nothing: the file's existence means
     /// nothing, and it is never removed to unlock. The lock is tried for about five seconds;
     /// past that, the floor is not touched.
-    fn locked<T>(
-        &self,
-        id: &str,
-        work: impl FnOnce() -> Result<T, Refusal>,
-    ) -> Result<T, Refusal> {
+    fn locked<T>(&self, id: &str, work: impl FnOnce() -> Result<T, Refusal>) -> Result<T, Refusal> {
         check_id(id)?;
         tree::not_a_link(&self.root)?;
         let dir = tree::make_dirs(&self.root, &["registry", id])?;
@@ -337,8 +333,13 @@ impl Itaoca {
                 return Ok(());
             }
             let parent = tree::make_dirs(&self.root, &["registry", id])?;
-            tree::store_file(&parent, "root-version", format!("{version}\n").as_bytes(), true)
-                .map_err(|refusal| format!("cannot store the root version: {refusal}"))
+            tree::store_file(
+                &parent,
+                "root-version",
+                format!("{version}\n").as_bytes(),
+                true,
+            )
+            .map_err(|refusal| format!("cannot store the root version: {refusal}"))
         })
     }
 }

@@ -204,10 +204,7 @@ impl<'t> Tiles<'t> {
             }
         }
         self.missing.push(exact.to_owned());
-        Err(format!(
-            "{} has no `{exact}`",
-            self.transport.describe()
-        ))
+        Err(format!("{} has no `{exact}`", self.transport.describe()))
     }
 
     /// The hashes of the tile `index` of tile level `level`.

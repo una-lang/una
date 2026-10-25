@@ -122,7 +122,11 @@ pub fn hash_text(hash: &Hash) -> String {
 /// A hash from `sha256:` and 64 lowercase hex digits.
 pub fn parse_hash_text(text: &str) -> Option<Hash> {
     let hex = text.strip_prefix("sha256:")?;
-    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
         return None;
     }
     let mut out = [0u8; 32];
@@ -199,14 +203,10 @@ pub fn accept_checkpoint(
         ));
     }
     let k = threshold_of(root, chain);
-    let time = witness::checkpoint_time(&cosigned, k).map_err(
-        |problem| match problem {
-            witness::Problem::TooFew { .. } => OpenError::Unavailable(witness_problem(&problem)),
-            witness::Problem::Decreasing { .. } => {
-                OpenError::Refused(witness_problem(&problem))
-            }
-        },
-    )?;
+    let time = witness::checkpoint_time(&cosigned, k).map_err(|problem| match problem {
+        witness::Problem::TooFew { .. } => OpenError::Unavailable(witness_problem(&problem)),
+        witness::Problem::Decreasing { .. } => OpenError::Refused(witness_problem(&problem)),
+    })?;
     let map = map::root_of(&checkpoint.extensions);
     Ok(Accepted {
         document: document.to_owned(),
@@ -307,9 +307,8 @@ fn prefix_proof(
     size: u64,
     hash: &str,
 ) -> Result<Proof, Refusal> {
-    let missing = |why: &str| -> Result<Proof, Refusal> {
-        Ok(Proof::Missing(Vec::new(), why.to_owned()))
-    };
+    let missing =
+        |why: &str| -> Result<Proof, Refusal> { Ok(Proof::Missing(Vec::new(), why.to_owned())) };
     let latest = match transport.get("checkpoint", note::MAX_NOTE as u64) {
         Ok(Some(bytes)) => bytes,
         Ok(None) | Err(_) => return missing("no place serves the latest checkpoint"),
@@ -345,13 +344,7 @@ fn prefix_proof(
             return Ok(Proof::Missing(unserved, why));
         }
     };
-    if !merkle::verify_consistency(
-        size,
-        to,
-        &at_root,
-        &latest.checkpoint.root,
-        &proof,
-    ) {
+    if !merkle::verify_consistency(size, to, &at_root, &latest.checkpoint.root, &proof) {
         return Err(format!(
             "its latest checkpoint does not extend the lock's point of size {size}, so the log forked"
         ));
@@ -376,9 +369,9 @@ fn witness_problem(problem: &witness::Problem) -> Refusal {
         witness::Problem::TooFew { found, needed } => format!(
             "the checkpoint is cosigned by {found} witnesses of the root, fewer than its threshold of {needed}"
         ),
-        witness::Problem::Decreasing { witness } => format!(
-            "the timestamps of the witness `{witness}` decrease as the log grows"
-        ),
+        witness::Problem::Decreasing { witness } => {
+            format!("the timestamps of the witness `{witness}` decrease as the log grows")
+        }
     }
 }
 
@@ -549,9 +542,9 @@ impl OpenError {
     /// The sentence that says why.
     pub fn message(self) -> String {
         match self {
-            OpenError::Unavailable(why)
-            | OpenError::Omitted(_, why)
-            | OpenError::Refused(why) => why,
+            OpenError::Unavailable(why) | OpenError::Omitted(_, why) | OpenError::Refused(why) => {
+                why
+            }
         }
     }
 }
@@ -737,7 +730,8 @@ impl LoggedRelease {
 
 /// The owner of a package's name: its `owner/` part, or Itaúna for an unscoped name.
 pub fn owner_of(name: &str) -> &str {
-    name.split_once('/').map_or(owner::ITAUNA, |(owner, _)| owner)
+    name.split_once('/')
+        .map_or(owner::ITAUNA, |(owner, _)| owner)
 }
 
 /// A name's yanks and advisories, verified (rule 41).
@@ -904,9 +898,7 @@ impl<'t> Registry<'t> {
         floors: &Floors<'_>,
     ) -> Result<Registry<'t>, OpenError> {
         let described = escaped(&transport.describe());
-        let says = |why: String| {
-            format!("the registry `{source}` ({described}): {}", shown(&why))
-        };
+        let says = |why: String| format!("the registry `{source}` ({described}): {}", shown(&why));
         let refused = |why: String| OpenError::Refused(says(why));
         let unavailable = |why: String| OpenError::Unavailable(says(why));
         let read = |path: &str| -> Result<Option<String>, OpenError> {
@@ -940,9 +932,7 @@ impl<'t> Registry<'t> {
             version += 1;
         };
         if pinned.source != source {
-            return Err(refused(
-                "its root metadata is of another source".to_owned(),
-            ));
+            return Err(refused("its root metadata is of another source".to_owned()));
         }
         loop {
             if roots.len() >= MAX_ROOTS {
@@ -976,8 +966,7 @@ impl<'t> Registry<'t> {
             Point::Latest { .. } | Point::Served => "checkpoint".to_owned(),
             Point::At { size, .. } => format!("checkpoint/{size}"),
         };
-        let document =
-            read(&path)?.ok_or_else(|| unavailable(format!("it has no `{path}`")))?;
+        let document = read(&path)?.ok_or_else(|| unavailable(format!("it has no `{path}`")))?;
         // A lock's point may name an older root version: its retired witnesses count only once
         // it is proven a prefix of the latest checkpoint, which must name the last version, by a
         // consistency proof from the tiles (one more checkpoint read and O(log L) hashes). A
@@ -1164,7 +1153,8 @@ impl<'t> Registry<'t> {
                     if missing.is_empty() {
                         return Err(self.refuse(why));
                     }
-                    self.omitted.extend(missing.into_iter().map(Omission::Document));
+                    self.omitted
+                        .extend(missing.into_iter().map(Omission::Document));
                     return Err(self.unserved(why));
                 }
             };
@@ -1359,7 +1349,8 @@ impl<'t> Registry<'t> {
         };
         let proved = map::prove_from_tiles(&root, name, &mut fetch);
         let unserved = !missing.is_empty();
-        self.omitted.extend(missing.into_iter().map(Omission::Document));
+        self.omitted
+            .extend(missing.into_iter().map(Omission::Document));
         let (head, proof) = proved.map_err(|why| {
             if unserved {
                 self.unserved(why)
@@ -1849,9 +1840,12 @@ impl<'t> Registry<'t> {
     /// left here.
     pub fn take_omitted(&mut self) -> Vec<Omission> {
         let mut omitted: Vec<Omission> = Vec::new();
-        let met = std::mem::take(&mut self.omitted)
-            .into_iter()
-            .chain(self.tiles.take_missing().into_iter().map(Omission::Document));
+        let met = std::mem::take(&mut self.omitted).into_iter().chain(
+            self.tiles
+                .take_missing()
+                .into_iter()
+                .map(Omission::Document),
+        );
         for omission in met {
             if !omitted.contains(&omission) {
                 omitted.push(omission);
@@ -1961,7 +1955,9 @@ impl<'t> Registry<'t> {
             for (index, _, entry) in &entries {
                 let request = matches!(
                     entry.event,
-                    owner::Event::Recover(_) | owner::Event::Dispute(_) | owner::Event::Cosigners(_)
+                    owner::Event::Recover(_)
+                        | owner::Event::Dispute(_)
+                        | owner::Event::Cosigners(_)
                 );
                 if request && self.earliest_effect(*index)? != self.recovery_effect(*index)? {
                     eager_needed = true;
@@ -2297,7 +2293,10 @@ impl<'t> Registry<'t> {
         let releases = self.releases(name)?;
         let marks = self.marks(name)?;
         let mut out = Vec::new();
-        for release in releases.iter().filter(|r| r.statement.version.line() == line) {
+        for release in releases
+            .iter()
+            .filter(|r| r.statement.version.line() == line)
+        {
             let served = self.logged_at(release.index)?;
             // The withheld-eligibility delay: cosignatures a place withholds can only make a
             // release's logged time later. When it would be past the cooldown at the earliest
@@ -2339,8 +2338,13 @@ impl<'t> Registry<'t> {
     /// their timestamps there. `None` when no such checkpoint bounds it.
     pub fn earliest_logged(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         self.begin();
-        let mut witnesses: Vec<&[u8; 32]> =
-            self.root.witnesses.keys.iter().map(|key| &key.public).collect();
+        let mut witnesses: Vec<&[u8; 32]> = self
+            .root
+            .witnesses
+            .keys
+            .iter()
+            .map(|key| &key.public)
+            .collect();
         witnesses.sort_unstable();
         witnesses.dedup();
         let n = witnesses.len();
