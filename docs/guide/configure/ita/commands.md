@@ -1,15 +1,15 @@
 ---
 construct: "una ita"
 editions: ["0.4"]
-spec: ["spec/30 §6", "spec/30 §10", "spec/30 §12"]
-codes: [U7013]
+spec: ["spec/30 §6", "spec/30 §10", "spec/30 §12", "spec/30 §14"]
+codes: [U7013, U7014]
 ---
 
 # `una ita`
 
 ## What it does
 
-`una ita` is the package manager, part of the `una` binary. The same binary run under the name `ita` behaves as `una ita`: `ita lock` is `una ita lock`. No command of this release opens a network connection, and none ever starts another program.
+`una ita` is the package manager, part of the `una` binary. The same binary run under the name `ita` behaves as `una ita`: `ita lock` is `una ita lock`. No command of this release opens a network connection, and none ever starts another program: a submission and a bundle go through a directory.
 
 `ita.una`
 
@@ -77,6 +77,12 @@ una ita remove <name> [path]
 una ita tree [path]
 una ita vendor [path]
 una ita verify [path]
+una ita publish [path] --key <file>... --upload <url>
+una ita yank <version> [path] --key <file>... --upload <url>
+una ita audit [path]
+una ita watch <owner> [<name>...] [--from <source>]
+una ita bundle <file> [path]
+una ita unbundle <file> [path]
 ```
 
 - **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009).
@@ -85,6 +91,13 @@ una ita verify [path]
 - **`remove`** takes a need out of `ita.una`, then writes the lock.
 - **`tree`** prints each package of the program, with its source, version, the ceiling granted, what it uses and the trust it adds.
 - **`vendor`** copies each locked registry package from Itaoca into `vendor/ita/`, and **`verify`** verifies each one again wherever it is, in `vendor/ita/` and in Itaoca.
+- **`publish`** refuses a package without `publish to`, `about` or `license`, with a `sources`, `replace` or `trust` section, or with a need of a path, a workspace member or another registry, and one that does not check at tier 1 with no diagnostic. It builds the archive of `ita.una`, the modules, `README.md`, `CHANGELOG.md` and the license files, writes the release statement against the verified state of the name, refusing authority that grows within a major line, signs it with each `--key`, and sends both to `--upload`. **`yank`** sends a signed yank of one version: new resolutions skip it, and existing locks keep it.
+- **`--upload`** is a `file:///` URL of the registry's directory in this release. An `https://` URL has no transport yet, and plain `http://` is never used: it is refused wherever a URL is read, in `sources`, in `mirrors.una` and on the command line.
+- **Key files** are read only when no one but their owner can read them, and only in the form written without a passphrase in this release.
+- **`audit`** checks each locked registry package against the verified state of its name and owner: a yanked release, an advisory, a key revoked as compromised, a pending recovery, a key change or a transfer is U7014, once per package, and the exit code is 1. It is the command a release gate runs; `una build` never runs it.
+- **`watch`** prints the new entries of an owner's chains since the position it keeps in Itaoca, and reports a registry's promise to log a submission that it did not keep.
+- **`bundle`** writes the lock's registry packages, with their provenance, into one file, and **`unbundle`** on an air-gapped machine verifies all of it against `ita.una` and `ita.lock`, then fills Itaoca. A bundle is trusted for nothing: one changed byte refuses it whole, and nothing is written.
+- **Mirrors.** `mirrors.una` in Itaoca lists, per source, URLs to try before the source's own; a mirror's copy is verified as the source's would be, and one that does not verify is skipped and named.
 - **The review.** Before it writes a changed lock, a command prints one line per package added, changed or dropped: its origin, its versions and digests, the ceiling granted, and what its code uses. `--dry-run` prints it and writes nothing.
 - **Consent.** A wider ceiling needs `--accept-authority`, and a dependency's trusted modules need `--accept-trust <package>` for its content as it is now. `add` and `remove` take neither flag: `una ita lock` with it is the repair.
 - **`add` and `update`** work on the package in the current directory; the other commands take its directory, `.` by default.
@@ -114,13 +127,14 @@ change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:… -> sha256:…; ma
 - **Usage errors.** A directory without `ita.una`, a name `update` or `remove` is given that the package does not need, and a word `add` would write that is not a name or a version, are usage errors, exit code 2.
 - **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing.
 - **Registry needs.** This release holds no registry's per-name state, which says what releases exist and which are yanked or under an advisory. So `lock`, `update` and `add` refuse a registry need with U7013 rather than resolve it from a partial view, and `add` writes nothing in this release.
-- **No network.** No command of this release opens a connection: `fetch`, `audit` and `publish` come with the registry client.
+- **No network.** No command of this release opens a connection. `fetch` comes with the registry client, which verifies a registry's roots, checkpoints, name map and chains. Until then, `publish`, `yank` and `watch` stop before they send anything, and `audit` reports each registry package as not verified, U7010, rather than as clean.
 
 ## Diagnostics
 
 The commands report the diagnostics of the files they read: see [`ita.una`](manifest.md), [`ita.lock`](lock.md) and [path dependencies](path-dependencies.md). Resolution adds one:
 
-- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution: a need no release meets, an avoided version with no later release, a bound exceeded, or a registry need this release cannot resolve offline.
+- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution: a need no release meets, an avoided version with no later release, a bound exceeded, or a registry need this release cannot resolve offline. `publish` and `yank` report a refused publication with it too.
+- [U7014](../../../../crates/una-explain/explain/U7014.md): `audit`: a locked release that is yanked, under an advisory, or signed after a stated compromise, or whose owner's keys changed.
 
 ## Edition
 
@@ -128,4 +142,4 @@ Edition `0.4` only, a preview.
 
 ## Normative source
 
-- `spec/30 §6`: commands; `spec/30 §10`: resolution, the review, `update`, `add` and `verify`; `spec/30 §12`: path dependencies and the lock.
+- `spec/30 §6`: commands; `spec/30 §10`: resolution, the review, `update`, `add` and `verify`; `spec/30 §12`: path dependencies and the lock; `spec/30 §14`: publishing, yanks, audit, watch, mirrors and bundles.
