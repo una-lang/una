@@ -65,7 +65,7 @@ use crate::notify::{Notice, Notifier, Recording};
 use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
-use crate::timing::{Obligation, Timed, admits, completable, obligation};
+use crate::timing::{Obligation, Timed, admits, obligation, uncompletable};
 use crate::tree::{Tree, root as tree_root};
 use crate::{
     MAX_ARCHIVE, MAX_ENTRY, MAX_NEEDS, MAX_RELEASES_PER_NAME, PROMISE_WINDOW, decimal,
@@ -601,16 +601,19 @@ impl Registry {
             })
     }
 
-    /// The counted cosignatures of the stored checkpoint of `size`, and their threshold.
-    fn stored_lines(&self, size: u64) -> (Vec<Cosigned>, usize) {
-        let signed = self
-            .store
+    /// The stored checkpoint of `size`, as a note.
+    fn stored_note(&self, size: u64) -> Option<Note> {
+        self.store
             .get(&checkpoint_path(size), MAX_DOCUMENT)
             .ok()
             .flatten()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .and_then(|document| parse_note(&document).ok());
-        match signed {
+            .and_then(|document| parse_note(&document).ok())
+    }
+
+    /// The counted cosignatures of the stored checkpoint of `size`, and their threshold.
+    fn stored_lines(&self, size: u64) -> (Vec<Cosigned>, usize) {
+        match self.stored_note(size) {
             Some(signed) => self.counted(&signed, size),
             None => (Vec::new(), self.root.witnesses.threshold),
         }
@@ -631,15 +634,21 @@ impl Registry {
         if due.is_empty() || self.accepted(size).is_some() {
             return None;
         }
-        let (lines, k) = self.stored_lines(size);
-        let blocking = due.into_iter().find(|due| match due {
-            Obligation::BeforeDeadline(index) => self
-                .requests
-                .get(index)
-                .and_then(Timed::target)
-                .is_some_and(|target| completable(&lines, target, k)),
-            _ => true,
-        })?;
+        // An obligated checkpoint signed before a target that has passed, which the
+        // cosignatures `admits` still takes cannot complete, is uncompletable: the log grows
+        // past it (`crate::timing::uncompletable`), and clients find what needs it unavailable.
+        // `admits` and this check count by one threshold, the root's the checkpoint names.
+        let (lines, need) = self.stored_lines(size);
+        let cap = self
+            .stored_note(size)
+            .map_or(self.root.witnesses.threshold, |signed| {
+                self.own_threshold(&signed)
+            });
+        let now = self.clock.now();
+        if uncompletable(size, now, self.requests.values(), &lines, cap, need).is_some() {
+            return None;
+        }
+        let blocking = due.into_iter().next()?;
         Some((
             blocking,
             format!(

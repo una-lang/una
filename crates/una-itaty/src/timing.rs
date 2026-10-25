@@ -31,9 +31,12 @@
 //! the newest checkpoint and never one below a checkpoint it cosigned, so an obligation can be
 //! met only before the log grows: while it is unmet, the service logs nothing, keeps serving the
 //! checkpoint at `witness/next`, and takes cosignatures as they come, for as long as witnesses
-//! are down. The checkpoint before a deadline is the one exception: once its target has passed
-//! and it carries no cosignature before the target, no cosignature can complete it, and the log
-//! grows, the gap the client then records as a missing deadline checkpoint.
+//! are down. **The uncompletable exception** ([`uncompletable`]): an obligated checkpoint
+//! signed before a target that has passed, which the cosignatures [`admits`] still takes can no
+//! longer bring to the threshold, lets the log grow past it rather than freeze it; what needs
+//! it is then an omission to every client (U7013): a cadence or start omission, or, for the
+//! checkpoint just before a deadline, a missing deadline checkpoint. [`admits`] and
+//! [`completable`] count by one threshold, that of the root version the checkpoint names.
 //!
 //! Costs: O(R) for R requests ever logged, per obligation check and per cosignature.
 
@@ -173,11 +176,40 @@ pub fn admits(
     Ok(())
 }
 
-/// Whether the checkpoint just before a deadline, carrying `lines` that count, can still
-/// complete the threshold `k` for the target `target`: it needs at least one cosignature
-/// before the target, since it takes fewer than `k` at or after it.
-pub fn completable(lines: &[Cosigned], target: u64, k: usize) -> bool {
-    lines.len() >= k || lines.iter().any(|line| line.time < target)
+/// Whether a checkpoint signed before `target`, carrying `lines` that count, can still reach
+/// `need` counted cosignatures once the target has passed, when every new cosignature is at
+/// or after it and [`admits`] takes at most `cap - 1` of those, `cap` the threshold of the
+/// root it names (the same threshold [`admits`] applies): its cosignatures before the target,
+/// which no longer grow, and `cap - 1` more.
+pub fn completable(lines: &[Cosigned], target: u64, cap: usize, need: usize) -> bool {
+    let before = lines.iter().filter(|line| line.time < target).count();
+    lines.len() >= need || before.saturating_add(cap.saturating_sub(1)) >= need
+}
+
+/// The request, by its index, whose passed target leaves the checkpoint of `size` unable to
+/// reach `need` counted cosignatures (`lines`), as [`completable`] decides with `cap`: the
+/// checkpoint was signed before that target (no deadline yet, or one after `size`), and the
+/// target is at or before `now`. Such an obligated checkpoint is uncompletable, and the log
+/// may grow past it: what needs it is then an omission to every client (U7013), the fail-safe
+/// direction. `None` when every obligation can still be met.
+pub fn uncompletable<'r>(
+    size: u64,
+    now: u64,
+    requests: impl Iterator<Item = &'r Timed>,
+    lines: &[Cosigned],
+    cap: usize,
+    need: usize,
+) -> Option<u64> {
+    requests
+        .filter(|request| {
+            request.index < size && request.deadline.is_none_or(|deadline| size < deadline)
+        })
+        .find(|request| {
+            request
+                .target()
+                .is_some_and(|target| now >= target && !completable(lines, target, cap, need))
+        })
+        .map(|request| request.index)
 }
 
 #[cfg(test)]
@@ -249,14 +281,43 @@ mod tests {
     }
 
     #[test]
-    fn a_checkpoint_before_a_deadline_needs_one_cosignature_before_the_target() {
-        assert!(completable(&[line("w0", 12, 5)], 10, 2));
-        assert!(!completable(&[line("w0", 12, 10)], 10, 2));
-        assert!(!completable(&[], 10, 2));
+    fn a_checkpoint_before_a_target_completes_only_with_cosignatures_before_it() {
+        // k = 2: one cosignature before the target and one after it complete it.
+        assert!(completable(&[line("w0", 12, 5)], 10, 2, 2));
+        assert!(!completable(&[line("w0", 12, 10)], 10, 2, 2));
+        assert!(!completable(&[], 10, 2, 2));
         assert!(completable(
             &[line("w0", 12, 10), line("w1", 12, 11)],
             10,
+            2,
             2
         ));
+        // k = 1: no cosignature may come after the target.
+        assert!(!completable(&[], 10, 1, 1));
+        // A threshold raised past the root's own: the cap is the root's.
+        assert!(!completable(&[line("w0", 12, 5)], 10, 2, 3));
+    }
+
+    #[test]
+    fn an_obligated_checkpoint_past_a_target_it_cannot_reach_is_uncompletable() {
+        let mut request = Timed::new(3);
+        request.start = Some(100);
+        let target = 100 + RECOVERY_DELAY;
+        let none: [Cosigned; 0] = [];
+        // Before the target, it can still be cosigned.
+        assert_eq!(
+            uncompletable(5, target - 1, std::iter::once(&request), &none, 2, 2),
+            None
+        );
+        assert_eq!(
+            uncompletable(5, target, std::iter::once(&request), &none, 2, 2),
+            Some(3)
+        );
+        // From the deadline on, cosignatures after the target are all taken.
+        request.deadline = Some(5);
+        assert_eq!(
+            uncompletable(5, target, std::iter::once(&request), &none, 2, 2),
+            None
+        );
     }
 }

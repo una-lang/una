@@ -39,7 +39,7 @@ use una_project::tlog::owner::{History, RECOVERY_DELAY, fingerprint};
 use una_project::tlog::root::digest as root_digest;
 use una_project::transport::Directory;
 
-use support::{EXPIRES, Keys, NOW, cosign_line, key_text, keypair, root_text, sign_line};
+use support::{EXPIRES, Keys, NOW, cosign_line, key_text, keypair, root_text_with, sign_line};
 
 type Pair = (SigningKey, Key);
 
@@ -86,11 +86,19 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
+        Fixture::with_k(name, 2)
+    }
+
+    /// A fixture whose root asks `k` of the three witnesses.
+    fn with_k(name: &str, k: usize) -> Fixture {
         let dir = temp_dir(name);
         let store = Arc::new(FileStore::open(&dir).unwrap());
         let keys = Keys::new("itaty");
         let roots: Vec<&Key> = keys.roots.iter().map(|(_, key)| key).collect();
-        let text = format!("{}\n", root_text("itaty", 1, EXPIRES, &keys, &roots));
+        let text = format!(
+            "{}\n",
+            root_text_with("itaty", 1, EXPIRES, &keys, &roots, k, &[])
+        );
         let document = note_of(&text, &[&keys.roots[0], &keys.roots[1]]);
         store.put("root/1", document.as_bytes()).unwrap();
         let pin = root_digest(&document);
@@ -589,4 +597,80 @@ fn a_service_starts_only_with_a_named_outbox() {
         "{lines}"
     );
     let _ = std::fs::remove_file(&outbox);
+}
+
+/// The logged recovery of `acme` by its cosigner, its start cosigned at `start` by `witnesses`,
+/// then the registration of `zenith` and, at `at`, its dispute, whose start checkpoint (size 4)
+/// is signed just before the recovery's target. Returns the recovery's target.
+fn dispute_just_before_a_target(f: &mut Fixture, witnesses: &[usize]) -> u64 {
+    let a = keypair(60, "acme.a");
+    let c = keypair(61, "trustee.c");
+    let z = keypair(62, "zenith.z");
+    let r = keypair(63, "acme.r");
+    let d = keypair(64, "zenith.d");
+    f.register("acme", &[&a], &[&c]);
+    let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
+    let receipt = f
+        .registry
+        .request(note_of(&recover, &[&c]).as_bytes())
+        .unwrap();
+    assert_eq!(f.logged(&owner_chain("acme"), receipt), 1);
+    f.cosign(witnesses, NOW + 10);
+    let target = NOW + 10 + RECOVERY_DELAY;
+    f.register("zenith", &[&z], &[]);
+    f.set_time(target - 60);
+    let dispute = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
+    let receipt = f.registry.request(dispute.as_bytes()).unwrap();
+    assert_eq!(f.logged(&owner_chain("zenith"), receipt), 3);
+    // The dispute's start checkpoint owes the threshold: until then, the log waits.
+    assert_eq!(
+        f.registry.owed().map(|(obligation, _)| obligation),
+        Some(Obligation::Start(3))
+    );
+    target
+}
+
+#[test]
+fn a_start_checkpoint_signed_just_before_a_target_never_freezes_the_log() {
+    // With a threshold of one, no cosignature at or after the recovery's target may land on a
+    // checkpoint signed before it, so the dispute's start checkpoint can never be cosigned
+    // once the target passes.
+    let mut f = Fixture::with_k("freeze-k1", 1);
+    let target = dispute_just_before_a_target(&mut f, &[0]);
+    let o = keypair(67, "orbit.o");
+    let orbit = f.registration("orbit", &[&o], 1, &[]);
+    assert_eq!(
+        f.registry
+            .register(note_of(&orbit, &[&o]).as_bytes(), false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::Obligation(Obligation::Start(3)))
+    );
+    f.set_time(target + 10);
+    assert_eq!(
+        f.cosign_at(4, 0, target + 10).unwrap_err().cause(),
+        Some(&Cause::CrossesTarget)
+    );
+    // Uncompletable: the log grows, and its next checkpoint is the recovery's deadline.
+    assert_eq!(f.registry.owed(), None);
+    assert_eq!(f.register("orbit", &[&o], &[]), 4);
+    assert_eq!(f.registry.deadline_of(1), Some(5));
+    // The dispute's start never carried the threshold: it never takes effect here, and every
+    // client finds its start an omission.
+    assert_eq!(f.registry.deadline_of(3), None);
+}
+
+#[test]
+fn an_outage_across_a_target_lets_the_log_grow_past_an_uncompletable_checkpoint() {
+    let mut f = Fixture::new("outage");
+    let target = dispute_just_before_a_target(&mut f, &[0, 1]);
+    // While the target has not passed, the log keeps waiting for its witnesses.
+    f.set_time(target - 1);
+    assert!(f.registry.owed().is_some());
+    // Past it, with no cosignature before it, at most one more can come: never two.
+    f.set_time(target + 10);
+    assert_eq!(f.registry.owed(), None);
+    let o = keypair(67, "orbit.o");
+    assert_eq!(f.register("orbit", &[&o], &[]), 4);
+    assert_eq!(f.registry.deadline_of(1), Some(5));
 }
