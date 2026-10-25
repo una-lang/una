@@ -1856,7 +1856,8 @@ fn a_frozen_owner_chain_is_refused_by_the_audit() {
         accepted: BTreeSet::new(),
         effects: BTreeSet::new(),
     };
-    let refusal = audit::facts(&mut client, &locked).unwrap_err();
+    let (code, refusal) = audit::facts(&mut client, &locked).unwrap_err();
+    assert_eq!(code, una_diag::Code::U7010);
     assert!(refusal.contains("frozen"), "{refusal}");
     assert!(refusal.contains(&format!("position {freeze}")), "{refusal}");
 }
@@ -2378,4 +2379,70 @@ fn a_tile_the_bundle_lacks_with_an_https_place_behind_is_an_omission() {
         "{failure:?}"
     );
     assert!(!store.contains(&b.expected.digest).unwrap());
+}
+
+/// Each failure is coded by its own cause, never by an earlier one's: a package whose state
+/// needs a kept checkpoint no place serves is U7013, and a package whose lock names another
+/// release than the registry's is U7010, in either order on one client.
+#[test]
+fn audit_codes_each_failure_by_its_own_cause() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (ledger, ledger_digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.append("other", "filler one");
+    test.append("other", "filler two");
+    let (tools, tools_digest) = test.release("acme/tools", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW);
+    // The kept checkpoint that times the ledger's release is served by no place.
+    let mut files = test.files.clone();
+    files.remove(&format!("checkpoint/{}", ledger + 1));
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files,
+    };
+    let locked_of = |name: &str, index: u64, digest: &str| Locked {
+        source: "acme".to_owned(),
+        name: name.to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest.to_owned()),
+        resolution: 1,
+        accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
+    };
+    let unserved = locked_of("acme/ledger", ledger, &ledger_digest);
+    // The lock names another log index than the registry's release.
+    let mismatch = locked_of("acme/tools", tools + 1, &tools_digest);
+    for packages in [
+        [unserved.clone(), mismatch.clone()],
+        [mismatch.clone(), unserved.clone()],
+    ] {
+        let mut client = Registry::open(
+            "acme",
+            &memory,
+            &test.pin(),
+            &Point::Latest { now: NOW + 60 },
+            None,
+        )
+        .unwrap();
+        let mut facts_of = |locked: &Locked| audit::facts(&mut client, locked);
+        let result = audit::audit(&packages, &mut facts_of);
+        let codes: Vec<(String, una_diag::Code)> = result
+            .unverified
+            .iter()
+            .map(|(at, (code, _))| (packages[*at].name.clone(), *code))
+            .collect();
+        let expected = |name: &str| {
+            if name == "acme/ledger" {
+                una_diag::Code::U7013
+            } else {
+                una_diag::Code::U7010
+            }
+        };
+        assert_eq!(codes.len(), 2, "{:?}", result.unverified);
+        for (name, code) in &codes {
+            assert_eq!(*code, expected(name), "{name}: {:?}", result.unverified);
+        }
+    }
 }

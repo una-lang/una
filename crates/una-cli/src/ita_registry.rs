@@ -134,11 +134,9 @@ fn prepare(
     let (mut registry, notes) =
         crate::registry::open_first(&declared, &places, &point, itaoca, None)
             .map_err(|(code, why)| at(code, why))?;
-    // A failure's code comes from the client's record of omissions, never its message: a
-    // document no place serves leaves the state unavailable (U7013), never different.
-    registry.take_omitted();
-    let state = NameState::read(&mut registry, name)
-        .map_err(|why| at(crate::registry::code_of(&mut registry), why))?;
+    // Each failure is coded where it arises, never from its message: a read that no place
+    // served leaves the state unavailable (U7013), never different.
+    let state = NameState::read(&mut registry, name).map_err(|(code, why)| at(code, why))?;
     let owner = owner_of(name);
     let history = registry
         .history(owner)
@@ -899,15 +897,10 @@ pub(crate) fn audit_command(
                 });
         opened.insert(source.clone(), registry);
     }
-    // A failure's code comes from the client's record of omissions, never from its message:
-    // a document no place serves makes the facts unavailable (U7013), never different.
+    // Each failure carries the code given where it arose (`audit::facts`): a read that no
+    // place served makes the facts unavailable (U7013), never different.
     let mut facts_of = |locked: &audit::Locked| match opened.get_mut(&locked.source) {
-        Some(Ok(registry)) => {
-            // Omissions of an earlier package's reading are its own.
-            registry.take_omitted();
-            audit::facts(registry, locked)
-                .map_err(|why| (crate::registry::code_of(registry), why))
-        }
+        Some(Ok(registry)) => audit::facts(registry, locked),
         Some(Err(failure)) => Err(failure.clone()),
         None => Err((
             Code::U7010,

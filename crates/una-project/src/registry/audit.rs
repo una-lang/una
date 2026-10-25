@@ -17,10 +17,12 @@
 
 use std::collections::BTreeSet;
 
+use super::read_failure;
 use crate::client::{Marks, Misbehavior, Observation, Registry, owner_of, shown};
 use crate::tlog::owner::Unsettled;
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
+use una_diag::Code;
 use crate::version::{Line, Version};
 
 /// A registry package of the lock, as the audit reads it.
@@ -108,9 +110,13 @@ pub struct Delay {
 /// The facts of `locked` from `registry`, opened at a fresh checkpoint of its source: its name's
 /// releases and marks ([`Registry::releases`], [`Registry::marks`]) and its owner's history
 /// ([`Registry::history`]). A release the registry does not hold refuses: a lock names only
-/// logged releases.
-pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refusal> {
-    let release = registry.release(&locked.name, &locked.version)?;
+/// logged releases. A failure carries its code: a read of the registry's, coded right after
+/// the read by the kind the client gave it, U7013 or U7010; one of the audit's own checks, a
+/// lock that names another release or a frozen chain, U7010 where it is raised.
+pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, (Code, Refusal)> {
+    let release = registry
+        .release(&locked.name, &locked.version)
+        .map_err(|why| read_failure(registry, why))?;
     // The release the registry holds is the one the lock names, by log index and digest.
     if locked.logged.is_some_and(|logged| logged != release.index)
         || locked
@@ -118,19 +124,29 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
             .as_ref()
             .is_some_and(|digest| *digest != release.statement.digest)
     {
-        return Err(format!(
-            "the registry's `{} {}` is not the one the lock names: its log index or digest differs",
-            locked.name, locked.version
+        return Err((
+            Code::U7010,
+            format!(
+                "the registry's `{} {}` is not the one the lock names: its log index or digest differs",
+                locked.name, locked.version
+            ),
         ));
     }
-    let marks = registry.marks(&locked.name)?;
-    let history = registry.history(owner_of(&locked.name))?;
+    let marks = registry
+        .marks(&locked.name)
+        .map_err(|why| read_failure(registry, why))?;
+    let history = registry
+        .history(owner_of(&locked.name))
+        .map_err(|why| read_failure(registry, why))?;
     // A chain frozen by competing recoveries or disputes resolves to no one (rule 38.1, the
     // amendment on competing requests): the package cannot be audited as clean (U7010).
     if let Some(from) = history.frozen {
-        return Err(format!(
-            "the chain of the owner `{}` is frozen from the log position {from} by competing recoveries or disputes; the owner registers again under a new owner name",
-            history.owner
+        return Err((
+            Code::U7010,
+            format!(
+                "the chain of the owner `{}` is frozen from the log position {from} by competing recoveries or disputes; the owner registers again under a new owner name",
+                history.owner
+            ),
         ));
     }
     let advisories: Vec<Advisory> = marks
@@ -222,7 +238,9 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
         }
     }
     for line in lines {
-        registry.state(&locked.name, line)?;
+        registry
+            .state(&locked.name, line)
+            .map_err(|why| read_failure(registry, why))?;
     }
     // Each delayed release of the name once, by version: the first observation of it. The
     // match names every kind of observation, so a new kind is a decision here, not a default.

@@ -1200,6 +1200,7 @@ impl<'t> Registry<'t> {
     /// stored under an earlier root, such as a submission's first promise (`spec/30 §15` rule
     /// 5), is verified against again. O(R) for R versions.
     pub fn root_at(&self, version: u64, digest: &str) -> Option<&Root> {
+        self.begin();
         self.chain
             .iter()
             .find(|(root, walked)| root.version == version && walked == digest)
@@ -1208,6 +1209,7 @@ impl<'t> Registry<'t> {
 
     /// The last root version walked, with its digest, `sha256:` and hex.
     pub fn last_root(&self) -> Option<(u64, &str)> {
+        self.begin();
         self.chain
             .last()
             .map(|(root, digest)| (root.version, digest.as_str()))
@@ -2138,6 +2140,7 @@ impl<'t> Registry<'t> {
     /// Any other refuses the name: it is evidence that the registry logged what it must not.
     /// O(E) after the chain.
     pub fn marks(&mut self, name: &str) -> Result<Marks, Refusal> {
+        self.begin();
         if let Some(marks) = self.marks.get(name) {
             return Ok(marks.clone());
         }

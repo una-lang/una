@@ -585,16 +585,16 @@ fn verify_source(
 }
 
 /// A failure of `registry`'s reading, coded right after the read that met it: by the kind the
-/// client gave it ([`Registry::last_failure`]), unavailable when no place served what it
+/// client gave it ([`Registry::take_failure`]), unavailable when no place served what it
 /// needed, a refusal when what was served does not verify; with no kind, by the omissions it
 /// recorded ([`Registry::take_omitted`]).
 fn coded(registry: &mut Registry<'_>, why: String) -> Failure {
-    let omitted = registry.take_omitted();
-    match (registry.last_failure(), omitted.into_iter().next()) {
-        (Some(crate::client::Failure::Refused), _) | (None, None) => Failure::Refused(why),
-        (Some(crate::client::Failure::Unserved) | None, Some(omission)) => {
-            Failure::Omitted(omission, why)
-        }
+    let failure = registry.take_failure();
+    // The omission it met is the last one recorded.
+    let omission = registry.take_omitted().pop();
+    match (failure, omission) {
+        (Some(crate::client::Failure::Refused) | None, _) => Failure::Refused(why),
+        (Some(crate::client::Failure::Unserved), Some(omission)) => Failure::Omitted(omission, why),
         (Some(crate::client::Failure::Unserved), None) => Failure::Unavailable(why),
     }
 }

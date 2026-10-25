@@ -209,16 +209,26 @@ pub struct NameState {
 impl NameState {
     /// The state of `name` in `registry`, verified ([`Registry::head`], [`Registry::releases`]
     /// and [`Registry::marks`]).
-    pub fn read(registry: &mut Registry<'_>, name: &str) -> Result<NameState, Refusal> {
+    pub fn read(
+        registry: &mut Registry<'_>,
+        name: &str,
+    ) -> Result<NameState, (una_diag::Code, Refusal)> {
         let head = registry
-            .head(name)?
+            .head(name)
+            .map_err(|why| super::read_failure(registry, why))?
             .map(|head| (head.index, hash_text(&head.leaf)));
         let statements = registry
-            .releases(name)?
+            .releases(name)
+            .map_err(|why| super::read_failure(registry, why))?
             .into_iter()
             .map(|release| (release.statement.version.clone(), release.statement))
             .collect();
-        let yanked = registry.marks(name)?.yanked.into_keys().collect();
+        let yanked = registry
+            .marks(name)
+            .map_err(|why| super::read_failure(registry, why))?
+            .yanked
+            .into_keys()
+            .collect();
         Ok(NameState {
             source: registry.source.clone(),
             name: name.to_owned(),

@@ -17,6 +17,20 @@ mod yank_model;
 
 use std::fmt::Write as _;
 
+/// A read of `registry` that failed, coded right after it by the kind the client gave it
+/// ([`crate::client::Registry::take_failure`]): U7013 when no place served what it needed,
+/// U7010 otherwise. Never called after anything but the read whose failure it codes.
+pub(crate) fn read_failure(
+    registry: &mut crate::client::Registry<'_>,
+    why: crate::transport::Refusal,
+) -> (una_diag::Code, crate::transport::Refusal) {
+    let code = match registry.take_failure() {
+        Some(crate::client::Failure::Unserved) => una_diag::Code::U7013,
+        Some(crate::client::Failure::Refused) | None => una_diag::Code::U7010,
+    };
+    (code, why)
+}
+
 /// Lowercase hexadecimal.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
