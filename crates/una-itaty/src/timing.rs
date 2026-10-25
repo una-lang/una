@@ -21,8 +21,10 @@
 //!
 //! **Held-back lines** ([`holds`]). An early line on the newest checkpoint above a request
 //! whose D is not fixed is held back, neither published nor served, while that checkpoint may
-//! still become D; once the log grows past it, it is not D, and its held lines are published,
-//! each under the rules above. So D carries only late lines as the service publishes it, and a
+//! still become D. Held and published lines late for a request both count toward it reaching
+//! that request's target ([`reaches`]), and toward the checkpoint's obligations. Once the log
+//! grows past the checkpoint, its held lines are published, but those early for a request
+//! whose D it is, which are dropped; rule 2 never applies to them. So D carries only late lines as the service publishes it, and a
 //! place that strips lines from D cannot bring its witness time below the target with lines the
 //! service published.
 //!
@@ -233,8 +235,10 @@ pub fn holds(request: &Timed, size: u64, newest: bool, time: u64) -> bool {
         && request.target().is_some_and(|target| time < target)
 }
 
-/// Whether the checkpoint of `size`, the newest, with its published counted `lines`, reaches
-/// the target of `request` whose D is not fixed: then it is that request's D.
+/// Whether the checkpoint of `size`, the newest, with its counted `lines`, published and held
+/// back, reaches the target of `request` whose D is not fixed: its lines late for the target
+/// are at least `k`. Then it is that request's D; its lines late for it, held because they are
+/// early for another request, are published once the log grows past it.
 pub fn reaches(request: &Timed, size: u64, lines: &[Cosigned], k: usize) -> bool {
     size > request.index
         && request.deadline.is_none()

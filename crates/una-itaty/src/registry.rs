@@ -1081,10 +1081,40 @@ impl Registry {
         let Ok(mut document) = String::from_utf8(bytes) else {
             return false;
         };
+        // Exactly the lines that will be published: the held ones but those dropped as early
+        // for a request whose deadline is this checkpoint.
         for held in self.held.get(&size).into_iter().flatten() {
-            document.push_str(&held.line);
+            if !self.dropped_at(size, held) {
+                document.push_str(&held.line);
+            }
         }
         accept_checkpoint(&document, &self.chain, Retired::Count).is_ok()
+    }
+
+    /// Whether the held line `held` of the checkpoint of `size` is never published: it is
+    /// early for a request whose deadline is that checkpoint (rule 3).
+    fn dropped_at(&self, size: u64, held: &HeldLine) -> bool {
+        self.requests.values().any(|request| {
+            request.deadline == Some(size)
+                && request.target().is_some_and(|target| held.time < target)
+        })
+    }
+
+    /// The counted lines of the checkpoint of `size`, published and held, one per witness,
+    /// and the threshold that counts them.
+    fn all_lines(&self, size: u64) -> Option<(Vec<Cosigned>, usize)> {
+        let signed = self.stored_note(size)?;
+        let (mut lines, k) = self.counted(&signed, size);
+        for held in self.held.get(&size).into_iter().flatten() {
+            if !lines.iter().any(|line| line.witness == held.witness) {
+                lines.push(Cosigned {
+                    witness: held.witness.clone(),
+                    size,
+                    time: held.time,
+                });
+            }
+        }
+        Some((lines, k))
     }
 
     /// A held line of the checkpoint of `size`, read back: its witness and time from the line.
@@ -1118,11 +1148,13 @@ impl Registry {
             .collect()
     }
 
-    /// The early lines held back on the checkpoint of `size`, no longer the newest, so no
-    /// longer one that may become a deadline: each is published when every request's rules
-    /// take it there as on an older checkpoint, and dropped otherwise. The checkpoint is served
-    /// as `checkpoint` when it then carries the threshold and is the largest that does; a start
-    /// it carries is fixed.
+    /// The lines held back on the checkpoint of `size`, no longer the newest, so no longer one
+    /// that may become a deadline: each is published, but one early for a request whose
+    /// deadline is that checkpoint, which is dropped (rule 3); rule 2 never applies to them,
+    /// since they were taken while it was the newest. A line whose witness the stored
+    /// checkpoint carries already is skipped, so a release that a crash cut short is done
+    /// again without a second line of one key. The checkpoint is served as `checkpoint` when it
+    /// then carries the threshold and is the largest that does; a start it carries is fixed.
     fn release_held(&mut self, size: u64) -> Result<(), String> {
         let Some(lines) = self.held.remove(&size) else {
             return Ok(());
@@ -1135,12 +1167,11 @@ impl Registry {
         let mut document = String::from_utf8(bytes).map_err(|_| "a checkpoint is not UTF-8")?;
         for held in lines {
             let signed = parse_note(&document)?;
-            let (counted, k) = self.counted(&signed, size);
-            let admitted = self
-                .requests
-                .values()
-                .all(|request| admits(request, size, false, held.time, &counted, k).is_ok());
-            if admitted {
+            let carried = signed
+                .signatures
+                .iter()
+                .any(|signature| signature.name == held.witness);
+            if !carried && !self.dropped_at(size, &held) {
                 document.push_str(&held.line);
             }
         }
@@ -1181,12 +1212,14 @@ impl Registry {
     }
 
     /// Fixes the deadline of each active request that the newest checkpoint, of `size`, now
-    /// reaches with its published lines (`crate::timing::reaches`), and writes the deadlines.
+    /// reaches with its lines late for it, published and held (`crate::timing::reaches`): a
+    /// held line late for a request is published once the log grows past the checkpoint,
+    /// since it is early only for another request, whose deadline the checkpoint is not.
+    /// Writes the deadlines.
     fn fix_deadlines(&mut self, size: u64) -> Result<(), String> {
-        let Some(signed) = self.stored_note(size) else {
+        let Some((lines, k)) = self.all_lines(size) else {
             return Ok(());
         };
-        let (lines, k) = self.counted(&signed, size);
         let reached: Vec<u64> = self
             .active_requests()
             .filter(|request| reaches(request, size, &lines, k))
@@ -2183,6 +2216,10 @@ impl Registry {
             }
             self.held = held;
             self.witnesses = witnesses;
+            if newest && let Err(e) = self.fix_deadlines(size) {
+                self.broken = Some(e.clone());
+                return Err(Refusal::Unavailable(e));
+            }
             return Ok(());
         }
         let document = format!("{document}{line}");

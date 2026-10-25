@@ -1457,3 +1457,174 @@ fn itaty_and_the_client_agree_on_every_deadline() {
         let _ = std::fs::remove_dir_all(&stripped);
     }
 }
+
+/// The size of the checkpoint served as `checkpoint`.
+fn served_size(f: &Fixture) -> u64 {
+    let bytes = f.store.get("checkpoint", 1 << 20).unwrap().unwrap();
+    let note = parse_note(&String::from_utf8(bytes).unwrap()).unwrap();
+    una_project::tlog::note::parse_checkpoint(&note.text)
+        .unwrap()
+        .size
+}
+
+#[test]
+fn lines_late_for_one_request_and_early_for_another_fix_its_deadline_and_are_served() {
+    let mut f = Fixture::new("two-targets");
+    let o = keypair(67, "orbit.o");
+    let (first, target) = disputed_zenith(&mut f);
+    // A second request starts three days later: its target is four days after the first's.
+    let second_start = NOW + 3 * 24 * 3600;
+    f.set_time(second_start);
+    let second = f.dispute("orbit", &keypair(68, "orbit.d")).unwrap();
+    f.cosign(&[0, 1, 2], second_start);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    assert_eq!(
+        f.registry
+            .request_timing(second)
+            .and_then(|timed| timed.start),
+        Some(second_start)
+    );
+    f.cosign(&[0, 1, 2], second_start);
+    // Between the two targets, every witness cosigns the newest checkpoint: late for the
+    // first request, early for the second, so held; they fix the first's deadline.
+    f.set_time(target + 10);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    let size = f.registry.size();
+    f.cosign(&[0, 1, 2], target + 10);
+    assert_eq!(f.registry.deadline_of(first), Some(size));
+    assert!(
+        f.checkpoint_note(size)
+            .cosignature(&f.keys.witnesses[0].1)
+            .is_none()
+    );
+    // The log grows: the deadline is served with every line, and the point advances.
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    let served = f.checkpoint_note(size);
+    assert!(
+        f.keys
+            .witnesses
+            .iter()
+            .all(|(_, key)| served.cosignature(key).is_some())
+    );
+    assert_eq!(served_size(&f), size);
+    let directory = Directory::new(&f.dir);
+    let mut client = Client::open("itaty", &directory, &f.pin, &Point::Served, None).unwrap();
+    assert_eq!(client.recovery_effect(first).unwrap(), Some(size));
+    assert_eq!(client.earliest_effect(first).unwrap(), Some(size));
+    assert!(client.misbehavior().is_empty());
+}
+
+#[test]
+fn concurrent_requests_keep_the_point_advancing() {
+    let mut schedule = Schedule(0x0c0c);
+    for k in 1..=3usize {
+        let mut f = Fixture::with_k(&format!("concurrent-{k}"), k);
+        let o = keypair(67, "orbit.o");
+        let names = ["bravo", "delta", "hotel", "kilo", "lima"];
+        let keys: Vec<Pair> = (0..5u32)
+            .map(|n| keypair_n(4_000 + n, &format!("{}.a", names[n as usize])))
+            .collect();
+        for (name, key) in names.iter().zip(&keys) {
+            f.register(name, &[key], &[]);
+        }
+        let orbit = f.register("orbit", &[&o], &[]);
+        let mut disputes: Vec<u64> = Vec::new();
+        let mut now = NOW;
+        let mut last = [NOW; 3];
+        let mut step = 0;
+        while disputes.len() < names.len()
+            || disputes
+                .iter()
+                .any(|index| f.registry.deadline_of(*index).is_none())
+        {
+            step += 1;
+            assert!(step < 500, "the schedule does not end");
+            now += schedule.below(10 * 3600);
+            f.set_time(now);
+            let logged = if disputes.len() < names.len() && schedule.below(3) == 0 {
+                let at = disputes.len();
+                let key = keypair_n(5_000 + at as u32, &format!("{}.d", names[at]));
+                f.dispute(names[at], &key).map(|index| disputes.push(index))
+            } else {
+                f.submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+                    .map(|_| ())
+            };
+            if let Err(refusal) = logged {
+                assert!(
+                    matches!(refusal.cause(), Some(Cause::Obligation(_))),
+                    "{refusal:?}"
+                );
+            }
+            let size = f.registry.size();
+            for (witness, seen) in last.iter_mut().enumerate() {
+                let at = now.max(*seen);
+                if f.cosign_at(size, witness, at).is_ok() {
+                    *seen = at;
+                }
+            }
+            // The point never falls more than one checkpoint behind the newest.
+            assert!(
+                served_size(&f) + 1 >= f.registry.size(),
+                "k {k}, step {step}"
+            );
+        }
+        loop {
+            now += 3600;
+            f.set_time(now);
+            let grown = f
+                .submit("orbit", &format!("cancel {orbit}"), 1, &[&o])
+                .is_ok();
+            let size = f.registry.size();
+            for (witness, seen) in last.iter_mut().enumerate() {
+                let at = now.max(*seen);
+                if f.cosign_at(size, witness, at).is_ok() {
+                    *seen = at;
+                }
+            }
+            if grown {
+                break;
+            }
+        }
+        let directory = Directory::new(&f.dir);
+        let mut client = Client::open("itaty", &directory, &f.pin, &Point::Served, None).unwrap();
+        for index in &disputes {
+            let ours = f.registry.deadline_of(*index);
+            assert_eq!(
+                client.recovery_effect(*index).unwrap(),
+                ours,
+                "k {k}, {index}"
+            );
+            assert_eq!(
+                client.earliest_effect(*index).unwrap(),
+                ours,
+                "k {k}, {index}"
+            );
+        }
+        assert!(client.misbehavior().is_empty());
+    }
+}
+
+#[test]
+fn a_release_cut_short_by_a_crash_is_done_again_once() {
+    let mut f = Fixture::new("release-crash");
+    let o = keypair(67, "orbit.o");
+    let (_, target) = disputed_zenith(&mut f);
+    f.set_time(target - 10);
+    f.cosign_at(3, 0, target - 10).unwrap();
+    f.cosign_at(3, 1, target - 5).unwrap();
+    let held = f.store.get("state/held", 1 << 20).unwrap().unwrap();
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    // A crash after the checkpoint was written and before `state/held` was: put it back.
+    f.store.put("state/held", &held).unwrap();
+    let reopened = f.reopen();
+    let note = f.checkpoint_note(3);
+    // The log's signature and one line of each witness, no second line of one key.
+    assert_eq!(note.signatures.len(), 3);
+    assert!(
+        f.store
+            .get("state/held", 1 << 20)
+            .unwrap()
+            .is_none_or(|bytes| bytes.is_empty())
+    );
+    assert_eq!(reopened.size(), 4);
+}
