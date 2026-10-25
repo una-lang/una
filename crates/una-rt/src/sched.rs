@@ -209,8 +209,8 @@ struct Worker {
     ready: Condvar,
     /// The attention word of the worker's thread, once it runs.
     word: Mutex<Option<una_sys::attention::Word>>,
-    /// Under the real clock, when the turn in progress is due to end, in microseconds of the
-    /// monotonic clock ([`micros`]): [`SLICE`] after the later of the turn's start and the
+    /// Under the real clock, when the turn in progress is due to end, in nanoseconds of the
+    /// monotonic clock ([`nanos`]): [`SLICE`] after the later of the turn's start and the
     /// moment its worker gained a second ready task (ADR 0117 rule 2). Written only under the
     /// queue's lock, when a turn begins and when a task is queued behind a lone one, so the two
     /// never race; read by the turn's check points and by the slicer. 0 before any turn.
@@ -238,7 +238,7 @@ impl Worker {
     fn arrive(&self, queue: &mut Queue, job: Job) {
         if queue.jobs.is_empty() && !crate::runtime::clock().is_virtual() {
             self.turn_ends.store(
-                micros().saturating_add(SLICE_MICROS),
+                nanos().saturating_add(SLICE_NANOS),
                 Ordering::SeqCst,
             );
         }
@@ -260,7 +260,7 @@ impl Worker {
                     // A turn's end is set from its own start, never from a phase of the run, so
                     // how long earlier code ran does not move it (#1146).
                     self.turn_ends.store(
-                        micros().saturating_add(SLICE_MICROS),
+                        nanos().saturating_add(SLICE_NANOS),
                         Ordering::SeqCst,
                     );
                 }
@@ -548,14 +548,16 @@ impl Scheduler {
 /// milliseconds (ADR 0117 rule 2, Fairness).
 const SLICE: u64 = 10;
 
-/// [`SLICE`] in microseconds, the unit of turn ends.
-const SLICE_MICROS: u64 = SLICE * 1000;
+/// [`SLICE`] in nanoseconds, the unit of turn ends: the finest the monotonic clock gives, so
+/// no rounding of a turn's end can depend on when in a coarser unit the turn began.
+const SLICE_NANOS: u64 = SLICE * 1_000_000;
 
-/// Microseconds of the monotonic clock since the process first read it, at least 1.
-fn micros() -> u64 {
+/// Nanoseconds of the monotonic clock since the process first read it, at least 1: one clock
+/// read, O(1). A `u64` holds 584 years of them.
+fn nanos() -> u64 {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let origin = *ORIGIN.get_or_init(std::time::Instant::now);
-    u64::try_from(origin.elapsed().as_micros())
+    u64::try_from(origin.elapsed().as_nanos())
         .unwrap_or(u64::MAX)
         .max(1)
 }
@@ -581,8 +583,8 @@ fn slice(scheduler: &std::sync::Weak<Scheduler>) {
             return;
         };
         handled.resize(scheduler.workers.len(), 0);
-        let now = micros();
-        let mut next = now.saturating_add(SLICE_MICROS);
+        let now = nanos();
+        let mut next = now.saturating_add(SLICE_NANOS);
         for (worker, done) in scheduler.workers.iter().zip(handled.iter_mut()) {
             let ends = worker.turn_ends.load(Ordering::SeqCst);
             if ends == 0 || ends == *done {
@@ -602,8 +604,8 @@ fn slice(scheduler: &std::sync::Weak<Scheduler>) {
             }
         }
         drop(scheduler);
-        std::thread::sleep(std::time::Duration::from_micros(
-            next.saturating_sub(micros()).max(1),
+        std::thread::sleep(std::time::Duration::from_nanos(
+            next.saturating_sub(nanos()).max(1),
         ));
     }
 }
@@ -646,7 +648,7 @@ pub(crate) fn turn_due() -> bool {
         una_sys::coroutine::inside()
             && RUNNING.with(|running| {
                 running.borrow().as_ref().is_some_and(|(worker, _, _)| {
-                    micros() >= worker.turn_ends.load(Ordering::SeqCst)
+                    nanos() >= worker.turn_ends.load(Ordering::SeqCst)
                 })
             })
     };
@@ -1208,7 +1210,7 @@ mod tests {
         // its own start. The shortest of a few tries is taken, since load only lengthens a
         // turn; the old phase gave 20 ms less the offset, at least 14 ms here.
         let slice = std::time::Duration::from_millis(SLICE);
-        let most = slice + std::time::Duration::from_micros(3500);
+        let most = slice + std::time::Duration::from_nanos(3_500_000);
         for earlier in [false, true] {
             for offset in [2, 4, 6] {
                 let shortest = (0..5)
@@ -1270,7 +1272,7 @@ mod tests {
         // task became ready. The shortest of a few tries is taken, since load only lengthens a
         // turn.
         let slice = std::time::Duration::from_millis(SLICE);
-        let most = slice + std::time::Duration::from_micros(3500);
+        let most = slice + std::time::Duration::from_nanos(3_500_000);
         for alone in [0, 9, 25] {
             let shortest = (0..5)
                 .map(|_| turn_after_arrival(std::time::Duration::from_millis(alone)))
@@ -1278,7 +1280,7 @@ mod tests {
                 .min()
                 .unwrap();
             assert!(
-                shortest + std::time::Duration::from_micros(50) >= slice && shortest <= most,
+                shortest >= slice && shortest <= most,
                 "alone for {alone} ms: turn of {shortest:?} after the arrival"
             );
         }
