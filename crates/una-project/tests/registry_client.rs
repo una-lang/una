@@ -2248,3 +2248,61 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
         }]
     );
 }
+
+/// Every checkpoint names, inside its signed text, the root version it was signed under: a
+/// place that hides the newer root makes the client's result unavailable, never decided under
+/// the older key set; a checkpoint without the line, or with another digest, is refused.
+#[test]
+fn a_checkpoint_names_its_root_and_a_hidden_newer_root_is_unavailable() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - DAY);
+    registry.rotate_witness();
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let floors = Floors::default();
+    let point = Point::Latest { now: NOW + 60 };
+    let full = Memory {
+        files: registry.files.clone(),
+    };
+    let client = Registry::open_with("acme", &full, &registry.pin(), &point, &floors).unwrap();
+    assert_eq!(client.root.version, 2);
+    // Root version 2 hidden: unavailable.
+    let mut hiding = Memory {
+        files: registry.files.clone(),
+    };
+    hiding.files.remove("root/2");
+    let opened = Registry::open_with("acme", &hiding, &registry.pin(), &point, &floors);
+    assert!(
+        matches!(opened, Err(OpenError::Unavailable(_))),
+        "{:?}",
+        opened.err()
+    );
+    // The latest checkpoint re-signed without the line, and with another digest: refused.
+    let document = String::from_utf8(registry.files["checkpoint"].clone()).unwrap();
+    let text = document.split_once("\n\n").unwrap().0.to_owned() + "\n";
+    let root_line = registry.root_line();
+    let resign = |text: &str| {
+        let mut out = format!(
+            "{text}\n{}",
+            registry::sign_line(&registry.keys.log.0, &registry.keys.log.1, text)
+        );
+        for (pair, key) in &registry.keys.witnesses {
+            out.push_str(&registry::cosign_line(pair, key, text, NOW));
+        }
+        out.into_bytes()
+    };
+    for altered in [
+        text.replace(&format!("{root_line}\n"), ""),
+        text.replace(&root_line, &format!("ita-root 2 sha256:{}", "0".repeat(64))),
+        text.replace(&root_line, &format!("{root_line}\n{root_line}")),
+    ] {
+        let mut place = Memory {
+            files: registry.files.clone(),
+        };
+        place.files.insert("checkpoint".to_owned(), resign(&altered));
+        let opened = Registry::open_with("acme", &place, &registry.pin(), &point, &floors);
+        assert!(matches!(opened, Err(OpenError::Refused(_))), "{altered}");
+    }
+}

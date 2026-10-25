@@ -112,24 +112,60 @@ pub fn parse_hash_text(text: &str) -> Option<Hash> {
     Some(out)
 }
 
-/// Accepts the checkpoint `document` under `root` (rules 36 and 36.4): its origin is the log's
-/// key name, it is signed by the log's key, and at least the witness threshold of the root's
-/// distinct witnesses cosign it; its witness time is the k-th latest of their timestamps.
-pub fn accept_checkpoint(document: &str, root: &Root) -> Result<Accepted, Refusal> {
-    let signed = note::parse_note(document)?;
-    let checkpoint = note::parse_checkpoint(&signed.text)?;
+/// The root metadata of `chain`, the walked root chain with each version's digest, that
+/// `checkpoint` names by its `ita-root` line (`spec/30 §11`): a version above the chain's end
+/// is a newer root the place does not serve, so the result is unavailable, never the older key
+/// set's; a version below the chain's start, or a digest other than the walked one's, refuses
+/// the checkpoint.
+pub fn named_root<'r>(
+    checkpoint: &note::Checkpoint,
+    chain: &'r [(Root, String)],
+) -> Result<&'r Root, OpenError> {
+    let (version, digest) = root::named(&checkpoint.extensions).map_err(OpenError::Refused)?;
+    let last = chain.last().map_or(0, |(root, _)| root.version);
+    if version > last {
+        return Err(OpenError::Unavailable(format!(
+            "its checkpoint was signed under root version {version}, and no root version past {last} is served"
+        )));
+    }
+    let Some((root, walked)) = chain.iter().find(|(root, _)| root.version == version) else {
+        return Err(OpenError::Refused(format!(
+            "its checkpoint names root version {version}, before the pinned one"
+        )));
+    };
+    if *walked != digest {
+        return Err(OpenError::Refused(format!(
+            "its checkpoint names root version {version} with the digest {digest}, not the one of that version"
+        )));
+    }
+    Ok(root)
+}
+
+/// Accepts the checkpoint `document` under the root of `chain` it names (rules 36 and 36.4;
+/// [`named_root`]): its origin is that root's log key name, it is signed by the log's key, and
+/// at least the witness threshold of the root's distinct witnesses cosign it; its witness time
+/// is the k-th latest of their timestamps.
+pub fn accept_checkpoint(
+    document: &str,
+    chain: &[(Root, String)],
+) -> Result<Accepted, OpenError> {
+    let signed = note::parse_note(document).map_err(OpenError::Refused)?;
+    let checkpoint = note::parse_checkpoint(&signed.text).map_err(OpenError::Refused)?;
+    let root = named_root(&checkpoint, chain)?;
     if checkpoint.origin != root.log.name {
-        return Err(format!(
+        return Err(OpenError::Refused(format!(
             "the checkpoint is of the log `{}`, not of `{}`",
             checkpoint.origin, root.log.name
-        ));
+        )));
     }
     if !signed.signed_by(&root.log) {
-        return Err("the checkpoint is not signed by the log's key".to_owned());
+        return Err(OpenError::Refused(
+            "the checkpoint is not signed by the log's key".to_owned(),
+        ));
     }
     let cosigned = cosignatures(&signed, checkpoint.size, root);
     let time = witness::checkpoint_time(&cosigned, root.witnesses.threshold)
-        .map_err(|problem| witness_problem(&problem))?;
+        .map_err(|problem| OpenError::Refused(witness_problem(&problem)))?;
     let map = map::root_of(&checkpoint.extensions);
     Ok(Accepted {
         document: document.to_owned(),
@@ -236,6 +272,9 @@ pub enum Misbehavior {
 pub enum Omission {
     /// A document no place served, by its path.
     Document(String),
+    /// A root version a verified checkpoint names, past the end of the root chain the places
+    /// serve: a newer root is hidden, and nothing is decided under the older key set.
+    RootVersion(u64),
     /// The start checkpoint of the request at this log index, the first that includes it,
     /// carries fewer than the witness threshold of cosignatures as every place serves it.
     StartCheckpoint(u64),
@@ -454,6 +493,9 @@ pub struct Registry<'t> {
     kept: BTreeMap<u64, Option<Kept>>,
     seen: Vec<Cosigned>,
     histories: BTreeMap<String, History>,
+    /// The root chain walked, each version with its digest, the one a kept checkpoint names
+    /// verifying it.
+    chain: Vec<(Root, String)>,
     /// For an owner whose requests could be in effect earlier than the cosignatures served say,
     /// its history with each at the earliest position its seven days allow.
     eager: BTreeMap<String, History>,
@@ -550,6 +592,11 @@ impl<'t> Registry<'t> {
         }
         let next: Vec<&str> = roots.iter().skip(1).map(String::as_str).collect();
         let last = root::walk(&pinned, &next, 0).map_err(refused)?;
+        let chain: Vec<(Root, String)> = root::walk_all(&pinned, &next, 0)
+            .map_err(refused)?
+            .into_iter()
+            .zip(roots.iter().map(|document| root::digest(document)))
+            .collect();
         if let Some(floor) = floors.root_version
             && last.version < floor
         {
@@ -565,7 +612,10 @@ impl<'t> Registry<'t> {
         };
         let document =
             read(&path)?.ok_or_else(|| unavailable(format!("it has no `{path}`")))?;
-        let accepted = accept_checkpoint(&document, &last).map_err(refused)?;
+        let accepted = accept_checkpoint(&document, &chain).map_err(|error| match error {
+            OpenError::Unavailable(why) => unavailable(why),
+            OpenError::Refused(why) => refused(why),
+        })?;
         match point {
             Point::At { size, hash } => {
                 if accepted.checkpoint.size != *size
@@ -599,6 +649,7 @@ impl<'t> Registry<'t> {
             transport,
             roots,
             root: last,
+            chain,
             tiles: Tiles::new(transport, accepted.checkpoint.size),
             seen: accepted.cosigned.clone(),
             point: accepted,
@@ -852,7 +903,8 @@ impl<'t> Registry<'t> {
         let time = witness::checkpoint_time(&cosigned, self.root.witnesses.threshold).ok();
         self.seen.extend(cosigned.iter().cloned());
         witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
-        let corroborated = views.len() >= 2 && views.windows(2).all(|pair| pair.first() == pair.last());
+        let corroborated =
+            views.len() >= 2 && views.windows(2).all(|pair| pair.first() == pair.last());
         let kept = Kept {
             cosigned,
             time,
@@ -875,12 +927,24 @@ impl<'t> Registry<'t> {
             String::from_utf8(bytes).map_err(|_| self.refuse(format!("`{path}` is not UTF-8")))?;
         let signed = note::parse_note(&document).map_err(|why| self.refuse(why))?;
         let checkpoint = note::parse_checkpoint(&signed.text).map_err(|why| self.refuse(why))?;
-        if checkpoint.size != size || checkpoint.origin != self.root.log.name {
+        // Verified under the root it names: one past the chain served is an omission of a
+        // root version, never a reason to trust the older key set.
+        let root = match named_root(&checkpoint, &self.chain) {
+            Ok(root) => root.clone(),
+            Err(OpenError::Unavailable(why)) => {
+                if let Ok((version, _)) = root::named(&checkpoint.extensions) {
+                    self.omitted.push(Omission::RootVersion(version));
+                }
+                return Err(self.refuse(why));
+            }
+            Err(OpenError::Refused(why)) => return Err(self.refuse(why)),
+        };
+        if checkpoint.size != size || checkpoint.origin != root.log.name {
             return Err(self.refuse(format!(
                 "`{path}` is not a checkpoint of its log of that size"
             )));
         }
-        if !signed.signed_by(&self.root.log) {
+        if !signed.signed_by(&root.log) {
             return Err(self.refuse(format!("`{path}` is not signed by the log's key")));
         }
         let proof = self
@@ -899,7 +963,7 @@ impl<'t> Registry<'t> {
                 self.point.checkpoint.size
             )));
         }
-        Ok(cosignatures(&signed, size, &self.root))
+        Ok(cosignatures(&signed, size, &root))
     }
 
     /// When the entry `index` was logged (rule 36.4): for each distinct witness, its earliest

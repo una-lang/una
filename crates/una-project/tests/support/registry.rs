@@ -172,6 +172,29 @@ impl TestRegistry {
         registry
     }
 
+    /// The extension line of a checkpoint naming the newest root metadata, which it is
+    /// signed under: `ita-root <version> sha256:<hex>`.
+    pub fn root_line(&self) -> String {
+        let document = self.roots.last().map_or("", String::as_str);
+        format!("ita-root {} {}", self.roots.len(), digest(document))
+    }
+
+    /// Rotates the witness of seed 32 to a new key, by the next root version, signed by two root
+    /// keys of the current one and of its own: the checkpoints signed from then on name it and
+    /// carry the new witness's cosignature.
+    pub fn rotate_witness(&mut self) {
+        let version = self.roots.len() as u64 + 1;
+        if let Some(witness) = self.keys.witnesses.last_mut() {
+            *witness = keypair(90 + version as u8, &format!("witness.rotated.{version}"));
+        }
+        let roots: Vec<&Key> = self.keys.roots.iter().map(|(_, key)| key).collect();
+        let text = root_text(&self.source, version, EXPIRES, &self.keys, &roots);
+        let document = signed(&text, &[&self.keys.roots[0], &self.keys.roots[1]]);
+        self.files
+            .insert(format!("root/{version}"), document.clone().into_bytes());
+        self.roots.push(document);
+    }
+
     /// The digest of the first root metadata: the pin of `sources`.
     pub fn pin(&self) -> String {
         digest(&self.roots[0])
@@ -395,10 +418,11 @@ impl TestRegistry {
             }
             let prefix = leaves.get(..kept as usize).unwrap_or_default();
             let text = format!(
-                "{}\n{kept}\n{}\nita-map {}\n",
+                "{}\n{kept}\n{}\nita-map {}\n{}\n",
                 self.keys.log.1.name,
                 encode_base64(&tree_root(prefix)),
-                encode_base64(&map_root)
+                encode_base64(&map_root),
+                self.root_line()
             );
             let line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
             let mut document = format!("{text}\n{line}");
@@ -412,10 +436,11 @@ impl TestRegistry {
             self.files.insert(path, document.into_bytes());
         }
         let text = format!(
-            "{}\n{size}\n{}\nita-map {}\n",
+            "{}\n{size}\n{}\nita-map {}\n{}\n",
             self.keys.log.1.name,
             encode_base64(&top),
-            encode_base64(&map_root)
+            encode_base64(&map_root),
+            self.root_line()
         );
         let log_line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
         let mut document = format!("{text}\n{log_line}");
