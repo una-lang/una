@@ -29,6 +29,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use una_sys::coroutine::{Coroutine, Resumed, Scope, Stack};
@@ -238,12 +239,31 @@ struct Entry<'s> {
 
 /// The loop of a worker's thread, inside one coroutine scope for its whole life: the scope
 /// cannot end, nor the thread exit, while a task of the worker is unfinished (`una_sys`).
-fn serve(worker: Arc<Worker>, shared: Arc<Shared>) {
-    una_sys::coroutine::scope(|scope| serve_in(scope, &worker, &shared));
+/// `ready`, when given, hears once the thread has set up what its first task would otherwise
+/// set up ([`Scheduler::start_all`]).
+fn serve(worker: Arc<Worker>, shared: Arc<Shared>, ready: Option<mpsc::Sender<()>>) {
+    una_sys::coroutine::scope(|scope| serve_in(scope, &worker, &shared, ready));
 }
 
 /// The loop of [`serve`], whose coroutines `scope` owns.
-fn serve_in(scope: &Scope, worker: &Arc<Worker>, shared: &Arc<Shared>) {
+fn serve_in(
+    scope: &Scope,
+    worker: &Arc<Worker>,
+    shared: &Arc<Shared>,
+    ready: Option<mpsc::Sender<()>>,
+) {
+    // The thread-locals a task's resume swaps are made now, at the thread's start, not by the
+    // first task the worker runs: a worker that never ran a task costs a later construct no
+    // more than one that did, whatever earlier code ran (#1145). Swapping twice is the
+    // identity, so the worker's state stays empty.
+    let mut warm = Slots::default();
+    swap(&mut warm);
+    swap(&mut warm);
+    drop(warm);
+    RUNNING.with(|_| ());
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     let mut entries: Vec<Option<Entry<'_>>> = Vec::new();
     let mut free: Vec<usize> = Vec::new();
     let mut generation: u64 = 0;
@@ -426,7 +446,7 @@ impl Scheduler {
         // [`Scheduler::start_all`], which a program with a task construct runs before `main`,
         // the thread is always there already.
         let mut queue = lock(&worker.queue);
-        self.serve_worker(worker, &mut queue)?;
+        self.serve_worker(worker, &mut queue, None)?;
         queue
             .jobs
             .push_back(Job::Start(stack, Box::new(body), Box::new(finish)));
@@ -437,8 +457,14 @@ impl Scheduler {
 }
 
 impl Scheduler {
-    /// Starts the thread of `worker`, whose queue `queue` is held, unless it started already.
-    fn serve_worker(&self, worker: &Arc<Worker>, queue: &mut Queue) -> Result<(), NotStarted> {
+    /// Starts the thread of `worker`, whose queue `queue` is held, unless it started already;
+    /// `ready` hears once the thread is set up.
+    fn serve_worker(
+        &self,
+        worker: &Arc<Worker>,
+        queue: &mut Queue,
+        ready: Option<mpsc::Sender<()>>,
+    ) -> Result<(), NotStarted> {
         if queue.started {
             return Ok(());
         }
@@ -447,7 +473,7 @@ impl Scheduler {
         std::thread::Builder::new()
             .name(format!("una-worker-{}", worker.index + 1))
             .stack_size(WORKER_STACK)
-            .spawn(move || serve(serving, shared))
+            .spawn(move || serve(serving, shared, ready))
             .map_err(|_| NotStarted)?;
         queue.started = true;
         Ok(())
@@ -458,14 +484,28 @@ impl Scheduler {
     /// whether a thread exists, and so whether a construct pays its start, would depend on what
     /// earlier code forked or waited on, possibly on `secret` data. O(N + H) thread starts, for
     /// `N` workers and `H` helpers, once per run; their stacks are reserved, not committed.
-    /// `Err` when one could not start: the run then stops before `main`.
+    /// It returns once every thread runs and each worker has set up its thread-locals, so
+    /// `main` starts after all of it. `Err` when one could not start: the run then stops
+    /// before `main`.
     pub(crate) fn start_all(&self) -> Result<(), NotStarted> {
+        let (ready, readied) = mpsc::channel();
+        let mut started = 0usize;
         for worker in &self.workers {
             let mut queue = lock(&worker.queue);
-            self.serve_worker(worker, &mut queue)?;
+            if !queue.started {
+                self.serve_worker(worker, &mut queue, Some(ready.clone()))?;
+                started += 1;
+            }
         }
-        self.shared.files.fill()?;
-        self.shared.io.fill()
+        started += self.shared.files.fill(&ready)?;
+        started += self.shared.io.fill(&ready)?;
+        drop(ready);
+        // Each thread sends once; a thread that ended before it did drops its sender, so the
+        // wait ends with `Err` instead of blocking.
+        for _ in 0..started {
+            readied.recv().map_err(|_| NotStarted)?;
+        }
+        Ok(())
     }
 
     /// How many worker threads, file helpers and I/O helpers have started, in tests.
@@ -525,19 +565,27 @@ impl Helpers {
     }
 
     /// Starts helpers until the pool holds `most` threads, each of them idle until a job
-    /// comes. `Err` when one could not start.
-    fn fill(self: &Arc<Self>) -> Result<(), NotStarted> {
+    /// comes, and each sending once on `ready` as it runs: how many started. `Err` when one
+    /// could not start.
+    fn fill(self: &Arc<Self>, ready: &mpsc::Sender<()>) -> Result<usize, NotStarted> {
         let mut queue = lock(&self.queue);
+        let mut started = 0usize;
         while queue.threads < self.most {
             let helpers = Arc::clone(self);
+            let ready = ready.clone();
             std::thread::Builder::new()
                 .name("una-helper".to_owned())
                 .stack_size(HELPER_STACK)
-                .spawn(move || helpers.serve())
+                .spawn(move || {
+                    let _ = ready.send(());
+                    drop(ready);
+                    helpers.serve();
+                })
                 .map_err(|_| NotStarted)?;
             queue.threads += 1;
+            started += 1;
         }
-        Ok(())
+        Ok(started)
     }
 
     /// Queues `job`, starting a helper when none is idle and the pool has room. The job back
