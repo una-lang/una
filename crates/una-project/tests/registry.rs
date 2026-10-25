@@ -23,7 +23,7 @@ use una_project::registry::bundle::{self, Memory, Recording};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
 use una_project::registry::submit::{self, NameState, PROMISE_WINDOW, Promise, check_promise};
 use una_project::registry::watch::{
-    MAX_SETTLED, Position, Seen, Submitted, Verdict, assess, judge, watch,
+    MAX_JUDGED, MAX_SETTLED, Position, Seen, Submitted, Verdict, assess, judge, to_judge, watch,
 };
 use una_project::tlog::note::parse_note;
 use una_project::tlog::release::parse_statement;
@@ -451,6 +451,7 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                 pending: vec![130],
                 key_changes: vec![140],
                 void_yanks: vec![150],
+                accepted_effects: Vec::new(),
             }
         } else {
             Facts {
@@ -998,6 +999,19 @@ fn unbundling_notes_a_floor_it_cannot_store() {
     let dir = store.root.join("registry").join(registry_id(&b.expected.root));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // A process that ignores file modes, as root does, can write here anyway.
+    let probe = dir.join("probe");
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .is_ok()
+    {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        println!("skipped: running with privileges that ignore file modes");
+        return;
+    }
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected)).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1246,7 +1260,7 @@ fn the_promise_window_is_anchored_and_only_kept_is_settled() {
         time: sent - 20 * hour,
         sent,
     };
-    assert_eq!(honest.anchor(), sent - una_project::client::SKEW);
+    assert_eq!(honest.anchor(), sent);
     let promise = Promise {
         source: "acme".to_owned(),
         leaf: format!("sha256:{}", honest.leaf),
@@ -1356,6 +1370,7 @@ fn a_bad_promise_is_reported_and_counts_as_none() {
     let ok = assess(
         &record(&good),
         Ok(Some(promise_of(&good, &log, "acme"))),
+        None,
         log.key(),
         "acme",
         Some(1500),
@@ -1368,7 +1383,7 @@ fn a_bad_promise_is_reported_and_counts_as_none() {
         (&elsewhere, promise_of(&elsewhere, &log, "other")),
         (&forged, b"not a promise".to_vec()),
     ] {
-        let bad = assess(&record(leaf), Ok(Some(served)), log.key(), "acme", None, now);
+        let bad = assess(&record(leaf), Ok(Some(served)), None, log.key(), "acme", None, now);
         assert_eq!(bad.notes.len(), 1, "{bad:?}");
         assert!(bad.notes[0].contains("counts as none"));
         // Judged as no promise: past the window, not logged, broken.
@@ -1410,4 +1425,155 @@ fn a_backfill_release_is_checked_against_the_highest_of_its_line() {
         &[&publisher],
     );
     assert!(same.is_ok());
+}
+
+// --- Third recheck: the window's end, replaced promises, the cap, accepted consent ----------
+
+/// The window ends at the later of the witness time and the local clock at sending, plus an
+/// hour and the hour of skew: an honest promise two minutes past an hour from sending is kept.
+#[test]
+fn an_honest_promise_with_latency_is_kept() {
+    let sent = 2_000_000_000;
+    let record = Submitted {
+        leaf: "ee".repeat(32),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/ledger".to_owned(),
+        time: sent - 600,
+        sent,
+    };
+    let promise = Promise {
+        source: "acme".to_owned(),
+        leaf: format!("sha256:{}", record.leaf),
+        by: sent + PROMISE_WINDOW + 120,
+        document: String::new(),
+    };
+    assert_eq!(
+        judge(&record, Some(&promise), Some(sent + PROMISE_WINDOW + 60), sent + 3 * 3600),
+        Verdict::Kept
+    );
+}
+
+/// The first verified promise is stored; a later one with another text is a replaced promise,
+/// reported as evidence, and the earliest `by` is the one judged, so a replacement cannot turn
+/// broken into kept.
+#[test]
+fn a_replaced_promise_is_evidence_and_the_earliest_by_is_judged() {
+    let log = key(20, "acme.example/log");
+    let leaf = "dd".repeat(32);
+    let record = Submitted {
+        leaf: leaf.clone(),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/ledger".to_owned(),
+        time: 1000,
+        sent: 1000,
+    };
+    let promise = |by: u64| {
+        sign_note(
+            &format!("ita-promise/1\nsource acme\nleaf sha256:{leaf}\nby {by}\n"),
+            &[&log],
+        )
+        .unwrap()
+    };
+    let early = promise(2000);
+    let late = promise(5000);
+    // The first one seen is to be stored.
+    let first = assess(
+        &record,
+        Ok(Some(early.clone().into_bytes())),
+        None,
+        log.key(),
+        "acme",
+        None,
+        1500,
+    );
+    assert_eq!(first.first.as_deref(), Some(early.as_str()));
+    assert!(!first.replaced);
+    // The registry serves another: replaced, and judged by the earliest `by`.
+    let replaced = assess(
+        &record,
+        Ok(Some(late.into_bytes())),
+        Some(early.clone().into_bytes()),
+        log.key(),
+        "acme",
+        Some(4000),
+        6000,
+    );
+    assert!(replaced.replaced);
+    assert!(replaced.first.is_none(), "the first one stays");
+    assert!(replaced.notes.iter().any(|note| note.contains("replaced its promise")));
+    assert!(matches!(replaced.verdict, Verdict::Broken(_)), "logged at 4000, after 2000");
+    // The same promise again is no replacement.
+    let same = assess(
+        &record,
+        Ok(Some(early.clone().into_bytes())),
+        Some(early.into_bytes()),
+        log.key(),
+        "acme",
+        Some(1500),
+        6000,
+    );
+    assert!(!same.replaced);
+    assert_eq!(same.verdict, Verdict::Kept);
+}
+
+/// At most `MAX_JUDGED` submissions are judged per run, the oldest first, and the rest are
+/// counted.
+#[test]
+fn a_run_judges_a_bounded_number_of_submissions() {
+    let all: Vec<String> = (0..MAX_JUDGED + 5).map(|i| format!("{i:064x}")).collect();
+    let (judged, waiting) = to_judge(all.clone());
+    assert_eq!(judged.len(), MAX_JUDGED);
+    assert_eq!(judged[0], all[0], "the oldest first");
+    assert_eq!(waiting, 5);
+    let (judged, waiting) = to_judge(all[..3].to_vec());
+    assert_eq!((judged.len(), waiting), (3, 0));
+}
+
+/// The audit honors an accepted index only as `una ita lock` does, and a recovery accepted while
+/// pending that has taken effect is reported: its new key needs fresh consent.
+#[test]
+fn the_audit_honors_accepted_indices_as_the_lock_does() {
+    let day = 24 * 3600;
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW - 10 * day);
+    let newcomer = keypair(64, "acme.new");
+    let request = test.recover("acme", "recover", &newcomer.1, &[]);
+    test.checkpoint(NOW - 9 * day);
+    let resolution = test.entries.len() as u64;
+    test.append("other", "filler");
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let mut locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution,
+        accepted: [request].into_iter().collect(),
+    };
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert_eq!(facts.accepted_effects, [request], "{facts:?}");
+    let kinds: Vec<Kind> = audit::findings(0, &facts).into_iter().map(|f| f.kind).collect();
+    assert!(kinds.contains(&Kind::AcceptedTookEffect(request)), "{kinds:?}");
+    // An index at or past the resolution point is not honored: the event is reported.
+    locked.resolution = request;
+    locked.accepted = [request].into_iter().collect();
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert!(facts.accepted_effects.is_empty());
+    assert!(facts.key_changes.contains(&request), "{facts:?}");
 }

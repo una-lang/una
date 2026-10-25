@@ -210,9 +210,9 @@ pub const SUBMITTED: &str = "ita-submitted/1";
 ///
 /// the URL it was sent to, where its promise appears; the name whose chain its entry joins; the
 /// witness time of the checkpoint read when it was sent; and the local clock when it was sent.
-/// Its window runs from the later of the witness time and the local clock less the allowed skew
-/// ([`Submitted::anchor`]), so an honest submission read at a checkpoint up to 24 hours old is
-/// not judged against a window that ended before it was sent.
+/// Its window runs from the later of the witness time and the local clock ([`Submitted::anchor`]),
+/// so an honest submission read at a checkpoint up to 24 hours old is not judged against a window
+/// that ended before it was sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Submitted {
     /// The hex of its entry's leaf hash.
@@ -237,9 +237,11 @@ impl Submitted {
     }
 
     /// Where its window starts: the later of the checkpoint's witness time and the local clock
-    /// at sending less the allowed skew (rule 36.4).
+    /// when it was sent. The window then runs [`PROMISE_WINDOW`] plus the allowed skew, which
+    /// leaves the registry's clock and the network their latency. A local clock that runs fast
+    /// can only widen the window, which fails toward leniency.
     pub fn anchor(&self) -> u64 {
-        self.time.max(self.sent.saturating_sub(SKEW))
+        self.time.max(self.sent)
     }
 
     /// Reads the record of the submission of leaf `leaf` strictly.
@@ -334,24 +336,61 @@ pub fn judge(
     }
 }
 
-/// What watching says of one submission: its verdict, and notes, such as a promise served that
-/// does not verify.
+/// The most submission records `una ita watch` judges in one run, the oldest first; the others
+/// wait for a later run, and the run says how many.
+pub const MAX_JUDGED: usize = 1000;
+
+/// The submissions to judge in this run, from `unsettled`, the oldest first: at most
+/// [`MAX_JUDGED`] of them, and how many wait for a later run.
+pub fn to_judge(mut unsettled: Vec<String>) -> (Vec<String>, usize) {
+    let waiting = unsettled.len().saturating_sub(MAX_JUDGED);
+    unsettled.truncate(MAX_JUDGED);
+    (unsettled, waiting)
+}
+
+/// What watching says of one submission: its verdict, notes, the promise to store as the first
+/// one seen, and whether the registry replaced a promise it made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Assessment {
     /// The verdict.
     pub verdict: Verdict,
     /// Notes to print with it.
     pub notes: Vec<String>,
+    /// The first verified promise, to store in Itaoca when none is stored yet.
+    pub first: Option<String>,
+    /// Whether the promise served differs from the first one stored: evidence against the
+    /// registry.
+    pub replaced: bool,
 }
 
-/// Assesses `submitted` from what was served at its place: `served`, the promise's bytes, none,
-/// or why the place could not serve; `log`, the log's key of the last root; `logged_at` and
-/// `now` as [`judge`] takes them. A promise that does not verify (a bad signature, another
-/// source or leaf, a text that does not read) is reported, and judged as no promise, so the
-/// window rule decides. It never fails: one submission's trouble is its own.
+/// A promise read from `bytes` and verified, or why not.
+fn verified(
+    bytes: Vec<u8>,
+    log: &crate::tlog::note::Key,
+    source: &str,
+    leaf: &str,
+) -> Result<Promise, String> {
+    let document = String::from_utf8(bytes).map_err(|_| "it is not UTF-8".to_owned())?;
+    super::submit::check_promise(&document, log, source, leaf)
+}
+
+/// Assesses `submitted` from what was served at its place, `served`, the promise's bytes, none,
+/// or why the place could not serve, and from `stored`, the first verified promise Itaoca keeps
+/// for it; `log` is the log's key of the last root; `logged_at` and `now` are as [`judge`] takes
+/// them.
+///
+/// - A promise served that does not verify (a bad signature, another source or leaf, a text
+///   that does not read) is reported, and counts as none.
+/// - The first verified promise is kept ([`Assessment::first`]); a later one whose text differs
+///   from it is a replaced promise, reported as evidence ([`Assessment::replaced`]).
+/// - The judgment takes the earliest `by` of every verified promise seen, so a registry cannot
+///   turn a broken promise into a kept one by replacing it.
+///
+/// It never fails: one submission's trouble is its own.
 pub fn assess(
     submitted: &Submitted,
     served: Result<Option<Vec<u8>>, String>,
+    stored: Option<Vec<u8>>,
     log: &crate::tlog::note::Key,
     source: &str,
     logged_at: Option<u64>,
@@ -359,22 +398,25 @@ pub fn assess(
 ) -> Assessment {
     let mut notes = Vec::new();
     let leaf = format!("sha256:{}", submitted.leaf);
-    let promise = match served {
+    let first = match stored.map(|bytes| verified(bytes, log, source, &leaf)) {
+        Some(Ok(promise)) => Some(promise),
+        Some(Err(why)) => {
+            notes.push(format!(
+                "the promise stored for {leaf} does not verify, and counts as none: {}",
+                crate::client::shown(&why)
+            ));
+            None
+        }
+        None => None,
+    };
+    let current = match served {
         Ok(None) => None,
-        Ok(Some(bytes)) => match String::from_utf8(bytes) {
-            Ok(document) => match super::submit::check_promise(&document, log, source, &leaf) {
-                Ok(promise) => Some(promise),
-                Err(why) => {
-                    notes.push(format!(
-                        "the promise served for {leaf} does not verify, and counts as none: {}",
-                        crate::client::shown(&why)
-                    ));
-                    None
-                }
-            },
-            Err(_) => {
+        Ok(Some(bytes)) => match verified(bytes, log, source, &leaf) {
+            Ok(promise) => Some(promise),
+            Err(why) => {
                 notes.push(format!(
-                    "the promise served for {leaf} is not UTF-8, and counts as none"
+                    "the promise served for {leaf} does not verify, and counts as none: {}",
+                    crate::client::shown(&why)
                 ));
                 None
             }
@@ -387,9 +429,25 @@ pub fn assess(
             None
         }
     };
+    let replaced = matches!((&first, &current), (Some(a), Some(b)) if a.document != b.document);
+    if replaced {
+        notes.push(format!(
+            "the registry replaced its promise for {leaf}, which is evidence against it; the earliest `by` is the one judged"
+        ));
+    }
+    let store = match (&first, &current) {
+        (None, Some(promise)) => Some(promise.document.clone()),
+        _ => None,
+    };
+    let earliest = [first, current]
+        .into_iter()
+        .flatten()
+        .min_by_key(|promise| promise.by);
     Assessment {
-        verdict: judge(submitted, promise.as_ref(), logged_at, now),
+        verdict: judge(submitted, earliest.as_ref(), logged_at, now),
         notes,
+        first: store,
+        replaced,
     }
 }
 

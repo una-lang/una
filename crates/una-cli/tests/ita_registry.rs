@@ -592,6 +592,20 @@ fn a_floor_that_cannot_be_stored_is_a_note() {
         std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
     }
     std::fs::set_permissions(&floors, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // A process that ignores file modes, as root does, can write here anyway: the test cannot
+    // block the store this way, and says so.
+    let probe = floors.join("probe");
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .is_ok()
+    {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&floors, std::fs::Permissions::from_mode(0o755)).unwrap();
+        println!("skipped: running with privileges that ignore file modes");
+        return;
+    }
     let (status, out, err) = una_in(&["una", "ita", "audit", path(&dir)], &itaoca);
     std::fs::set_permissions(&floors, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(status, 0, "{out}{err}");

@@ -34,8 +34,9 @@ pub struct Locked {
     /// The lock's resolution point at its source: the checkpoint's size.
     pub resolution: u64,
     /// The entries of its owner's chain whose key change the lock records as consented to, the
-    /// lock's `accepted` line for the owner (`spec/30 §4` rule 2, §14 rule 8): never reported
-    /// again, as `una ita lock --check` does not report them.
+    /// lock's `accepted` line for the owner (`spec/30 §4` rule 2, §14 rule 8). An index counts
+    /// only as `una ita lock` counts it: below the lock's resolution point and an entry of the
+    /// owner's chain there, a recovery or a dispute then pending, or another key event.
     pub accepted: BTreeSet<u64>,
 }
 
@@ -60,6 +61,9 @@ pub struct Facts {
     /// The log indexes of the yanks of it that are void: counted only with a compromised key,
     /// or repeating a yank.
     pub void_yanks: Vec<u64>,
+    /// The recoveries and disputes the lock accepted while pending, now in effect: their log
+    /// indexes. Their effect needs fresh consent, so each is reported.
+    pub accepted_effects: Vec<u64>,
 }
 
 /// The facts of `locked` from `registry`, opened at a fresh checkpoint of its source: its name's
@@ -104,11 +108,33 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     // Recorded consent counts as `una ita lock --check` counts it
     // (`History::changed_after_except`): an accepted entry, and the effect it requested, are
     // not reported again; a new one is.
+    // Only the indices `una ita lock` would honor: below the resolution point, on the owner's
+    // chain, and, for a recovery or a dispute, not in effect at that point.
+    let accepted: BTreeSet<u64> = locked
+        .accepted
+        .iter()
+        .copied()
+        .filter(|index| {
+            *index < locked.resolution
+                && history.entries.contains(index)
+                && history
+                    .requests
+                    .get(index)
+                    .is_none_or(|effect| effect.is_none_or(|at| at > locked.resolution))
+        })
+        .collect();
+    // A recovery or a dispute accepted while pending that has since taken effect: its effect
+    // is a key change of its own, which the consent to the request does not cover.
+    let accepted_effects: Vec<u64> = accepted
+        .iter()
+        .copied()
+        .filter(|index| matches!(history.requests.get(index), Some(Some(_))))
+        .collect();
     let pending: Vec<u64> = history
         .pending
         .iter()
         .map(|p| p.index)
-        .filter(|index| !locked.accepted.contains(index))
+        .filter(|index| !accepted.contains(index))
         .collect();
     let mut changes: BTreeSet<u64> = history
         .entries
@@ -125,7 +151,9 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     );
     let key_changes = changes
         .into_iter()
-        .filter(|index| !locked.accepted.contains(index) && !pending.contains(index))
+        .filter(|index| {
+            !accepted.contains(index) && !pending.contains(index) && !accepted_effects.contains(index)
+        })
         .collect();
     Ok(Facts {
         yanked: marks.yanked.contains_key(&locked.version),
@@ -140,6 +168,7 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
             .filter(|void| void.version == locked.version)
             .map(|void| void.index)
             .collect(),
+        accepted_effects,
     })
 }
 
@@ -169,6 +198,9 @@ pub enum Kind {
     /// A yank of its release at this log index that is void: it does not stand, yet it shows
     /// that someone holding a compromised key, or its owner again, tried to yank it.
     VoidYank(u64),
+    /// A recovery or a dispute of its owner, logged at this index, which the lock accepted while
+    /// pending, has taken effect: the new key needs fresh consent.
+    AcceptedTookEffect(u64),
 }
 
 /// A finding: the package, by its index among the packages audited, and what was found.
@@ -211,6 +243,10 @@ impl Finding {
                 "the keys of the owner `{}` changed after the lock's resolution point (log entry {index}), with no consent the lock records",
                 owner_of(&locked.name)
             ),
+            Kind::AcceptedTookEffect(index) => format!(
+                "the recovery or dispute of the owner `{}` at log entry {index}, accepted while pending, has taken effect; its new key needs fresh consent",
+                owner_of(&locked.name)
+            ),
             Kind::VoidYank(index) => format!(
                 "a yank of {version} at log entry {index} is void: it counts only with a key revoked as compromised, or repeats a yank"
             ),
@@ -240,6 +276,12 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
     kinds.extend(facts.pending.iter().map(|index| Kind::PendingRecovery(*index)));
     kinds.extend(facts.key_changes.iter().map(|from| Kind::KeyChange(*from)));
     kinds.extend(facts.void_yanks.iter().map(|index| Kind::VoidYank(*index)));
+    kinds.extend(
+        facts
+            .accepted_effects
+            .iter()
+            .map(|index| Kind::AcceptedTookEffect(*index)),
+    );
     kinds
         .into_iter()
         .map(|kind| Finding { package, kind })

@@ -218,6 +218,10 @@ fn read_key_file_on(path: &Path) -> Result<(SigningKey, u64), String> {
 ///   key hash a client looks for (`spec/30 §11` rule 3); the others are not used;
 /// - at least `threshold` distinct registered keys must be found, and every one found signs.
 ///
+/// The directory is checked as a best-effort bound on a local attacker who can already write
+/// `~/.una`: its device and inode before it is listed and after every read, and each key file's
+/// device. The check becomes relative to the directory's descriptor later.
+///
 /// Returns the keys in the order of their file names.
 pub fn owner_keys(
     dir: &Path,
@@ -238,7 +242,8 @@ pub fn owner_keys(
     // A best-effort bound on a local attacker who can already write `~/.una`: the directory's
     // device and inode, read with no link followed, are recorded before it is listed, each key
     // file opened must be on that device, and after every read the directory must still be the
-    // same one and still private. Any change refuses.
+    // same one and still private. Any change refuses. The check becomes relative to the
+    // directory's descriptor later, which closes the window between the checks and the opens.
     let before = crate::tree::private_dir_identity(dir)?;
     let entries =
         std::fs::read_dir(dir).map_err(|error| format!("cannot list `{}`: {error}", dir.display()))?;

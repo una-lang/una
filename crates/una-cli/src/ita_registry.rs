@@ -1008,10 +1008,19 @@ pub(crate) fn watch_command(
             // Settled lines whose record is gone are pruned, so the position stays bounded.
             let existing: std::collections::BTreeSet<String> = list.iter().cloned().collect();
             report.position.prune(&existing);
-            for leaf in list {
-                if report.position.settled.contains(&leaf) {
-                    continue;
-                }
+            // At most `MAX_JUDGED` records per run, the oldest first; the rest wait.
+            let unsettled: Vec<String> = list
+                .into_iter()
+                .filter(|leaf| !report.position.settled.contains(leaf))
+                .collect();
+            let (judged, waiting) = watch::to_judge(unsettled);
+            if waiting > 0 {
+                lines.push(format!(
+                    "note: {waiting} submissions wait for a later run; each run judges at most {} of them, the oldest first",
+                    watch::MAX_JUDGED
+                ));
+            }
+            for leaf in judged {
                 let assessment = match judge_submission(itaoca, source, &leaf, &mut registry) {
                     Ok(assessment) => assessment,
                     Err(why) => {
@@ -1024,6 +1033,17 @@ pub(crate) fn watch_command(
                     }
                 };
                 lines.extend(assessment.notes.iter().map(|note| format!("note: {note}")));
+                if assessment.replaced {
+                    failed = true;
+                }
+                if let Some(first) = &assessment.first
+                    && let Err(why) = store_promise(itaoca, source, &leaf, first)
+                {
+                    failed = true;
+                    lines.push(format!(
+                        "error: the first promise for sha256:{leaf} is not stored: {why}"
+                    ));
+                }
                 match &assessment.verdict {
                     watch::Verdict::Pending => {
                         lines.push(format!("pending: the submission sha256:{leaf} is not logged yet"));
@@ -1091,7 +1111,13 @@ fn submissions(itaoca: &Itaoca, source: &str) -> Result<Vec<String>, String> {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
         .collect();
-    leaves.sort();
+    // The oldest first, by the time each record was written, then by name.
+    leaves.sort_by_cached_key(|leaf| {
+        let written = std::fs::symlink_metadata(dir.join(leaf))
+            .and_then(|meta| meta.modified())
+            .ok();
+        (written, leaf.clone())
+    });
     Ok(leaves)
 }
 
@@ -1112,6 +1138,9 @@ fn judge_submission(
     let record = watch::Submitted::parse(leaf, &text)?;
     // What the place serves is judged by `assess`: a promise that does not verify is reported
     // and counts as none; a place that cannot serve is reported too.
+    let stored = tree::locate(&itaoca.root, &["registry", source, "promises", leaf])?
+        .map(|file| tree::read_file(&file, 1 << 16))
+        .transpose()?;
     let served = Location::parse(&record.url)
         .and_then(|location| transport::open(&location).get(&format!("submit/{leaf}/promise"), 1 << 16));
     let target = format!("sha256:{leaf}");
@@ -1126,11 +1155,21 @@ fn judge_submission(
     Ok(watch::assess(
         &record,
         served,
+        stored,
         &registry.root.log,
         source,
         logged_at,
         registry.point.time,
     ))
+}
+
+/// Stores `document`, the first verified promise for the submission `leaf`, at
+/// `registry/<source>/promises/<leaf>` in Itaoca, once.
+fn store_promise(itaoca: &Itaoca, source: &str, leaf: &str, document: &str) -> Result<(), String> {
+    vendor::check_source(source)?;
+    tree::not_a_link(&itaoca.root)?;
+    let parent = tree::make_dirs(&itaoca.root, &["registry", source, "promises"])?;
+    tree::store_file(&parent, leaf, document.as_bytes(), true)
 }
 
 /// The registry packages of the project's lock, as their provenance must show them; or the
