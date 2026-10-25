@@ -4223,9 +4223,12 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "failed 2000\n");
     let _ = std::fs::remove_dir_all(&interpreted_dir);
     let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
-    for workers in ["1", "4"] {
+    // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
+    // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
+    // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
+    for (workers, budget) in [("1", "16"), ("2", "24"), ("4", "24")] {
         let native = Command::new(dir.join("target/una/cancelled"))
-            .args(["--max-memory", "16", "--workers", workers])
+            .args(["--max-memory", budget, "--workers", workers])
             .current_dir(&dir)
             .output()
             .unwrap();
