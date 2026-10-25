@@ -4,9 +4,10 @@
 //! the Trusted zone and the key joins it instead.
 //!
 //! An existing key file is used only when it is a private regular file of the user: not a
-//! symbolic link, and on Unix owned by the process's effective user with no permission for the
-//! group or others (#1164). Any other file, which someone else could have chosen or could read,
-//! turns the cache off.
+//! symbolic link, with no other hard link, at most 4 KiB, and on Unix owned by the process's
+//! effective user and used when its mode grants nothing to group or others (#1164). Any other
+//! file, which someone else could have chosen or could read, turns the cache off. A key is also
+//! at least 16 bytes, which `una_verify::ProofCache::new` requires too; a shorter one is no key.
 //!
 //! When there is no key to read or make, the cache is off: every obligation is solved, and the
 //! build report's `tcb.proof_cache_key` is `null`. That is never an error.
@@ -28,6 +29,9 @@ const LENGTH: usize = 32;
 /// A key shorter than this is not used.
 const MINIMUM: usize = 16;
 
+/// The most bytes of a key file that are read; a longer file is not a key.
+const MAXIMUM: u64 = 4 * 1024;
+
 /// The user's key: its bytes, and its file as the build report shows it.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ProofKey {
@@ -44,32 +48,112 @@ impl std::fmt::Debug for ProofKey {
     }
 }
 
-/// The key, read or made, or `None` when there is none to use.
-pub(crate) fn resolve(environment: Environment<'_>) -> Option<ProofKey> {
-    let (path, shown) =
-        match crate::variable(environment, OVERRIDE).filter(|value| !value.is_empty()) {
-            Some(file) => (PathBuf::from(&file), file),
-            None => {
-                let home = crate::variable(environment, "HOME").filter(|home| !home.is_empty())?;
-                let path = Path::new(&home).join(".una").join("proof-cache.key");
-                (path, DEFAULT_SHOWN.to_owned())
-            }
-        };
-    let secret = read_or_make(&path)?;
-    (secret.len() >= MINIMUM).then_some(ProofKey { secret, shown })
+/// Why an existing key file is not used (#1164).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The file is a symbolic link.
+    Link,
+    /// The file is not a regular file, such as a directory.
+    NotRegular,
+    /// The file belongs to another user.
+    NotOwned,
+    /// The group or others have permissions on the file.
+    Shared,
+    /// The file has another hard link, a name someone else may have made for it.
+    HardLinked,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refusal::Link => "it is a symbolic link",
+            Refusal::NotRegular => "it is not a regular file",
+            Refusal::NotOwned => "another user owns it",
+            Refusal::Shared => "the group or others have permissions on it",
+            Refusal::HardLinked => "it has another hard link",
+        })
+    }
+}
+
+/// An existing key file that is not used: as the report shows it, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Refused {
+    pub(crate) shown: String,
+    pub(crate) reason: Refusal,
+}
+
+/// The key, read or made; `Ok(None)` when there is none to use, as when there is no home or
+/// the key is too short; and the refusal of a key file that exists but is not a private
+/// regular file of the user, which the command line reports. This function prints nothing.
+pub(crate) fn resolve(environment: Environment<'_>) -> Result<Option<ProofKey>, Refused> {
+    let (path, shown) = match crate::variable(environment, OVERRIDE)
+        .filter(|value| !value.is_empty())
+    {
+        Some(file) => (PathBuf::from(&file), file),
+        None => {
+            let Some(home) = crate::variable(environment, "HOME").filter(|home| !home.is_empty())
+            else {
+                return Ok(None);
+            };
+            let path = Path::new(&home).join(".una").join("proof-cache.key");
+            (path, DEFAULT_SHOWN.to_owned())
+        }
+    };
+    let secret = match read_or_make(&path) {
+        Ok(Some(secret)) => secret,
+        Ok(None) => return Ok(None),
+        Err(reason) => return Err(Refused { shown, reason }),
+    };
+    Ok((secret.len() >= MINIMUM).then_some(ProofKey { secret, shown }))
 }
 
 /// The bytes of the key file at `path`, made first when it does not exist; an existing file is
 /// used only when it is private ([`read_private`]). Two processes that
 /// make it at once agree: each writes its key to a file of its own, then links it to `path`,
 /// which succeeds only when `path` is absent; the loser reads the winner's. The link is atomic,
-/// so `path` never shows a key half written (#282).
-fn read_or_make(path: &Path) -> Option<Vec<u8>> {
-    match read_private(path) {
-        Ok(bytes) => return Some(bytes),
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return None,
+/// so `path` never shows a key half written (#282). An existing file that is not private is
+/// the refusal.
+fn read_or_make(path: &Path) -> Result<Option<Vec<u8>>, Refusal> {
+    match read_settled(path) {
+        Ok(read) => return read.map(Some),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {}
     }
+    match make(path) {
+        Some(Made::Key(secret)) => Ok(Some(secret)),
+        // Another process made it first: its key is read under the same rules.
+        Some(Made::Raced) => match read_settled(path) {
+            Ok(read) => read.map(Some),
+            Err(_) => Ok(None),
+        },
+        None => Ok(None),
+    }
+}
+
+/// [`read_private`], waiting a little while the key has a second hard link: a process that
+/// makes the key links its staged file to `path`, then removes the staged name, so for a
+/// moment the key has two links. After about 100 ms, a second link is the refusal.
+fn read_settled(path: &Path) -> std::io::Result<Result<Vec<u8>, Refusal>> {
+    for _ in 0..50 {
+        match read_private(path)? {
+            Err(Refusal::HardLinked) => std::thread::sleep(std::time::Duration::from_millis(2)),
+            read => return Ok(read),
+        }
+    }
+    read_private(path)
+}
+
+/// What [`make`] did.
+enum Made {
+    /// It made the key.
+    Key(Vec<u8>),
+    /// A file was at the name first.
+    Raced,
+}
+
+/// Makes the key file at `path`, or finds that another process made it first; `None` when it
+/// cannot.
+fn make(path: &Path) -> Option<Made> {
     // The key, then the name of the file it is written to first.
     let mut random = vec![0u8; LENGTH + 8];
     std::fs::File::open("/dev/urandom")
@@ -98,57 +182,72 @@ fn read_or_make(path: &Path) -> Option<Vec<u8>> {
     let linked = written.and_then(|()| std::fs::hard_link(&staged, path));
     let _ = std::fs::remove_file(&staged);
     match linked {
-        Ok(()) => Some(secret),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_private(path).ok(),
+        Ok(()) => Some(Made::Key(secret)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Some(Made::Raced),
         Err(_) => None,
     }
 }
 
 /// The bytes of the key file at `path` when it is a private regular file of the user (#1164),
-/// and an error otherwise: `NotFound` when there is no file, `PermissionDenied` when there is
-/// one this module does not use.
+/// the refusal when it is not, and the error of inspecting or reading it otherwise (`NotFound`
+/// when there is no file).
 ///
 /// The file is checked by `symlink_metadata`, which never follows a link, then opened, and the
 /// opened file is checked again and must be the one checked first (same device and inode), so
 /// a file swapped in between is not read.
-fn read_private(path: &Path) -> std::io::Result<Vec<u8>> {
-    let refused = || {
-        std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "the proof cache key is not a private regular file of the user",
-        )
-    };
+fn read_private(path: &Path) -> std::io::Result<Result<Vec<u8>, Refusal>> {
     let checked = std::fs::symlink_metadata(path)?;
     let user = effective_uid();
-    if !private(&checked, user) {
-        return Err(refused());
+    if let Err(reason) = private(&checked, user) {
+        return Ok(Err(reason));
     }
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     let opened = file.metadata()?;
-    if !private(&opened, user) || !same_file(&checked, &opened) {
-        return Err(refused());
+    if let Err(reason) = private(&opened, user) {
+        return Ok(Err(reason));
+    }
+    if !same_file(&checked, &opened) {
+        // Swapped between the two steps: what was opened is not the file checked.
+        return Ok(Err(Refusal::Link));
     }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
+    file.take(MAXIMUM + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAXIMUM {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the proof cache key file is larger than 4 KiB",
+        ));
+    }
+    Ok(Ok(bytes))
 }
 
-/// Whether `metadata` is that of a regular file, not a link, and on Unix one owned by `user`
-/// with no permission for the group or others.
-fn private(metadata: &std::fs::Metadata, user: Option<u32>) -> bool {
+/// Whether `metadata` is that of a regular file, not a link, and on Unix one owned by `user`,
+/// whose mode grants nothing to group or others, with a single hard link; the refusal
+/// otherwise. With no user to compare
+/// (`None`), a file on Unix is taken as another user's.
+fn private(metadata: &std::fs::Metadata, user: Option<u32>) -> Result<(), Refusal> {
+    if metadata.file_type().is_symlink() {
+        return Err(Refusal::Link);
+    }
     if !metadata.file_type().is_file() {
-        return false;
+        return Err(Refusal::NotRegular);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if user != Some(metadata.uid()) || metadata.mode() & 0o077 != 0 {
-            return false;
+        if user != Some(metadata.uid()) {
+            return Err(Refusal::NotOwned);
+        }
+        if metadata.mode() & 0o077 != 0 {
+            return Err(Refusal::Shared);
+        }
+        if metadata.nlink() != 1 {
+            return Err(Refusal::HardLinked);
         }
     }
     #[cfg(not(unix))]
     let _ = user;
-    true
+    Ok(())
 }
 
 /// Whether `first` and `second` are the metadata of the same file.
@@ -213,7 +312,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let home = dir.to_str().unwrap().to_owned();
         let environment = move |name: &str| Ok((name == "HOME").then(|| home.clone()));
-        let made = resolve(&environment).unwrap();
+        let made = resolve(&environment).unwrap().unwrap();
         assert_eq!(made.secret.len(), LENGTH);
         assert_eq!(made.shown, "~/.una/proof-cache.key");
         let file = dir.join(".una").join("proof-cache.key");
@@ -223,15 +322,21 @@ mod tests {
             let mode = std::fs::metadata(&file).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        assert_eq!(resolve(&environment).unwrap(), made);
+        assert_eq!(resolve(&environment), Ok(Some(made.clone())));
         assert!(!format!("{made:?}").contains(&format!("{:?}", made.secret)));
         // The override names another file; a key too short, or no home, is no key.
         let other = dir.join("other.key");
         std::fs::write(&other, b"short").unwrap();
+        // Private, so that only its length keeps it from being a key (#1164).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let other_name = other.to_str().unwrap().to_owned();
         let overriding = move |name: &str| Ok((name == OVERRIDE).then(|| other_name.clone()));
-        assert_eq!(resolve(&overriding), None);
-        assert_eq!(resolve(&|_: &str| Ok(None)), None);
+        assert_eq!(resolve(&overriding), Ok(None));
+        assert_eq!(resolve(&|_: &str| Ok(None)), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -249,16 +354,35 @@ mod tests {
         let file = dir.join("proof-cache.key");
         std::fs::write(&file, key).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(read_or_make(&file), Some(key.to_vec()));
+        assert_eq!(read_or_make(&file), Ok(Some(key.to_vec())));
         let link = dir.join("linked.key");
         std::os::unix::fs::symlink(&file, &link).unwrap();
-        assert_eq!(read_or_make(&link), None);
+        assert_eq!(read_or_make(&link), Err(Refusal::Link));
         assert_eq!(std::fs::read_link(&link).unwrap(), file);
         let name = link.to_str().unwrap().to_owned();
+        let shown = name.clone();
         let overriding = move |variable: &str| Ok((variable == OVERRIDE).then(|| name.clone()));
-        assert_eq!(resolve(&overriding), None);
+        assert_eq!(
+            resolve(&overriding),
+            Err(Refused {
+                shown,
+                reason: Refusal::Link
+            })
+        );
+        assert_eq!(read_or_make(&dir), Err(Refusal::NotRegular));
+        // A second hard link to the private key: someone else may have made that name.
+        let second = dir.join("second.key");
+        std::fs::hard_link(&file, &second).unwrap();
+        assert_eq!(read_or_make(&file), Err(Refusal::HardLinked));
+        std::fs::remove_file(&second).unwrap();
+        assert_eq!(read_or_make(&file), Ok(Some(key.to_vec())));
+        // A file over 4 KiB is not a key, and is not read whole.
+        let large = dir.join("large.key");
+        std::fs::write(&large, vec![7u8; 5000]).unwrap();
+        std::fs::set_permissions(&large, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_or_make(&large), Ok(None));
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(read_or_make(&file), None);
+        assert_eq!(read_or_make(&file), Err(Refusal::Shared));
         assert_eq!(std::fs::read(&file).unwrap(), key);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -280,7 +404,7 @@ mod tests {
                     let start = std::sync::Arc::clone(&start);
                     std::thread::spawn(move || {
                         start.wait();
-                        read_or_make(&path)
+                        read_or_make(&path).ok().flatten()
                     })
                 })
                 .collect::<Vec<_>>()

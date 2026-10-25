@@ -20,6 +20,7 @@ fn repository() -> PathBuf {
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository())
         .output()
@@ -296,6 +297,7 @@ pub first() -> Int = book(4321)
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -320,6 +322,7 @@ pub first() -> Int = book(4321)
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["check", "--tier", "0", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -452,6 +455,7 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let _ = std::fs::remove_dir_all(root.join(".una"));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &bin)
         .output()
@@ -1553,8 +1557,15 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     };
     let refuted =
         |output: &Output| output.status.code() == Some(1) && stderr(output).contains("U5001");
-    // The first run solves and caches the refutation under the key it makes.
-    assert!(refuted(&run("alice", None, &["check"])));
+    // The first run solves and caches the refutation under the key it makes: a missing key is
+    // made, with no note (#1164).
+    let first = run("alice", None, &["check"]);
+    assert!(refuted(&first));
+    assert!(
+        !stderr(&first).contains("proof cache key"),
+        "{}",
+        stderr(&first)
+    );
     assert_eq!(
         report("alice", None),
         (json!(1), json!("~/.una/proof-cache.key"))
@@ -1575,14 +1586,39 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     let unreadable = scratch.join("a-directory");
     std::fs::create_dir_all(&unreadable).unwrap();
     assert_eq!(report("alice", Some(&unreadable)), (json!(0), json!(null)));
+    // It exists and is not a regular file: a note says the cache is off (#1164).
+    let noted = run("alice", Some(&unreadable), &["check"]);
+    assert!(
+        stderr(&noted).contains(&format!(
+            "note: the proof cache key `{}` is not a private regular file of the user (it is not a regular file); the proof cache is off (chmod 600 it)",
+            unreadable.display()
+        )),
+        "{}",
+        stderr(&noted)
+    );
     // The override names the key file, as the report shows it.
     let named = scratch.join("team.key");
     std::fs::write(&named, [7u8; 32]).unwrap();
-    // A key file is used only when it is a private regular file of the user (#1164).
+    // A key file is used only when it is a private regular file of the user (#1164): one the
+    // group or others can read is refused with a note, and the 0600 one is used, with none.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(report("carol", Some(&named)).1, json!(null));
+        let noted = run("carol", Some(&named), &["check"]);
+        assert!(
+            stderr(&noted).contains("(the group or others have permissions on it); the proof cache is off (chmod 600 it)"),
+            "{}",
+            stderr(&noted)
+        );
         std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let used = run("carol", Some(&named), &["check"]);
+        assert!(
+            !stderr(&used).contains("proof cache key"),
+            "{}",
+            stderr(&used)
+        );
     }
     let shown = json!(named.to_str().unwrap());
     assert_eq!(report("carol", Some(&named)).1, shown);
@@ -1705,6 +1741,7 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", scratch.join("home"))
+        .env_remove("UNA_PROOF_KEY")
         .env("PATH", path)
         .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check"])

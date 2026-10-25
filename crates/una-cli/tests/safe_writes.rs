@@ -1,31 +1,70 @@
 //! The guard of #1160: the non-test sources of `una-cli`, `una-verify` and `una-codegen` write
 //! into a package directory only through `una_diag::safe_write`, which never follows a link
-//! planted there out of the package. A raw write (`fs::write`, `File::create`, `.create(true)`
-//! or `create_dir_all`) fails this test unless the allowlist below names it with its reason.
+//! planted there out of the package. A raw write ([`RAW_WRITES`]: `fs::write`, `File::create`,
+//! `.create(true)`, `create_dir_all`, `create_dir`, `OpenOptions::new`, `DirBuilder`,
+//! `fs::rename`, `fs::copy` or `hard_link`) fails this test unless the allowlist below names
+//! it, with its exact count and reason. The helper itself, `crates/una-diag/src/safe_write.rs`,
+//! is not read.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The calls that write without the checks of `una_diag::safe_write`.
-const RAW_WRITES: [&str; 4] = [
+const RAW_WRITES: [&str; 10] = [
     "fs::write(",
     "File::create(",
     ".create(true)",
     "create_dir_all(",
+    "OpenOptions::new(",
+    "fs::rename(",
+    "fs::copy(",
+    "hard_link(",
+    "DirBuilder",
+    "create_dir(",
 ];
 
 /// The crates whose sources are read.
 const CRATES: [&str; 3] = ["una-cli", "una-verify", "una-codegen"];
 
 /// The raw writes that remain, by file and call, with how many there are and why each is safe.
-const ALLOWED: [(&str, &str, usize, &str); 1] = [(
-    "crates/una-cli/src/build.rs",
-    "create_dir_all(",
-    1,
-    "the directory that `una build --out` names on the command line: the user chose it, not \
-     the package, and the files in it are still written through `una_diag::safe_write`",
-)];
+const ALLOWED: [(&str, &str, usize, &str); 5] = [
+    (
+        "crates/una-cli/src/build.rs",
+        "create_dir_all(",
+        1,
+        "the absolute directory that `una build --out` names on the command line: the user chose \
+         it, not the package, and the files in it are still written through \
+         `una_diag::safe_write`",
+    ),
+    (
+        "crates/una-cli/src/proof_key.rs",
+        "DirBuilder",
+        2,
+        "the directory of the user's proof cache key under HOME (or `UNA_PROOF_KEY`), outside \
+         any package, created with mode 0700",
+    ),
+    (
+        "crates/una-cli/src/proof_key.rs",
+        "OpenOptions::new(",
+        2,
+        "the staged key file and the effective-user probe in the temporary directory, both \
+         created exclusively (`create_new`) with mode 0600, outside any package",
+    ),
+    (
+        "crates/una-cli/src/proof_key.rs",
+        "hard_link(",
+        1,
+        "the staged key linked to its name, which fails when anything is at that name (#282)",
+    ),
+    (
+        "crates/una-cli/src/runtime.rs",
+        "OpenOptions::new(",
+        1,
+        "`write_file`, a program's own write under its granted file-system capability \
+         (ADR 0038 D9 rule 3): a new file is created with `create_new`, never through a link",
+    ),
+];
 
 /// The repository root.
 fn root() -> PathBuf {
