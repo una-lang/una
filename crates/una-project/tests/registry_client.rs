@@ -2397,8 +2397,8 @@ fn a_root_version_that_decreases_is_refused() {
     assert!(client.logged_at(1).is_err());
 }
 
-/// Cosignatures are counted against the last root's witnesses: a rotated-out witness's
-/// back-dated cosignature on a kept checkpoint is ignored, and no time moves.
+/// A witness the next root revokes as it rotates it out: its back-dated cosignature on a kept
+/// checkpoint is ignored, and no time moves.
 #[test]
 fn an_old_witness_back_dating_is_ignored() {
     let a = keypair(60, "acme.a");
@@ -2408,7 +2408,7 @@ fn an_old_witness_back_dating_is_ignored() {
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
     // The release's checkpoint, cosigned by two of the three witnesses.
     registry.checkpoint_with(&[Some(NOW - 5 * DAY), Some(NOW - 5 * DAY), None]);
-    registry.rotate_witness();
+    registry.rotate_witnesses(1, true);
     registry.append("other", "filler");
     registry.checkpoint(NOW);
     let honest = Memory {
