@@ -14,7 +14,7 @@
 #[path = "common/timing.rs"]
 mod timing;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
@@ -3911,6 +3911,61 @@ fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
         assert!(output.contains("tie 1\n") || output.contains("tie 2\n"));
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The program of #1146: a `secret` key, `key`, decides whether a task is started before a
+/// public race between a long branch, listed first, and a short one; the race prints its winner.
+fn slicer_program(key: u8) -> String {
+    format!(
+        "module leak\n\nnoop() -> Unit = unit\n\nkey() -> secret Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
+    )
+}
+
+#[test]
+fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time() {
+    // #1146, ADR 0117 rule 2: a turn ends `SLICE` after its own start, and the slicer runs
+    // from the scheduler's start, so whether earlier code started a task, and how long it
+    // ran, never changes when the turns of a public race end. The same program is built
+    // twice, with only its `secret` key changed, and each executable runs 20 times on one
+    // worker under the real clock: the outcomes must be distributed the same.
+    //
+    // Before the fix, the slicer started at the run's first started task. With key 0 no task
+    // was started, the long first branch was never sliced and won every run, printing `1`;
+    // with key 1 the `start` began the slicer, the long branch yielded after 10 to 20 ms and
+    // the short one won every run, printing `2`: a public race read the secret key.
+    const RUNS: usize = 20;
+    let mut outcomes = Vec::new();
+    for key in [0u8, 1] {
+        let name = format!("slicerleak{key}");
+        let dir = within_package(&name, "leak", &slicer_program(key));
+        let exe = dir.join(format!("target/una/{name}"));
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for _ in 0..RUNS {
+            let native = Command::new(&exe)
+                .args(["--workers", "1"])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(native.status.code(), Some(0), "key {key}: {native:?}");
+            *counts
+                .entry(String::from_utf8_lossy(&native.stdout).into_owned())
+                .or_default() += 1;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        outcomes.push(counts);
+    }
+    // The short branch wins whenever the long one's turn ends before it returns, as it does
+    // for every key now.
+    assert_eq!(
+        outcomes.first(),
+        outcomes.last(),
+        "the race's outcomes differ with the secret key"
+    );
+    assert_eq!(
+        outcomes.first().and_then(|counts| counts.get("2\n")),
+        Some(&RUNS),
+        "{outcomes:?}"
+    );
 }
 
 /// A program that runs `rounds` races, each between a branch that computes a little and

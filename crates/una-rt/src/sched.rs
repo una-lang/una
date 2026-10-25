@@ -20,7 +20,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use una_sys::coroutine::{Coroutine, Resumed, Scope, Stack};
@@ -207,11 +207,13 @@ struct Queue {
 struct Worker {
     queue: Mutex<Queue>,
     ready: Condvar,
-    /// The attention word of the worker's thread, once it runs, and when the turn in progress
-    /// began, in milliseconds of the monotonic clock: the slicer raises the word of a worker
-    /// whose turn has lasted [`SLICE`] while another task waits (ADR 0117 rule 2).
+    /// The attention word of the worker's thread, once it runs.
     word: Mutex<Option<una_sys::attention::Word>>,
-    turn_since: AtomicU64,
+    /// Under the real clock, when the turn in progress is due to end, in microseconds of the
+    /// monotonic clock ([`micros`]): set when the turn begins, [`SLICE`] after its start, and
+    /// cleared by the slicer once it has handled that end (ADR 0117 rule 2). 0 when no end is
+    /// pending.
+    turn_ends: AtomicU64,
 }
 
 impl Worker {
@@ -226,6 +228,26 @@ impl Worker {
             }
         }
         self.ready.notify_one();
+        if !front {
+            self.arrived();
+        }
+    }
+
+    /// After a task was queued as a new turn: when the turn in progress has passed its end with
+    /// no task waiting, the slicer has left it running, so its word is raised here and the
+    /// task yields at its next check point (ADR 0117 rule 2). O(1).
+    ///
+    /// The slicer clears `turn_ends` before it looks at the queue, and this reads it after the
+    /// job is queued, so one of the two sees the other: an arrival never goes unseen. A raise
+    /// on an idle worker, or before a turn's end, costs one slow path, where [`turn_due`] finds
+    /// the turn not over.
+    fn arrived(&self) {
+        if self.turn_ends.load(Ordering::SeqCst) == 0
+            && !crate::runtime::clock().is_virtual()
+            && let Some(word) = *lock(&self.word)
+        {
+            word.raise();
+        }
     }
 
     /// Whether another job waits in the queue.
@@ -277,8 +299,12 @@ fn serve_in(scope: &Scope<'_>, worker: &Arc<Worker>, shared: &Arc<Shared>) {
     *lock(&worker.word) = Some(crate::runtime::attention_word());
     while let Some((job, fresh)) = worker.next(held > 0) {
         if fresh {
+            // A turn's end is set from its own start, never from a phase of the run, so how
+            // long earlier code ran does not move it (#1146).
             TURN.with(|turn| turn.set(0));
-            worker.turn_since.store(millis(), Ordering::Relaxed);
+            let ends = micros().saturating_add(SLICE_MICROS).max(1);
+            TURN_ENDS.with(|cell| cell.set(ends));
+            worker.turn_ends.store(ends, Ordering::SeqCst);
         }
         let id = match job {
             Job::Start(stack, body, finish) => {
@@ -397,8 +423,6 @@ impl Shared {
 /// share.
 pub(crate) struct Scheduler {
     workers: Vec<Arc<Worker>>,
-    /// Whether the slicer runs: from the first started task, under the real clock.
-    slicing: AtomicBool,
     next: AtomicUsize,
     shared: Arc<Shared>,
 }
@@ -408,7 +432,9 @@ pub(crate) struct Scheduler {
 pub(crate) struct NotStarted;
 
 impl Scheduler {
-    /// A scheduler with the settings of the run; its threads start on demand.
+    /// A scheduler with the settings of the run; its workers start on demand. Under the real
+    /// clock its slicer starts here, with the scheduler, whatever the program starts later
+    /// (#1146).
     pub(crate) fn new(settings: una_interp::Concurrency) -> Arc<Scheduler> {
         let workers = (0..settings.workers.max(1))
             .map(|_| {
@@ -420,13 +446,12 @@ impl Scheduler {
                     }),
                     ready: Condvar::new(),
                     word: Mutex::new(None),
-                    turn_since: AtomicU64::new(0),
+                    turn_ends: AtomicU64::new(0),
                 })
             })
             .collect();
-        Arc::new(Scheduler {
+        let scheduler = Arc::new(Scheduler {
             workers,
-            slicing: AtomicBool::new(false),
             next: AtomicUsize::new(0),
             shared: Arc::new(Shared {
                 stacks: Mutex::new(BTreeMap::new()),
@@ -434,7 +459,17 @@ impl Scheduler {
                 files: Arc::new(Helpers::new(settings.file_threads)),
                 io: Arc::new(Helpers::new(settings.io_threads)),
             }),
-        })
+        });
+        if !crate::runtime::clock().is_virtual() {
+            let weak = Arc::downgrade(&scheduler);
+            // The slicer only raises attention words; a slicer that cannot start leaves turns
+            // to end when their tasks park, a liveness limit of the run, not a safety one.
+            let _ = std::thread::Builder::new()
+                .name("una-slicer".to_owned())
+                .stack_size(HELPER_STACK)
+                .spawn(move || slice(&weak));
+        }
+        scheduler
     }
 
     /// Starts `body` as a task on a stack of `stack` usable bytes, on the next worker of the
@@ -464,23 +499,14 @@ impl Scheduler {
     }
 
     /// Starts `body` as a started task, at the back of its worker's queue, a turn of its own
-    /// (ADR 0117 rules 7 and 11). Under the real clock, the first one starts the slicer, which
-    /// ends a turn that has lasted [`SLICE`] while another task waits on its worker.
+    /// (ADR 0117 rules 7 and 11). Its turns end as every task's do: the slicer runs from the
+    /// scheduler's start, so a started task changes no other task's turns (#1146).
     pub(crate) fn spawn_started(
-        self: &Arc<Self>,
+        &self,
         stack: usize,
         body: impl FnOnce() + Send + 'static,
         finish: impl FnOnce() + Send + 'static,
     ) -> Result<(), NotStarted> {
-        if !crate::runtime::clock().is_virtual() && !self.slicing.swap(true, Ordering::SeqCst) {
-            let scheduler = Arc::downgrade(self);
-            // The slicer only raises attention words; a slicer that cannot start leaves turns
-            // to end when their tasks park, a liveness limit of the run, not a safety one.
-            let _ = std::thread::Builder::new()
-                .name("una-slicer".to_owned())
-                .stack_size(HELPER_STACK)
-                .spawn(move || slice(&scheduler));
-        }
         self.spawn_at(stack, body, finish, false)
     }
 
@@ -516,40 +542,69 @@ impl Scheduler {
         }
         drop(queue);
         worker.ready.notify_one();
+        if !front {
+            worker.arrived();
+        }
         Ok(())
     }
 }
 
-/// The longest turn of a task while another waits on its worker, under the real clock (ADR
-/// 0117 rule 2, Fairness).
+/// The longest turn of a task while another waits on its worker, under the real clock, in
+/// milliseconds (ADR 0117 rule 2, Fairness).
 const SLICE: u64 = 10;
 
-/// Milliseconds of the monotonic clock since the process first read it.
-fn millis() -> u64 {
+/// [`SLICE`] in microseconds, the unit of turn ends.
+const SLICE_MICROS: u64 = SLICE * 1000;
+
+/// Microseconds of the monotonic clock since the process first read it, at least 1.
+fn micros() -> u64 {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let origin = *ORIGIN.get_or_init(std::time::Instant::now);
-    u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+    u64::try_from(origin.elapsed().as_micros())
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
-/// The slicer of a scheduler: every [`SLICE`] milliseconds, raises the attention word of each
-/// worker whose turn has lasted that long while another task waits, so the task yields at its
-/// next check point. Ends with its scheduler.
+/// The slicer of a scheduler, under the real clock: wakes at the earliest pending turn end of
+/// its workers, and raises the word of each worker whose turn has reached its end while
+/// another task waits, so the task yields at its next check point. A turn's end is its own
+/// start plus [`SLICE`], so the slicer has no phase of its own (#1146). Ends with its scheduler.
+///
+/// It sleeps at most [`SLICE`]: an end set after a scan is at least [`SLICE`] after it, so the
+/// slicer is awake by then. Each wake is O(w) in the w workers; a check point does no more
+/// than before, one clock read on its slow path ([`turn_due`]).
 fn slice(scheduler: &std::sync::Weak<Scheduler>) {
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(SLICE));
         let Some(scheduler) = scheduler.upgrade() else {
             return;
         };
-        let now = millis();
+        let now = micros();
+        let mut next = now.saturating_add(SLICE_MICROS);
         for worker in &scheduler.workers {
-            let since = worker.turn_since.load(Ordering::Relaxed);
-            if now.saturating_sub(since) >= SLICE
+            let ends = worker.turn_ends.load(Ordering::SeqCst);
+            if ends == 0 {
+                continue;
+            }
+            if ends > now {
+                next = next.min(ends);
+                continue;
+            }
+            // Cleared before the queue is read: a task queued later raises the word itself
+            // ([`Worker::arrived`]). A turn that began meanwhile keeps its own end.
+            if worker
+                .turn_ends
+                .compare_exchange(ends, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
                 && worker.others()
                 && let Some(word) = *lock(&worker.word)
             {
                 word.raise();
             }
         }
+        drop(scheduler);
+        std::thread::sleep(std::time::Duration::from_micros(
+            next.saturating_sub(micros()).max(1),
+        ));
     }
 }
 
@@ -559,6 +614,9 @@ thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     /// The check points of the turn in progress on this worker.
     static TURN: Cell<u32> = const { Cell::new(0) };
+    /// Under the real clock, when the turn in progress on this worker ends, in [`micros`]: set
+    /// when the turn begins.
+    static TURN_ENDS: Cell<u64> = const { Cell::new(0) };
     /// Whether the task that runs is due to give its worker to the next task, at the slow path
     /// of its check point.
     static DUE: Cell<bool> = const { Cell::new(false) };
@@ -576,8 +634,9 @@ pub(crate) fn counting() -> bool {
 
 /// A check point that reached the attention path (ADR 0117 rule 2): counts it under virtual
 /// time, and says whether the task's turn is over, while another task waits on its worker:
-/// after [`TURN_CHECKS`] check points under virtual time, or once the slicer raised the word
-/// under the real clock. The task then yields at the slow path ([`yield_due`]).
+/// after [`TURN_CHECKS`] check points under virtual time, or once the turn has reached its own
+/// end under the real clock, whatever raised the word: one clock read, O(1). The task then
+/// yields at the slow path ([`yield_due`]).
 pub(crate) fn turn_due() -> bool {
     let over = if counting() {
         let checks = TURN.with(|turn| {
@@ -587,7 +646,7 @@ pub(crate) fn turn_due() -> bool {
         });
         checks >= TURN_CHECKS
     } else {
-        true
+        una_sys::coroutine::inside() && micros() >= TURN_ENDS.with(Cell::get)
     };
     let due = over
         && una_sys::coroutine::inside()
@@ -1095,6 +1154,71 @@ mod tests {
         release.send(()).unwrap();
         release.send(()).unwrap();
         helpers.close();
+    }
+
+    /// The length of the first turn of a task that shares one worker with another, after
+    /// `earlier` ran on the scheduler for `offset`: what a check point loop measures from the
+    /// task's start to the end of its turn, or `None` when the turn never ended.
+    fn first_turn(earlier: bool, offset: std::time::Duration) -> Option<std::time::Duration> {
+        use std::time::{Duration, Instant};
+        let sched = Scheduler::new(settings(1, 1, 1));
+        if earlier {
+            let (done, ended) = channel();
+            sched
+                .spawn_started(256 * 1024, || {}, move || done.send(()))
+                .unwrap();
+            assert_eq!(ended.recv(), Some(()));
+        }
+        std::thread::sleep(offset);
+        let (measured, length) = std::sync::mpsc::channel();
+        let looping = start(&sched, move || {
+            // A check point as compiled code makes one: the slow path when the word changed.
+            let word = crate::runtime::attention_word();
+            let mut seen = word.load();
+            let began = Instant::now();
+            let mut turn = None;
+            while began.elapsed() < Duration::from_millis(200) {
+                std::hint::black_box(seen);
+                if let Some(now) = word.changed_since(seen) {
+                    seen = now;
+                    if turn_due() {
+                        turn = Some(began.elapsed());
+                        yield_due();
+                        break;
+                    }
+                }
+            }
+            measured.send(turn).unwrap();
+        });
+        let waiting = start(&sched, || {});
+        assert_eq!(looping.recv(), Some(()));
+        assert_eq!(waiting.recv(), Some(()));
+        length.recv().unwrap()
+    }
+
+    #[test]
+    fn a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before() {
+        // #1146: a turn's end was set by a slicer that started at the run's first started task
+        // and ticked on its own 10 ms phase, so a task that shared a worker never yielded
+        // before any `start`, and after one its turn lasted 10 to 20 ms, by how long earlier
+        // code ran. Now the slicer starts with the scheduler and each turn ends `SLICE` after
+        // its own start. The shortest of a few tries is taken, since load only lengthens a
+        // turn; the old phase gave 20 ms less the offset, at least 14 ms here.
+        let slice = std::time::Duration::from_millis(SLICE);
+        let most = slice + std::time::Duration::from_micros(2500);
+        for earlier in [false, true] {
+            for offset in [2, 4, 6] {
+                let shortest = (0..5)
+                    .map(|_| first_turn(earlier, std::time::Duration::from_millis(offset)))
+                    .map(|turn| turn.expect("a turn that shares its worker ends"))
+                    .min()
+                    .unwrap();
+                assert!(
+                    shortest + std::time::Duration::from_millis(1) >= slice && shortest <= most,
+                    "earlier start {earlier}, offset {offset} ms: turn of {shortest:?}"
+                );
+            }
+        }
     }
 
     #[test]
