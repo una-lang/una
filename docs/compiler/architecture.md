@@ -30,7 +30,7 @@ crates/
   una-hash/               keyed hashing: SipHash-2-4, the hash encoding, the process and table keys, the ordered hash table, shared by both engines (ADR 0119)
   una-rt/                 the runtime library of native executables; its ffi.rs is the only unsafe code (ADR 0058)
   una-lsp/                the language server of `una lsp`: LSP over stdio, the server's state (v0.2, ADR 0063)
-  una-itaty/              the Itaty registry service: log, tiles, name map, checks of submissions, HTTP endpoints (ADR 0122 S8)
+  una-itaty/              the Itaty registry service: log, tiles, name map, checks of submissions by the client's replay, witness obligations, rotation tooling, owner notices, HTTP endpoints (ADR 0122 S8)
   una-cli/                the `una` binary (the only compiler crate that does I/O to the terminal; una-rt is the I/O of native executables)
 tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
