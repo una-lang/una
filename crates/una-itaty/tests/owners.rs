@@ -2011,3 +2011,30 @@ fn cancellations_a_void_frees_again_draw_on_the_bucket_past_two() {
     assert_eq!(third.cause(), Some(&Cause::RateLimited));
     assert!(matches!(third, Refusal::Wait(..)));
 }
+
+#[test]
+fn the_hold_never_stops_a_cancellation_of_the_held_request() {
+    let mut f = Fixture::new("hold-cancel");
+    let a = keypair(60, "acme.a");
+    let c = keypair(61, "trustee.c");
+    let r = keypair(63, "acme.r");
+    f.register("acme", &[&a], &[&c]);
+    let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
+    let receipt = f
+        .registry
+        .request(signed(&recover, &[&c]).as_bytes(), false)
+        .unwrap();
+    let recovery = f.logged(&owner_chain("acme"), receipt);
+    f.cosign(&[0, 1], NOW);
+    // An hour before the recovery's target, the owner's other entries wait.
+    f.set_time(NOW + RECOVERY_DELAY - 3600);
+    assert_eq!(
+        f.submit("acme", "cancel 0", 1, &[&a]).unwrap_err().cause(),
+        Some(&Cause::OwnerHold(recovery))
+    );
+    // Its cancellation of the held recovery is taken.
+    let cancel = f
+        .submit("acme", &format!("cancel {recovery}"), 1, &[&a])
+        .unwrap();
+    assert!(f.registry.request_timing(cancel).is_some());
+}

@@ -1294,11 +1294,14 @@ impl Registry {
 
     /// The per-owner hold (`spec/30 §16` rule 10): from [`HOLD_WINDOW`] before the target of
     /// a request of `owner` until its deadline is fixed, the owner's entries, of its chain and
-    /// of its packages, wait; no other owner's do.
-    fn owner_hold(&self, owner_name: &str) -> Result<(), Refusal> {
+    /// of its packages, wait; no other owner's do. A cancellation of the held request itself,
+    /// `cancels`, is exempt, so an owner answers a thief's request until its target: at worst
+    /// the owner's names are unavailable to clients for a while, the fail-safe direction.
+    fn owner_hold(&self, owner_name: &str, cancels: Option<u64>) -> Result<(), Refusal> {
         let now = self.clock.now();
         let held = self.active_requests().find(|request| {
             request.owner == owner_name
+                && cancels != Some(request.index)
                 && request.deadline.is_none()
                 && request
                     .target()
@@ -2488,7 +2491,11 @@ impl Registry {
             || owner_of(&entry.chain).to_owned(),
             |read| read.owner.clone(),
         );
-        self.owner_hold(&owner_name)?;
+        let cancels = entry.owner_entry().and_then(|read| match read.event {
+            Event::Cancel(target) => Some(target),
+            _ => None,
+        });
+        self.owner_hold(&owner_name, cancels)?;
         let now = self.clock.now();
         if logging.throttled && self.bucket.available(now) == 0 {
             return Err(wait(
