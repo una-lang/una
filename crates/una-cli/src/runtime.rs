@@ -424,7 +424,7 @@ pub(crate) fn run_command(
         if una_http::resolve::start(io_threads).is_err() {
             writeln!(
                 stderr,
-                "[{}] Error: the resolver threads of this run's requests could not be made",
+                "[{}] Error: the lookup and connect threads of this run's requests could not be made",
                 Code::U6003
             )?;
             return Ok(ExitStatus::Errors);

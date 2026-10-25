@@ -1910,7 +1910,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         if una_http::resolve::start(state.concurrency.io_threads).is_err() {
             let written = writeln!(
                 stderr,
-                "[{}] Error: the resolver threads of this run's requests could not be made",
+                "[{}] Error: the lookup and connect threads of this run's requests could not be made",
                 Code::U6003
             );
             return if written.is_ok() { 1 } else { USAGE };

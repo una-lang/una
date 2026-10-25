@@ -172,7 +172,7 @@ fn serve(pool: &Pool) {
                 }
             }
         };
-        (job.run)(&job.gave_up);
+        (job.run)(&*job.gave_up);
     }
 }
 
