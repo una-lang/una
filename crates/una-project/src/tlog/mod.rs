@@ -6,6 +6,8 @@ pub mod ed25519;
 pub mod map;
 pub mod merkle;
 pub mod note;
+pub mod publish;
 pub mod release;
 pub mod root;
+pub mod state;
 pub mod witness;
