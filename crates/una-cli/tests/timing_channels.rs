@@ -13,41 +13,47 @@
 //! - the release gate `timing-channels` of `scripts/release-gates.sh` (`docs/release-gates.md`).
 //!
 //! Both run `cargo test --locked -p una-cli --test timing_channels -- --ignored
-//! --test-threads=1`.
+//! --test-threads=1`. Each oracle follows ADR 0116, amendment §G: an outcome of a deadline, two
+//! inputs compared with each other directly, 20 runs of each, alternating, and every run of
+//! both inputs giving the same outcome, with no retry. `crates/una-cli/tests/release_gates.rs`
+//! checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 #[path = "common/native_build.rs"]
 mod native_build;
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use native_build::{root, una};
 
-/// The extra time, in microseconds, past which the judge of the placement test holds its third
-/// answer beyond the deadline: the first `public` block took that much longer than the second,
-/// the same block run right after it in the same iteration.
-const JUDGED_EXTRA_US: u128 = 2000;
+/// How long the server holds the request under the deadline, in milliseconds.
+const HOLD_MS: u64 = 50;
 
-/// The judge of the placement test: a server on `127.0.0.1` that notes when `/a`, `/b` and `/c`
-/// arrive and answers `/a` and `/b` at once. It answers `/c` at once when the block between `/a`
-/// and `/b` took at most [`JUDGED_EXTRA_US`] longer than the same block between `/b` and `/c`,
-/// and otherwise holds it for 5 s, past the run's deadline, so the run's request fails with
-/// `TimedOut`. Each run compares its two blocks with each other, on the same machine at the
-/// same moment, so no threshold depends on the machine's speed.
-fn judging_server() -> u16 {
-    use std::io::{Read, Write};
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+/// The margin, in milliseconds, between the calibrated schedule and the deadline (ADR 0116
+/// amendment §G: each outcome at least 25 ms from the deadline).
+const MARGIN_MS: u64 = 25;
+
+/// The workers of every run: as many as `--workers` allows, so that the threads a construct
+/// would have started lazily are as many as they can be.
+const WORKERS: &str = "1024";
+
+/// A server on `127.0.0.1` for the placement oracle. It answers `/mark` at once and notes when
+/// it came, and holds `/hold` for [`HOLD_MS`] before it answers, noting in `spans` how long
+/// after the last `/mark` it came, in microseconds: the time the iteration spent between them.
+fn holding_server(spans: Arc<Mutex<Vec<u128>>>) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let marks: Arc<Mutex<(Option<Instant>, Option<Instant>)>> = Arc::new(Mutex::new((None, None)));
+    let mark: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let marks = Arc::clone(&marks);
+            let (mark, spans) = (Arc::clone(&mark), Arc::clone(&spans));
             std::thread::spawn(move || {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut request = Vec::new();
@@ -60,30 +66,16 @@ fn judging_server() -> u16 {
                 }
                 let now = Instant::now();
                 let request = String::from_utf8_lossy(&request).into_owned();
-                let path = request.split(' ').nth(1).unwrap_or("").to_owned();
-                let hold = {
-                    let mut marks = marks.lock().unwrap();
-                    match path.as_str() {
-                        "/a" => {
-                            *marks = (Some(now), None);
-                            false
-                        }
-                        "/b" => {
-                            marks.1 = Some(now);
-                            false
-                        }
-                        _ => match *marks {
-                            (Some(a), Some(b)) => {
-                                let first = b.duration_since(a).as_micros();
-                                let second = now.duration_since(b).as_micros();
-                                first > second + JUDGED_EXTRA_US
-                            }
-                            _ => true,
-                        },
+                if request.split(' ').nth(1) == Some("/mark") {
+                    *mark.lock().unwrap() = Some(now);
+                } else {
+                    if let Some(marked) = *mark.lock().unwrap() {
+                        spans
+                            .lock()
+                            .unwrap()
+                            .push(now.duration_since(marked).as_micros());
                     }
-                };
-                if hold {
-                    std::thread::sleep(Duration::from_secs(5));
+                    std::thread::sleep(Duration::from_millis(HOLD_MS));
                 }
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
             });
@@ -92,13 +84,14 @@ fn judging_server() -> u16 {
     port
 }
 
-/// The package of the placement test, with `key` as its `secret` input, built.
-fn placement_package(key: u8, port: u16) -> PathBuf {
+/// The oracle's package, with `key` as its `secret` input and `deadline` in milliseconds,
+/// built in a directory named by `name`.
+fn placement_package(name: &str, key: u8, deadline: u64, port: u16) -> PathBuf {
     let get = |path: &str| {
         let url = format!("http://127.0.0.1:{port}/{path}");
         format!(r#"attempt @http.get("{url}", headers: [], key_name: None)"#)
     };
-    let (a, b, c) = (get("a"), get("b"), get("c"));
+    let (mark, hold) = (get("mark"), get("hold"));
     let program = format!(
         r#"module flip
 
@@ -109,22 +102,19 @@ pub main() -> Unit
   diverges
 =
   let key: secret Int = {key}
-  let parts = 64 + 448 * key
+  let parts = 1 + 1023 * key
   let earlier = together for i in 0..<parts
     i
-  for ever within 1000 * millisecond
-    let at_a = {a}
-    let first = together for i in 0..<448
+  for ever within {deadline} * millisecond
+    let at_mark = {mark}
+    let later = together for i in 0..<1024
       i
-    let at_b = {b}
-    let second = together for i in 0..<448
-      i
-    let at_c = {c}
+    let at_hold = {hold}
     stop
   unit
 "#
     );
-    let dir = std::env::temp_dir().join(format!("una-native-flip-{key}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
@@ -145,12 +135,12 @@ pub main() -> Unit
     dir
 }
 
-/// Whether one run of the placement test met its deadline: its third request, which the judge
-/// holds when the first block took longer than the second, failed with `TimedOut`.
+/// Whether one run of the oracle met its deadline: its request to `/hold` failed with
+/// `TimedOut`.
 fn timed_out(dir: &Path, run: usize) -> bool {
     let trace = dir.join(format!("trace-{run}.json"));
     let native = Command::new(dir.join("target/una/flip"))
-        .args(["--workers", "512", "--http-timeout", "30", "--trace"])
+        .args(["--workers", WORKERS, "--http-timeout", "30", "--trace"])
         .arg(&trace)
         .current_dir(dir)
         .output()
@@ -164,48 +154,69 @@ fn timed_out(dir: &Path, run: usize) -> bool {
         .iter()
         .filter(|event| event["op"] == "get")
         .collect();
-    assert_eq!(gets.len(), 3, "{events}");
-    // The first two requests are answered at once, well inside the deadline.
-    for get in &gets[..2] {
-        assert!(get["outcome"].get("variant").is_none(), "{events}");
-    }
-    gets[2]["outcome"]["variant"] == "TimedOut"
+    assert_eq!(gets.len(), 2, "{events}");
+    assert!(gets[0]["outcome"].get("variant").is_none(), "{events}");
+    gets[1]["outcome"]["variant"] == "TimedOut"
 }
 
 #[test]
 #[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
 fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started() {
-    // #1145, `spec/27 §1` rules 2 and 4, ADR 0116 IF6 and amendment P8, on the real clock. The
-    // same program runs with its `secret` key 0 and 1, and nothing else changed: the key decides
-    // whether a block starts 64 or 512 tasks before the loop. In the loop, under a deadline, the
-    // same `public` block of 448 tasks runs twice, with a request before, between and after.
-    // The judge (`judging_server`) holds the last request past the deadline when the first block
-    // took more than 2 ms longer than the second, so the trace records whether it did.
+    // #1145, ADR 0116 amendment P8 and §G, `spec/27 §1` rule 4, on the real clock, with
+    // `--workers 1024`. The `secret` key, 0 or 1, decides whether a block starts 1 task or
+    // 1,024 before the loop; nothing else differs. In the loop, under the deadline, a `public`
+    // block forks 1,024 tasks between a request to `/mark` and one to `/hold`, which the server
+    // holds for 50 ms. The outcome is whether `/hold` meets the deadline.
     //
-    // How it failed before: one round-robin counter for the whole run placed tasks, and each
-    // worker's thread started at its first job. With `--workers 512`, key 1 left the counter at
-    // 512, so both blocks ran on workers whose threads had started. Key 0 left it at 64, so the
-    // first block went to workers 64 to 511, and the fork of each of its 448 tasks started a
-    // thread and waited for it, inside the deadline, while the second block found them started:
-    // key 0 timed out in every run, key 1 in none. Both blocks now run on workers 0 to 447, and
-    // every thread starts before `main`, so neither key times out. Before either key's earlier
-    // block the stack pool is full (64 stacks) for both keys, so its warmth is no difference.
-    let port = judging_server();
-    let dirs = [placement_package(0, port), placement_package(1, port)];
-    for run in 0..10 {
-        for (key, dir) in dirs.iter().enumerate() {
-            // A run that times out runs twice more and counts only if every try timed out, so
-            // a pause of the machine cannot fail the test (#341); the cost that old placement
-            // added is in every try.
-            let mut tries = (0..3).map(|attempt| timed_out(dir, run * 3 + attempt));
-            assert!(
-                !tries.all(|timed_out| timed_out),
-                "key {key}, run {run}: the first `public` block took longer than the second in \
-                 three tries in a row, so how many tasks secret code started changed its timing"
-            );
+    // The deadline is calibrated on this machine first: the same program with key 1 and a
+    // deadline of a minute runs 5 times, the server notes each run's time from `/mark` to
+    // `/hold`, and the deadline is the slowest of them, plus the hold, plus 25 ms. Then key 0
+    // and key 1 are built with it and run 20 times each, alternating, and every run of both
+    // must give the same outcome; there is no retry.
+    //
+    // How it failed before (P8): worker threads started at their first job. Key 1's earlier
+    // block had started all 1,024 workers; key 0's, one. So key 0's `public` block started
+    // 1,023 threads inside the deadline, each on the critical path of its fork, while key 1's
+    // found them running: key 0 timed out in every run, key 1 in none. The two schedules must
+    // lie at least 50 ms apart for that (§G); the slot that builds #1145 measures the cost of
+    // those starts on the old code and records it, and if it is under 50 ms this amplifier must
+    // grow. Now every thread starts before `main`, so both keys run the same schedule. P6, the
+    // placement, is checked directly by the unit tests of `crates/una-rt/src/sched.rs`, and by
+    // the parity amplifier of ADR 0117 S4, where a forker runs beside its tasks.
+    let spans = Arc::new(Mutex::new(Vec::new()));
+    let port = holding_server(Arc::clone(&spans));
+    let calibration = placement_package("calibration", 1, 60_000, port);
+    for run in 0..5 {
+        assert!(!timed_out(&calibration, run), "a calibration run timed out");
+    }
+    let slowest = spans.lock().unwrap().iter().copied().max().unwrap();
+    let deadline = u64::try_from(slowest.div_ceil(1000)).unwrap() + HOLD_MS + MARGIN_MS;
+    spans.lock().unwrap().clear();
+    let dirs = [
+        placement_package("key0", 0, deadline, port),
+        placement_package("key1", 1, deadline, port),
+    ];
+    let mut outcomes: [Vec<bool>; 2] = [Vec::new(), Vec::new()];
+    for run in 0..20 {
+        for (dir, outcome) in dirs.iter().zip(outcomes.iter_mut()) {
+            outcome.push(timed_out(dir, run));
         }
     }
-    for dir in dirs {
-        let _ = std::fs::remove_dir_all(&dir);
+    let measured: Vec<u128> = spans
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|span| span / 1000)
+        .collect();
+    eprintln!("deadline {deadline} ms; from /mark to /hold, ms, keys alternating: {measured:?}");
+    // Key 0 against key 1, run by run, and every run the same.
+    assert_eq!(outcomes[0], outcomes[1], "key 0 and key 1 differ; deadline {deadline} ms");
+    assert!(
+        outcomes[0].iter().all(|&timed_out| timed_out == outcomes[0][0]),
+        "the runs of one key differ: {outcomes:?}; deadline {deadline} ms"
+    );
+    assert!(!outcomes[0][0], "every run timed out; deadline {deadline} ms");
+    for dir in dirs.iter().chain([&calibration]) {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

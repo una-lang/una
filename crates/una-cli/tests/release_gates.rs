@@ -157,6 +157,29 @@ fn the_summary_knows_exactly_the_gates_the_script_runs_in_its_order() {
 }
 
 #[test]
+fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
+    // `crates/una-cli/tests/timing_channels.rs` holds only security timing oracles, which the
+    // ordinary test run must not run and the step and gate named in their reason must (#1145).
+    // Read as text: each `#[test]` is followed by exactly this attribute.
+    const IGNORE: &str = "#[ignore = \"security timing oracle: run by the timing-channels step of local-ci and the release gates\"]";
+    let source =
+        std::fs::read_to_string(root().join("crates/una-cli/tests/timing_channels.rs")).unwrap();
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    let tests: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at] == "#[test]")
+        .collect();
+    assert!(!tests.is_empty(), "timing_channels.rs holds no test");
+    for at in tests {
+        assert_eq!(
+            lines.get(at + 1).copied(),
+            Some(IGNORE),
+            "the test at line {} of timing_channels.rs",
+            at + 1
+        );
+    }
+}
+
+#[test]
 fn usage_errors_exit_with_2() {
     let Some(sha) = head() else {
         return;

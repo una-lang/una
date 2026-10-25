@@ -3,9 +3,10 @@
 //! - **Workers.** Each task of `together` and `together for` runs as a coroutine of
 //!   [`una_sys::coroutine`] on one of `--workers` threads, and never moves: its heap, reference
 //!   counts and state are only touched by one thread.
-//! - **Placement is structural** (`spec/27 §1` rule 2, #1145). Part `i` of a construct runs on
-//!   worker `(w + i) mod N`, where `w` is the worker of the task that runs the construct (0 for
-//!   the root task) and `N` is `--workers`. The scheduler keeps no run-wide placement state: a
+//! - **Placement is structural** (`spec/27 §1` rule 2, #1145, ADR 0116 amendment P6). Part `i`
+//!   of a construct, counted from 1, runs on worker `(w + i) mod N`, where `w` is the worker of
+//!   the task that runs the construct (0 for the root, which runs on the `una-main` thread) and
+//!   `N` is `--workers`. The scheduler keeps no run-wide placement state: a
 //!   round-robin counter remembered how many parts earlier code started, so code that branched
 //!   on `secret` data moved a later `public` construct to other workers and changed its timing,
 //!   which a deadline turns into a value (ADR 0116 IF6).
@@ -40,6 +41,9 @@ const POOL_STACKS: usize = 64;
 /// The stack of a worker's own thread, which runs only the loop that resumes coroutines and
 /// drops what finished tasks leave.
 const WORKER_STACK: usize = 8 * 1024 * 1024;
+
+/// How many tasks a worker's table holds before it grows: one batch of a block (ADR 0113).
+const WORKER_TASKS: usize = 64;
 
 /// The stack of a helper thread, which runs one host operation at a time.
 const HELPER_STACK: usize = 2 * 1024 * 1024;
@@ -188,7 +192,8 @@ enum Job {
 }
 
 /// A worker's queue, first in, first out, whether its scheduler is gone, and whether its thread
-/// started, which its first job starts under this queue's lock.
+/// started: before `main` in an executable ([`Scheduler::start_all`]), else at its first job,
+/// under this queue's lock.
 struct Queue {
     jobs: VecDeque<Job>,
     closed: bool,
@@ -196,8 +201,8 @@ struct Queue {
 }
 
 /// One worker: its index among the scheduler's workers, its queue, and the thread that serves
-/// it, started at its first job. A task reads its worker's index through [`RUNNING`] to place
-/// the parts it forks.
+/// it, started before `main` in an executable ([`Scheduler::start_all`]), else at its first job.
+/// A task reads its worker's index through [`RUNNING`] to place the parts it forks.
 struct Worker {
     index: usize,
     queue: Mutex<Queue>,
@@ -261,11 +266,15 @@ fn serve_in(
     swap(&mut warm);
     drop(warm);
     RUNNING.with(|_| ());
+    // The worker's table of tasks and its free list are reserved now too, for
+    // [`WORKER_TASKS`] tasks, so the first tasks a worker holds never grow them, whatever ran
+    // before. A worker that holds more at once grows them, which only the constructs running
+    // then decide (#1145).
+    let mut entries: Vec<Option<Entry<'_>>> = Vec::with_capacity(WORKER_TASKS);
+    let mut free: Vec<usize> = Vec::with_capacity(WORKER_TASKS);
     if let Some(ready) = ready {
         let _ = ready.send(());
     }
-    let mut entries: Vec<Option<Entry<'_>>> = Vec::new();
-    let mut free: Vec<usize> = Vec::new();
     let mut generation: u64 = 0;
     let mut held = 0usize;
     while let Some(job) = worker.next(held > 0) {
@@ -430,8 +439,9 @@ pub(crate) struct Scheduler {
 pub(crate) struct NotStarted;
 
 impl Scheduler {
-    /// A scheduler with the settings of the run; its threads start on demand, or all at once
-    /// with [`Scheduler::start_all`].
+    /// A scheduler with the settings of the run. An executable starts all its threads at once,
+    /// before `main`, with [`Scheduler::start_all`]; without that call, as in unit tests, a
+    /// worker's thread starts at its first job and a helper as operations queue up.
     pub(crate) fn new(settings: una_interp::Concurrency) -> Arc<Scheduler> {
         let workers = (0..settings.workers.max(1))
             .map(|index| {
@@ -460,14 +470,14 @@ impl Scheduler {
         })
     }
 
-    /// Starts `body`, part `part` of its construct counted from 0 in index order, as a task on
+    /// Starts `body`, part `part` of its construct counted from 1 in index order, as a task on
     /// a stack of `stack` usable bytes; `finish` runs on the worker once the task has ended and
     /// its thread-locals are dropped.
     ///
     /// The task runs on worker `(w + part) mod N`, where `w` is the worker of the calling task
-    /// (0 for the root) and `N` the number of workers (`spec/27 §1` rule 2): placement is a
-    /// function of the program's structure only, never of how many tasks earlier code started
-    /// (#1145, ADR 0116 IF6). Choosing the worker is O(1) in the average and the worst case, a
+    /// (0 for the root, which runs on the `una-main` thread) and `N` the number of workers
+    /// (`spec/27 §1` rule 2): placement is a function of the program's structure only, never of
+    /// how many tasks earlier code started (#1145, ADR 0116 IF6). Choosing the worker is O(1) in the average and the worst case, a
     /// thread-local read and a remainder, with no shared counter; the whole start is O(1)
     /// besides the stack pool's O(log k).
     pub(crate) fn spawn(
@@ -589,7 +599,8 @@ impl Drop for Scheduler {
     }
 }
 
-/// A pool of helper threads, started as operations queue up, at most `most` of them.
+/// A pool of helper threads, at most `most` of them: all started before `main` in an executable
+/// ([`Helpers::fill`]), else started as operations queue up.
 struct Helpers {
     queue: Mutex<HelperQueue>,
     ready: Condvar,
@@ -630,6 +641,9 @@ impl Helpers {
                 .name("una-helper".to_owned())
                 .stack_size(HELPER_STACK)
                 .spawn(move || {
+                    // The thread's first allocation is made now, before it reports ready, so
+                    // the first operation a helper runs costs no more than a later one (#1145).
+                    drop(std::hint::black_box(Vec::<u8>::with_capacity(4096)));
                     let _ = ready.send(());
                     drop(ready);
                     helpers.serve();
@@ -721,9 +735,21 @@ fn current_worker() -> usize {
 }
 
 /// The worker of part `part` of a construct that a task on worker `parent` runs, among `count`
-/// workers: `(parent + part) mod count`, so the placement depends only on the program's
-/// structure (`spec/27 §1` rule 2). A `count` of 0 is taken as 1. O(1).
-fn placement(parent: usize, part: usize, count: usize) -> usize {
+/// workers: `(parent + part) mod count`, with `part` counted from 1 (ADR 0116 amendment, P6:
+/// the branch index of `together`, the element index of `together for`), so the placement
+/// depends only on the program's structure (`spec/27 §1` rule 2). The root, which runs on the
+/// `una-main` thread, counts as worker 0. A `count` of 0 is taken as 1. O(1).
+///
+/// Balance (M2 of the review of #1145): under binary recursion the parts do not spread evenly.
+/// A task on worker `w` forks its two halves to `w + 1` and `w + 2`, so a leaf at depth `d`
+/// runs on the root's worker plus the sum of `d` steps of 1 or 2, a sum between `d` and `2d`
+/// whose counts are binomial, `C(d, k)` leaves at `d + k`. With 8 workers and depth 10, the
+/// 1,024 leaves land on the workers 0 to 7 as 210, 120, 46, 20, 46, 120, 210 and 252 (the test
+/// `binary_recursion_leaves_per_worker_under_structural_placement` pins these), against an
+/// even 128: the busiest worker holds 1.97 times its share, so leaves of equal work could take
+/// about twice as long as under an even spread. The S1 design note records that the slot
+/// measures this slowdown; a placement by a hash of the task's path, still structural, is the
+/// candidate if it is large, through a later amendment.
     let count = count.max(1);
     // Each term is reduced first, so the sum never overflows.
     (parent % count + part % count) % count
@@ -820,8 +846,8 @@ mod tests {
         }
     }
 
-    /// Spawns `body` on `sched` as part `index` of its construct and returns the mailbox that
-    /// says it ended.
+    /// Spawns `body` on `sched` as part `index` of its construct, counted from 1, and returns the
+    /// mailbox that says it ended.
     fn start(
         sched: &Scheduler,
         index: usize,
@@ -834,11 +860,11 @@ mod tests {
         ended
     }
 
-    /// Forks a construct of `parts` parts from the calling code and joins it: the worker each
-    /// part ran on, in part order, and for each part the workers of the `nested` parts it forks
-    /// and joins in turn.
+    /// Forks a construct of `parts` parts, numbered from 1, from the calling code and joins it:
+    /// the worker each part ran on, in part order, and for each part the workers of the `nested`
+    /// parts it forks and joins in turn.
     fn construct(sched: &Arc<Scheduler>, parts: usize, nested: usize) -> Vec<(usize, Vec<usize>)> {
-        let forked: Vec<(Receiver<()>, Receiver<(usize, Vec<usize>)>)> = (0..parts)
+        let forked: Vec<(Receiver<()>, Receiver<(usize, Vec<usize>)>)> = (1..=parts)
             .map(|part| {
                 let (sender, receiver) = channel();
                 let inner = Arc::clone(sched);
@@ -985,13 +1011,37 @@ mod tests {
 
     #[test]
     fn placement_is_the_parent_s_worker_plus_the_part_modulo_the_workers() {
-        // #1145, `spec/27 §1` rule 2: part `i` of a construct runs on worker `(w + i) mod N`,
-        // `w` being its parent's worker, 0 for the root: a function of these three only.
-        assert_eq!(placement(0, 0, 0), 0);
+        // #1145, `spec/27 §1` rule 2, ADR 0116 amendment P6: part `i` of a construct, counted
+        // from 1, runs on worker `(w + i) mod N`, `w` being its parent's worker, 0 for the root:
+        // a function of these three only.
+        assert_eq!(placement(0, 1, 0), 0);
+        assert_eq!(placement(0, 1, 3), 1);
+        assert_eq!(placement(0, 3, 3), 0);
         assert_eq!(placement(0, 4, 3), 1);
         assert_eq!(placement(2, 2, 3), 1);
         // 2^64 - 1 is a multiple of 3: the sum is reduced without overflow.
         assert_eq!(placement(usize::MAX, usize::MAX, 3), 0);
+    }
+
+    #[test]
+    fn binary_recursion_leaves_per_worker_under_structural_placement() {
+        // M2 of the review of #1145: the balance of the placement, computed from `placement`
+        // alone. Binary recursion of depth 10 from the root, on 8 workers: each task forks its
+        // two halves as parts 1 and 2, and the 1,024 leaves land on the workers as below,
+        // against an even 128 each. The slot measures what this costs (S1 design note).
+        fn leaves(worker: usize, depth: u32, counts: &mut [usize; 8]) {
+            if depth == 0 {
+                counts[worker] += 1;
+                return;
+            }
+            for part in 1..=2 {
+                leaves(placement(worker, part, 8), depth - 1, counts);
+            }
+        }
+        let mut counts = [0usize; 8];
+        leaves(0, 10, &mut counts);
+        assert_eq!(counts, [210, 120, 46, 20, 46, 120, 210, 252]);
+        assert_eq!(counts.iter().sum::<usize>(), 1024);
     }
 
     #[test]
@@ -1003,12 +1053,15 @@ mod tests {
         // after 0 to 7 earlier parts, top-level and nested, and must land on the same workers
         // every time.
         let sched = Scheduler::new(settings(3, 1, 1));
-        let expected: Vec<(usize, Vec<usize>)> = (0..4)
+        // The root's parts 1 to 4 land on workers 1, 2, 0 and 1; the parts 1 to 5 of a task on
+        // worker `w`, on `w + 1` to `w + 5`, modulo 3.
+        let expected: Vec<(usize, Vec<usize>)> = (1..=4)
             .map(|part| {
                 let worker = part % 3;
-                (worker, (0..5).map(|child| (worker + child) % 3).collect())
+                (worker, (1..=5).map(|child| (worker + child) % 3).collect())
             })
             .collect();
+        assert_eq!(expected[0].0, 1);
         for earlier in 0..8 {
             let warm = construct(&sched, earlier, earlier % 3);
             assert_eq!(warm.len(), earlier);
