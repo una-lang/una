@@ -21,6 +21,10 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   owner-replay the exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5):
+#                `cargo test --release --locked -p una-project --lib -- --ignored --exact
+#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_six --nocapture`,
+#                every chain of the model to depth 6, which the ordinary test run checks to depth 4
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -61,7 +65,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native sanitize site formal hunt hunt-linux-arm64)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native owner-replay sanitize site formal hunt hunt-linux-arm64)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -315,6 +319,15 @@ gate_site() {
             && UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
+
+gate_owner-replay() {
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5): ignored in
+    # the ordinary run, which checks it to depth 4, and run here to depth 6. It is a unit test of
+    # una-project, since the model of signatures it stands in for Ed25519 exists only in that
+    # crate's test build; `--release`, for its millions of replays; `--nocapture`, so the log
+    # holds its counts.
+    run owner-replay cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_six --nocapture
+}
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
 # built with AddressSanitizer, by the checking toolchain of scripts/check-toolchain.toml, which

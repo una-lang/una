@@ -154,7 +154,9 @@ pub struct Entry {
 pub fn fingerprint(public: &[u8; 32]) -> String {
     let mut out = String::with_capacity(64);
     for byte in Sha256::digest(public) {
-        out.push_str(&format!("{byte:02x}"));
+        for nibble in [byte >> 4, byte & 0x0f] {
+            out.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
+        }
     }
     out
 }
@@ -574,7 +576,7 @@ impl History {
             .filter(|key| verified(note, key))
             .cloned()
             .collect();
-        signers.sort_by_key(|key| fingerprint(&key.public));
+        signers.sort_by_cached_key(|key| fingerprint(&key.public));
         signers.dedup_by(|a, b| a.public == b.public);
         signers
     }
