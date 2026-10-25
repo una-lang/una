@@ -33,11 +33,17 @@
 //! path, and each file and directory is synced before the directory is renamed into place,
 //! relative to the parent's descriptor and refusing anything already at its name
 //! (`RENAME_NOREPLACE`, `RENAME_EXCL`), or, for one file, the file is renamed from the fresh
-//! directory's descriptor to the parent's, replacing what was there. The fresh name must be the
-//! directory created, by the identity taken from its descriptor, just before the rename, and the
-//! final name must be it just after: a swap refuses the write, and leaves the directory. A
-//! write that fails removes the fresh directory only when its name is still that directory;
-//! otherwise it is left in place and the refusal says so.
+//! directory's descriptor to the parent's, replacing what was there ([`store_file`]) or refusing
+//! anything there ([`store_new_file`]). The fresh name must be the directory created, by the
+//! identity taken from its descriptor, just before the rename, and the final name must be it
+//! just after: a swap refuses the write, and leaves the directory. No call checks and renames in
+//! one step, so a directory swapped in between the two is moved into place; the check after the
+//! rename refuses the write and every later load refuses the directory, which fails closed, as a
+//! denial of service. A write that fails removes the fresh directory only when its name is still
+//! that directory, and then through descriptors: each entry it created is unlinked relative to
+//! its directory's descriptor, and the fresh name last, with `AT_REMOVEDIR`, which removes only
+//! an empty directory; otherwise it is left in place and the refusal says so. Only the
+//! directories above the file being written are open at a time.
 //!
 //! A component above the base, which the user chose, is resolved once, when the base is opened.
 //! A platform whose flag values this module does not know refuses every read and write: nothing
@@ -46,7 +52,6 @@
 //! Costs: O(B) for the B bytes read or written, with one SHA-256 pass; O(e log e) to sort the e
 //! entries of a directory.
 
-use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -680,19 +685,24 @@ fn fresh_name() -> String {
 
 /// A private directory this process created in a [`Parent`], with what it created in it. Every
 /// file and directory of a write is created relative to its descriptor, or to that of a
-/// directory created in it, never by path.
+/// directory created in it, never by path. Only the directories above the file being written
+/// stay open, so a package of many directories holds as many descriptors as it is deep.
 struct Fresh<'p> {
     parent: &'p Parent,
     /// Its name in the parent.
     name: String,
-    /// Its path, for messages and for the removal of an unfinished write.
+    /// Its path, for messages only.
     path: PathBuf,
     /// Its identity, from its open descriptor when it was created.
     identity: Identity,
     /// Its descriptor.
     handle: DirHandle,
-    /// Each directory created in it, by its path in the package, with its descriptor.
-    dirs: BTreeMap<String, DirHandle>,
+    /// The directories open below it, outermost first: each one's name with its descriptor.
+    /// One is completed and closed when a file outside it is written.
+    open: Vec<(String, DirHandle)>,
+    /// Each file and directory created in it, by its path in the package, in the order of
+    /// creation, with whether it is a directory: what removing an unfinished write unlinks.
+    created: Vec<(String, bool)>,
     /// The mode each file gets.
     file_mode: u32,
 }
@@ -721,7 +731,8 @@ impl<'p> Fresh<'p> {
             identity: identity(&meta),
             path,
             handle,
-            dirs: BTreeMap::new(),
+            open: Vec::new(),
+            created: Vec::new(),
             file_mode: if read_only {
                 READ_ONLY_MODE
             } else {
@@ -730,43 +741,68 @@ impl<'p> Fresh<'p> {
         })
     }
 
-    /// The descriptor of the directory at `relative` in the fresh one, which is itself at "".
-    fn dir(&self, relative: &str) -> Result<&DirHandle, Refusal> {
-        if relative.is_empty() {
-            return Ok(&self.handle);
+    /// The descriptor of the innermost open directory, the fresh one when none is.
+    fn current(&self) -> &DirHandle {
+        self.open.last().map_or(&self.handle, |(_, handle)| handle)
+    }
+
+    /// The path in the package of `name` in the innermost open directory.
+    fn relative(&self, name: &str) -> String {
+        let mut parts: Vec<&str> = self.open.iter().map(|(part, _)| part.as_str()).collect();
+        parts.push(name);
+        parts.join("/")
+    }
+
+    /// Completes the innermost open directory: sets its final mode through its descriptor,
+    /// syncs it and closes it.
+    fn close(&mut self) -> Result<(), Refusal> {
+        let shown = self
+            .open
+            .iter()
+            .fold(self.path.clone(), |path, (part, _)| path.join(part));
+        if let Some((_, handle)) = self.open.pop() {
+            handle
+                .set_mode(DIRECTORY_MODE)
+                .map_err(|e| cannot("protect", &shown, &e))?;
+            sync_dir(&handle, &shown)?;
         }
-        self.dirs
-            .get(relative)
-            .ok_or_else(|| format!("`{relative}` was not created before a file in it"))
+        Ok(())
     }
 
     /// Writes `bytes` at `path`, a path of rule 27, creating the directories above it, each
-    /// relative to the descriptor of the one above.
+    /// relative to the descriptor of the one above. The open directories that are not above
+    /// it are completed first; a directory completed before is never written in again, since
+    /// `mkdirat` refuses its name, so the files come in the order of their paths
+    /// ([`store_tree`] sorts them), which keeps each directory's files together.
     fn write(&mut self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
         content::check_path(path)?;
         let segments: Vec<&str> = path.split('/').collect();
         let Some((name, parents)) = segments.split_last() else {
             return Err(format!("`{path}` is not a path"));
         };
-        let mut relative = String::new();
-        for segment in parents {
-            let above = relative.clone();
-            if !relative.is_empty() {
-                relative.push('/');
-            }
-            relative.push_str(segment);
-            if self.dirs.contains_key(&relative) {
-                continue;
-            }
-            let shown = self.path.join(&relative);
-            let dir = self.dir(&above)?;
-            sys::mkdir_at(dir, segment, 0o700).map_err(|e| cannot("create", &shown, &e))?;
-            let handle = open_private_dir(dir, segment, &shown)?;
-            self.dirs.insert(relative.clone(), handle);
+        let keep = self
+            .open
+            .iter()
+            .zip(parents)
+            .take_while(|((open, _), part)| open == *part)
+            .count();
+        while self.open.len() > keep {
+            self.close()?;
         }
-        let shown = self.path.join(path);
-        let mut file = sys::create_file_at(self.dir(&relative)?, name, 0o600)
+        for segment in parents.iter().skip(keep) {
+            let relative = self.relative(segment);
+            let shown = self.path.join(&relative);
+            sys::mkdir_at(self.current(), segment, 0o700)
+                .map_err(|e| cannot("create", &shown, &e))?;
+            self.created.push((relative, true));
+            let handle = open_private_dir(self.current(), segment, &shown)?;
+            self.open.push(((*segment).to_owned(), handle));
+        }
+        let relative = self.relative(name);
+        let shown = self.path.join(&relative);
+        let mut file = sys::create_file_at(self.current(), name, 0o600)
             .map_err(|e| cannot("create", &shown, &e))?;
+        self.created.push((relative, false));
         file.write_all(bytes)
             .map_err(|e| cannot("write", &shown, &e))?;
         // Through the descriptor (`fchmod`), never by path.
@@ -775,15 +811,11 @@ impl<'p> Fresh<'p> {
         Ok(())
     }
 
-    /// Sets each directory's final mode through its descriptor and syncs it, the fresh one
-    /// last.
-    fn seal(&self) -> Result<(), Refusal> {
-        for (relative, handle) in self.dirs.iter().rev() {
-            let shown = self.path.join(relative);
-            handle
-                .set_mode(DIRECTORY_MODE)
-                .map_err(|e| cannot("protect", &shown, &e))?;
-            sync_dir(handle, &shown)?;
+    /// Completes each open directory, innermost first, then the fresh one: sets its final
+    /// mode through its descriptor and syncs it.
+    fn seal(&mut self) -> Result<(), Refusal> {
+        while !self.open.is_empty() {
+            self.close()?;
         }
         self.handle
             .set_mode(DIRECTORY_MODE)
@@ -810,7 +842,13 @@ impl<'p> Fresh<'p> {
     /// Renames the fresh directory to `name` in its parent, relative to the parent's
     /// descriptor, refusing anything already at `name`. The fresh name must still be the
     /// directory written just before, and `name` must be it just after.
-    fn commit(self, name: &str) -> Result<(), Refusal> {
+    ///
+    /// No call checks a name and renames it in one step, so someone who can rename entries of
+    /// the parent can put a directory of their own at the fresh name between the check and the
+    /// rename. It is then moved into place instead: the check after the rename refuses the
+    /// write, and every later load verifies its content and refuses it. This fails closed, as
+    /// a denial of service until the directory is removed, never as a different package.
+    fn commit(mut self, name: &str) -> Result<(), Refusal> {
         let target = self.parent.path.join(name);
         if let Err(error) = self.seal().and_then(|()| self.named(&self.name)) {
             return Err(self.discard(error));
@@ -828,38 +866,79 @@ impl<'p> Fresh<'p> {
     }
 
     /// Renames the one file `file` of the fresh directory to `name` in its parent, relative to
-    /// both descriptors, replacing what `name` was, then removes the fresh directory, now empty.
-    fn commit_file(self, file: &str, name: &str) -> Result<(), Refusal> {
+    /// both descriptors, replacing what `name` was when `replace`, refusing anything there
+    /// otherwise, then removes the fresh directory, now empty.
+    fn commit_file(mut self, file: &str, name: &str, replace: bool) -> Result<(), Refusal> {
         let target = self.parent.path.join(name);
         if let Err(error) = self.seal() {
             return Err(self.discard(error));
         }
-        // A rename replaces the name itself: a link there is replaced, never followed.
-        if let Err(error) = sys::replace_at(&self.handle, file, &self.parent.handle, name) {
+        // A rename moves the name itself: a link there is replaced or refused, never followed.
+        let (from, to) = (&self.handle, &self.parent.handle);
+        let moved = if replace {
+            sys::replace_at(from, file, to, name)
+        } else {
+            sys::rename_at(from, file, to, name)
+        };
+        if let Err(error) = moved {
             let refusal = format!("cannot move `{}` into place: {error}", target.display());
             return Err(self.discard(refusal));
         }
-        sync_dir(&self.parent.handle, &self.parent.path)?;
-        if let Err(refusal) = self.named(&self.name) {
-            return Err(format!("{refusal}; it was left in place"));
+        // The file is in place, so the fresh directory holds nothing more.
+        self.created.clear();
+        if let Err(refusal) = sync_dir(&self.parent.handle, &self.parent.path) {
+            return Err(self.discard(refusal));
         }
-        fs::remove_dir(&self.path).map_err(|e| cannot("remove", &self.path, &e))
+        self.remove()
     }
 
-    /// Removes the fresh directory after `refusal`, when its name in the parent still names the
-    /// directory created; otherwise leaves it, and says so.
-    fn discard(self, refusal: Refusal) -> Refusal {
-        if let Err(changed) = self.named(&self.name) {
-            return format!("{refusal}; {changed}, so it was left in place");
+    /// Removes the fresh directory, while its name in the parent is still the directory
+    /// created; otherwise leaves it, and says so. What it created in it is unlinked in the
+    /// reverse order, each relative to the descriptor of its directory, reopened from the
+    /// fresh one's with no link followed; then the fresh name with `AT_REMOVEDIR`, which
+    /// removes only an empty directory. Nothing is removed by path, so a directory put at the
+    /// fresh name after the check is never emptied: at most an empty one is removed.
+    fn remove(&mut self) -> Result<(), Refusal> {
+        self.named(&self.name)
+            .map_err(|changed| format!("{changed}, so it was left in place"))?;
+        self.open.clear();
+        // The directory of the last entry removed, open: `None` for the fresh one.
+        let mut at: (String, Option<DirHandle>) = (String::new(), None);
+        while let Some((relative, directory)) = self.created.pop() {
+            let (dir, name) = relative
+                .rsplit_once('/')
+                .unwrap_or(("", relative.as_str()));
+            if at.0 != dir {
+                let shown = self.path.join(dir);
+                let handle = open_below(&self.handle, dir)
+                    .map_err(|e| cannot("open, without following a link,", &shown, &e))?;
+                at = (dir.to_owned(), handle);
+            }
+            sys::unlink_at(at.1.as_ref().unwrap_or(&self.handle), name, directory)
+                .map_err(|e| cannot("remove the unfinished", &self.path.join(&relative), &e))?;
         }
-        match fs::remove_dir_all(&self.path) {
+        sys::unlink_at(&self.parent.handle, &self.name, true)
+            .map_err(|e| cannot("remove the unfinished", &self.path, &e))
+    }
+
+    /// Removes the fresh directory after `refusal`, as [`Fresh::remove`] does, and adds to the
+    /// refusal why it could not.
+    fn discard(mut self, refusal: Refusal) -> Refusal {
+        match self.remove() {
             Ok(()) => refusal,
-            Err(error) => format!(
-                "{refusal}; {}",
-                cannot("remove the unfinished", &self.path, &error)
-            ),
+            Err(error) => format!("{refusal}; {error}"),
         }
     }
+}
+
+/// The directory at `relative` below `root`, opened one component at a time relative to the
+/// one above, with no link followed; `None` for `root` itself, when `relative` is empty.
+fn open_below(root: &DirHandle, relative: &str) -> std::io::Result<Option<DirHandle>> {
+    let mut handle: Option<DirHandle> = None;
+    for part in relative.split('/').filter(|part| !part.is_empty()) {
+        handle = Some(sys::open_dir_at(handle.as_ref().unwrap_or(root), part)?);
+    }
+    Ok(handle)
 }
 
 /// Syncs the directory open as `handle`. A file system that cannot sync a directory at all
@@ -906,8 +985,11 @@ pub fn store_tree(
     read_only: bool,
 ) -> Result<(), Refusal> {
     component(name)?;
+    // In the order of their paths, so each directory is written whole before the next one.
+    let mut files: Vec<&File> = tree.files().iter().collect();
+    files.sort_by_key(|file| file.path.as_str());
     let mut fresh = Fresh::create(parent, read_only)?;
-    for file in tree.files() {
+    for file in files {
         if let Err(refusal) = fresh.write(&file.path, &file.bytes) {
             return Err(fresh.discard(refusal));
         }
@@ -924,6 +1006,28 @@ pub fn store_file(
     bytes: &[u8],
     read_only: bool,
 ) -> Result<(), Refusal> {
+    store_one(parent, name, bytes, read_only, true)
+}
+
+/// Writes `bytes` as the file `name` in `parent` as [`store_file`] does, but fails when
+/// anything is already at `name`, which is never replaced: for a document stored once, which
+/// two processes may store at the same time.
+pub fn store_new_file(
+    parent: &Parent,
+    name: &str,
+    bytes: &[u8],
+    read_only: bool,
+) -> Result<(), Refusal> {
+    store_one(parent, name, bytes, read_only, false)
+}
+
+fn store_one(
+    parent: &Parent,
+    name: &str,
+    bytes: &[u8],
+    read_only: bool,
+    replace: bool,
+) -> Result<(), Refusal> {
     component(name)?;
     let mut fresh = Fresh::create(parent, read_only)?;
     // The file's name inside the fresh directory is fixed, and a path of rule 27.
@@ -931,7 +1035,7 @@ pub fn store_file(
     if let Err(refusal) = fresh.write(INSIDE, bytes) {
         return Err(fresh.discard(refusal));
     }
-    fresh.commit_file(INSIDE, name)
+    fresh.commit_file(INSIDE, name, replace)
 }
 
 #[cfg(test)]
@@ -1037,7 +1141,7 @@ mod tests {
         fs::rename(&fresh.path, &moved).unwrap();
         fs::create_dir(&fresh.path).unwrap();
         fs::write(fresh.path.join("file"), b"planted").unwrap();
-        let refusal = fresh.commit_file("file", "doc").unwrap_err();
+        let refusal = fresh.commit_file("file", "doc", true).unwrap_err();
         assert!(refusal.contains("left in place"), "{refusal}");
         assert_eq!(fs::read(dir.join("doc")).unwrap(), b"ours");
         let _ = fs::remove_dir_all(&dir);
@@ -1058,6 +1162,52 @@ mod tests {
         let _ = fresh.discard(refusal);
         assert!(!path.exists());
         assert!(dir.join("keep").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The removal of an unfinished write goes through descriptors: it empties the directory
+    /// created, wherever its path now leads, and then removes the fresh name only when it is an
+    /// empty directory. Only the directories above the file being written stay open.
+    #[cfg(unix)]
+    #[test]
+    fn a_discard_unlinks_through_descriptors_and_keeps_few_open() {
+        let dir = scratch("fresh-discard");
+        let parent = make_dirs(&dir, &[]).unwrap();
+        let mut fresh = Fresh::create(&parent, true).unwrap();
+        for path in ["a/b/c.una", "a/b/d/e.una", "a/f.una", "g.una"] {
+            fresh.write(path, b"x").unwrap();
+        }
+        // Only the directories above `g.una`, none, are open; `a` and below are complete.
+        assert!(fresh.open.is_empty());
+        // A directory completed before is never written in again.
+        assert!(fresh.write("a/h.una", b"x").is_err());
+        let path = fresh.path.clone();
+        let refusal = fresh.discard("stopped".to_owned());
+        assert_eq!(refusal, "stopped");
+        assert!(fs::symlink_metadata(&path).is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        // Many directories hold no more descriptors than the depth of one path.
+        let mut fresh = Fresh::create(&parent, false).unwrap();
+        for at in 0..300 {
+            fresh.write(&format!("d{at:03}/f.una"), b"x").unwrap();
+            assert_eq!(fresh.open.len(), 1);
+        }
+        fresh.commit("many").unwrap();
+        assert_eq!(fs::read_dir(dir.join("many")).unwrap().count(), 300);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A single file stored once never replaces what is at its name, and leaves nothing behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_stored_once_never_replaces() {
+        let dir = scratch("fresh-once");
+        let parent = make_dirs(&dir, &[]).unwrap();
+        store_new_file(&parent, "doc", b"one", true).unwrap();
+        let refusal = store_new_file(&parent, "doc", b"two", true).unwrap_err();
+        assert!(refusal.contains("cannot move"), "{refusal}");
+        assert_eq!(fs::read(dir.join("doc")).unwrap(), b"one");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 }

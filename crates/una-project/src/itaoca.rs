@@ -127,7 +127,9 @@ impl Itaoca {
     /// Stores the provenance of a release at the resolution point of `size`, once: the
     /// document must read ([`provenance::parse`]), and one already stored must be the same
     /// bytes. It is written into a fresh private directory, never through a link, then renamed
-    /// into place.
+    /// into place with a rename that never replaces ([`tree::store_new_file`]), so a process
+    /// that stores another document between the check and the rename is never overwritten:
+    /// what it stored is read again and must be the same bytes.
     pub fn store_provenance(
         &self,
         source: &str,
@@ -138,14 +140,17 @@ impl Itaoca {
     ) -> Result<(), Refusal> {
         provenance::parse(bytes)?;
         let parts = Self::provenance_parts(source, name, version, size)?;
-        if let Some(stored) = self.load_provenance(source, name, version, size)? {
-            return if stored == bytes {
+        let same = |stored: Vec<u8>| {
+            if stored == bytes {
                 Ok(())
             } else {
                 Err(format!(
                     "another provenance of `{name} {version}` at the checkpoint of size {size} is stored"
                 ))
-            };
+            }
+        };
+        if let Some(stored) = self.load_provenance(source, name, version, size)? {
+            return same(stored);
         }
         let [registry, source_dir, releases, release, file] = &parts;
         tree::not_a_link(&self.root)?;
@@ -158,8 +163,14 @@ impl Itaoca {
                 release.as_str(),
             ],
         )?;
-        tree::store_file(&parent, file, bytes, true)
-            .map_err(|refusal| format!("cannot store the provenance: {refusal}"))
+        if let Err(refusal) = tree::store_new_file(&parent, file, bytes, true) {
+            // Another process stored one first: it must be the same document.
+            if let Some(stored) = self.load_provenance(source, name, version, size)? {
+                return same(stored);
+            }
+            return Err(format!("cannot store the provenance: {refusal}"));
+        }
+        Ok(())
     }
 
     /// The provenance of a release at the resolution point of `size`, read once with no link
