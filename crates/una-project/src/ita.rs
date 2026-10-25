@@ -1096,12 +1096,13 @@ pub fn check_lock_consistency(
 /// The consent check of `ita.lock` (ADR 0122 rule 17): every `may` line of the root is within
 /// the ceiling the lock records as granted by the root (`granted by <root> may ...`). A wider
 /// one is U7009 at the `may` line, an authority change that only `una ita lock
-/// --accept-authority` records, never `una fix`. The lock is a control of visibility: a
+/// --accept-authority <package>` records, never `una fix`. The lock is a control of visibility: a
 /// widening shows in its diff. O(c log c) for the c capabilities written.
 pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Vec<ProjectError> {
     let mut errors = Vec::new();
     for need in &manifest.needs {
-        let recorded = recorded_ceiling(lock, &need.name.value, root);
+        let origin = need.origin.as_ref().map(|origin| &origin.value);
+        let recorded = recorded_ceiling(lock, &need.name.value, origin, root);
         for cap in &need.may {
             let wider: Vec<&str> = cap
                 .ops
@@ -1118,10 +1119,11 @@ pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Ve
                     Code::U7009,
                     cap.range.clone(),
                     format!(
-                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority`",
+                        "the ceiling of `{}` allows `{}[{}]`, which ita.lock does not record as consented; review it and run `una ita lock --accept-authority {}`",
                         need.name.value,
                         cap.capability,
-                        wider.join(", ")
+                        wider.join(", "),
+                        need.name.value
                     ),
                 ));
             }
@@ -1130,15 +1132,34 @@ pub fn check_consent(manifest: &ita::Manifest, lock: &ItaLock, root: &str) -> Ve
     errors
 }
 
-/// The ceiling the lock records as granted by `root` to the package `name`: each capability
-/// with its operations.
+/// Whether a locked package's origin is the one a need writes: the same path, ignoring a
+/// trailing `/`; the same registry source, `itaty` when the need names none; or a workspace
+/// member, which a need names by its name alone.
+pub fn same_origin(need: Option<&Origin>, locked: Option<&LockOrigin>) -> bool {
+    match (need, locked) {
+        (Some(Origin::Path(dir)), Some(LockOrigin::Path(locked))) => {
+            dir.trim_end_matches('/') == locked.trim_end_matches('/')
+        }
+        (Some(Origin::Source(source)), Some(LockOrigin::Source(locked))) => source == locked,
+        (None, Some(LockOrigin::Source(locked))) => locked == ITATY,
+        (Some(Origin::Workspace), Some(LockOrigin::Workspace(_))) => true,
+        _ => false,
+    }
+}
+
+/// The ceiling the lock records as granted by `root` to the package `name` from `origin`, the
+/// need's: each capability with its operations. A package of the same name from another
+/// origin records nothing for this need.
 pub fn recorded_ceiling<'l>(
     lock: &'l ItaLock,
     name: &PkgName,
+    origin: Option<&Origin>,
     root: &str,
 ) -> BTreeMap<&'l str, BTreeSet<&'l str>> {
     let mut recorded: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for package in lock.read.packages.iter().filter(|p| p.name.value == *name) {
+    for package in lock.read.packages.iter().filter(|p| {
+        p.name.value == *name && same_origin(origin, p.from.as_ref().map(|from| &from.value))
+    }) {
         for grant in package
             .granted
             .iter()

@@ -70,8 +70,8 @@ pub greet() -> Text = shout("hello")
 ## Forms
 
 ```text
-una ita lock [path] [--check [--fresh]] [--dry-run] [--accept-authority] [--accept-trust <package>]
-una ita update [<name>...] [--cooldown <hours>] [--now] [--dry-run] [--accept-authority] [--accept-trust <package>]
+una ita lock [path] [--check [--fresh]] [--dry-run] [--accept-authority <package>]... [--accept-trust <package>@<digest>]... [--accept-key <package>]...
+una ita update [<name>...] [--cooldown <hours>] [--now] [--dry-run] [--accept-authority <package>]... [--accept-trust <package>@<digest>]... [--accept-key <package>]...
 una ita add <name> [<version>] [--as <local>] [--from <source>] [--now] [--dry-run]
 una ita remove <name> [path]
 una ita tree [path]
@@ -80,13 +80,13 @@ una ita verify [path]
 ```
 
 - **`lock`** resolves the package by minimal version selection and writes `ita.lock`: the solver section, kept from the lock it replaces, and each path dependency with its version, directory, digest, ceiling and consents. `--check` writes nothing and reports where the lock is not the one it would write (U7009), and fails on a registry package whose owner's chain froze since the lock (U7010), as far as the newest checkpoint a place serves shows, which a note states; `--check --fresh` requires that checkpoint to be less than 24 hours old, and fails without one (U7013). CI runs `--check --fresh` (see [the lock](lock.md#in-ci)).
-- **`update`** raises the named needs, or all, and writes the lock. A path dependency is always locked as its directory holds it, so `update` locks it again. `--cooldown` and `--now` set how long a release must have been logged before it is taken: 72 hours by default.
-- **`add`** adds a need to `ita.una` and locks; both files are written only when the resolution succeeds. It writes no `may` and no `trust` line.
+- **`update`** raises the named needs, or all, and writes the lock; a need it is not asked to raise keeps what the lock records. A path dependency is always locked as its directory holds it, so `update` locks it again. `--cooldown` and `--now` set how long a release must have been logged before it is taken: 72 hours by default.
+- **`add`** adds a need to `ita.una` and locks; both files are written only when the resolution succeeds, the lock first, put back if `ita.una` cannot be written. It writes no `may` and no `trust` line.
 - **`remove`** takes a need out of `ita.una`, then writes the lock.
 - **`tree`** prints each package of the program, with its source, version, the ceiling granted, what it uses and the trust it adds.
-- **`vendor`** copies each locked registry package from Itaoca into `vendor/ita/`, and **`verify`** verifies each one again wherever it is, in `vendor/ita/` and in Itaoca.
-- **The review.** Before it writes a changed lock, a command prints one line per package added, changed or dropped: its origin, its versions and digests, the ceiling granted, and what its code uses. `--dry-run` prints it and writes nothing.
-- **Consent.** A wider ceiling needs `--accept-authority`, and a dependency's trusted modules need `--accept-trust <package>` for its content as it is now. `add` and `remove` take neither flag: `una ita lock` with it is the repair.
+- **`vendor`** copies each locked registry package from Itaoca into `vendor/ita/`, and **`verify`** checks each one again wherever it is, in `vendor/ita/` and in Itaoca. Until the registry client supplies the owner's key chain, a package whose copies match the lock is reported as not verified (U7013), and `verify` exits with code 1.
+- **The review.** Before it writes a changed lock, a command prints one line per package added, changed or dropped: its origin, its versions and digests, the ceiling granted, what its code uses, and its consented trust. `--dry-run` prints it and writes nothing.
+- **Consent.** Each flag names what it accepts. A wider ceiling needs `--accept-authority <package>`, and a dependency's trusted modules need `--accept-trust <package>@<digest>` for the content digest of the package as it is now; both repeat, one per package. Without consent the review is printed all the same, with `to accept, after reviewing: una ita lock ...` and the exact flags to copy, and nothing is written. `add` and `remove` take neither flag: `una ita lock` with it is the repair.
 - **`add` and `update`** work on the package in the current directory; the other commands take its directory, `.` by default.
 - **`--json`** prints one `una.ita/1` document; a command that writes the lock gives the review as `changes`.
 
@@ -112,7 +112,7 @@ change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:… -> sha256:…; ma
 ## Edge cases
 
 - **Usage errors.** A directory without `ita.una`, a name `update` or `remove` is given that the package does not need, and a word `add` would write that is not a name or a version, are usage errors, exit code 2.
-- **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing.
+- **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing. A file that cannot be written is exit code 1 too, with a message.
 - **Registry needs.** `lock`, `update`, `add` and `fetch` read a source of `sources` from the first of its places whose copy verifies: the mirrors listed for it in Itaoca's `mirrors.una`, then its own URL. They verify everything they read, from the root its `sources` entry pins to each release's signature and its owner's keys, and skip a mirror that serves a bad copy, naming it (U7010). This release has no https transport, so a source needs a mirror directory, listed as a `file://` URL; with none it is U7013. A `http://` location is refused: plain HTTP is never used. A need of `itaty`, whose root is not built into this release, is U7013.
 - **Keys.** A change of a locked package's owner's keys, a key added or revoked, or a recovery or a co-signer change that took effect, is U7014 until `--accept-key <package>` records it, and so is a recovery, a dispute or a co-signer change pending at the resolution point.
 - **Owners' keys.** An owner of packages should use a threshold above one, or designate recovery co-signers: with one key and no co-signers, a single stolen key can harm the owner's packages until a recovery or a dispute takes effect and the owner logs its claim on the stolen key (`spec/30 §14` rule 5). A change of co-signers waits seven days, as a recovery does, and any current key of the owner cancels it meanwhile, so co-signers are designated before they are needed; a thief's designation cannot block a dispute, which stays available while it waits. Two disputes, or a dispute and a recovery, waiting at once on one owner's chain mean that its account was taken over: the chain freezes, its names are no longer resolved (U7010), and the owner registers anew under a new owner name. A claim that a key was compromised since an earlier position is signed with the owner's other keys, its co-signers, or the key of its recovery or dispute, and never with the key it names: one that needs the claimed key's own signature counts only from its own position, since a thief holding the key could sign it too. An owner responds to a pending change it did not make within seven days: after that, a thief holding only one of its keys can take its names.

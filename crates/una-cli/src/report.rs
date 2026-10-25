@@ -146,7 +146,7 @@ pub(crate) struct DependencyDoc {
     signed: Option<String>,
     replaced: bool,
     edition: &'static str,
-    profile: &'static str,
+    profile: String,
     granted_by: Vec<GrantedByDoc>,
     effective_ceiling: Vec<String>,
     authority: Vec<String>,
@@ -1108,6 +1108,7 @@ pub(crate) fn dependencies(
         .as_ref()
         .map(|name| name.value.to_string())
         .unwrap_or_default();
+    // The lock, for a registry release's line and its key.
     let lock = package
         .lock
         .map(|id| una_project::ita::parse_ita_lock(package.sources.file(id).text()).0);
@@ -1135,6 +1136,12 @@ pub(crate) fn dependencies(
             .as_ref()
             .map_or(una_project::Edition::V0_4, |s| s.edition)
             .name();
+        // The package's own profile, `app` when its `ita.una` names none.
+        let profile = settings
+            .as_ref()
+            .and_then(|s| s.ita.as_deref())
+            .and_then(|read| read.profile.as_ref())
+            .map_or_else(|| "app".to_owned(), |profile| profile.value.clone());
         let ceiling: Vec<String> = need
             .may
             .iter()
@@ -1144,16 +1151,33 @@ pub(crate) fn dependencies(
             })
             .collect();
         // One level of needs: the root can grant anything, so a direct dependency's effective
-        // ceiling is the ceiling the root writes (rule 51).
-        let granted: una_project::authority::Authority = need
-            .may
+        // ceiling is the ceiling its package extent has (rule 51): the one the root writes, or,
+        // for a package with trusted modules, its intersection with the trust line's (spec/30
+        // §13 rule 4).
+        let extent = manifest
+            .boundaries
             .iter()
-            .flat_map(|cap| {
-                cap.ops
-                    .iter()
-                    .map(|op| (cap.capability.clone(), op.value.clone()))
-            })
-            .collect();
+            .find(|b| b.package && b.module.value == mount.local);
+        let granted: una_project::authority::Authority = match extent {
+            Some(extent) => extent
+                .ceiling
+                .iter()
+                .flat_map(|cap| {
+                    cap.ops
+                        .iter()
+                        .map(|op| (cap.capability.clone(), op.clone()))
+                })
+                .collect(),
+            None => need
+                .may
+                .iter()
+                .flat_map(|cap| {
+                    cap.ops
+                        .iter()
+                        .map(|op| (cap.capability.clone(), op.value.clone()))
+                })
+                .collect(),
+        };
         let edges = [una_project::authority::Edge {
             from: 0,
             to: 1,
@@ -1176,9 +1200,8 @@ pub(crate) fn dependencies(
                     )
             }),
         });
-        let digest = locked
-            .and_then(|p| p.digest.as_ref())
-            .map(|d| d.value.clone());
+        // The digest of the code analysed: the bytes loaded, which the checks read.
+        let digest = crate::package::dependency_digest(dependency).ok();
         let (source, path, signed) = match &dependency.registry {
             Some(origin) => (
                 origin.source.clone(),
@@ -1199,7 +1222,7 @@ pub(crate) fn dependencies(
             signed,
             replaced: false,
             edition,
-            profile: "app",
+            profile,
             granted_by: vec![GrantedByDoc {
                 package: root.clone(),
                 source: None,

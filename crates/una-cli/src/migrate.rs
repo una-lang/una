@@ -129,7 +129,15 @@ pub(crate) fn migrate_command(
             ("ita.una", &migration.manifest),
             ("ita.lock", &migration.lock),
         ] {
-            if let Err(error) = crate::write_through_rename_or_create(&path.join(name), text) {
+            // `ita.lock` belongs to the toolchain: a link at its name is replaced, never
+            // followed. `ita.una` is the author's, written as sources are.
+            let target = path.join(name);
+            let result = if name == "ita.lock" {
+                una_diag::safe_write::write_new_name(path, &target, text.as_bytes(), true)
+            } else {
+                crate::write_through_rename_or_create(path, &target, text)
+            };
+            if let Err(error) = result {
                 writeln!(stderr, "error: cannot write `{name}`: {error}")?;
                 return Ok(ExitStatus::Usage);
             }
@@ -260,6 +268,7 @@ fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
         both_manifests: false,
         manifest: Some(manifest_id),
         lock: Some(lock_id),
+        lock_bytes: Some(lock.as_bytes().to_vec()),
         modules,
         disk_paths,
         dependencies: Vec::new(),

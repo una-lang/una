@@ -120,7 +120,7 @@ $ una ita lock --check --fresh
 ## Edge cases
 
 - **Consistency.** Every need of `ita.una` must be met by a locked package at least the version it asks for, every locked package must be reached by a need, and each package is locked once on its major line.
-- **Consent.** A `may` line wider than the ceiling the lock records is U7009 until `una ita lock --accept-authority` records it (see [authority](authority.md)).
+- **Consent.** A `may` line wider than the ceiling the lock records is U7009 until `una ita lock --accept-authority <package>` records it (see [authority](authority.md)).
 - **No git origin.** A lock with a `git` origin is U7009: there are no git dependencies.
 - **Bounds.** `ita.lock` holds at most 16 MiB.
 

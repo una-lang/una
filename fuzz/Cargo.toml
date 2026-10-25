@@ -1,5 +1,6 @@
-# The fuzz targets of the native runtime (#766, the `sanitize` release gate) and of the parsers
-# of the documents a package registry serves (ADR 0122). Outside the
+# The fuzz targets of the native runtime (#766, the `sanitize` release gate), of the readers of
+# the package manager's documents (#997): the provenance, the archive and `ita.lock`, and of the
+# parsers of the documents a package registry serves (ADR 0122). Outside the
 # workspace: its own `[workspace]` and Cargo.lock, so the workspace's stable builds never see
 # it. scripts/sanitize.sh builds it with the checking toolchain of scripts/check-toolchain.toml,
 # with libFuzzer's coverage, AddressSanitizer and `--cfg una_fuzz`, and runs each target.
@@ -17,7 +18,8 @@ publish = false
 libfuzzer-sys = "=0.4.13"
 num-bigint = "0.4.6"
 una-core = { path = "../crates/una-core" }
-# The parsers of the documents a registry serves (ADR 0122 rules 29 to 39), in pure Rust.
+# The readers of the package manager's documents and the parsers of the documents a registry
+# serves (ADR 0122 rules 29 to 39), in pure Rust.
 una-project = { path = "../crates/una-project" }
 # Signs fuzzed documents with fixed test keys, so the targets reach past the signatures.
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
@@ -40,6 +42,27 @@ bench = false
 [[bin]]
 name = "json"
 path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provenance"
+path = "fuzz_targets/provenance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ita_lock"
+path = "fuzz_targets/ita_lock.rs"
 test = false
 doc = false
 bench = false
