@@ -479,77 +479,44 @@ fn una_build_writes_the_executable_and_prints_una_build_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
 #[test]
-fn una_build_never_writes_through_a_link_leading_outside_the_package() {
-    // #1160 (S-31): a repository can commit `target` as a link to any directory, or a link at
-    // the object file's or the executable's name. `una build` refuses an output whose
-    // directory resolves outside the package or whose name is a link, before the linker
-    // starts, and never writes `<name>.o` next to the executable, so the file a link leads to
-    // stays as it was.
-    runtime();
+fn una_build_never_writes_through_a_link_leading_outside_the_package_1160() {
+    // #1160: a repository can commit `target/una/<name>.o`, `target/una/<name>` or `target`
+    // itself as a link to somewhere outside it. `una build` refuses each before it writes,
+    // and before the linker starts, and the file the link leads to stays as it was.
     let dir = package(
         "planted",
         "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
         &[("src/hello.una", HELLO)],
     );
-    let outside = dir.with_file_name(format!("una-native-planted-outside-{}", std::process::id()));
+    let outside = dir.with_extension("outside");
     let _ = std::fs::remove_dir_all(&outside);
     std::fs::create_dir_all(&outside).unwrap();
     let victim = outside.join("victim");
-    std::fs::write(&victim, b"kept").unwrap();
-    let untouched = |what: &str| {
-        assert_eq!(std::fs::read(&victim).unwrap(), b"kept", "{what}");
-        let names: Vec<String> = std::fs::read_dir(&outside)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["victim"], "{what}");
+    std::fs::write(&victim, "untouched").unwrap();
+    let refused = |expected: &str| {
+        let output = una(&dir, &["build"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
     };
-    // `target` -> outside: refused before anything is created through it.
-    std::os::unix::fs::symlink(&outside, dir.join("target")).unwrap();
-    let output = una(&dir, &["build"]);
-    assert_eq!(output.status.code(), Some(2), "target link");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("outside the package"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    untouched("target link");
-    std::fs::remove_file(dir.join("target")).unwrap();
-    // A link at `target/una/planted`, the executable: refused.
+    // The object's name.
     std::fs::create_dir_all(dir.join("target/una")).unwrap();
-    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted")).unwrap();
-    let output = una(&dir, &["build"]);
-    assert_eq!(output.status.code(), Some(2), "executable link");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("symbolic link"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    untouched("executable link");
-    std::fs::remove_file(dir.join("target/una/planted")).unwrap();
-    // A link at `target/una/planted.o`, the object file's old name: never followed, and the
-    // build succeeds.
     std::os::unix::fs::symlink(&victim, dir.join("target/una/planted.o")).unwrap();
-    let output = una(&dir, &["build"]);
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    untouched("object link");
-    let run = Command::new(dir.join("target/una/planted"))
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
-    // No private directory of the build is left behind.
-    let mut left: Vec<String> = std::fs::read_dir(dir.join("target/una"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    left.sort();
-    assert_eq!(left, ["planted", "planted.o"]);
+    refused("outside the package");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted")).is_err());
+    // The executable's name, which the linker would write.
+    std::fs::remove_file(dir.join("target/una/planted.o")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted")).unwrap();
+    refused("is a symbolic link");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted.o")).is_err());
+    // `target` itself: nothing is created outside.
+    std::fs::remove_dir_all(dir.join("target")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("target")).unwrap();
+    refused("outside the package");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&outside);
 }

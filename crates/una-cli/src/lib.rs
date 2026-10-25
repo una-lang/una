@@ -1435,11 +1435,11 @@ pub(crate) fn write_through_rename_or_create(
     target: &Path,
     text: &str,
 ) -> io::Result<()> {
-    una_diag::files::write_atomically(root, target, text.as_bytes(), true)
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), true, true)
 }
 
 /// Replaces the file `target` with `text` through a fresh temporary file and a rename, so an
-/// interrupted write never leaves a truncated file, as [`una_diag::files::write_atomically`]
+/// interrupted write never leaves a truncated file, as [`una_diag::safe_write::write_atomically`]
 /// writes it.
 ///
 /// The temporary file is created next to the destination with `create_new` (`O_CREAT|O_EXCL`,
@@ -1452,7 +1452,7 @@ pub(crate) fn write_through_rename_or_create(
 /// the write is refused, naming the link and where it leads: a cloned repository can choose a
 /// target link as easily as a temporary one.
 pub(crate) fn write_through_rename(root: &Path, target: &Path, text: &str) -> io::Result<()> {
-    una_diag::files::write_atomically(root, target, text.as_bytes(), false)
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), false, true)
 }
 
 /// The package directory a command given `path` writes in: `path` itself, or the directory of a

@@ -258,22 +258,20 @@ pub(crate) fn build_command(
             )
         }
     };
-    let written = match &options.out {
-        Some(out) => out_directory(out),
-        None => una_diag::files::create_directories(&root, Path::new("target/una"))
-            .map(|_| root.clone()),
-    }
-    .and_then(|write_root| write_outputs(&write_root, &output, &object, options.environment));
-    match written {
-        Ok(Ok(())) => {}
-        Ok(Err(message)) => {
-            writeln!(stderr, "error: {message}")?;
-            return Ok(ExitStatus::Usage);
-        }
+    // #1160: the object and the executable are written only inside the package, or inside the
+    // directory `--out` names, never through a link planted there that leads elsewhere.
+    let (output, object_path) = match placed(&root, options.out.is_some(), &output, &object) {
+        Ok(placed) => placed,
         Err(error) => {
             writeln!(stderr, "error: cannot write `{shown}`: {error}")?;
             return Ok(ExitStatus::Usage);
         }
+    };
+    let linked = link(&object_path, &output, options.environment);
+    let _ = std::fs::remove_file(&object_path);
+    if let Err(message) = linked {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
     }
     if options.json {
         let document = BuildDocument {
@@ -306,6 +304,44 @@ fn print_json(
     stdout.flush()
 }
 
+/// Creates the directory of `output` and writes the object next to it, then returns the paths
+/// the linker is given: the executable and the object (#1160).
+///
+/// The default output, `target/una/<name>`, is placed inside the package root `root`: each
+/// level of `target/una` is created one at a time, and a link among them that leads outside the
+/// package is refused. An `--out` path (`explicit`) is placed inside the directory it names,
+/// which is created as the user asked. The object is written through
+/// [`una_diag::safe_write::write_atomically`], and the executable's path is checked by
+/// [`una_diag::safe_write::checked_output`] before the linker starts: it must not be a link.
+fn placed(
+    root: &Path,
+    explicit: bool,
+    output: &Path,
+    object: &[u8],
+) -> io::Result<(PathBuf, PathBuf)> {
+    let write_root = if explicit {
+        // The directory the user named on the command line, not one the package chose.
+        let directory = match output.parent().filter(|p| !p.as_os_str().is_empty()) {
+            Some(parent) => parent.to_path_buf(),
+            None => PathBuf::from("."),
+        };
+        std::fs::create_dir_all(&directory)?;
+        directory
+    } else {
+        let root = if root.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            root
+        };
+        una_diag::safe_write::create_dir_inside(root, &root.join("target").join("una"))?;
+        root.to_path_buf()
+    };
+    let output = una_diag::safe_write::checked_output(&write_root, output)?;
+    let object_path = output.with_extension("o");
+    una_diag::safe_write::write_atomically(&write_root, &object_path, object, true, true)?;
+    Ok((output, object_path))
+}
+
 /// The directory of `una.toml`, or of the file of a single-file package.
 fn package_root(package: &crate::package::Package) -> PathBuf {
     package
@@ -313,53 +349,8 @@ fn package_root(package: &crate::package::Package) -> PathBuf {
         .or_else(|| package.modules.first().copied())
         .and_then(|id| package.disk_paths.get(&id))
         .and_then(|path| path.parent())
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-}
-
-/// The directory `--out <file>` names, created with its parents, which is the root its writes
-/// stay in. The user chose this path on the command line, not the package, so it is created
-/// as given; the object file and the executable are still written in it under the rules of
-/// [`write_outputs`], so a link planted at either name is never written through outside it.
-fn out_directory(out: &Path) -> io::Result<PathBuf> {
-    match out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        Some(parent) => {
-            std::fs::create_dir_all(parent)?;
-            Ok(parent.to_path_buf())
-        }
-        None => Ok(PathBuf::from(".")),
-    }
-}
-
-/// Links `object` into the executable `output`, inside `root` (#1160). The linker never writes
-/// a name the package chose: [`una_diag::files::reserve`] checks that the directory of
-/// `output` resolves inside `root` and refuses a link at `output`, before `cc` starts, and
-/// gives `cc` a file of the same name in a private directory of its own, with the object file
-/// beside it, written through [`una_diag::files::write_atomically`]. The executable is then
-/// renamed onto `output`, and the private directory removed. No `<name>.o` is ever written
-/// next to `output`, so a link planted there is never followed. The outer error is a refused
-/// or failed write; the inner one, the linker's message.
-fn write_outputs(
-    root: &Path,
-    output: &Path,
-    object: &[u8],
-    environment: crate::Environment<'_>,
-) -> io::Result<Result<(), String>> {
-    let reserved = una_diag::files::reserve(root, output)?;
-    // `<name>.o`, as before, unless the executable's own name already ends in `.o`.
-    let object_path = match reserved.path().with_extension("o") {
-        same if same == reserved.path() => {
-            let stem = same.file_stem().unwrap_or_default().to_string_lossy();
-            reserved.directory().join(format!("{stem}-object.o"))
-        }
-        other => other,
-    };
-    una_diag::files::write_atomically(root, &object_path, object, true)?;
-    match link(&object_path, reserved.path(), environment) {
-        Ok(()) => reserved.commit().map(Ok),
-        // Dropping the reservation removes its directory, the object file included.
-        Err(message) => Ok(Err(message)),
-    }
+        .map(Path::to_path_buf)
+        .unwrap_or_default()
 }
 
 /// Links `object` with the runtime library into the executable `output` through `cc`.
