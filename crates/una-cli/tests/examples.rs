@@ -19,6 +19,9 @@ fn repository() -> PathBuf {
 
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository())
         .output()
@@ -416,6 +419,9 @@ fn every_example_package_is_canonical_verified_and_tested() {
         if let Some((_, output)) = expected {
             // `examples/journal` copies its entry only when `JOURNAL_COPY` is set.
             let run = Command::new(env!("CARGO_BIN_EXE_una"))
+                // The proof cache's key lives under this home, never the user's (#1164).
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(["run", &path])
                 .env_remove("JOURNAL_COPY")
                 .current_dir(repository())

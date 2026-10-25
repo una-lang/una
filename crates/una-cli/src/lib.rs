@@ -9,6 +9,7 @@
 mod args;
 mod contract;
 mod package;
+mod proof_key;
 mod report;
 mod runtime;
 mod trace;
@@ -16,7 +17,7 @@ mod verification;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
@@ -29,6 +30,7 @@ use una_syntax::{FileId, Interner, Lexed, SourceDb, lex, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
+use crate::verification::Solving;
 pub use crate::verification::{DEFAULT_WALLCLOCK, Verification};
 
 /// The exit status of a `una` command (`spec/13 §5`).
@@ -83,14 +85,20 @@ pub struct Checked {
 }
 
 /// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
-/// default wall-clock guard of the solver.
+/// default wall-clock guard of the solver and no proof cache.
 pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
     check_with(path, tier, DEFAULT_WALLCLOCK)
 }
 
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
-/// reports nothing, every proof obligation.
+/// reports nothing, every proof obligation, solved with the guard `wallclock`. No proof cache
+/// is read or written: only the command line has the user's key that authenticates one (#1164).
 pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
+    check_solving(path, tier, Solving::uncached(wallclock))
+}
+
+/// [`check_with`] with the proof cache of `solving`, when it has a key.
+fn check_solving(path: &Path, tier: Tier, solving: Solving<'_>) -> Result<Checked, LoadError> {
     let package = load(path)?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
@@ -98,7 +106,7 @@ pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checke
     });
     let mut verification = None;
     if tier == Tier::One && diagnostics.is_empty() {
-        let found = verification::tier_one(&package, &program, wallclock);
+        let found = verification::tier_one(&package, &program, solving);
         diagnostics.extend(found.diagnostics);
         verification = found.verification;
     }
@@ -267,6 +275,11 @@ fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
 /// `Env.get` aborts on it (S-16, ADR 0086).
 pub type Environment<'a> = &'a (dyn Fn(&str) -> Result<Option<String>, una_interp::NotText> + Sync);
 
+/// The variable `name` for the toolchain's own use: unset when its value is not valid UTF-8.
+pub(crate) fn variable(environment: Environment<'_>, name: &str) -> Option<String> {
+    environment(name).ok().flatten()
+}
+
 /// Runs the `una` command line. `args` starts with the program name; `stderr_is_terminal`
 /// decides `--color auto`, since human diagnostics go to stderr (ADR 0015 D1).
 ///
@@ -282,6 +295,30 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
+    // never makes one. A key file that exists but is not a private regular file of the user
+    // turns the cache off, with a note (#1164).
+    let resolve_key = |stderr: &mut dyn Write, json: bool| match proof_key::resolve(environment) {
+        Ok(key) => key,
+        Err(refused) => {
+            // Under `--json` stderr stays empty (`spec/13 §5`, ADR 0015): the report's
+            // `tcb.proof_cache_key: null` is the signal there. A note that cannot be written
+            // changes nothing about the command.
+            if !json {
+                let hint = refused
+                    .reason
+                    .hint()
+                    .map(|hint| format!(" ({hint})"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    stderr,
+                    "note: the proof cache key `{}` is not used, since {}; the proof cache is off{hint}",
+                    refused.shown, refused.reason
+                );
+            }
+            None
+        }
+    };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             Command::Check {
@@ -290,6 +327,12 @@ where
                 dump_core,
                 solver_wallclock,
             } => {
+                // Tier 0 never verifies, so it needs no key.
+                let key = if matches!(tier, TierArg::One) {
+                    resolve_key(stderr, cli.json)
+                } else {
+                    None
+                };
                 let options = CheckOptions {
                     tier: match tier {
                         TierArg::Zero => Tier::Zero,
@@ -297,7 +340,10 @@ where
                     },
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -305,10 +351,14 @@ where
                 requirement,
                 solver_wallclock,
             } => {
+                let key = resolve_key(stderr, cli.json);
                 let options = trace::TraceOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
@@ -316,10 +366,14 @@ where
                 path,
                 solver_wallclock,
             } => {
+                let key = resolve_key(stderr, cli.json);
                 let options = report::ReportOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
@@ -327,10 +381,14 @@ where
                 path,
                 solver_wallclock,
             } => {
+                let key = resolve_key(stderr, cli.json);
                 let options = verification::ObligationsOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -352,13 +410,17 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
+                let key = resolve_key(stderr, cli.json);
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -367,13 +429,17 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
+                let key = resolve_key(stderr, cli.json);
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
@@ -400,23 +466,23 @@ where
 
 /// The options of `una check`.
 #[derive(Clone, Copy, Debug)]
-struct CheckOptions {
+struct CheckOptions<'a> {
     tier: Tier,
     json: bool,
     color: bool,
-    wallclock: Duration,
+    solving: Solving<'a>,
 }
 
 /// `una check [path]`: prints the diagnostics of [`check`], as JSON on stdout (ADR 0012) or
 /// for people on stderr (ADR 0015 D1).
 fn check_command(
     path: &Path,
-    options: CheckOptions,
+    options: CheckOptions<'_>,
     dump_core: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let checked = match check_with(path, options.tier, options.wallclock) {
+    let checked = match check_solving(path, options.tier, options.solving) {
         Ok(checked) => checked,
         // A usage error goes to stderr even with --json; it happens before the
         // command runs, like the usage errors clap reports.
@@ -497,9 +563,10 @@ struct FmtOptions {
 /// `una fmt [path]` and `una fmt --check [path]` (`spec/13 §5`, ADR 0020).
 ///
 /// Files with syntax errors are reported and left untouched; the others are
-/// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
-/// printed on success. `--check` reports U7001 instead of writing.
+/// rewritten when they differ from their canonical form, each through a fresh temporary file
+/// and a rename onto the file itself or, for a symbolic link that resolves inside the package,
+/// onto its resolved target (a link leading outside it is refused), and nothing is printed on
+/// success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
@@ -536,7 +603,7 @@ fn fmt_command(
         let Some(target) = package.disk_paths.get(&id) else {
             continue;
         };
-        if let Err(error) = write_through_rename(target, &canonical) {
+        if let Err(error) = write_through_rename(&write_root(path), target, &canonical) {
             writeln!(
                 stderr,
                 "error: cannot write `{}`: {error}",
@@ -555,29 +622,30 @@ fn fmt_command(
     )
 }
 
-/// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so
-/// that an interrupted write never leaves a truncated source.
+/// Replaces the file `target` with `text` through a fresh temporary file and a rename, so an
+/// interrupted write never leaves a truncated file ([`una_diag::safe_write::write_atomically`]).
 ///
-/// A symbolic link is resolved first, so the rename lands on the file the link points to and
-/// the link itself is kept (review finding R-024).
-fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
-    let resolved;
-    let target = if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
-        resolved = std::fs::canonicalize(target)?;
-        resolved.as_path()
-    } else {
-        target
-    };
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = target.with_file_name(format!(".{name}.fmt-tmp"));
-    std::fs::write(&temporary, text)?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        std::fs::set_permissions(&temporary, metadata.permissions())?;
+/// The temporary file is created exclusively under a name unique to the write, so anything
+/// already at that name, a planted link included, is never written through (#1160).
+///
+/// A symbolic link at `target` is written through onto the file it resolves to (review finding
+/// R-024) only when that file, and the directory it lives in, resolve inside `root`. Otherwise
+/// the write is refused, naming the link and where it leads: a cloned repository can choose a
+/// target link as easily as a temporary one.
+fn write_through_rename(root: &Path, target: &Path, text: &str) -> io::Result<()> {
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), false, true)
+}
+
+/// The package directory a command given `path` writes in: `path` itself, or the directory of a
+/// single file.
+fn write_root(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        return path.to_path_buf();
     }
-    std::fs::rename(&temporary, target)
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
 }
 
 /// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current

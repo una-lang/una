@@ -23,3 +23,7 @@
 ## Alternatives considered
 
 - **Authenticate or re-validate entries now (E6 B).** Not chosen: a new mechanism before v0.1 closes.
+
+## Amendment (2026-10-25, advisory UNA-SA-019, #1164)
+
+On the 0.1 line, rule 1 (the trusted proof cache) is superseded from v0.1.13 by the authenticated cache of advisory UNA-SA-019, as ADR 0064 did on the 0.3 line. Each entry carries an HMAC-SHA-256 tag under a per-user key outside the package, and an entry without a valid tag is solved again; the proof cache key, not the cache, is in the Trusted zone (`spec/12 §9`, `spec/13 §6`, which adds `tcb.proof_cache_key` beside `tcb.proof_cache`). Rule 2 is unchanged. The authentication that rule 3 deferred is this change.

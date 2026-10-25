@@ -20,7 +20,7 @@ use una_interp::{
 use una_syntax::{SourceDb, Span};
 
 use crate::contract::Modules;
-use crate::verification::tier_one;
+use crate::verification::{Solving, tier_one};
 use crate::{Analysis, Environment, ExitStatus, Package, analyze, load, on_large_stack};
 
 /// The exit status of a package that the checks reject: 3 for an internal error, 1 otherwise.
@@ -55,8 +55,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) color: bool,
     /// The environment variables for `Env.get`.
     pub(crate) environment: Environment<'a>,
-    /// The wall-clock guard of the solver.
-    pub(crate) wallclock: std::time::Duration,
+    /// The wall-clock guard of the solver, and the key of the proof cache.
+    pub(crate) solving: Solving<'a>,
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -171,7 +171,7 @@ pub(crate) fn run_command(
     }
     let mut analysis = on_large_stack(|| analyze(&package, Some(&specs)));
     if analysis.diagnostics.is_empty() {
-        let found = tier_one(&package, &analysis.program, options.wallclock);
+        let found = tier_one(&package, &analysis.program, options.solving);
         analysis.diagnostics = found.diagnostics;
     }
     if !analysis.diagnostics.is_empty() {
@@ -475,7 +475,7 @@ pub(crate) fn test_command(
     };
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
-        let found = tier_one(&package, &analysis.program, options.wallclock);
+        let found = tier_one(&package, &analysis.program, options.solving);
         analysis.diagnostics = found.diagnostics;
     }
     if !analysis.diagnostics.is_empty() {

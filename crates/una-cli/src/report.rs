@@ -6,7 +6,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::Duration;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -16,13 +15,17 @@ use una_syntax::Span;
 use una_syntax::ast::{ClauseKind, DeclKind, TextPart};
 
 use crate::contract::Modules;
-use crate::verification::{lock_of, problem_diagnostic, report_unverified, settings, tier_one};
+use crate::verification::{
+    Solving, lock_of, problem_diagnostic, report_unverified, settings, tier_one,
+};
 use crate::{Analysis, ExitStatus, Package, analyze, load, on_large_stack, report};
 
 /// The JSON schema of `una report --json` (`spec/13 §6`).
 const REPORT_SCHEMA: &str = "una.report/1";
 
-/// The proof cache of a package, relative to its root: trusted in v0.1 (ADR 0041).
+/// The proof cache of a package, relative to its root. Its entries are authenticated under the
+/// user's key, which is in the Trusted zone instead (#1164; ADR 0041 made the cache itself
+/// trusted until v0.1.12).
 const PROOF_CACHE: &str = ".una/cache/";
 
 /// What the verification model does not cover: the one list of `spec/07 §1` and `spec/13 §6`,
@@ -137,8 +140,11 @@ struct TcbDoc {
     trusted_modules: Vec<TrustedDoc>,
     host_capabilities: Vec<String>,
     solver: String,
-    /// The proof cache of the package, part of the Trusted zone (ADR 0041).
+    /// The proof cache of the package, kept for the schema `una.report/1`.
     proof_cache: &'static str,
+    /// The key file that authenticates the cache's entries, part of the Trusted zone, or `null`
+    /// when the run used no cache (#1164).
+    proof_cache_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -164,17 +170,17 @@ struct CoverageDoc {
 
 /// The options of `una report`.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReportOptions {
+pub(crate) struct ReportOptions<'a> {
     pub(crate) json: bool,
     pub(crate) color: bool,
-    pub(crate) wallclock: Duration,
+    pub(crate) solving: Solving<'a>,
 }
 
 /// `una report [path]`: checks the package at tier 1 and prints its build report; the
 /// diagnostics of tier 0, or of a solver that cannot run, instead of it.
 pub(crate) fn report_command(
     path: &Path,
-    options: ReportOptions,
+    options: ReportOptions<'_>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
@@ -196,7 +202,7 @@ pub(crate) fn report_command(
             stderr,
         );
     }
-    let found = tier_one(&package, &analysis.program, options.wallclock);
+    let found = tier_one(&package, &analysis.program, options.solving);
     let Some(verification) = found.verification else {
         return report_unverified(
             &found.diagnostics,
@@ -211,7 +217,7 @@ pub(crate) fn report_command(
     let trivial_queries =
         on_large_stack(|| una_verify::trivial_ensures(&analysis.program, &package.sources));
     let trivial: BTreeSet<(String, Span)> =
-        match una_verify::verify(&trivial_queries, &settings(&package, options.wallclock)) {
+        match una_verify::verify(&trivial_queries, &settings(&package, options.solving)) {
             Ok(outcomes) => trivial_queries
                 .iter()
                 .zip(outcomes)
@@ -241,7 +247,12 @@ pub(crate) fn report_command(
         }
     }
     let unproven = counts.refuted + counts.unknown > 0;
-    let document = build(&package, &analysis, counts, &trivial);
+    // The key appears when this run used a cache, which only a package with a key has.
+    let key = settings(&package, options.solving)
+        .cache
+        .and(options.solving.proof_key)
+        .map(|key| key.shown.clone());
+    let document = build(&package, &analysis, counts, &trivial, key);
     if options.json {
         match serde_json::to_string(&document) {
             Ok(text) => writeln!(stdout, "{text}")?,
@@ -276,6 +287,7 @@ fn build(
     analysis: &Analysis,
     counts: Counts,
     trivial: &BTreeSet<(String, Span)>,
+    proof_cache_key: Option<String>,
 ) -> Report {
     let (manifest, _) = crate::package::project(package);
     let modules = Modules {
@@ -471,6 +483,7 @@ fn build(
             host_capabilities: host.into_iter().collect(),
             solver: format!("z3 {}", lock.solver_version),
             proof_cache: PROOF_CACHE,
+            proof_cache_key,
         },
         requirements,
         coverage: CoverageDoc {
@@ -724,6 +737,14 @@ fn human(report: &Report) -> String {
     ));
     line(format!("  solver: {}", report.tcb.solver));
     line(format!("  proof cache: {}", report.tcb.proof_cache));
+    line(format!(
+        "  proof cache key: {}",
+        report
+            .tcb
+            .proof_cache_key
+            .as_deref()
+            .unwrap_or("none, so the cache is off")
+    ));
     line("requirements:".to_owned());
     for requirement in &report.requirements {
         line(format!(

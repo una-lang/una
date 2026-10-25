@@ -19,6 +19,9 @@ fn repository() -> PathBuf {
 /// Runs `una --json <args>` in `dir`: the exit code and the one document on stdout.
 fn una(dir: &Path, args: &[&str]) -> (i32, Value) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .arg("--json")
         .args(args)
         .current_dir(dir)
@@ -164,6 +167,9 @@ example \"a second after midnight\"
 
     // 5. A usage error is the only output outside a document: exit code 2 and stderr.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", "no-such-package"])
         .current_dir(&root)
         .output()

@@ -105,6 +105,9 @@ fn scratch(line: usize) -> PathBuf {
 
 fn check(target: &Path) -> (Output, Vec<String>) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", target.to_str().unwrap()])
         .output()
         .unwrap();
@@ -196,6 +199,9 @@ fn every_block_of_the_guide_is_checked() {
                     }
                     let args: Vec<&str> = words.split_whitespace().skip(1).collect();
                     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                        // The proof cache's key lives under this home, never the user's (#1164).
+                        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                        .env_remove("UNA_PROOF_KEY")
                         .args(&args)
                         .current_dir(&dir)
                         .output()

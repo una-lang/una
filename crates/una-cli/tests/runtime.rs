@@ -17,6 +17,9 @@ fn repository() -> PathBuf {
 /// Runs the `una` binary in `dir`, relative to the repository root, or absolute.
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository().join(dir))
         .output()
@@ -1047,6 +1050,9 @@ fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
         &[("src/rr.una", HOST_REDACTION), ("data/.keep", "")],
     );
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "run"])
         .env("UNA_SECRET_TOKEN", "hunter2")
         .current_dir(&root)

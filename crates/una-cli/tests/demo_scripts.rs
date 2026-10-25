@@ -19,6 +19,9 @@ fn every_demo_script_finds_its_expected_outcomes() {
     assert!(!scripts.is_empty(), "scripts/demo holds no demo script");
     for script in scripts {
         let output = Command::new("sh")
+            // The proof cache's key lives under this home, never the user's (#1164).
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .arg(&script)
             .arg(env!("CARGO_BIN_EXE_una"))
             .current_dir(&root)
