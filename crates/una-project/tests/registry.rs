@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use support::{NOW, TestRegistry, hash_hex, keypair};
-use una_project::client::{Point, Registry};
+use una_project::client::{Misbehavior, Point, Registry};
 use una_project::content::File;
 use una_project::itaoca::{Itaoca, registry_id};
 use una_project::mirrors::{Attempt, first_verified};
@@ -1991,4 +1991,56 @@ fn a_bundle_carries_every_places_copy_of_a_kept_checkpoint() {
         [b"one".to_vec(), b"two".to_vec()]
     );
     assert!(copy.get_all("checkpoint/4", 100).unwrap().is_empty());
+}
+
+/// Every kind of the client's typed misbehavior is evidence the audit reports: a cadence gap
+/// the client met, with its range of sizes; a missing deadline checkpoint, with the request's
+/// index and target witness time.
+#[test]
+fn the_audit_reports_deadline_and_cadence_evidence() {
+    let a = keypair(60, "acme.a");
+    let mut test = TestRegistry::new("acme");
+    test.register("acme", &a);
+    test.checkpoint(NOW - 30 * 86_400);
+    let (release, _) = test.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    for at in 0..70 {
+        test.append("other", &format!("filler {at}"));
+    }
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    client.logged_at(release).unwrap();
+    let gap = audit::Evidence::CadenceGap {
+        from: release + 1,
+        to: release + 64,
+    };
+    assert_eq!(audit::evidence(&client), [gap.clone()]);
+    let text = gap.text("acme");
+    assert!(
+        text.contains("evidence against the registry `acme`")
+            && text.contains(&format!("sizes {} to {}", release + 1, release + 64)),
+        "{text}"
+    );
+    let missing = audit::Evidence::from(Misbehavior::MissingDeadline {
+        owner: "acme".to_owned(),
+        index: 7,
+        target: 1_000_000,
+    });
+    let text = missing.text("acme");
+    assert!(
+        text.contains("log index 7")
+            && text.contains("the owner `acme`")
+            && text.contains("target witness time 1000000"),
+        "{text}"
+    );
 }

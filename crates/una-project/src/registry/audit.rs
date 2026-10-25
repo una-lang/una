@@ -17,7 +17,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::client::{Marks, Registry, owner_of, shown};
+use crate::client::{Marks, Misbehavior, Registry, owner_of, shown};
 use crate::tlog::owner::Unsettled;
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
@@ -351,25 +351,75 @@ pub fn audit<E>(
 }
 
 /// Evidence against a registry that the audit reports (`spec/30 §15` rule 7): what the
-/// registry logged that a registry following the rules never logs. It is said as such, apart
-/// from the findings about packages, for the user to publish with the registry's checkpoint.
+/// registry logged or kept that a registry following the rules never does. It is said as such,
+/// apart from the findings about packages, for the user to publish with the registry's
+/// checkpoint, to its witnesses and to other places.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Evidence {
     /// The registry logged an owner chain that does not settle (`spec/30 §14` rule 5,
     /// invariant (4)): the owner's names are refused (U7010).
     Unsettled(Unsettled),
+    /// No place serves the deadline checkpoint of a request, the first checkpoint at or after
+    /// its target witness time with the witness threshold of cosignatures, which a registry
+    /// keeps: the request's effect cannot be decided.
+    MissingDeadline {
+        /// The owner whose chain holds the request.
+        owner: String,
+        /// The request's log index.
+        index: u64,
+        /// Its target witness time, in seconds since the Unix epoch.
+        target: u64,
+    },
+    /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
+    /// a registry may leave between two such checkpoints.
+    CadenceGap {
+        /// The first size of the range.
+        from: u64,
+        /// The last size of the range.
+        to: u64,
+    },
+}
+
+impl From<Misbehavior> for Evidence {
+    fn from(misbehavior: Misbehavior) -> Evidence {
+        match misbehavior {
+            Misbehavior::Unsettled(unsettled) => Evidence::Unsettled(unsettled),
+            Misbehavior::MissingDeadline {
+                owner,
+                index,
+                target,
+            } => Evidence::MissingDeadline {
+                owner,
+                index,
+                target,
+            },
+            Misbehavior::CadenceGap { from, to } => Evidence::CadenceGap { from, to },
+        }
+    }
 }
 
 impl Evidence {
     /// What the evidence states against the registry `source`, shown safely.
     pub fn text(&self, source: &str) -> String {
+        let against = format!("evidence against the registry `{}`", shown(source));
+        let publish = "keep its checkpoint and the files read, and publish them as evidence";
         match self {
             Evidence::Unsettled(unsettled) => format!(
-                "evidence against the registry `{}`: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; keep its checkpoint and that chain's entries, and publish them as evidence",
-                shown(source),
+                "{against}: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; {publish}",
                 shown(&unsettled.owner),
                 unsettled.passes,
                 unsettled.index
+            ),
+            Evidence::MissingDeadline {
+                owner,
+                index,
+                target,
+            } => format!(
+                "{against}: no place serves the deadline checkpoint of the request at the log index {index} of the owner `{}`, the first checkpoint at or after its target witness time {target} with the witnesses' threshold of cosignatures, which a registry keeps; {publish}",
+                shown(owner)
+            ),
+            Evidence::CadenceGap { from, to } => format!(
+                "{against}: no checkpoint of the sizes {from} to {to} carries the witnesses' threshold of cosignatures, a longer gap than a registry may leave; {publish}"
             ),
         }
     }
@@ -384,6 +434,6 @@ pub fn evidence(registry: &Registry<'_>) -> Vec<Evidence> {
         .misbehavior()
         .iter()
         .cloned()
-        .map(Evidence::Unsettled)
+        .map(Evidence::from)
         .collect()
 }
