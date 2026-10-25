@@ -29,7 +29,7 @@ use una_project::tlog::note::parse_note;
 use una_project::tlog::owner::Unsettled;
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
-use una_project::transport::{Directory, Transport};
+use una_project::transport::{Directory, Fallback, Transport};
 use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
 
@@ -1960,4 +1960,35 @@ fn a_file_the_bundle_lacks_is_an_omission() {
     let done =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &behind).unwrap();
     assert_eq!(done.stored.len(), 1, "{done:?}");
+}
+
+/// A bundle carries every place's distinct copy of a kept checkpoint, whose cosignatures the
+/// client merges: the writer records each, and the bundle's copy serves them all again, so
+/// unbundling merges the same cosignatures offline.
+#[test]
+fn a_bundle_carries_every_places_copy_of_a_kept_checkpoint() {
+    let place_of = |bytes: &[u8]| Memory {
+        source: "acme".to_owned(),
+        files: BTreeMap::from([("checkpoint/3".to_owned(), bytes.to_vec())]),
+    };
+    let place = Fallback::new(
+        Box::new(place_of(b"one")),
+        vec![Box::new(place_of(b"two")), Box::new(place_of(b"one"))],
+    );
+    let recording = Recording::new(&place);
+    let copies = recording.get_all("checkpoint/3", 100).unwrap();
+    assert_eq!(copies, [b"one".to_vec(), b"two".to_vec(), b"one".to_vec()]);
+    let seen = recording.seen.into_inner();
+    assert_eq!(seen["checkpoint/3"], b"one");
+    assert_eq!(seen[&bundle::copy_path(1, "checkpoint/3")], b"two");
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    let copy = Memory {
+        source: "acme".to_owned(),
+        files: seen,
+    };
+    assert_eq!(
+        copy.get_all("checkpoint/3", 100).unwrap(),
+        [b"one".to_vec(), b"two".to_vec()]
+    );
+    assert!(copy.get_all("checkpoint/4", 100).unwrap().is_empty());
 }

@@ -746,6 +746,32 @@ impl<'t> Registry<'t> {
             .is_some_and(|floor| floor.size > self.point.checkpoint.size)
     }
 
+    /// Refuses, as unavailable, the judgment of `note`, an entry of `name`'s chain at `index`,
+    /// by its owner's `history` when the earliest timing of the owner's requests would change
+    /// it (`spec/30 §14` rule 1, withheld cosignatures): an omission of cosignatures, recorded
+    /// for [`Registry::take_omitted`], never a verdict. `what` names the entry. O(S) for its S
+    /// signatures.
+    fn timing_settled(
+        &mut self,
+        name: &str,
+        history: &History,
+        note: &Note,
+        index: u64,
+        what: &str,
+    ) -> Result<(), Refusal> {
+        let differs = self
+            .eager
+            .get(owner_of(name))
+            .is_some_and(|eager| eager.judge(note, index) != history.judge(note, index));
+        if differs {
+            self.omitted.push(Omission::Cosignatures(name.to_owned()));
+            return Err(self.refuse(format!(
+                "{what} at log entry {index} stands or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint"
+            )));
+        }
+        Ok(())
+    }
+
     fn refuse(&self, why: impl std::fmt::Display) -> Refusal {
         format!(
             "the registry `{}` ({}): {}",
@@ -1344,7 +1370,10 @@ impl<'t> Registry<'t> {
                         )));
                     }
                     // How it stands is the owner replay's, never derived here
-                    // ([`apply_yank`], through `History::judge`).
+                    // ([`apply_yank`], through `History::judge`), and only when the earliest
+                    // timing of its owner's requests would not change it.
+                    let what = format!("the yank of `{name} {}`", yank.version);
+                    self.timing_settled(name, &history, &entry.note, index, &what)?;
                     if apply_yank(&mut marks, &history, &entry.note, index, &yank.version)
                         == YankStanding::Unsigned
                     {
@@ -1367,6 +1396,8 @@ impl<'t> Registry<'t> {
                     // The owner's threshold counts as the owner replay judges the entry
                     // (`History::judge`), its sound signers taken without the root's security
                     // keys, so the two counts are of disjoint keys (§11 rule 11).
+                    let what = format!("the advisory {}", advisory.id);
+                    self.timing_settled(name, &history, &entry.note, index, &what)?;
                     let owner_threshold = match history.judge(&entry.note, index) {
                         Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
                             let owners = sound

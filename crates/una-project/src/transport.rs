@@ -294,10 +294,10 @@ impl Transport for Fallback {
     fn get_all(&self, path: &str, limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
         let mut copies = Vec::new();
         let mut failure: Option<Refusal> = None;
+        // Each place's own copies: a bundle's copy carries every place's copy it recorded.
         for place in &self.places {
-            match place.get(path, limit) {
-                Ok(Some(bytes)) => copies.push(bytes),
-                Ok(None) => {}
+            match place.get_all(path, limit) {
+                Ok(found) => copies.extend(found),
                 Err(why) => {
                     failure.get_or_insert(why);
                 }

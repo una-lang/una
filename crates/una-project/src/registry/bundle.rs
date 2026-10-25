@@ -22,7 +22,10 @@
 //!   verify the lock's releases of it at the lock's resolution point ([`Recording`]): the root
 //!   chain, the checkpoint of that point and the kept checkpoints that time its entries, the
 //!   log's tiles and entry bundles, and the name map's tiles of each name and owner, so the
-//!   per-name state, the owners' keys and every inclusion proof travel with it.
+//!   per-name state, the owners' keys and every inclusion proof travel with it. Of each kept
+//!   checkpoint, whose cosignatures the client merges across places, every place's distinct
+//!   copy travels: the first at its path, the others at `copies/<n>/<path>` ([`copy_path`]),
+//!   so unbundling merges the same cosignatures offline and computes the same witness times.
 //!
 //! **Nothing in a bundle is trusted.** Unbundling reads the bundle once into memory, checks its
 //! listing and every entry's hash, and then, for every registry package of the lock, verifies
@@ -99,6 +102,16 @@ impl<'t> Recording<'t> {
     }
 }
 
+/// The most copies of one file a bundle carries: one per place of a source, its 64 mirrors and
+/// its own URL.
+pub const MAX_COPIES: usize = 65;
+
+/// The path at which a bundle's copy of a source carries the `n`-th other copy of `path`, `n`
+/// from 1: `copies/<n>/<path>`.
+pub fn copy_path(n: usize, path: &str) -> String {
+    format!("copies/{n}/{path}")
+}
+
 impl Transport for Recording<'_> {
     fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
         let got = self.inner.get(path, limit)?;
@@ -108,6 +121,29 @@ impl Transport for Recording<'_> {
                 .insert(path.to_owned(), bytes.clone());
         }
         Ok(got)
+    }
+
+    /// Every place's copy, each distinct one recorded: the first at `path`, the others at
+    /// [`copy_path`], so a bundle carries every copy whose cosignatures the client merged.
+    /// O(C^2) for C copies, C at most [`MAX_COPIES`].
+    fn get_all(&self, path: &str, limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
+        let copies = self.inner.get_all(path, limit)?;
+        let mut distinct: Vec<&Vec<u8>> = Vec::new();
+        for bytes in &copies {
+            if !distinct.contains(&bytes) && distinct.len() < MAX_COPIES {
+                distinct.push(bytes);
+            }
+        }
+        let mut seen = self.seen.borrow_mut();
+        for (n, bytes) in distinct.into_iter().enumerate() {
+            let at = if n == 0 {
+                path.to_owned()
+            } else {
+                copy_path(n, path)
+            };
+            seen.insert(at, bytes.clone());
+        }
+        Ok(copies)
     }
 
     fn describe(&self) -> String {
@@ -135,6 +171,22 @@ impl Transport for Memory {
             Some(bytes) => Ok(Some(bytes.clone())),
             None => Ok(None),
         }
+    }
+
+    /// The copy at `path`, then the other copies the bundle carries for it, at [`copy_path`]
+    /// from 1 while there is one: every place's copy the bundle's writer recorded.
+    fn get_all(&self, path: &str, limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
+        let mut copies: Vec<Vec<u8>> = self.get(path, limit)?.into_iter().collect();
+        if copies.is_empty() {
+            return Ok(copies);
+        }
+        for n in 1..MAX_COPIES {
+            match self.get(&copy_path(n, path), limit)? {
+                Some(bytes) => copies.push(bytes),
+                None => break,
+            }
+        }
+        Ok(copies)
     }
 
     fn describe(&self) -> String {
