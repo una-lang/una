@@ -1077,7 +1077,16 @@ impl Registry {
             kind: kind.to_owned(),
             leaf: digest_string(leaf),
             digest: digest_string(digest),
-            link: entry_bundle_path(index / WIDTH, WIDTH),
+            // The bundle's path as the log serves it now: `.p/<W>` while it is partial.
+            link: {
+                let bundle = index / WIDTH;
+                let width = self
+                    .tree
+                    .size()
+                    .saturating_sub(bundle.saturating_mul(WIDTH))
+                    .min(WIDTH);
+                entry_bundle_path(bundle, width)
+            },
         })
     }
 

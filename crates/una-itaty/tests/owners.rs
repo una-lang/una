@@ -911,6 +911,11 @@ fn an_outbox_is_never_a_link() {
     let directory = temp_dir("outbox-dir");
     std::fs::create_dir_all(&directory).unwrap();
     assert!(una_itaty::notify::Outbox::open(&directory).is_err());
+    // A socket, like a FIFO, is refused before it is opened, never waited on.
+    let socket = temp_dir("outbox-socket");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    assert!(una_itaty::notify::Outbox::open(&socket).is_err());
+    let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&link);
     let _ = std::fs::remove_file(&target);
     let _ = std::fs::remove_dir_all(&directory);
@@ -941,7 +946,12 @@ fn a_notice_names_its_entry_by_index_and_the_digest_of_its_bytes() {
         digest_string(&Sha256::digest(document.as_bytes()).into())
     );
     assert_eq!(notice.leaf, digest_string(&receipt.leaf));
-    assert_eq!(notice.link, "tile/entries/000");
+    // The bundle is partial: its path as the log serves it now.
+    assert_eq!(
+        notice.link,
+        una_itaty::tiles::entry_bundle_path(0, f.registry.size())
+    );
+    assert!(notice.link.contains(".p/"));
 }
 
 #[test]
@@ -1737,4 +1747,51 @@ fn opening_recomputes_a_deadline_and_drops_a_phantom_cancellation() {
     let cancel = f.submit("acme", "cancel 3", 1, &[&a]).unwrap();
     assert_eq!(cancel, next);
     assert!(f.registry.request_timing(cancel).is_none());
+}
+
+#[test]
+fn a_rotation_that_moves_a_start_whose_deadline_is_fixed_needs_confirmation() {
+    let mut f = Fixture::new("rotation-fixed");
+    let z = keypair(62, "zenith.z");
+    let d = keypair(64, "zenith.d");
+    f.register("zenith", &[&z], &[]);
+    let disputed = f.dispute("zenith", &d).unwrap();
+    // Its start, the second earliest of three, is NOW + 10.
+    f.cosign_at(2, 0, NOW).unwrap();
+    f.cosign_at(2, 1, NOW + 10).unwrap();
+    f.cosign_at(2, 2, NOW + 20).unwrap();
+    let o = keypair(67, "orbit.o");
+    f.register("orbit", &[&o], &[]);
+    let later = NOW + 20 + RECOVERY_DELAY + 100;
+    f.set_time(later);
+    f.cosign(&[0, 2], later);
+    assert!(f.registry.deadline_of(disputed).is_some());
+    // Revoking the witness of seed 31 moves the start to NOW + 20, its deadline fixed.
+    let compromised = f.keys.witnesses[1].1.clone();
+    let rotation = Rotation::new(
+        EXPIRES,
+        vec![
+            f.keys.witnesses[0].1.clone(),
+            f.keys.witnesses[2].1.clone(),
+            keypair(97, "witness.rotated.1").1,
+        ],
+        2,
+    )
+    .compromise(vec![compromised]);
+    let text = f.registry.rotation_text(&rotation).unwrap();
+    let document = signed(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
+    assert_eq!(
+        f.registry
+            .install_root(&document, false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::StartMoves(disputed))
+    );
+    f.registry.install_root(&document, true).unwrap();
+    assert_eq!(
+        f.registry
+            .request_timing(disputed)
+            .and_then(|timed| timed.start),
+        Some(NOW + 20)
+    );
 }

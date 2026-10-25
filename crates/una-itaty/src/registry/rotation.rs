@@ -287,8 +287,8 @@ impl Registry {
     /// next size is signed under it.
     ///
     /// A rotation changes which cosignatures count, so it can move the start, the k-th earliest
-    /// counted cosignature on a start checkpoint, of a request whose deadline is not fixed yet,
-    /// and with it the target every client computes. Such a rotation is refused
+    /// counted cosignature on a start checkpoint, of any timed request, its deadline fixed or
+    /// not, and with it the target every client computes. Such a rotation is refused
     /// ([`Cause::StartMoves`]) unless `confirm_start_moves` is the operator's explicit
     /// confirmation; once installed, every request's start is recomputed from the stored
     /// checkpoints under the new chain, and the deadlines are written again.
@@ -350,7 +350,6 @@ impl Registry {
         let moved = self
             .requests
             .values()
-            .filter(|request| request.deadline.is_none())
             .find(|request| self.start_under(&next_chain, request.index) != request.start)
             .map(|request| request.index);
         if let Some(index) = moved
@@ -359,7 +358,7 @@ impl Registry {
             return Err(rule(
                 Cause::StartMoves(index),
                 format!(
-                    "the rotation changes which cosignatures count on the start checkpoint of the request at {index}, whose deadline is not fixed, and so its start and target; install it only with the operator's explicit confirmation"
+                    "the rotation changes which cosignatures count on the start checkpoint of the request at {index}, and so its start and target; install it only with the operator's explicit confirmation"
                 ),
             ));
         }

@@ -128,6 +128,16 @@ const NO_FOLLOW: Option<i32> = Some(0x8000);
 )))]
 const NO_FOLLOW: Option<i32> = None;
 
+/// `O_NONBLOCK`, so opening a FIFO swapped in never blocks: macOS.
+#[cfg(target_os = "macos")]
+const NON_BLOCK: i32 = 0x0004;
+/// `O_NONBLOCK` on Linux.
+#[cfg(target_os = "linux")]
+const NON_BLOCK: i32 = 0x0800;
+/// Any other platform opens no outbox.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const NON_BLOCK: i32 = 0;
+
 #[cfg(unix)]
 fn no_follow(options: &mut OpenOptions, flags: i32) {
     use std::os::unix::fs::OpenOptionsExt;
@@ -141,14 +151,25 @@ impl Outbox {
     /// The outbox at `path`, created if missing and appended to otherwise, opened with no
     /// symbolic link followed at its last component (`O_NOFOLLOW`, by this crate's constant
     /// for the platform, as `una-project` opens package files), and refused unless the file
-    /// opened is a regular file, checked on the open handle.
+    /// opened is a regular file, checked before it is opened and on the open handle; the open
+    /// does not block, so a FIFO is refused rather than waited on.
     pub fn open(path: &Path) -> Result<Outbox, String> {
+        // Anything but a regular file is refused before it is opened, so a FIFO never blocks
+        // the open; the open itself is also non-blocking and follows no link.
+        if let Ok(found) = std::fs::symlink_metadata(path)
+            && !found.file_type().is_file()
+        {
+            return Err(format!(
+                "the outbox {} is not a regular file",
+                path.display()
+            ));
+        }
         let flags = NO_FOLLOW.ok_or_else(|| {
             "this release knows no way to open the outbox without following a link on this platform".to_owned()
         })?;
         let mut options = OpenOptions::new();
         options.create(true).append(true);
-        no_follow(&mut options, flags);
+        no_follow(&mut options, flags | NON_BLOCK);
         let file = options
             .open(path)
             .map_err(|e| format!("cannot open the outbox {}: {e}", path.display()))?;
