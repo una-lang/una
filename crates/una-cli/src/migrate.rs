@@ -129,7 +129,8 @@ pub(crate) fn migrate_command(
             ("ita.una", &migration.manifest),
             ("ita.lock", &migration.lock),
         ] {
-            if let Err(error) = crate::write_through_rename_or_create(&path.join(name), text) {
+            if let Err(error) = crate::write_through_rename_or_create(path, &path.join(name), text)
+            {
                 writeln!(stderr, "error: cannot write `{name}`: {error}")?;
                 return Ok(ExitStatus::Usage);
             }

@@ -485,7 +485,11 @@ fn resolve_and_lock(
         .map(|name| name.value.to_string())
         .unwrap_or_default();
     // Each consent flag names a need of `ita.una`, and one value per package (rule 25).
-    let needed: BTreeSet<String> = read.needs.iter().map(|n| n.name.value.to_string()).collect();
+    let needed: BTreeSet<String> = read
+        .needs
+        .iter()
+        .map(|n| n.name.value.to_string())
+        .collect();
     for name in options.accept_authority {
         if !needed.contains(name) {
             writeln!(
@@ -964,7 +968,7 @@ fn resolve_and_lock(
         _ => None,
     };
     if !lock_unchanged {
-        if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
+        if let Err(error) = crate::write_through_rename_or_create(path, &lock_path, &text) {
             return fail_resolved(
                 command,
                 &[],
@@ -980,12 +984,12 @@ fn resolve_and_lock(
         lines.push("wrote ita.lock".to_owned());
     }
     if let Some(edited) = &options.edited {
-        if let Err(error) = crate::write_through_rename(&manifest_path, edited) {
+        if let Err(error) = crate::write_through_rename(path, &manifest_path, edited) {
             let mut message = format!("cannot write `{}`: {error}", manifest_path.display());
             let mut left: Vec<&str> = Vec::new();
             if !lock_unchanged {
                 let restored = match previous {
-                    Some(bytes) => crate::write_through_rename_or_create(&lock_path, bytes),
+                    Some(bytes) => crate::write_through_rename_or_create(path, &lock_path, bytes),
                     None => std::fs::remove_file(&lock_path),
                 };
                 match restored {
@@ -1339,7 +1343,9 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
         diagnostics.extend(una_fmt::differences(&sources, id, &canonical));
     } else if text != canonical || sources.file(id).first_crlf().is_some() {
         let target: PathBuf = path.to_path_buf();
-        if let Err(error) = crate::write_through_rename(&target, &canonical) {
+        if let Err(error) =
+            crate::write_through_rename(&crate::write_root(path), &target, &canonical)
+        {
             writeln!(
                 out.stderr,
                 "error: cannot write `{}`: {error}",
@@ -1534,7 +1540,11 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         .map(|n| n.name.value.to_string())
         .filter(|n| n != name)
         .collect();
-    let left: Vec<String> = after.needs.iter().map(|n| n.name.value.to_string()).collect();
+    let left: Vec<String> = after
+        .needs
+        .iter()
+        .map(|n| n.name.value.to_string())
+        .collect();
     if left != kept {
         return internal_error(out, "removing the need would change other lines");
     }
