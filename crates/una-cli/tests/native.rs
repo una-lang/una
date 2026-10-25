@@ -517,6 +517,13 @@ fn una_build_never_writes_through_a_link_leading_outside_the_package_1160() {
     std::os::unix::fs::symlink(&outside, dir.join("target")).unwrap();
     refused("outside the package");
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    // A relative `--out` through that link is refused too: it is rooted at the current
+    // directory, here the package.
+    let output = una(&dir, &["build", "--out", "target/una/planted"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("outside the package"), "{stderr}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
     // Without links, the build succeeds and leaves only the executable: the linker wrote in a
     // private directory, which is gone.
     std::fs::remove_file(dir.join("target")).unwrap();

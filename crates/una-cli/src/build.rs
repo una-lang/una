@@ -333,8 +333,9 @@ struct Placed {
 ///
 /// The default output, `target/una/<name>`, is placed inside the package root `root`: each
 /// level of `target/una` is created one at a time, and a link among them that leads outside the
-/// package is refused. An `--out` path (`explicit`) is placed inside the directory it names,
-/// which is created as the user asked. The executable's path, and `<name>.o` beside it, are
+/// package is refused. An absolute `--out` path (`explicit`) is placed inside the directory it
+/// names, which is created as the user asked; a relative one is rooted at the current
+/// directory, and its directories are created there as `target/una` is in the package. The executable's path, and `<name>.o` beside it, are
 /// checked by [`una_diag::safe_write::checked_output`] before the linker starts, for an early
 /// error on a link at either. The linker never writes a name the package could have planted: the object, written
 /// through [`una_diag::safe_write::write_atomically`], and the executable both live in a
@@ -342,13 +343,22 @@ struct Placed {
 /// executable into place.
 fn placed(root: &Path, explicit: bool, output: &Path, object: &[u8]) -> io::Result<Placed> {
     let write_root = if explicit {
-        // The directory the user named on the command line, not one the package chose.
         let directory = match output.parent().filter(|p| !p.as_os_str().is_empty()) {
             Some(parent) => parent.to_path_buf(),
             None => PathBuf::from("."),
         };
-        std::fs::create_dir_all(&directory)?;
-        directory
+        if output.is_absolute() {
+            // An absolute directory the user named on the command line, not one the package
+            // chose: created as given, and the root of the writes in it.
+            std::fs::create_dir_all(&directory)?;
+            directory
+        } else {
+            // A relative one is rooted at the current directory, often the package itself, so
+            // it is created one level at a time: a committed `target` link cannot redirect it.
+            let here = Path::new(".");
+            una_diag::safe_write::create_dir_inside(here, &here.join(&directory))?;
+            here.to_path_buf()
+        }
     } else {
         let root = if root.as_os_str().is_empty() {
             Path::new(".")

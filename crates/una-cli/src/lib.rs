@@ -882,10 +882,22 @@ fn run_command(
     heap: Heap<'_>,
 ) -> ExitStatus {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
-    // never makes one (ADR 0064).
-    let solving = |seconds: u64| Solving {
+    // never makes one (ADR 0064). A key file that exists but is not a private regular file of
+    // the user turns the cache off, with a note (#1164).
+    let solving = |seconds: u64, stderr: &mut dyn Write| Solving {
         wallclock: Duration::from_secs(seconds),
-        proof_key: proof_key::resolve(environment),
+        proof_key: match proof_key::resolve(environment) {
+            Ok(key) => key,
+            Err(refused) => {
+                // A note that cannot be written changes nothing about the command.
+                let _ = writeln!(
+                    stderr,
+                    "note: the proof cache key `{}` is not a private regular file of the user ({}); the proof cache is off (chmod 600 it)",
+                    refused.shown, refused.reason
+                );
+                None
+            }
+        },
     };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) if cli.version => version_command(cli.json, stdout),
@@ -917,7 +929,7 @@ fn run_command(
                     },
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -939,7 +951,7 @@ fn run_command(
                 let options = trace::TraceOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
@@ -950,7 +962,7 @@ fn run_command(
                 let options = report::ReportOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
@@ -961,7 +973,7 @@ fn run_command(
                 let options = verification::ObligationsOptions {
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -979,7 +991,7 @@ fn run_command(
                     dry_run,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                 };
                 fix::fix_command(&path, options, stdout, stderr)
             }
@@ -1051,7 +1063,7 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                     stop_after: stop_after_iterations,
                 };
                 runtime::run_command(&path, options, stdout, stderr)
@@ -1065,7 +1077,7 @@ fn run_command(
                     out,
                     json,
                     color: use_color(color, stderr_is_terminal),
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                     environment,
                 };
                 build::build_command(&path, &options, stdout, stderr)
@@ -1085,13 +1097,13 @@ fn run_command(
                     json,
                     color: use_color(color, stderr_is_terminal),
                     environment,
-                    solving: solving(solver_wallclock),
+                    solving: solving(solver_wallclock, stderr),
                     stop_after: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, json, stdout, stderr),
-            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs())),
+            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs(), stderr)),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {
