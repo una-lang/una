@@ -194,6 +194,23 @@ fn malformed_archives_are_refused() {
 /// The digest and the archive reader are linear in the package's size (ADR 0122, Costs):
 /// the time per byte of a 16 MiB package stays within a constant factor of that of a 1 MiB one.
 /// The factor is generous, for a shared machine; quadratic work would exceed it 16 times over.
+/// A listing with `\r\n` line ends reads, line by line, as the canonical one, but its digest
+/// would differ: it is refused, so a digest is only ever taken over a canonical listing.
+#[test]
+fn a_listing_with_carriage_returns_is_refused() {
+    let mut files = package();
+    let canonical = listing(&mut files).unwrap();
+    let crlf = canonical.replace('\n', "\r\n");
+    let mut bytes = format!("{ARCHIVE_MAGIC}\n{}\n{crlf}", crlf.len()).into_bytes();
+    for file in &files {
+        bytes.extend_from_slice(&file.bytes);
+    }
+    let refusal = read_archive(&bytes).unwrap_err();
+    assert!(refusal.contains("carriage return"), "{refusal}");
+    // The canonical archive of the same files reads.
+    assert!(read_archive(&archive(&mut files).unwrap()).is_ok());
+}
+
 #[test]
 fn the_digest_and_the_reader_scale_linearly() {
     let per_byte = |size: usize| {

@@ -77,6 +77,13 @@ const FLAGS: Option<Flags> = Some(Flags {
 });
 
 /// Linux on x86-64: `O_NOFOLLOW` 0o400000, `O_DIRECTORY` 0o200000, `O_NONBLOCK` 0o4000.
+///
+/// Linux has no `O_NOFOLLOW_ANY`: a component above the last one is checked by
+/// `symlink_metadata` when the package is listed, and a swap of it for a link between that check
+/// and the open is not refused by the open itself; the file opened is still checked by device
+/// and inode against the entry listed, and every byte read against the digest. A sibling change
+/// to `una-sys` closes this gap with opens relative to a directory descriptor (`openat` with
+/// `O_NOFOLLOW` at each component).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const FLAGS: Option<Flags> = Some(Flags {
     no_follow: 0x2_0000,
@@ -586,7 +593,9 @@ impl Walk {
             } else {
                 format!("{prefix}/{name}")
             };
-            content::check_path(&relative)?;
+            content::check_path(&relative).map_err(|reason| {
+                format!("the package holds `{relative}`, which a package may not hold: {reason}")
+            })?;
             let child = path.join(&name);
             if kind.is_symlink() {
                 return Err(format!(
@@ -641,7 +650,10 @@ impl Walk {
     }
 }
 
-/// The mode of a file written read-only, and of one written otherwise.
+/// The mode of a file written read-only, and of one written otherwise. Each mode is set through
+/// the file's or the directory's descriptor after it is created, so the process's umask, which
+/// applies only at creation, never changes it: files are created 0600 and directories 0700,
+/// and both are given these explicit modes before they are renamed into place.
 const READ_ONLY_MODE: u32 = 0o444;
 const WRITABLE_MODE: u32 = 0o644;
 /// The mode of a directory once it is complete, set through its descriptor before the rename.
@@ -815,6 +827,29 @@ impl Fresh {
         fs::remove_dir(&self.path).map_err(|e| cannot("remove", &self.path, &e))
     }
 
+    /// Links the one file `file` of the fresh directory as `name` in its parent, only when no
+    /// entry `name` is there: `link` fails on any entry, a link included, and never replaces
+    /// one. Then removes the fresh directory, so the file stored keeps one link.
+    fn link_file(self, file: &str, name: &str) -> Result<Stored, Refusal> {
+        let target = self.parent()?.join(name);
+        if let Err(error) = self.seal() {
+            return Err(self.discard(error));
+        }
+        let outcome = match fs::hard_link(self.path.join(file), &target) {
+            Ok(()) => Stored::Written,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Stored::Present,
+            Err(error) => {
+                let refusal = format!("cannot link `{}` into place: {error}", target.display());
+                return Err(self.discard(refusal));
+            }
+        };
+        if let Err(refusal) = self.still_ours() {
+            return Err(format!("{refusal}; it was left in place"));
+        }
+        fs::remove_dir_all(&self.path).map_err(|e| cannot("remove", &self.path, &e))?;
+        Ok(outcome)
+    }
+
     fn parent(&self) -> Result<&Path, Refusal> {
         self.path
             .parent()
@@ -905,6 +940,39 @@ pub fn store_file(parent: &Path, name: &str, bytes: &[u8], read_only: bool) -> R
     fresh.commit_file(INSIDE, name)
 }
 
+/// What [`store_file_once`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// The file was written under its name.
+    Written,
+    /// An entry of that name was already there, and was left as it is.
+    Present,
+}
+
+/// Writes `bytes` as the file `name` in `parent`, which [`make_dirs`] made, only when `parent`
+/// holds no entry `name`: into a fresh private directory, read-only when `read_only`, then
+/// hard-linked to `name` and the fresh directory removed. A link fails on any entry already
+/// there, a symbolic link included, so nothing is ever replaced or followed: an entry there
+/// gives [`Stored::Present`], for the caller to read and compare.
+///
+/// The paths are resolved by name, as the rest of this module does; a sibling change to
+/// `una-sys` moves this onto calls relative to the parent's descriptor (`linkat`).
+pub fn store_file_once(
+    parent: &Path,
+    name: &str,
+    bytes: &[u8],
+    read_only: bool,
+) -> Result<Stored, Refusal> {
+    component(name)?;
+    let mut fresh = Fresh::create(parent, read_only)?;
+    // The file's name inside the fresh directory is fixed, and a path of rule 27.
+    const INSIDE: &str = "file";
+    if let Err(refusal) = fresh.write(INSIDE, bytes) {
+        return Err(fresh.discard(refusal));
+    }
+    fresh.link_file(INSIDE, name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,6 +1050,41 @@ mod tests {
                 .is_symlink()
         );
         assert!(away.join("ita.una").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file stored once is never replaced: a second store, a planted file and a planted link
+    /// at its name each leave what is there, and the link's target is untouched.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_stored_once_is_never_replaced() {
+        let dir = scratch("store-once");
+        assert_eq!(
+            store_file_once(&dir, "doc", b"first", true).unwrap(),
+            Stored::Written
+        );
+        assert_eq!(fs::read(dir.join("doc")).unwrap(), b"first");
+        assert_eq!(links(&fs::metadata(dir.join("doc")).unwrap()), 1);
+        assert_eq!(
+            store_file_once(&dir, "doc", b"second", true).unwrap(),
+            Stored::Present
+        );
+        assert_eq!(fs::read(dir.join("doc")).unwrap(), b"first");
+        let target = dir.join("target");
+        fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("planted")).unwrap();
+        assert_eq!(
+            store_file_once(&dir, "planted", b"evil", true).unwrap(),
+            Stored::Present
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        // No fresh directory is left behind.
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with(".una-fresh-"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 

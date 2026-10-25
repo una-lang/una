@@ -125,8 +125,10 @@ impl Itaoca {
 
     /// Stores the provenance of a release at the resolution point of `size`, once: the
     /// document must read ([`provenance::parse`]), and one already stored must be the same
-    /// bytes. It is written into a fresh private directory, never through a link, then renamed
-    /// into place.
+    /// bytes. It is written into a fresh private directory, never through a link, then linked
+    /// to its name, which fails when anything is there, so a stored provenance is never
+    /// replaced, even by a process storing another at the same moment
+    /// ([`tree::store_file_once`]); what is there is then read and compared.
     pub fn store_provenance(
         &self,
         source: &str,
@@ -157,8 +159,21 @@ impl Itaoca {
                 release.as_str(),
             ],
         )?;
-        tree::store_file(&parent, file, bytes, true)
-            .map_err(|refusal| format!("cannot store the provenance: {refusal}"))
+        let stored = tree::store_file_once(&parent, file, bytes, true)
+            .map_err(|refusal| format!("cannot store the provenance: {refusal}"))?;
+        match stored {
+            tree::Stored::Written => Ok(()),
+            // Another process stored one first: it must be the same document.
+            tree::Stored::Present => match self.load_provenance(source, name, version, size)? {
+                Some(there) if there == bytes => Ok(()),
+                Some(_) => Err(format!(
+                    "another provenance of `{name} {version}` at the checkpoint of size {size} is stored"
+                )),
+                None => Err(format!(
+                    "the provenance of `{name} {version}` at the checkpoint of size {size} was removed while it was stored"
+                )),
+            },
+        }
     }
 
     /// The provenance of a release at the resolution point of `size`, read once with no link

@@ -407,6 +407,63 @@ fn a_release_loads_from_itaoca_verified() {
     ));
 }
 
+/// Itaoca holding a release's files without its provenance is an inconsistent store, refused
+/// (U7010), not a package in neither place (U7011).
+#[test]
+fn itaoca_files_without_provenance_are_refused() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("files-only-itaoca"),
+    };
+    itaoca.store(&release.archive).unwrap();
+    let root = fresh("files-only-root");
+    let refusal = vendor::load(&root, Some(&itaoca), &release.expected).unwrap_err();
+    assert!(
+        matches!(&refusal, Problem::Refused(message) if message.contains("inconsistent")),
+        "{refusal:?}"
+    );
+}
+
+/// A stray file in a vendored copy, such as the `.DS_Store` a file browser leaves, refuses the
+/// load (U7010), and the refusal names it.
+#[test]
+fn a_stray_file_in_a_vendored_copy_is_named() {
+    let (release, itaoca) = stored("vendor-stray");
+    let root = fresh("vendor-stray-root");
+    vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
+    let dir = root.join("vendor/ita/acme/acme+ledger-0.3.1");
+    std::fs::write(dir.join("src/.DS_Store"), b"\0\0\0\x01Bud1").unwrap();
+    let refusal = vendor::load(&root, None, &release.expected).unwrap_err();
+    assert!(
+        matches!(&refusal, Problem::Refused(message) if message.contains("`src/.DS_Store`")),
+        "{refusal:?}"
+    );
+}
+
+/// A link planted at the name of a provenance to store is never written through: the store is
+/// refused and the link's target keeps its bytes.
+#[cfg(unix)]
+#[test]
+fn a_provenance_is_never_stored_through_a_link() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("provenance-link"),
+    };
+    let release_dir = itaoca
+        .root
+        .join("registry/acme/releases/acme+ledger-0.3.1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    let target = fresh("provenance-link-target").join("kept");
+    std::fs::write(&target, b"kept").unwrap();
+    std::os::unix::fs::symlink(&target, release_dir.join("checkpoint-2.provenance")).unwrap();
+    assert!(
+        itaoca
+            .store_provenance(SOURCE, NAME, VERSION, 2, &release.provenance.encode())
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+}
+
 #[test]
 fn vendoring_copies_the_release_and_every_load_verifies_it() {
     let (release, itaoca) = stored("vendoring");
