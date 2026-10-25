@@ -918,6 +918,44 @@ fn contract_and_report_show_result_summaries() {
 }
 
 #[test]
+fn contract_shows_a_wrapped_header_of_edition_0_4_on_one_line() {
+    // ADR 0125, amendment of 2026-10-25: the canonical form of edition 0.4 wraps the long
+    // header, and `una contract` shows its source text without that layout, as the verifier's
+    // goals do, in the JSON `header` and in the human header line.
+    let root = scratch("wrapped-contract");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita s\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/conformance/types/decimal_accepted/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/s.una"),
+        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\npub tagged[T: Eq, U](first_value: T, second_value: T, tag: U) -> Pair[List[U],\n  Int\n] = Pair(left: if first_value == second_value then [tag] else [], right: 1)\n",
+    )
+    .unwrap();
+    let header =
+        "pub tagged[T: Eq, U](first_value: T, second_value: T, tag: U) -> Pair[List[U], Int]";
+    let json = una_in(&root, &["contract", "--json", "s.tagged"]);
+    let document: Value = serde_json::from_str(stdout(&json)).unwrap();
+    assert_eq!(document["header"], header, "{}", stdout(&json));
+    let human = una_in(&root, &["contract", "s.tagged"]);
+    assert_eq!(
+        stdout(&human).lines().next(),
+        Some(header),
+        "{}",
+        stdout(&human)
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn report_lists_handlers_with_uses_14() {
     // ADR 0081 (#14): `handler_authority` lists every handler with `uses`, after `authority`,
     // which keeps listing functions only; a host capability only a handler uses counts in

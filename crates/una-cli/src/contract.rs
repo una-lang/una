@@ -9,6 +9,7 @@ use serde::Serialize;
 use una_check::Header;
 use una_syntax::ast::{ClauseKind, Decl, DeclKind, File, FunctionDecl, TextPart};
 use una_syntax::{Interner, SourceDb, Span};
+use una_verify::SourceLayout;
 
 /// The JSON schema of `una contract --json` (ADR 0029).
 pub(crate) const CONTRACT_SCHEMA: &str = "una.contract/1";
@@ -188,14 +189,24 @@ impl Modules<'_> {
 }
 
 /// The contract of `function` of module `module`, whose header after inference is `header`.
-/// The package checked without diagnostics, so its sources are in canonical form (U7001).
+/// The package checked without diagnostics, so its sources are in canonical form (U7001). In
+/// edition 0.4 (`layout`), whose canonical form wraps long lines, the source text of the header
+/// and the clauses shows without that layout, as the verifier's goals do (ADR 0125, amendment
+/// of 2026-10-25); earlier editions show it as written.
 pub(crate) fn contract(
     modules: &Modules<'_>,
     module: &str,
     decl: &Decl,
     function: &FunctionDecl,
     header: Option<&Header>,
+    layout: SourceLayout,
 ) -> Contract {
+    let shown = |text: &str| -> String {
+        match layout {
+            SourceLayout::Joined => text.to_owned(),
+            SourceLayout::Wrapped => una_verify::unwrap_layout(text),
+        }
+    };
     let name = modules.name(function.name.name).to_owned();
     let docs: Vec<String> = decl
         .docs
@@ -230,27 +241,28 @@ pub(crate) fn contract(
                 .collect()
         })
         .unwrap_or_default();
-    lines.push(with_inferred(
+    // The inferred constraints go in at source offsets, so the layout goes after them.
+    lines.push(shown(&with_inferred(
         modules,
         decl,
         function,
         &signature,
         &constraints,
-    ));
+    )));
     let mut requires = Vec::new();
     let mut ensures = Vec::new();
     let mut derived = Vec::new();
     let clause_lines = |pick: &dyn Fn(&ClauseKind) -> bool, lines: &mut Vec<String>| {
         for clause in function.clauses.iter().filter(|c| pick(&c.kind)) {
-            lines.push(format!("  {}", modules.text(clause.span)));
+            lines.push(format!("  {}", shown(modules.text(clause.span))));
         }
     };
     clause_lines(&|k| matches!(k, ClauseKind::Requires(_)), &mut lines);
     clause_lines(&|k| matches!(k, ClauseKind::Ensures(_)), &mut lines);
     for clause in &function.clauses {
         match &clause.kind {
-            ClauseKind::Requires(expr) => requires.push(modules.text(expr.span).to_owned()),
-            ClauseKind::Ensures(expr) => ensures.push(modules.text(expr.span).to_owned()),
+            ClauseKind::Requires(expr) => requires.push(shown(modules.text(expr.span))),
+            ClauseKind::Ensures(expr) => ensures.push(shown(modules.text(expr.span))),
             ClauseKind::DerivedFrom(ids) => {
                 derived.extend(ids.iter().map(|id| modules.name(id.name).to_owned()));
             }
@@ -371,7 +383,7 @@ pub(crate) fn contract(
         function: format!("{module}.{name}"),
         public: function.public,
         docs,
-        header: signature,
+        header: shown(&signature),
         constraints,
         result_labels,
         of_raises,
