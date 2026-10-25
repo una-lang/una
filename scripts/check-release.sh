@@ -49,13 +49,21 @@ fi
 # Keyed hashing's test hooks (a fixed key, a probe counter, a constant hash) exist only in the
 # toolchain's own test builds (ADR 0119 rule 9). Their module holds a marker that its key path
 # keeps: neither the symbol, by `nm`, nor its bytes, which a stripped binary still holds, may be
-# in the shipped `una` or `libuna_rt.a`.
-marker=UNA_HASH_TEST_HOOKS_MARKER
+# in the shipped `una` or `libuna_rt.a`. The same holds for the test hooks of the `Http`
+# client's reach pool, a lookup and a connect function a test can make hang and a pool started
+# on a first request (#1148), which only una-http's `test-hooks` feature compiles, and which
+# can unify into the workspace's test builds.
 for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
-    if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
-        echo "error: $artifact was built with keyed hashing's test hooks (ADR 0119 rule 9)" >&2
-        exit 1
-    fi
+    for marker in UNA_HASH_TEST_HOOKS_MARKER UNA_HTTP_TEST_HOOKS_MARKER; do
+        if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
+            case $marker in
+                UNA_HASH_*) what="keyed hashing's test hooks (ADR 0119 rule 9)" ;;
+                *) what="the Http client's test hooks (#1148)" ;;
+            esac
+            echo "error: $artifact was built with $what" >&2
+            exit 1
+        fi
+    done
 done
 # The guides, byte for byte the tree's, and nothing else under docs/ (#410, N-65): an agent's
 # first contact with Una is the archive.

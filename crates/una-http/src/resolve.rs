@@ -192,6 +192,13 @@ fn system_connect(addr: &SocketAddr, timeout: Duration) -> std::io::Result<TcpSt
     TcpStream::connect_timeout(addr, timeout)
 }
 
+/// The marker the release gate looks for in the shipped `una` and `libuna_rt.a`, by `nm` and in
+/// their raw bytes (`scripts/check-release.sh`): it exists only with the `test-hooks` feature,
+/// and the pool of [`pool`] reads it, so a build with the hooks keeps it (#1148).
+#[cfg(feature = "test-hooks")]
+#[used]
+pub static UNA_HTTP_TEST_HOOKS_MARKER: [u8; 26] = *b"UNA_HTTP_TEST_HOOKS_MARKER";
+
 /// The lookup and the connect function a test put in place of the system's, with the
 /// `test-hooks` feature only, which only tests enable.
 #[cfg(feature = "test-hooks")]
@@ -241,6 +248,7 @@ fn connect() -> Connect {
 /// of the client, which call it directly, when none was.
 #[cfg(feature = "test-hooks")]
 fn pool() -> Option<&'static Arc<Pool>> {
+    let _ = std::hint::black_box(&UNA_HTTP_TEST_HOOKS_MARKER);
     Some(POOL.get_or_init(|| make(MIN_RESOLVERS)))
 }
 
