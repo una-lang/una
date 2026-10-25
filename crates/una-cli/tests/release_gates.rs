@@ -133,6 +133,30 @@ fn a_failing_gate_does_not_stop_the_next_one() {
 }
 
 #[test]
+fn the_summary_knows_exactly_the_gates_the_script_runs_in_its_order() {
+    // The summary refuses a gate row it does not know, so a gate added to
+    // scripts/release-gates.sh and not to scripts/release-summary.py would fail a release's
+    // summary only once that release's gates ran. Both lists are read as text; nothing runs.
+    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let all: Vec<&str> = script
+        .lines()
+        .find_map(|line| line.strip_prefix("ALL=("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .expect("an ALL=(...) line in scripts/release-gates.sh")
+        .split_whitespace()
+        .collect();
+    let summary = std::fs::read_to_string(root().join("scripts/release-summary.py")).unwrap();
+    let start = summary
+        .find("\nGATES = [")
+        .expect("a GATES list in scripts/release-summary.py");
+    let list = &summary[start..];
+    let list = &list[..list.find(']').expect("the end of the GATES list")];
+    let gates: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+    assert!(!all.is_empty());
+    assert_eq!(gates, all);
+}
+
+#[test]
 fn usage_errors_exit_with_2() {
     let Some(sha) = head() else {
         return;
