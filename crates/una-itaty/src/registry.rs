@@ -24,6 +24,15 @@
 //! takes a request as in effect only from its deadline checkpoint, once the service knows it, so
 //! an entry signed with the key it names is refused until then, as one that waits.
 //!
+//! **Witness obligations** (`crate::timing`). Every size gets a signed checkpoint. The log
+//! grows past its newest checkpoint only once that checkpoint carries the witness threshold of
+//! cosignatures when it is a multiple of 64, a request's start checkpoint, its deadline
+//! checkpoint, or the one just before it; until then every submission is refused as one that
+//! may be sent again (503), and the checkpoint stays at `witness/next` for witnesses to cosign.
+//! A request's deadline is the first checkpoint the service signs at or after its target, and
+//! cosignatures that would move any checkpoint across a target are refused, so the deadline is
+//! signed only at or after the target and the client's pinned search finds the same one.
+//!
 //! Costs: a submission is O(log L) for the log's tree, O(32 · 8 k) for the map's path, and
 //! O(B) for an archive of B bytes; checks of names and keys are O(1) lookups by hash, but the
 //! distance check of a new owner (`crate::names`); an owner's entry, a release or a yank adds
@@ -33,14 +42,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use una_project::client::{Marks, YankStanding, apply_yank, owner_of};
+use una_project::client::{
+    Accepted, Marks, Retired, YankStanding, accept_checkpoint, apply_yank, owner_of,
+};
 use una_project::content::read_archive;
 use una_project::tlog::map::Head;
 use una_project::tlog::merkle::Hash;
 use una_project::tlog::note::{Key, Note, encode_base64, parse_checkpoint, parse_note};
 use una_project::tlog::owner::{self, Change, Event, History, Logged, ReplayError, Standing};
 use una_project::tlog::release::{Statement, within};
-use una_project::tlog::root::{Root, trust_first, walk};
+use una_project::tlog::root::{self as roots, Root, trust_first, walk_all};
+use una_project::tlog::witness::{Cosigned, logged_at};
 use una_project::tlog::{map, publish};
 use una_project::version::Version;
 use una_syntax::ita::parse_manifest;
@@ -52,6 +64,7 @@ use crate::names::{self, Names};
 use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
+use crate::timing::{Obligation, Timed, admits, completable, obligation};
 use crate::tree::{Tree, root as tree_root};
 use crate::{
     MAX_ARCHIVE, MAX_ENTRY, MAX_NEEDS, MAX_RELEASES_PER_NAME, PROMISE_WINDOW, decimal,
@@ -62,6 +75,9 @@ use crate::{
 const STATE_SIZE: &str = "state/size";
 /// The store path of each witness's last cosignature, the service's own state.
 const STATE_WITNESSES: &str = "state/witnesses";
+/// The store path of each timed request's deadline checkpoint, the service's own state: the
+/// clock at which a checkpoint was signed is in no checkpoint, so it is kept here.
+const STATE_DEADLINES: &str = "state/deadlines";
 /// The store path of the newest checkpoint the log signed, which witnesses read.
 pub const WITNESS_NEXT: &str = "witness/next";
 /// The store path of the newest checkpoint with the witness threshold of cosignatures.
@@ -172,6 +188,8 @@ pub struct Prepared {
 pub struct Registry {
     store: Arc<dyn Store>,
     root: Root,
+    /// The root chain walked from the pinned version, each with its digest; the last is `root`.
+    chain: Vec<(Root, String)>,
     log: Signer,
     clock: Arc<dyn Clock>,
     tree: Tree,
@@ -188,6 +206,9 @@ pub struct Registry {
     witnesses: BTreeMap<String, (u64, u64)>,
     published: Option<u64>,
     broken: Option<String>,
+    /// The recoveries, disputes, co-signer changes and cancellations of recoveries, by index,
+    /// with their starts and deadlines (`crate::timing`).
+    requests: BTreeMap<u64, Timed>,
 }
 
 impl std::fmt::Debug for Registry {
@@ -200,8 +221,9 @@ impl std::fmt::Debug for Registry {
 }
 
 /// Reads root metadata `root/1`, `root/2`, … from the store, trusts the first by `pin` and
-/// walks the chain (rule 35), at `now`.
-pub fn read_root(store: &dyn Store, pin: &str, now: u64) -> Result<Root, String> {
+/// walks the chain (rule 35), at `now`: every version, each with its digest, the pinned one
+/// first.
+pub fn read_chain(store: &dyn Store, pin: &str, now: u64) -> Result<Vec<(Root, String)>, String> {
     let mut documents = Vec::new();
     let mut n = 1u64;
     while let Some(bytes) = store.get(&format!("root/{n}"), crate::MAX_ENTRY)? {
@@ -213,7 +235,21 @@ pub fn read_root(store: &dyn Store, pin: &str, now: u64) -> Result<Root, String>
         .ok_or("the store has no root metadata `root/1`")?;
     let first = trust_first(first, pin)?;
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
-    walk(&first, &rest, now)
+    Ok(walk_all(&first, &rest, now)?
+        .into_iter()
+        .map(|root| {
+            let digest = root.digest.clone();
+            (root, digest)
+        })
+        .collect())
+}
+
+/// Reads root metadata from the store as [`read_chain`] does: its last version.
+pub fn read_root(store: &dyn Store, pin: &str, now: u64) -> Result<Root, String> {
+    read_chain(store, pin, now)?
+        .pop()
+        .map(|(root, _)| root)
+        .ok_or_else(|| "the store has no root metadata `root/1`".to_owned())
 }
 
 impl Registry {
@@ -225,7 +261,11 @@ impl Registry {
         config: &Config,
         clock: Arc<dyn Clock>,
     ) -> Result<Registry, String> {
-        let root = read_root(store.as_ref(), &config.pin, clock.now())?;
+        let chain = read_chain(store.as_ref(), &config.pin, clock.now())?;
+        let root = chain
+            .last()
+            .map(|(root, _)| root.clone())
+            .ok_or("the store has no root metadata `root/1`")?;
         let log = Signer::from_seed(&root.log.name, &config.log_seed);
         if log.key().public != root.log.public {
             return Err("the log's key is not the one the root metadata names".to_owned());
@@ -233,6 +273,7 @@ impl Registry {
         let mut registry = Registry {
             store,
             root,
+            chain,
             log,
             clock,
             tree: Tree::new(),
@@ -246,6 +287,7 @@ impl Registry {
             witnesses: BTreeMap::new(),
             published: None,
             broken: None,
+            requests: BTreeMap::new(),
         };
         registry.replay()?;
         Ok(registry)
@@ -343,8 +385,156 @@ impl Registry {
             let text = String::from_utf8(bytes).map_err(|_| "the checkpoint is not UTF-8")?;
             self.published = Some(parse_checkpoint(&parse_note(&text)?.text)?.size);
         }
+        self.load_timing()?;
         self.sign_checkpoint()?;
         Ok(())
+    }
+
+    /// Reads the timed requests' deadlines from `state/deadlines`, and their starts from their
+    /// start checkpoints as stored.
+    fn load_timing(&mut self) -> Result<(), String> {
+        if let Some(bytes) = self.store.get(STATE_DEADLINES, MAX_DOCUMENT)? {
+            let text = String::from_utf8(bytes).map_err(|_| "state/deadlines is not UTF-8")?;
+            for line in text.lines() {
+                let (index, size) = line
+                    .split_once(' ')
+                    .and_then(|(index, size)| Some((decimal(index)?, decimal(size)?)))
+                    .ok_or("state/deadlines has a line of the wrong form")?;
+                let request = self
+                    .requests
+                    .get_mut(&index)
+                    .ok_or("state/deadlines names an entry that is not a timed request")?;
+                request.deadline = Some(size);
+            }
+        }
+        let indices: Vec<u64> = self.requests.keys().copied().collect();
+        for index in indices {
+            let start = self.start_of(index);
+            if let Some(request) = self.requests.get_mut(&index) {
+                request.start = start;
+            }
+        }
+        Ok(())
+    }
+
+    /// The stored checkpoint of `size`, accepted as a client accepts it
+    /// ([`accept_checkpoint`]): signed by the log's key under the root version it names, with
+    /// the threshold of cosignatures that count. `None` when it is not, or carries fewer.
+    fn accepted(&self, size: u64) -> Option<Accepted> {
+        let bytes = self
+            .store
+            .get(&checkpoint_path(size), MAX_DOCUMENT)
+            .ok()??;
+        let document = String::from_utf8(bytes).ok()?;
+        accept_checkpoint(&document, &self.chain, Retired::Count).ok()
+    }
+
+    /// The threshold that counts the cosignatures of a checkpoint naming the root `version`:
+    /// the larger of that version's and the last root's (`spec/30 §11` rule 9).
+    fn threshold_named(&self, version: u64) -> usize {
+        let named = self
+            .chain
+            .iter()
+            .find(|(root, _)| root.version == version)
+            .map_or(self.root.witnesses.threshold, |(root, _)| {
+                root.witnesses.threshold
+            });
+        named.max(self.root.witnesses.threshold)
+    }
+
+    /// The start of the request logged at `index`: the k-th earliest cosignature on its start
+    /// checkpoint, once that carries the threshold, as the client takes it.
+    fn start_of(&self, index: u64) -> Option<u64> {
+        let accepted = self.accepted(index.saturating_add(1))?;
+        let k = self.threshold_named(accepted.version);
+        logged_at(index, &accepted.cosigned, k).ok()
+    }
+
+    /// The cosignatures of the checkpoint `signed`, of `size`, that count as `spec/30 §11` rule
+    /// 9 counts them, a witness of the last root or a retired one of the version it names that
+    /// no root revokes (the service's own log binds every checkpoint to its newest), and the
+    /// threshold that counts them.
+    fn counted(&self, signed: &Note, size: u64) -> (Vec<Cosigned>, usize) {
+        let version = parse_checkpoint(&signed.text)
+            .ok()
+            .and_then(|checkpoint| roots::named(&checkpoint.extensions).ok())
+            .map_or(self.root.version, |(version, _)| version);
+        let named = self
+            .chain
+            .iter()
+            .map(|(root, _)| root)
+            .find(|root| root.version == version)
+            .unwrap_or(&self.root);
+        let revoked: Vec<&str> = self
+            .chain
+            .iter()
+            .flat_map(|(root, _)| root.witnesses_revoked.iter().map(String::as_str))
+            .collect();
+        let mut keys: Vec<&Key> = self.root.witnesses.keys.iter().collect();
+        for key in &named.witnesses.keys {
+            if !keys.iter().any(|k| k.public == key.public) {
+                keys.push(key);
+            }
+        }
+        let lines = keys
+            .into_iter()
+            .filter(|key| !revoked.contains(&owner::fingerprint(&key.public).as_str()))
+            .filter_map(|key| {
+                signed.cosignature(key).map(|time| Cosigned {
+                    witness: key.name.clone(),
+                    size,
+                    time,
+                })
+            })
+            .collect();
+        (lines, self.threshold_named(version))
+    }
+
+    /// The counted cosignatures of the stored checkpoint of `size`, and their threshold.
+    fn stored_lines(&self, size: u64) -> (Vec<Cosigned>, usize) {
+        let signed = self
+            .store
+            .get(&checkpoint_path(size), MAX_DOCUMENT)
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|document| parse_note(&document).ok());
+        match signed {
+            Some(signed) => self.counted(&signed, size),
+            None => (Vec::new(), self.root.witnesses.threshold),
+        }
+    }
+
+    /// What the log waits for before it grows, if anything: an obligation of its newest
+    /// checkpoint that its cosignatures do not meet yet (`crate::timing`), as one sentence.
+    /// Witnesses read that checkpoint at `witness/next` and send their cosignatures to
+    /// [`Registry::cosign`]; the service never stops taking them, and never times out.
+    pub fn waiting(&self) -> Option<String> {
+        let size = self.tree.size();
+        let due = obligation(size, self.clock.now(), self.requests.values());
+        if due.is_empty() || self.accepted(size).is_some() {
+            return None;
+        }
+        let (lines, k) = self.stored_lines(size);
+        let blocking = due.into_iter().find(|due| match due {
+            Obligation::BeforeDeadline(index) => self
+                .requests
+                .get(index)
+                .and_then(Timed::target)
+                .is_some_and(|target| completable(&lines, target, k)),
+            _ => true,
+        })?;
+        Some(format!(
+            "the log grows only once its checkpoint of size {size} carries the witness threshold of cosignatures, since {}; it keeps serving it at `{WITNESS_NEXT}` for its witnesses to cosign: try again shortly",
+            blocking.describe()
+        ))
+    }
+
+    /// The deadline checkpoint of the request logged at `index`, once fixed.
+    pub fn deadline_of(&self, index: u64) -> Option<u64> {
+        self.requests
+            .get(&index)
+            .and_then(|request| request.deadline)
     }
 
     fn root_hash(&mut self) -> Result<Hash, String> {
@@ -486,8 +676,7 @@ impl Registry {
     /// The first position the request logged at `request` governs, as a client finds it: its
     /// deadline, once known.
     fn effect_of(&self, request: u64) -> Option<u64> {
-        let _ = request;
-        None
+        self.deadline_of(request)
     }
 
     /// Whether `note`, about the package `name` and logged at the next index, counts as its
@@ -1050,6 +1239,11 @@ impl Registry {
                 "the cosignature by `{name}` is from the future"
             )));
         }
+        // Every checkpoint stays on its side of each request's target (`crate::timing`).
+        let (lines, k) = self.counted(&signed, size);
+        for request in self.requests.values() {
+            admits(request, size, time, &lines, k).map_err(invalid)?;
+        }
         let document = format!("{document}{line}");
         let all = parse_note(&document).map_err(invalid)?;
         let count = self
@@ -1080,6 +1274,19 @@ impl Registry {
         self.witnesses = witnesses;
         if count >= self.root.witnesses.threshold && self.published.is_none_or(|p| size >= p) {
             self.published = Some(size);
+        }
+        // A start checkpoint that reached the threshold fixes its request's start.
+        let starting: Vec<u64> = self
+            .requests
+            .values()
+            .filter(|request| request.start.is_none() && request.index.saturating_add(1) == size)
+            .map(|request| request.index)
+            .collect();
+        for index in starting {
+            let start = self.start_of(index);
+            if let Some(request) = self.requests.get_mut(&index) {
+                request.start = start;
+            }
         }
         Ok(())
     }
@@ -1143,6 +1350,22 @@ impl Registry {
                         .entry(key.public)
                         .or_insert_with(|| owner_name.clone());
                 }
+                // A recovery, a dispute and a co-signer change wait seven days of witness time,
+                // and a cancellation of a recovery bounds its overruling by its own seven days:
+                // each is timed (`crate::timing`).
+                let timed = match &read.event {
+                    Event::Recover(_) | Event::Dispute(_) | Event::Cosigners(_) => true,
+                    Event::Cancel(target) => self.owners.get(&owner_name).is_some_and(|chain| {
+                        chain.iter().any(|recorded| {
+                            recorded.index == *target
+                                && matches!(recorded.entry.event, Event::Recover(_))
+                        })
+                    }),
+                    _ => false,
+                };
+                if timed {
+                    self.requests.insert(index, Timed::new(index));
+                }
                 self.owners.entry(owner_name).or_default().push(Recorded {
                     index,
                     note: entry.note.clone(),
@@ -1155,8 +1378,37 @@ impl Registry {
     /// Logs an entry checked by the caller: writes it, the tiles and the map, then the size,
     /// then signs the checkpoint, then applies it.
     fn append(&mut self, entry: Entry, blob: Option<(&str, &[u8])>) -> Result<Receipt, Refusal> {
+        if let Some(why) = self.waiting() {
+            return Err(Refusal::Unavailable(why));
+        }
         let index = self.tree.size();
         let leaf = entry.leaf();
+        // The checkpoint about to be signed is the deadline of every request whose target has
+        // passed by the service's clock and that has none yet: signed at or after the target.
+        let now = self.clock.now();
+        let due: Vec<u64> = self
+            .requests
+            .values()
+            .filter(|request| {
+                request.deadline.is_none()
+                    && request.index < index
+                    && request.target().is_some_and(|target| now >= target)
+            })
+            .map(|request| request.index)
+            .collect();
+        let deadlines: Option<String> = (!due.is_empty()).then(|| {
+            self.requests
+                .values()
+                .filter_map(|request| {
+                    let deadline = if due.contains(&request.index) {
+                        Some(index + 1)
+                    } else {
+                        request.deadline
+                    };
+                    deadline.map(|deadline| format!("{} {deadline}\n", request.index))
+                })
+                .collect()
+        });
         let map_files = self.grow(&entry);
         let size = self.tree.size();
         let written = (|| -> Result<(), String> {
@@ -1193,6 +1445,9 @@ impl Registry {
                     self.store.put(path, bytes)?;
                 }
             }
+            if let Some(deadlines) = &deadlines {
+                self.store.put(STATE_DEADLINES, deadlines.as_bytes())?;
+            }
             self.store.put(STATE_SIZE, size.to_string().as_bytes())?;
             self.sign_checkpoint()
         })();
@@ -1201,6 +1456,11 @@ impl Registry {
             return Err(Refusal::Unavailable(format!(
                 "the registry could not write the entry ({e}); it logs again once reopened"
             )));
+        }
+        for request in due {
+            if let Some(request) = self.requests.get_mut(&request) {
+                request.deadline = Some(size);
+            }
         }
         self.apply(&entry);
         let text = format!(

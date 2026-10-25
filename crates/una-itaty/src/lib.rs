@@ -22,6 +22,7 @@
 //! - [`names`]: the name rules of rules 44 and 45 at registration;
 //! - [`authority`]: a package's authority and trust, computed from its archive (rule 37);
 //! - [`registry`]: the state of the registry and the checks at submission;
+//! - [`timing`]: the witness obligations, and the deadlines of owners' requests;
 //! - [`witness`]: a witness, which replays the log and the map before it cosigns;
 //! - [`http`]: the HTTP/1.1 endpoints, on the standard library alone;
 //! - [`sign`]: signing notes, for the log, witnesses and tests.
@@ -35,6 +36,7 @@ pub mod registry;
 pub mod sign;
 pub mod store;
 pub mod tiles;
+pub mod timing;
 pub mod tree;
 pub mod witness;
 
