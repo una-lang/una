@@ -1,9 +1,14 @@
 //! The real-clock timing oracles of the amendment of ADR 0116 (section G): for each channel a
 //! fix closes, a program whose observable timing, through a deadline, a race, a limit or a
 //! tick, turns a difference of time into a difference the outside sees. Their timing needs a
-//! machine without another heavy job, so they are ignored in the ordinary suite and run in the
-//! release gates' quiet slot and in the pull request of each fix, where their output is
-//! recorded. The deterministic halves of their differentials run in the ordinary suite.
+//! machine without another heavy job, so they are not run by an ordinary `cargo test`; the
+//! deterministic halves of their differentials run there instead.
+//!
+//! **Ignored is not skipped.** Every test here is a security oracle. The local-ci step "Timing
+//! channels (security oracles)" and the release gate of the same name (#1065) run this file
+//! with `cargo test -p una-cli --test timing_channels -- --ignored --test-threads=1`, one test
+//! at a time on a quiet machine, and record its output; a pull request that fixes a timing
+//! channel runs it too.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -12,7 +17,7 @@
 mod history;
 
 #[test]
-#[ignore = "real-clock timing oracle, run in the release gates' quiet slot"]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
 fn the_history_of_a_limit_amplifies_time_on_this_machine() {
     // The positive control of the differential of #1147 (ADR 0116 P8, slice T1), whose secret
     // half is in `http_limits.rs`: the twin whose `key` is `public` is accepted under the same
