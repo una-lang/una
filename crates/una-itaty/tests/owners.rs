@@ -1795,3 +1795,44 @@ fn a_rotation_that_moves_a_start_whose_deadline_is_fixed_needs_confirmation() {
         Some(NOW + 20)
     );
 }
+
+#[test]
+fn a_request_is_cancelled_once_and_its_cancellation_never_waits_on_the_bucket() {
+    let mut f = Fixture::new("cancel-once");
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    f.register("acme", &[&a], &[]);
+    // A thief holding acme's key asks a co-signer change.
+    let change = format!("cosigners 1 {}", key_text(&x.1));
+    let stolen = f.submit("acme", &change, 1, &[&a]).unwrap();
+    f.cosign(&[0, 1], NOW);
+    // Others drain the bucket.
+    let mut drained = false;
+    for n in 0..16u32 {
+        let name = owner_name(400 + n as usize);
+        let key = keypair_n(7_000 + n, &format!("{name}.a"));
+        f.register_reviewed(&name, &key);
+        match f.submit(&name, &change, 1, &[&key]) {
+            Ok(_) => f.cosign(&[0, 1], NOW),
+            Err(refusal) => {
+                assert_eq!(refusal.cause(), Some(&Cause::RateLimited));
+                drained = true;
+                break;
+            }
+        }
+    }
+    assert!(drained);
+    // The owner cancels the thief's change with the bucket drained.
+    let cancel = f
+        .submit("acme", &format!("cancel {stolen}"), 1, &[&a])
+        .unwrap();
+    assert!(f.registry.request_timing(cancel).is_some());
+    f.cosign(&[0, 1], NOW);
+    // A second cancellation of it is refused.
+    assert_eq!(
+        f.submit("acme", &format!("cancel {stolen}"), 1, &[&a])
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::AlreadyCancelled)
+    );
+}

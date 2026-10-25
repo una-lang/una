@@ -100,10 +100,10 @@ pub const WITNESS_LATENCY: u64 = 3_600;
 /// The per-owner hold: from this many seconds before a request's target until its deadline is
 /// fixed, its owner's entries wait. Two hours.
 pub const HOLD_WINDOW: u64 = MAX_WITNESS_AHEAD + WITNESS_LATENCY;
-/// The registry-wide rate of unprivileged timed requests (co-signer changes, and cancellations
-/// of them): one token every this many seconds. Each costs about three witness round trips of
-/// the log's time, so at a round trip of 2 seconds they stall the log for at most about a tenth
-/// of its time.
+/// The registry-wide rate of co-signer changes, the unprivileged timed requests that draw on
+/// the bucket: one token every this many seconds. Each, with its one cancellation, which is
+/// exempt, costs about six witness round trips of the log's time, so at a round trip of 2
+/// seconds they stall the log for at most about a fifth of its time.
 pub const TIMED_EVERY: u64 = 60;
 /// The burst of unprivileged timed requests: at most this many tokens are kept.
 pub const TIMED_BURST: u64 = 8;
@@ -205,6 +205,8 @@ pub enum Cause {
     RateLimited,
     /// A co-signer change past the owner's two in seven days (`spec/30 §16` rule 10).
     CosignerChangeCap,
+    /// A cancellation of a request cancelled already.
+    AlreadyCancelled,
     /// A rotation that lists as a witness a key a root version revoked.
     RevokedWitness,
     /// A rotation whose compromised key is not a current witness rotated out.
@@ -1828,19 +1830,11 @@ impl Registry {
                                 .values()
                                 .any(|cancels| cancels.contains(&position))
                         });
-                    // Co-signer changes and timed cancellations are the unprivileged timed
-                    // requests: they draw on the registry-wide bucket.
-                    // A cancellation of a recovery or a dispute never is: an owner can always
-                    // cancel a thief's waiting recovery within its window.
-                    let cancels_change = match read.event {
-                        Event::Cancel(target) => self
-                            .requests
-                            .get(&target)
-                            .is_some_and(|request| request.kind == TimedKind::Cosigners),
-                        _ => false,
-                    };
-                    throttled = (timed_cancel && cancels_change)
-                        || matches!(read.event, Event::Cosigners(_));
+                    // Co-signer changes draw on the registry-wide bucket. A cancellation never
+                    // does: each request is cancelled at most once, so cancellations never
+                    // outnumber the requests admitted, and an owner can always cancel a thief's
+                    // waiting recovery or co-signer change within its window.
+                    throttled = matches!(read.event, Event::Cosigners(_));
                 }
             },
         }
@@ -2021,7 +2015,23 @@ impl Registry {
                     ));
                 }
             }
-            Event::Cancel(_) => stated(threshold_now, "a cancellation")?,
+            Event::Cancel(target) => {
+                stated(threshold_now, "a cancellation")?;
+                // A request is cancelled once: a second cancellation changes nothing, and
+                // refusing it keeps cancellations from outnumbering the requests admitted.
+                let cancelled = current.as_ref().is_some_and(|history| {
+                    history
+                        .cancellations
+                        .get(target)
+                        .is_some_and(|cancels| !cancels.is_empty())
+                });
+                if cancelled {
+                    return Err(rule(
+                        Cause::AlreadyCancelled,
+                        format!("the request at {target} of `{owner_name}` is cancelled already"),
+                    ));
+                }
+            }
             Event::Overrule(_) => stated(threshold_now, "an overruling")?,
             Event::Recover(key) | Event::Dispute(key) => {
                 stated(Some(1), "a recovery or a dispute")?;
