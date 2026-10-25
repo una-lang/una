@@ -1,7 +1,8 @@
 //! `una ita` with a registry (ADR 0122 rules 25, 26 and 34 to 40, `spec/30 §14`): a source of
-//! `sources` read from a mirror directory and verified, resolved into the lock, fetched into
-//! Itaoca, and mounted in the program; a source with no mirror, a plain `http://` mirror, a
-//! tampered mirror, a key change, and a release that breaks rule 26.
+//! `sources` read from a mirror directory that Itaoca's `mirrors.una` lists and verified,
+//! resolved into the lock, fetched into Itaoca, and mounted in the program; a source with no
+//! place this release can read, a plain `http://` mirror, a tampered mirror skipped for a good
+//! one, a key change, and a release that breaks rule 26.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -86,8 +87,8 @@ fn acme() -> (TestRegistry, (ed25519_dalek::SigningKey, una_project::tlog::note:
 }
 
 /// A package that needs `acme/ledger 0.3` from the registry `acme`, whose module imports it,
-/// the registry written as a mirror beside it, and an empty Itaoca. Returns the package, the
-/// mirror and Itaoca.
+/// the registry written as a mirror beside it, as a registry's store keeps its files, and an
+/// Itaoca whose `mirrors.una` lists it. Returns the package, the mirror and Itaoca.
 fn project(name: &str, registry: &TestRegistry) -> (PathBuf, PathBuf, PathBuf) {
     let base = scratch(name);
     let dir = base.join("demo");
@@ -109,15 +110,21 @@ fn project(name: &str, registry: &TestRegistry) -> (PathBuf, PathBuf, PathBuf) {
     )
     .unwrap();
     registry.write(&mirror);
+    list_mirrors(&itaoca, &[&mirror]);
     (dir, mirror, itaoca)
+}
+
+/// Writes Itaoca's `mirrors.una`, listing `mirrors` for the source `acme` as `file://` URLs.
+fn list_mirrors(itaoca: &Path, mirrors: &[&Path]) {
+    let mut text = "mirrors\n  acme\n".to_owned();
+    for mirror in mirrors {
+        text.push_str(&format!("    \"file://{}\"\n", mirror.display()));
+    }
+    std::fs::write(itaoca.join("mirrors.una"), text).unwrap();
 }
 
 fn arg(path: &Path) -> &str {
     path.to_str().unwrap()
-}
-
-fn mirror_flag(mirror: &Path) -> String {
-    format!("acme={}", mirror.display())
 }
 
 /// The codes of `una --json check` with Itaoca at `itaoca`.
@@ -135,10 +142,9 @@ fn codes(dir: &Path, itaoca: &Path) -> Vec<String> {
 #[test]
 fn a_registry_need_is_locked_fetched_and_mounted() {
     let (registry, _) = acme();
-    let (dir, mirror, itaoca) = project("end-to-end", &registry);
-    let flag = mirror_flag(&mirror);
+    let (dir, _, itaoca) = project("end-to-end", &registry);
     let (code, out, err) = una_in(
-        &["una", "ita", "lock", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "lock", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
@@ -158,12 +164,12 @@ fn a_registry_need_is_locked_fetched_and_mounted() {
     assert!(codes(&dir, &itaoca).contains(&"U7011".to_owned()));
     // Fetched at the lock's resolution point, verified, into Itaoca.
     let (code, out, err) = una_in(
-        &["una", "ita", "fetch", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "fetch", arg(&dir)],
         &itaoca,
     );
     assert_eq!((code, out.as_str()), (0, "fetched acme/ledger 0.3.1\n"), "{err}");
     let (code, out, _) = una_in(
-        &["una", "ita", "fetch", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "fetch", arg(&dir)],
         &itaoca,
     );
     assert_eq!((code, out.as_str()), (0, "acme/ledger 0.3.1 is in Itaoca\n"));
@@ -176,36 +182,45 @@ fn a_registry_need_is_locked_fetched_and_mounted() {
     assert_eq!(report["tcb"]["registries"][0]["root"], registry.pin());
     // The lock is the one `una ita lock --check` writes at its own resolution point.
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--check", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "lock", "--check", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
 }
 
 #[test]
-fn a_source_is_read_only_from_a_mirror_and_never_over_plain_http() {
+fn a_source_is_read_only_from_its_places_and_never_over_plain_http() {
     let (registry, _) = acme();
-    let (dir, _, itaoca) = project("no-mirror", &registry);
-    // No mirror: the source is at an https URL, and this release has no https transport.
+    let (dir, mirror, itaoca) = project("no-mirror", &registry);
+    // No mirror: the source's own URL is https, and this release has no https transport.
+    std::fs::remove_file(itaoca.join("mirrors.una")).unwrap();
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(
-        err.contains("U7013") && err.contains("no https transport"),
+        err.contains("U7013")
+            && err.contains("no https transport")
+            && err.contains("mirrors.una"),
         "{err}"
     );
     assert!(!dir.join("ita.lock").exists());
+    // A mirror at a plain `http://` URL, another scheme, or a bare path: mirrors.una is refused,
+    // and no source is read from a list that is not the one written.
     for refused in [
-        "acme=http://mirror.example",
-        "acme=ftp://mirror.example",
-        "acme",
-        "itaty=/srv",
+        "http://mirror.example".to_owned(),
+        "ftp://mirror.example".to_owned(),
+        mirror.display().to_string(),
     ] {
-        let (code, _, err) = una_in(
-            &["una", "ita", "lock", "--mirror", refused, arg(&dir)],
-            &itaoca,
-        );
+        std::fs::write(
+            itaoca.join("mirrors.una"),
+            format!("mirrors\n  acme\n    \"{refused}\"\n"),
+        )
+        .unwrap();
+        let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
         assert_eq!(code, 1, "{refused}");
-        assert!(err.contains("U7013"), "{refused}: {err}");
+        assert!(
+            err.contains("U7008") && err.contains("mirrors.una, line 3"),
+            "{refused}: {err}"
+        );
         assert!(!dir.join("ita.lock").exists());
     }
     // `itaty`, whose root is not built into this release, stays unresolved.
@@ -214,18 +229,47 @@ fn a_source_is_read_only_from_a_mirror_and_never_over_plain_http() {
         "ita demo\n  version 0.1.0\n  edition 0.4\n\nneeds\n  json 2.0\n",
     )
     .unwrap();
+    std::fs::remove_file(itaoca.join("mirrors.una")).unwrap();
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(err.contains("U7013") && err.contains("`itaty`"), "{err}");
+}
+
+/// A mirror that serves a copy that does not verify is skipped and named, and the next place
+/// whose copy verifies is used.
+#[test]
+fn a_mirror_with_a_bad_copy_is_skipped_for_one_that_verifies() {
+    let (registry, _) = acme();
+    let (dir, mirror, itaoca) = project("skip-bad", &registry);
+    let bad = mirror.with_file_name("bad-mirror");
+    registry.write(&bad);
+    let latest = bad.join("checkpoint/latest");
+    let mut bytes = std::fs::read(&latest).unwrap();
+    let at = bytes.len() / 2;
+    bytes[at] ^= 0x01;
+    std::fs::write(&latest, &bytes).unwrap();
+    list_mirrors(&itaoca, &[&bad, &mirror]);
+    let (code, out, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("U7010") && out.contains("bad-mirror") && out.contains("skipped"),
+        "{out}"
+    );
+    assert!(dir.join("ita.lock").is_file());
+    // With only the bad mirror, nothing verifies: U7010 names it.
+    std::fs::remove_file(dir.join("ita.lock")).unwrap();
+    list_mirrors(&itaoca, &[&bad]);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7010") && err.contains("bad-mirror"), "{err}");
 }
 
 #[test]
 fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
     let (registry, _) = acme();
     let (dir, mirror, itaoca) = project("tampered", &registry);
-    let flag = mirror_flag(&mirror);
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "lock", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
@@ -243,7 +287,7 @@ fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
     bytes[last] ^= 0x01;
     std::fs::write(&blob, &bytes).unwrap();
     let (code, _, err) = una_in(
-        &["una", "ita", "fetch", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "fetch", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 1);
@@ -257,7 +301,7 @@ fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
     bytes[0] ^= 0x01;
     std::fs::write(&tile, &bytes).unwrap();
     let (code, _, err) = una_in(
-        &["una", "ita", "fetch", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "fetch", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 1);
@@ -268,9 +312,8 @@ fn a_tampered_mirror_is_refused_and_nothing_is_stored() {
 fn a_change_of_the_owners_keys_needs_accept_key() {
     let (mut registry, key) = acme();
     let (dir, mirror, itaoca) = project("accept-key", &registry);
-    let flag = mirror_flag(&mirror);
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "lock", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 0, "{err}");
@@ -280,7 +323,7 @@ fn a_change_of_the_owners_keys_needs_accept_key() {
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "lock", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 1);
@@ -295,8 +338,6 @@ fn a_change_of_the_owners_keys_needs_accept_key() {
             "lock",
             "--accept-key",
             "acme/ledger",
-            "--mirror",
-            &flag,
             arg(&dir),
         ],
         &itaoca,
@@ -310,15 +351,14 @@ fn update_raises_past_the_cooldown_only() {
     // 0.3.3 is logged a minute ago: within the 72-hour cooldown.
     registry.release("acme/ledger", "0.3.3", "none", "none", &[&key]);
     registry.checkpoint(now() - 60);
-    let (dir, mirror, itaoca) = project("update", &registry);
-    let flag = mirror_flag(&mirror);
-    let (code, out, err) = una_at(&dir, &["ita", "update", "--mirror", &flag], &itaoca);
+    let (dir, _, itaoca) = project("update", &registry);
+    let (code, out, err) = una_at(&dir, &["ita", "update"], &itaoca);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("acme/ledger 0.3.2 (acme)"), "{out}");
     let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
     assert!(manifest.contains("  acme/ledger 0.3.2 from acme\n"), "{manifest}");
     // `--now` takes the release within the cooldown.
-    let (code, _, err) = una_at(&dir, &["ita", "update", "--now", "--mirror", &flag], &itaoca);
+    let (code, _, err) = una_at(&dir, &["ita", "update", "--now"], &itaoca);
     assert_eq!(code, 0, "{err}");
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
     assert!(lock.contains("\npackage acme/ledger 0.3.3\n"), "{lock}");
@@ -327,7 +367,7 @@ fn update_raises_past_the_cooldown_only() {
 #[test]
 fn add_takes_the_newest_release_past_the_cooldown_from_its_owners_source() {
     let (registry, _) = acme();
-    let (dir, mirror, itaoca) = project("add", &registry);
+    let (dir, _, itaoca) = project("add", &registry);
     std::fs::write(
         dir.join("ita.una"),
         format!(
@@ -337,8 +377,7 @@ fn add_takes_the_newest_release_past_the_cooldown_from_its_owners_source() {
     )
     .unwrap();
     std::fs::write(dir.join("src/demo.una"), "module demo\n\npub one() -> Int = 1\n").unwrap();
-    let flag = mirror_flag(&mirror);
-    let (code, _, err) = una_at(&dir, &["ita", "add", "acme/ledger", "--mirror", &flag], &itaoca);
+    let (code, _, err) = una_at(&dir, &["ita", "add", "acme/ledger"], &itaoca);
     assert_eq!(code, 0, "{err}");
     let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
     assert!(
@@ -356,10 +395,9 @@ fn a_registry_that_logged_a_breach_of_rule_26_is_refused() {
     registry.release("acme/ledger", "0.3.2", "Http[post]", "none", &[&key]);
     registry.checkpoint(now() - 20 * DAY);
     registry.checkpoint(now() - 60);
-    let (dir, mirror, itaoca) = project("rule-26", &registry);
-    let flag = mirror_flag(&mirror);
+    let (dir, _, itaoca) = project("rule-26", &registry);
     let (code, _, err) = una_in(
-        &["una", "ita", "lock", "--mirror", &flag, arg(&dir)],
+        &["una", "ita", "lock", arg(&dir)],
         &itaoca,
     );
     assert_eq!(code, 1);

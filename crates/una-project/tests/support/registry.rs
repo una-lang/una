@@ -1,8 +1,9 @@
-//! A test registry (ADR 0122 rules 34 to 38): root metadata, a log of signed entries served as
-//! tiles and entry bundles, a name map with a proof per name per checkpoint, checkpoints kept by
-//! size with their witnesses' cosignatures, and archives. It is built in memory and written to
-//! a directory, which the client reads as a mirror. Shared by the tests of `una-project` and
-//! `una-cli`.
+//! A test registry (ADR 0122 rules 34 to 38), at the paths a registry serves: root metadata, a
+//! log of signed entries served as tiles and entry bundles, the name map as content-addressed
+//! tiles, checkpoints kept by size with their witnesses' cosignatures, and archives. It is built
+//! in memory and written to a directory as a registry's store keeps it, the latest checkpoint at
+//! `checkpoint/latest`, which the client reads as a mirror. Shared by the tests of `una-project`
+//! and `una-cli`.
 
 // Each test crate uses a part of it.
 #![allow(dead_code)]
@@ -15,7 +16,7 @@ use std::path::Path;
 use ed25519_dalek::{Signer, SigningKey};
 use una_project::content::{File, archive, digest_of};
 use una_project::provenance::sha256_digest;
-use una_project::tlog::map::{Head, Map, encode_proof, key_hex};
+use una_project::tlog::map::{Head, build_tiles};
 use una_project::tlog::merkle::{Hash, leaf_hash, root as tree_root};
 use una_project::tlog::note::{Key, encode_base64};
 use una_project::tlog::owner::fingerprint;
@@ -129,7 +130,6 @@ pub struct TestRegistry {
     pub keys: Keys,
     pub roots: Vec<String>,
     pub entries: Vec<Vec<u8>>,
-    pub map: Map,
     pub heads: BTreeMap<String, Head>,
     pub files: BTreeMap<String, Vec<u8>>,
     pub sizes: Vec<u64>,
@@ -147,7 +147,6 @@ impl TestRegistry {
             keys,
             roots: Vec::new(),
             entries: Vec::new(),
-            map: Map::default(),
             heads: BTreeMap::new(),
             files: BTreeMap::new(),
             sizes: Vec::new(),
@@ -179,7 +178,6 @@ impl TestRegistry {
         self.entries.push(document.as_bytes().to_vec());
         let count = self.heads.get(name).map_or(0, |h| h.count) + 1;
         let head = Head { index, leaf, count };
-        self.map.set(name, &head);
         self.heads.insert(name.to_owned(), head);
         index
     }
@@ -291,16 +289,22 @@ impl TestRegistry {
     }
 
     /// Publishes a checkpoint at the current size, cosigned by each witness at the time
-    /// `times` gives it (`None`: no cosignature); then its tiles, entry bundles and map proofs.
+    /// `times` gives it (`None`: no cosignature); then its tiles, entry bundles and map tiles.
     pub fn checkpoint_with(&mut self, times: &[Option<u64>]) -> u64 {
         let size = self.entries.len() as u64;
         let leaves: Vec<Hash> = self.entries.iter().map(|e| leaf_hash(e)).collect();
         let top = tree_root(&leaves);
+        let heads: Vec<(String, Head)> = self
+            .heads
+            .iter()
+            .map(|(name, head)| (name.clone(), *head))
+            .collect();
+        let (map_root, tiles) = build_tiles(&heads);
         let text = format!(
             "{}\n{size}\n{}\nita-map {}\n",
             self.keys.log.1.name,
             encode_base64(&top),
-            encode_base64(&self.map.root())
+            encode_base64(&map_root)
         );
         let log_line = sign_line(&self.keys.log.0, &self.keys.log.1, &text);
         let mut document = format!("{text}\n{log_line}");
@@ -310,23 +314,16 @@ impl TestRegistry {
             }
         }
         self.files
-            .insert(format!("checkpoints/{size}"), document.clone().into_bytes());
+            .insert(format!("checkpoint/{size}"), document.clone().into_bytes());
         self.files
             .insert("checkpoint".to_owned(), document.into_bytes());
         if self.sizes.last() != Some(&size) {
             self.sizes.push(size);
         }
-        let index: String = self.sizes.iter().map(|s| format!("{s}\n")).collect();
-        self.files
-            .insert("checkpoints/index".to_owned(), index.into_bytes());
         self.tiles(&leaves);
-        for name in self.heads.keys().cloned().collect::<Vec<_>>() {
-            let head = self.heads[&name];
-            let proof = self.map.prove(&name);
-            self.files.insert(
-                format!("map/{size}/{}", key_hex(&name)),
-                encode_proof(Some(&head), &proof).into_bytes(),
-            );
+        // Map tiles are named by their content: every checkpoint's stay served.
+        for (path, bytes) in tiles {
+            self.files.insert(path, bytes);
         }
         size
     }
@@ -376,10 +373,15 @@ impl TestRegistry {
         }
     }
 
-    /// Writes every file below `dir`.
+    /// Writes every file below `dir`, as a registry's store keeps it: the latest checkpoint at
+    /// `checkpoint/latest`.
     pub fn write(&self, dir: &Path) {
         for (path, bytes) in &self.files {
-            let file = dir.join(path);
+            let file = if path == "checkpoint" {
+                dir.join("checkpoint").join("latest")
+            } else {
+                dir.join(path)
+            };
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, bytes).unwrap();
         }

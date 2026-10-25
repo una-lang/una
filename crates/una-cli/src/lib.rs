@@ -1055,13 +1055,11 @@ fn run_command(
                         accept_authority,
                         accept_trust,
                         accept_key,
-                        mirror,
                         dry_run,
                     } => ita::lock_command(
                         &path,
                         ita::LockOptions {
                             accept_key: &accept_key,
-                            mirrors: &mirror,
                             itaoca: store.as_ref(),
                             now: clock,
                             ..ita::LockOptions::lock(
@@ -1080,7 +1078,6 @@ fn run_command(
                         accept_authority,
                         accept_trust,
                         accept_key,
-                        mirror,
                         dry_run,
                     } => {
                         let options = ita::LockOptions {
@@ -1093,7 +1090,6 @@ fn run_command(
                                 })
                             },
                             accept_key: &accept_key,
-                            mirrors: &mirror,
                             itaoca: store.as_ref(),
                             now: clock,
                             ..ita::LockOptions::lock(
@@ -1111,7 +1107,6 @@ fn run_command(
                         local,
                         from,
                         now,
-                        mirror,
                         dry_run,
                     } => {
                         let options = ita::LockOptions {
@@ -1121,7 +1116,6 @@ fn run_command(
                             } else {
                                 una_project::resolve::COOLDOWN
                             },
-                            mirrors: &mirror,
                             itaoca: store.as_ref(),
                             now: clock,
                             ..ita::LockOptions::lock(false, dry_run, false, &[])
@@ -1136,8 +1130,8 @@ fn run_command(
                             output,
                         )
                     }
-                    ItaCommand::Fetch { path, mirror } => {
-                        ita::fetch_command(&path, store.as_ref(), &mirror, output)
+                    ItaCommand::Fetch { path } => {
+                        ita::fetch_command(&path, store.as_ref(), output)
                     }
                     ItaCommand::Vendor { path } => {
                         ita::vendor_command(&path, store.as_ref(), output)

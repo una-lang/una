@@ -13,6 +13,14 @@
 //!
 //! A checkpoint carries the map's root in its extension line `ita-map <base64 root>`.
 //!
+//! **Tiles.** A registry serves the map as content-addressed tiles of eight levels: the tile of
+//! tile level `t` (0 to 31) under the first `t` bytes of a key holds the 256 nodes at depth
+//! `8t + 8` below that prefix, indexed by the key's byte `t`, and is the file
+//! `map/<t>/<hex of its root>`: a bitmap of 32 bytes, then each node that is not empty, its hash
+//! or, at tile level 31, the leaf's head ([`encode_tile`]). A client walks the tiles on a name's
+//! path from the root in the checkpoint, checks each against the hash that names it, and builds
+//! the proof below from them ([`prove_from_tiles`]).
+//!
 //! **A proof** of a name's leaf, or of its absence, is a bitmap of 256 bits, bit `i` set when
 //! the sibling at height `i` (0 at the leaves) is not the empty subtree, and the siblings that
 //! are not empty, from the leaf up. Its size is O(log M) hashes for M names, since above the
@@ -23,6 +31,7 @@
 //! client holds, the number of links walked must equal the map's count minus the count held, so
 //! an omitted entry is caught. O(E) for the E entries not seen before.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
@@ -135,7 +144,7 @@ pub fn verify(root: &Hash, name: &str, head: Option<&Head>, proof: &Proof) -> bo
 /// any name. Setting a head is O(log n); the root and a proof are O(n · 256) for n names.
 #[derive(Clone, Debug, Default)]
 pub struct Map {
-    leaves: std::collections::BTreeMap<Hash, Hash>,
+    leaves: BTreeMap<Hash, Hash>,
 }
 
 impl Map {
@@ -276,123 +285,6 @@ pub fn walk(
     Ok(links)
 }
 
-/// The format line of a map proof document.
-pub const PROOF_FORMAT: &str = "ita-map-proof/1";
-
-/// The most bytes of a map proof document: 256 siblings and their lines fit well within it.
-pub const MAX_PROOF_DOCUMENT: usize = 32 << 10;
-
-/// A map proof document, as a registry serves it at `map/<size>/<hex of the name's key>`: the
-/// name's head at the checkpoint of that size, or none, and the proof.
-///
-/// ```text
-/// ita-map-proof/1
-/// head <index> <base64 leaf hash> <count>     (or `head none`)
-/// bitmap <base64 of 32 bytes>
-/// sibling <base64 hash>                       (one line per bit set, from height 0 up)
-/// ```
-///
-/// It is read strictly, in its one encoding, and verified against the map's root of the
-/// checkpoint ([`verify`]); nothing in it is trusted before that. O(n) to read.
-pub fn parse_proof(document: &[u8]) -> Result<(Option<Head>, Proof), String> {
-    use super::note::base64;
-
-    if document.len() > MAX_PROOF_DOCUMENT {
-        return Err(format!(
-            "a map proof is longer than {MAX_PROOF_DOCUMENT} bytes"
-        ));
-    }
-    let text = std::str::from_utf8(document).map_err(|_| "a map proof is not UTF-8")?;
-    let body = text
-        .strip_suffix('\n')
-        .ok_or("a map proof ends with a line feed")?;
-    let mut lines = body.split('\n');
-    if lines.next() != Some(PROOF_FORMAT) {
-        return Err(format!("a map proof starts with `{PROOF_FORMAT}`"));
-    }
-    let hash = |text: &str| -> Option<Hash> {
-        base64(text).and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-    };
-    let decimal = |text: &str| -> Option<u64> {
-        let valid = !text.is_empty()
-            && text.len() <= 20
-            && text.bytes().all(|b| b.is_ascii_digit())
-            && (text == "0" || !text.starts_with('0'));
-        valid.then(|| text.parse().ok()).flatten()
-    };
-    let head_line = lines
-        .next()
-        .and_then(|line| line.strip_prefix("head "))
-        .ok_or("a map proof has no `head` line")?;
-    let head = if head_line == "none" {
-        None
-    } else {
-        let parts: Vec<&str> = head_line.split(' ').collect();
-        let [index, leaf, count] = parts.as_slice() else {
-            return Err("a map proof's head is `<index> <leaf hash> <count>`".to_owned());
-        };
-        let head = Head {
-            index: decimal(*index).ok_or("a map head's index is not a decimal")?,
-            leaf: hash(*leaf).ok_or("a map head's leaf hash is not 32 bytes of base64")?,
-            count: decimal(*count)
-                .filter(|count| *count >= 1)
-                .ok_or("a map head's count is a decimal from 1")?,
-        };
-        Some(head)
-    };
-    let bitmap: [u8; 32] = lines
-        .next()
-        .and_then(|line| line.strip_prefix("bitmap "))
-        .and_then(hash)
-        .ok_or("a map proof has no `bitmap` line of 32 bytes")?;
-    let mut siblings = Vec::new();
-    for line in lines {
-        let sibling = line
-            .strip_prefix("sibling ")
-            .and_then(hash)
-            .ok_or("a map proof's sibling is not 32 bytes of base64")?;
-        siblings.push(sibling);
-    }
-    let set: u32 = bitmap.iter().map(|byte| byte.count_ones()).sum();
-    if siblings.len() != set as usize {
-        return Err(format!(
-            "a map proof's bitmap sets {set} bits for {} siblings",
-            siblings.len()
-        ));
-    }
-    let proof = Proof { bitmap, siblings };
-    if encode_proof(head.as_ref(), &proof).as_bytes() != document {
-        return Err("a map proof is not in its one encoding".to_owned());
-    }
-    Ok((head, proof))
-}
-
-/// The one encoding of a map proof document ([`parse_proof`]).
-pub fn encode_proof(head: Option<&Head>, proof: &Proof) -> String {
-    use super::note::encode_base64;
-
-    let mut out = format!("{PROOF_FORMAT}\n");
-    match head {
-        Some(head) => out.push_str(&format!(
-            "head {} {} {}\n",
-            head.index,
-            encode_base64(&head.leaf),
-            head.count
-        )),
-        None => out.push_str("head none\n"),
-    }
-    out.push_str(&format!("bitmap {}\n", encode_base64(&proof.bitmap)));
-    for sibling in &proof.siblings {
-        out.push_str(&format!("sibling {}\n", encode_base64(sibling)));
-    }
-    out
-}
-
-/// The hex of a name's key, as the path of its map proof writes it.
-pub fn key_hex(name: &str) -> String {
-    key(name).iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// The map's root that a checkpoint carries in its extension line `ita-map <base64 root>`, if
 /// it carries exactly one.
 pub fn root_of(extensions: &[String]) -> Option<Hash> {
@@ -404,4 +296,290 @@ pub fn root_of(extensions: &[String]) -> Option<Hash> {
         return None;
     }
     super::note::base64(first).and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The map as tiles
+// ---------------------------------------------------------------------------------------------
+
+/// The number of tile levels of the map: 256 levels of the tree, eight per tile.
+pub const TILE_LEVELS: usize = 32;
+
+/// The largest map tile: its bitmap and 256 heads.
+pub const MAX_TILE: usize = 32 + 256 * 48;
+
+/// The empty subtree of `height`, 0 to 256.
+pub fn empty_at(height: usize) -> Hash {
+    empty().get(height).copied().unwrap_or_default()
+}
+
+/// The height of the nodes at the bottom of a tile of tile level `t`.
+fn bottom_height(t: usize) -> usize {
+    256 - 8 * (t + 1)
+}
+
+/// The leaf of `head` under `key`, as the map hashes it.
+pub fn leaf_of(key: &Hash, head: &Head) -> Hash {
+    leaf(key, head)
+}
+
+/// The path of the map tile of tile level `t` and root `root`: `map/<t>/<hex of root>`.
+pub fn tile_path(t: usize, root: &Hash) -> String {
+    let hex: String = root.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("map/{t}/{hex}")
+}
+
+/// A map tile: its nodes that are not the empty subtree, by their index at its bottom, and for
+/// the last tile level the heads they are the leaves of.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tile {
+    /// The nodes at the tile's bottom, by index.
+    pub nodes: BTreeMap<u8, Hash>,
+    /// For tile level 31, the head of each leaf.
+    pub heads: BTreeMap<u8, Head>,
+}
+
+/// The rows of a tile, from its bottom (256 nodes) to its root (1), each sparse. O(8 k) hashes
+/// for its k nodes.
+fn rows(bottom: &BTreeMap<u8, Hash>, t: usize) -> Vec<BTreeMap<u16, Hash>> {
+    let mut rows: Vec<BTreeMap<u16, Hash>> = Vec::with_capacity(9);
+    rows.push(bottom.iter().map(|(i, h)| (u16::from(*i), *h)).collect());
+    let mut height = bottom_height(t);
+    for _ in 0..8 {
+        let below = rows.last().cloned().unwrap_or_default();
+        let mut row = BTreeMap::new();
+        for index in below.keys() {
+            let parent = index / 2;
+            if row.contains_key(&parent) {
+                continue;
+            }
+            let left = below
+                .get(&(parent * 2))
+                .copied()
+                .unwrap_or_else(|| empty_at(height));
+            let right = below
+                .get(&(parent * 2 + 1))
+                .copied()
+                .unwrap_or_else(|| empty_at(height));
+            row.insert(parent, node(&left, &right));
+        }
+        rows.push(row);
+        height += 1;
+    }
+    rows
+}
+
+/// The root of a tile of tile level `t` whose nodes that are not empty are `bottom`.
+pub fn tile_root(bottom: &BTreeMap<u8, Hash>, t: usize) -> Hash {
+    rows(bottom, t)
+        .last()
+        .and_then(|row| row.get(&0).copied())
+        .unwrap_or_else(|| empty_at(bottom_height(t) + 8))
+}
+
+/// The bytes of a tile of tile level `t`: a bitmap of 32 bytes, bit `i` (of byte `i / 8`, least
+/// significant first) set when node `i` is not empty, then for each such node in order its hash,
+/// the root of the tile below, or at tile level 31 the leaf's head: the log index (8 bytes,
+/// big-endian), the leaf hash, and the count (8 bytes).
+pub fn encode_tile(tile: &Tile, t: usize) -> Vec<u8> {
+    let mut bitmap = [0u8; 32];
+    for index in tile.nodes.keys() {
+        if let Some(byte) = bitmap.get_mut(usize::from(*index / 8)) {
+            *byte |= 1 << (index % 8);
+        }
+    }
+    let mut out = bitmap.to_vec();
+    for (index, hash) in &tile.nodes {
+        if t + 1 == TILE_LEVELS {
+            if let Some(head) = tile.heads.get(index) {
+                out.extend_from_slice(&head.index.to_be_bytes());
+                out.extend_from_slice(&head.leaf);
+                out.extend_from_slice(&head.count.to_be_bytes());
+            }
+        } else {
+            out.extend_from_slice(hash);
+        }
+    }
+    out
+}
+
+/// Reads a tile of tile level `t` from its bytes, under the key prefix `prefix` (its first `t`
+/// bytes), which the leaves of tile level 31 are hashed with. Refused when it is longer than
+/// [`MAX_TILE`], when its length does not match its bitmap, and when it lists an empty subtree
+/// or no node at all. O(n) for its n bytes, and one hash per leaf.
+pub fn decode_tile(bytes: &[u8], t: usize, prefix: &[u8]) -> Result<Tile, String> {
+    if bytes.len() > MAX_TILE {
+        return Err("a map tile is too long".to_owned());
+    }
+    if t >= TILE_LEVELS || prefix.len() != t {
+        return Err("a map tile is read at a level it cannot have".to_owned());
+    }
+    let (bitmap, mut rest) = bytes
+        .split_first_chunk::<32>()
+        .ok_or("a map tile is shorter than its bitmap")?;
+    let mut tile = Tile::default();
+    for index in 0..=255u8 {
+        let set = bitmap
+            .get(usize::from(index / 8))
+            .is_some_and(|byte| byte >> (index % 8) & 1 == 1);
+        if !set {
+            continue;
+        }
+        if t + 1 == TILE_LEVELS {
+            let (index_bytes, after) = rest
+                .split_first_chunk::<8>()
+                .ok_or("a map tile is cut inside a head")?;
+            let (leaf_hash, after) = after
+                .split_first_chunk::<32>()
+                .ok_or("a map tile is cut inside a head")?;
+            let (count, after) = after
+                .split_first_chunk::<8>()
+                .ok_or("a map tile is cut inside a head")?;
+            rest = after;
+            let head = Head {
+                index: u64::from_be_bytes(*index_bytes),
+                leaf: *leaf_hash,
+                count: u64::from_be_bytes(*count),
+            };
+            let mut full = [0u8; 32];
+            let (start, last) = full.split_at_mut(31);
+            start.copy_from_slice(prefix.get(..31).ok_or("a map key prefix is short")?);
+            if let Some(slot) = last.first_mut() {
+                *slot = index;
+            }
+            tile.nodes.insert(index, leaf(&full, &head));
+            tile.heads.insert(index, head);
+        } else {
+            let (hash, after) = rest
+                .split_first_chunk::<32>()
+                .ok_or("a map tile is cut inside a hash")?;
+            rest = after;
+            if *hash == empty_at(bottom_height(t)) {
+                return Err("a map tile lists an empty subtree".to_owned());
+            }
+            tile.nodes.insert(index, *hash);
+        }
+    }
+    if !rest.is_empty() {
+        return Err("a map tile has bytes after its last node".to_owned());
+    }
+    if tile.nodes.is_empty() {
+        return Err("a map tile lists no node".to_owned());
+    }
+    Ok(tile)
+}
+
+/// Reads the map of root `root` along the path of `name`, through `fetch` (a tile's path to its
+/// bytes, `None` when it is missing), and returns the name's head, if any, with the proof that
+/// [`verify`] checks against the same root. Each tile is checked against the hash that names
+/// it before anything in it is used, so a wrong or missing tile only fails. At most 32 tiles of
+/// at most [`MAX_TILE`] bytes, O(256 + 8 k) hashes for k nodes on the path's tiles.
+pub fn prove_from_tiles(
+    root: &Hash,
+    name: &str,
+    fetch: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, String>,
+) -> Result<(Option<Head>, Proof), String> {
+    let key = key(name);
+    // The sibling of the path at each depth 1 to 256, `None` when empty.
+    let mut siblings: Vec<Option<Hash>> = Vec::with_capacity(256);
+    let mut expected = *root;
+    let mut head = None;
+    for t in 0..TILE_LEVELS {
+        if expected == empty_at(256 - 8 * t) {
+            break;
+        }
+        let path = tile_path(t, &expected);
+        let bytes = fetch(&path)?.ok_or_else(|| format!("the map tile `{path}` is missing"))?;
+        let prefix = key.get(..t).unwrap_or_default();
+        let tile = decode_tile(&bytes, t, prefix)?;
+        if tile_root(&tile.nodes, t) != expected {
+            return Err(format!("the map tile `{path}` does not hash to its name"));
+        }
+        let rows = rows(&tile.nodes, t);
+        let byte = key.get(t).copied().unwrap_or_default();
+        for i in 0..8usize {
+            // The path's node at depth 8t + i + 1 is at row 7 - i, rows counted from the bottom.
+            let index = u16::from(byte) >> (7 - i);
+            let sibling = rows
+                .get(7 - i)
+                .and_then(|row| row.get(&(index ^ 1)).copied());
+            siblings.push(sibling);
+        }
+        match tile.nodes.get(&byte) {
+            None => expected = empty_at(bottom_height(t)),
+            Some(hash) => {
+                expected = *hash;
+                if t + 1 == TILE_LEVELS {
+                    head = tile.heads.get(&byte).copied();
+                }
+            }
+        }
+    }
+    let mut bitmap = [0u8; 32];
+    let mut present = Vec::new();
+    // Heights run from 0 at the leaves: the sibling at depth d has height 256 - d.
+    for (depth_minus_one, sibling) in siblings.iter().enumerate().rev() {
+        let height = 255 - depth_minus_one;
+        if let Some(hash) = sibling
+            && *hash != empty_at(height)
+        {
+            if let Some(byte) = bitmap.get_mut(height / 8) {
+                *byte |= 1 << (height % 8);
+            }
+            present.push(*hash);
+        }
+    }
+    Ok((
+        head,
+        Proof {
+            bitmap,
+            siblings: present,
+        },
+    ))
+}
+
+/// The tiles of the map of `heads`, by name: its root, and each tile's path and bytes. For a
+/// registry that builds its map at once, and for tests. O(n · 32 · 8) hashes for n names.
+pub fn build_tiles(heads: &[(String, Head)]) -> (Hash, Vec<(String, Vec<u8>)>) {
+    let mut keyed: Vec<(Hash, Head)> = heads
+        .iter()
+        .map(|(name, head)| (key(name), *head))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed.dedup_by(|a, b| a.0 == b.0);
+    let mut files = Vec::new();
+    if keyed.is_empty() {
+        return (empty_at(256), files);
+    }
+    let root = build_level(&keyed, 0, &mut files);
+    (root, files)
+}
+
+/// The tile of tile level `t` holding `keyed`, which share their first `t` bytes; its root.
+fn build_level(keyed: &[(Hash, Head)], t: usize, files: &mut Vec<(String, Vec<u8>)>) -> Hash {
+    let mut tile = Tile::default();
+    let mut start = 0;
+    while let Some((first, _)) = keyed.get(start) {
+        let byte = first.get(t).copied().unwrap_or_default();
+        let end = start
+            + keyed
+                .get(start..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|(k, _)| k.get(t).copied() == Some(byte))
+                .count();
+        let group = keyed.get(start..end).unwrap_or_default();
+        if t + 1 == TILE_LEVELS {
+            if let Some((k, head)) = group.first() {
+                tile.nodes.insert(byte, leaf(k, head));
+                tile.heads.insert(byte, *head);
+            }
+        } else {
+            tile.nodes.insert(byte, build_level(group, t + 1, files));
+        }
+        start = end.max(start + 1);
+    }
+    let root = tile_root(&tile.nodes, t);
+    files.push((tile_path(t, &root), encode_tile(&tile, t)));
+    root
 }

@@ -4,8 +4,8 @@
 //! `una ita lock`, `update` and `add` write the solver section, kept from the lock it replaces or
 //! the default one, then each path dependency and each registry release of the program, resolved
 //! by minimal version selection: a path dependency as its directory holds it, and a source of
-//! `sources` from its registry, read through a mirror and verified by the registry client
-//! ([`crate::registry`]). A need of `itaty`, whose root is not built into this release, is
+//! `sources` from its registry, read from its mirrors or its own URL and verified by the
+//! registry client ([`crate::registry`]). A need of `itaty`, whose root is not built into this release, is
 //! refused (U7013), and one of a workspace member is refused (U7008): never left unresolved, and
 //! never resolved from a partial view. `una ita fetch` fills Itaoca with the locked releases,
 //! verified. No command here opens a network connection or starts a program.
@@ -120,8 +120,6 @@ pub(crate) struct LockOptions<'a> {
     pub(crate) edited: Option<String>,
     /// `--accept-key <package>`: record a change of these packages' owners' keys (rule 25).
     pub(crate) accept_key: &'a [String],
-    /// `--mirror <source>=<location>`: where each source is read from.
-    pub(crate) mirrors: &'a [String],
     /// Itaoca, whose stored checkpoints are the registries' floors (rule 39).
     pub(crate) itaoca: Option<&'a una_project::itaoca::Itaoca>,
     /// The local clock, in seconds, for the freshness of a registry's checkpoint (rule 39).
@@ -148,7 +146,6 @@ impl<'a> LockOptions<'a> {
             cooldown: una_project::resolve::COOLDOWN,
             edited: None,
             accept_key: &[],
-            mirrors: &[],
             itaoca: None,
             now: 0,
             raise: None,
@@ -261,9 +258,10 @@ pub(crate) fn lock_command(
 /// directory holds it, one release of its identity, and over the releases of each source of
 /// `sources` that the root needs, read from the registry at a fresh checkpoint and verified
 /// (rules 35 to 39, [`una_project::client`]); `--check` reads them at the lock's own resolution
-/// point. A source is read from its mirror (`--mirror`); one with none, which this release can
-/// only reach over https, is U7013, as a need of `itaty`, whose root is not built into this
-/// release. A registry that fails verification is U7010. A workspace member is not loaded
+/// point. A source is read from the first of its places, the mirrors Itaoca's `mirrors.una`
+/// lists then its own URL, whose copy verifies; one with no place this release can read (an
+/// `https://` location has no transport yet) is U7013, as a need of `itaty`, whose root is not
+/// built into this release. A registry that fails verification is U7010. A workspace member is not loaded
 /// (U7008). An avoided version that no later release replaces, and a bound of rule 23
 /// exceeded, are U7013.
 ///
@@ -289,7 +287,6 @@ fn resolve_and_lock(
 
     use una_project::client::{Online, Point, Registry};
     use una_project::resolve::{self, Bounds, Identity, Need, Offline, Policy, Problem, Release};
-    use una_project::transport::Transport;
 
     let command = options.command;
     // The command whose `--accept-…` flags repair a refusal: `update` takes them, and `lock`
@@ -336,10 +333,10 @@ fn resolve_and_lock(
     let Some(read) = manifest.ita.as_deref() else {
         return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     };
-    let mirrors = match crate::registry::mirrors(options.mirrors) {
+    let mirrors = match crate::registry::load_mirrors(options.itaoca) {
         Ok(mirrors) => mirrors,
-        Err(error) => {
-            diagnostics.extend(located(sources, manifest_id, vec![error]));
+        Err(errors) => {
+            diagnostics.extend(located(sources, manifest_id, errors));
             return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
         }
     };
@@ -613,7 +610,8 @@ fn resolve_and_lock(
     if !diagnostics.is_empty() {
         return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
     }
-    // The registries the root needs, each read from its mirror and verified (rules 35 to 39).
+    // The registries the root needs, each read from the first of its places, its mirrors then
+    // its own URL, whose copy verifies (rules 35 to 40).
     let first_need = |source: &str| {
         need_ranges
             .iter()
@@ -622,22 +620,22 @@ fn resolve_and_lock(
     };
     let registry_sources: BTreeSet<String> =
         direct.keys().map(|identity| identity.source.clone()).collect();
-    let mut transports: BTreeMap<String, Box<dyn Transport>> = BTreeMap::new();
+    let mut places: BTreeMap<String, Vec<crate::registry::Place>> = BTreeMap::new();
     for source in &registry_sources {
-        let opened = crate::registry::declared(read, source)
-            .ok_or_else(|| format!("`{source}` is not a source of `sources`"))
-            .and_then(|declared| crate::registry::transport_of(declared, &mirrors));
-        match opened {
-            Ok(transport) => {
-                transports.insert(source.clone(), transport);
+        match crate::registry::declared(read, source) {
+            Some(declared) => {
+                places.insert(
+                    source.clone(),
+                    crate::registry::places_of(declared, &mirrors),
+                );
             }
-            Err(message) => diagnostics.extend(located(
+            None => diagnostics.extend(located(
                 sources,
                 manifest_id,
                 vec![ProjectError {
                     code: Code::U7013,
                     range: first_need(source),
-                    message,
+                    message: format!("`{source}` is not a source of `sources`"),
                 }],
             )),
         }
@@ -654,8 +652,9 @@ fn resolve_and_lock(
                 .map(|r| (r.checkpoint_size.value, r.checkpoint_hash.value.clone()))
         })
     };
+    let mut notes: Vec<String> = Vec::new();
     let mut registries: BTreeMap<String, RefCell<Registry<'_>>> = BTreeMap::new();
-    for (source, transport) in &transports {
+    for (source, list) in &places {
         let Some(declared) = crate::registry::declared(read, source) else {
             continue;
         };
@@ -668,21 +667,16 @@ fn resolve_and_lock(
             _ => Point::Latest { now: options.now },
         };
         let floor = old.as_ref().map(|(size, _)| *size);
-        match crate::registry::open(
-            declared,
-            transport.as_ref(),
-            &point,
-            options.itaoca,
-            floor,
-        ) {
-            Ok(registry) => {
+        match crate::registry::open_first(declared, list, &point, options.itaoca, floor) {
+            Ok((registry, skipped)) => {
+                notes.extend(skipped);
                 registries.insert(source.clone(), RefCell::new(registry));
             }
-            Err(message) => diagnostics.extend(located(
+            Err((code, message)) => diagnostics.extend(located(
                 sources,
                 manifest_id,
                 vec![ProjectError {
-                    code: Code::U7010,
+                    code,
                     range: first_need(source),
                     message,
                 }],
@@ -1053,18 +1047,12 @@ fn resolve_and_lock(
             .as_ref()
             .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
     if unchanged {
-        return finish_resolved(
-            command,
-            &[],
-            &[],
-            &["ita.lock is up to date".to_owned()],
-            &diagnostics,
-            sources,
-            out,
-        );
+        notes.push("ita.lock is up to date".to_owned());
+        return finish_resolved(command, &[], &[], &notes, &diagnostics, sources, out);
     }
     let changes = review(&package, existing_lock, &entries);
-    let mut lines: Vec<String> = changes.iter().map(ChangeDoc::line).collect();
+    let mut lines: Vec<String> = notes;
+    lines.extend(changes.iter().map(ChangeDoc::line));
     if options.dry_run {
         lines.push("--dry-run: nothing written".to_owned());
         return finish_resolved(command, &[], &changes, &lines, &diagnostics, sources, out);
@@ -1853,8 +1841,9 @@ fn with_need(text: &str, line: &str) -> String {
 /// The newest release of `name` at `source` that `una ita add` takes with no version (rule 25):
 /// of the newest major line, not a pre-release, not signed after its key's stated compromise,
 /// and logged at least the cooldown before a fresh resolution point, read from the registry
-/// and verified. `itaty`, a source with no mirror, and a registry that fails verification are
-/// refused, as `una ita lock` refuses them.
+/// and verified, from the first of its places whose copy verifies. `itaty`, a source with no
+/// place this release can read, and a registry that fails verification are refused, as
+/// `una ita lock` refuses them.
 fn newest_release(
     read: &ita::Manifest,
     source: &str,
@@ -1876,23 +1865,32 @@ fn newest_release(
             ),
         ));
     }
-    let mirrors = crate::registry::mirrors(options.mirrors)?;
+    let mirrors = crate::registry::load_mirrors(options.itaoca).map_err(|errors| {
+        errors
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                refuse(
+                    Code::U7008,
+                    "Itaoca's mirrors.una does not read".to_owned(),
+                )
+            })
+    })?;
     let declared = crate::registry::declared(read, source).ok_or_else(|| {
         refuse(
             Code::U7013,
             format!("`{source}` is not a source of `sources`"),
         )
     })?;
-    let transport = crate::registry::transport_of(declared, &mirrors)
-        .map_err(|message| refuse(Code::U7013, message))?;
-    let mut registry = crate::registry::open(
+    let places = crate::registry::places_of(declared, &mirrors);
+    let (mut registry, _) = crate::registry::open_first(
         declared,
-        transport.as_ref(),
+        &places,
         &Point::Latest { now: options.now },
         options.itaoca,
         None,
     )
-    .map_err(|message| refuse(Code::U7010, message))?;
+    .map_err(|(code, message)| refuse(code, message))?;
     let releases = registry
         .releases(name)
         .map_err(|message| refuse(Code::U7010, message))?;
@@ -2158,25 +2156,24 @@ pub(crate) fn verify_command(
     finish("verify", &[], &lines, &diagnostics, sources, out)
 }
 
-/// `una ita fetch [path] [--mirror <source>=<location>]` (ADR 0122 rules 30, 37 and 39): fills
-/// Itaoca with each registry release of `ita.lock` that it does not hold yet, read from the
-/// source's mirror at the lock's resolution point and verified as the registry client verifies
+/// `una ita fetch [path]` (ADR 0122 rules 30, 37, 39 and 40): fills Itaoca with each registry
+/// release of `ita.lock` that it does not hold yet, read at the lock's resolution point from the
+/// first place of its source, its mirrors then its own URL, whose copy verifies, and verified
+/// as the registry client verifies
 /// everything (`spec/30 §14`): the root chain from the pin of `sources`, the checkpoint the lock
 /// records with its witnesses, the release statement's inclusion and its signature by the key
 /// the lock names, valid at its log position, and the archive's digest; then the statement is
 /// checked against the archive (rule 37), what its code uses included, the package is stored
 /// with its provenance, and loaded again as every command loads it. No freshness is needed:
 /// the lock's digests and the stored provenance decide. A release that fails is U7010, a source
-/// with no mirror U7013, and nothing of it is stored. Path packages are not fetched. No program
+/// with no place this release can read U7013, and nothing of it is stored. Path packages are not fetched. No program
 /// is started. O(bytes of the archives) and the registry client's costs.
 pub(crate) fn fetch_command(
     path: &Path,
     itaoca: Option<&una_project::itaoca::Itaoca>,
-    mirror: &[String],
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     use una_project::client::{Point, Registry};
-    use una_project::transport::Transport;
     use una_project::vendor;
 
     if !path.join("ita.una").is_file() {
@@ -2213,11 +2210,11 @@ pub(crate) fn fetch_command(
     };
     let (lock, errors) = parse_ita_lock(sources.file(lock_id).text());
     diagnostics.extend(located(sources, lock_id, errors));
-    let mirrors = match crate::registry::mirrors(mirror) {
+    let mirrors = match crate::registry::load_mirrors(Some(itaoca)) {
         Ok(mirrors) => mirrors,
-        Err(error) => {
-            diagnostics.extend(located(sources, manifest_id, vec![error]));
-            BTreeMap::new()
+        Err(errors) => {
+            diagnostics.extend(located(sources, manifest_id, errors));
+            una_project::mirrors::Mirrors::default()
         }
     };
     let Some(read) = manifest.ita.as_deref() else {
@@ -2228,10 +2225,10 @@ pub(crate) fn fetch_command(
     }
     let mut lines: Vec<String> = Vec::new();
     let mut problems: Vec<ProjectError> = Vec::new();
-    // What the lock says of each registry release, and the transport of each source, first: the
-    // registries opened below borrow the transports.
+    // What the lock says of each registry release, and the places of each source, first: the
+    // registries opened below borrow their transports.
     let mut wanted: Vec<(&ita::LockPackage, vendor::Expected)> = Vec::new();
-    let mut transports: BTreeMap<String, Box<dyn Transport>> = BTreeMap::new();
+    let mut places: BTreeMap<String, Vec<crate::registry::Place>> = BTreeMap::new();
     for locked in &lock.read.packages {
         if !matches!(
             &locked.from,
@@ -2270,16 +2267,19 @@ pub(crate) fn fetch_command(
                 continue;
             }
         }
-        if !transports.contains_key(&expected.source) {
-            let opened = crate::registry::declared(read, &expected.source)
-                .ok_or_else(|| format!("`{}` is not a source of `sources`", expected.source))
-                .and_then(|declared| crate::registry::transport_of(declared, &mirrors));
-            match opened {
-                Ok(transport) => {
-                    transports.insert(expected.source.clone(), transport);
+        if !places.contains_key(&expected.source) {
+            match crate::registry::declared(read, &expected.source) {
+                Some(declared) => {
+                    places.insert(
+                        expected.source.clone(),
+                        crate::registry::places_of(declared, &mirrors),
+                    );
                 }
-                Err(message) => {
-                    refuse(Code::U7013, message);
+                None => {
+                    refuse(
+                        Code::U7013,
+                        format!("`{}` is not a source of `sources`", expected.source),
+                    );
                     continue;
                 }
             }
@@ -2295,7 +2295,7 @@ pub(crate) fn fetch_command(
                 message,
             });
         };
-        let Some(transport) = transports.get(&expected.source) else {
+        let Some(list) = places.get(&expected.source) else {
             continue;
         };
         if !registries.contains_key(&expected.source) {
@@ -2306,12 +2306,13 @@ pub(crate) fn fetch_command(
                 size: expected.checkpoint_size,
                 hash: expected.checkpoint_hash.clone(),
             };
-            match crate::registry::open(declared, transport.as_ref(), &point, Some(itaoca), None) {
-                Ok(registry) => {
+            match crate::registry::open_first(declared, list, &point, Some(itaoca), None) {
+                Ok((registry, skipped)) => {
+                    lines.extend(skipped);
                     registries.insert(expected.source.clone(), registry);
                 }
-                Err(message) => {
-                    refuse(Code::U7010, message);
+                Err((code, message)) => {
+                    refuse(code, message);
                     continue;
                 }
             }

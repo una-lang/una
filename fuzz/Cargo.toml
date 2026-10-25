@@ -78,8 +78,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "registry_map"
-path = "fuzz_targets/registry_map.rs"
+name = "registry_map_tile"
+path = "fuzz_targets/registry_map_tile.rs"
 test = false
 doc = false
 bench = false
@@ -101,6 +101,13 @@ bench = false
 [[bin]]
 name = "registry_archive"
 path = "fuzz_targets/registry_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_mirrors"
+path = "fuzz_targets/registry_mirrors.rs"
 test = false
 doc = false
 bench = false

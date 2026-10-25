@@ -181,6 +181,21 @@ impl Itaoca {
         }
     }
 
+    /// The text of `mirrors.una` (rule 40), read once with no link followed, or `None` when
+    /// Itaoca has none. [`crate::mirrors::parse`] reads it.
+    pub fn load_mirrors(&self) -> Result<Option<String>, Refusal> {
+        tree::not_a_link(&self.root)?;
+        match tree::locate(&self.root, &[crate::mirrors::FILE])? {
+            Some(path) => {
+                let bytes = tree::read_file(&path, crate::mirrors::MAX_BYTES as u64)?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| "mirrors.una is not UTF-8".to_owned())
+            }
+            None => Ok(None),
+        }
+    }
+
     /// The checkpoint stored for `source`, the floor of rule 39, read once with no link
     /// followed, or `None` when there is none. The caller verifies what it uses of it.
     pub fn load_checkpoint(&self, source: &str) -> Result<Option<String>, Refusal> {

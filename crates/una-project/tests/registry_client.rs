@@ -290,10 +290,15 @@ fn a_tampered_mirror_is_refused() {
         (format!("tile/entries/000.p/{size}"), "entry"),
         (format!("tile/0/000.p/{size}"), "tile"),
         (
-            format!("map/{size}/{}", una_project::tlog::map::key_hex("acme/ledger")),
-            "map",
+            registry
+                .files
+                .keys()
+                .find(|path| path.starts_with("map/0/"))
+                .unwrap()
+                .clone(),
+            "map tile",
         ),
-        ("checkpoint".to_owned(), "checkpoint"),
+        ("checkpoint/latest".to_owned(), "checkpoint"),
         (format!("blobs/sha256/{hex}"), "archive"),
     ];
     for (path, what) in cases {
@@ -399,7 +404,7 @@ fn checkpoints_need_witnesses_freshness_and_their_floor() {
     // A lock's resolution point is read by size and hash, with no freshness.
     let size = 2u64;
     let document =
-        String::from_utf8(registry.files[&format!("checkpoints/{size}")].clone()).unwrap();
+        String::from_utf8(registry.files[&format!("checkpoint/{size}")].clone()).unwrap();
     let signed = una_project::tlog::note::parse_note(&document).unwrap();
     let checkpoint = una_project::tlog::note::parse_checkpoint(&signed.text).unwrap();
     let at = Point::At {
@@ -466,7 +471,6 @@ fn a_map_or_chain_that_hides_an_entry_is_refused() {
     registry.release("acme/ledger", "0.3.2", "none", "none", &[&key]);
     let mut head = registry.heads["acme/ledger"];
     head.count -= 1;
-    registry.map.set("acme/ledger", &head);
     registry.heads.insert("acme/ledger".to_owned(), head);
     registry.checkpoint(NOW);
     let memory = Memory {
@@ -712,4 +716,156 @@ fn a_witness_whose_time_decreases_is_refused() {
     .unwrap();
     let refusal = client.state("acme/ledger", Line::Zero(3)).unwrap_err();
     assert!(refusal.contains("decrease"), "{refusal}");
+}
+
+/// The map's tiles give the proof the in-memory map gives, for a name and for an absent one,
+/// and a changed tile only fails.
+#[test]
+fn map_tiles_prove_what_the_map_proves() {
+    use una_project::tlog::map::{Head, Map, build_tiles, prove_from_tiles, verify};
+    let head = |i: u64| Head {
+        index: i,
+        leaf: leaf_hash(&i.to_be_bytes()),
+        count: i + 1,
+    };
+    let mut map = Map::default();
+    let mut heads: Vec<(String, Head)> = Vec::new();
+    for i in 0..300u64 {
+        let name = format!("owner{}/pkg{i}", i % 13);
+        map.set(&name, &head(i));
+        heads.push((name, head(i)));
+    }
+    let (root, tiles) = build_tiles(&heads);
+    assert_eq!(root, map.root());
+    let files: BTreeMap<String, Vec<u8>> = tiles.into_iter().collect();
+    let mut fetch = |path: &str| Ok(files.get(path).cloned());
+    for i in [0u64, 7, 299] {
+        let name = format!("owner{}/pkg{i}", i % 13);
+        let (found, proof) = prove_from_tiles(&root, &name, &mut fetch).unwrap();
+        assert_eq!(found, Some(head(i)));
+        assert_eq!(proof, map.prove(&name));
+        assert!(verify(&root, &name, Some(&head(i)), &proof));
+    }
+    let (found, proof) = prove_from_tiles(&root, "nobody/here", &mut fetch).unwrap();
+    assert_eq!(found, None);
+    assert!(verify(&root, "nobody/here", None, &proof));
+    // A tile changed, or missing: refused, never a different head.
+    for path in files.keys().filter(|p| p.starts_with("map/0/") || p.starts_with("map/31/")) {
+        let mut changed = files.clone();
+        let bytes = changed.get_mut(path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        let mut fetch = |p: &str| Ok(changed.get(p).cloned());
+        let name = "owner0/pkg0";
+        if let Ok((found, proof)) = prove_from_tiles(&root, name, &mut fetch) {
+            // A tile off the name's path does not matter.
+            assert_eq!(found, Some(head(0)));
+            assert!(verify(&root, name, found.as_ref(), &proof));
+        }
+    }
+    let mut empty = |_: &str| Ok(None);
+    assert!(prove_from_tiles(&root, "owner0/pkg0", &mut empty).is_err());
+    // The empty map has no tile.
+    let (empty_root, none) = build_tiles(&[]);
+    assert!(none.is_empty());
+    let (found, _) = prove_from_tiles(&empty_root, "a/b", &mut empty).unwrap();
+    assert_eq!(found, None);
+}
+
+#[test]
+fn map_tiles_are_read_strictly() {
+    use una_project::tlog::map::{MAX_TILE, decode_tile};
+    assert!(decode_tile(&[0u8; 31], 0, &[]).is_err(), "short of its bitmap");
+    assert!(decode_tile(&[0u8; 32], 0, &[]).is_err(), "no node");
+    let mut one = vec![0u8; 32];
+    one[0] = 1;
+    assert!(decode_tile(&one, 0, &[]).is_err(), "cut inside a hash");
+    one.extend_from_slice(&[0u8; 32]);
+    assert!(decode_tile(&one, 0, &[]).is_err(), "an empty subtree listed");
+    one.truncate(32);
+    one.extend_from_slice(&[7u8; 32]);
+    assert!(decode_tile(&one, 0, &[]).is_ok());
+    one.push(0);
+    assert!(decode_tile(&one, 0, &[]).is_err(), "trailing bytes");
+    assert!(decode_tile(&vec![0u8; MAX_TILE + 1], 0, &[]).is_err());
+    assert!(decode_tile(&one, 3, &[]).is_err(), "a prefix of the wrong length");
+}
+
+#[test]
+fn mirrors_una_lists_https_and_file_locations_only() {
+    use una_project::mirrors::parse;
+    let (mirrors, errors) = parse(
+        "mirrors\n  itaty\n    \"https://ita-mirror.example.net\"\n    \"file:///srv/ita-mirror\"\n  acme\n    \"file:///srv/acme\"\n",
+    );
+    assert_eq!(errors, []);
+    assert_eq!(mirrors.of("itaty").len(), 2);
+    assert_eq!(
+        mirrors.of("acme")[0].location,
+        Location::Directory(PathBuf::from("/srv/acme"))
+    );
+    assert!(mirrors.of("other").is_empty());
+    for bad in [
+        "mirrors\n  itaty\n    \"http://ita-mirror.example.net\"\n",
+        "mirrors\n  itaty\n    \"ftp://ita-mirror.example.net\"\n",
+        "mirrors\n  itaty\n    \"/srv/ita-mirror\"\n",
+        "mirrors\n  itaty\n    \"file:///a\"\n    \"file:///a\"\n",
+        "mirrors\n  itaty\n  itaty\n",
+        "sources\n",
+        "mirrors\n  Itaty\n",
+        "mirrors\n  itaty\n    file\n",
+        "",
+    ] {
+        let (_, errors) = parse(bad);
+        assert!(!errors.is_empty(), "{bad:?}");
+    }
+}
+
+/// A registry is read from the first place whose copy verifies: a mirror that serves a bad copy
+/// is skipped and named, one with nothing is unavailable, and the source's own is tried last.
+#[test]
+fn the_first_place_whose_copy_verifies_is_taken() {
+    use una_project::mirrors::{Attempt, first_verified};
+    let mut registry = TestRegistry::new("acme");
+    let key = acme(&mut registry);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
+    registry.checkpoint(NOW);
+    let good = Memory {
+        files: registry.files.clone(),
+    };
+    let mut bad_files = registry.files.clone();
+    let checkpoint = bad_files.get_mut("checkpoint").unwrap();
+    let at = checkpoint.len() / 2;
+    checkpoint[at] ^= 1;
+    let bad = Memory { files: bad_files };
+    let empty = Memory {
+        files: BTreeMap::new(),
+    };
+    let places: Vec<(String, Result<&dyn Transport, String>)> = vec![
+        ("https://ita.acme.example".to_owned(), Err("no https transport".to_owned())),
+        ("file:///bad".to_owned(), Ok(&bad)),
+        ("file:///empty".to_owned(), Ok(&empty)),
+        ("file:///good".to_owned(), Ok(&good)),
+    ];
+    let pin = registry.pin();
+    let fetched = first_verified(&places, &mut |transport| {
+        Registry::open(
+            "acme",
+            transport,
+            &pin,
+            &Point::Latest { now: NOW + 60 },
+            None,
+        )
+        .map(|registry| registry.point.checkpoint.size)
+        .map_err(|why| {
+            if why.contains("has no") || why.contains("no root metadata") {
+                Attempt::Unavailable(why)
+            } else {
+                Attempt::Refused(why)
+            }
+        })
+    });
+    assert_eq!(fetched.value, Some((2, "file:///good".to_owned())));
+    assert_eq!(fetched.refused.len(), 1);
+    assert_eq!(fetched.refused[0].from, "file:///bad");
+    assert_eq!(fetched.unavailable.len(), 2);
 }

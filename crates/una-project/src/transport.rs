@@ -91,7 +91,7 @@ impl Location {
 }
 
 /// A transport over a directory on the local file system: a mirror, or a copy of a registry's
-/// files (rule 40). Each file is found with no symbolic link followed below the directory, and
+/// store directory (rule 40), the latest checkpoint at `checkpoint/latest`. Each file is found with no symbolic link followed below the directory, and
 /// read once through a descriptor opened with no link followed. What it gives is verified as
 /// what any transport gives: a local directory is trusted for nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,7 +133,13 @@ pub fn segments(path: &str) -> Result<Vec<&str>, Refusal> {
 
 impl Transport for Directory {
     fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
-        let parts = segments(path)?;
+        let mut parts = segments(path)?;
+        // A registry serves both `checkpoint` and `checkpoint/<size>`, which no file system can
+        // hold as a file and a directory of one name: on disk the latest is
+        // `checkpoint/latest`, a name no size can have, as a registry's own store keeps it.
+        if parts == ["checkpoint"] {
+            parts = vec!["checkpoint", "latest"];
+        }
         tree::not_a_link(&self.root)?;
         match tree::locate(&self.root, &parts)? {
             Some(found) => tree::read_file(&found, limit).map(Some),
@@ -159,7 +165,7 @@ impl Transport for Unavailable {
     fn get(&self, path: &str, _limit: u64) -> Result<Option<Vec<u8>>, Refusal> {
         segments(path)?;
         Err(format!(
-            "`{}` is reached over https, and this release has no https transport; read the registry from a mirror directory with `--mirror <source>=<directory>`",
+            "`{}` is reached over https, and this release has no https transport; list a mirror directory for its source in Itaoca's `mirrors.una`, as a `file://` URL",
             self.url
         ))
     }

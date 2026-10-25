@@ -2,16 +2,19 @@
 //! where each source of the root is read from, opening it verified, and the lines a lock
 //! writes for a release.
 //!
-//! **Where a source is read from.** A `--mirror <source>=<location>` names a mirror directory,
-//! or a `file://` URL of one, for that source; with none, the source is read at the `https://`
-//! URL `ita.una`'s `sources` gives it. This release has no https transport: a source with no
-//! mirror is refused with U7013, which says so, and is never skipped. A location with any other
-//! scheme, `http://` included, is refused when it is read (U7013), so plain HTTP is never used.
-//! A mirror is verified as the source itself: the root from the pin of `sources`, the
-//! checkpoint and its witnesses, every proof and signature, and every archive's digest.
+//! **Where a source is read from** (rule 40). Each source is read from its mirrors, the
+//! locations Itaoca's `mirrors.una` lists for it, in order, then from its own URL, the one
+//! `ita.una`'s `sources` gives it; the first place whose copy of the root metadata and the
+//! checkpoint verifies is used ([`una_project::mirrors::first_verified`]). A mirror that serves a
+//! copy that does not verify is skipped and named (U7010). Every location goes through
+//! [`Location::parse`]: plain `http://` is refused, and an `https://` location has no transport
+//! in this release, which the diagnostic says. A source with no place that verifies is U7010,
+//! naming each place that served a bad copy, or U7013 when none could serve at all. A mirror is
+//! verified as the source itself: the root from the pin of `sources`, the checkpoint and its
+//! witnesses, every proof and signature, and every archive's digest.
 //!
 //! `itaty`, whose root metadata is to be built into `una`, is not served by this release: a need
-//! of it stays U7013. No program is started and no connection is opened.
+//! of it stays U7013. No program is started and no network connection is opened.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -19,59 +22,150 @@ use std::collections::BTreeMap;
 use una_diag::Code;
 use una_project::ProjectError;
 use una_project::client::{LoggedRelease, Point, Registry};
-use una_project::ita::ITATY;
 use una_project::itaoca::Itaoca;
+use una_project::mirrors::{self, Attempt, Mirrors};
 use una_project::transport::{self, Location, Transport};
 use una_syntax::ita;
 
-/// The values of `--mirror <source>=<location>`, by source. A value that is not of that form,
-/// a source named twice, or a location that is not a directory, a `file://` URL or an
-/// `https://` URL, is refused with U7013 at the start of `ita.una`: plain HTTP is never used.
-pub(crate) fn mirrors(values: &[String]) -> Result<BTreeMap<String, Location>, ProjectError> {
+/// A place a source may be read from: its location as written, and its transport, or why it
+/// has none.
+pub(crate) type Place = (String, Result<Box<dyn Transport>, String>);
+
+/// The mirrors of Itaoca's `mirrors.una` (rule 40), none when Itaoca has none or no file. A file
+/// that does not read, or that `mirrors::parse` refuses, is U7008 at the start of `ita.una`,
+/// naming the line of `mirrors.una`, so no source is read from a list that is not the one
+/// written.
+pub(crate) fn load_mirrors(itaoca: Option<&Itaoca>) -> Result<Mirrors, Vec<ProjectError>> {
     let refuse = |message: String| ProjectError {
-        code: Code::U7013,
+        code: Code::U7008,
         range: 0..0,
         message,
     };
-    let mut out = BTreeMap::new();
-    for value in values {
-        let Some((source, location)) = value.split_once('=') else {
-            return Err(refuse(format!(
-                "`--mirror {value}` is not `<source>=<location>`"
-            )));
-        };
-        if una_project::vendor::check_source(source).is_err() || source == ITATY {
-            return Err(refuse(format!(
-                "`{source}` in `--mirror` is not a source this release reads"
-            )));
-        }
-        let location = Location::parse(location)
-            .map_err(|why| refuse(format!("the mirror of `{source}` is refused: {why}")))?;
-        if out.insert(source.to_owned(), location).is_some() {
-            return Err(refuse(format!("`--mirror` names `{source}` twice")));
-        }
+    let Some(itaoca) = itaoca else {
+        return Ok(Mirrors::default());
+    };
+    let text = match itaoca.load_mirrors() {
+        Ok(Some(text)) => text,
+        Ok(None) => return Ok(Mirrors::default()),
+        Err(why) => return Err(vec![refuse(format!("Itaoca's mirrors.una does not read: {why}"))]),
+    };
+    let (read, errors) = mirrors::parse(&text);
+    if errors.is_empty() {
+        return Ok(read);
     }
-    Ok(out)
+    Err(errors
+        .into_iter()
+        .map(|error| {
+            let line = text
+                .get(..error.range.start)
+                .map_or(1, |head| head.matches('\n').count() + 1);
+            refuse(format!(
+                "Itaoca's mirrors.una, line {line}: {}",
+                error.message
+            ))
+        })
+        .collect())
 }
 
-/// The transport of `source`: its mirror when one is named, else the URL its `sources` entry
-/// gives. A source read over https is refused here with the reason, since this release has no
-/// https transport: the refusal says how to read it from a mirror instead.
-pub(crate) fn transport_of(
-    source: &ita::Source,
-    mirrors: &BTreeMap<String, Location>,
-) -> Result<Box<dyn Transport>, String> {
-    let name = &source.name.value;
-    let location = match mirrors.get(name) {
-        Some(location) => location.clone(),
-        None => Location::parse(&source.url.value)
-            .map_err(|why| format!("the source `{name}` is refused: {why}"))?,
-    };
+/// The transport of a location: a directory's; an `https://` location has none in this release.
+fn transport_for(location: &Location) -> Result<Box<dyn Transport>, String> {
     match location {
         Location::Https(url) => Err(format!(
-            "the source `{name}` is at `{url}`, and this release has no https transport; read it from a mirror directory with `--mirror {name}=<directory>`"
+            "`{url}` is reached over https, and this release has no https transport"
         )),
-        Location::Directory(_) => Ok(transport::open(&location)),
+        Location::Directory(_) => Ok(transport::open(location)),
+    }
+}
+
+/// The places of `source`, in the order they are tried: its mirrors, then its own URL.
+pub(crate) fn places_of(source: &ita::Source, mirrors: &Mirrors) -> Vec<Place> {
+    let name = &source.name.value;
+    let mut places: Vec<Place> = mirrors
+        .of(name)
+        .iter()
+        .map(|mirror| (mirror.url.clone(), transport_for(&mirror.location)))
+        .collect();
+    let own = &source.url.value;
+    places.push((
+        own.clone(),
+        Location::parse(own).and_then(|location| transport_for(&location)),
+    ));
+    places
+}
+
+/// Opens `source` at `point` from the first of `places` whose root metadata and checkpoint
+/// verify ([`open`]), and returns it with a note per mirror skipped for a copy that did not
+/// verify. With none: U7010 naming each place that served a bad copy, or U7013 when no place
+/// could serve, with how to list a mirror.
+pub(crate) fn open_first<'t>(
+    source: &ita::Source,
+    places: &'t [Place],
+    point: &Point,
+    itaoca: Option<&Itaoca>,
+    lock_floor: Option<u64>,
+) -> Result<(Registry<'t>, Vec<String>), (Code, String)> {
+    let name = &source.name.value;
+    let refs: Vec<mirrors::Place<'t>> = places
+        .iter()
+        .map(|(from, transport)| {
+            (
+                from.clone(),
+                transport
+                    .as_ref()
+                    .map(|transport| transport.as_ref())
+                    .map_err(Clone::clone),
+            )
+        })
+        .collect();
+    let fetched = mirrors::first_verified(&refs, &mut |transport| {
+        open(source, transport, point, itaoca, lock_floor).map_err(|why| {
+            // Nothing served is a refusal of service; anything served that fails is evidence.
+            if why.contains("has no `")
+                || why.contains("no root metadata has the pinned digest")
+                || why.contains("cannot read")
+            {
+                Attempt::Unavailable(why)
+            } else {
+                Attempt::Refused(why)
+            }
+        })
+    });
+    let notes: Vec<String> = fetched
+        .refused
+        .iter()
+        .map(|skipped| {
+            format!(
+                "note: U7010: `{}` served a copy of `{name}` that does not verify, and was skipped: {}",
+                skipped.from, skipped.reason
+            )
+        })
+        .collect();
+    match fetched.value {
+        Some((registry, _)) => Ok((registry, notes)),
+        None if !fetched.refused.is_empty() => Err((
+            Code::U7010,
+            format!(
+                "no place of the source `{name}` serves a copy that verifies: {}",
+                fetched
+                    .refused
+                    .iter()
+                    .map(|s| format!("`{}`: {}", s.from, s.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        )),
+        None => Err((
+            Code::U7013,
+            format!(
+                "the source `{name}` has no place this release can read: {}; list a mirror directory for `{name}` in Itaoca's mirrors.una, as a `file://` URL",
+                fetched
+                    .unavailable
+                    .iter()
+                    .map(|s| format!("`{}`: {}", s.from, s.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        )),
     }
 }
 

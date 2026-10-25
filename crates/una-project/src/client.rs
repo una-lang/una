@@ -1,7 +1,9 @@
 //! The registry client (ADR 0122 rules 26 and 34 to 39): what `una ita` reads from a registry,
 //! and how it verifies every byte of it before any is used.
 //!
-//! A [`Registry`] is one source read through one [`Transport`]. Opening it verifies:
+//! A [`Registry`] is one source read through one [`Transport`], at the paths of rule 34:
+//! `root/<n>`, `checkpoint` and `checkpoint/<size>`, `tile/…`, `map/…` and `blobs/sha256/<hex>`.
+//! Opening it verifies:
 //! - **the root chain** (rule 35): the root metadata whose digest is the source's pin, by the
 //!   threshold of its own root keys, then each next version `root/<n + 1>` by the thresholds of
 //!   the previous version's root keys and of its own; the last version MUST NOT have expired at
@@ -10,7 +12,7 @@
 //!   witness threshold of distinct witnesses of the last root. For a resolution, the latest one,
 //!   `checkpoint`, whose witness time MUST be less than 24 hours old by the local clock, and a
 //!   local clock more than one hour behind it is clock skew (rule 39); for a lock, the one of its
-//!   resolution point, `checkpoints/<size>`, with the lock's root hash, and no freshness;
+//!   resolution point, `checkpoint/<size>`, with the lock's root hash, and no freshness;
 //! - **the floor** (rule 39): never a checkpoint smaller than the one stored for the source, and a
 //!   consistency proof between the two, so the registry cannot show a fork; and every witness's
 //!   timestamps never decrease as the log grows.
@@ -18,31 +20,32 @@
 //! Then, at that checkpoint:
 //! - **an entry** is read from the log's entry bundles and verified by its inclusion proof,
 //!   computed from the log's tiles ([`crate::tlog::tile`]);
-//! - **a name's state** is its map proof at `map/<size>/<hex of the name's key>`, verified
-//!   against the checkpoint's map root, and its whole chain walked from the head, with the count
-//!   of rule 36.1 ([`crate::tlog::map::walk`]);
+//! - **a name's state** is its head in the name map, read from the map's tiles on its path from
+//!   the checkpoint's map root and proven against it ([`crate::tlog::map::prove_from_tiles`]),
+//!   and its whole chain walked from the head, with the count of rule 36.1
+//!   ([`crate::tlog::map::walk`]);
 //! - **an owner's keys** are replayed from its chain ([`crate::tlog::owner::replay`]), the
-//!   recovery delay measured in witness time from the cosigned checkpoints kept by size,
-//!   `checkpoints/<size>` (with their sizes listed in `checkpoints/index`, a hint verified
-//!   checkpoint by checkpoint);
+//!   recovery delay measured in witness time from the checkpoints kept by size,
+//!   `checkpoint/<size>`, each verified when it is read;
 //! - **a release** is a release statement of the name's chain, signed by its owner's threshold of
 //!   keys valid at its log position, of the source and name it is read for, each version once
 //!   (rule 36), and with no authority or trust beyond the highest release of its identity logged
 //!   before it (rule 26);
 //! - **its logged time** is the k-th earliest of the distinct witnesses' earliest cosignatures on
-//!   the checkpoints that include it (rule 36.4).
+//!   the kept checkpoints that include it (rule 36.4), read by size from the entry on.
 //!
 //! A failure is a refusal, U7010 where `una ita` reports it, naming the registry and what failed.
 //! An entry of a kind this client does not read yet (a yank, an advisory, a transfer) refuses the
 //! name, so nothing is ever resolved from a partial view of its state.
 //!
 //! **Transport.** Bytes come only through [`Transport`]; every rule above applies to every
-//! transport alike, a local mirror directory included. No program is started.
+//! transport alike, a local mirror directory included. Which place a source is read from is
+//! [`crate::mirrors`]'s. No program is started.
 //!
 //! **Costs.** Opening: O(R) root versions and one checkpoint, O(log L) hashes for its consistency
-//! proof in a log of L entries. An entry: O(log L) hashes and tiles. A name: 256 hashes for its
-//! map proof and O(E log L) for its E entries. A logged time: O(c) checkpoints until k witnesses
-//! are seen; a recovery's effect: O(log C) checkpoints by binary search over C kept checkpoints.
+//! proof in a log of L entries. An entry: O(log L) hashes and tiles. A name: at most 32 map tiles
+//! and O(256 + 8 k) hashes for its head, and O(E log L) for its E entries. A logged time: at most
+//! [`MAX_SCAN`] kept checkpoints; a recovery's effect: O(log L) probes by binary search.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -167,6 +170,14 @@ fn witness_problem(problem: &witness::Problem) -> Refusal {
     }
 }
 
+/// A kept checkpoint read by size: the cosignatures that verify, and its witness time when at
+/// least the threshold of witnesses cosign it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Kept {
+    cosigned: Vec<Cosigned>,
+    time: Option<u64>,
+}
+
 /// Which checkpoint a [`Registry`] is opened at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Point {
@@ -281,8 +292,7 @@ pub struct Registry<'t> {
     /// The checkpoint the registry is read at.
     pub point: Accepted,
     tiles: Tiles<'t>,
-    kept: BTreeMap<u64, Accepted>,
-    sizes: Option<Vec<u64>>,
+    kept: BTreeMap<u64, Option<Kept>>,
     seen: Vec<Cosigned>,
     histories: BTreeMap<String, History>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
@@ -353,7 +363,7 @@ impl<'t> Registry<'t> {
         // The checkpoint.
         let path = match point {
             Point::Latest { .. } => "checkpoint".to_owned(),
-            Point::At { size, .. } => format!("checkpoints/{size}"),
+            Point::At { size, .. } => format!("checkpoint/{size}"),
         };
         let bytes = transport
             .get(&path, note::MAX_NOTE as u64)
@@ -400,7 +410,6 @@ impl<'t> Registry<'t> {
             seen: accepted.cosigned.clone(),
             point: accepted,
             kept: BTreeMap::new(),
-            sizes: None,
             histories: BTreeMap::new(),
             releases: BTreeMap::new(),
         };
@@ -497,26 +506,21 @@ impl<'t> Registry<'t> {
         self.tiles.inclusion(index).map_err(|why| self.refuse(why))
     }
 
-    /// The map's head of `name` at the point, verified by its proof against the checkpoint's
-    /// map root (rule 36.1): `None` when the map proves the name has no entry.
+    /// The map's head of `name` at the point (rule 36.1): the map's tiles on the name's path,
+    /// read from the root of the checkpoint's `ita-map` line, each checked against the hash
+    /// that names it, and the proof built from them verified against that root
+    /// ([`map::prove_from_tiles`]); `None` when the map proves the name has no entry.
     pub fn head(&mut self, name: &str) -> Result<Option<Head>, Refusal> {
         let Some(root) = self.point.map else {
             return Err(self.refuse("its checkpoint carries no name map"));
         };
-        let path = format!(
-            "map/{}/{}",
-            self.point.checkpoint.size,
-            map::key_hex(name)
-        );
-        let bytes = self
-            .transport
-            .get(&path, map::MAX_PROOF_DOCUMENT as u64)
-            .map_err(|why| self.refuse(why))?
-            .ok_or_else(|| self.refuse(format!("it has no `{path}`")))?;
-        let (head, proof) = map::parse_proof(&bytes).map_err(|why| self.refuse(why))?;
+        let transport = self.transport;
+        let mut fetch = |path: &str| transport.get(path, map::MAX_TILE as u64);
+        let (head, proof) =
+            map::prove_from_tiles(&root, name, &mut fetch).map_err(|why| self.refuse(why))?;
         if !map::verify(&root, name, head.as_ref(), &proof) {
             return Err(self.refuse(format!(
-                "the map proof of `{name}` does not verify against the checkpoint's map"
+                "the map's tiles for `{name}` do not prove its head against the checkpoint's map"
             )));
         }
         Ok(head)
@@ -556,72 +560,52 @@ impl<'t> Registry<'t> {
         Ok(read.into_values().collect())
     }
 
-    /// The sizes of the kept checkpoints up to the point, ascending, from `checkpoints/index`:
-    /// a hint, each checkpoint verified when it is read.
-    fn sizes(&mut self) -> Result<Vec<u64>, Refusal> {
-        if let Some(sizes) = &self.sizes {
-            return Ok(sizes.clone());
-        }
-        let bytes = self
-            .transport
-            .get("checkpoints/index", MAX_DOCUMENT)
-            .map_err(|why| self.refuse(why))?
-            .unwrap_or_default();
-        let text =
-            String::from_utf8(bytes).map_err(|_| self.refuse("`checkpoints/index` is not UTF-8"))?;
-        let mut sizes: Vec<u64> = Vec::new();
-        for line in text.lines() {
-            let size: u64 = line
-                .parse()
-                .ok()
-                .filter(|_| {
-                    !line.is_empty()
-                        && line.bytes().all(|b| b.is_ascii_digit())
-                        && (line == "0" || !line.starts_with('0'))
-                })
-                .ok_or_else(|| {
-                    self.refuse("`checkpoints/index` lists a size that is not a decimal")
-                })?;
-            if sizes.last().is_some_and(|last| *last >= size) {
-                return Err(self.refuse("`checkpoints/index` is not in ascending order"));
-            }
-            if size <= self.point.checkpoint.size {
-                sizes.push(size);
-            }
-        }
-        if sizes.last() != Some(&self.point.checkpoint.size) {
-            sizes.push(self.point.checkpoint.size);
-        }
-        self.sizes = Some(sizes.clone());
-        Ok(sizes)
-    }
-
-    /// The kept checkpoint of `size`, at most the point's, verified under the root and shown to
-    /// be a prefix of the point by a consistency proof.
-    fn kept(&mut self, size: u64) -> Result<Accepted, Refusal> {
+    /// The kept checkpoint of `size` (rule 36.4), at `checkpoint/<size>`, when the registry
+    /// serves one: signed by the log's key, of that size, a prefix of the point by a consistency
+    /// proof, with the cosignatures of the root's witnesses that verify, and its witness time
+    /// when at least the threshold cosign it. Every witness's timestamps never decrease.
+    fn kept(&mut self, size: u64) -> Result<Option<Kept>, Refusal> {
         if size == self.point.checkpoint.size {
-            return Ok(self.point.clone());
+            return Ok(Some(Kept {
+                cosigned: self.point.cosigned.clone(),
+                time: Some(self.point.time),
+            }));
+        }
+        if size > self.point.checkpoint.size || size == 0 {
+            return Ok(None);
         }
         if let Some(kept) = self.kept.get(&size) {
             return Ok(kept.clone());
         }
-        let path = format!("checkpoints/{size}");
-        let bytes = self
+        let path = format!("checkpoint/{size}");
+        let Some(bytes) = self
             .transport
             .get(&path, note::MAX_NOTE as u64)
             .map_err(|why| self.refuse(why))?
-            .ok_or_else(|| self.refuse(format!("it has no `{path}`")))?;
+        else {
+            self.kept.insert(size, None);
+            return Ok(None);
+        };
         let document =
             String::from_utf8(bytes).map_err(|_| self.refuse(format!("`{path}` is not UTF-8")))?;
-        let accepted = accept_checkpoint(&document, &self.root).map_err(|why| self.refuse(why))?;
-        if accepted.checkpoint.size != size {
-            return Err(self.refuse(format!("`{path}` is a checkpoint of another size")));
+        let signed = note::parse_note(&document).map_err(|why| self.refuse(why))?;
+        let checkpoint = note::parse_checkpoint(&signed.text).map_err(|why| self.refuse(why))?;
+        if checkpoint.size != size || checkpoint.origin != self.root.log.name {
+            return Err(self.refuse(format!(
+                "`{path}` is not a checkpoint of its log of that size"
+            )));
         }
-        let proof = self.tiles.consistency(size).map_err(|why| self.refuse(why))?;
+        if !signed.signed_by(&self.root.log) {
+            return Err(self.refuse(format!("`{path}` is not signed by the log's key")));
+        }
+        let proof = self
+            .tiles
+            .consistency(size)
+            .map_err(|why| self.refuse(why))?;
         if !merkle::verify_consistency(
             size,
             self.point.checkpoint.size,
-            &accepted.checkpoint.root,
+            &checkpoint.root,
             &self.point.checkpoint.root,
             &proof,
         ) {
@@ -630,58 +614,90 @@ impl<'t> Registry<'t> {
                 self.point.checkpoint.size
             )));
         }
-        self.seen.extend(accepted.cosigned.iter().cloned());
+        let cosigned = cosignatures(&signed, size, &self.root);
+        let time = witness::checkpoint_time(&cosigned, self.root.witnesses.threshold).ok();
+        self.seen.extend(cosigned.iter().cloned());
         witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
-        self.kept.insert(size, accepted.clone());
-        Ok(accepted)
+        let kept = Kept { cosigned, time };
+        self.kept.insert(size, Some(kept.clone()));
+        Ok(Some(kept))
     }
 
     /// When the entry `index` was logged (rule 36.4): for each distinct witness, its earliest
-    /// cosignature on a kept checkpoint that includes it; the k-th earliest of these. O(c)
-    /// checkpoints, until k witnesses are seen, at most [`MAX_SCAN`].
+    /// cosignature on a kept checkpoint that includes it; the k-th earliest of these. The kept
+    /// checkpoints are read by size from `index + 1` on, until k witnesses are seen, at most
+    /// [`MAX_SCAN`] of them; past that the point's cosignatures are taken too, a later time and
+    /// so a longer wait, never a shorter one.
     pub fn logged_at(&mut self, index: u64) -> Result<u64, Refusal> {
         let k = self.root.witnesses.threshold;
-        let sizes: Vec<u64> = self.sizes()?.into_iter().filter(|s| *s > index).collect();
+        let last = self
+            .point
+            .checkpoint
+            .size
+            .min(index.saturating_add(MAX_SCAN as u64));
         let mut cosigned: Vec<Cosigned> = Vec::new();
-        for size in sizes.into_iter().take(MAX_SCAN) {
-            let kept = self.kept(size)?;
-            cosigned.extend(kept.cosigned);
+        let distinct = |cosigned: &[Cosigned]| {
             let mut witnesses: Vec<&str> = cosigned.iter().map(|c| c.witness.as_str()).collect();
             witnesses.sort_unstable();
             witnesses.dedup();
-            if witnesses.len() >= k {
-                break;
+            witnesses.len()
+        };
+        for size in index.saturating_add(1)..=last {
+            if let Some(kept) = self.kept(size)? {
+                cosigned.extend(kept.cosigned);
+                if distinct(cosigned.as_slice()) >= k {
+                    break;
+                }
             }
+        }
+        if distinct(cosigned.as_slice()) < k {
+            cosigned.extend(self.point.cosigned.iter().cloned());
         }
         witness::logged_at(index, &cosigned, k)
             .map_err(|problem| self.refuse(witness_problem(&problem)))
     }
 
+    /// The first kept checkpoint at or after `from` that has a witness time, read by size, at
+    /// most [`MAX_SCAN`] of them; the point past that. Its size and its witness time.
+    fn first_timed(&mut self, from: u64) -> Result<(u64, u64), Refusal> {
+        let point = self.point.checkpoint.size;
+        let last = point.min(from.saturating_add(MAX_SCAN as u64));
+        for size in from..=last {
+            if let Some(Kept {
+                time: Some(time), ..
+            }) = self.kept(size)?
+            {
+                return Ok((size, time));
+            }
+        }
+        Ok((point, self.point.time))
+    }
+
     /// The first log position a recovery or a dispute logged at `index` governs (rule 38.1): the
     /// size of the first kept checkpoint whose witness time is at least seven days after the
     /// witness time of the first one that includes it; `None` when no checkpoint up to the point
-    /// is. O(log C) checkpoints, by binary search: witness times never decrease as the log grows.
+    /// is. By binary search over sizes, since witness times never decrease as the log grows:
+    /// O(log L) probes of at most [`MAX_SCAN`] checkpoints each.
     pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
-        let sizes: Vec<u64> = self.sizes()?.into_iter().filter(|s| *s > index).collect();
-        let Some(first) = sizes.first().copied() else {
+        let point = self.point.checkpoint.size;
+        if index >= point {
             return Ok(None);
-        };
-        let start = self.kept(first)?.time;
+        }
+        let (first, start) = self.first_timed(index + 1)?;
         let target = start.saturating_add(owner::RECOVERY_DELAY);
         if self.point.time < target {
             return Ok(None);
         }
-        let (mut low, mut high) = (0usize, sizes.len() - 1);
+        let (mut low, mut high) = (first, point);
         while low < high {
             let middle = low + (high - low) / 2;
-            let size = sizes.get(middle).copied().unwrap_or_default();
-            if self.kept(size)?.time >= target {
+            if self.first_timed(middle)?.1 >= target {
                 high = middle;
             } else {
                 low = middle + 1;
             }
         }
-        Ok(sizes.get(low).copied())
+        Ok(Some(self.first_timed(low)?.0))
     }
 
     /// The keys of `owner` over the log up to the point, replayed from its chain; Itaúna's are

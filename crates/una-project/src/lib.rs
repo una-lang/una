@@ -17,6 +17,7 @@ pub mod literal;
 mod lock;
 mod manifest;
 pub mod migrate;
+pub mod mirrors;
 pub mod names;
 mod package;
 pub mod provenance;
