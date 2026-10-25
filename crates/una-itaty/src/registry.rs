@@ -1294,14 +1294,27 @@ impl Registry {
 
     /// The per-owner hold (`spec/30 §16` rule 10): from [`HOLD_WINDOW`] before the target of
     /// a request of `owner` until its deadline is fixed, the owner's entries, of its chain and
-    /// of its packages, wait; no other owner's do. A cancellation of the held request itself,
-    /// `cancels`, is exempt, so an owner answers a thief's request until its target: at worst
-    /// the owner's names are unavailable to clients for a while, the fail-safe direction.
+    /// of its packages, wait; no other owner's do. A cancellation of any active request of the
+    /// owner, `cancels`, is exempt, so an owner answers a thief's request until its target
+    /// even while another of its requests is held. That is fail-safe: a deadline not fixed when
+    /// the cancellation is logged is a later checkpoint (only the newest may newly reach a
+    /// target), so every client's served replay judges the cancellation under the same keys
+    /// and cosigners as the service; a client whose earliest timing differs finds the names
+    /// unavailable (U7013), never a different verdict.
     fn owner_hold(&self, owner_name: &str, cancels: Option<u64>) -> Result<(), Refusal> {
+        let exempt = cancels.is_some_and(|target| {
+            self.active.contains(&target)
+                && self
+                    .requests
+                    .get(&target)
+                    .is_some_and(|request| request.owner == owner_name)
+        });
+        if exempt {
+            return Ok(());
+        }
         let now = self.clock.now();
         let held = self.active_requests().find(|request| {
             request.owner == owner_name
-                && cancels != Some(request.index)
                 && request.deadline.is_none()
                 && request
                     .target()

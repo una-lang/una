@@ -2038,3 +2038,34 @@ fn the_hold_never_stops_a_cancellation_of_the_held_request() {
         .unwrap();
     assert!(f.registry.request_timing(cancel).is_some());
 }
+
+#[test]
+fn another_held_request_never_stops_a_cancellation() {
+    let mut f = Fixture::new("hold-two");
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    let r = keypair(63, "acme.r");
+    f.register("acme", &[&a], &[]);
+    // A thief asks a co-signer change, then, an hour later, a recovery, so the recovery's
+    // hold covers the change's last hours.
+    let change = f
+        .submit("acme", &format!("cosigners 1 {}", key_text(&x.1)), 1, &[&a])
+        .unwrap();
+    f.cosign(&[0, 1], NOW);
+    f.set_time(NOW + 3600);
+    let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
+    let receipt = f.registry.request(recover.as_bytes(), false).unwrap();
+    f.logged(&owner_chain("acme"), receipt);
+    f.cosign(&[0, 1], NOW + 3600);
+    // Half an hour before the change's target, both requests hold the owner's entries.
+    f.set_time(NOW + RECOVERY_DELAY - 1800);
+    assert_eq!(
+        f.submit("acme", "cancel 0", 1, &[&a]).unwrap_err().cause(),
+        Some(&Cause::OwnerHold(change))
+    );
+    // The cancellation of the change is taken all the same.
+    let cancel = f
+        .submit("acme", &format!("cancel {change}"), 1, &[&a])
+        .unwrap();
+    assert!(f.registry.request_timing(cancel).is_some());
+}
