@@ -42,7 +42,7 @@ A second place may hold `unsafe` code: a new crate, `una-sys`, under rule 1's co
 
 ## Amendment (2026-10-25): what `una-sys` holds, and how its size is counted
 
-The amendment of 2026-10-18 limits `una-sys` to the signal handlers and the coroutine stacks. The concurrency, server and package-store records need more bindings to the operating system than those two. Each is written in the crate's own Rust, through the declarations of the `libc` crate (ADR 0116, amendment of 2026-10-19): no foreign code, and no binding to a system library beyond the C library.
+The amendment of 2026-10-18 limits `una-sys` to the signal handlers and the coroutine stacks. The concurrency, server and package-store records need more bindings to the operating system than those two. Each is written in the crate's own Rust, through the declarations of the `libc` crate (ADR 0116, amendment of 2026-10-19): no foreign code, and no binding to a system library beyond the C library. One exception holds in sanitizer builds only: the stack switch of `coroutine.rs` tells AddressSanitizer about each switch through the sanitizer runtime's own fiber interface (`__sanitizer_start_switch_fiber`, `__sanitizer_finish_switch_fiber`). Those declarations compile only under `cfg(una_asan)`, which `scripts/sanitize.sh` sets, and no shipped binary or runtime library refers to them; a check over the release build enforces it.
 
 **What it may hold.** Bindings to the operating system that the standard library cannot provide, in these modules:
 
