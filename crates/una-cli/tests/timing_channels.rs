@@ -27,7 +27,10 @@
 //! 45 ms, 9 and 1 timeouts in 20, and the same majority. A control compares one input with
 //! itself, 20 runs against 20, and must pass, so a machine whose noise alone would fail the
 //! test is seen as such. The deterministic test of P8 in `crates/una-rt/src/sched.rs` remains
-//! the primary guard at this slice.
+//! the primary guard at this slice. The oracle of the lazy timer (#1151) deviates from §G, as
+//! its own comment records: its channel cannot be amplified to a deadline outcome, so it
+//! measures a span, has low power before the fix, and the deterministic guards of #1151 are
+//! primary.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
@@ -262,9 +265,6 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     }
 }
 
-/// The public `within`s that follow `/mark` in the oracle of the lazy timer.
-const PUBLIC_WITHINS: u32 = 64;
-
 /// The oracle's package of the lazy timer, with `key` as its `secret` input, built in a
 /// directory named by `name`.
 fn lazy_timer_package(name: &str, key: u8, port: u16) -> PathBuf {
@@ -288,13 +288,11 @@ pub main() -> Unit
   uses @http: Http[get]
 =
   let key: secret Int = {key}
+  let public_value = 7
   let earlier = if key == 1 then warm(key) else 0
   let at_mark = {mark}
-  let edit total = 0
-  for i in 0..<{PUBLIC_WITHINS}
-    let step = i within 60 * second
-      if error use 0
-    total = total + step
+  let first = public_value within 60 * second
+    if error use 0
   let at_hold = {hold}
   unit
 "#
@@ -302,7 +300,8 @@ pub main() -> Unit
     build_flip(name, port, &program)
 }
 
-/// The time of one run of the lazy timer's oracle from `/mark` to `/hold`, in milliseconds.
+/// The time of one run of the lazy timer's oracle from `/mark` to `/hold`, which follows the
+/// first public `within` at once, in milliseconds.
 fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
     spans.lock().unwrap().clear();
     let native = Command::new(dir.join("target/una/flip"))
@@ -320,9 +319,10 @@ fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
 fn a_public_within_s_timing_never_depends_on_whether_secret_code_ran_a_within() {
     // #1151, ADR 0116 amendment P8 and P13, `spec/27 §1` rule 4 and §5, on the real clock, in
     // release form, at `--workers 2`. The `secret` key, 0 or 1, decides whether a `within`
-    // ran before `main`'s public section; nothing else differs. The public section, between a
-    // request to `/mark` and one to `/hold`, runs 64 `within`s over public values, and the
-    // server notes the time between the two requests.
+    // ran before `main`'s public section; nothing else differs. The public section is one
+    // `within` over a public value between a request to `/mark` and one to `/hold`, and the
+    // server notes the time between the two requests: the measurement is narrowed to the first
+    // public `within`, the only one that a lazy start could charge.
     //
     // Before the fix, the timer thread started at the first deadline, through a `OnceLock`:
     // key 0's first public `within` paid the thread's start, key 1's did not. After it, both
@@ -330,18 +330,20 @@ fn a_public_within_s_timing_never_depends_on_whether_secret_code_ran_a_within() 
     // deadline is armed and fired in nanoseconds, so the two keys' spans have one
     // distribution.
     //
-    // Expected effect size, recorded so a reader does not read a pass before the fix as a
-    // proof: one thread start, tens of microseconds, once per process. It cannot be repeated
-    // inside one run, since a process started its timer thread at most once, and the
-    // millisecond phase of P13 is set again at each firing, so it does not accumulate either.
-    // That is below the noise of two local requests on most machines, so this oracle has
-    // little power before the fix. The primary guards at this slice are deterministic and
-    // need no timing: `runtime::tests::the_timer_thread_runs_before_main_and_no_within_starts_
-    // it_whatever_ran_before` (the thread runs before `main`, and no `within` starts one after
-    // any history), `sched`'s `start_all` test, and the timer and wheel tests of P13 on a
-    // clock the test drives (`timer.rs`, `wheel.rs`, `deadline.rs`). This oracle guards the
-    // whole executable after the fix: a lazy start, or any other cost that a `secret`
-    // `within` leaves to a later public one, large enough to see, fails it.
+    // **A deviation from ADR 0116 amendment §G, recorded:** §G asks for an amplifier that
+    // turns the channel into a deadline outcome at least 25 ms from `d`. This channel cannot
+    // be amplified so: its effect is one thread start, tens of microseconds, once per
+    // process, since a process started its timer thread at most once, and the sub-millisecond
+    // phase of P13 is not cumulative either. So this oracle measures the span directly, has
+    // low power before the fix, below the noise of two local requests on most machines, and
+    // a pass before the fix proves nothing. The primary guards at this slice are
+    // deterministic and need no timing: `runtime::tests::the_timer_thread_runs_before_main_
+    // and_no_within_starts_it_whatever_ran_before`, `sched`'s `start_all` test, the history
+    // guard `timer::tests::a_history_of_cancelled_timers_leaves_no_state_and_no_later_wake`,
+    // and the tests of P13 on a clock the test drives (`timer.rs`, `wheel.rs`, `deadline.rs`,
+    // the driver's ticks in `runtime.rs` and the waits of `una-interp`'s `stopping.rs`). This
+    // oracle guards the whole executable after the fix: a lazy start, or any other cost that a
+    // `secret` `within` leaves to a later public one, large enough to see, fails it.
     //
     // The judgment is the rank test of the header: key 0's 20 spans against key 1's, failing
     // at p < 0.001. The control runs key 0 twice as often and compares its two halves, which

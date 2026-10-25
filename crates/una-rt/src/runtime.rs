@@ -1132,8 +1132,11 @@ pub fn drive_tick() -> i64 {
         }
         // On the run's clock, real or virtual, in nanoseconds (P13, #1151): under virtual time
         // the wait moves the clock to the tick at once (ADR 0116 rule 19), in whole
-        // milliseconds; on the real clock the wait lasts to the tick's exact nanosecond, and a
-        // host stop interrupts it.
+        // milliseconds. On the real clock the wait ends at the tick's exact instant, to the
+        // resolution of the system's sleep: `wait_tick` polls only the whole milliseconds
+        // left, since `poll` rounds a wait up to whole milliseconds, and sleeps the
+        // sub-millisecond rest. A host stop interrupts the polls; during that rest, under 1 ms,
+        // it is seen at its end.
         let clock = clock();
         let origin = *driver.origin.get_or_insert_with(|| clock.now_nanos());
         let due = tick_due(origin, driver.next, driver.ticks.max(1));

@@ -16,7 +16,7 @@
 //! `e`, which inherit the entry, then stop, and the stop reaches the `within`, whose
 //! [`within_end`] decides what it means: its own time-out, an outer `within`'s, or a stop of the
 //! task that goes on. Interruptible operations inside `e` wait no longer than the earliest
-//! deadline that covers them. Arming is O(log s), O(1) on average, and ending O(1) (`timer`).
+//! deadline that covers them. Arming and ending are O(1) (`timer`).
 //!
 //! **Nanoseconds** (ADR 0116 amendment of 2026-10-25, P13, #1151). Every deadline here is a
 //! moment in nanoseconds of the run's clock (`Clock::now_nanos`), armed on a reading in
@@ -393,8 +393,7 @@ fn timeout_event(task: String) {
 
 /// Enters `e within d`, whose deadline is the integer of the borrowed word `word`, in
 /// milliseconds: the deadline is exactly `d` after now on the run's clock, in nanoseconds
-/// (`spec/27 §5`; P13, #1151). Returns the frame's id, which [`within_end`] takes. O(log s),
-/// O(1) on average, for the timer (`timer`).
+/// (`spec/27 §5`; P13, #1151). Returns the frame's id, which [`within_end`] takes. O(1).
 pub fn within_enter(word: i64) -> i64 {
     let clock = crate::runtime::clock();
     let now = clock.now_nanos();
@@ -592,6 +591,28 @@ mod tests {
                 }
             }
         }
+        // Through `iteration` itself, on the run's clock: the deadline, less `d`, is a reading
+        // taken between the two readings around the call, so not one rounded down to its
+        // millisecond, which would fall before the first reading at almost every offset.
+        std::thread::spawn(|| {
+            let clock = crate::runtime::clock();
+            let d = 250u64;
+            enter(values::int_word(&num_bigint::BigInt::from(d)));
+            for _ in 0..20 {
+                let before = clock.now_nanos();
+                iteration();
+                let after = clock.now_nanos();
+                let at = LOCAL.with(|cell| cell.borrow().ever.as_ref().and_then(|ever| ever.at));
+                let armed = at.unwrap() - u128::from(d) * 1_000_000;
+                assert!(
+                    before <= armed && armed <= after,
+                    "{before} {armed} {after}"
+                );
+            }
+            leave();
+        })
+        .join()
+        .unwrap();
         // The time left is exact, in nanoseconds, and saturates.
         assert_eq!(duration(1), Duration::from_nanos(1));
         assert_eq!(duration(2_500_000_001), Duration::new(2, 500_000_001));

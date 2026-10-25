@@ -8,22 +8,37 @@
 //! (`runtime::enter`, `spec/19 §6` rule 4) and stop up to the `within`, which then reports its
 //! time-out. The thread runs no Una code. The run's scheduler owns the timers (`sched`).
 //!
-//! - **Exact firing (P13).** Deadlines are nanoseconds of the run's monotonic clock. The thread
-//!   sleeps until the earliest exact deadline the wheel gives, never to a millisecond's end,
-//!   and fires each timer once the clock has reached its own nanosecond: the wheel compares
-//!   exact deadlines everywhere (`wheel`). So a `within d` lasts `d` from the moment it was
-//!   armed, to the resolution of the system's clock and sleep, whatever phase within a
-//!   millisecond earlier code left.
+//! - **Exact firing (P13).** Deadlines are nanoseconds of the run's monotonic clock, and the
+//!   wheel's finest slot is one nanosecond (`wheel`). The thread sleeps until the wheel's next
+//!   expiration, read again from the clock just before each wait, and fires each timer once
+//!   the clock has reached its own nanosecond, never at the end of a coarser slot. So a
+//!   `within d` lasts `d` from the moment it was armed, to the resolution of the system's
+//!   clock and sleep, whatever phase earlier code left.
 //! - **Started up front (P8).** A program with a `within`, a `for ever` or a task construct
 //!   starts the thread before `main`, with the workers ([`Timers::start`], called by
 //!   `Scheduler::start_all`), and `main` begins once the thread runs. Whether the thread exists
 //!   is then never state that earlier code left: no `within` pays for its start, whether or
 //!   not an earlier one ran. A program without these constructs starts no timer thread. Code
 //!   without that start, as unit tests, starts the thread at its first deadline.
-//! - **Costs.** Arming is O(log s) under one lock, O(1) on average, for the `s` timers of one
-//!   millisecond; cancelling is O(1); each timer fires in O(log s) amortized, and the thread
-//!   wakes at each exact deadline and at most 10 times more per timer, to cascade it down the
-//!   wheel's levels.
+//! - **Wakes, and no state from ended code.** The thread wakes only:
+//!   - at the next expiration, which is always a live timer's: its exact deadline, or the
+//!     start of a slot that holds it and is cascaded there, at most 10 times per timer and
+//!     shared by the timers of that slot;
+//!   - when a timer is armed earlier than the moment it sleeps until;
+//!   - when the timer it sleeps for is cancelled and no other holds that moment, so that it
+//!     sleeps on to the new next expiration instead of waking for a dead one;
+//!   - when the timers close.
+//!
+//!   Arming first moves the wheel's time to the moment of arming, so the slots a timer passes
+//!   through, and so the cascade wakes it causes, follow from its own arming moment and
+//!   deadline only, never from when the thread last passed. Removal is eager, so after any
+//!   history of armed and cancelled timers the wheel holds only its live timers, and the
+//!   thread's later wakes are those that its live timers need.
+//! - **Costs.** Arming, cancelling and firing are O(1) under one lock, firing amortized over at
+//!   most 10 cascade moves per timer, each O(1) and made inside passes the thread already makes
+//!   at a cascade wake; finding the next expiration is O(levels). The wheel and the thread's
+//!   lists are made with room for [`TIMER_CAPACITY`] timers, so a run with up to that many
+//!   allocates nothing to arm or fire them.
 //! - **Virtual time.** Under `--virtual-time` no timer is armed: nothing but the run's own waits
 //!   moves a virtual clock, and a `within` checks its deadline on the clock when its expression
 //!   returns (`deadline`).
@@ -40,10 +55,15 @@ use crate::wheel::{TimerId, Wheel};
 /// The stack of the timer thread, which only moves timers between lists.
 const TIMER_STACK: usize = 256 * 1024;
 
+/// The timers the wheel's slab and lists, and the thread's list of fired timers, have room for
+/// when the timers are made: 64, about 5 KiB, one per task of a batch (ADR 0113). More grow
+/// them, by doubling.
+const TIMER_CAPACITY: usize = 64;
+
 /// Where the timer thread reads the time, in nanoseconds, and how it waits for a moment.
 pub(crate) enum Source {
     /// The run's clock (`runtime::clock`): nanoseconds since the run started, on the monotonic
-    /// clock; the thread sleeps on a condition variable until the next deadline.
+    /// clock; the thread sleeps on a condition variable until the next expiration.
     Run,
     /// A clock that a test drives by hand: the thread never sleeps on the real clock, and
     /// waits until the test moves the time or arms a timer.
@@ -63,23 +83,33 @@ impl Source {
     }
 }
 
-/// The armed deadlines, and whether the thread that fires them is to stop.
+/// The armed deadlines, and what the thread waits for.
 struct Inner {
     wheel: Wheel<Arc<AtomicUsize>>,
     closed: bool,
-    /// How many passes of the thread found nothing more to fire, every entry of the timers it
-    /// fired before already set, for a test that waits for the thread to catch up.
+    /// The moment the thread sleeps until: the wheel's next expiration when it last looked.
+    target: Option<u64>,
+    /// Whether the thread is to look at the wheel before its target: a timer earlier than the
+    /// target was armed, the target's timer was cancelled, or the timers closed.
+    look: bool,
+    /// The passes the thread made after its first, in tests: each is a wake.
     #[cfg(test)]
-    passes: u64,
+    wakes: u64,
+    /// The moves of a driven clock, and the last one the thread has seen with nothing left to
+    /// fire, so a test can wait for the thread to catch up.
+    #[cfg(test)]
+    pokes: u64,
+    #[cfg(test)]
+    seen: u64,
 }
 
 /// What the timer thread shares with the tasks that arm and cancel timers.
 struct Shared {
     inner: Mutex<Inner>,
-    /// Wakes the thread: a new timer, or the timers closed.
+    /// Wakes the thread: `look` or `closed` was set, or, in tests, a driven clock moved.
     wake: Condvar,
     source: Source,
-    /// Wakes a test that waits for a pass of the thread.
+    /// Wakes a test that waits for the thread to see a move of the clock.
     #[cfg(test)]
     passed: Condvar,
 }
@@ -99,6 +129,9 @@ pub(crate) struct Timers {
     /// run with the start before `main`, never while a construct runs.
     #[cfg(test)]
     starts: AtomicUsize,
+    /// A test's stand-in for a thread that the system refuses to start.
+    #[cfg(test)]
+    refuse: bool,
 }
 
 impl Timers {
@@ -108,10 +141,16 @@ impl Timers {
         Timers {
             shared: Arc::new(Shared {
                 inner: Mutex::new(Inner {
-                    wheel: Wheel::new(now),
+                    wheel: Wheel::with_capacity(now, TIMER_CAPACITY),
                     closed: false,
+                    target: None,
+                    look: false,
                     #[cfg(test)]
-                    passes: 0,
+                    wakes: 0,
+                    #[cfg(test)]
+                    pokes: 0,
+                    #[cfg(test)]
+                    seen: 0,
                 }),
                 wake: Condvar::new(),
                 source,
@@ -121,6 +160,8 @@ impl Timers {
             thread: OnceLock::new(),
             #[cfg(test)]
             starts: AtomicUsize::new(0),
+            #[cfg(test)]
+            refuse: false,
         }
     }
 
@@ -129,6 +170,10 @@ impl Timers {
     /// that no construct ever starts it. O(1) after the first call.
     pub(crate) fn start(&self) -> bool {
         *self.thread.get_or_init(|| {
+            #[cfg(test)]
+            if self.refuse {
+                return false;
+            }
             let (ready, readied) = mpsc::channel();
             let shared = Arc::clone(&self.shared);
             let spawned = std::thread::Builder::new()
@@ -143,6 +188,72 @@ impl Timers {
         })
     }
 
+    /// Arms the deadline `at`, in nanoseconds of the run's clock, to set `flag` to 0 once the
+    /// clock reaches it. O(1). `None` when no timer can be armed: the deadline then counts as
+    /// passed, and `flag` is set at once.
+    pub(crate) fn arm(&self, at: u64, flag: &Arc<AtomicUsize>) -> Option<TimerId> {
+        let armed = if self.start() {
+            let mut inner = lock(&self.shared);
+            if inner.closed {
+                None
+            } else {
+                // The wheel's time moves to the moment of arming, so where the timer goes, and
+                // the cascade wakes it causes, follow from its own moment and deadline. A slot
+                // due by now is one the thread has not reached yet: its timers fire here.
+                let now = self.shared.source.now();
+                let mut late = Vec::new();
+                inner.wheel.advance_unordered(now, &mut late);
+                for (_, due) in late {
+                    due.store(0, Ordering::SeqCst);
+                }
+                let id = inner.wheel.arm(at, Arc::clone(flag)).ok();
+                // The thread wakes only when the new timer comes before the moment it sleeps
+                // until.
+                let next = inner.wheel.next_expiration();
+                let earlier = match (next, inner.target) {
+                    (Some(next), Some(target)) => next < target,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                if id.is_some() && earlier {
+                    inner.look = true;
+                    drop(inner);
+                    self.shared.wake.notify_one();
+                }
+                id
+            }
+        } else {
+            None
+        };
+        if armed.is_none() {
+            flag.store(0, Ordering::SeqCst);
+        }
+        armed
+    }
+
+    /// Cancels the timer `id`, when it has not fired. O(1). When the thread sleeps for the
+    /// moment of that timer and no other timer holds it, the thread is told to look again, so
+    /// it never wakes for a timer that was cancelled.
+    pub(crate) fn cancel(&self, id: TimerId) {
+        if self.thread.get().copied().unwrap_or(false) {
+            let mut inner = lock(&self.shared);
+            if inner.wheel.cancel(id).is_some() && inner.wheel.next_expiration() != inner.target {
+                inner.look = true;
+                drop(inner);
+                self.shared.wake.notify_one();
+            }
+        }
+    }
+
+    /// Stops the thread, at its next wake, which this call causes; timers left never fire.
+    pub(crate) fn close(&self) {
+        let mut inner = lock(&self.shared);
+        inner.closed = true;
+        inner.look = true;
+        drop(inner);
+        self.shared.wake.notify_all();
+    }
+
     /// Whether the thread runs, without starting it.
     #[cfg(test)]
     pub(crate) fn running(&self) -> bool {
@@ -155,56 +266,41 @@ impl Timers {
         self.starts.load(Ordering::SeqCst)
     }
 
-    /// Arms the deadline `at`, in nanoseconds of the run's clock, to set `flag` to 0 once the
-    /// clock reaches it. O(log s), O(1) on average. `None` when no timer can be armed: the
-    /// deadline then counts as passed, and `flag` is set at once.
-    pub(crate) fn arm(&self, at: u64, flag: &Arc<AtomicUsize>) -> Option<TimerId> {
-        let armed = if self.start() {
-            let mut inner = lock(&self.shared);
-            let id = if inner.closed {
-                None
-            } else {
-                inner.wheel.arm(at, Arc::clone(flag)).ok()
-            };
-            drop(inner);
-            self.shared.wake.notify_one();
-            id
-        } else {
-            None
-        };
-        if armed.is_none() {
-            flag.store(0, Ordering::SeqCst);
-        }
-        armed
+    /// Timers whose thread the system refuses to start, in tests.
+    #[cfg(test)]
+    fn refusing(source: Source) -> Timers {
+        let mut timers = Timers::new(source);
+        timers.refuse = true;
+        timers
     }
 
-    /// Cancels the timer `id`, when it has not fired. O(1).
-    pub(crate) fn cancel(&self, id: TimerId) {
-        if self.thread.get().copied().unwrap_or(false) {
-            lock(&self.shared).wheel.cancel(id);
-        }
+    /// The passes the thread made after its first, in tests.
+    #[cfg(test)]
+    fn wakes(&self) -> u64 {
+        lock(&self.shared).wakes
     }
 
-    /// Stops the thread, at its next wake, which this call causes; timers left never fire.
-    pub(crate) fn close(&self) {
-        lock(&self.shared).closed = true;
-        self.shared.wake.notify_all();
+    /// The live timers, and whether the wheel has a next expiration, in tests.
+    #[cfg(test)]
+    fn held(&self) -> (usize, bool) {
+        let inner = lock(&self.shared);
+        (inner.wheel.len(), inner.wheel.next_expiration().is_some())
     }
 
-    /// Moves a driven clock to `to` and returns once the thread has made a whole pass that
-    /// began after the move, so with the entry of every timer due by `to` set. Only for timers
-    /// on [`Source::Driven`] whose thread runs. A pass reads the clock and counts itself under
-    /// one hold of the lock, so a pass counted after this call took the lock read `to` or
-    /// later.
+    /// Moves a driven clock to `to` and returns once the thread has seen the move with nothing
+    /// left to fire, so with the entry of every timer due by `to` set. Only for timers on
+    /// [`Source::Driven`] whose thread runs. The thread reads the clock and marks the move seen
+    /// under one hold of the lock, so a move marked seen was read at `to` or later.
     #[cfg(test)]
     pub(crate) fn settle(&self, to: u64) {
         if let Source::Driven(now) = &self.shared.source {
             now.store(to, Ordering::SeqCst);
         }
         let mut inner = lock(&self.shared);
-        let before = inner.passes;
+        inner.pokes += 1;
+        let poke = inner.pokes;
         self.shared.wake.notify_all();
-        while inner.passes == before {
+        while inner.seen < poke {
             inner = self
                 .shared
                 .passed
@@ -221,9 +317,9 @@ impl Drop for Timers {
 }
 
 /// The loop of the timer thread: fires every timer whose exact deadline has passed, then sleeps
-/// until the earliest exact deadline left, or until a new timer or the close wakes it.
+/// until the wheel's next expiration, or until it is told to look again.
 fn serve(shared: &Shared, ready: mpsc::Sender<()>) {
-    let mut fired = Vec::new();
+    let mut fired = Vec::with_capacity(TIMER_CAPACITY);
     let mut inner = lock(shared);
     let _ = ready.send(());
     drop(ready);
@@ -232,10 +328,10 @@ fn serve(shared: &Shared, ready: mpsc::Sender<()>) {
             return;
         }
         let now = shared.source.now();
-        // Under the lock, only the timers that are due move out of the wheel, O(log s) each,
-        // into a list whose capacity is kept; their entries are set once the lock is released,
-        // so a task that arms or cancels a timer never waits for that work (ADR 0117
-        // amendment of 2026-10-19, point 4).
+        // Under the lock, only the timers that are due move out of the wheel, O(1) each, into
+        // a list whose capacity is kept; their entries are set once the lock is released, so a
+        // task that arms or cancels a timer never waits for that work (ADR 0117 amendment of
+        // 2026-10-19, point 4).
         inner.wheel.advance_unordered(now, &mut fired);
         if !fired.is_empty() {
             drop(inner);
@@ -247,29 +343,41 @@ fn serve(shared: &Shared, ready: mpsc::Sender<()>) {
             // The clock is read again: time passed while the entries were set.
             continue;
         }
-        let next = inner.wheel.next_expiration();
+        let target = inner.wheel.next_expiration();
+        inner.target = target;
+        inner.look = false;
+        loop {
+            // The clock is read again before each wait, so the wait is the exact time left.
+            let now = shared.source.now();
+            if inner.look || inner.closed || target.is_some_and(|at| now >= at) {
+                break;
+            }
+            #[cfg(test)]
+            {
+                inner.seen = inner.pokes;
+                shared.passed.notify_all();
+            }
+            inner = match (&shared.source, target) {
+                (Source::Run, Some(at)) => {
+                    // The exact time left, in nanoseconds; an early or spurious wake reads the
+                    // clock again and sleeps on, and is not a pass.
+                    let left = Duration::from_nanos(at - now);
+                    shared
+                        .wake
+                        .wait_timeout(inner, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+                _ => shared
+                    .wake
+                    .wait(inner)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
         #[cfg(test)]
         {
-            inner.passes += 1;
-            shared.passed.notify_all();
+            inner.wakes += 1;
         }
-        inner = match (&shared.source, next) {
-            (Source::Run, Some(at)) => {
-                // The exact time left to the earliest deadline, in nanoseconds, not rounded to
-                // a millisecond. An early wake, spurious or for a new timer, reads the clock
-                // again and sleeps on.
-                let left = Duration::from_nanos(at.saturating_sub(now));
-                shared
-                    .wake
-                    .wait_timeout(inner, left)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0
-            }
-            _ => shared
-                .wake
-                .wait(inner)
-                .unwrap_or_else(PoisonError::into_inner),
-        };
     }
 }
 
@@ -282,6 +390,9 @@ mod tests {
 
     /// One millisecond, in nanoseconds.
     const MS: u64 = 1_000_000;
+
+    /// Whether the heavy loops run smaller, where each step is slow.
+    const SMALL: bool = cfg!(miri);
 
     /// Timers on a clock the test drives, at `origin`, with their thread started.
     fn driven(origin: u64) -> (Timers, Arc<AtomicU64>) {
@@ -309,7 +420,9 @@ mod tests {
         // the entry was set up to 1 ms early, by the phase that earlier code left.
         let origin = 17 * MS + 345;
         let (timers, now) = driven(origin);
-        let offsets = (0..MS).step_by(19_997).chain([1, MS - 1]);
+        let offsets = (0..MS)
+            .step_by(if SMALL { 199_999 } else { 19_997 })
+            .chain([1, MS - 1]);
         for offset in offsets {
             for d_ms in [1u64, 2, 65] {
                 let armed = (now.load(Ordering::SeqCst) / MS + 1) * MS + offset;
@@ -397,6 +510,15 @@ mod tests {
             set(&entry),
             "a deadline that cannot be armed counts as passed"
         );
+        // A thread the system refuses to start: the start reports it, which stops a run
+        // before `main` (`Scheduler::start_all`), and a deadline armed anyway counts as passed.
+        let refused = Timers::refusing(Source::Driven(Arc::new(AtomicU64::new(0))));
+        assert!(!refused.start());
+        assert!(!refused.running());
+        let entry = flag();
+        assert!(refused.arm(10 * MS, &entry).is_none());
+        assert!(set(&entry));
+        assert_eq!(refused.starts(), 0);
     }
 
     #[test]
@@ -410,5 +532,58 @@ mod tests {
         assert_eq!(timers.starts(), 1);
         timers.arm(MS, &flag()).unwrap();
         assert_eq!(timers.starts(), 1);
+    }
+
+    #[test]
+    fn a_history_of_cancelled_timers_leaves_no_state_and_no_later_wake() {
+        // #1151 (M1), the deterministic guard of state left by ended code: a history of 0 or
+        // 10,000 timers, of lengths from a nanosecond to an hour, armed and cancelled, as a
+        // loop of a `secret` length would, leaves the wheel empty, and the same later window,
+        // with the same live timers on the same clock, wakes the thread the same number of
+        // times and passes the same deadlines. A wheel that kept dead items, or whose
+        // placement followed the time the thread last passed, would wake for them or at other
+        // moments.
+        let start = 10_000 * MS;
+        let mut seen = Vec::new();
+        for history in [0u64, if SMALL { 500 } else { 10_000 }] {
+            let (timers, _) = driven(MS);
+            let spans = [1, 1_000, MS, 60_000 * MS, 3_600_000 * MS];
+            let mut ids = Vec::new();
+            for i in 0..history {
+                let span = spans[(i % 5) as usize];
+                let entry = flag();
+                ids.push(timers.arm(MS + 1 + (i * 7_919) % span, &entry).unwrap());
+                if i % 2 == 1 {
+                    for id in ids.drain(..) {
+                        timers.cancel(id);
+                    }
+                }
+            }
+            for id in ids.drain(..) {
+                timers.cancel(id);
+            }
+            timers.settle(start);
+            assert_eq!(timers.held(), (0, false), "after {history} cancels");
+            let before = timers.wakes();
+            let (a, b, c) = (flag(), flag(), flag());
+            timers.arm(start + MS, &a).unwrap();
+            timers.arm(start + 2 * MS + 7, &b).unwrap();
+            let long = timers.arm(start + 3_600_000 * MS, &c).unwrap();
+            for step in [
+                start + MS - 1,
+                start + MS,
+                start + 2 * MS + 6,
+                start + 2 * MS + 7,
+                start + 3 * MS,
+            ] {
+                timers.settle(step);
+            }
+            timers.cancel(long);
+            timers.settle(start + 4 * MS);
+            assert_eq!(timers.held(), (0, false));
+            seen.push((timers.wakes() - before, set(&a), set(&b), set(&c)));
+        }
+        assert_eq!(seen[0], seen[1], "{seen:?}");
+        assert_eq!((seen[0].1, seen[0].2, seen[0].3), (true, true, false));
     }
 }
