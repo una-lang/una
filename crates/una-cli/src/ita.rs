@@ -583,7 +583,7 @@ fn resolve_and_lock(
         let kept = options
             .only
             .filter(|only| !only.contains(&name))
-            .and_then(|_| existing.as_ref())
+            .and(existing.as_ref())
             .and_then(|(_, lock, _)| kept_entry(lock, need, &dependency.dir, &root));
         let entry = if let Some(kept) = kept {
             kept
