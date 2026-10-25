@@ -472,3 +472,19 @@ fn the_powers_of_ten_are_exact() {
         );
     }
 }
+
+#[test]
+fn the_decimal_paths_call_no_platform_power() {
+    // #1090: `powi` and `powf` round differently across targets (and under Miri), so no decimal
+    // conversion may call them; powers of ten come from `POW10`.
+    let source = include_str!("../decimal.rs");
+    for (line, text) in source.lines().enumerate() {
+        let code = text.split("//").next().unwrap_or("");
+        assert!(
+            !code.contains(".powi(") && !code.contains(".powf("),
+            "decimal.rs:{}: {}",
+            line + 1,
+            text.trim()
+        );
+    }
+}
