@@ -586,6 +586,29 @@ pub(crate) fn blocking<T: Send + 'static>(
     }
 }
 
+/// Gives the worker to the jobs queued before the calling task, which runs again after them:
+/// its own resume goes to the back of its worker's queue, first in, first out. Outside a task's
+/// coroutine it does nothing. O(1).
+pub(crate) fn yield_now() {
+    if !una_sys::coroutine::inside() {
+        return;
+    }
+    let running = RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map(|(worker, id, _)| (Arc::clone(worker), *id))
+    });
+    let Some((worker, id)) = running else {
+        return;
+    };
+    // The worker is this thread, so it takes the job only once the task has suspended; a wake
+    // that comes meanwhile adds a resume of its own, which the task's next wait ignores.
+    worker.push(Job::Resume(id));
+    drop(worker);
+    una_sys::coroutine::suspend();
+}
+
 /// What an interruptible wait gave: the job's result, or the interruption of its task.
 enum Waited<T> {
     Done(std::thread::Result<T>),

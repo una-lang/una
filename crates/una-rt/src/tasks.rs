@@ -1408,6 +1408,13 @@ fn task(
     // A task starts when it receives its signal to run; one told to exit, or cancelled since
     // it imported, never starts and leaves no event.
     let go = signals.go.recv().unwrap_or(false);
+    // A branch of a race that got its signal before it parked runs on without waiting, ahead
+    // of the branches before it whose resumes are queued: it lets them run first, so that on
+    // one worker the branches start in index order, as the interpreter runs them, and a winner
+    // before it is seen below.
+    if go && race.is_some() {
+        sched::yield_now();
+    }
     let cancelled = count.load(Ordering::SeqCst) <= index || template.cancelled();
     if !go || cancelled {
         values::release(closure);
