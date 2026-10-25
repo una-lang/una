@@ -1219,7 +1219,10 @@ pub(crate) fn blocking_interruptible<T: Send + 'static>(
             also();
         }
     });
-    let registration = crate::interrupt::register(entries, &wake);
+    // Set when the job begins on its helper: a deadline's cut wakes the task only before that
+    // (#1148, `started::cancel_tasks`).
+    let begun = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let registration = crate::interrupt::register_job(entries, &wake, Some(Arc::clone(&begun)));
     drop(wake);
     // A cancellation that came before the registration woke nothing: seen here, the operation
     // is never sent.
@@ -1230,6 +1233,7 @@ pub(crate) fn blocking_interruptible<T: Send + 'static>(
         return None;
     }
     let wrapped: Box<dyn FnOnce() + Send> = Box::new(move || {
+        begun.store(true, Ordering::SeqCst);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
         sender.send(Waited::Done(result));
     });
@@ -1479,90 +1483,130 @@ mod tests {
         }
     }
 
+    /// The threads of this process, as the system counts them: `/proc/self/task` on Linux,
+    /// `ps -M` on macOS, `None` elsewhere.
+    fn os_threads() -> Option<usize> {
+        if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
+            return Some(entries.count());
+        }
+        let listed = std::process::Command::new("ps")
+            .args(["-M", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        if !listed.status.success() {
+            return None;
+        }
+        Some(
+            String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .count()
+                .saturating_sub(1),
+        )
+    }
+
+    /// The test's resolver: `stall.test` is an address of TEST-NET-1, which nothing answers.
+    fn stall_lookup(name: &str, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        if name == "stall.test" {
+            return Ok(vec![std::net::SocketAddr::from(([192, 0, 2, 1], port))]);
+        }
+        std::net::ToSocketAddrs::to_socket_addrs(&(name, port)).map(Iterator::collect)
+    }
+
+    /// The test's connect function: a connection to TEST-NET-1 hangs for good, as one to an
+    /// address that drops every packet; any other is the system's.
+    fn stall_connect(
+        addr: &std::net::SocketAddr,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::net::TcpStream> {
+        if addr.ip() == std::net::IpAddr::from([192, 0, 2, 1]) {
+            loop {
+                std::thread::park();
+            }
+        }
+        std::net::TcpStream::connect_timeout(addr, timeout)
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn requests_four_times_the_pool_never_take_more_threads_than_its_helpers() {
-        // #1148: a request connects on its helper, and looks a name up on the bounded resolver
-        // pool, the client starting no thread per request, so `N` requests in flight take at most
-        // the pool's `--io-threads` threads, whatever `N` (the resolver pool's own bound is
-        // `una-http`'s `tests/resolve.rs`). Eight tasks request a server that never answers, through a
-        // pool of 2: only the 2 helpers run the client, the pool starts no more, and the server
-        // never holds more than 2 connections at once.
-        use std::io::Read;
+        // #1148: a request resolves its name and connects on the bounded pool of
+        // `una_http::resolve`, and runs its exchange on its helper, the client starting no
+        // thread per request. With 2 helpers and a pool of 2, both started first, 8 requests whose
+        // connections hang all fail with `TimedOut` at their 300 ms deadline, while the process
+        // gains no thread: a thread per request would add 8 that live as long as the hang.
+        // The pools' own counts stay at their sizes.
         const POOL: usize = 2;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let open = Arc::new(AtomicUsize::new(0));
-        let most = Arc::new(AtomicUsize::new(0));
-        let (counted, highest) = (Arc::clone(&open), Arc::clone(&most));
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let (counted, highest) = (Arc::clone(&counted), Arc::clone(&highest));
-                std::thread::spawn(move || {
-                    let now = counted.fetch_add(1, Ordering::SeqCst) + 1;
-                    highest.fetch_max(now, Ordering::SeqCst);
-                    let mut stream = stream;
-                    let mut buffer = [0u8; 1024];
-                    // Reads until the client closes the connection, and never answers.
-                    while matches!(stream.read(&mut buffer), Ok(n) if n > 0) {}
-                    counted.fetch_sub(1, Ordering::SeqCst);
-                });
-            }
-        });
+        una_http::resolve::use_test_lookup(stall_lookup);
+        una_http::resolve::use_test_connect(stall_connect);
+        una_http::resolve::start(POOL).unwrap();
         let sched = Scheduler::new(settings(2, POOL, 1));
-        let grant =
-            una_http::grant::Grant::parse(&format!("http:http://127.0.0.1:{port}:get")).unwrap();
+        sched.start_all(256 * 1024).unwrap();
+        let before = os_threads();
+        let grant = una_http::grant::Grant::parse("http:http://stall.test:get").unwrap();
         let governor = Arc::new(una_http::limit::Governor::new(vec![grant]));
-        let threads: Arc<Mutex<std::collections::BTreeSet<String>>> = Arc::default();
-        let url = format!("http://127.0.0.1:{port}/");
         let (results, outcomes) = std::sync::mpsc::channel();
         let tasks: Vec<Receiver<()>> = (0..4 * POOL)
             .map(|part| {
-                let (governor, threads, url) =
-                    (Arc::clone(&governor), Arc::clone(&threads), url.clone());
+                let governor = Arc::clone(&governor);
                 let results = results.clone();
                 start(&sched, part, move || {
                     let result = blocking(Pool::Io, move || {
-                        lock(&threads).insert(format!("{:?}", std::thread::current().id()));
                         let request = una_http::client::Request {
                             method: una_http::grant::Method::Get,
-                            url: &url,
+                            url: "http://stall.test/",
                             headers: &[],
                             body: &[],
                             bearer: None,
                         };
                         let settings = una_http::client::Settings {
                             limits: una_http::parse::Limits::default(),
-                            timeout: std::time::Duration::from_millis(200),
+                            timeout: std::time::Duration::from_millis(300),
                         };
-                        una_http::client::send_covered(
+                        let started = std::time::Instant::now();
+                        let sent = una_http::client::send_covered(
                             &request,
                             &governor,
                             &settings,
                             &una_http::client::Uninterrupted,
                             &una_http::limit::Abandon::new(),
                             una_http::client::Cover::default(),
-                        )
+                        );
+                        (sent, started.elapsed())
                     });
                     let _ = results.send(result);
                 })
             })
             .collect();
+        // While the requests wait, the process's threads are sampled.
+        let mut most = before;
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            most = match (most, os_threads()) {
+                (Some(most), Some(now)) => Some(most.max(now)),
+                (most, _) => most,
+            };
+        }
         for task in tasks {
             assert_eq!(task.recv(), Some(()));
         }
         drop(results);
         let outcomes: Vec<_> = outcomes.iter().collect();
         assert_eq!(outcomes.len(), 4 * POOL);
-        assert!(
-            outcomes
-                .iter()
-                .all(|outcome| *outcome == Err(una_http::client::Error::TimedOut)),
-            "{outcomes:?}"
-        );
-        assert!(lock(&threads).len() <= POOL, "{:?}", lock(&threads));
-        assert!(most.load(Ordering::SeqCst) <= POOL);
-        assert!(sched.started().2 <= POOL, "{:?}", sched.started());
+        for (sent, took) in &outcomes {
+            assert_eq!(sent, &Err(una_http::client::Error::TimedOut));
+            // Each waited at most its deadline and a little: never behind another's hang.
+            assert!(*took < std::time::Duration::from_millis(500), "{took:?}");
+        }
+        assert_eq!(una_http::resolve::threads(), POOL);
+        assert_eq!(sched.started().2, POOL);
+        // Other tests of this binary may start threads meanwhile, so a margin below the 8 a
+        // thread per request would add.
+        if let (Some(before), Some(most)) = (before, most) {
+            assert!(
+                most < before + 4 * POOL,
+                "{before} threads before the requests, {most} while they waited"
+            );
+        }
     }
 
     #[test]

@@ -179,13 +179,20 @@ pub fn tasks_end(cancel: i64) {
 ///   deadline as its own, an instant its helper's exchange never passes, and ends at it, at its
 ///   next I/O step, with its own `TimedOut`. Each task waits for its helper, so nothing of the
 ///   statement's work outlives it, and the argument that a deadline's cut leaves no residue
-///   holds. The count still falls to 0, so each task stops at its next check point after.
+///   holds. The count still falls to 0, so each task stops at its next check point after. Only
+///   a job that has begun on its helper is waited for: a task whose job is still queued is
+///   woken at once, and its abandon keeps the job from running at all.
+/// - **Which deadlines.** `deadline::cut` reads the `within`s that cover the block, never the
+///   deadline of a `for ever within` iteration, which cancels no task: a `tasks` statement in
+///   such a body is counted by `L_res` whatever ends it.
 ///
 /// O(1), and O(k log w) to wake the `k` waits of the scope's count among the `w` of the process
 /// ([`crate::interrupt::lowered`]).
 pub(crate) fn cancel_tasks(scope: &StartScope, by_deadline: bool) {
     scope.cancel.store(0, Ordering::SeqCst);
-    if !by_deadline {
+    if by_deadline {
+        crate::interrupt::lowered_unstarted(&scope.cancel);
+    } else {
         crate::interrupt::lowered(&scope.cancel);
     }
 }
@@ -500,12 +507,13 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
-    fn a_task_cancelled_by_a_deadline_waits_for_its_helper_and_one_cancelled_otherwise_does_not() {
+    fn a_task_cancelled_by_a_deadline_waits_for_its_running_helper_and_no_other_does() {
         // #1148, ADR 0116 amendment P9: when a deadline around a `tasks` statement cancels its
         // tasks, a task parked on a request waits for its helper, whose exchange ends by the
         // same deadline at its next I/O step, so the cut leaves nothing on the helper. Before the
         // fix every cancellation of a statement woke such a task at once, and the helper went on
-        // without it, as the second half still does for a block that failed.
+        // without it, as the second half still does for a block that failed. A task whose job
+        // is still queued, not yet on a helper, is woken at once by the cut too (third half).
         let sched = sched::Scheduler::new(una_interp::Concurrency {
             workers: 1,
             task_depth: 10,
@@ -538,6 +546,35 @@ mod tests {
             None
         );
         let _ = release.send(());
+        std::thread::sleep(wait);
+        // A deadline's cut while a job is still queued behind the only helper: the task whose
+        // job runs waits for it, and the one whose job waits in the queue is woken at once.
+        let scope = StartScope::new("s3".to_owned(), 2);
+        let (release, gate) = std::sync::mpsc::channel();
+        let running = parked_on_a_helper(&sched, &scope, gate);
+        std::thread::sleep(wait);
+        let (never, queued_gate) = std::sync::mpsc::channel::<()>();
+        let queued = parked_on_a_helper(&sched, &scope, queued_gate);
+        std::thread::sleep(wait);
+        cancel_tasks(&scope, true);
+        assert_eq!(
+            queued
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            None
+        );
+        assert!(
+            running.recv_timeout(wait).is_err(),
+            "woken before its helper"
+        );
+        release.send(()).unwrap();
+        assert_eq!(
+            running
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            Some(7)
+        );
+        drop(never);
     }
 
     #[test]

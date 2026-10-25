@@ -1428,6 +1428,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "una-core",
+ "una-http",
  "una-sys",
  "webpki-roots",
 ]

@@ -487,16 +487,19 @@ pub main() -> Unit
     )
 }
 
-/// A server for the residue oracle: it holds `/silent` open without answering, and answers
-/// `/fast` at once. Returns its port.
-fn residue_server() -> u16 {
+/// A server for the residue oracle: it holds `/silent` open without answering, counting those
+/// requests, and answers `/fast` at once. Returns its port and the count of `/silent` requests.
+fn residue_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    let silent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&silent);
     std::thread::spawn(move || {
         let held: Arc<Mutex<Vec<std::net::TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let held = Arc::clone(&held);
+            let counted = Arc::clone(&counted);
             std::thread::spawn(move || {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut request = Vec::new();
@@ -511,12 +514,13 @@ fn residue_server() -> u16 {
                 if request.split(' ').nth(1) == Some("/fast") {
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
                 } else {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     held.lock().unwrap().push(stream);
                 }
             });
         }
     });
-    port
+    (port, silent)
 }
 
 /// A package of edition `0.4` named `name` whose entry module is [`residue_program`], granted
@@ -600,7 +604,7 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
     // run of key 0 timed out, the helper held by the cancelled request for `--http-timeout`, and
     // no run of key 1 did, p about 1e-9. After it, the cancelled exchange ends at its next I/O
     // step, the helper is free again within it, and no run of either key times out.
-    let port = residue_server();
+    let (port, silent) = residue_server();
     let refused = residue_package("residuesecret", "secret ", 0, port, false);
     let checked = una(&refused, &["check", "."]);
     let said = format!(
@@ -609,7 +613,17 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
         String::from_utf8_lossy(&checked.stderr)
     );
     assert_ne!(checked.status.code(), Some(0), "{said}");
-    assert!(said.contains("U4001"), "{said}");
+    // U4001 at the later `within`, line 39 of the program, at its `attempt`: the diagnostic
+    // that names U4001, up to the next one, holds that position.
+    let at_within = said.match_indices("U4001").any(|(at, _)| {
+        let rest = &said[at..];
+        let end = rest
+            .get(1..)
+            .and_then(|tail| tail.find("[U"))
+            .map_or(rest.len(), |e| e + 1);
+        rest[..end].contains("src/residue.una:39:15")
+    });
+    assert!(at_within, "{said}");
     let _ = std::fs::remove_dir_all(&refused);
     let dirs = [
         residue_package("residuekey0", "", 0, port, true),
@@ -619,8 +633,13 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for run in 0..20 {
         for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
+            silent.store(0, std::sync::atomic::Ordering::SeqCst);
             let late = residue_timed_out(&dirs[key], names[key], run * 3 + sample);
-            eprintln!("run {run} key {key}: timed out {late}");
+            // The power check: the amplifier works on this run, key 0 leaving its request at
+            // the server and key 1 none, so the outcomes compared are those of the channel.
+            let left = silent.load(std::sync::atomic::Ordering::SeqCst);
+            eprintln!("run {run} key {key}: timed out {late}, /silent requests {left}");
+            assert_eq!(left, usize::from(key == 0), "run {run} key {key}");
             samples[sample].push(if late { 1.0 } else { 0.0 });
         }
     }
