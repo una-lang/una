@@ -16,7 +16,7 @@ mod verification;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
@@ -497,9 +497,10 @@ struct FmtOptions {
 /// `una fmt [path]` and `una fmt --check [path]` (`spec/13 §5`, ADR 0020).
 ///
 /// Files with syntax errors are reported and left untouched; the others are
-/// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
-/// printed on success. `--check` reports U7001 instead of writing.
+/// rewritten when they differ from their canonical form, each through a fresh temporary file
+/// and a rename onto the file itself or, for a symbolic link that resolves inside the package,
+/// onto its resolved target (a link leading outside it is refused), and nothing is printed on
+/// success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
@@ -536,7 +537,7 @@ fn fmt_command(
         let Some(target) = package.disk_paths.get(&id) else {
             continue;
         };
-        if let Err(error) = write_through_rename(target, &canonical) {
+        if let Err(error) = write_through_rename(&write_root(path), target, &canonical) {
             writeln!(
                 stderr,
                 "error: cannot write `{}`: {error}",
@@ -555,29 +556,142 @@ fn fmt_command(
     )
 }
 
-/// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so
-/// that an interrupted write never leaves a truncated source.
+/// Replaces the file `target` with `text` through a fresh temporary file and a rename, so an
+/// interrupted write never leaves a truncated file.
 ///
-/// A symbolic link is resolved first, so the rename lands on the file the link points to and
-/// the link itself is kept (review finding R-024).
-fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
-    let resolved;
-    let target = if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
-        resolved = std::fs::canonicalize(target)?;
-        resolved.as_path()
-    } else {
-        target
+/// The temporary file is created next to the destination with `create_new` (`O_CREAT|O_EXCL`,
+/// which never follows a symbolic link at its name), under a name unique to this process and
+/// write, with mode 0600 on Unix until it takes the destination's permissions. Anything already
+/// at that name, a planted link included, is never written through (#1160).
+///
+/// A symbolic link at `target` is written through onto the file it resolves to (review finding
+/// R-024) only when that file, and the directory it lives in, resolve inside `root`. Otherwise
+/// the write is refused, naming the link and where it leads: a cloned repository can choose a
+/// target link as easily as a temporary one.
+fn write_through_rename(root: &Path, target: &Path, text: &str) -> io::Result<()> {
+    write_atomically(root, target, text, false)
+}
+
+/// The body of [`write_through_rename`]; `create` allows a target that does not exist yet.
+fn write_atomically(root: &Path, target: &Path, text: &str, create: bool) -> io::Result<()> {
+    let root = std::fs::canonicalize(root)?;
+    let destination = match std::fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let resolved = std::fs::canonicalize(target)?;
+            if !resolved.starts_with(&root) {
+                return Err(outside(target, &resolved));
+            }
+            resolved
+        }
+        Ok(_) => target.to_path_buf(),
+        Err(error) if create && error.kind() == io::ErrorKind::NotFound => target.to_path_buf(),
+        Err(error) => return Err(error),
     };
-    let name = target
+    let directory = match destination.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let directory = std::fs::canonicalize(&directory)?;
+    if !directory.starts_with(&root) {
+        return Err(outside(target, &directory));
+    }
+    let name = destination
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temporary = target.with_file_name(format!(".{name}.fmt-tmp"));
-    std::fs::write(&temporary, text)?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        std::fs::set_permissions(&temporary, metadata.permissions())?;
+    let destination = directory.join(&name);
+    let permissions = std::fs::metadata(&destination)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let (temporary, mut file) = fresh_temporary(&directory, &name)?;
+    let written = fill_and_rename(file, &temporary, &destination, permissions, text);
+    if written.is_err() {
+        // The name was created by this write alone, so removing it removes no one else's file.
+        let _ = std::fs::remove_file(&temporary);
     }
-    std::fs::rename(&temporary, target)
+    written
+}
+
+/// Writes `text` into the fresh `file`, gives it `permissions` (or those of a new file), syncs
+/// it and renames it from `temporary` onto `destination`.
+fn fill_and_rename(
+    mut file: std::fs::File,
+    temporary: &Path,
+    destination: &Path,
+    permissions: Option<std::fs::Permissions>,
+    text: &str,
+) -> io::Result<()> {
+    file.write_all(text.as_bytes())?;
+    match permissions {
+        Some(permissions) => file.set_permissions(permissions)?,
+        None => fresh_permissions(&file)?,
+    }
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(temporary, destination)
+}
+
+/// The package directory a command given `path` writes in: `path` itself, or the directory of a
+/// single file.
+fn write_root(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        return path.to_path_buf();
+    }
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// The error for a write whose destination resolves outside the package directory.
+fn outside(target: &Path, resolved: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "`{}` leads to `{}`, outside the package; it is not written through",
+            target.display(),
+            resolved.display()
+        ),
+    )
+}
+
+/// Creates a new temporary file in `directory` for a write of `name`: exclusively, so nothing
+/// already at the chosen name is opened, retrying a few unique names before giving up.
+fn fresh_temporary(directory: &Path, name: &str) -> io::Result<(PathBuf, std::fs::File)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let process = std::process::id();
+    let mut last = None;
+    for _ in 0..16 {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temporary = directory.join(format!(".{name}.{process}.{serial}.una-tmp"));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("no fresh temporary name")))
+}
+
+/// The permissions of a file the write creates: 0644 on Unix, readable by all and writable by
+/// its owner, as the file would have under the usual umask.
+fn fresh_permissions(file: &std::fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Ok(())
 }
 
 /// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current

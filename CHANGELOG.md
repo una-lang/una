@@ -4,11 +4,12 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## v0.1.13
 
-v0.1.12 with the #1071 fix: records and function values release what they hold by a worklist.
+v0.1.12 with two security fixes: records and function values release what they hold by a worklist (#1071), and `una fmt` never writes through a symbolic link planted at its temporary file (#1160).
 
 ### Security
 
 - **A deep value is released without recursion** (#1071, advisory UNA-SA-017). `fold` builds a value deeper than the call depth without deep calls, through records or function values, and the interpreter released such a value by recursion on the native stack, one level per level of the value, so a deep enough value overflowed the stack of `una run` and aborted the process, in every release up to v0.1.12. Records and function values now release what only they hold by one worklist. Reaching the overflow at the default `--max-depth` takes a value of about 650,000 levels, which costs quadratic time to build in this line; a lower `--max-depth` reaches it sooner.
+- **`una fmt` never writes through a planted link** (#1160, advisory UNA-SA-018). It replaced a file by writing a temporary file at a fixed name next to it (`.<name>.fmt-tmp`) with a write that follows a symbolic link at that name, so a link that a repository commits there could have a run of `una fmt` overwrite a file outside the repository, in every release up to v0.1.12. The temporary file is now created exclusively, under a name unique to the write, with mode 0600 until it takes the destination's permissions. A source that is a symbolic link is still written through onto the file it resolves to only when that file is inside the package; a link that leads outside it is refused.
 
 ## v0.1.12
 
