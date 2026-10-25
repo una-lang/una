@@ -1,0 +1,7 @@
+ita-owner/1
+source acme
+owner acme
+previous 7 sha256:aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04
+event revoke
+fingerprint 0101010101010101010101010101010101010101010101010101010101010101
+compromised 5
