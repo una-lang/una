@@ -1661,3 +1661,103 @@ fn an_effect_line_passes_the_audit_for_its_effect() {
     let facts = audit::facts(&mut client, &forged).unwrap();
     assert_eq!(facts.pending, [request], "{facts:?}");
 }
+
+// --- Co-signer changes wait, and competing requests freeze (the ADR 0122 amendment) ---------
+
+const DAY: u64 = 86_400;
+
+/// A pending change of recovery co-signers is reported by the audit, as a pending recovery is.
+#[test]
+fn the_audit_reports_a_pending_cosigner_change() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW - 100);
+    let resolution = test.entries.len() as u64;
+    let trustee = keypair(67, "trustee.x");
+    let change = test.owner_event(
+        "acme",
+        &format!("cosigners 1 {}", support::key_text(&trustee.1)),
+        1,
+        &[&owner],
+    );
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution,
+        accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
+    };
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert_eq!(facts.pending, [change], "{facts:?}");
+}
+
+/// A chain frozen by competing disputes is not audited as clean: its facts are refused (U7010),
+/// naming the freeze; and a yank logged from the freeze on is void.
+#[test]
+fn a_frozen_owner_chain_is_refused_by_the_audit() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW - 30 * DAY);
+    let resolution = test.entries.len() as u64;
+    let first = keypair(68, "acme.first");
+    let second = keypair(69, "acme.second");
+    test.recover("acme", "dispute", &first.1, &[]);
+    test.checkpoint(NOW - 29 * DAY);
+    let freeze = test.recover("acme", "dispute", &second.1, &[]);
+    test.checkpoint(NOW - 28 * DAY);
+    let yank = format!(
+        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.1\n{}",
+        test.previous("acme/ledger")
+    );
+    let document = support::signed(&yank, &[&owner]);
+    test.append("acme/ledger", &document);
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let marks = client.marks("acme/ledger").unwrap();
+    assert!(marks.yanked.is_empty(), "{marks:?}");
+    assert_eq!(marks.voided.len(), 1);
+    let locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution,
+        accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
+    };
+    let refusal = audit::facts(&mut client, &locked).unwrap_err();
+    assert!(refusal.contains("frozen"), "{refusal}");
+    assert!(refusal.contains(&format!("position {freeze}")), "{refusal}");
+}

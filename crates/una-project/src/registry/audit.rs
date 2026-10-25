@@ -56,8 +56,8 @@ pub struct Facts {
     pub compromised: bool,
     /// The log entry since which the key that signed it is compromised, when one is.
     pub compromised_since: Option<u64>,
-    /// The log indexes of the recoveries and disputes pending for its owner, but those the lock
-    /// accepted.
+    /// The log indexes of the recoveries, disputes and co-signer changes pending for its owner,
+    /// but those the lock accepted (the owner replay's `History::pending`).
     pub pending: Vec<u64>,
     /// The log indexes of its owner's key changes at or after the lock's resolution point, but
     /// those the lock accepted and those still pending.
@@ -90,6 +90,14 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     }
     let marks = registry.marks(&locked.name)?;
     let history = registry.history(owner_of(&locked.name))?;
+    // A chain frozen by competing recoveries or disputes resolves to no one (rule 38.1, the
+    // amendment on competing requests): the package cannot be audited as clean (U7010).
+    if let Some(from) = history.frozen {
+        return Err(format!(
+            "the chain of the owner `{}` is frozen from the log position {from} by competing recoveries or disputes; the owner registers again under a new owner name",
+            history.owner
+        ));
+    }
     let advisories = marks
         .advised
         .get(&locked.version)
@@ -109,9 +117,6 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     } else {
         None
     };
-    // Recorded consent counts as `una ita lock --check` counts it
-    // (`History::changed_after_except`): an accepted entry, and the effect it requested, are
-    // not reported again; a new one is.
     // The consent the lock records counts as `una ita lock --check` counts it (`spec/30 §14`
     // rule 8): an index below the resolution point that is, there, a recovery or a dispute of
     // the owner's chain; pending and not cancelled for an `accepted` line, in effect for an
@@ -204,7 +209,8 @@ pub enum Kind {
         /// The entry since which a key that signed it is compromised, when one is.
         since: Option<u64>,
     },
-    /// A recovery or a dispute of its owner is pending, logged at this index.
+    /// A recovery, a dispute or a co-signer change of its owner is pending, logged at this
+    /// index.
     PendingRecovery(u64),
     /// A key change of its owner since the resolution point, from this log position.
     KeyChange(u64),
@@ -249,7 +255,7 @@ impl Finding {
                 "{version} counts only with keys that void entries of its owner's chain brought in"
             ),
             Kind::PendingRecovery(index) => format!(
-                "a recovery of the owner `{}` is pending (log entry {index})",
+                "a recovery, a dispute or a change of recovery co-signers of the owner `{}` is pending (log entry {index})",
                 owner_of(&locked.name)
             ),
             Kind::KeyChange(index) => format!(
