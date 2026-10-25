@@ -413,11 +413,14 @@ fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The program of the history of a limit (ADR 0116 P8, issue #1147), with the secret `key`:
-/// `run` makes a request, spends time bounded by `key`, and makes a second, which `fetch` cuts
-/// after 300 ms. With one request per second, the second waits about a second less the time
-/// `crunch` took, so it is sent only when `crunch` took more than 700 ms.
-fn history_program(port: u16, key: u64) -> String {
+/// The program of the history of a limit (ADR 0116 P8, issue #1147), with `key` labeled
+/// `secret` when `secretly`, and `public` otherwise, the program being the same but for that
+/// label: `run` makes a request, spends time bounded by `key`, and makes a second, which
+/// `fetch` cuts after 300 ms. With one request per second, the second waits about a second less
+/// the time `crunch` took, so it is sent only when `crunch` took more than 700 ms: the limit
+/// and the cut amplify a difference of time into a difference of requests the server receives.
+fn history_program(port: u16, key: u64, secretly: bool) -> String {
+    let label = if secretly { "secret " } else { "" };
     format!(
         r#"module history
 
@@ -429,14 +432,14 @@ fetch(url: Text) -> Unit
   let outcome = attempt @http.get(url, headers: [], key_name: None) within 300 * millisecond
   unit
 
-crunch(key: secret Int) -> secret Int
+crunch(key: {label}Int) -> {label}Int
 =
-  let edit total: secret Int = 0
+  let edit total: {label}Int = 0
   for i in 0..<key
     total = total + i % 7
   total
 
-run(url: Text, key: secret Int) -> Unit
+run(url: Text, key: {label}Int) -> Unit
   uses @http: Http[get]
 =
   fetch(url)
@@ -446,68 +449,106 @@ run(url: Text, key: secret Int) -> Unit
 pub main() -> Unit
   uses @http: Http[get]
 =
-  let key: secret Int = {key}
+  let key: {label}Int = {key}
   run("http://127.0.0.1:{port}/a", key: key)
 "#
+    )
+}
+
+/// What the outside sees of one run of the history program, interpreted or native: its exit
+/// status, its output, and how many requests the server received.
+fn observe_history(
+    server: &Server,
+    key: u64,
+    secretly: bool,
+    native: bool,
+) -> (Option<i32>, String, usize) {
+    let port = server.port;
+    let limited = format!("http:http://127.0.0.1:{port}:get;1/second");
+    let dir = std::env::temp_dir().join(format!(
+        "una-limits-history-{key}-{secretly}-{native}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita history\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry history\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/history.una"),
+        history_program(port, key, secretly),
+    )
+    .unwrap();
+    server.take();
+    let output = if native {
+        let built = una(&dir, &["build", "."]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        Command::new(dir.join("target/una/history"))
+            .args(["--grant", &limited])
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    } else {
+        una(&dir, &["run", ".", "--grant", &limited])
+    };
+    let received = server.take();
+    let _ = std::fs::remove_dir_all(&dir);
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        received,
     )
 }
 
 #[test]
 fn the_history_of_a_limit_does_not_depend_on_a_secret_on_the_real_clock() {
     // A two-run differential (ADR 0116, slice T1): the same program twice, changing only the
-    // `secret` `key`, under the real clock, with one request per second given at start-up. What
+    // `secret` `key`, under the real clock, with one request per second given at start-up; what
     // the outside sees, the exit status, the output and the requests the server receives, must
-    // be the same in both runs. Before the fix of #1147, `L_lim` covered only `fetch`, whose
-    // timing is `internal`, so both runs started: with `key` 0 the second request waited past
-    // its 300 ms and was never sent, the server receiving one request, and with `key` large
-    // `crunch` took over 700 ms and the server received two, so the server learned the secret.
-    // Now `run`, an ancestor of the request, makes `L_lim` `secret`, and both runs are refused
-    // before `main`, the same way.
+    // be the same in both runs, in each engine.
+    //
+    // The work for the large `key` is sized per engine to take well over the 700 ms window: 30
+    // million iterations interpreted, 3 billion native.
     let server = Server::start();
-    let port = server.port;
-    let limited = format!("http:http://127.0.0.1:{port}:get;1/second");
-    let mut observed = Vec::new();
-    for key in [0u64, 20_000_000] {
-        let dir = package(
-            &format!("history{key}"),
-            &format!("    http \"http://127.0.0.1:{port}\" get\n"),
-            &history_program(port, key),
+    for native in [false, true] {
+        let (small, large): (u64, u64) = if native {
+            (0, 3_000_000_000)
+        } else {
+            (0, 30_000_000)
+        };
+        // The positive control: the twin whose `key` is `public` is accepted under the same
+        // grant, so the limits work, and its two runs differ, one request against two, so the
+        // amplifier detects the difference of time on this machine.
+        let control = [
+            observe_history(&server, small, false, native),
+            observe_history(&server, large, false, native),
+        ];
+        assert_eq!(
+            control,
+            [(Some(0), String::new(), 1), (Some(0), String::new(), 2)],
+            "the control, native {native}"
         );
-        // The entry is `history`: the package's own module name differs only for the paths.
-        std::fs::write(
-            dir.join("ita.una"),
-            format!(
-                "ita history\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry history\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"
-            ),
-        )
-        .unwrap();
-        let module = dir.join(format!("src/history{key}.una"));
-        std::fs::rename(&module, dir.join("src/history.una")).unwrap();
-        let run = una(&dir, &["run", ".", "--grant", &limited]);
-        let received = server.take();
-        observed.push((
-            run.status.code(),
-            String::from_utf8_lossy(&run.stdout).into_owned(),
-            received,
-        ));
-        let built = una(&dir, &["build", "."]);
-        assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let native = Command::new(dir.join("target/una/history"))
-            .args(["--grant", &limited])
-            .current_dir(&dir)
-            .output()
-            .unwrap();
-        let received = server.take();
-        observed.push((
-            native.status.code(),
-            String::from_utf8_lossy(&native.stdout).into_owned(),
-            received,
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        // The differential. Before the fix of #1147, `L_lim` covered only `fetch`, whose timing
+        // is `internal`, so the `secret` program ran as the control does: the server received
+        // 1 request when `key` was 0 and 2 when it was large, in each engine, and so learned
+        // the secret. Now `run`, an ancestor of the request, makes `L_lim` `secret`, and both
+        // runs are refused before `main`, exit code 2, the same way.
+        let secret = [
+            observe_history(&server, small, true, native),
+            observe_history(&server, large, true, native),
+        ];
+        assert_eq!(secret[0], secret[1], "native {native}: {secret:?}");
+        assert_eq!(secret[0], (Some(2), String::new(), 0), "native {native}");
     }
-    assert_eq!(observed[0], observed[2], "una run: {observed:?}");
-    assert_eq!(observed[1], observed[3], "the executable: {observed:?}");
-    assert_eq!(observed[0], (Some(2), String::new(), 0), "{observed:?}");
 }
 
 /// A program whose request is made after work on a `secret` parameter when `secretly`, so its

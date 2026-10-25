@@ -790,6 +790,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
                 self.resolved(call.span, Res::Handler { id });
+                self.graph_install(id);
                 if let Some(current) = self.current {
                     self.findings.installs.insert((current, id));
                 }

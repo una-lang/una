@@ -2311,34 +2311,26 @@ pub(crate) fn limit_timing(
     let mut sites: Vec<&super::timing::LimitSite> = limits.sites.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.span);
-    let name = |f: usize| {
-        env.functions.get(f).map_or_else(String::new, |def| {
-            let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
-            format!("{module}.{}", def.name)
-        })
-    };
     for site in sites {
         if site.label.flows_to(&internal) {
             continue;
         }
-        let holder = site.function;
-        let by = match site.raiser {
-            Some(super::timing::Raiser::Function(f)) if Some(f) == holder => {
-                format!("the work of `{}`, which makes it", name(f))
+        let (by, raised) = match &site.raiser {
+            Some(super::timing::Raiser::Ancestor(name, label, own)) => {
+                let how = if *own { "which makes it" } else { "which leads to it" };
+                (format!("the work of {name}, {how}"), label.clone())
             }
-            Some(super::timing::Raiser::Function(f)) => {
-                format!("the work of `{}`, which leads to it", name(f))
-            }
-            Some(super::timing::Raiser::Beside) | None => {
-                "tasks that can run beside it".to_owned()
-            }
+            Some(super::timing::Raiser::Beside) | None => (
+                "tasks that can run beside it".to_owned(),
+                site.label.clone(),
+            ),
         };
         let mut diagnostic = report.make(
             Code::U4001,
             site.span,
             format!(
-                "the grant `{}` of {section} has limits, so this request must be timed by `internal` data at most, but when it is made depends on {by}, labeled `{}`",
-                grant.value, site.label
+                "the grant `{}` of {section} has limits, so this request must be timed by `internal` data at most, but when it is made depends on {by}, labeled `{raised}`",
+                grant.value
             ),
         );
         diagnostic.repairs.push(Report::advice(format!(

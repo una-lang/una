@@ -1,0 +1,28 @@
+-- test: the history of a limit through a lambda and a handler (ADR 0116 P1, P8, ADR 0117 IF4): the request in `fetch` is called only from a lambda, whose calls leave from the one node of every lambda, which the handler `relay` reaches by calling its function parameter; a handler that calls a function value has the timing label `⊤` (IF5 item 4), so the request is U4001
+-- spec: spec/27 §9
+-- expect: error U4001 at src/relay.una:13:25
+module relay
+
+capability Work
+  op go(url: Text) -> Unit
+
+--- One request, whose failure it handles.
+fetch(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+handler relay(each: fn(Text) -> Unit uses @http: Http[get]) for Work
+  uses @http: Http[get]
+  op go(url) = each(url)
+
+serve(url: Text) -> Unit
+  uses @work: Work[go]
+=
+  @work.go(url)
+
+pub run(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  serve(url) with @work = relay(each: fn(u) -> fetch(u))

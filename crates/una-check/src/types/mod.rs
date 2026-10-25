@@ -996,6 +996,13 @@ pub(crate) struct Findings {
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
+    /// operations or a lambda (`Λ`), to a function called or named.
+    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The nodes of that graph that call a function value, and so reach `Λ`.
+    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
+    /// The handlers each node of that graph installs.
+    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

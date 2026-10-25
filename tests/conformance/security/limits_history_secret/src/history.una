@@ -12,7 +12,7 @@ fetch(url: Text) -> Unit
 
 crunch(key: secret Int) -> secret Int = key * 3
 
-pub run(key: secret Int, url: Text) -> Unit
+pub run(url: Text, key: secret Int) -> Unit
   uses @http: Http[get]
 =
   fetch(url)

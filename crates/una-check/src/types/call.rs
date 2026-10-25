@@ -212,6 +212,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
+                self.graph_value_call();
                 self.timing_value_call();
             }
             return ty;
@@ -449,6 +450,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
+        self.graph_value_call();
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();

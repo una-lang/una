@@ -86,6 +86,19 @@ pub(crate) struct HttpSite {
     pub(crate) unplaced: bool,
 }
 
+/// Where a call is written, as a node of the call graph of ADR 0116 P1: the body of a function,
+/// the operations of a handler, or a lambda, all lambdas being one node (`Λ`), which every
+/// function or handler that calls a function value reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Caller {
+    /// The body of a function.
+    Function(usize),
+    /// The operations of a handler.
+    Handler(usize),
+    /// A lambda, wherever it is written.
+    Lambda,
+}
+
 /// One frame of [`Checker::timing_start`]: where the site's locals start, and its seed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TimingFrame {
@@ -119,6 +132,40 @@ impl Checker<'_, '_, '_> {
             || self.task_depth > 0
             || !self.tasks_frames.is_empty()
             || self.current.is_none()
+    }
+
+    /// The node of the call graph whose code is being checked (ADR 0116 P1): a lambda, then a
+    /// handler's operation, then a function; `None` elsewhere, as in a constant.
+    pub(crate) fn caller(&self) -> Option<Caller> {
+        if self.lambda_depth > 0 {
+            Some(Caller::Lambda)
+        } else if let Some(handler) = self.handler {
+            Some(Caller::Handler(handler))
+        } else {
+            self.current.map(Caller::Function)
+        }
+    }
+
+    /// Records a call of, or a reference to, the function `callee` from the code being checked,
+    /// in the call graph of ADR 0116 P1.
+    pub(crate) fn graph_call(&mut self, callee: usize) {
+        if let Some(from) = self.caller() {
+            self.findings.calls.insert((from, callee));
+        }
+    }
+
+    /// Records that the code being checked calls a function value, so it reaches `Λ`.
+    pub(crate) fn graph_value_call(&mut self) {
+        if let Some(from) = self.caller() {
+            self.findings.value_calls.insert(from);
+        }
+    }
+
+    /// Records that the code being checked installs the handler `handler`.
+    pub(crate) fn graph_install(&mut self, handler: usize) {
+        if let Some(from) = self.caller() {
+            self.findings.caller_installs.insert((from, handler));
+        }
     }
 
     /// Records an operation of the host's `Http` at `span`, for `L_lim` (ADR 0117 IF4).
@@ -201,12 +248,13 @@ impl Checker<'_, '_, '_> {
     }
 }
 
-/// Why a request's label is what it is, for the message of U4001 (ADR 0117 IF4, ADR 0116 P8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What raised a request's label, for the message of U4001 (ADR 0117 IF4, ADR 0116 P8).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Raiser {
-    /// The body of this function, the one that holds the request or one of its ancestors in the
-    /// call graph, with what it reaches.
-    Function(usize),
+    /// The nearest ancestor of the request in the call graph whose body is above `internal`, the
+    /// function that makes the request included: how a message names it, its body's label, and
+    /// whether it is the function that makes the request.
+    Ancestor(String, Label, bool),
     /// Tasks that can run beside the request (`τ_conc` of the preview, `⊤`).
     Beside,
 }
@@ -216,12 +264,10 @@ pub(crate) enum Raiser {
 pub(crate) struct LimitSite {
     /// The request.
     pub(crate) span: una_syntax::Span,
-    /// The function that holds it.
-    pub(crate) function: Option<usize>,
     /// The join of `τ⁰` of the bodies of every ancestor of its function, its function included,
     /// and `τ_conc` at it.
     pub(crate) label: Label,
-    /// The first source of that label above `internal`, when there is one.
+    /// What raised that label above `internal`, when it is.
     pub(crate) raiser: Option<Raiser>,
 }
 
@@ -341,59 +387,42 @@ fn close<T: Clone>(succ: &[Vec<usize>], local: &[T], join: impl Fn(&T, &T) -> T)
 }
 
 /// `L_lim` of the package and the label of each request (ADR 0117 IF4, as ADR 0116 P8 states
-/// it, slice T1): the label of a request is the join of `τ⁰` of the body of every node from
-/// which its function can be reached in the call graph, its own function included, and of
-/// `τ_conc` at it, the preview's: `⊤` for a request inside a lambda, a task or a handler's
+/// it, slice T1): the label of a request is the join of `τ⁰` of the body of every node of the
+/// call graph from which the function that makes it can be reached, that function included, and
+/// of `τ_conc` at it, the preview's: `⊤` for a request inside a lambda, a task or a handler's
 /// operation, or in a function that a part of a task construct can reach. The code that runs
 /// between two requests of one task lies in the body of an ancestor of the later one, or in
 /// what such a body calls, so the ancestors' `τ⁰` covers it.
 ///
-/// `τ⁰` of a body is the label of its parameters joined with `down` of the function: the
-/// labels of everything it reaches, by the one rule of [`timing`]: the operations of the
-/// functions reached and the handlers that can serve them, with their parameters and the
-/// operations they need, the handlers the functions reached install, a call of a function value,
-/// and a prelude function with a function parameter.
+/// **The graph** is that of ADR 0116 P1, built from the calls the checking recorded
+/// ([`Checker::graph_call`]), not from the call edges of functions alone:
+/// - a node per function, per handler, per capability and per operation, and one node `Λ` for
+///   every lambda;
+/// - a function or a handler goes to what its code calls, to the operations of its `uses`, to
+///   the handlers it installs, and to `Λ` when it calls a function value; a prelude function
+///   with a function parameter goes to `Λ` too;
+/// - an operation goes to its capability, a capability to every handler of it, and `Λ` to what
+///   lambdas call and to every function named as a value.
 ///
-/// Linear: one graph of the functions, the handlers, the capabilities and the operations, whose
-/// `down` labels one pass of strongly connected components joins, then one more pass over the
-/// reversed call graph for the ancestors. O(F + H + C + O + E) label joins, for `F` functions,
-/// `H` handlers, `C` capabilities, `O` operations and `E` edges, with no search per request.
+/// So the operations of a handler, which a function reaches through an operation of the
+/// handler's capability, are ancestors of what they call, and so are the functions that call a
+/// value, of what a lambda calls.
+///
+/// **`τ⁰` of a body** is its parameters' labels joined with `down` of its node: the labels of
+/// everything it reaches, by the one rule of [`timing`]: the operations' `ρ`, the handlers'
+/// parameters, a call of a function value, and a prelude function with a function parameter
+/// (`⊤`). `Λ`'s body is `⊤` (IF5 item 4); an operation's is its `ρ`, a capability's `public`.
+///
+/// **Linear.** `down` is one pass over the strongly connected components of the graph, the join
+/// over the ancestors one pass over those of the reversed graph, and the nearest ancestor above
+/// `internal`, for the message, one breadth-first search from all such nodes at once:
+/// O(F + H + C + O + E) label joins and steps, for `F` functions, `H` handlers, `C`
+/// capabilities, `O` operations and `E` edges, with no search per request.
 pub(crate) fn limit_labels(
     env: &Env<'_>,
     findings: &Findings,
     concurrent: &BTreeSet<usize>,
 ) -> LimitLabels {
-    if findings.http_sites.is_empty() {
-        return LimitLabels {
-            label: Label::public(),
-            sites: Vec::new(),
-        };
-    }
-    let kinds = env.kind_labels.as_ref();
-    let top = Label::top(&env.categories);
-    let functions = env.functions.len();
-    let handlers = env.handlers.len();
-    let capabilities = env.capabilities.len();
-    let handler_node = |h: usize| functions + h;
-    let cap_node = |c: usize| functions + handlers + c;
-    // The operations named by any `uses`, each one node after the capabilities.
-    let mut ops: BTreeMap<(CapId, String), usize> = BTreeMap::new();
-    let needs = env
-        .functions
-        .iter()
-        .flat_map(|f| f.uses.iter())
-        .chain(env.handlers.iter().flat_map(|h| h.uses.iter()));
-    for need in needs {
-        if let Some(cap) = need.usage.capability {
-            for op in &need.usage.ops {
-                let at = functions + handlers + capabilities + ops.len();
-                ops.entry((cap, op.clone())).or_insert(at);
-            }
-        }
-    }
-    let nodes = functions + handlers + capabilities + ops.len();
-    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); nodes];
-    let mut local: Vec<Label> = vec![Label::public(); nodes];
     fn add(succ: &mut [Vec<usize>], from: usize, to: usize) {
         if let Some(edges) = succ.get_mut(from) {
             edges.push(to);
@@ -413,35 +442,70 @@ pub(crate) fn limit_labels(
         }
         out
     }
-    for (f, def) in env.functions.iter().enumerate() {
-        let mut own = Label::public();
-        if findings.value_callers.contains(&f) {
-            own = top.clone();
+    if findings.http_sites.is_empty() {
+        return LimitLabels {
+            label: Label::public(),
+            sites: Vec::new(),
+        };
+    }
+    let kinds = env.kind_labels.as_ref();
+    let top = Label::top(&env.categories);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let functions = env.functions.len();
+    let handlers = env.handlers.len();
+    let capabilities = env.capabilities.len();
+    let handler_node = |h: usize| functions + h;
+    let cap_node = |c: usize| functions + handlers + c;
+    // The operations named by any `uses`, each one node after the capabilities; `Λ` last.
+    let mut ops: BTreeMap<(CapId, String), usize> = BTreeMap::new();
+    let needs = env
+        .functions
+        .iter()
+        .flat_map(|f| f.uses.iter())
+        .chain(env.handlers.iter().flat_map(|h| h.uses.iter()));
+    for need in needs {
+        if let Some(cap) = need.usage.capability {
+            for op in &need.usage.ops {
+                let at = functions + handlers + capabilities + ops.len();
+                ops.entry((cap, op.clone())).or_insert(at);
+            }
         }
-        // A prelude function that applies a function argument, such as `map`.
+    }
+    let lambda = functions + handlers + capabilities + ops.len();
+    let nodes = lambda + 1;
+    let node_of = |caller: Caller| match caller {
+        Caller::Function(f) => (f < functions).then_some(f),
+        Caller::Handler(h) => (h < handlers).then(|| handler_node(h)),
+        Caller::Lambda => Some(lambda),
+    };
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+    // What each node adds to `down` itself, and what its body is, for the ancestors.
+    let mut local: Vec<Label> = vec![Label::public(); nodes];
+    for (f, def) in env.functions.iter().enumerate() {
+        // A call of a function value anywhere in the function, its lambdas' included (IF5 item
+        // 4), as `timing` counts it.
+        if findings.value_callers.contains(&f)
+            && let Some(slot) = local.get_mut(f)
+        {
+            *slot = top.clone();
+        }
+        // A prelude function that applies a function argument, such as `map`, runs lambdas.
         if def.module >= env.prelude
             && def
                 .params
                 .iter()
                 .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
         {
-            own = top.clone();
-        }
-        if let Some(slot) = local.get_mut(f) {
-            *slot = own;
+            if let Some(slot) = local.get_mut(f) {
+                *slot = top.clone();
+            }
+            add(&mut succ, f, lambda);
         }
         for to in op_edges(&ops, &def.uses) {
             add(&mut succ, f, to);
-        }
-    }
-    for &(caller, callee, _) in &findings.edges {
-        if caller < functions && callee < functions {
-            add(&mut succ, caller, callee);
-        }
-    }
-    for &(f, h) in &findings.installs {
-        if f < functions && h < handlers {
-            add(&mut succ, f, handler_node(h));
         }
     }
     for (h, handler) in env.handlers.iter().enumerate() {
@@ -465,6 +529,37 @@ pub(crate) fn limit_labels(
             add(&mut succ, cap_node(cap), handler_node(h));
         }
     }
+    for &(from, callee) in &findings.calls {
+        if let Some(from) = node_of(from)
+            && callee < functions
+        {
+            add(&mut succ, from, callee);
+        }
+    }
+    for &from in &findings.value_calls {
+        if let Some(node) = node_of(from) {
+            if let Some(slot) = local.get_mut(node) {
+                *slot = top.clone();
+            }
+            add(&mut succ, node, lambda);
+        }
+    }
+    for &(from, h) in &findings.caller_installs {
+        if let Some(from) = node_of(from)
+            && h < handlers
+        {
+            add(&mut succ, from, handler_node(h));
+        }
+    }
+    // A function named as a value may run wherever a value is called.
+    for &f in &findings.function_values {
+        if f < functions {
+            add(&mut succ, lambda, f);
+        }
+    }
+    if let Some(slot) = local.get_mut(lambda) {
+        *slot = top.clone();
+    }
     for (&(cap, ref op), &node) in &ops {
         let Some(capability) = env.capabilities.get(cap) else {
             continue;
@@ -484,44 +579,95 @@ pub(crate) fn limit_labels(
         add(&mut succ, node, cap_node(cap));
     }
     let down = close(&succ, &local, |a: &Label, b: &Label| a.join(b));
-    // `τ⁰` of each body: its parameters, and what it reaches.
-    let body: Vec<Label> = (0..functions)
-        .map(|f| {
-            let params = env.functions.get(f).map_or_else(Label::public, |def| {
-                def.params.iter().fold(Label::public(), |label, param| {
-                    label.join(&param.ty.base.deep_label(kinds))
-                })
-            });
-            down.get(f).map_or(params.clone(), |d| params.join(d))
+    // `τ⁰` of each node's body: a function's parameters and what it reaches; a handler's
+    // parameters, in its `local`, and what it reaches; an operation's `ρ`; `Λ`'s `⊤`.
+    let body: Vec<Label> = (0..nodes)
+        .map(|node| {
+            if node < functions {
+                let params = env.functions.get(node).map_or_else(Label::public, |def| {
+                    def.params.iter().fold(Label::public(), |label, param| {
+                        label.join(&param.ty.base.deep_label(kinds))
+                    })
+                });
+                down.get(node).map_or(params.clone(), |d| params.join(d))
+            } else if node < functions + handlers {
+                down.get(node).cloned().unwrap_or_else(|| top.clone())
+            } else {
+                local.get(node).cloned().unwrap_or_else(|| top.clone())
+            }
         })
         .collect();
-    // The ancestors: the reversed call graph, closed once.
-    let mut callers: Vec<Vec<usize>> = vec![Vec::new(); functions];
-    for &(caller, callee, _) in &findings.edges {
-        if caller < functions
-            && let Some(up) = callers.get_mut(callee)
-        {
-            up.push(caller);
+    // The ancestors: the reversed graph, closed once.
+    let mut pred: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+    for (from, tos) in succ.iter().enumerate() {
+        for &to in tos {
+            add(&mut pred, to, from);
         }
     }
-    let internal = Label {
-        level: una_syntax::ast::Level::Internal,
-        ..Label::public()
-    };
-    let up = close(&callers, &body, |a: &Label, b: &Label| a.join(b));
-    // The ancestor that raises a request above `internal`: the least such function, its own
-    // function first.
-    let raising: Vec<Option<usize>> = body
-        .iter()
-        .enumerate()
-        .map(|(f, label)| (!label.flows_to(&internal)).then_some(f))
-        .collect();
-    let raised_by = close(&callers, &raising, |a: &Option<usize>, b: &Option<usize>| {
-        match (*a, *b) {
-            (Some(x), Some(y)) => Some(x.min(y)),
-            (x, y) => x.or(y),
+    let up = close(&pred, &body, |a: &Label, b: &Label| a.join(b));
+    // The nearest ancestor above `internal` of each node: a breadth-first search along the
+    // graph from every such node at once, the first to reach a node naming it.
+    let mut nearest: Vec<Option<usize>> = vec![None; nodes];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for (node, label) in body.iter().enumerate() {
+        if !label.flows_to(&internal)
+            && let Some(slot) = nearest.get_mut(node)
+        {
+            *slot = Some(node);
+            queue.push_back(node);
         }
-    });
+    }
+    while let Some(node) = queue.pop_front() {
+        let witness = nearest.get(node).copied().flatten();
+        for &to in succ.get(node).map_or(&[][..], Vec::as_slice) {
+            if let Some(slot) = nearest.get_mut(to)
+                && slot.is_none()
+            {
+                *slot = witness;
+                queue.push_back(to);
+            }
+        }
+    }
+    // The operation of each operation node, to name it.
+    let mut op_of: Vec<Option<(CapId, &str)>> = vec![None; ops.len()];
+    for ((cap, op), &node) in &ops {
+        if let Some(slot) = op_of.get_mut(node - functions - handlers - capabilities) {
+            *slot = Some((*cap, op.as_str()));
+        }
+    }
+    let name = |node: usize| -> String {
+        let qualified = |module: usize, name: &str| {
+            match env.modules.get(module).map(|m| m.path.as_str()) {
+                Some(path) if !path.is_empty() => format!("`{path}.{name}`"),
+                _ => format!("`{name}`"),
+            }
+        };
+        if node < functions {
+            env.functions
+                .get(node)
+                .map_or_else(String::new, |def| qualified(def.module, def.name))
+        } else if node < functions + handlers {
+            env.handlers.get(node - functions).map_or_else(String::new, |h| {
+                format!(
+                    "the handler {}",
+                    qualified(h.module, env.text(h.module, h.ast.name.name))
+                )
+            })
+        } else if node == lambda {
+            "a call of a function value".to_owned()
+        } else {
+            op_of
+                .get(node.saturating_sub(functions + handlers + capabilities))
+                .copied()
+                .flatten()
+                .and_then(|(cap, op)| {
+                    env.capabilities
+                        .get(cap)
+                        .map(|c| format!("the operation `{}.{op}`", c.name))
+                })
+                .unwrap_or_default()
+        }
+    };
     let mut sites = Vec::new();
     let mut label = Label::public();
     for site in &findings.http_sites {
@@ -530,13 +676,19 @@ pub(crate) fn limit_labels(
             || site.function.is_some_and(|f| concurrent.contains(&f));
         let (own, raiser) = match site.function {
             Some(f) => {
-                let ancestors = up.get(f).cloned().unwrap_or_else(|| top.clone());
-                let first = raising
-                    .get(f)
-                    .copied()
-                    .flatten()
-                    .or_else(|| raised_by.get(f).copied().flatten());
-                (ancestors, first.map(Raiser::Function))
+                let own = up.get(f).cloned().unwrap_or_else(|| top.clone());
+                let raiser = if own.flows_to(&internal) {
+                    None
+                } else {
+                    nearest.get(f).copied().flatten().map(|node| {
+                        Raiser::Ancestor(
+                            name(node),
+                            body.get(node).cloned().unwrap_or_else(|| top.clone()),
+                            node == f,
+                        )
+                    })
+                };
+                (own, raiser)
             }
             None => (top.clone(), None),
         };
@@ -548,7 +700,6 @@ pub(crate) fn limit_labels(
         label = label.join(&site_label);
         sites.push(LimitSite {
             span: site.span,
-            function: site.function,
             label: site_label,
             raiser,
         });
