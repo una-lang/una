@@ -180,7 +180,10 @@ pub fn invalid_grant(spec: &str) -> String {
         && let Err(problems) = una_core::http::serve::ServeGrant::parse(spec)
     {
         let messages: Vec<String> = problems.into_iter().map(|p| p.message).collect();
-        return format!("`{spec}` is not a valid serve grant: {}", messages.join("; "));
+        return format!(
+            "`{spec}` is not a valid serve grant: {}",
+            messages.join("; ")
+        );
     }
     format!(
         "`{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"

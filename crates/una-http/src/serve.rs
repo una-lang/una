@@ -86,8 +86,8 @@ pub fn prepare(grants: &[ServeInput<'_>]) -> Result<Prepared, String> {
     if grants.is_empty() {
         return Ok(Prepared::default());
     }
-    if let Some(&index) = overlapping(grants.iter().map(|g| (g.grant.address, g.grant.port)))
-        .first()
+    if let Some(&index) =
+        overlapping(grants.iter().map(|g| (g.grant.address, g.grant.port))).first()
         && let Some(input) = grants.get(index)
     {
         return Err(format!(
@@ -110,9 +110,10 @@ pub fn prepare(grants: &[ServeInput<'_>]) -> Result<Prepared, String> {
     }
     // The run's user and groups, read once when a key file is to be checked.
     let identity = if grants.iter().any(|input| input.grant.tls) {
-        Some(una_sys::server::identity().map_err(|error| {
-            format!("cannot read the run's user and groups: {error}")
-        })?)
+        Some(
+            una_sys::server::identity()
+                .map_err(|error| format!("cannot read the run's user and groups: {error}"))?,
+        )
     } else {
         None
     };
@@ -139,8 +140,8 @@ pub fn prepare(grants: &[ServeInput<'_>]) -> Result<Prepared, String> {
     let mut listeners = Vec::with_capacity(grants.len());
     for (input, tls) in grants.iter().zip(materials) {
         let address = SocketAddr::new(input.grant.address, input.grant.port);
-        let backlog = u32::try_from(input.grant.limits.connections.min(MAX_BACKLOG))
-            .unwrap_or(u32::MAX);
+        let backlog =
+            u32::try_from(input.grant.limits.connections.min(MAX_BACKLOG)).unwrap_or(u32::MAX);
         let socket = una_sys::server::listen(address, backlog).map_err(|error| {
             format!(
                 "cannot listen on `{}` for its serve grant: {error}",
@@ -220,8 +221,7 @@ fn load_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
 fn load_key(path: &Path, who: &Identity) -> Result<PrivateKeyDer<'static>, String> {
     let what = "private key";
     let (file, metadata) = open_checked(path, what)?;
-    if let Some(problem) = key_file_problem(metadata.mode(), metadata.uid(), metadata.gid(), who)
-    {
+    if let Some(problem) = key_file_problem(metadata.mode(), metadata.uid(), metadata.gid(), who) {
         return Err(format!("the {what} `{}` {problem}", path.display()));
     }
     let mut bytes = read_bounded(file, path, what)?;

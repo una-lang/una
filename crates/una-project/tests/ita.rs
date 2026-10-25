@@ -564,7 +564,12 @@ fn serve_grants_are_checked_item_by_item() {
     let (manifest, errors) = parse_ita_manifest(&bad);
     let located: Vec<(String, usize)> = errors
         .iter()
-        .map(|e| (e.message.clone(), bad[..e.range.start].matches('\n').count() + 1))
+        .map(|e| {
+            (
+                e.message.clone(),
+                bad[..e.range.start].matches('\n').count() + 1,
+            )
+        })
         .collect();
     assert_eq!(
         located,

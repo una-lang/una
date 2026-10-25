@@ -260,7 +260,9 @@ impl ServeGrant {
     /// among the `;` suffixes, or `None` for the origin and for what concerns the whole grant.
     pub fn parse(spec: &str) -> Result<ServeGrant, Vec<ServeError>> {
         let Some(rest) = spec.strip_prefix(PREFIX) else {
-            return Err(vec![ServeError::grant("a serve grant starts with `serve:`")]);
+            return Err(vec![ServeError::grant(
+                "a serve grant starts with `serve:`",
+            )]);
         };
         let mut errors = Vec::new();
         let mut parts = rest.split(';');
@@ -576,8 +578,7 @@ fn parse_item(text: &str) -> Result<Item, String> {
             }
             _ => {}
         }
-        let Some(&(name, low, high, unit, none)) =
-            NAMED.iter().find(|(known, ..)| *known == name)
+        let Some(&(name, low, high, unit, none)) = NAMED.iter().find(|(known, ..)| *known == name)
         else {
             return Err(unknown(text));
         };

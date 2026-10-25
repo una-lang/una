@@ -72,8 +72,18 @@ fn derived_defaults_follow_the_values_given() {
     assert_eq!(given.limits.peer, None);
     assert_eq!(given.limits.peer_buffers, None);
     assert_eq!(given.limits.peer_replies, Some(3 << 20));
-    assert_eq!(grant("serve:http://127.0.0.1:1;handshakes=16").limits.peer_handshakes(), 4);
-    assert_eq!(grant("serve:http://127.0.0.1:1;handshakes=160").limits.peer_handshakes(), 10);
+    assert_eq!(
+        grant("serve:http://127.0.0.1:1;handshakes=16")
+            .limits
+            .peer_handshakes(),
+        4
+    );
+    assert_eq!(
+        grant("serve:http://127.0.0.1:1;handshakes=160")
+            .limits
+            .peer_handshakes(),
+        10
+    );
 }
 
 #[test]
@@ -103,8 +113,14 @@ fn every_item_at_its_bounds() {
             period: Period::Hour
         })
     );
-    assert_eq!((l.waiting, l.connections, l.peer), (0, 1 << 20, Some(1 << 20)));
-    assert_eq!((l.line, l.headers, l.header, l.body), (64 << 10, 1000, 256 << 10, 0));
+    assert_eq!(
+        (l.waiting, l.connections, l.peer),
+        (0, 1 << 20, Some(1 << 20))
+    );
+    assert_eq!(
+        (l.line, l.headers, l.header, l.body),
+        (64 << 10, 1000, 256 << 10, 0)
+    );
     assert_eq!(l.buffers, 64 << 30);
     assert_eq!(l.delivered, 64 << 30);
     assert_eq!((l.idle, l.read, l.write, l.answer), (1, 3600, 3600, 86_400));
@@ -139,39 +155,111 @@ fn every_item_at_its_bounds() {
 fn values_out_of_range_name_their_item() {
     for (item, message) in [
         ("0/once", "`N/once` counts from 1 to 2147483647, not `0`"),
-        ("2147483648/second", "`N/second` counts from 1 to 2147483647, not `2147483648`"),
-        ("waiting=2147483648", "`waiting` is a number from 0 to 2147483647, not `2147483648`"),
-        ("connections=0", "`connections` is a number from 1 to 1048576, not `0`"),
-        ("connections=1048577", "`connections` is a number from 1 to 1048576, not `1048577`"),
-        ("peer=0", "`peer` is a number from 1 to 1048576, or `none`, not `0`"),
-        ("handshakes=0", "`handshakes` is a number from 1 to 2147483647, not `0`"),
-        ("requests=0", "`requests` is a number from 1 to 2147483647, not `0`"),
+        (
+            "2147483648/second",
+            "`N/second` counts from 1 to 2147483647, not `2147483648`",
+        ),
+        (
+            "waiting=2147483648",
+            "`waiting` is a number from 0 to 2147483647, not `2147483648`",
+        ),
+        (
+            "connections=0",
+            "`connections` is a number from 1 to 1048576, not `0`",
+        ),
+        (
+            "connections=1048577",
+            "`connections` is a number from 1 to 1048576, not `1048577`",
+        ),
+        (
+            "peer=0",
+            "`peer` is a number from 1 to 1048576, or `none`, not `0`",
+        ),
+        (
+            "handshakes=0",
+            "`handshakes` is a number from 1 to 2147483647, not `0`",
+        ),
+        (
+            "requests=0",
+            "`requests` is a number from 1 to 2147483647, not `0`",
+        ),
         ("line=0", "`line` is a number of KiB from 1 to 64, not `0`"),
-        ("line=65", "`line` is a number of KiB from 1 to 64, not `65`"),
-        ("headers=1001", "`headers` is a number from 1 to 1000, not `1001`"),
-        ("header=257", "`header` is a number of KiB from 1 to 256, not `257`"),
-        ("body=1048577", "`body` is a number of KiB from 0 to 1048576, not `1048577`"),
-        ("buffers=0", "`buffers` is a number of MiB from 1 to 65536, not `0`"),
-        ("peer_buffers=65537", "`peer_buffers` is a number of MiB from 1 to 65536, or `none`, not `65537`"),
-        ("replies=65537", "`replies` is a number of MiB from 1 to 65536, not `65537`"),
-        ("peer_replies=0", "`peer_replies` is a number of MiB from 1 to 65536, or `none`, not `0`"),
-        ("delivered=0", "`delivered` is a number of MiB from 1 to 65536, not `0`"),
-        ("idle=0", "`idle` is a number of seconds from 1 to 3600, not `0`"),
-        ("read=3601", "`read` is a number of seconds from 1 to 3600, not `3601`"),
-        ("write=0", "`write` is a number of seconds from 1 to 3600, not `0`"),
-        ("answer=86401", "`answer` is a number of seconds from 1 to 86400, not `86401`"),
-        ("connections=none", "`connections` is a number from 1 to 1048576, not `none`"),
-        ("waiting=08", "`waiting` is a number from 0 to 2147483647, not `08`"),
-        ("waiting=+8", "`waiting` is a number from 0 to 2147483647, not `+8`"),
-        ("waiting=", "`waiting` is a number from 0 to 2147483647, not ``"),
-        ("waiting=99999999999999999999999", "`waiting` is a number from 0 to 2147483647, not `99999999999999999999999`"),
+        (
+            "line=65",
+            "`line` is a number of KiB from 1 to 64, not `65`",
+        ),
+        (
+            "headers=1001",
+            "`headers` is a number from 1 to 1000, not `1001`",
+        ),
+        (
+            "header=257",
+            "`header` is a number of KiB from 1 to 256, not `257`",
+        ),
+        (
+            "body=1048577",
+            "`body` is a number of KiB from 0 to 1048576, not `1048577`",
+        ),
+        (
+            "buffers=0",
+            "`buffers` is a number of MiB from 1 to 65536, not `0`",
+        ),
+        (
+            "peer_buffers=65537",
+            "`peer_buffers` is a number of MiB from 1 to 65536, or `none`, not `65537`",
+        ),
+        (
+            "replies=65537",
+            "`replies` is a number of MiB from 1 to 65536, not `65537`",
+        ),
+        (
+            "peer_replies=0",
+            "`peer_replies` is a number of MiB from 1 to 65536, or `none`, not `0`",
+        ),
+        (
+            "delivered=0",
+            "`delivered` is a number of MiB from 1 to 65536, not `0`",
+        ),
+        (
+            "idle=0",
+            "`idle` is a number of seconds from 1 to 3600, not `0`",
+        ),
+        (
+            "read=3601",
+            "`read` is a number of seconds from 1 to 3600, not `3601`",
+        ),
+        (
+            "write=0",
+            "`write` is a number of seconds from 1 to 3600, not `0`",
+        ),
+        (
+            "answer=86401",
+            "`answer` is a number of seconds from 1 to 86400, not `86401`",
+        ),
+        (
+            "connections=none",
+            "`connections` is a number from 1 to 1048576, not `none`",
+        ),
+        (
+            "waiting=08",
+            "`waiting` is a number from 0 to 2147483647, not `08`",
+        ),
+        (
+            "waiting=+8",
+            "`waiting` is a number from 0 to 2147483647, not `+8`",
+        ),
+        (
+            "waiting=",
+            "`waiting` is a number from 0 to 2147483647, not ``",
+        ),
+        (
+            "waiting=99999999999999999999999",
+            "`waiting` is a number from 0 to 2147483647, not `99999999999999999999999`",
+        ),
     ] {
         assert_eq!(
             errors(&format!("serve:http://127.0.0.1:8080;tls=1;{item}")),
-            vec![
-                (Some(0), unknown("tls=1")),
-                (Some(1), message.to_owned())
-            ],
+            vec![(Some(0), unknown("tls=1")), (Some(1), message.to_owned())],
             "{item}"
         );
     }
@@ -195,7 +283,9 @@ fn unknown_repeated_and_second_rates_are_refused() {
         )]
     );
     assert_eq!(
-        items_in_error("serve:http://127.0.0.1:8080;1/once;2/once;peer=none;peer=3;hosts=*;hosts=*"),
+        items_in_error(
+            "serve:http://127.0.0.1:8080;1/once;2/once;peer=none;peer=3;hosts=*;hosts=*"
+        ),
         [Some(1), Some(3), Some(5)]
     );
 }
@@ -213,7 +303,10 @@ fn tls_items_belong_to_https_grants_which_need_both_files() {
     assert_eq!(
         errors("serve:https://127.0.0.1:8443"),
         [
-            (None, "an https grant names its `certificate` file".to_owned()),
+            (
+                None,
+                "an https grant names its `certificate` file".to_owned()
+            ),
             (None, "an https grant names its `key` file".to_owned())
         ]
     );
@@ -364,7 +457,10 @@ fn overlaps_are_found_in_one_pass() {
         at("serve:http://0.0.0.0:9090"),
     ];
     assert_eq!(overlapping(grants), [1, 2, 4, 6, 7]);
-    assert_eq!(overlapping([at("serve:http://0.0.0.0:1"), at("serve:http://0.0.0.0:1")]), [1]);
+    assert_eq!(
+        overlapping([at("serve:http://0.0.0.0:1"), at("serve:http://0.0.0.0:1")]),
+        [1]
+    );
     assert_eq!(overlapping(Vec::new()), Vec::<usize>::new());
 }
 
@@ -380,7 +476,10 @@ fn overlap_scales_linearly_in_grants() {
         });
         let started = std::time::Instant::now();
         assert!(overlapping(listeners).is_empty());
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{count}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{count}"
+        );
     }
 }
 

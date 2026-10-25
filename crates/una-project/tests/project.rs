@@ -145,7 +145,9 @@ fn serve_grants_are_refused_in_una_toml() {
             manifest_errors(&format!(
                 "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n[run]\ngrants = [\"console\", \"serve:http://127.0.0.1:8080\"]\n"
             )),
-            ["U7002 6:22 a `serve:` grant needs edition 0.4, whose grants are written in ita.una; una.toml cannot hold one"]
+            [
+                "U7002 6:22 a `serve:` grant needs edition 0.4, whose grants are written in ita.una; una.toml cannot hold one"
+            ]
         );
     }
     assert!(!is_grant("serve:http://127.0.0.1:8080"));

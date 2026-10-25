@@ -82,7 +82,11 @@ fn package_0_3(name: &str) -> PathBuf {
         "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n[run]\nentry = \"main\"\ngrants = [\"console\"]\n",
     )
     .unwrap();
-    std::fs::copy(root().join("verification.lock"), dir.join("verification.lock")).unwrap();
+    std::fs::copy(
+        root().join("verification.lock"),
+        dir.join("verification.lock"),
+    )
+    .unwrap();
     std::fs::write(dir.join("src/main.una"), MAIN).unwrap();
     dir
 }
@@ -163,7 +167,14 @@ fn serve_flags_need_edition_0_4() {
     let file = dir.join("src/main.una");
     let output = una(
         &dir,
-        &["run", file.to_str().unwrap(), "--grant", "console", "--grant", &spec],
+        &[
+            "run",
+            file.to_str().unwrap(),
+            "--grant",
+            "console",
+            "--grant",
+            &spec,
+        ],
     );
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert!(stderr(&output).ends_with("this package is of edition 0.1\n"));
@@ -195,10 +206,7 @@ fn overlaps_across_the_manifest_and_the_flags_are_refused() {
 fn an_address_the_run_cannot_bind_is_a_usage_error() {
     let taken = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
-    let dir = package(
-        "taken",
-        &format!("    serve \"http://127.0.0.1:{port}\"\n"),
-    );
+    let dir = package("taken", &format!("    serve \"http://127.0.0.1:{port}\"\n"));
     let output = una(&dir, &["run"]);
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert!(
@@ -282,16 +290,20 @@ fn executables_check_serve_grants_as_una_run_does() {
     };
     let output = run(&["--grant", "serve:http://localhost:8080"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(stderr(&output).starts_with(
-        "error: `serve:http://localhost:8080` is not a valid serve grant: "
-    ));
+    assert!(
+        stderr(&output)
+            .starts_with("error: `serve:http://localhost:8080` is not a valid serve grant: ")
+    );
     let taken = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
     let output = run(&["--grant", &format!("serve:http://127.0.0.1:{port}")]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(stderr(&output).starts_with(&format!("error: cannot listen on `127.0.0.1:{port}`")));
     drop(taken);
-    let output = run(&["--grant", &format!("serve:http://127.0.0.1:{}", free_port())]);
+    let output = run(&[
+        "--grant",
+        &format!("serve:http://127.0.0.1:{}", free_port()),
+    ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(stdout(&output), "started\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -301,13 +313,18 @@ fn executables_check_serve_grants_as_una_run_does() {
     let built = una(&old, &["build"]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let output = Command::new(old.join("target/una/app"))
-        .args(["--grant", &format!("serve:http://127.0.0.1:{}", free_port())])
+        .args([
+            "--grant",
+            &format!("serve:http://127.0.0.1:{}", free_port()),
+        ])
         .current_dir(&old)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(stderr(&output).ends_with(
-        "needs a program of edition 0.4; this executable is of an earlier edition\n"
-    ));
+    assert!(
+        stderr(&output).ends_with(
+            "needs a program of edition 0.4; this executable is of an earlier edition\n"
+        )
+    );
     let _ = std::fs::remove_dir_all(&old);
 }

@@ -83,7 +83,9 @@ pub fn raise_descriptor_limit(wanted: u64) -> io::Result<u64> {
     // macOS refuses a soft limit above `OPEN_MAX` with `EINVAL`, even under an infinite hard
     // limit: the reachable limit is tried, so the caller's message names it.
     #[cfg(target_os = "macos")]
-    if set.as_ref().is_err_and(|e| e.raw_os_error() == Some(libc::EINVAL))
+    if set
+        .as_ref()
+        .is_err_and(|e| e.raw_os_error() == Some(libc::EINVAL))
         && soft > OPEN_MAX
         && OPEN_MAX > limit.rlim_cur
     {

@@ -451,17 +451,41 @@ fn serve_grant_lines_become_the_text_spec() {
 #[test]
 fn serve_item_lines_of_other_forms_are_errors() {
     for (line, message) in [
-        ("line at most 8 MiB", "`line` is a number of KiB, written `line at most <n> KiB`"),
-        ("body at most 1024", "`body` is a number of KiB, written `body at most <n> KiB`"),
-        ("buffers at most 1 KiB", "`buffers` is a number of MiB, written `buffers at most <n> MiB`"),
+        (
+            "line at most 8 MiB",
+            "`line` is a number of KiB, written `line at most <n> KiB`",
+        ),
+        (
+            "body at most 1024",
+            "`body` is a number of KiB, written `body at most <n> KiB`",
+        ),
+        (
+            "buffers at most 1 KiB",
+            "`buffers` is a number of MiB, written `buffers at most <n> MiB`",
+        ),
         ("idle within 5 minutes", "`idle` is a number of seconds"),
-        ("idle at most 5 seconds", "expected `idle within <n> seconds`"),
+        (
+            "idle at most 5 seconds",
+            "expected `idle within <n> seconds`",
+        ),
         ("connections none", "expected `at most` and a number"),
-        ("backlog at most 5", "`backlog` is not an item of a serve grant (spec/31 §2)"),
-        ("at most 5 per day", "a rate is per `second`, `minute` or `hour`"),
+        (
+            "backlog at most 5",
+            "`backlog` is not an item of a serve grant (spec/31 §2)",
+        ),
+        (
+            "at most 5 per day",
+            "a rate is per `second`, `minute` or `hour`",
+        ),
         ("at most 5", "expected `at once`, or `per` and a period"),
-        ("handshakes at most 5", "`handshakes` is a number per second: `handshakes at most 512 per second`"),
-        ("certificate \"a;b\"", "the path of `certificate` holds `;`, which ends an item of a grant"),
+        (
+            "handshakes at most 5",
+            "`handshakes` is a number per second: `handshakes at most 512 per second`",
+        ),
+        (
+            "certificate \"a;b\"",
+            "the path of `certificate` holds `;`, which ends an item of a grant",
+        ),
         ("hosts \"a,b\"", "`a,b` is not a host name"),
         ("tls12 on", "unexpected `on` at the end of this line"),
     ] {

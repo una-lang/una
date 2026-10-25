@@ -72,7 +72,11 @@ fn key_files_are_checked_by_owner_group_and_mode() {
         (0o100640, 0, 61),
         (0o104400, 501, 20),
     ] {
-        assert_eq!(key_file_problem(mode, uid, gid, &who), None, "{mode:o} {uid} {gid}");
+        assert_eq!(
+            key_file_problem(mode, uid, gid, &who),
+            None,
+            "{mode:o} {uid} {gid}"
+        );
     }
     for (mode, uid, gid, problem) in [
         (
@@ -81,11 +85,36 @@ fn key_files_are_checked_by_owner_group_and_mode() {
             20,
             "has mode 0644: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440",
         ),
-        (0o100604, 501, 20, "has mode 0604: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440"),
-        (0o100620, 501, 20, "has mode 0620: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440"),
-        (0o100401, 501, 20, "has mode 0401: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440"),
-        (0o100400, 502, 20, "is owned by user 502, neither the run's user (501) nor root"),
-        (0o100440, 0, 99, "is readable by group 99, which is not a group of the run"),
+        (
+            0o100604,
+            501,
+            20,
+            "has mode 0604: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440",
+        ),
+        (
+            0o100620,
+            501,
+            20,
+            "has mode 0620: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440",
+        ),
+        (
+            0o100401,
+            501,
+            20,
+            "has mode 0401: a key file gives others no access and its group no write access, such as 0400, 0600 or 0440",
+        ),
+        (
+            0o100400,
+            502,
+            20,
+            "is owned by user 502, neither the run's user (501) nor root",
+        ),
+        (
+            0o100440,
+            0,
+            99,
+            "is readable by group 99, which is not a group of the run",
+        ),
     ] {
         assert_eq!(
             key_file_problem(mode, uid, gid, &who).as_deref(),
@@ -122,7 +151,9 @@ fn each_grant_binds_its_listener_before_main() {
     // The address stays the run's: a second run cannot bind it.
     let error = prepare(&[plain(&g)]).unwrap_err();
     assert!(
-        error.starts_with(&format!("cannot listen on `127.0.0.1:{port}` for its serve grant: ")),
+        error.starts_with(&format!(
+            "cannot listen on `127.0.0.1:{port}` for its serve grant: "
+        )),
         "{error}"
     );
 }
@@ -142,8 +173,14 @@ fn overlapping_grants_of_a_run_are_refused() {
 
 #[test]
 fn a_descriptor_limit_the_run_cannot_reach_is_refused() {
-    let a = grant(&format!("serve:http://127.0.0.1:{};connections=1048576", free_port()));
-    let b = grant(&format!("serve:http://127.0.0.1:{};connections=1048576", free_port()));
+    let a = grant(&format!(
+        "serve:http://127.0.0.1:{};connections=1048576",
+        free_port()
+    ));
+    let b = grant(&format!(
+        "serve:http://127.0.0.1:{};connections=1048576",
+        free_port()
+    ));
     let error = prepare(&[plain(&a), plain(&b)]).unwrap_err();
     assert!(
         error.starts_with("the serve grants need 2097216 open descriptors"),

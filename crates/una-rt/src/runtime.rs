@@ -424,10 +424,7 @@ impl Meta {
             Some(section) => section.as_str()?.to_owned(),
             None => "`[run] grants`".to_owned(),
         };
-        let serve = value
-            .get("serve")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let serve = value.get("serve").and_then(Value::as_bool).unwrap_or(false);
         Some(Meta {
             grants,
             uses,

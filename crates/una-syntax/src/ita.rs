@@ -434,7 +434,9 @@ impl<'l> Cursor<'l> {
                 item: Item::Upper(written),
                 ..
             }) if written == unit => Ok(()),
-            _ => Err(format!("`{item}` is a number of {unit}, written `{item} at most <n> {unit}`")),
+            _ => Err(format!(
+                "`{item}` is a number of {unit}, written `{item} at most <n> {unit}`"
+            )),
         }
     }
 
@@ -1445,9 +1447,8 @@ fn grant(line: &Line) -> Result<Grant, Vec<Error>> {
 }
 
 fn grant_line(line: &Line, cursor: &mut Cursor<'_>) -> Result<Grant, Error> {
-    let kind = cursor.word(
-        "a grant: `console`, `clock`, `env`, `keys`, `files`, `http` or `serve`",
-    )?;
+    let kind =
+        cursor.word("a grant: `console`, `clock`, `env`, `keys`, `files`, `http` or `serve`")?;
     let spec = match kind.value.as_str() {
         "console" | "clock" | "env" => kind.value.clone(),
         "keys" => {
@@ -1628,7 +1629,9 @@ fn serve_item(line: &Line) -> Result<String, String> {
             if cursor.eat_word("at") && cursor.eat_word("once") {
                 format!("{count}/once")
             } else if cursor.eat_word("per") {
-                let period = cursor.word("`second`, `minute` or `hour`").map_err(message)?;
+                let period = cursor
+                    .word("`second`, `minute` or `hour`")
+                    .map_err(message)?;
                 if !matches!(period.value.as_str(), "second" | "minute" | "hour") {
                     return Err("a rate is per `second`, `minute` or `hour`".to_owned());
                 }
@@ -1646,7 +1649,10 @@ fn serve_item(line: &Line) -> Result<String, String> {
         "handshakes" => {
             let count = cursor.at_most()?;
             if !(cursor.eat_word("per") && cursor.eat_word("second")) {
-                return Err("`handshakes` is a number per second: `handshakes at most 512 per second`".to_owned());
+                return Err(
+                    "`handshakes` is a number per second: `handshakes at most 512 per second`"
+                        .to_owned(),
+                );
             }
             format!("handshakes={count}")
         }
@@ -1662,10 +1668,7 @@ fn serve_item(line: &Line) -> Result<String, String> {
         }
         "idle" | "read" | "write" | "answer" => {
             if !cursor.eat_word("within") {
-                return Err(format!(
-                    "expected `{} within <n> seconds`",
-                    name.value
-                ));
+                return Err(format!("expected `{} within <n> seconds`", name.value));
             }
             let count = cursor.digits()?;
             if !(cursor.eat_word("seconds") || cursor.eat_word("second")) {
