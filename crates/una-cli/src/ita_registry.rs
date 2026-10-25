@@ -883,9 +883,49 @@ pub(crate) fn audit_command(
             locked.source
         )),
     };
-    let (diagnostics, lines) = audit_project(&project, &mut facts_of);
+    let (mut diagnostics, lines) = audit_project(&project, &mut facts_of);
     notes.extend(lines);
+    // Evidence against each registry, from its client's typed record of what reading the
+    // packages found (U7010), at the lock's section of the source.
+    let mut evidence: Vec<(String, audit::Evidence)> = Vec::new();
+    for (source, registry) in &opened {
+        if let Ok(registry) = registry {
+            evidence.extend(
+                audit::evidence(registry)
+                    .into_iter()
+                    .map(|found| (source.clone(), found)),
+            );
+        }
+    }
+    diagnostics.extend(evidence_diagnostics(&project, &evidence));
     finish("audit", &[], &notes, &diagnostics, &project.package.sources, out)
+}
+
+/// The diagnostics of the evidence against registries that `una ita audit` found: one U7010
+/// per record, at the `registry` section of its source in `ita.lock`, else at the lock's first
+/// package of that source. O(E x (R + P)) for E records, R sections and P packages.
+fn evidence_diagnostics(
+    project: &Project,
+    evidence: &[(String, audit::Evidence)],
+) -> Vec<Diagnostic> {
+    let read = &project.lock.read;
+    let mut problems: Vec<ProjectError> = Vec::new();
+    for (source, found) in evidence {
+        let range = read
+            .registries
+            .iter()
+            .find(|r| r.source.value == *source)
+            .map(|r| r.source.range.clone())
+            .or_else(|| {
+                read.packages
+                    .iter()
+                    .find(|p| registry_source(p) == Some(source.as_str()))
+                    .map(|p| p.range.clone())
+            })
+            .unwrap_or_default();
+        problems.push(problem(Code::U7010, range, found.text(source)));
+    }
+    located(&project.package.sources, project.lock_id, problems)
 }
 
 /// The codes `una ita audit` reports for the package at `path`, each package's facts from

@@ -12,6 +12,8 @@ pub mod bundle;
 pub mod keyfile;
 pub mod submit;
 pub mod watch;
+#[cfg(test)]
+mod yank_model;
 
 use std::fmt::Write as _;
 

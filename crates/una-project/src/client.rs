@@ -422,6 +422,58 @@ pub struct Void {
     pub why: String,
 }
 
+/// How a yank stands against its owner's replayed history (rule 41), as [`apply_yank`] judges
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YankStanding {
+    /// It counts, and yanks its version: signed by the owner's threshold of sound keys valid at
+    /// its position.
+    Stands,
+    /// It is void and ignored, listed in [`Marks::voided`]: it counts only with keys
+    /// compromised or void before it, it is logged once its owner's chain was frozen, or its
+    /// version is yanked already.
+    Void,
+    /// It is not signed as required, which a registry following the rules never logs: the
+    /// name is refused (U7010), and `marks` is left unchanged.
+    Unsigned,
+}
+
+/// Applies to `marks` a yank of `version` whose `note` is logged at `index`, judged by the owner
+/// replay's [`History::judge`] and never derived here: a yank that counts marks the version
+/// yanked; one skipped, and a second yank of a version yanked already, are listed as void. The
+/// standing says which. O(S) for the note's S signatures, plus O(log V) for V versions yanked.
+pub fn apply_yank(
+    marks: &mut Marks,
+    history: &History,
+    note: &Note,
+    index: u64,
+    version: &Version,
+) -> YankStanding {
+    match history.judge(note, index) {
+        Standing::Counts(_) => {}
+        Standing::Skipped(_) => {
+            marks.voided.push(Void {
+                index,
+                version: version.clone(),
+                why: "it counts only with keys compromised or void before it, or is logged once its owner's chain was frozen"
+                    .to_owned(),
+            });
+            return YankStanding::Void;
+        }
+        Standing::Unsigned => return YankStanding::Unsigned,
+    }
+    if marks.yanked.contains_key(version) {
+        marks.voided.push(Void {
+            index,
+            version: version.clone(),
+            why: "the version is yanked already".to_owned(),
+        });
+        return YankStanding::Void;
+    }
+    marks.yanked.insert(version.clone(), index);
+    YankStanding::Stands
+}
+
 /// One registry, read through one transport, at one checkpoint.
 pub struct Registry<'t> {
     /// The source's name.
@@ -1055,11 +1107,11 @@ impl<'t> Registry<'t> {
 
     /// The yanks and advisories of `name` at the point (rule 41), each verified, in log order.
     ///
-    /// - A yank of this source and name, of a release logged before it, stands when the owner's
-    ///   threshold of keys valid at its position, after the cascade of compromises
-    ///   ([`History::signed`]), signs it. One that reaches the threshold only with a key
-    ///   compromised before its position, and a second yank of a version already yanked, are
-    ///   void: ignored, and listed in [`Marks::voided`] for `una ita audit`.
+    /// - A yank of this source and name, of a release logged before it, stands as the owner
+    ///   replay judges it ([`apply_yank`], [`History::judge`]). One that counts only with keys
+    ///   compromised or void before its position, one logged once the owner's chain was frozen,
+    ///   and a second yank of a version already yanked, are void: ignored, and listed in
+    ///   [`Marks::voided`] for `una ita audit`.
     /// - An advisory of this source and name stands when at least one security key of the root
     ///   signs it, and names releases logged before it; it lifts the cooldown for the fix it
     ///   names by digest only with the root's security threshold of security keys, never fewer
@@ -1100,40 +1152,16 @@ impl<'t> Registry<'t> {
                             yank.version
                         )));
                     }
-                    // The owner's keys valid at its position, after the cascade of compromises
-                    // (`History::signed`): a yank that reaches the threshold only with a key
-                    // compromised before it is void, as such a release is, and is ignored.
                     // How it stands is the owner replay's, never derived here
-                    // (`History::judge`): counted; skipped, when it counts only with a key
-                    // compromised before it, with keys only void entries bring in, or from a
-                    // freeze on, which makes the yank void; or not signed as required.
-                    match history.judge(&entry.note, index) {
-                        Standing::Counts(_) => {}
-                        Standing::Skipped(_) => {
-                            marks.voided.push(Void {
-                                index,
-                                version: yank.version.clone(),
-                                why: "it counts only with keys compromised or void before it, or is logged once its owner's chain was frozen"
-                                    .to_owned(),
-                            });
-                            continue;
-                        }
-                        Standing::Unsigned => {
-                            return Err(self.refuse(format!(
-                                "the yank of `{name} {}` at log entry {index} is not signed by the threshold of its owner's keys valid there",
-                                yank.version
-                            )));
-                        }
+                    // ([`apply_yank`], through `History::judge`).
+                    if apply_yank(&mut marks, &history, &entry.note, index, &yank.version)
+                        == YankStanding::Unsigned
+                    {
+                        return Err(self.refuse(format!(
+                            "the yank of `{name} {}` at log entry {index} is not signed by the threshold of its owner's keys valid there",
+                            yank.version
+                        )));
                     }
-                    if marks.yanked.contains_key(&yank.version) {
-                        marks.voided.push(Void {
-                            index,
-                            version: yank.version.clone(),
-                            why: "the version is yanked already".to_owned(),
-                        });
-                        continue;
-                    }
-                    marks.yanked.insert(yank.version.clone(), index);
                 }
                 Kind::Advisory(advisory) => {
                     if advisory.source != self.source || advisory.name != name {

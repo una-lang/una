@@ -8,12 +8,17 @@
 //! package, with every finding of it, and exits with code 1 on any. The facts come from the
 //! verified client ([`facts`]); nothing here reads a registry's word.
 //!
+//! Beside the findings, the audit reports evidence against a registry ([`Evidence`]): each
+//! misbehavior the verified client saw while it read the packages' owners, from its typed record
+//! ([`Registry::misbehavior`]), as `una ita watch` reports a broken or a replaced promise.
+//!
 //! Costs: per package, one verified state of its name and one of its owner, each cached by the
 //! client, then O(A + K) for its A advisories and its owner's K key events.
 
 use std::collections::BTreeSet;
 
-use crate::client::{Registry, owner_of, shown};
+use crate::client::{Marks, Registry, owner_of, shown};
+use crate::tlog::owner::Unsettled;
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
 use crate::version::Version;
@@ -42,6 +47,17 @@ pub struct Locked {
     /// `effect` line for the owner: an index counts only below the lock's resolution point and
     /// in effect there.
     pub effects: BTreeSet<u64>,
+}
+
+/// The log indexes of the void yanks of `version` in `marks`, in log order: what the audit
+/// reports of them (`spec/30 §15` rule 6). O(V) for the V void yanks.
+pub fn void_yanks(marks: &Marks, version: &Version) -> Vec<u64> {
+    marks
+        .voided
+        .iter()
+        .filter(|void| void.version == *version)
+        .map(|void| void.index)
+        .collect()
 }
 
 /// What the verified state says of a locked release.
@@ -180,12 +196,7 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
         compromised_since,
         pending,
         key_changes,
-        void_yanks: marks
-            .voided
-            .iter()
-            .filter(|void| void.version == locked.version)
-            .map(|void| void.index)
-            .collect(),
+        void_yanks: void_yanks(&marks, &locked.version),
         accepted_effects,
     })
 }
@@ -333,4 +344,42 @@ pub fn audit(
         }
     }
     out
+}
+
+/// Evidence against a registry that the audit reports (`spec/30 §15` rule 7): what the
+/// registry logged that a registry following the rules never logs. It is said as such, apart
+/// from the findings about packages, for the user to publish with the registry's checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Evidence {
+    /// The registry logged an owner chain that does not settle (`spec/30 §14` rule 5,
+    /// invariant (4)): the owner's names are refused (U7010).
+    Unsettled(Unsettled),
+}
+
+impl Evidence {
+    /// What the evidence states against the registry `source`, shown safely.
+    pub fn text(&self, source: &str) -> String {
+        match self {
+            Evidence::Unsettled(unsettled) => format!(
+                "evidence against the registry `{}`: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; keep its checkpoint and that chain's entries, and publish them as evidence",
+                shown(source),
+                shown(&unsettled.owner),
+                unsettled.passes,
+                unsettled.index
+            ),
+        }
+    }
+}
+
+/// The evidence against `registry` that its client has seen so far, in the order seen, from
+/// the client's typed record ([`Registry::misbehavior`]), never from a refusal's text. Called
+/// after the packages' facts are read, so it holds what reading them found. O(M) for its M
+/// records.
+pub fn evidence(registry: &Registry<'_>) -> Vec<Evidence> {
+    registry
+        .misbehavior()
+        .iter()
+        .cloned()
+        .map(Evidence::Unsettled)
+        .collect()
 }

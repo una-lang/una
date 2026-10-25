@@ -26,6 +26,7 @@ use una_project::registry::watch::{
     MAX_JUDGED, MAX_SETTLED, Position, Seen, Submitted, Verdict, assess, judge, to_judge, watch,
 };
 use una_project::tlog::note::parse_note;
+use una_project::tlog::owner::Unsettled;
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
 use una_project::transport::{Directory, Transport};
@@ -1760,4 +1761,70 @@ fn a_frozen_owner_chain_is_refused_by_the_audit() {
     let refusal = audit::facts(&mut client, &locked).unwrap_err();
     assert!(refusal.contains("frozen"), "{refusal}");
     assert!(refusal.contains(&format!("position {freeze}")), "{refusal}");
+}
+
+/// A chain the registry logged that does not settle: the audit refuses the package (U7010) and
+/// reports the registry's misbehavior as evidence, from the client's typed record.
+#[test]
+fn the_audit_reports_an_unsettled_chain_as_evidence() {
+    let mut test = TestRegistry::new("acme");
+    let a = keypair(60, "acme.a");
+    let t = keypair(66, "acme.t");
+    test.register("acme", &a);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    test.checkpoint(NOW - 100);
+    let resolution = test.entries.len() as u64;
+    test.owner_event(
+        "acme",
+        &format!("add {}", support::key_text(&t.1)),
+        1,
+        &[&a, &t],
+    );
+    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&t]);
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    assert!(audit::evidence(&client).is_empty());
+    let locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution,
+        accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
+    };
+    assert!(audit::facts(&mut client, &locked).is_err());
+    let unsettled = Unsettled {
+        owner: "acme".to_owned(),
+        index: claim,
+        passes: 4,
+    };
+    assert_eq!(
+        audit::evidence(&client),
+        [audit::Evidence::Unsettled(unsettled.clone())]
+    );
+    // Read again, it is recorded once.
+    assert!(audit::facts(&mut client, &locked).is_err());
+    assert_eq!(
+        audit::evidence(&client),
+        [audit::Evidence::Unsettled(unsettled)]
+    );
+    let text = audit::evidence(&client)[0].text("acme");
+    assert!(
+        text.contains("evidence against the registry `acme`")
+            && text.contains(&format!("first at the log index {claim}")),
+        "{text}"
+    );
 }

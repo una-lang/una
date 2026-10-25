@@ -384,6 +384,50 @@ fn a_published_release_is_locked_fetched_yanked_and_audited() {
     assert_eq!(codes_of(&out), ["U7010"], "{out}");
 }
 
+/// The registry then logs an owner chain that does not settle: the audit refuses the package
+/// (U7010) and reports, apart, the evidence against the registry at the lock's `registry`
+/// section (U7010), read from the client's typed record.
+#[test]
+fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
+    let (mut registry, _, _) = published_registry("unsettled");
+    let (dir, mirror, itaoca) = project("unsettled", &registry);
+    let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
+    assert_eq!(status, 0, "{out}{err}");
+    let a = keypair(60, "acme.laptop");
+    let t = keypair(66, "acme.t");
+    registry.owner_event(
+        "acme",
+        &format!("add {}", support::key_text(&t.1)),
+        1,
+        &[&a, &t],
+    );
+    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&t]);
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7010", "U7010"], "{out}");
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let evidence: Vec<&serde_json::Value> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| {
+            d["message"]
+                .as_str()
+                .unwrap()
+                .contains("evidence against the registry `acme`")
+        })
+        .collect();
+    assert_eq!(evidence.len(), 1, "{out}");
+    let message = evidence[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("the owner `acme`")
+            && message.contains(&format!("first at the log index {claim}")),
+        "{message}"
+    );
+}
+
 #[test]
 fn audit_of_a_lock_with_no_registry_package_is_clean() {
     let store = scratch("ita-registry-store", "audit-plain");
