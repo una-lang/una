@@ -984,3 +984,37 @@ fn each_package_of_a_fetch_has_the_code_of_its_own_failure() {
         }
     }
 }
+
+/// A resolution whose source's registry fails while it is read takes the code of that failure:
+/// the release statements' entry tiles served by no place make it unavailable (U7013), and
+/// tiles served but altered make it a refusal (U7010).
+#[test]
+fn a_resolution_takes_the_code_of_its_registrys_failure() {
+    let (registry, _) = acme();
+    let entries: Vec<&String> = registry
+        .files
+        .keys()
+        .filter(|path| path.starts_with("tile/entries/"))
+        .collect();
+    assert!(!entries.is_empty());
+    for (name, expected) in [("unserved-entries", "U7013"), ("altered-entries", "U7010")] {
+        let (dir, mirror, itaoca) = project(name, &registry);
+        for path in &entries {
+            let file = mirror.join(path.as_str());
+            if expected == "U7013" {
+                std::fs::remove_file(&file).unwrap();
+            } else {
+                let mut bytes = std::fs::read(&file).unwrap();
+                let at = bytes.len() / 2;
+                bytes[at] ^= 0x01;
+                std::fs::write(&file, &bytes).unwrap();
+            }
+        }
+        let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+        assert_eq!(code, 1, "{name}: {err}");
+        assert!(err.contains(expected), "{name}: {err}");
+        let other = if expected == "U7013" { "U7010" } else { "U7013" };
+        assert!(!err.contains(other), "{name}: {err}");
+        assert!(!dir.join("ita.lock").exists());
+    }
+}

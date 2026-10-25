@@ -149,7 +149,13 @@ pub enum Problem {
     /// A bound of rule 23 is exceeded.
     Bound(String),
     /// The index could not answer.
-    Index(String),
+    Index {
+        /// The source whose index failed to answer, when the failure is a read of it; `None`
+        /// when it is resolution's own record of what it read.
+        source: Option<String>,
+        /// Why, one sentence.
+        why: String,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -178,7 +184,7 @@ impl fmt::Display for Problem {
                 "{identity} must be raised past {from}, which is yanked, under an advisory or avoided, and no later release qualifies"
             ),
             Problem::Bound(what) => write!(f, "the resolution exceeds a bound: {what}"),
-            Problem::Index(why) => f.write_str(why),
+            Problem::Index { why, .. } => f.write_str(why),
         }
     }
 }
@@ -355,6 +361,14 @@ struct Resolver<'a> {
     work: usize,
 }
 
+/// The index failed to answer for `identity`: a read of its source.
+fn read_failed(identity: &Identity, why: String) -> Problem {
+    Problem::Index {
+        source: Some(identity.source.clone()),
+        why,
+    }
+}
+
 impl Resolver<'_> {
     fn note_pre(&mut self, need: &Need) {
         if need.version.is_pre() {
@@ -365,7 +379,10 @@ impl Resolver<'_> {
     /// The releases of `identity`, read once and sorted ascending.
     fn releases_of(&mut self, identity: &Identity) -> Result<&Vec<Release>, Problem> {
         if !self.releases.contains_key(identity) {
-            let mut releases = self.index.releases(identity).map_err(Problem::Index)?;
+            let mut releases = self
+                .index
+                .releases(identity)
+                .map_err(|why| read_failed(identity, why))?;
             if releases.len() > self.bounds.releases {
                 return Err(Problem::Bound(format!(
                     "more than {} releases of {identity}",
@@ -379,7 +396,10 @@ impl Resolver<'_> {
         }
         self.releases
             .get(identity)
-            .ok_or_else(|| Problem::Index(format!("the releases of {identity} were not kept")))
+            .ok_or_else(|| Problem::Index {
+                source: None,
+                why: format!("the releases of {identity} were not kept"),
+            })
     }
 
     /// The release a need of `version` reaches: the least release of the identity at or
@@ -407,7 +427,7 @@ impl Resolver<'_> {
         let needs = self
             .index
             .needs(identity, version)
-            .map_err(Problem::Index)?;
+            .map_err(|why| read_failed(identity, why))?;
         if needs.len() > self.bounds.needs {
             return Err(Problem::Bound(format!(
                 "{identity} {version} has more than {} needs",
@@ -435,7 +455,10 @@ impl Resolver<'_> {
         };
         let at = releases
             .binary_search_by(|r| r.version.cmp(current))
-            .map_err(|_| Problem::Index(format!("{identity} {current} is not a release")))?;
+            .map_err(|_| Problem::Index {
+                source: None,
+                why: format!("{identity} {current} is not a release"),
+            })?;
         let Some(here) = releases.get(at) else {
             return Ok(None);
         };
