@@ -2197,3 +2197,23 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
     );
     assert!(!store.contains(&b.expected.digest).unwrap());
 }
+
+/// An equivocation, two checkpoints of one size the log signed naming different root
+/// versions, is the registry's misbehavior: two signed copies back it.
+#[test]
+fn the_audit_reports_an_equivocation_against_the_registry() {
+    let evidence = audit::Evidence::from(Misbehavior::Equivocation {
+        size: 12,
+        versions: vec![1, 2],
+        places: vec!["a".to_owned(), "b".to_owned()],
+    });
+    assert!(evidence.attributed());
+    let text = evidence.text("acme");
+    assert!(
+        text.starts_with("evidence against the registry `acme`")
+            && text.contains("two checkpoints of size 12")
+            && text.contains("root versions 1 and 2")
+            && text.contains("places read: a, b"),
+        "{text}"
+    );
+}

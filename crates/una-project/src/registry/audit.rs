@@ -433,7 +433,8 @@ pub fn audit<E>(
 }
 
 /// Evidence the audit reports apart from its findings (`spec/30 §15` rule 7). An unsettled
-/// chain is the registry's misbehavior, since every place serves the same verified log. A
+/// chain is the registry's misbehavior, since every place serves the same verified log, and
+/// so is an equivocation, backed by two copies the log signed of one size. A
 /// missing deadline checkpoint or a cadence gap is evidence from an absence, which a place can
 /// cause, and two places can be one party: it is never the registry's misbehavior, only a note
 /// (`unattributed: a place or the registry`), with the places read and how many agreed.
@@ -468,6 +469,16 @@ pub enum Evidence {
         /// The fewest places that served the same copy of a checkpoint of the range.
         places_agreeing: usize,
     },
+    /// The log signed two checkpoints of one size naming different root versions: backed by
+    /// the two signed copies, the registry's misbehavior (U7010).
+    Equivocation {
+        /// The size.
+        size: u64,
+        /// The root versions named, ascending.
+        versions: Vec<u64>,
+        /// The places read.
+        places: Vec<String>,
+    },
 }
 
 impl From<Misbehavior> for Evidence {
@@ -498,15 +509,25 @@ impl From<Misbehavior> for Evidence {
                 places,
                 places_agreeing,
             },
+            Misbehavior::Equivocation {
+                size,
+                versions,
+                places,
+            } => Evidence::Equivocation {
+                size,
+                versions,
+                places,
+            },
         }
     }
 }
 
 impl Evidence {
-    /// Whether it is the registry's misbehavior (U7010): an unsettled chain only. Evidence from
-    /// an absence is a note, whatever the places agree on.
+    /// Whether it is the registry's misbehavior (U7010): an unsettled chain, or an
+    /// equivocation, which two signed copies back. Evidence from an absence is a note, whatever
+    /// the places agree on.
     pub fn attributed(&self) -> bool {
-        matches!(self, Evidence::Unsettled(_))
+        matches!(self, Evidence::Unsettled(_) | Evidence::Equivocation { .. })
     }
 
     /// What the evidence states about the registry `source`, shown safely: against the
@@ -539,6 +560,19 @@ impl Evidence {
                 shown(owner),
                 read(places, *places_agreeing)
             ),
+            Evidence::Equivocation {
+                size,
+                versions,
+                places,
+            } => {
+                let named: Vec<String> = versions.iter().map(u64::to_string).collect();
+                let names: Vec<String> = places.iter().map(|place| shown(place)).collect();
+                format!(
+                    "evidence against the registry `{source}`: its log signed two checkpoints of size {size}, naming the root versions {}; places read: {}; keep both signed copies, and publish them as evidence",
+                    named.join(" and "),
+                    names.join(", ")
+                )
+            }
             Evidence::CadenceGap {
                 from,
                 to,
