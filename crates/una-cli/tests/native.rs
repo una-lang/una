@@ -524,6 +524,20 @@ fn una_build_never_writes_through_a_link_leading_outside_the_package_1160() {
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("outside the package"), "{stderr}");
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    // A relative `--out` with `..` is the user's own typed path, created as given.
+    let typed = format!(
+        "../{}/typed/planted",
+        outside.file_name().unwrap().to_string_lossy()
+    );
+    let output = una(&dir, &["build", "--out", &typed]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(outside.join("typed/planted").is_file());
+    std::fs::remove_dir_all(outside.join("typed")).unwrap();
     // Without links, the build succeeds and leaves only the executable: the linker wrote in a
     // private directory, which is gone.
     std::fs::remove_file(dir.join("target")).unwrap();

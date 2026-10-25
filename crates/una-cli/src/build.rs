@@ -333,9 +333,10 @@ struct Placed {
 ///
 /// The default output, `target/una/<name>`, is placed inside the package root `root`: each
 /// level of `target/una` is created one at a time, and a link among them that leads outside the
-/// package is refused. An absolute `--out` path (`explicit`) is placed inside the directory it
-/// names, which is created as the user asked; a relative one is rooted at the current
-/// directory, and its directories are created there as `target/una` is in the package. The executable's path, and `<name>.o` beside it, are
+/// package is refused. An absolute `--out` path (`explicit`), or a relative one with `..`, is
+/// placed inside the directory it names, which is created as the user asked; a plain relative
+/// one is rooted at the current directory, and its directories are created there as
+/// `target/una` is in the package. The executable's path, and `<name>.o` beside it, are
 /// checked by [`una_diag::safe_write::checked_output`] before the linker starts, for an early
 /// error on a link at either. The linker never writes a name the package could have planted: the object, written
 /// through [`una_diag::safe_write::write_atomically`], and the executable both live in a
@@ -347,14 +348,20 @@ fn placed(root: &Path, explicit: bool, output: &Path, object: &[u8]) -> io::Resu
             Some(parent) => parent.to_path_buf(),
             None => PathBuf::from("."),
         };
-        if output.is_absolute() {
-            // An absolute directory the user named on the command line, not one the package
-            // chose: created as given, and the root of the writes in it.
+        let typed = output.is_absolute()
+            || output
+                .components()
+                .any(|component| component == std::path::Component::ParentDir);
+        if typed {
+            // An absolute directory, or a relative one with `..`, is a path the user typed on
+            // the command line, which a repository cannot inject: created as given, and the
+            // root of the writes in it.
             std::fs::create_dir_all(&directory)?;
             directory
         } else {
-            // A relative one is rooted at the current directory, often the package itself, so
-            // it is created one level at a time: a committed `target` link cannot redirect it.
+            // A plain relative one is rooted at the current directory, often the package
+            // itself, so it is created one level at a time: a committed `target` link cannot
+            // redirect it.
             let here = Path::new(".");
             una_diag::safe_write::create_dir_inside(here, &here.join(&directory))?;
             here.to_path_buf()
