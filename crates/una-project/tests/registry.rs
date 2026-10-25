@@ -2028,7 +2028,10 @@ fn a_file_the_bundle_lacks_is_an_omission() {
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
             .unwrap_err();
     assert_eq!(at, Some(0));
-    assert!(matches!(failure, Failure::Unavailable(_)), "{failure:?}");
+    assert!(
+        matches!(failure, Failure::Omitted(Omission::Document(_), _)),
+        "{failure:?}"
+    );
     assert!(!store.contains(&b.expected.digest).unwrap());
     // A place behind the bundle serves the file: verified like the rest, it fills the gap.
     let registry = Memory {
@@ -2343,4 +2346,36 @@ fn an_advisory_judges_its_security_keys_before_the_owner() {
         owner_threshold: true,
     };
     assert!(owner.needs_owner(true, 2));
+}
+
+/// A tile the bundle lacks, with only an https place behind it, which this release cannot
+/// read: the place cannot serve, so it is skipped, and the tile is an omission of a document,
+/// unavailable (U7013), never a refusal.
+#[test]
+fn a_tile_the_bundle_lacks_with_an_https_place_behind_is_an_omission() {
+    let b = bundled();
+    let mut files = b.files.clone();
+    let tile = files
+        .keys()
+        .find(|path| path.starts_with("tile/entries/"))
+        .unwrap()
+        .clone();
+    files.remove(&tile);
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let store = Itaoca {
+        root: scratch("unbundle-https-behind"),
+    };
+    let https = |_: &str| -> Vec<Box<dyn Transport>> {
+        vec![Box::new(una_project::transport::Unavailable {
+            url: "https://ita.acme.example".to_owned(),
+        })]
+    };
+    let (at, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &https).unwrap_err();
+    assert_eq!(at, Some(0));
+    assert!(
+        matches!(&failure, Failure::Omitted(Omission::Document(path), _) if path.starts_with("tile/")),
+        "{failure:?}"
+    );
+    assert!(!store.contains(&b.expected.digest).unwrap());
 }

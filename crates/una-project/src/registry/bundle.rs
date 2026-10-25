@@ -149,6 +149,15 @@ impl Transport for Recording<'_> {
     fn describe(&self) -> String {
         self.inner.describe()
     }
+
+    fn describe_all(&self) -> Vec<String> {
+        self.inner.describe_all()
+    }
+
+    /// What the recorded transport serves: a recording never serves more than it.
+    fn serves(&self) -> bool {
+        self.inner.serves()
+    }
 }
 
 /// A source's registry files as a bundle carries them, served from memory.
@@ -563,9 +572,7 @@ fn verify_source(
         let Some(registry) = opened.as_mut() else {
             continue;
         };
-        if let Err(why) = check_opened(registry, package) {
-            return Err((index, coded(registry, why)));
-        }
+        check_opened(registry, package).map_err(|failure| (index, failure))?;
     }
     opened
         .map(|registry| (registry.point.document.clone(), registry.root.version))
@@ -577,34 +584,51 @@ fn verify_source(
         })
 }
 
-/// A failure of `registry`'s reading: unavailable when the client recorded a document no place
-/// serves ([`Registry::take_omitted`]), otherwise a copy that does not verify.
+/// A failure of `registry`'s reading, coded right after the read that met it: by the kind the
+/// client gave it ([`Registry::last_failure`]), unavailable when no place served what it
+/// needed, a refusal when what was served does not verify; with no kind, by the omissions it
+/// recorded ([`Registry::take_omitted`]).
 fn coded(registry: &mut Registry<'_>, why: String) -> Failure {
-    if registry.take_omitted().is_empty() {
-        Failure::Refused(why)
-    } else {
-        Failure::Unavailable(why)
+    let omitted = registry.take_omitted();
+    match (registry.last_failure(), omitted.into_iter().next()) {
+        (Some(crate::client::Failure::Refused), _) | (None, None) => Failure::Refused(why),
+        (Some(crate::client::Failure::Unserved) | None, Some(omission)) => {
+            Failure::Omitted(omission, why)
+        }
+        (Some(crate::client::Failure::Unserved), None) => Failure::Unavailable(why),
     }
 }
 
 /// The checks of [`verify_source`] on `package`, with the source's registry opened: it is the
-/// lock's release, its name's state verifies, and its logged time is read.
-fn check_opened(registry: &mut Registry<'_>, package: &Expected) -> Result<(), String> {
+/// lock's release, its name's state verifies, and its logged time is read. Each failure of the
+/// client is coded right after the read that met it ([`coded`]); a check of this module that
+/// fails is a refusal.
+fn check_opened(registry: &mut Registry<'_>, package: &Expected) -> Result<(), Failure> {
     if registry.point.checkpoint.size != package.checkpoint_size {
-        return Err("the lock names two resolution points of one source".to_owned());
-    }
-    let version = crate::version::Version::parse_full(&package.version)?;
-    let release = registry.release(&package.name, &version)?;
-    if release.index != package.logged || release.statement.digest != package.digest {
-        return Err(format!(
-            "the registry's `{} {}` is not the lock's: its log index or digest differs",
-            package.name, package.version
+        return Err(Failure::Refused(
+            "the lock names two resolution points of one source".to_owned(),
         ));
     }
-    registry.marks(&package.name)?;
+    let version =
+        crate::version::Version::parse_full(&package.version).map_err(Failure::Refused)?;
+    let release = match registry.release(&package.name, &version) {
+        Ok(release) => release,
+        Err(why) => return Err(coded(registry, why)),
+    };
+    if release.index != package.logged || release.statement.digest != package.digest {
+        return Err(Failure::Refused(format!(
+            "the registry's `{} {}` is not the lock's: its log index or digest differs",
+            package.name, package.version
+        )));
+    }
+    if let Err(why) = registry.marks(&package.name) {
+        return Err(coded(registry, why));
+    }
     // Its logged time, from the kept checkpoints the bundle carries (rule 33), or a place
     // behind it.
-    registry.logged_at(release.index)?;
+    if let Err(why) = registry.logged_at(release.index) {
+        return Err(coded(registry, why));
+    }
     Ok(())
 }
 

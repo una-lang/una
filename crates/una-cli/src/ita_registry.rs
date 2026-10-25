@@ -1068,14 +1068,20 @@ pub(crate) fn watch_command(
         Err(why) => return usage(out, &why),
     };
     registry.take_omitted();
-    let mut chain = |name: &str| watch::chain_of(&mut registry, name);
+    // A failure to read a chain is coded right after that read (`code_of`); a check of
+    // watching's own, a chain shorter than the count seen, is evidence (U7010).
+    let mut failed_read: Option<Code> = None;
+    let mut chain = |name: &str| {
+        watch::chain_of(&mut registry, name).map_err(|why| {
+            failed_read = Some(crate::registry::code_of(&mut registry));
+            why
+        })
+    };
     let followed = watch::watch(&mut chain, &stored, names);
     let mut report = match followed {
         Ok(report) => report,
         Err(why) => {
-            // Unavailable when no place serves a document the chains need (U7013), from the
-            // client's record of omissions; otherwise what was served does not verify (U7010).
-            let code = crate::registry::code_of(&mut registry);
+            let code = failed_read.unwrap_or(Code::U7010);
             writeln!(
                 out.stderr,
                 "error[{}]: the chains of `{owner}` at `{source}` cannot be followed: {why}",
@@ -1121,11 +1127,11 @@ pub(crate) fn watch_command(
                 registry.take_omitted();
                 let assessment = match judge_submission(itaoca, source, &leaf, &mut registry) {
                     Ok(assessment) => assessment,
-                    Err(why) => {
+                    Err((code, why)) => {
                         failed = true;
-                        // A document no place serves leaves it unavailable (U7013), from the
-                        // client's record of omissions, never a verdict.
-                        if registry.take_omitted().is_empty() {
+                        // A document no place serves leaves it unavailable (U7013), coded
+                        // right after the read that met it, never a verdict.
+                        if code != Some(Code::U7013) {
                             lines.push(format!(
                                 "error: the submission sha256:{leaf} cannot be judged: {}",
                                 shown(&why)
@@ -1245,25 +1251,33 @@ fn judge_submission(
     source: &str,
     leaf: &str,
     registry: &mut Registry<'_>,
-) -> Result<watch::Assessment, String> {
-    let file = tree::locate(&itaoca.root, &["registry", source, "submitted", leaf])?
-        .ok_or("the record is gone")?;
-    let text = String::from_utf8(tree::read_file(&file, 4096)?)
-        .map_err(|_| "the record is not UTF-8".to_owned())?;
-    let record = watch::Submitted::parse(leaf, &text)?;
+) -> Result<watch::Assessment, (Option<Code>, String)> {
+    // A failure of Itaoca's own files has no code of a registry; one of the client is coded
+    // right after the read that met it (`code_of`).
+    let local = |why: String| (None, why);
+    let file = tree::locate(&itaoca.root, &["registry", source, "submitted", leaf])
+        .map_err(local)?
+        .ok_or_else(|| local("the record is gone".to_owned()))?;
+    let text = String::from_utf8(tree::read_file(&file, 4096).map_err(local)?)
+        .map_err(|_| local("the record is not UTF-8".to_owned()))?;
+    let record = watch::Submitted::parse(leaf, &text).map_err(local)?;
     // What the place serves is judged by `assess`: a promise that does not verify is reported
     // and counts as none; a place that cannot serve is reported too.
     // The first promise stored, verified against the log key of the root in force when it was
     // stored, which its record names; one stored with no record, before records were kept, is
     // verified against the last root's.
-    let stored = match tree::locate(&itaoca.root, &["registry", source, "promises", leaf])? {
+    let stored = match tree::locate(&itaoca.root, &["registry", source, "promises", leaf])
+        .map_err(local)?
+    {
         None => None,
         Some(file) => {
-            let bytes = tree::read_file(&file, 1 << 16)?;
+            let bytes = tree::read_file(&file, 1 << 16).map_err(local)?;
             let name = format!("{leaf}.root");
-            let log = match tree::locate(&itaoca.root, &["registry", source, "promises", &name])? {
+            let found = tree::locate(&itaoca.root, &["registry", source, "promises", &name])
+                .map_err(local)?;
+            let log = match found {
                 None => Ok(registry.root.log.clone()),
-                Some(record) => String::from_utf8(tree::read_file(&record, 4096)?)
+                Some(record) => String::from_utf8(tree::read_file(&record, 4096).map_err(local)?)
                     .map_err(|_| "the record of a promise's root is not UTF-8".to_owned())
                     .and_then(|text| watch::parse_stored_root(&text))
                     .and_then(|(version, digest)| {
@@ -1283,12 +1297,19 @@ fn judge_submission(
     let served = Location::parse(&record.url)
         .and_then(|location| transport::open(&location).get(&format!("submit/{leaf}/promise"), 1 << 16));
     let target = format!("sha256:{leaf}");
-    let index = watch::chain_of(registry, &record.name)?
+    let chain = match watch::chain_of(registry, &record.name) {
+        Ok(chain) => chain,
+        Err(why) => return Err((Some(crate::registry::code_of(registry)), why)),
+    };
+    let index = chain
         .into_iter()
         .find(|entry| entry.leaf == target)
         .map(|entry| entry.index);
     let logged_at = match index {
-        Some(index) => Some(registry.logged_at(index)?),
+        Some(index) => match registry.logged_at(index) {
+            Ok(time) => Some(time),
+            Err(why) => return Err((Some(crate::registry::code_of(registry)), why)),
+        },
         None => None,
     };
     Ok(watch::assess(

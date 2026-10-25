@@ -376,6 +376,13 @@ pub fn yank(
 /// Sends `submission` through `transport`: the archive first, then the entry, so a registry
 /// that reads the entry finds its archive. Returns the paths written.
 pub fn send(transport: &dyn Transport, submission: &Submission) -> Result<Vec<String>, String> {
+    // A place that cannot serve, such as one with no transport yet, is never written to.
+    if !transport.serves() {
+        return Err(format!(
+            "{} cannot serve, so nothing is sent",
+            transport.describe()
+        ));
+    }
     let dir = submission.dir();
     let mut written = Vec::new();
     let fail = |path: &str, reason: Refusal| {

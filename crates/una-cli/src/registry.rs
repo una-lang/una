@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use una_diag::Code;
 use una_project::ProjectError;
-use una_project::client::{Floors, LoggedRelease, OpenError, Point, Registry};
+use una_project::client::{Failure, Floors, LoggedRelease, OpenError, Point, Registry};
 use una_project::itaoca::Itaoca;
 use una_project::mirrors::{self, Attempt, Mirrors};
 use una_project::transport::{self, Location, Transport};
@@ -188,12 +188,17 @@ pub(crate) fn open_first<'t>(
 
 /// The code of a failure `registry` just met (`spec/30 §14` rule 1): U7013 when a document
 /// that no place serves made the result unavailable, U7010 when what was served does not
-/// verify. Read from the registry's record of omissions, never from the message.
+/// verify. Read from the kind the registry recorded with the failure itself
+/// ([`Registry::last_failure`]), which a refusal's own kind decides even when an earlier
+/// failure recorded omissions; from the record of omissions only when it recorded none. Never
+/// from the message. The omissions recorded are taken either way, so none outlives the call.
 pub(crate) fn code_of(registry: &mut Registry<'_>) -> Code {
-    if registry.take_omitted().is_empty() {
-        Code::U7010
-    } else {
-        Code::U7013
+    let omitted = registry.take_omitted();
+    match registry.last_failure() {
+        Some(Failure::Refused) => Code::U7010,
+        Some(Failure::Unserved) => Code::U7013,
+        None if omitted.is_empty() => Code::U7010,
+        None => Code::U7013,
     }
 }
 

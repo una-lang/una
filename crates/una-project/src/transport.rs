@@ -47,6 +47,7 @@ pub trait Transport {
 
     /// Writes `bytes` as the file at `path` below the registry's base, once: when a file is
     /// already there, it must be the same bytes. A transport that cannot write refuses.
+    /// A transport that cannot serve ([`Transport::serves`]) refuses every write too.
     fn put(&self, path: &str, bytes: &[u8]) -> Result<(), Refusal> {
         segments(path)?;
         let _ = bytes;
@@ -57,6 +58,14 @@ pub trait Transport {
     /// for a single place.
     fn describe_all(&self) -> Vec<String> {
         vec![self.describe()]
+    }
+
+    /// Whether the transport can serve at all: false for a place this release has no transport
+    /// for ([`Unavailable`]), whose every read fails. Such a failure is a refusal of service,
+    /// an omission of what was asked (U7013), never evidence that something served does not
+    /// verify (U7010).
+    fn serves(&self) -> bool {
+        true
     }
 }
 
@@ -253,6 +262,10 @@ impl Transport for Unavailable {
             self.url
         ))
     }
+
+    fn serves(&self) -> bool {
+        false
+    }
 }
 
 /// A place with the other places of its source behind it (`spec/30 §14` rule 1): the root
@@ -260,7 +273,9 @@ impl Transport for Unavailable {
 /// every other document, verified against that checkpoint by its hash, signature or proof
 /// wherever it comes from, is read from the place, or, when the place omits it or cannot
 /// serve it, from the next place that serves it. So an omission by one place never changes a
-/// result, and makes it unavailable only when no place serves the document.
+/// result, and makes it unavailable only when no place serves the document. A place behind the
+/// first that cannot serve at all ([`Transport::serves`]) serves nothing, so a document no
+/// other place serves is `None`, an omission, never the error of that place.
 pub struct Fallback {
     /// The place, then the others, in their order.
     places: Vec<Box<dyn Transport>>,
@@ -283,6 +298,9 @@ impl Transport for Fallback {
             if chooses && at > 0 {
                 break;
             }
+            if at > 0 && !place.serves() {
+                continue;
+            }
             match place.get(path, limit) {
                 Ok(Some(bytes)) => return Ok(Some(bytes)),
                 Ok(None) => {}
@@ -300,8 +318,10 @@ impl Transport for Fallback {
     fn get_all(&self, path: &str, limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
         let mut copies = Vec::new();
         let mut failure: Option<Refusal> = None;
-        // Each place's own copies: a bundle's copy carries every place's copy it recorded.
-        for place in &self.places {
+        for (at, place) in self.places.iter().enumerate() {
+            if at > 0 && !place.serves() {
+                continue;
+            }
             match place.get_all(path, limit) {
                 Ok(served) => copies.extend(served),
                 Err(why) => {
@@ -327,6 +347,10 @@ impl Transport for Fallback {
             .flat_map(|place| place.describe_all())
             .collect()
     }
+
+    fn serves(&self) -> bool {
+        self.places.iter().any(|place| place.serves())
+    }
 }
 
 /// The transport of a location.
@@ -339,7 +363,7 @@ pub fn open(location: &Location) -> Box<dyn Transport> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fallback, Refusal, Transport};
+    use super::{Fallback, Refusal, Transport, Unavailable};
 
     /// A place that serves `copies` of every file.
     struct Copies(Vec<Vec<u8>>);
@@ -369,5 +393,17 @@ mod tests {
             Ok(vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()])
         );
         assert_eq!(fallback.get("checkpoint/3", 64), Ok(Some(b"one".to_vec())));
+    }
+
+    #[test]
+    fn a_place_behind_that_cannot_serve_serves_nothing() {
+        let empty = Copies(Vec::new());
+        let https = Unavailable {
+            url: "https://registry.example".to_owned(),
+        };
+        let fallback = Fallback::new(Box::new(empty), vec![Box::new(https)]);
+        assert_eq!(fallback.get("tile/0/000", 64), Ok(None));
+        assert_eq!(fallback.get_all("checkpoint/3", 64), Ok(Vec::new()));
+        assert!(fallback.serves());
     }
 }
