@@ -6,9 +6,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## v0.3.17
 
-A patch of the Beta, with one security fix, made from the v0.3.16 tag: no other change of main is in it. In the interpreter, a function value releases the values it closes over by the worklist that releases records, so a value that a loop nests deeply through function values no longer overflows the stack of `una run` when it is released (#1071, advisory UNA-SA-017). Validation: `docs/releases/0.3.17-validation.md`.
+A patch of the Beta, with two security fixes, made from the v0.3.16 tag: no other change of main is in it. In the interpreter, a function value releases the values it closes over by the worklist that releases records, so a value that a loop nests deeply through function values no longer overflows the stack of `una run` when it is released (#1071, advisory UNA-SA-017). And `una-http`'s TLS trust store no longer holds the distrusted emSign root (#1130, RUSTSEC-2026-0381, RUSTSEC-2026-0382). Validation: `docs/releases/0.3.17-validation.md`.
 
 - **Function values release what they hold without recursion** (#1071, advisory UNA-SA-017). In the interpreter, a function value releases the values it closes over and the handlers of its capabilities by the same worklist as records, so a value that a loop nests deeply through function values ends normally. Before, releasing such a value recursed on the native stack, and a deep enough one aborted `una run` with a stack overflow, in every release up to v0.3.16. Native executables are not affected.
+- **Security: the distrusted emSign root is out of the TLS trust store** (#1130, RUSTSEC-2026-0381, RUSTSEC-2026-0382). `una-http` updates `webpki-roots` from 1.0.9 to 1.0.11, which removes `emSign ECC Root CA - G3`, and `rustls-webpki` from 0.103.15 to 0.103.16, which rejects certificate paths through the emSign intermediates whose private keys are public. A TLS connection made by `una-http` no longer trusts a server certificate issued through them.
 
 ## v0.3.16
 
