@@ -871,3 +871,17 @@ fn check_fresh_needs_a_fresh_checkpoint_and_finds_a_freeze() {
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("U7010") && err.contains("frozen"), "{err}");
 }
+
+/// Plain `--check` reads the lock's resolution point from a place: with no place reachable it
+/// fails closed (U7013), never passing unchecked.
+#[test]
+fn check_with_no_place_fails_closed() {
+    let (registry, _) = acme();
+    let (dir, mirror, itaoca) = project("check-no-place", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    std::fs::remove_dir_all(&mirror).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("U7013"), "{err}");
+}

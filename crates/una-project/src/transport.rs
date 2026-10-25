@@ -35,6 +35,13 @@ pub trait Transport {
     /// `..`. A file larger than `limit` is a refusal, never a truncation.
     fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, Refusal>;
 
+    /// Every copy of the file at `path` that the places behind this transport serve, in their
+    /// order: none, or the one [`Transport::get`] gives, for a single place. The client merges
+    /// the witnesses' cosignatures of every copy of a kept checkpoint.
+    fn get_all(&self, path: &str, limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
+        Ok(self.get(path, limit)?.into_iter().collect())
+    }
+
     /// Where the transport reads from, for messages.
     fn describe(&self) -> String;
 
@@ -281,6 +288,24 @@ impl Transport for Fallback {
         match failure {
             Some(why) => Err(why),
             None => Ok(None),
+        }
+    }
+
+    fn get_all(&self, path: &str, limit: u64) -> Result<Vec<Vec<u8>>, Refusal> {
+        let mut copies = Vec::new();
+        let mut failure: Option<Refusal> = None;
+        for place in &self.places {
+            match place.get(path, limit) {
+                Ok(Some(bytes)) => copies.push(bytes),
+                Ok(None) => {}
+                Err(why) => {
+                    failure.get_or_insert(why);
+                }
+            }
+        }
+        match failure {
+            Some(why) if copies.is_empty() => Err(why),
+            _ => Ok(copies),
         }
     }
 

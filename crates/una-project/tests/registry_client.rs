@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use registry::{NOW, TestRegistry, hash_hex, keypair, key_text};
-use una_project::client::{Floors, LoggedRelease, OpenError, Point, Registry, owner_of, shown};
+use una_project::client::{
+    Floors, LoggedRelease, Omission, OpenError, Point, Registry, owner_of, shown,
+};
 use una_project::provenance::{Expected, signed_name, verify};
 use una_project::tlog::merkle::{
     Hash, consistency_proof, inclusion_proof, leaf_hash, node_hash, root as tree_root,
@@ -2100,7 +2102,7 @@ fn an_omitted_kept_checkpoint_is_unavailable_never_a_later_effect() {
     assert!(client.history("acme").is_err());
     assert_eq!(
         client.take_omitted(),
-        vec![format!("checkpoint/{effect}")]
+        vec![Omission::Document(format!("checkpoint/{effect}"))]
     );
     // Behind it, a place that serves it: the full view.
     let full_place = Memory {
@@ -2113,4 +2115,70 @@ fn an_omitted_kept_checkpoint_is_unavailable_never_a_later_effect() {
     let mut client = open(&both, &registry).unwrap();
     assert_eq!(client.history("acme").unwrap(), full);
     assert!(client.take_omitted().is_empty());
+}
+
+/// The checkpoint `document` with the cosignature lines of every witness but `kept` removed:
+/// what a place that withholds cosignatures serves.
+fn withhold(document: &[u8], log: &str, kept: &str) -> Vec<u8> {
+    let text = String::from_utf8(document.to_vec()).unwrap();
+    let (body, lines) = text.split_once("\n\n").unwrap();
+    let lines: Vec<&str> = lines
+        .lines()
+        .filter(|line| {
+            line.starts_with(&format!("\u{2014} {log} "))
+                || line.starts_with(&format!("\u{2014} {kept} "))
+        })
+        .collect();
+    format!("{body}\n\n{}\n", lines.join("\n")).into_bytes()
+}
+
+/// A place withholds the cosignatures of the checkpoint where a dispute takes effect, but one:
+/// with an honest place behind it, the cosignatures are merged and the result is the full one;
+/// alone, the owner's verdict depends on what it withholds, so the name is unavailable, an
+/// omission of cosignatures, never refused.
+#[test]
+fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 30 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 29 * DAY);
+    registry.append("other", "filler");
+    let effect = registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&n]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&n]);
+    registry.checkpoint(NOW);
+    let full = history_of(&registry).unwrap();
+    assert_eq!(full.took_effect.get(&dispute), Some(&effect));
+    let path = format!("checkpoint/{effect}");
+    let mut stripping = Memory {
+        files: registry.files.clone(),
+    };
+    let log = registry.keys.log.1.name.clone();
+    let witness = registry.keys.witnesses[0].1.name.clone();
+    let stripped = withhold(&registry.files[&path], &log, &witness);
+    stripping.files.insert(path.clone(), stripped);
+    // With an honest place behind it: merged, the full result.
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let stripping_files = stripping.files.clone();
+    let both =
+        una_project::transport::Fallback::new(Box::new(stripping), vec![Box::new(honest)]);
+    let mut client = open(&both, &registry).unwrap();
+    assert_eq!(client.history("acme").unwrap(), full);
+    assert!(!client.releases("acme/ledger").unwrap()[0].compromised);
+    // Alone: unavailable, by an omission of cosignatures.
+    let alone = Memory {
+        files: stripping_files,
+    };
+    let mut client = open(&alone, &registry).unwrap();
+    assert!(client.history("acme").is_err());
+    assert_eq!(
+        client.take_omitted(),
+        vec![Omission::Cosignatures("acme".to_owned())]
+    );
+    assert!(client.misbehavior().is_empty());
 }
