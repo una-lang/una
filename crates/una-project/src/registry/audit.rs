@@ -17,11 +17,11 @@
 
 use std::collections::BTreeSet;
 
-use crate::client::{Marks, Misbehavior, Registry, owner_of, shown};
+use crate::client::{Marks, Misbehavior, Observation, Registry, owner_of, shown};
 use crate::tlog::owner::Unsettled;
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
-use crate::version::Version;
+use crate::version::{Line, Version};
 
 /// A registry package of the lock, as the audit reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +84,25 @@ pub struct Facts {
     /// The recoveries and disputes the lock accepted while pending, now in effect, whose effect
     /// no `effect` line consents to: their log indexes. Each is reported (U7014).
     pub accepted_effects: Vec<u64>,
+    /// The releases of its name whose cooldown eligibility a place's withheld cosignatures
+    /// delay, as the client observed them ([`Observation::EligibilityDelay`]).
+    pub eligibility_delays: Vec<Delay>,
+}
+
+/// A release whose cooldown eligibility withheld cosignatures delay: eligible at the earliest
+/// time the cosignatures merged across places allow, but not at its logged time as served,
+/// which resolution keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delay {
+    /// The release delayed.
+    pub version: Version,
+    /// Its logged time as served, in seconds since the Unix epoch.
+    pub served: u64,
+    /// The earliest it could have been logged, in seconds since the Unix epoch.
+    pub earliest: u64,
+    /// Whether it is the fix that an advisory naming the locked release names: then the delay
+    /// keeps the locked package from its fix (U7014); otherwise it is a note.
+    pub fix: bool,
 }
 
 /// The facts of `locked` from `registry`, opened at a fresh checkpoint of its source: its name's
@@ -114,7 +133,7 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
             history.owner
         ));
     }
-    let advisories = marks
+    let advisories: Vec<Advisory> = marks
         .advised
         .get(&locked.version)
         .map(|ids| {
@@ -189,6 +208,40 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
         .into_iter()
         .filter(|index| !pending.contains(index))
         .collect();
+    // The lines resolution reads for this package, its own and each fix's, so the client
+    // observes every release whose eligibility withheld cosignatures delay (spec/30 section 14
+    // rule 1); a line that cannot be read leaves the facts unavailable, never shorter.
+    let fixes: Vec<&Version> = advisories
+        .iter()
+        .filter_map(|advisory| advisory.fixed.as_ref().map(|(fix, _)| fix))
+        .collect();
+    let mut lines: Vec<Line> = vec![locked.version.line()];
+    for fix in &fixes {
+        if !lines.contains(&fix.line()) {
+            lines.push(fix.line());
+        }
+    }
+    for line in lines {
+        registry.state(&locked.name, line)?;
+    }
+    let eligibility_delays = registry
+        .observations()
+        .iter()
+        .filter_map(|observation| match observation {
+            Observation::EligibilityDelay {
+                name,
+                version,
+                served,
+                earliest,
+            } if *name == locked.name => Some(Delay {
+                version: version.clone(),
+                served: *served,
+                earliest: *earliest,
+                fix: fixes.contains(&version),
+            }),
+            _ => None,
+        })
+        .collect();
     Ok(Facts {
         yanked: marks.yanked.contains_key(&locked.version),
         advisories,
@@ -198,6 +251,7 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
         key_changes,
         void_yanks: void_yanks(&marks, &locked.version),
         accepted_effects,
+        eligibility_delays,
     })
 }
 
@@ -231,6 +285,10 @@ pub enum Kind {
     /// A recovery or a dispute of its owner, logged at this index, which the lock accepted while
     /// pending, has taken effect: the new key needs fresh consent.
     AcceptedTookEffect(u64),
+    /// A release of its name whose cooldown eligibility a place's withheld cosignatures delay:
+    /// a finding (U7014) when it is the fix an advisory naming the locked release names, a note
+    /// otherwise ([`Finding::is_note`]).
+    EligibilityDelay(Delay),
 }
 
 /// A finding: the package, by its index among the packages audited, and what was found.
@@ -280,7 +338,24 @@ impl Finding {
             Kind::VoidYank(index) => format!(
                 "a yank of {version} at log entry {index} is void: it counts only with a key revoked as compromised, or repeats a yank"
             ),
+            Kind::EligibilityDelay(delay) => format!(
+                "{}{} is served as logged at {}, but the cosignatures merged across places allow {}: a place withholds cosignatures, which delays its eligibility past the cooldown",
+                delay.version,
+                if delay.fix {
+                    format!(", the fix of an advisory that names {version},")
+                } else {
+                    String::new()
+                },
+                delay.served,
+                delay.earliest
+            ),
         }
+    }
+
+    /// Whether it is a note, which the audit says and which decides nothing: a delayed release
+    /// that is not the fix of an advisory naming the locked release.
+    pub fn is_note(&self) -> bool {
+        matches!(&self.kind, Kind::EligibilityDelay(delay) if !delay.fix)
     }
 }
 
@@ -311,6 +386,13 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
             .accepted_effects
             .iter()
             .map(|index| Kind::AcceptedTookEffect(*index)),
+    );
+    kinds.extend(
+        facts
+            .eligibility_delays
+            .iter()
+            .cloned()
+            .map(Kind::EligibilityDelay),
     );
     kinds
         .into_iter()
@@ -350,19 +432,18 @@ pub fn audit<E>(
     out
 }
 
-/// Evidence the audit reports apart from its findings (`spec/30 §15` rule 7): what a registry
-/// following the rules never logs or keeps. An unsettled chain is the registry's, since every
-/// place serves the same verified log; a missing deadline checkpoint or a cadence gap is
-/// evidence from an absence, the registry's only when at least two places served the same view
-/// ([`Evidence::attributed`]), and otherwise a place's or the registry's.
+/// Evidence the audit reports apart from its findings (`spec/30 §15` rule 7). An unsettled
+/// chain is the registry's misbehavior, since every place serves the same verified log. A
+/// missing deadline checkpoint or a cadence gap is evidence from an absence, which a place can
+/// cause, and two places can be one party: it is never the registry's misbehavior, only a note
+/// (`unattributed: a place or the registry`), with the places read and how many agreed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Evidence {
     /// The registry logged an owner chain that does not settle (`spec/30 §14` rule 5,
     /// invariant (4)): the owner's names are refused (U7010).
     Unsettled(Unsettled),
     /// No place serves the deadline checkpoint of a request, the first checkpoint at or after
-    /// its target witness time with the witness threshold of cosignatures, which a registry
-    /// keeps: the request's effect cannot be decided.
+    /// its target witness time with the witness threshold of cosignatures.
     MissingDeadline {
         /// The owner whose chain holds the request.
         owner: String,
@@ -372,8 +453,8 @@ pub enum Evidence {
         target: u64,
         /// The places read.
         places: Vec<String>,
-        /// Whether at least two places served the same view of the checkpoints it rests on.
-        attributed: bool,
+        /// The fewest places that served the same copy of a checkpoint it rests on.
+        places_agreeing: usize,
     },
     /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
     /// a registry may leave between two such checkpoints.
@@ -384,8 +465,8 @@ pub enum Evidence {
         to: u64,
         /// The places read.
         places: Vec<String>,
-        /// Whether at least two places served the same view of every checkpoint of the range.
-        attributed: bool,
+        /// The fewest places that served the same copy of a checkpoint of the range.
+        places_agreeing: usize,
     },
 }
 
@@ -398,58 +479,51 @@ impl From<Misbehavior> for Evidence {
                 index,
                 target,
                 places,
-                attributed,
+                places_agreeing,
             } => Evidence::MissingDeadline {
                 owner,
                 index,
                 target,
                 places,
-                attributed,
+                places_agreeing,
             },
             Misbehavior::CadenceGap {
                 from,
                 to,
                 places,
-                attributed,
+                places_agreeing,
             } => Evidence::CadenceGap {
                 from,
                 to,
                 places,
-                attributed,
+                places_agreeing,
             },
         }
     }
 }
 
 impl Evidence {
-    /// Whether it is the registry's misbehavior: an unsettled chain always; evidence from an
-    /// absence only when at least two places served the same view.
+    /// Whether it is the registry's misbehavior (U7010): an unsettled chain only. Evidence from
+    /// an absence is a note, whatever the places agree on.
     pub fn attributed(&self) -> bool {
-        match self {
-            Evidence::Unsettled(_) => true,
-            Evidence::MissingDeadline { attributed, .. }
-            | Evidence::CadenceGap { attributed, .. } => *attributed,
-        }
+        matches!(self, Evidence::Unsettled(_))
     }
 
     /// What the evidence states about the registry `source`, shown safely: against the
     /// registry when it is attributed; otherwise `unattributed: a place or the registry`, with
-    /// the places read.
+    /// the places read and how many agreed.
     pub fn text(&self, source: &str) -> String {
         let source = shown(source);
-        let who = if self.attributed() {
-            format!("evidence against the registry `{source}`")
-        } else {
-            format!("unattributed: a place or the registry `{source}`")
-        };
-        let read = |places: &[String]| -> String {
+        let read = |places: &[String], agreeing: usize| -> String {
             let names: Vec<String> = places.iter().map(|place| shown(place)).collect();
-            format!("; places read: {}", names.join(", "))
+            format!(
+                "; places read: {}; {agreeing} of them served the same copy",
+                names.join(", ")
+            )
         };
-        let publish = "keep its checkpoint and the files read, and publish them as evidence";
         match self {
             Evidence::Unsettled(unsettled) => format!(
-                "{who}: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; {publish}",
+                "evidence against the registry `{source}`: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; keep its checkpoint and the files read, and publish them as evidence",
                 shown(&unsettled.owner),
                 unsettled.passes,
                 unsettled.index
@@ -459,17 +533,20 @@ impl Evidence {
                 index,
                 target,
                 places,
-                ..
+                places_agreeing,
             } => format!(
-                "{who}: no place serves the deadline checkpoint of the request at the log index {index} of the owner `{}`, the first checkpoint at or after its target witness time {target} with the witnesses' threshold of cosignatures, which a registry keeps{}; {publish}",
+                "unattributed: a place or the registry `{source}`: no place serves the deadline checkpoint of the request at the log index {index} of the owner `{}`, the first checkpoint at or after its target witness time {target} with the witnesses' threshold of cosignatures{}",
                 shown(owner),
-                read(places)
+                read(places, *places_agreeing)
             ),
             Evidence::CadenceGap {
-                from, to, places, ..
+                from,
+                to,
+                places,
+                places_agreeing,
             } => format!(
-                "{who}: no checkpoint of the sizes {from} to {to} carries the witnesses' threshold of cosignatures, a longer gap than a registry may leave{}; {publish}",
-                read(places)
+                "unattributed: a place or the registry `{source}`: no checkpoint of the sizes {from} to {to} carries the witnesses' threshold of cosignatures, a longer gap than a registry may leave{}",
+                read(places, *places_agreeing)
             ),
         }
     }

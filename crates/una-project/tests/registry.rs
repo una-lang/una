@@ -17,7 +17,7 @@ use una_project::content::File;
 use una_project::itaoca::{Itaoca, registry_id};
 use una_project::mirrors::{Attempt, first_verified};
 use una_project::provenance::{Expected, signed_name};
-use una_project::registry::audit::{self, Facts, Kind, Locked};
+use una_project::registry::audit::{self, Delay, Facts, Kind, Locked};
 use una_project::tlog::state::{Signers, parse_advisory};
 use una_project::registry::bundle::{self, Failure, Memory, Recording};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
@@ -447,6 +447,20 @@ fn advisory(id: &str) -> Advisory {
 #[test]
 fn audit_reports_yanks_advisories_compromises_and_owner_events() {
     let packages = [locked("acme/ledger", "0.3.1"), locked("acme/ledger", "0.3.2")];
+    // Withheld cosignatures delay the eligibility of the advisory's fix, a finding, and of
+    // another release, a note.
+    let fixed_late = Delay {
+        version: v("0.3.2"),
+        served: 2_000,
+        earliest: 1_000,
+        fix: true,
+    };
+    let other_late = Delay {
+        version: v("0.4.0"),
+        served: 3_000,
+        earliest: 2_500,
+        fix: false,
+    };
     let mut facts_of = |package: &Locked| -> Result<Facts, String> {
         Ok(if package.version == v("0.3.1") {
             Facts {
@@ -458,6 +472,7 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                 key_changes: vec![140],
                 void_yanks: vec![150],
                 accepted_effects: Vec::new(),
+                eligibility_delays: vec![fixed_late.clone(), other_late.clone()],
             }
         } else {
             Facts {
@@ -489,10 +504,25 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
             Kind::PendingRecovery(130),
             Kind::KeyChange(140),
             Kind::VoidYank(150),
+            Kind::EligibilityDelay(fixed_late),
+            Kind::EligibilityDelay(other_late),
         ]
     );
     assert_eq!(of(1), [Kind::PendingRecovery(130)]);
     assert_eq!(findings[0].text(&packages[0]), "0.3.1 is yanked");
+    let delays: Vec<&audit::Finding> = findings
+        .iter()
+        .filter(|f| matches!(f.kind, Kind::EligibilityDelay(_)))
+        .collect();
+    assert!(!delays[0].is_note() && delays[1].is_note());
+    let text = delays[0].text(&packages[0]);
+    assert!(
+        text.contains("0.3.2, the fix of an advisory that names 0.3.1,")
+            && text.contains("served as logged at 2000")
+            && text.contains("allow 1000"),
+        "{text}"
+    );
+    assert!(findings.iter().filter(|f| !f.is_note()).count() < findings.len());
     // A package that cannot be verified is reported, and the audit goes on with the next:
     // nothing is called clean unverified, and no finding is hidden.
     let mut first_down = |package: &Locked| -> Result<Facts, String> {
@@ -810,10 +840,19 @@ struct Bundled {
 }
 
 fn bundled() -> Bundled {
+    bundled_with(false)
+}
+
+/// A bundle's parts, the registry's root rotated to a second version before the lock's point
+/// when `rotated`, so the point names root version 2.
+fn bundled_with(rotated: bool) -> Bundled {
     let mut test = TestRegistry::new("acme");
     let owner = keypair(60, "acme.laptop");
     test.register("acme", &owner);
     let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    if rotated {
+        test.rotate_witness();
+    }
     let size = test.checkpoint(NOW);
     let served = Memory {
         source: "acme".to_owned(),
@@ -2022,13 +2061,13 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
     )
     .unwrap();
     client.logged_at(release).unwrap();
-    // One place read: evidence from an absence, unattributed.
+    // One place read: evidence from an absence, a note.
     let place = memory.describe();
     let gap = audit::Evidence::CadenceGap {
         from: release + 1,
         to: release + 64,
         places: vec![place.clone()],
-        attributed: false,
+        places_agreeing: 1,
     };
     assert_eq!(audit::evidence(&client), [gap.clone()]);
     assert!(!gap.attributed());
@@ -2036,10 +2075,11 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
     assert!(
         text.starts_with("unattributed: a place or the registry `acme`")
             && text.contains(&format!("sizes {} to {}", release + 1, release + 64))
-            && text.contains(&format!("places read: {place}")),
+            && text.contains(&format!("places read: {place}; 1 of them")),
         "{text}"
     );
-    // Two places with the same view: the registry's misbehavior.
+    // Two places with the same view: both agree, and it is still a note, since two places
+    // can be one party.
     let both = Fallback::new(Box::new(memory.clone()), vec![Box::new(memory.clone())]);
     let mut client = Registry::open(
         "acme",
@@ -2052,26 +2092,50 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
     client.logged_at(release).unwrap();
     let evidence = audit::evidence(&client);
     assert_eq!(evidence.len(), 1, "{evidence:?}");
-    assert!(evidence[0].attributed(), "{evidence:?}");
-    assert!(
-        evidence[0]
-            .text("acme")
-            .starts_with("evidence against the registry `acme`")
-    );
+    assert!(!evidence[0].attributed(), "{evidence:?}");
+    assert!(evidence[0].text("acme").contains("2 of them served the same copy"));
     let missing = audit::Evidence::from(Misbehavior::MissingDeadline {
         owner: "acme".to_owned(),
         index: 7,
         target: 1_000_000,
         places: vec!["a".to_owned(), "b".to_owned()],
-        attributed: true,
+        places_agreeing: 2,
     });
+    assert!(!missing.attributed());
     let text = missing.text("acme");
     assert!(
-        text.starts_with("evidence against the registry `acme`")
+        text.starts_with("unattributed: a place or the registry `acme`")
             && text.contains("log index 7")
             && text.contains("the owner `acme`")
             && text.contains("target witness time 1000000")
-            && text.contains("places read: a, b"),
+            && text.contains("places read: a, b; 2 of them"),
         "{text}"
     );
+}
+
+/// A bundle carries the last root version its checkpoints name: the writer records the whole
+/// root chain the client walks. One the bundle lacks is an omission, unavailable (U7013), and
+/// never an older root trusted in its place.
+#[test]
+fn a_bundle_without_its_last_root_version_is_unavailable() {
+    let b = bundled_with(true);
+    assert!(b.files.contains_key("root/2"), "{:?}", b.files.keys());
+    let store = Itaoca {
+        root: scratch("unbundle-last-root"),
+    };
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let done =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
+    assert_eq!(done.stored.len(), 1);
+    let mut files = b.files.clone();
+    files.remove("root/2");
+    let store = Itaoca {
+        root: scratch("unbundle-last-root-missing"),
+    };
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let (_, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+            .unwrap_err();
+    assert!(matches!(failure, Failure::Unavailable(_)), "{failure:?}");
+    assert!(!store.contains(&b.expected.digest).unwrap());
 }

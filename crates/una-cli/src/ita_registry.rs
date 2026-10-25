@@ -768,8 +768,22 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
         }
     }
     let mut by_package: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    // Notes decide nothing: said once each, never part of a U7014.
+    let mut said: Vec<String> = Vec::new();
     for finding in &result.findings {
         if let Some(package) = packages.get(finding.package) {
+            if finding.is_note() {
+                let note = format!(
+                    "note: `{}` ({}): {}",
+                    package.name,
+                    package.source,
+                    finding.text(package)
+                );
+                if !said.contains(&note) {
+                    said.push(note);
+                }
+                continue;
+            }
             by_package
                 .entry(finding.package)
                 .or_default()
@@ -802,9 +816,11 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
             }
         }
     }
+    let reported = result.findings.iter().any(|finding| !finding.is_note());
+    lines.extend(said);
     if packages.is_empty() {
         lines.push("no registry package is locked".to_owned());
-    } else if result.findings.is_empty() && result.unverified.is_empty() {
+    } else if !reported && result.unverified.is_empty() {
         lines.push(format!(
             "audited {} registry packages: none is yanked, advised, or of an owner whose keys changed",
             packages.len()
@@ -912,8 +928,8 @@ pub(crate) fn audit_command(
             );
         }
     }
-    // Attributed evidence is the registry's misbehavior (U7010); evidence from an absence that
-    // fewer than two places agree on is said, unattributed, and decides nothing.
+    // An unsettled chain is the registry's misbehavior (U7010); evidence from an absence is
+    // said, unattributed, with the places read, and decides nothing.
     let (attributed, unattributed): (Vec<_>, Vec<_>) = evidence
         .into_iter()
         .partition(|(_, found)| found.attributed());
