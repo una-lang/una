@@ -253,7 +253,7 @@ fn outside_git(name: &str) -> PathBuf {
     std::fs::create_dir_all(&base).unwrap();
     assert_eq!(
         una_project::registry::submit::git_entry(&base),
-        None,
+        Ok(None),
         "the temporary directory is inside a git repository"
     );
     base
