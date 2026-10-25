@@ -861,11 +861,14 @@ mod tests {
         ended
     }
 
+    /// The mailbox of a part of [`construct`]: its worker, and its own parts' workers.
+    type Placed = Receiver<(usize, Vec<usize>)>;
+
     /// Forks a construct of `parts` parts, numbered from 1, from the calling code and joins it:
     /// the worker each part ran on, in part order, and for each part the workers of the `nested`
     /// parts it forks and joins in turn.
     fn construct(sched: &Arc<Scheduler>, parts: usize, nested: usize) -> Vec<(usize, Vec<usize>)> {
-        let forked: Vec<(Receiver<()>, Receiver<(usize, Vec<usize>)>)> = (1..=parts)
+        let forked: Vec<(Receiver<()>, Placed)> = (1..=parts)
             .map(|part| {
                 let (sender, receiver) = channel();
                 let inner = Arc::clone(sched);
