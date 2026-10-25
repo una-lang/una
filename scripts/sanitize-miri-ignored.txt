@@ -2,7 +2,7 @@
 # sorted. scripts/sanitize.sh fails when the tests Miri ignores differ from this list, so a
 # skip is never added silently. Each is ignored in the code with its reason: a scenario run in
 # a process of its own, a test that starts such a process, or a test of the scheduler that
-# starts its threads and maps its stacks (#1145).
+# starts its threads and maps its stacks (#1145, #1151).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -66,6 +66,7 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+runtime::tests::the_timer_thread_runs_before_main_and_no_within_starts_it_whatever_ran_before
 sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
 sched::tests::placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers
 sched::tests::start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size

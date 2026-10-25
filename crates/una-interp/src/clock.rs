@@ -3,7 +3,8 @@
 //!
 //! Both engines read time through a [`Clock`]: the interpreter keeps one per machine, and a
 //! native executable one per process. A run has exactly one clock, made when it starts, and
-//! every reading is in milliseconds since that start.
+//! every reading is in milliseconds since that start, except the readings in nanoseconds on
+//! which the native runtime arms deadlines and ticks ([`Clock::now_nanos`], #1151).
 //!
 //! **Virtual time.** Under `--virtual-time`, and always in tests, the clock is a
 //! [`VirtualClock`]: a counter of milliseconds that starts at 0 and never waits on the wall
@@ -126,6 +127,21 @@ impl Clock {
         }
     }
 
+    /// The nanoseconds since the run started: on the monotonic clock, its full resolution; on a
+    /// virtual one, its milliseconds times 1,000,000, so virtual time keeps moving in whole
+    /// milliseconds. A `u128` holds every reading of both, with no rounding and no overflow.
+    ///
+    /// The native runtime arms deadlines and the driver's ticks on this reading, never on
+    /// [`Clock::now`]: a reading rounded to the millisecond would carry, into a deadline, the
+    /// phase within a millisecond that earlier code set (ADR 0116 amendment of 2026-10-25,
+    /// P13, #1151). `Clock.now` and virtual time stay in milliseconds.
+    pub fn now_nanos(&self) -> u128 {
+        match self {
+            Clock::Real { start } => start.elapsed().as_nanos(),
+            Clock::Virtual(clock) => u128::from(clock.now()) * 1_000_000,
+        }
+    }
+
     /// Waits until `at` milliseconds after the run started, when the run has nothing else to do
     /// before then. On the real clock it sleeps; on a virtual one it moves the clock to `at` at
     /// once, so a wait that only time could end never hangs a test (ADR 0116 rule 19). A moment
@@ -230,6 +246,23 @@ mod tests {
         }
         assert_eq!(clock.now(), 1000 * 86_400_000);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn nanosecond_readings_follow_the_clock() {
+        let clock = Clock::virtual_time();
+        assert_eq!(clock.now_nanos(), 0);
+        clock.wait_until(7);
+        assert_eq!(clock.now_nanos(), 7_000_000);
+        clock.wait_until(u64::MAX);
+        assert_eq!(clock.now_nanos(), u128::from(u64::MAX) * 1_000_000);
+        // The real clock never goes back, and its nanoseconds agree with its milliseconds.
+        let real = Clock::real();
+        let first = real.now_nanos();
+        let millis = real.now();
+        let second = real.now_nanos();
+        assert!(first <= second);
+        assert!(u128::from(millis) * 1_000_000 <= second);
     }
 
     #[test]
