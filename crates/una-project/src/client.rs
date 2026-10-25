@@ -50,7 +50,7 @@
 //! sizes from the request to its deadline, the pinned multiples of [`CADENCE`] and then the
 //! sizes up to the deadline, at most [`MAX_DEADLINE_SPAN`] sizes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use crate::resolve::{self, Identity, Index, Need, Offline, Release};
@@ -473,6 +473,18 @@ pub enum Observation {
     },
 }
 
+/// The kind of the last failure a [`Registry`] met ([`Registry::last_failure`]): the code a
+/// caller reports comes from it, never from the omissions recorded earlier, which a later
+/// failure to verify does not undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// No place served a document the result needed, or none could serve at all: unavailable
+    /// (U7013), an omission recorded with it.
+    Unserved,
+    /// What was served does not verify: refused (U7010).
+    Refused,
+}
+
 /// What a place left out that made a result unavailable (`spec/30 §14` rule 1): never a reason
 /// to change a result, only to give none.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -743,6 +755,8 @@ pub struct Registry<'t> {
     /// The most sizes past a request its deadline search reads: [`MAX_DEADLINE_SPAN`], or
     /// lower ([`Registry::lower_scan_cap`]).
     scan_cap: u64,
+    /// The kind of the last failure met ([`Registry::last_failure`]).
+    failure: Cell<Option<Failure>>,
     /// The threshold that counts the point's cosignatures: the larger of the version it names
     /// and the last root's.
     point_k: usize,
@@ -959,6 +973,7 @@ impl<'t> Registry<'t> {
             unproven: (unproven, unproven_why),
             deadlines: BTreeMap::new(),
             scan_cap: MAX_DEADLINE_SPAN,
+            failure: Cell::new(None),
             point_k,
             chain,
             tiles: Tiles::new(transport, accepted.checkpoint.size),
@@ -973,7 +988,13 @@ impl<'t> Registry<'t> {
             releases: BTreeMap::new(),
         };
         if let Some(floor) = floors.checkpoint {
-            registry.consistent_with(floor).map_err(refused)?;
+            // A tile of the floor's proof no place serves is an omission, never a fork.
+            registry.consistent_with(floor).map_err(|why| {
+                match registry.take_omitted().into_iter().next() {
+                    Some(omission) => OpenError::Omitted(omission, says(why)),
+                    None => refused(why),
+                }
+            })?;
         }
         Ok(registry)
     }
@@ -990,10 +1011,11 @@ impl<'t> Registry<'t> {
                 "it serves a checkpoint of size {point}, below the lock's resolution point of size {size}"
             )));
         }
+        let before = self.tiles.missing_count();
         let proof = self
             .tiles
             .consistency(size)
-            .map_err(|why| self.refuse(why))?;
+            .map_err(|why| self.tile_failure(why, before))?;
         if !merkle::verify_consistency(size, point, &root, &self.point.checkpoint.root, &proof) {
             return Err(self.refuse(format!(
                 "its checkpoint of size {point} does not extend the lock's resolution point, so the log forked"
@@ -1011,7 +1033,11 @@ impl<'t> Registry<'t> {
         let floor = note::parse_checkpoint(&signed.text)?;
         let size = self.point.checkpoint.size;
         if floor.size <= size {
-            let proof = self.tiles.consistency(floor.size)?;
+            let before = self.tiles.missing_count();
+            let proof = self
+                .tiles
+                .consistency(floor.size)
+                .map_err(|why| self.tile_failure(why, before))?;
             if !merkle::verify_consistency(
                 floor.size,
                 size,
@@ -1026,7 +1052,17 @@ impl<'t> Registry<'t> {
             }
         } else {
             let mut larger = Tiles::new(self.transport, floor.size);
-            let proof = larger.consistency(size)?;
+            let proof = match larger.consistency(size) {
+                Ok(proof) => proof,
+                Err(why) => {
+                    let missing = larger.take_missing();
+                    if missing.is_empty() {
+                        return Err(self.refuse(why));
+                    }
+                    self.omitted.extend(missing.into_iter().map(Omission::Document));
+                    return Err(self.unserved(why));
+                }
+            };
             if !merkle::verify_consistency(
                 size,
                 floor.size,
@@ -1054,7 +1090,10 @@ impl<'t> Registry<'t> {
             .is_some_and(|floor| floor.size > self.point.checkpoint.size)
     }
 
+    /// A failure because what was served does not verify (U7010), one sentence naming the
+    /// registry; it is recorded as the last failure.
     fn refuse(&self, why: impl std::fmt::Display) -> Refusal {
+        self.failure.set(Some(Failure::Refused));
         format!(
             "the registry `{}` ({}): {}",
             self.source,
@@ -1063,10 +1102,39 @@ impl<'t> Registry<'t> {
         )
     }
 
+    /// A failure because no place served what the result needed (U7013), its omission already
+    /// recorded; it is recorded as the last failure.
+    fn unserved(&self, why: impl std::fmt::Display) -> Refusal {
+        let refusal = self.refuse(why);
+        self.failure.set(Some(Failure::Unserved));
+        refusal
+    }
+
+    /// A failure of a read from the tiles: unserved when the read recorded a tile no place
+    /// serves, its count of missing files grown past `before`; refused otherwise.
+    fn tile_failure(&self, why: impl std::fmt::Display, before: usize) -> Refusal {
+        if self.tiles.missing_count() > before {
+            self.unserved(why)
+        } else {
+            self.refuse(why)
+        }
+    }
+
+    /// The kind of the last failure this registry met, if any (`spec/30 §14` rule 1): a
+    /// caller reports U7013 for [`Failure::Unserved`] and U7010 for [`Failure::Refused`],
+    /// whatever omissions an earlier failure recorded.
+    pub fn last_failure(&self) -> Option<Failure> {
+        self.failure.get()
+    }
+
     /// The entry at `index`, verified by its inclusion proof at the point: its document and its
     /// leaf hash. O(log L).
     pub fn entry(&mut self, index: u64) -> Result<(String, Hash), Refusal> {
-        let bytes = self.tiles.entry(index).map_err(|why| self.refuse(why))?;
+        let before = self.tiles.missing_count();
+        let bytes = self
+            .tiles
+            .entry(index)
+            .map_err(|why| self.tile_failure(why, before))?;
         let leaf = merkle::leaf_hash(&bytes);
         let proof = self.inclusion(index)?;
         if !merkle::verify_inclusion(
@@ -1088,7 +1156,10 @@ impl<'t> Registry<'t> {
     /// The inclusion proof of the entry `index` at the point, from the tiles. It is verified by
     /// whoever uses it.
     pub fn inclusion(&mut self, index: u64) -> Result<Vec<Hash>, Refusal> {
-        self.tiles.inclusion(index).map_err(|why| self.refuse(why))
+        let before = self.tiles.missing_count();
+        self.tiles
+            .inclusion(index)
+            .map_err(|why| self.tile_failure(why, before))
     }
 
     /// The map's head of `name` at the point (rule 36.1): the map's tiles on the name's path,
@@ -1102,15 +1173,26 @@ impl<'t> Registry<'t> {
         let transport = self.transport;
         let mut missing: Vec<String> = Vec::new();
         let mut fetch = |path: &str| {
-            let read = transport.get(path, map::MAX_TILE as u64);
+            // A transport that cannot serve at all serves nothing: an omission of the tile.
+            let read = match transport.get(path, map::MAX_TILE as u64) {
+                Err(_) if !transport.serves() => Ok(None),
+                read => read,
+            };
             if matches!(read, Ok(None)) {
                 missing.push(path.to_owned());
             }
             read
         };
         let proved = map::prove_from_tiles(&root, name, &mut fetch);
+        let unserved = !missing.is_empty();
         self.omitted.extend(missing.into_iter().map(Omission::Document));
-        let (head, proof) = proved.map_err(|why| self.refuse(why))?;
+        let (head, proof) = proved.map_err(|why| {
+            if unserved {
+                self.unserved(why)
+            } else {
+                self.refuse(why)
+            }
+        })?;
         if !map::verify(&root, name, head.as_ref(), &proof) {
             return Err(self.refuse(format!(
                 "the map's tiles for `{name}` do not prove its head against the checkpoint's map"
@@ -1127,6 +1209,8 @@ impl<'t> Registry<'t> {
             return Ok(Vec::new());
         };
         let mut read: BTreeMap<u64, ChainEntry> = BTreeMap::new();
+        // The walk's failure keeps the kind of the read that caused it.
+        let earlier = self.failure.replace(None);
         let walked = {
             let mut fetch = |index: u64| -> Result<Link, String> {
                 let (document, leaf) = self.entry(index)?;
@@ -1149,7 +1233,15 @@ impl<'t> Registry<'t> {
             };
             map::walk(&head, None, &mut fetch)
         };
-        walked.map_err(|why| self.refuse(format!("the chain of `{name}`: {why}")))?;
+        if let Err(why) = walked {
+            let why = format!("the chain of `{name}`: {why}");
+            return Err(if self.failure.get() == Some(Failure::Unserved) {
+                self.unserved(why)
+            } else {
+                self.refuse(why)
+            });
+        }
+        self.failure.set(earlier);
         Ok(read.into_values().collect())
     }
 
@@ -1178,13 +1270,15 @@ impl<'t> Registry<'t> {
         // checkpoint that does not exist. Every place's copy is read, and the cosignatures of
         // those that verify are merged by witness, so a place that withholds cosignatures
         // cannot make the witness time later when another place serves them.
-        let copies = self
-            .transport
-            .get_all(&path, note::MAX_NOTE as u64)
-            .map_err(|why| self.refuse(why))?;
+        let copies = match self.transport.get_all(&path, note::MAX_NOTE as u64) {
+            Ok(copies) => copies,
+            // A transport that cannot serve at all serves nothing.
+            Err(_) if !self.transport.serves() => Vec::new(),
+            Err(why) => return Err(self.refuse(why)),
+        };
         if copies.is_empty() {
             self.omitted.push(Omission::Document(path.clone()));
-            return Err(self.refuse(format!(
+            return Err(self.unserved(format!(
                 "no place serves `{path}`, a checkpoint below the point that a registry keeps"
             )));
         }
@@ -1192,7 +1286,7 @@ impl<'t> Registry<'t> {
         let mut versions: Vec<u64> = Vec::new();
         let mut k = self.root.witnesses.threshold;
         let mut views: Vec<Vec<Cosigned>> = Vec::new();
-        let mut failure: Option<Refusal> = None;
+        let mut failure: Option<(Refusal, Option<Failure>)> = None;
         let mut unproven = false;
         for bytes in copies {
             match self.verify_kept(size, &path, bytes) {
@@ -1212,7 +1306,8 @@ impl<'t> Registry<'t> {
                 }
                 Ok(None) => unproven = true,
                 Err(why) => {
-                    failure.get_or_insert(why);
+                    let kind = self.failure.get();
+                    failure.get_or_insert((why, kind));
                 }
             }
         }
@@ -1221,7 +1316,7 @@ impl<'t> Registry<'t> {
         if unproven {
             let (omissions, why) = self.unproven.clone();
             self.omitted.extend(omissions);
-            return Err(self.refuse(format!(
+            return Err(self.unserved(format!(
                 "`{path}` carries a retired witness's cosignature, and the proof that the lock's point is a prefix of the latest checkpoint, which it needs to count, could not be completed: {why}"
             )));
         }
@@ -1241,7 +1336,14 @@ impl<'t> Registry<'t> {
             )));
         }
         let Some(&version) = versions.first() else {
-            return Err(failure.unwrap_or_else(|| self.refuse(format!("`{path}` does not verify"))));
+            // The first copy's failure, of its own kind.
+            return Err(match failure {
+                Some((why, kind)) => {
+                    self.failure.set(kind);
+                    why
+                }
+                None => self.refuse(format!("`{path}` does not verify")),
+            });
         };
         // The root version a checkpoint names never decreases as the log grows; one recorded
         // for a size is never replaced.
@@ -1290,7 +1392,7 @@ impl<'t> Registry<'t> {
                 if let Ok((version, _)) = root::named(&checkpoint.extensions) {
                     self.omitted.push(Omission::RootVersion(version));
                 }
-                return Err(self.refuse(why));
+                return Err(self.unserved(why));
             }
             Err(OpenError::Refused(why) | OpenError::Omitted(_, why)) => {
                 return Err(self.refuse(why));
@@ -1304,10 +1406,11 @@ impl<'t> Registry<'t> {
         if !signed.signed_by(&root.log) {
             return Err(self.refuse(format!("`{path}` is not signed by the log's key")));
         }
+        let before = self.tiles.missing_count();
         let proof = self
             .tiles
             .consistency(size)
-            .map_err(|why| self.refuse(why))?;
+            .map_err(|why| self.tile_failure(why, before))?;
         if !merkle::verify_consistency(
             size,
             self.point.checkpoint.size,
@@ -1412,7 +1515,7 @@ impl<'t> Registry<'t> {
         while pinned < point {
             if pinned.saturating_sub(from) >= self.scan_cap {
                 self.omitted.push(Omission::ScanCap { from, to: pinned });
-                return Err(self.refuse(format!(
+                return Err(self.unserved(format!(
                     "the search for the deadline of the request at {index} reached size {pinned}, {} sizes past it, without one",
                     self.scan_cap
                 )));
@@ -1463,7 +1566,7 @@ impl<'t> Registry<'t> {
             places: self.transport.describe_all(),
             places_agreeing: agreeing,
         });
-        self.refuse(format!(
+        self.unserved(format!(
             "no checkpoint from size {from} to {to} carries the witness threshold of cosignatures as any place serves it, which a registry must not leave"
         ))
     }
@@ -1526,7 +1629,7 @@ impl<'t> Registry<'t> {
             Ok(time) => Ok(time),
             Err(_) => {
                 self.omitted.push(Omission::StartCheckpoint(index));
-                Err(self.refuse(format!(
+                Err(self.unserved(format!(
                     "the checkpoint of size {size}, the first that includes the request at {index}, carries fewer cosignatures than the witness threshold as every place serves it, which a registry must not leave"
                 )))
             }
@@ -1558,8 +1661,9 @@ impl<'t> Registry<'t> {
 
     /// The documents no place served since the last call: each one made the result that
     /// needed it unavailable, never a different result (`spec/30 §14` rule 1). A caller that
-    /// meets an error and finds an omission here reports the source as unserved (U7013),
-    /// otherwise as a copy that does not verify (U7010).
+    /// meets an error reports it by its own kind ([`Registry::last_failure`]): unserved
+    /// (U7013) or a copy that does not verify (U7010), whatever omissions an earlier failure
+    /// left here.
     pub fn take_omitted(&mut self) -> Vec<Omission> {
         let mut omitted: Vec<Omission> = Vec::new();
         let met = std::mem::take(&mut self.omitted)
@@ -1773,7 +1877,7 @@ impl<'t> Registry<'t> {
                     self.missing_deadline(owner_of(name), request)?;
                 }
                 self.omitted.push(Omission::Cosignatures(name.to_owned()));
-                return Err(self.refuse(format!(
+                return Err(self.unserved(format!(
                     "`{name} {}` counts or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint",
                     statement.version
                 )));
@@ -1928,11 +2032,16 @@ impl<'t> Registry<'t> {
             .ok_or_else(|| self.refuse(format!("`{digest}` is not a digest")))?;
         let path = format!("blobs/sha256/{hex}");
         let limit = crate::content::MAX_BYTES + MAX_DOCUMENT;
-        match self.transport.get(&path, limit).map_err(|why| self.refuse(why))? {
+        let read = match self.transport.get(&path, limit) {
+            // A transport that cannot serve at all serves nothing.
+            Err(_) if !self.transport.serves() => Ok(None),
+            read => read,
+        };
+        match read.map_err(|why| self.refuse(why))? {
             Some(bytes) => Ok(bytes),
             None => {
                 self.omitted.push(Omission::Document(path.clone()));
-                Err(self.refuse(format!("no place serves `{path}`")))
+                Err(self.unserved(format!("no place serves `{path}`")))
             }
         }
     }

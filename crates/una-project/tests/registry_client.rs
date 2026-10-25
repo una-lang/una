@@ -15,7 +15,8 @@ use std::path::PathBuf;
 
 use registry::{NOW, TestRegistry, hash_hex, keypair, key_text};
 use una_project::client::{
-    Floors, LoggedRelease, Misbehavior, Omission, OpenError, Point, Registry, owner_of, shown,
+    Failure, Floors, LoggedRelease, Misbehavior, Omission, OpenError, Point, Registry, owner_of,
+    shown,
 };
 use una_project::provenance::{Expected, signed_name, verify};
 use una_project::tlog::merkle::{
@@ -3177,4 +3178,67 @@ fn stripping_the_deadline_cannot_move_the_effect_unseen() {
         client.earliest_effect(dispute).unwrap(),
         client.recovery_effect(dispute).unwrap()
     );
+}
+
+/// A file mirror lacking a tile and a kept checkpoint, with an https place behind it, which
+/// this release cannot read: the https place serves nothing, so each result is unserved, an
+/// omission of the document (U7013), never a refusal (U7010).
+#[test]
+fn a_mirror_lacking_a_document_with_an_https_place_behind_is_unserved() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let mut mirror = Memory {
+        files: registry.files.clone(),
+    };
+    mirror.files.retain(|path, _| !path.starts_with("tile/"));
+    mirror.files.remove("checkpoint/1");
+    let https = Unavailable {
+        url: "https://registry.example".to_owned(),
+    };
+    let both = una_project::transport::Fallback::new(Box::new(mirror), vec![Box::new(https)]);
+    let mut client = open(&both, &registry).unwrap();
+    assert!(client.entry(0).is_err());
+    assert_eq!(client.last_failure(), Some(Failure::Unserved));
+    let omitted = client.take_omitted();
+    assert!(omitted.iter().any(is_tile), "{omitted:?}");
+    assert!(client.logged_at(0).is_err());
+    assert_eq!(client.last_failure(), Some(Failure::Unserved));
+    assert_eq!(
+        client.take_omitted(),
+        vec![Omission::Document("checkpoint/1".to_owned())]
+    );
+}
+
+/// An omission recorded early, then a checkpoint whose signature does not verify: the failure
+/// is a refusal (U7010) by its own kind, never U7013 inferred from the earlier omission.
+#[test]
+fn a_bad_signature_after_an_omission_is_a_refusal() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.append("other", "filler");
+    registry.append("other", "another filler");
+    registry.checkpoint(NOW);
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    place.files.remove("checkpoint/3");
+    let unsigned = withhold(&registry.files["checkpoint/2"], "nobody", "nobody");
+    place.files.insert("checkpoint/2".to_owned(), unsigned);
+    let mut client = open(&place, &registry).unwrap();
+    assert!(client.logged_at(2).is_err());
+    assert_eq!(client.last_failure(), Some(Failure::Unserved));
+    assert!(client.logged_at(1).is_err());
+    assert_eq!(client.last_failure(), Some(Failure::Refused));
+    // The earlier omission is still recorded; the code comes from the failure's own kind.
+    assert!(!client.take_omitted().is_empty());
+}
+
+/// Whether `omission` is of a tile or an entry bundle.
+fn is_tile(omission: &Omission) -> bool {
+    matches!(omission, Omission::Document(path) if path.starts_with("tile/"))
 }

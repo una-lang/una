@@ -145,6 +145,12 @@ impl<'t> Tiles<'t> {
         }
     }
 
+    /// How many files no transport served since the last [`Tiles::take_missing`]: a reader
+    /// compares it before and after a read to tell an omission from a failure to verify.
+    pub fn missing_count(&self) -> usize {
+        self.missing.len()
+    }
+
     /// The files no transport served since the last call, which made a result unavailable:
     /// an omission never changes a result (`spec/30 §14` rule 1).
     pub fn take_missing(&mut self) -> Vec<String> {
@@ -181,13 +187,19 @@ impl<'t> Tiles<'t> {
         partial: bool,
         limit: u64,
     ) -> Result<(Vec<u8>, bool), Refusal> {
+        // A transport that cannot serve at all serves nothing: an omission of the tile.
+        let transport = self.transport;
+        let get = |path: &str| match transport.get(path, limit) {
+            Err(_) if !transport.serves() => Ok(None),
+            read => read,
+        };
         self.reads += 1;
-        if let Some(bytes) = self.transport.get(exact, limit)? {
+        if let Some(bytes) = get(exact)? {
             return Ok((bytes, !partial));
         }
         if partial {
             self.reads += 1;
-            if let Some(bytes) = self.transport.get(full, limit)? {
+            if let Some(bytes) = get(full)? {
                 return Ok((bytes, true));
             }
         }
