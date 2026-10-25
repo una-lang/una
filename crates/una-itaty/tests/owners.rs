@@ -1235,9 +1235,9 @@ fn no_owner_stalls_the_registry_and_the_bucket_spares_owners_own_requests() {
     let change = format!("cosigners 1 {}", key_text(&trustee.1));
     let mut now = NOW;
     let mut changes: Vec<u64> = Vec::new();
-    // 200 owners each ask a co-signer change, a minute apart, between a publisher's entries.
+    // 200 owners each ask a co-signer change, 90 seconds apart, between a publisher's entries.
     for (name, key) in owners.iter().take(200) {
-        now += 60;
+        now += 90;
         f.set_time(now);
         let index = f.submit(name, &change, 1, &[key]).unwrap();
         changes.push(index);
@@ -1927,4 +1927,87 @@ fn a_co_signer_change_counts_toward_the_cap_by_when_it_was_logged() {
         .unwrap();
     f.cosign(&[0, 1], later);
     f.submit("acme", &change, 1, &[&a]).unwrap();
+}
+
+/// Other owners ask co-signer changes until the bucket is drained; owners from `from` on.
+fn drain_bucket(f: &mut Fixture, from: usize) {
+    let x = keypair(70, "trustee.x");
+    let change = format!("cosigners 1 {}", key_text(&x.1));
+    for n in from..from + 16 {
+        let name = owner_name(n);
+        let key = keypair_n(8_000 + n as u32, &format!("{name}.a"));
+        f.register_reviewed(&name, &key);
+        match f.submit(&name, &change, 1, &[&key]) {
+            Ok(_) => f.cosign(&[0, 1], NOW),
+            Err(refusal) => {
+                assert_eq!(refusal.cause(), Some(&Cause::RateLimited));
+                return;
+            }
+        }
+    }
+    panic!("the bucket was not drained");
+}
+
+#[test]
+fn cancellations_a_void_frees_again_draw_on_the_bucket_past_two() {
+    let mut f = Fixture::new("recancel");
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let x = keypair(70, "trustee.x");
+    f.register("acme", &[&a, &b], &[]);
+    let change = f
+        .submit("acme", &format!("cosigners 1 {}", key_text(&x.1)), 1, &[&b])
+        .unwrap();
+    f.cosign(&[0, 1], NOW);
+    // One round: cancel with `signer`, then void that cancellation by revoking `signer` since
+    // just before it, and add `next`.
+    let round = |f: &mut Fixture, signer: &Pair, next: &Pair| -> u64 {
+        let cancel = f
+            .submit("acme", &format!("cancel {change}"), 1, &[signer])
+            .unwrap();
+        f.cosign(&[0, 1], NOW);
+        f.submit(
+            "acme",
+            &format!("revoke {} since {}", signer.1.name, cancel - 1),
+            1,
+            &[&b],
+        )
+        .unwrap();
+        f.submit(
+            "acme",
+            &format!("add {}", key_text(&next.1)),
+            1,
+            &[&b, next],
+        )
+        .unwrap();
+        cancel
+    };
+    let a2 = keypair(62, "acme.a2");
+    let a3 = keypair(63, "acme.a3");
+    // The first two timed cancellations are exempt, the bucket drained or not.
+    drain_bucket(&mut f, 500);
+    let first = round(&mut f, &a, &a2);
+    assert!(f.registry.request_timing(first).is_some());
+    // A timed cancellation recorded past the log's size, as a crash leaves, is dropped.
+    let size = f.registry.size();
+    let mut cancels = f
+        .store
+        .get("state/timed-cancels", 1 << 20)
+        .unwrap()
+        .unwrap();
+    cancels.extend_from_slice(format!("{size} {change}\n").as_bytes());
+    f.store.put("state/timed-cancels", &cancels).unwrap();
+    f.registry = f.reopen();
+    drain_bucket(&mut f, 520);
+    let second = round(&mut f, &a2, &a3);
+    assert!(f.registry.request_timing(second).is_some());
+    // The count survives a reopening: the third draws on the bucket, and waits when it is
+    // drained, never refused.
+    f.registry = f.reopen();
+    drain_bucket(&mut f, 540);
+    let third = f
+        .submit("acme", &format!("cancel {change}"), 1, &[&a3])
+        .unwrap_err();
+    assert_eq!(third.cause(), Some(&Cause::RateLimited));
+    assert!(matches!(third, Refusal::Wait(..)));
 }

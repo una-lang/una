@@ -102,13 +102,16 @@ pub const WITNESS_LATENCY: u64 = 3_600;
 /// The per-owner hold: from this many seconds before a request's target until its deadline is
 /// fixed, its owner's entries wait. Two hours.
 pub const HOLD_WINDOW: u64 = MAX_WITNESS_AHEAD + WITNESS_LATENCY;
-/// The registry-wide rate of co-signer changes, the unprivileged timed requests that draw on
-/// the bucket: one token every this many seconds. Each, with its one cancellation, which is
-/// exempt, costs about six witness round trips of the log's time, so at a round trip of 2
-/// seconds they stall the log for at most about a fifth of its time.
-pub const TIMED_EVERY: u64 = 60;
+/// The registry-wide rate of the timed requests that draw on the bucket: co-signer changes, and
+/// cancellations past the first [`EXEMPT_CANCELS`] of a request. One token every this many
+/// seconds. Each co-signer change, with its two exempt cancellations, costs about nine witness
+/// round trips of the log's time, so at a round trip of 2 seconds they stall the log for at
+/// most about a fifth of its time.
+pub const TIMED_EVERY: u64 = 90;
 /// The burst of unprivileged timed requests: at most this many tokens are kept.
 pub const TIMED_BURST: u64 = 8;
+/// How many timed cancellations of one request, void or not, are exempt from the bucket.
+pub const EXEMPT_CANCELS: usize = 2;
 /// The most co-signer changes an owner asks in seven days, cancelled ones counted.
 pub const COSIGNER_CHANGES_PER_WEEK: usize = 2;
 /// The store path of the cosignature lines held back, one per line after its checkpoint's size.
@@ -354,8 +357,12 @@ impl NoticeStatus {
 /// it draws on the bucket of unprivileged timed requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Logging {
-    timed_cancel: bool,
+    /// The request a timed cancellation cancels, when the entry is one.
+    timed_cancel: Option<u64>,
+    /// Whether it draws on the bucket.
     throttled: bool,
+    /// Whether it is a co-signer change, which the per-owner cap counts.
+    cosigner_change: bool,
 }
 
 /// A cosignature line held back: the line, its witness and its time.
@@ -464,7 +471,10 @@ pub struct Registry {
     active: BTreeSet<u64>,
     /// The cancellations the client's replay records as cancelling a waiting request, kept in
     /// `state/timed-cancels`: the cancellations that are timed.
-    timed_cancels: BTreeSet<u64>,
+    /// Every timed cancellation, void or not, by its index, with the request it cancels, kept
+    /// in `state/timed-cancels`: the first [`EXEMPT_CANCELS`] of a request are exempt from the
+    /// bucket, every later one draws on it.
+    timed_cancels: BTreeMap<u64, u64>,
     /// When each co-signer change was logged, by the service's clock, by index, kept in
     /// `state/cosigner-changes`: the per-owner cap counts them by it.
     cosigner_logged: BTreeMap<u64, u64>,
@@ -568,7 +578,7 @@ impl Registry {
             broken: None,
             requests: BTreeMap::new(),
             active: BTreeSet::new(),
-            timed_cancels: BTreeSet::new(),
+            timed_cancels: BTreeMap::new(),
             cosigner_logged: BTreeMap::new(),
             held: BTreeMap::new(),
             bucket: Bucket::full(0),
@@ -615,9 +625,11 @@ impl Registry {
         if let Some(bytes) = self.store.get(STATE_TIMED_CANCELS, MAX_DOCUMENT)? {
             let text = String::from_utf8(bytes).map_err(|_| "state/timed-cancels is not UTF-8")?;
             for line in text.lines() {
-                let index =
-                    decimal(line).ok_or("state/timed-cancels has a line of the wrong form")?;
-                self.timed_cancels.insert(index);
+                let (index, target) = line
+                    .split_once(' ')
+                    .and_then(|(index, target)| Some((decimal(index)?, decimal(target)?)))
+                    .ok_or("state/timed-cancels has a line of the wrong form")?;
+                self.timed_cancels.insert(index, target);
             }
         }
         if let Some(bytes) = self.store.get(STATE_COSIGNER_CHANGES, MAX_DOCUMENT)? {
@@ -720,7 +732,7 @@ impl Registry {
         }
         // A timed cancellation recorded for an index the log never reached, as after a crash
         // between writing `state/timed-cancels` and `state/size`, names no entry: dropped.
-        self.timed_cancels.retain(|index| *index < size);
+        self.timed_cancels.retain(|index, _| *index < size);
         self.cosigner_logged.retain(|index, _| *index < size);
         self.load_timing()?;
         self.sign_checkpoint()?;
@@ -1741,7 +1753,8 @@ impl Registry {
         self.ready()?;
         let entry = parse_entry(bytes).map_err(invalid)?;
         self.admit(&entry)?;
-        let mut timed_cancel = false;
+        let mut timed_cancel: Option<u64> = None;
+        let mut cosigner_change = false;
         let mut throttled = false;
         match &entry.kind {
             Kind::Release(_) => {
@@ -1841,18 +1854,30 @@ impl Registry {
                 _ => {
                     let position = self.tree.size();
                     let replayed = self.check_owner_entry(&entry)?;
-                    timed_cancel = matches!(read.event, Event::Cancel(_))
-                        && replayed.is_some_and(|history| {
-                            history
-                                .cancellations
-                                .values()
-                                .any(|cancels| cancels.contains(&position))
-                        });
-                    // Co-signer changes draw on the registry-wide bucket. A cancellation never
-                    // does: each request is cancelled at most once, so cancellations never
-                    // outnumber the requests admitted, and an owner can always cancel a thief's
-                    // waiting recovery or co-signer change within its window.
-                    throttled = matches!(read.event, Event::Cosigners(_));
+                    let timed = replayed.is_some_and(|history| {
+                        history
+                            .cancellations
+                            .values()
+                            .any(|cancels| cancels.contains(&position))
+                    });
+                    if let Event::Cancel(target) = read.event
+                        && timed
+                    {
+                        timed_cancel = Some(target);
+                    }
+                    // Co-signer changes draw on the registry-wide bucket. The first
+                    // `EXEMPT_CANCELS` timed cancellations of a request, void or not, do not, so
+                    // an owner can always cancel a thief's waiting recovery or co-signer change
+                    // within its window, even once a thief voided its first cancellation; every
+                    // later one does, and waits when the bucket is drained, never refused.
+                    cosigner_change = matches!(read.event, Event::Cosigners(_));
+                    let earlier = timed_cancel.map_or(0, |target| {
+                        self.timed_cancels
+                            .values()
+                            .filter(|cancelled| **cancelled == target)
+                            .count()
+                    });
+                    throttled = cosigner_change || earlier >= EXEMPT_CANCELS;
                 }
             },
         }
@@ -1862,6 +1887,7 @@ impl Registry {
             Logging {
                 timed_cancel,
                 throttled,
+                cosigner_change,
             },
         )
     }
@@ -2420,7 +2446,7 @@ impl Registry {
                 // each is timed (`crate::timing`).
                 let timed = match &read.event {
                     Event::Recover(_) | Event::Dispute(_) | Event::Cosigners(_) => true,
-                    Event::Cancel(_) => self.timed_cancels.contains(&index),
+                    Event::Cancel(_) => self.timed_cancels.contains_key(&index),
                     _ => false,
                 };
                 if timed {
@@ -2511,16 +2537,16 @@ impl Registry {
                     self.store.put(path, bytes)?;
                 }
             }
-            if timed_cancel {
+            if let Some(target) = timed_cancel {
                 let cancels: String = self
                     .timed_cancels
                     .iter()
-                    .chain(std::iter::once(&index))
-                    .map(|cancel| format!("{cancel}\n"))
+                    .chain(std::iter::once((&index, &target)))
+                    .map(|(cancel, target)| format!("{cancel} {target}\n"))
                     .collect();
                 self.store.put(STATE_TIMED_CANCELS, cancels.as_bytes())?;
             }
-            if logging.throttled {
+            if logging.cosigner_change {
                 let changes: String = self
                     .cosigner_logged
                     .iter()
@@ -2538,11 +2564,13 @@ impl Registry {
                 "the registry could not write the entry ({e}); it logs again once reopened"
             )));
         }
-        if timed_cancel {
-            self.timed_cancels.insert(index);
+        if let Some(target) = timed_cancel {
+            self.timed_cancels.insert(index, target);
+        }
+        if logging.cosigner_change {
+            self.cosigner_logged.insert(index, now);
         }
         if logging.throttled {
-            self.cosigner_logged.insert(index, now);
             self.bucket.take(now);
         }
         self.apply(&entry);
