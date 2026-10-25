@@ -840,20 +840,41 @@ struct Bundled {
 }
 
 fn bundled() -> Bundled {
-    bundled_with(false)
+    bundled_with(Rotation::None)
 }
 
-/// A bundle's parts, the registry's root rotated to a second version before the lock's point
-/// when `rotated`, so the point names root version 2.
-fn bundled_with(rotated: bool) -> Bundled {
+/// How the registry of a bundle's parts rotates its witnesses.
+#[derive(Clone, Copy)]
+enum Rotation {
+    /// Not at all.
+    None,
+    /// One witness, by root version 2, before the lock's point: the point names version 2.
+    BeforePoint,
+    /// `count` witnesses, by root version 2, after the lock's point, which names version 1 and
+    /// is cosigned by witnesses retired since; a later checkpoint names version 2.
+    AfterPoint(usize),
+}
+
+/// A bundle's parts, the registry's witnesses rotated as `rotation` says.
+fn bundled_with(rotation: Rotation) -> Bundled {
     let mut test = TestRegistry::new("acme");
     let owner = keypair(60, "acme.laptop");
     test.register("acme", &owner);
     let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    if rotated {
-        test.rotate_witness();
-    }
-    let size = test.checkpoint(NOW);
+    let size = match rotation {
+        Rotation::None => test.checkpoint(NOW),
+        Rotation::BeforePoint => {
+            test.rotate_witness();
+            test.checkpoint(NOW)
+        }
+        Rotation::AfterPoint(count) => {
+            let size = test.checkpoint(NOW - 10 * 86_400);
+            test.rotate_witnesses(count, false);
+            test.append("other", "after the rotation");
+            test.checkpoint(NOW);
+            size
+        }
+    };
     let served = Memory {
         source: "acme".to_owned(),
         files: test.files.clone(),
@@ -2118,7 +2139,7 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
 /// never an older root trusted in its place.
 #[test]
 fn a_bundle_without_its_last_root_version_is_unavailable() {
-    let b = bundled_with(true);
+    let b = bundled_with(Rotation::BeforePoint);
     assert!(b.files.contains_key("root/2"), "{:?}", b.files.keys());
     let store = Itaoca {
         root: scratch("unbundle-last-root"),
@@ -2137,5 +2158,42 @@ fn a_bundle_without_its_last_root_version_is_unavailable() {
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
             .unwrap_err();
     assert!(matches!(failure, Failure::Unavailable(_)), "{failure:?}");
+    assert!(!store.contains(&b.expected.digest).unwrap());
+}
+
+/// A lock's point under an older root, cosigned by witnesses a later root retired, leaving
+/// fewer than the threshold of old witnesses: the bundle carries the latest checkpoint under
+/// the current root and the tiles of the prefix proof the client read, and every root version,
+/// so unbundling verifies the point through the client's own rule, offline. Without the latest
+/// checkpoint, the retired witnesses count for nothing and the point is unavailable.
+#[test]
+fn a_point_cosigned_by_retired_witnesses_unbundles() {
+    for count in [1, 2] {
+        let b = bundled_with(Rotation::AfterPoint(count));
+        assert!(b.files.contains_key("checkpoint"), "{:?}", b.files.keys());
+        assert!(b.files.contains_key("root/2"), "{:?}", b.files.keys());
+        let store = Itaoca {
+            root: scratch(&format!("unbundle-retired-{count}")),
+        };
+        let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+        let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+            .unwrap();
+        assert_eq!(done.stored.len(), 1, "{count}");
+    }
+    // Two of three witnesses retired, below the threshold of two: the point needs the proof.
+    let b = bundled_with(Rotation::AfterPoint(2));
+    let mut files = b.files.clone();
+    files.remove("checkpoint");
+    let store = Itaoca {
+        root: scratch("unbundle-retired-no-latest"),
+    };
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let (_, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+            .unwrap_err();
+    assert!(
+        matches!(failure, Failure::Unavailable(_) | Failure::Refused(_)),
+        "{failure:?}"
+    );
     assert!(!store.contains(&b.expected.digest).unwrap());
 }
