@@ -289,7 +289,7 @@ fn resolve_and_lock(
 ) -> io::Result<ExitStatus> {
     use std::cell::RefCell;
 
-    use una_project::client::{Online, Point, Registry};
+    use una_project::client::{Failure, Online, Point, Registry};
     use una_project::resolve::{self, Bounds, Identity, Need, Offline, Policy, Problem, Release};
 
     let command = options.command;
@@ -793,18 +793,27 @@ fn resolve_and_lock(
                     .iter()
                     .find(|(id, _)| id == identity)
                     .map(|(_, range)| range.clone()),
-                Problem::Bound(_) | Problem::Index(_) => None,
+                Problem::Bound(_) | Problem::Index { .. } => None,
             };
-            // A registry that fails verification while it is read is U7010; every other
-            // problem is no resolution.
-            // A document no place serves makes the resolution unavailable (U7013).
-            let omitted = online.registries.values().any(|cell| {
-                cell.try_borrow_mut()
-                    .is_ok_and(|mut registry| !registry.take_omitted().is_empty())
-            });
+            // A read of a source's registry that failed has the kind that registry recorded:
+            // what it served does not verify (U7010), or no place served what it needed
+            // (U7013). Every other problem is no resolution (U7013): a source with no registry
+            // here, and resolution's own records. Never from the message.
             let code = match &problem {
-                Problem::Index(_) if omitted => Code::U7013,
-                Problem::Index(why) if why.starts_with("the registry `") => Code::U7010,
+                Problem::Index {
+                    source: Some(source),
+                    ..
+                } => match online.registries.get(source) {
+                    Some(cell) => match cell
+                        .try_borrow_mut()
+                        .ok()
+                        .and_then(|mut registry| registry.take_failure())
+                    {
+                        Some(Failure::Refused) => Code::U7010,
+                        Some(Failure::Unserved) | None => Code::U7013,
+                    },
+                    None => Code::U7013,
+                },
                 _ => Code::U7013,
             };
             let error = ProjectError {
