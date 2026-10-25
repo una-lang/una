@@ -1579,9 +1579,13 @@ pub struct LockRegistry {
     pub checkpoint_size: At<u64>,
     /// The resolution point: the checkpoint's root hash.
     pub checkpoint_hash: At<String>,
-    /// `accepted <owner> <index> …`: per owner, the entries of its chain pending at the
-    /// resolution point whose key change the lock was written under (`spec/30 §14`).
+    /// `accepted <owner> <index> …`: per owner, the recoveries and disputes of its chain
+    /// pending at the resolution point whose pending state the lock was written under
+    /// (`spec/30 §14`).
     pub accepted: Vec<LockAccepted>,
+    /// `effect <owner> <index> …`: per owner, the recoveries and disputes of its chain in effect
+    /// at the resolution point whose taking effect the lock was written under.
+    pub effects: Vec<LockAccepted>,
 }
 
 /// An `accepted` line of a `registry` section: an owner and the log indices of the entries of
@@ -1867,11 +1871,24 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
     let mut root = None;
     let mut checkpoint = None;
     let mut accepted: Vec<LockAccepted> = Vec::new();
+    let mut effects: Vec<LockAccepted> = Vec::new();
     for child in &line.children {
         no_children(child, errors);
         let mut cursor = Cursor::new(child);
-        if checkpoint.is_some() && cursor.eat_word("accepted") {
-            let owner = match cursor.word("the owner whose key change is accepted") {
+        let consent = if checkpoint.is_none() {
+            None
+        } else if cursor.eat_word("accepted") && effects.is_empty() {
+            Some(false)
+        } else if cursor.eat_word("effect") {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(effect) = consent {
+            let size = checkpoint
+                .as_ref()
+                .map_or(0, |(size, _): &(At<u64>, At<String>)| size.value);
+            let owner = match cursor.word("the owner whose key change is consented to") {
                 Ok(owner) => owner,
                 Err(error) => {
                     errors.push(error);
@@ -1879,29 +1896,42 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
                 }
             };
             let mut indices: Vec<At<u64>> = Vec::new();
+            let mut bad = false;
             while !cursor.done() {
                 match cursor.int("a log index") {
+                    Ok(index) if index.value >= size => {
+                        errors.push(Error::new(
+                            index.range.clone(),
+                            "a consented log index is below the registry's checkpoint size",
+                        ));
+                        bad = true;
+                    }
                     Ok(index) => indices.push(index),
                     Err(error) => {
                         errors.push(error);
+                        bad = true;
                         break;
                     }
                 }
             }
+            if bad {
+                continue;
+            }
+            let list = if effect { &mut effects } else { &mut accepted };
             let ascending = indices
                 .windows(2)
                 .all(|pair| matches!(pair, [a, b] if a.value < b.value));
-            let ordered = accepted
+            let ordered = list
                 .last()
-                .is_none_or(|previous| previous.owner.value < owner.value);
+                .is_none_or(|previous: &LockAccepted| previous.owner.value < owner.value);
             if indices.is_empty() || !ascending || !ordered {
                 errors.push(Error::new(
                     child.range.clone(),
-                    "an `accepted` line names an owner after the previous one's, then its log indices in ascending order, each once",
+                    "an `accepted` or `effect` line names an owner after the previous one's, then its log indices in ascending order, each once; `accepted` lines come before `effect` lines",
                 ));
                 continue;
             }
-            accepted.push(LockAccepted {
+            list.push(LockAccepted {
                 owner,
                 indices,
                 range: child.range.clone(),
@@ -1926,7 +1956,7 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
         } else {
             errors.push(Error::new(
                 child.range.clone(),
-                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each, then its `accepted` lines",
+                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each, then its `accepted` and `effect` lines",
             ));
         }
     }
@@ -1937,6 +1967,7 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
             checkpoint_size,
             checkpoint_hash,
             accepted,
+            effects,
         }),
         _ => {
             errors.push(Error::new(

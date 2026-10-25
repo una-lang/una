@@ -674,3 +674,83 @@ fn a_forged_accepted_index_is_refused() {
         assert!(err.contains("U7009") && err.contains("accepted index"), "{forged}: {err}");
     }
 }
+
+/// A consent to a pending dispute covers its pending state only: once it takes effect, the
+/// key change needs `--accept-key` again, which records it as an `effect`.
+#[test]
+fn a_consented_dispute_needs_new_consent_when_it_takes_effect() {
+    use una_project::tlog::merkle::{leaf_hash, root as tree_root};
+    let mut registry = TestRegistry::new("acme");
+    let key = keypair(60, "acme.laptop");
+    registry.register("acme", &key);
+    let (index, digest) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
+    registry.checkpoint(now() - 20 * DAY);
+    let dispute = registry.recover("acme", "dispute", &keypair(64, "acme.disputed").1, &[]);
+    registry.checkpoint(now() - 10 * DAY);
+    // The lock was written here, the dispute pending and consented to.
+    let old_size = registry.entries.len();
+    let leaves: Vec<_> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
+    let hex: String = tree_root(&leaves)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    registry.append("other", "filler");
+    registry.checkpoint(now() - 60);
+    let (dir, _, itaoca) = project("effect-consent", &registry);
+    let signed = una_project::provenance::signed_name("acme/ledger", &key.1.public);
+    std::fs::write(
+        dir.join("ita.lock"),
+        format!(
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {old_size} \"sha256:{hex}\"\n  accepted acme {dispute}\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            registry.pin()
+        ),
+    )
+    .unwrap();
+    // Seven days on, the dispute is in effect: a key change the pending consent does not cover.
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7014") && err.contains("changed"), "{err}");
+    let (code, _, err) = una_in(
+        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &itaoca,
+    );
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(lock.contains(&format!("\n  effect acme {dispute}\n")), "{lock}");
+    assert!(!lock.contains("  accepted "), "{lock}");
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+}
+
+/// An `accepted` or `effect` index at or above the registry's checkpoint size is U7009 when
+/// the lock is read.
+#[test]
+fn a_consented_index_past_the_checkpoint_is_refused_when_read() {
+    let (registry, _) = acme();
+    let (dir, _, itaoca) = project("index-range", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let checkpoint_line = lock
+        .lines()
+        .find(|line| line.starts_with("  checkpoint "))
+        .unwrap()
+        .to_owned();
+    let size: u64 = checkpoint_line.split(' ').nth(3).unwrap().parse().unwrap();
+    for line in [format!("accepted acme {size}"), format!("effect acme {}", size + 5)] {
+        std::fs::write(
+            dir.join("ita.lock"),
+            lock.replacen(&checkpoint_line, &format!("{checkpoint_line}\n  {line}"), 1),
+        )
+        .unwrap();
+        let (_, out, _) = una_in(&["una", "--json", "check", arg(&dir)], &itaoca);
+        let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let codes: Vec<&str> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["code"].as_str().unwrap())
+            .collect();
+        assert!(codes.contains(&"U7009"), "{line}: {codes:?}");
+    }
+}

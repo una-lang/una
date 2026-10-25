@@ -249,14 +249,16 @@ pub(crate) fn open<'t>(
 }
 
 /// The lines of `ita.lock` for a registry's resolution point (rule 16).
-/// With `accepted`, per owner, the log indices of the entries of its chain pending at the point
-/// whose key change the lock records as consented to: `accepted <owner> <index> …`, owners in
-/// order and indices ascending.
+/// With `accepted`, per owner, the recoveries and disputes pending at the point whose pending
+/// state the lock records as consented to, `accepted <owner> <index> …`; then with `effects`,
+/// those in effect at the point whose taking effect it records as consented to,
+/// `effect <owner> <index> …`; owners in order and indices ascending.
 pub(crate) fn registry_block(
     source: &str,
     pin: &str,
     registry: &Registry<'_>,
     accepted: &BTreeMap<String, BTreeSet<u64>>,
+    effects: &BTreeMap<String, BTreeSet<u64>>,
 ) -> String {
     let mut block = format!(
         "\nregistry {source}\n  root \"{pin}\"\n  checkpoint {} \"{}\"\n",
@@ -266,6 +268,10 @@ pub(crate) fn registry_block(
     for (owner, indices) in accepted.iter().filter(|(_, indices)| !indices.is_empty()) {
         let list: Vec<String> = indices.iter().map(u64::to_string).collect();
         block.push_str(&format!("  accepted {owner} {}\n", list.join(" ")));
+    }
+    for (owner, indices) in effects.iter().filter(|(_, indices)| !indices.is_empty()) {
+        let list: Vec<String> = indices.iter().map(u64::to_string).collect();
+        block.push_str(&format!("  effect {owner} {}\n", list.join(" ")));
     }
     block
 }
@@ -318,10 +324,11 @@ pub(crate) fn key_changed(
     old_point: Option<u64>,
     new_signed: &str,
     accepted: &BTreeSet<u64>,
+    effects: &BTreeSet<u64>,
 ) -> Result<bool, String> {
     if old_signed.is_some_and(|old| old != new_signed) {
         return Ok(true);
     }
     let history = registry.history(una_project::client::owner_of(name))?;
-    Ok(old_point.is_some_and(|point| history.changed_after_except(point, accepted)))
+    Ok(old_point.is_some_and(|point| history.changed_after_except(point, accepted, effects)))
 }

@@ -546,20 +546,27 @@ impl History {
     /// key added or revoked, cosigners, a cancellation, an overruling, a pending recovery or a
     /// dispute), or a recovery or a dispute that took effect after it.
     pub fn changed_after(&self, position: u64) -> bool {
-        self.changed_after_except(position, &BTreeSet::new())
+        self.changed_after_except(position, &BTreeSet::new(), &BTreeSet::new())
     }
 
-    /// [`History::changed_after`], leaving out the entries of `accepted`, whose key change a lock
-    /// records as consented to: the entry itself, and the effect of a recovery or a dispute it
-    /// requested.
-    pub fn changed_after_except(&self, position: u64, accepted: &BTreeSet<u64>) -> bool {
+    /// [`History::changed_after`], leaving out what a lock records as consented to: the
+    /// entries of `pending`, recoveries and disputes whose pending state was consented to, and
+    /// the effects of those of `effects`, whose taking effect was. A consent to a pending
+    /// recovery or dispute never covers its effect: when it takes effect, that is a key change
+    /// of its own.
+    pub fn changed_after_except(
+        &self,
+        position: u64,
+        pending: &BTreeSet<u64>,
+        effects: &BTreeSet<u64>,
+    ) -> bool {
         self.entries
             .iter()
-            .any(|index| *index >= position && !accepted.contains(index))
+            .any(|index| *index >= position && !pending.contains(index))
             || self
                 .snapshots
                 .iter()
-                .any(|s| s.from > position && !accepted.contains(&s.by))
+                .any(|s| s.from > position && !effects.contains(&s.by))
     }
 }
 
