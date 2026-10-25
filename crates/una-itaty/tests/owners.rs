@@ -41,7 +41,7 @@ use una_project::tlog::root::digest as root_digest;
 use una_project::transport::Directory;
 use una_project::transport::Fallback;
 
-use support::{EXPIRES, Keys, NOW, cosign_line, key_text, keypair, root_text_with, sign_line};
+use support::{EXPIRES, Keys, NOW, cosign_line, key_text, keypair, root_text_with, signed};
 
 type Pair = (SigningKey, Key);
 
@@ -51,15 +51,6 @@ impl Clock for TestClock {
     fn now(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
     }
-}
-
-/// A signed note of `text`, which ends with a line feed, by each of `signers`.
-fn note_of(text: &str, signers: &[&Pair]) -> String {
-    let mut document = format!("{text}\n");
-    for (pair, key) in signers {
-        document.push_str(&sign_line(pair, key, text));
-    }
-    document
 }
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -101,7 +92,7 @@ impl Fixture {
             "{}\n",
             root_text_with("itaty", 1, EXPIRES, &keys, &roots, k, &[])
         );
-        let document = note_of(&text, &[&keys.roots[0], &keys.roots[1]]);
+        let document = signed(&text, &[&keys.roots[0], &keys.roots[1]]);
         store.put("root/1", document.as_bytes()).unwrap();
         let pin = root_digest(&document);
         let clock = Arc::new(TestClock(AtomicU64::new(NOW)));
@@ -195,7 +186,7 @@ impl Fixture {
         let text = self.registration(owner, keys, 1, cosigners);
         let receipt = self
             .registry
-            .register(note_of(&text, keys).as_bytes(), false)
+            .register(signed(&text, keys).as_bytes(), false)
             .unwrap();
         self.logged(&owner_chain(owner), receipt)
     }
@@ -206,7 +197,7 @@ impl Fixture {
         let text = self.registration(owner, &[key], 1, &[]);
         let receipt = self
             .registry
-            .register(note_of(&text, &[key]).as_bytes(), true)
+            .register(signed(&text, &[key]).as_bytes(), true)
             .unwrap();
         self.logged(&owner_chain(owner), receipt)
     }
@@ -234,7 +225,7 @@ impl Fixture {
         signers: &[&Pair],
     ) -> Result<u64, Refusal> {
         let text = self.event(owner, action, threshold);
-        let receipt = self.registry.submit(note_of(&text, signers).as_bytes())?;
+        let receipt = self.registry.submit(signed(&text, signers).as_bytes())?;
         Ok(self.logged(&owner_chain(owner), receipt))
     }
 
@@ -317,7 +308,7 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
     let receipt = f
         .registry
-        .request(note_of(&recover, &[&c]).as_bytes(), false)
+        .request(signed(&recover, &[&c]).as_bytes(), false)
         .unwrap();
     let recovery = f.logged(&owner_chain("acme"), receipt);
     assert_eq!(recovery, 2);
@@ -440,7 +431,7 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     raised.threshold = 3;
     let short = f.registry.rotation_text(&raised).unwrap_err();
     assert_eq!(short.cause(), Some(&Cause::ThresholdShort), "{short:?}");
-    let document = note_of(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
+    let document = signed(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
     f.registry.install_root(&document, false).unwrap();
     f.keys.witnesses[2] = rotated;
     // A revoked key is never a witness again.
@@ -668,13 +659,13 @@ fn a_service_starts_only_with_a_named_outbox() {
     let registration = f.registration("acme", &[&a], 1, &[]);
     let mut registry = service.registry().lock().unwrap();
     let receipt = registry
-        .register(note_of(&registration, &[&a]).as_bytes(), false)
+        .register(signed(&registration, &[&a]).as_bytes(), false)
         .unwrap();
     let event = format!(
         "ita-key/1\nsource itaty\nowner acme\nprevious 0 {}\ncancel 0\nthreshold 1\n",
         digest_string(&receipt.leaf)
     );
-    registry.submit(note_of(&event, &[&a]).as_bytes()).unwrap();
+    registry.submit(signed(&event, &[&a]).as_bytes()).unwrap();
     // The service delivers notices outside the registry's lock; held here, flush them.
     registry.flush_notices();
     drop(registry);
@@ -700,7 +691,7 @@ fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines(
     let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
     let receipt = f
         .registry
-        .request(note_of(&recover, &[&c]).as_bytes(), false)
+        .request(signed(&recover, &[&c]).as_bytes(), false)
         .unwrap();
     let recovery = f.logged(&owner_chain("acme"), receipt);
     // Its start, the second earliest of three cosignatures, is t0 + 20.
@@ -729,7 +720,7 @@ fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines(
     )
     .compromise(vec![compromised]);
     let text = f.registry.rotation_text(&rotation).unwrap();
-    let document = note_of(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
+    let document = signed(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
     assert_eq!(
         f.registry
             .install_root(&document, false)
@@ -938,7 +929,7 @@ fn a_notice_names_its_entry_by_index_and_the_digest_of_its_bytes() {
     let mut f = Fixture::new("notice-link");
     let a = keypair(60, "acme.a");
     f.register("acme", &[&a], &[]);
-    let document = note_of(&f.event("acme", "cancel 0", 1), &[&a]);
+    let document = signed(&f.event("acme", "cancel 0", 1), &[&a]);
     let receipt = f.registry.submit(document.as_bytes()).unwrap();
     let notice = f.recording.notices().pop().unwrap();
     assert_eq!(notice.index, receipt.index);
@@ -981,7 +972,7 @@ fn owner_checks_refuse_by_their_cause() {
     let theirs = f.registration("zenith", &[&stolen], 1, &[]);
     assert_eq!(
         f.registry
-            .register(note_of(&theirs, &[&stolen]).as_bytes(), false)
+            .register(signed(&theirs, &[&stolen]).as_bytes(), false)
             .unwrap_err()
             .cause(),
         Some(&Cause::KeyOfAnotherOwner)
@@ -991,7 +982,7 @@ fn owner_checks_refuse_by_their_cause() {
     let own = f.registration("orbit", &[&o], 1, &[&o]);
     assert_eq!(
         f.registry
-            .register(note_of(&own, &[&o]).as_bytes(), false)
+            .register(signed(&own, &[&o]).as_bytes(), false)
             .unwrap_err()
             .cause(),
         Some(&Cause::CosignerIsOwnKey)

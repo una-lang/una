@@ -55,13 +55,20 @@ impl Signer {
     }
 }
 
-/// The signed note of `text` (which ends with a line feed) by each of `signers`, in order.
+/// The signed note of `text` by each of `signers`, in order: the text, ending with a line feed
+/// (one is added when it has none), a blank line, then the signature lines, each over the text
+/// with its final line feed.
 pub fn note(text: &str, signers: &[&Signer]) -> String {
+    let text = if text.ends_with('\n') {
+        text.to_owned()
+    } else {
+        format!("{text}\n")
+    };
     let mut out = String::with_capacity(text.len() + 1 + signers.len() * 128);
-    out.push_str(text);
+    out.push_str(&text);
     out.push('\n');
     for signer in signers {
-        out.push_str(&signer.line(text));
+        out.push_str(&signer.line(&text));
     }
     out
 }
