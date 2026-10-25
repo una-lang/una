@@ -606,8 +606,9 @@ impl History {
             .filter(|key| verified(note, key))
             .count();
         // From a freeze on, nothing an owner's key signs counts, and nothing refuses the name
-        // the releases before it stand on.
-        if self.frozen.is_some_and(|from| position >= from) {
+        // the releases before it stand on. The freeze, an entry, governs what is logged after
+        // it, as every entry of the chain does (a snapshot's `from`).
+        if self.frozen.is_some_and(|from| position > from) {
             Standing::Skipped(signers)
         } else if sound.len() >= threshold {
             Standing::Counts(sound)
