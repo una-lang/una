@@ -332,9 +332,9 @@ pub fn parse_proof(document: &[u8]) -> Result<(Option<Head>, Proof), String> {
             return Err("a map proof's head is `<index> <leaf hash> <count>`".to_owned());
         };
         let head = Head {
-            index: decimal(index).ok_or("a map head's index is not a decimal")?,
-            leaf: hash(leaf).ok_or("a map head's leaf hash is not 32 bytes of base64")?,
-            count: decimal(count)
+            index: decimal(*index).ok_or("a map head's index is not a decimal")?,
+            leaf: hash(*leaf).ok_or("a map head's leaf hash is not 32 bytes of base64")?,
+            count: decimal(*count)
                 .filter(|count| *count >= 1)
                 .ok_or("a map head's count is a decimal from 1")?,
         };
