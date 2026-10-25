@@ -7,7 +7,7 @@ use std::rc::Rc;
 use num_bigint::BigInt;
 use una_core::{Ctor, Expr, Name};
 
-use crate::machine::{Caps, Env};
+use crate::machine::{Caps, Env, Instance};
 pub(crate) use una_core::Text;
 
 /// A value of the Una Abstract Machine; `'p` is the program's lifetime.
@@ -143,7 +143,7 @@ pub(crate) struct Data<'p> {
 // would overflow (ADR 0032).
 impl Drop for Data<'_> {
     fn drop(&mut self) {
-        unwind(std::mem::take(&mut self.fields));
+        unwind(std::mem::take(&mut self.fields), Vec::new());
     }
 }
 
@@ -152,7 +152,7 @@ impl Drop for Data<'_> {
 impl Drop for Dense<'_> {
     fn drop(&mut self) {
         if let Some(items) = take_values(self) {
-            unwind(items);
+            unwind(items, Vec::new());
         }
     }
 }
@@ -167,46 +167,80 @@ fn take_values<'p>(dense: &mut Dense<'p>) -> Option<Vec<Value<'p>>> {
     }
 }
 
-/// Drops `pending` and everything only it holds, with a worklist instead of recursion.
-fn unwind(mut pending: Vec<Value<'_>>) {
-    while let Some(value) = pending.pop() {
-        match value {
-            Value::Data(data) => {
-                if let Ok(mut data) = Rc::try_unwrap(data) {
-                    pending.append(&mut data.fields);
+// A function value holds the values it closes over and the handlers of its capabilities, whose
+// arguments are values too, so a loop nests values through function values as deep as through
+// records; they drop by the same worklist (S-30).
+impl Drop for Closure<'_> {
+    fn drop(&mut self) {
+        unwind(self.env.take_values(), vec![std::mem::take(&mut self.caps)]);
+    }
+}
+
+/// Drops `pending` and the capabilities in `caps`, with everything only they hold, by a worklist
+/// instead of recursion. A value or a capability held elsewhere too is only released.
+fn unwind<'p>(mut pending: Vec<Value<'p>>, mut caps: Vec<Caps<'p>>) {
+    loop {
+        if let Some(value) = pending.pop() {
+            match value {
+                Value::Data(data) => {
+                    if let Ok(mut data) = Rc::try_unwrap(data) {
+                        pending.append(&mut data.fields);
+                    }
                 }
-            }
-            Value::List(items) | Value::Tuple(items) => {
-                if let Ok(items) = Rc::try_unwrap(items) {
-                    pending.extend(items);
+                Value::List(items) | Value::Tuple(items) => {
+                    if let Ok(items) = Rc::try_unwrap(items) {
+                        pending.extend(items);
+                    }
                 }
+                Value::Map(entries) => {
+                    if let Ok(entries) = Rc::try_unwrap(entries) {
+                        for (_, (key, value)) in entries {
+                            pending.push(key);
+                            pending.push(value);
+                        }
+                    }
+                }
+                Value::Seq(items) => {
+                    if let Ok(items) = Rc::try_unwrap(items) {
+                        pending.extend(items);
+                    }
+                }
+                Value::Set(items) => {
+                    if let Ok(items) = Rc::try_unwrap(items) {
+                        pending.extend(items.into_values());
+                    }
+                }
+                Value::Dense(dense) => {
+                    if let Ok(mut dense) = Rc::try_unwrap(dense)
+                        && let Some(items) = take_values(&mut dense)
+                    {
+                        pending.extend(items);
+                    }
+                }
+                Value::Closure(closure) => {
+                    if let Ok(mut closure) = Rc::try_unwrap(closure) {
+                        pending.extend(closure.env.take_values());
+                        caps.push(std::mem::take(&mut closure.caps));
+                    }
+                }
+                _ => {}
             }
-            Value::Map(entries) => {
-                if let Ok(entries) = Rc::try_unwrap(entries) {
-                    for (_, (key, value)) in entries {
-                        pending.push(key);
-                        pending.push(value);
+        } else if let Some(held) = caps.pop() {
+            if let Ok(held) = Rc::try_unwrap(held) {
+                for (_, instance) in held {
+                    if let Ok(Instance::Handled {
+                        values,
+                        caps: inner,
+                        ..
+                    }) = Rc::try_unwrap(instance)
+                    {
+                        pending.extend(values);
+                        caps.push(inner);
                     }
                 }
             }
-            Value::Seq(items) => {
-                if let Ok(items) = Rc::try_unwrap(items) {
-                    pending.extend(items);
-                }
-            }
-            Value::Set(items) => {
-                if let Ok(items) = Rc::try_unwrap(items) {
-                    pending.extend(items.into_values());
-                }
-            }
-            Value::Dense(dense) => {
-                if let Ok(mut dense) = Rc::try_unwrap(dense)
-                    && let Some(items) = take_values(&mut dense)
-                {
-                    pending.extend(items);
-                }
-            }
-            _ => {}
+        } else {
+            return;
         }
     }
 }
@@ -679,5 +713,56 @@ mod tests {
         assert_eq!(equal_within(&a, &b, 10), None);
         assert_eq!(equal_within(&a, &b, 1000), Some(true));
         assert_eq!(equal_within(&a, &a, 0), Some(true));
+    }
+
+    #[test]
+    fn a_deep_chain_of_function_values_drops_without_native_recursion() {
+        // S-30: a function value that closes over the previous one, in a record or not, as a
+        // loop builds it, and one whose capability's handler holds it, drop by the worklist on
+        // a small stack.
+        let dropped = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut sources = una_syntax::SourceDb::new();
+                let file = sources.add("chain.una", b"");
+                let body: &'static Expr = Box::leak(Box::new(Expr::Atom {
+                    atom: una_core::Atom::Unit,
+                    span: una_syntax::Span::new(file, 0, 0),
+                }));
+                let closing = |value: Value<'static>, caps: Caps<'static>| {
+                    let mut env = Env::new();
+                    env.push(("prev", value));
+                    Value::Closure(Rc::new(Closure {
+                        params: Vec::new(),
+                        body,
+                        env,
+                        caps,
+                    }))
+                };
+                let node = Ctor {
+                    kind: una_core::Path {
+                        module: "chain".to_owned(),
+                        name: "F".to_owned(),
+                    },
+                    name: "L".to_owned(),
+                    index: 1,
+                };
+                let mut through_records = Value::Unit;
+                for _ in 0..100_000 {
+                    let closure = closing(through_records, Rc::default());
+                    through_records = Value::data(node.clone(), vec![closure]);
+                }
+                drop(through_records);
+                let mut through_closures = Value::Unit;
+                for _ in 0..100_000 {
+                    through_closures = closing(through_closures, Rc::default());
+                }
+                drop(through_closures);
+                true
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(dropped);
     }
 }
