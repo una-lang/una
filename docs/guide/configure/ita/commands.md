@@ -2,7 +2,7 @@
 construct: "una ita"
 editions: ["0.4"]
 spec: ["spec/30 §6", "spec/30 §10", "spec/30 §12"]
-codes: [U7013]
+codes: [U7013, U7014]
 ---
 
 # `una ita`
@@ -113,14 +113,16 @@ change util 0.2.0 -> 0.3.0 (path deps/util): digest sha256:… -> sha256:…; ma
 
 - **Usage errors.** A directory without `ita.una`, a name `update` or `remove` is given that the package does not need, and a word `add` would write that is not a name or a version, are usage errors, exit code 2.
 - **Errors.** A command whose output holds an error diagnostic exits with code 1, and writes nothing.
-- **Registry needs.** This release holds no registry's per-name state, which says what releases exist and which are yanked or under an advisory. So `lock`, `update` and `add` refuse a registry need with U7013 rather than resolve it from a partial view, and `add` writes nothing in this release.
-- **No network.** No command of this release opens a connection: `fetch`, `audit` and `publish` come with the registry client.
+- **Registry needs.** `lock`, `update` and `add` read a source of `sources` from a mirror directory, `--mirror acme=/srv/ita-mirror`, and verify everything they read, from the root its `sources` entry pins to each release's signature and its owner's keys. This release has no https transport, so a source with no mirror is U7013, and a `http://` location is refused: plain HTTP is never used. A need of `itaty`, whose root is not built into this release, is U7013.
+- **Keys.** A change of a locked package's owner's keys, a key added or revoked or a recovery that took effect, is U7014 until `--accept-key <package>` records it.
+- **No network.** No command of this release opens a network connection. `fetch` fills Itaoca with the locked releases from the mirror, verified; `audit` and `publish` come later.
 
 ## Diagnostics
 
 The commands report the diagnostics of the files they read: see [`ita.una`](manifest.md), [`ita.lock`](lock.md) and [path dependencies](path-dependencies.md). Resolution adds one:
 
-- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution: a need no release meets, an avoided version with no later release, a bound exceeded, or a registry need this release cannot resolve offline.
+- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution: a need no release meets, an avoided version with no later release, a bound exceeded, a source with no mirror, or a need of `itaty`.
+- [U7014](../../../../crates/una-explain/explain/U7014.md): the keys of a locked package's owner changed, until `--accept-key` records it.
 
 ## Edition
 

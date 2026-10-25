@@ -13,7 +13,7 @@ A need of a registry package names the least version its author tested, such as 
 
 A selection is raised past a release that is yanked, named by a security advisory, or avoided by the package, to the least later release that is none of these. Every such raise, and every `una ita update`, waits a cooldown of 72 hours after the release was logged, measured by the registry's witnesses, never by a publisher's clock. A malicious release found in that window never reaches a program by resolution.
 
-This release loads path dependencies only. A need of a registry package is read and checked, then refused (U7008), so no import reaches a package that is not checked. `una ita lock`, `update` and `add` do not resolve it either (U7013): this release holds no registry's per-name state, the releases that exist and which are yanked or under an advisory, and resolution never works from a partial view of it:
+This release resolves path dependencies and the packages of the sources that `sources` declares, each read from a mirror directory (`--mirror <source>=<directory>`) and verified. A need of `itaty`, the default registry, is read and checked, then refused (U7008), so no import reaches a package that is not checked: its root is not built into this release, so nothing it serves can be verified. `una ita lock`, `update` and `add` do not resolve it either (U7013), and resolution never works from a partial view of a registry:
 
 `ita.una`
 
@@ -67,18 +67,18 @@ needs
 
 ## Examples
 
-Once the registry client lands, a raise names what the cooldown holds back:
+A source read from a mirror is raised past the cooldown:
 
 ```text
-$ una ita update json
-change json 2.1.0 -> 2.1.3 (itaty): digest sha256:… -> sha256:…; may nothing; uses nothing
+$ una ita update acme/ledger --mirror acme=/srv/ita-mirror
+change acme/ledger 0.3.1 -> 0.3.2 (acme): digest sha256:… -> sha256:…; may nothing; uses nothing
 ```
 
-In this release:
+A need of `itaty`, in this release:
 
 ```text
 $ una ita update json
-error[U7013]: `json` cannot be resolved offline, since the per-name state of `itaty` at a resolution point is not held; this release resolves path dependencies only
+error[U7013]: `json` is a package of `itaty`, whose root metadata is not built into this release, so the per-name state of `itaty` at a resolution point cannot be verified; this release resolves path dependencies and the sources of `sources`
 ```
 
 ## Edge cases
@@ -90,7 +90,7 @@ error[U7013]: `json` cannot be resolved offline, since the per-name state of `it
 ## Diagnostics
 
 - [U7008](../../../../crates/una-explain/explain/U7008.md): a need this release does not load, or an invalid need.
-- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution, such as an avoided version with no later release, or a registry need this release cannot resolve offline.
+- [U7013](../../../../crates/una-explain/explain/U7013.md): no resolution, such as an avoided version with no later release, a source with no mirror, or a need of `itaty`.
 
 ## Edition
 
