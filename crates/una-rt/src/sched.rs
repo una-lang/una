@@ -1,8 +1,14 @@
 //! The scheduler of a run's tasks (ADR 0117 rules 1 to 3, `docs/plan/0117-s1-design.md`).
 //!
 //! - **Workers.** Each task of `together` and `together for` runs as a coroutine of
-//!   [`una_sys::coroutine`] on one of `--workers` threads, chosen round-robin when it is forked,
-//!   and never moves: its heap, reference counts and state are only touched by one thread.
+//!   [`una_sys::coroutine`] on one of `--workers` threads, and never moves: its heap, reference
+//!   counts and state are only touched by one thread.
+//! - **Placement is structural** (`spec/27 §1` rule 2, #1145). Part `i` of a construct runs on
+//!   worker `(w + i) mod N`, where `w` is the worker of the task that runs the construct (0 for
+//!   the root task) and `N` is `--workers`. The scheduler keeps no run-wide placement state: a
+//!   round-robin counter remembered how many parts earlier code started, so code that branched
+//!   on `secret` data moved a later `public` construct to other workers and changed its timing,
+//!   which a deadline turns into a value (ADR 0116 IF6).
 //! - **Slots.** The runtime keeps a task's state in thread-locals. A worker swaps them with the
 //!   task's saved [`Slots`] when it resumes the task, and back when the task parks or ends, so
 //!   between tasks a worker's thread-locals are empty.
@@ -12,8 +18,10 @@
 //! - **Helpers.** [`blocking`] runs a host operation that may block on a helper thread of its
 //!   pool while the task parks: `Files` and a blocked `Console.print` on one pool, `Http` on the
 //!   other, so that stalled requests never delay files or prints.
-//! - **One scheduler per run,** made at its first block: a run without tasks has no worker, no
-//!   helper and no switch.
+//! - **One scheduler per run.** A program that holds a task construct or a `for ever` makes it
+//!   before `main`, with every worker and both helper pools started at full size
+//!   ([`Scheduler::start_all`], #1145), so no thread starts at a moment earlier code decided. A
+//!   program without them has no worker, no helper and no switch.
 //!
 //! The stack pool hands out guard-paged stacks by size and takes them back, at most
 //! [`POOL_STACKS`] kept, in O(log k).
@@ -186,8 +194,11 @@ struct Queue {
     started: bool,
 }
 
-/// One worker: its queue, and the thread that serves it, started at its first job.
+/// One worker: its index among the scheduler's workers, its queue, and the thread that serves
+/// it, started at its first job. A task reads its worker's index through [`RUNNING`] to place
+/// the parts it forks.
 struct Worker {
+    index: usize,
     queue: Mutex<Queue>,
     ready: Condvar,
 }
@@ -351,11 +362,10 @@ impl Shared {
     }
 }
 
-/// The scheduler of one run: its workers, the next worker of the round-robin, and what they
-/// share.
+/// The scheduler of one run: its workers and what they share. It holds no placement state: a
+/// task's worker follows from the program's structure alone ([`placement`]).
 pub(crate) struct Scheduler {
     workers: Vec<Arc<Worker>>,
-    next: AtomicUsize,
     shared: Arc<Shared>,
 }
 
@@ -364,11 +374,13 @@ pub(crate) struct Scheduler {
 pub(crate) struct NotStarted;
 
 impl Scheduler {
-    /// A scheduler with the settings of the run; its threads start on demand.
+    /// A scheduler with the settings of the run; its threads start on demand, or all at once
+    /// with [`Scheduler::start_all`].
     pub(crate) fn new(settings: una_interp::Concurrency) -> Arc<Scheduler> {
         let workers = (0..settings.workers.max(1))
-            .map(|_| {
+            .map(|index| {
                 Arc::new(Worker {
+                    index,
                     queue: Mutex::new(Queue {
                         jobs: VecDeque::new(),
                         closed: false,
@@ -380,7 +392,6 @@ impl Scheduler {
             .collect();
         Arc::new(Scheduler {
             workers,
-            next: AtomicUsize::new(0),
             shared: Arc::new(Shared {
                 stacks: Mutex::new(BTreeMap::new()),
                 pooled: AtomicUsize::new(0),
@@ -390,38 +401,86 @@ impl Scheduler {
         })
     }
 
-    /// Starts `body` as a task on a stack of `stack` usable bytes, on the next worker of the
-    /// round-robin, in O(1) besides the stack pool's O(log k); `finish` runs on the worker once
-    /// the task has ended and its thread-locals are dropped.
+    /// Starts `body`, part `part` of its construct counted from 0 in index order, as a task on
+    /// a stack of `stack` usable bytes; `finish` runs on the worker once the task has ended and
+    /// its thread-locals are dropped.
+    ///
+    /// The task runs on worker `(w + part) mod N`, where `w` is the worker of the calling task
+    /// (0 for the root) and `N` the number of workers (`spec/27 §1` rule 2): placement is a
+    /// function of the program's structure only, never of how many tasks earlier code started
+    /// (#1145, ADR 0116 IF6). Choosing the worker is O(1) in the average and the worst case, a
+    /// thread-local read and a remainder, with no shared counter; the whole start is O(1)
+    /// besides the stack pool's O(log k).
     pub(crate) fn spawn(
         &self,
+        part: usize,
         stack: usize,
         body: impl FnOnce() + Send + 'static,
         finish: impl FnOnce() + Send + 'static,
     ) -> Result<(), NotStarted> {
-        let count = self.workers.len().max(1);
-        let index = self.next.fetch_add(1, Ordering::Relaxed) % count;
+        let index = placement(current_worker(), part, self.workers.len());
         let worker = self.workers.get(index).ok_or(NotStarted)?;
         let stack = self.shared.take(stack).ok_or(NotStarted)?;
         // The thread starts and the job is queued under one hold of the queue's lock, so no job
-        // ever waits on a worker whose thread failed to start: that start fails the fork.
+        // ever waits on a worker whose thread failed to start: that start fails the fork. After
+        // [`Scheduler::start_all`], which a program with a task construct runs before `main`,
+        // the thread is always there already.
         let mut queue = lock(&worker.queue);
-        if !queue.started {
-            let serving = Arc::clone(worker);
-            let shared = Arc::clone(&self.shared);
-            std::thread::Builder::new()
-                .name(format!("una-worker-{}", index + 1))
-                .stack_size(WORKER_STACK)
-                .spawn(move || serve(serving, shared))
-                .map_err(|_| NotStarted)?;
-            queue.started = true;
-        }
+        self.serve_worker(worker, &mut queue)?;
         queue
             .jobs
             .push_back(Job::Start(stack, Box::new(body), Box::new(finish)));
         drop(queue);
         worker.ready.notify_one();
         Ok(())
+    }
+}
+
+impl Scheduler {
+    /// Starts the thread of `worker`, whose queue `queue` is held, unless it started already.
+    fn serve_worker(&self, worker: &Arc<Worker>, queue: &mut Queue) -> Result<(), NotStarted> {
+        if queue.started {
+            return Ok(());
+        }
+        let serving = Arc::clone(worker);
+        let shared = Arc::clone(&self.shared);
+        std::thread::Builder::new()
+            .name(format!("una-worker-{}", worker.index + 1))
+            .stack_size(WORKER_STACK)
+            .spawn(move || serve(serving, shared))
+            .map_err(|_| NotStarted)?;
+        queue.started = true;
+        Ok(())
+    }
+
+    /// Starts every worker's thread and both helper pools at their full sizes, before `main`
+    /// (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145). Lazy starts would leave history:
+    /// whether a thread exists, and so whether a construct pays its start, would depend on what
+    /// earlier code forked or waited on, possibly on `secret` data. O(N + H) thread starts, for
+    /// `N` workers and `H` helpers, once per run; their stacks are reserved, not committed.
+    /// `Err` when one could not start: the run then stops before `main`.
+    pub(crate) fn start_all(&self) -> Result<(), NotStarted> {
+        for worker in &self.workers {
+            let mut queue = lock(&worker.queue);
+            self.serve_worker(worker, &mut queue)?;
+        }
+        self.shared.files.fill()?;
+        self.shared.io.fill()
+    }
+
+    /// How many worker threads, file helpers and I/O helpers have started, in tests.
+    #[cfg(test)]
+    pub(crate) fn started(&self) -> (usize, usize, usize) {
+        let workers = self
+            .workers
+            .iter()
+            .filter(|worker| lock(&worker.queue).started)
+            .count();
+        (
+            workers,
+            lock(&self.shared.files.queue).threads,
+            lock(&self.shared.io.queue).threads,
+        )
     }
 }
 
@@ -463,6 +522,22 @@ impl Helpers {
             ready: Condvar::new(),
             most: most.max(1),
         }
+    }
+
+    /// Starts helpers until the pool holds `most` threads, each of them idle until a job
+    /// comes. `Err` when one could not start.
+    fn fill(self: &Arc<Self>) -> Result<(), NotStarted> {
+        let mut queue = lock(&self.queue);
+        while queue.threads < self.most {
+            let helpers = Arc::clone(self);
+            std::thread::Builder::new()
+                .name("una-helper".to_owned())
+                .stack_size(HELPER_STACK)
+                .spawn(move || helpers.serve())
+                .map_err(|_| NotStarted)?;
+            queue.threads += 1;
+        }
+        Ok(())
     }
 
     /// Queues `job`, starting a helper when none is idle and the pool has room. The job back
@@ -528,6 +603,29 @@ pub(crate) enum Pool {
     Files,
     /// `Http`: `--io-threads`.
     Io,
+}
+
+/// The index of the worker that runs the calling task, or 0 outside a task: the root task, and
+/// a run's other threads, count as worker 0 (`spec/27 §1` rules 2 and 3). O(1).
+fn current_worker() -> usize {
+    if !una_sys::coroutine::inside() {
+        return 0;
+    }
+    RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map_or(0, |(worker, _, _)| worker.index)
+    })
+}
+
+/// The worker of part `part` of a construct that a task on worker `parent` runs, among `count`
+/// workers: `(parent + part) mod count`, so the placement depends only on the program's
+/// structure (`spec/27 §1` rule 2). A `count` of 0 is taken as 1. O(1).
+fn placement(parent: usize, part: usize, count: usize) -> usize {
+    let count = count.max(1);
+    // Each term is reduced first, so the sum never overflows.
+    (parent % count + part % count) % count
 }
 
 /// Whether the calling code runs a task on a worker, where an operation that may block goes
@@ -621,13 +719,45 @@ mod tests {
         }
     }
 
-    /// Spawns `body` on `sched` and returns the mailbox that says it ended.
-    fn start(sched: &Scheduler, body: impl FnOnce() + Send + 'static) -> Receiver<()> {
+    /// Spawns `body` on `sched` as part `index` of its construct and returns the mailbox that
+    /// says it ended.
+    fn start(
+        sched: &Scheduler,
+        index: usize,
+        body: impl FnOnce() + Send + 'static,
+    ) -> Receiver<()> {
         let (done, ended) = channel();
         sched
-            .spawn(256 * 1024, body, move || done.send(()))
+            .spawn(index, 256 * 1024, body, move || done.send(()))
             .unwrap();
         ended
+    }
+
+    /// Forks a construct of `parts` parts from the calling code and joins it: the worker each
+    /// part ran on, in part order, and for each part the workers of the `nested` parts it forks
+    /// and joins in turn.
+    fn construct(sched: &Arc<Scheduler>, parts: usize, nested: usize) -> Vec<(usize, Vec<usize>)> {
+        let forked: Vec<(Receiver<()>, Receiver<(usize, Vec<usize>)>)> = (0..parts)
+            .map(|part| {
+                let (sender, receiver) = channel();
+                let inner = Arc::clone(sched);
+                let ended = start(sched, part, move || {
+                    let children = construct(&inner, nested, 0)
+                        .into_iter()
+                        .map(|(worker, _)| worker)
+                        .collect();
+                    sender.send((current_worker(), children));
+                });
+                (ended, receiver)
+            })
+            .collect();
+        forked
+            .into_iter()
+            .map(|(ended, receiver)| {
+                assert_eq!(ended.recv(), Some(()));
+                receiver.recv().unwrap()
+            })
+            .collect()
     }
 
     #[test]
@@ -658,9 +788,9 @@ mod tests {
                 return;
             }
             let children: Vec<Receiver<()>> = (0..3)
-                .map(|_| {
+                .map(|part| {
                     let (sched_inner, sum) = (Arc::clone(&sched), Arc::clone(&sum));
-                    start(&sched, move || level(sched_inner, depth - 1, sum))
+                    start(&sched, part, move || level(sched_inner, depth - 1, sum))
                 })
                 .collect();
             for child in children {
@@ -670,7 +800,7 @@ mod tests {
         let sched = Scheduler::new(settings(1, 1, 1));
         let sum = Arc::new(AtomicUsize::new(0));
         let (inner, counted) = (Arc::clone(&sched), Arc::clone(&sum));
-        let root = start(&sched, move || level(inner, 3, counted));
+        let root = start(&sched, 0, move || level(inner, 3, counted));
         assert_eq!(root.recv(), Some(()));
         assert_eq!(sum.load(Ordering::SeqCst), 1 + 3 + 9 + 27);
     }
@@ -684,16 +814,16 @@ mod tests {
         let (release, gate) = std::sync::mpsc::channel::<()>();
         let gate = Arc::new(Mutex::new(gate));
         let stalled: Vec<Receiver<()>> = (0..4)
-            .map(|_| {
+            .map(|part| {
                 let gate = Arc::clone(&gate);
-                start(&sched, move || {
+                start(&sched, part, move || {
                     blocking(Pool::Io, move || {
                         let _ = lock(&gate).recv();
                     });
                 })
             })
             .collect();
-        let read = start(&sched, || {
+        let read = start(&sched, 4, || {
             assert_eq!(blocking(Pool::Files, || 7), 7);
         });
         assert_eq!(read.recv(), Some(()));
@@ -753,9 +883,68 @@ mod tests {
     }
 
     #[test]
+    fn placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers() {
+        // #1145, `spec/27 §1` rule 2: part `i` of a construct runs on worker `(w + i) mod N`,
+        // `w` being its parent's worker, 0 for the root. A run-wide round-robin counter made a
+        // construct's workers depend on how many parts earlier code had forked, so a `secret`
+        // number of earlier parts moved a later `public` construct, and its timing. Here the
+        // same constructs run after 0 to 7 earlier parts, top-level and nested, and must land
+        // on the same workers every time.
+        assert_eq!(placement(0, 0, 0), 0);
+        assert_eq!(placement(2, 2, 3), 1);
+        // 2^64 - 1 is a multiple of 3: the sum is reduced without overflow.
+        assert_eq!(placement(usize::MAX, usize::MAX, 3), 0);
+        let sched = Scheduler::new(settings(3, 1, 1));
+        let expected: Vec<(usize, Vec<usize>)> = (0..4)
+            .map(|part| {
+                let worker = part % 3;
+                (worker, (0..5).map(|child| (worker + child) % 3).collect())
+            })
+            .collect();
+        for earlier in 0..8 {
+            let warm = construct(&sched, earlier, earlier % 3);
+            assert_eq!(warm.len(), earlier);
+            assert_eq!(construct(&sched, 4, 5), expected, "after {earlier} earlier parts");
+        }
+        // Outside a task, the calling code counts as worker 0.
+        assert_eq!(current_worker(), 0);
+    }
+
+    #[test]
+    fn start_all_starts_every_worker_and_both_pools_before_any_task() {
+        // #1145, ADR 0116 amendment P8: before `main`, a program with a task construct has every
+        // worker's thread and both helper pools at full size, so no construct starts a thread.
+        let sched = Scheduler::new(settings(3, 5, 2));
+        assert_eq!(sched.started(), (0, 0, 0));
+        sched.start_all().unwrap();
+        assert_eq!(sched.started(), (3, 2, 5));
+        // The helpers are running threads: each reaches its idle wait.
+        let idle = || {
+            (
+                lock(&sched.shared.files.queue).idle,
+                lock(&sched.shared.io.queue).idle,
+            )
+        };
+        for _ in 0..5000 {
+            if idle() == (2, 5) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(idle(), (2, 5));
+        // A second call starts nothing more, and tasks then start no thread.
+        sched.start_all().unwrap();
+        let tasks: Vec<Receiver<()>> = (0..7).map(|part| start(&sched, part, || {})).collect();
+        for task in tasks {
+            assert_eq!(task.recv(), Some(()));
+        }
+        assert_eq!(sched.started(), (3, 2, 5));
+    }
+
+    #[test]
     fn the_stack_pool_reuses_stacks_by_size_and_keeps_at_most_its_bound() {
         let sched = Scheduler::new(settings(2, 1, 1));
-        let tasks: Vec<Receiver<()>> = (0..200).map(|_| start(&sched, || {})).collect();
+        let tasks: Vec<Receiver<()>> = (0..200).map(|part| start(&sched, part, || {})).collect();
         for task in tasks {
             assert_eq!(task.recv(), Some(()));
         }

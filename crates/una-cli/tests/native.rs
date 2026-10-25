@@ -1778,6 +1778,138 @@ fn one_worker_runs_blocks_nested_three_levels_deep_without_deadlock() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A server on `127.0.0.1` that answers each request, one at a time, about 1 ms after reading
+/// it, so that the requests a run completes before a deadline count the time left to it.
+fn ticking_server() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(1) => request.push(byte[0]),
+                    _ => break,
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    port
+}
+
+/// The package of the placement test, with `key` as its `secret` input, built.
+fn placement_package(key: u8, port: u16) -> PathBuf {
+    let program = format!(
+        r#"module flip
+
+import std.time (millisecond)
+
+pub main() -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  let key: secret Int = {key}
+  let parts = 512 * (key + 1)
+  let earlier = together for i in 0..<parts
+    i
+  for ever within 120 * millisecond
+    let later = together for i in 0..<512
+      i
+    let edit asked = 0
+    for j in 0..<400
+      let reading = attempt @http.get("http://127.0.0.1:{port}/tick", headers: [], key_name: None)
+      asked = asked + 1
+    stop
+  unit
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-native-flip-{key}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita flip\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry flip\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/flip.una"), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+/// The requests of one run of the placement test that completed before the deadline.
+fn completed_requests(dir: &Path, run: usize) -> usize {
+    let trace = dir.join(format!("trace-{run}.json"));
+    let native = Command::new(dir.join("target/una/flip"))
+        .args(["--workers", "1024", "--http-timeout", "30", "--trace"])
+        .arg(&trace)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+    let _ = std::fs::remove_file(&trace);
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["op"] == "get" && event["outcome"].get("variant").is_none())
+        .count()
+}
+
+#[test]
+fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started() {
+    // #1145, `spec/27 §1` rules 2 and 4, ADR 0116 IF6 and amendment P8, on the real clock. The
+    // same program runs with its `secret` key 0 and 1, and nothing else changed. The key decides
+    // how many tasks a block starts before the loop: 512 or 1024. Inside the loop, a `public`
+    // block of 512 tasks runs under the deadline, and then requests to a server that answers in
+    // about 1 ms each, until the deadline cuts them. The trace shows how many completed, which
+    // counts the time the deadline left after the block. Both keys must give the same count.
+    //
+    // How it failed before: one round-robin counter for the whole run placed tasks, and worker
+    // threads started at their first job. With `--workers 1024`, key 1 left the counter at 1024,
+    // so the block's tasks went to workers 0 to 511, whose threads had started; key 0 left it at
+    // 512, so they went to workers 512 to 1023, and the block started 512 threads inside the
+    // deadline, whose cost left key 0 fewer completed requests. Now the block's tasks run on
+    // workers 0 to 511 whatever ran before, and every thread starts before `main`.
+    let port = ticking_server();
+    let dirs = [placement_package(0, port), placement_package(1, port)];
+    let mut counts: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    // The two inputs alternate, so a change in the machine's load reaches both alike.
+    for run in 0..20 {
+        for (dir, count) in dirs.iter().zip(counts.iter_mut()) {
+            count.push(completed_requests(dir, run));
+        }
+    }
+    let median = |values: &[usize]| {
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
+    };
+    let (low, high) = (median(&counts[0]), median(&counts[1]));
+    // Each run completes some requests: the block and the deadline leave room for them.
+    assert!(low > 0 && high > 0, "{counts:?}");
+    // The same distribution, up to the noise of the clock: medians within 5 requests, about
+    // 6 ms, against a difference of tens of requests before the fix.
+    assert!(low.abs_diff(high) <= 5, "key 0: {:?}, key 1: {:?}", counts[0], counts[1]);
+    for dir in dirs {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn the_flags_of_tasks_out_of_range_are_usage_errors_in_both_engines() {
     // ADR 0117, Diagnostics: a `--workers`, `--task-depth`, `--io-threads` or `--file-threads`

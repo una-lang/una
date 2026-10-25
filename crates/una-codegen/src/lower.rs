@@ -766,6 +766,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let Expr::Loop {
             source,
             var,
@@ -1485,6 +1487,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let value = match expr {
             Expr::Together { tasks, span } => {
                 let site = self.site(*span);
