@@ -853,3 +853,69 @@ fn a_request_that_would_freeze_the_chain_needs_the_operators_confirmation() {
     assert_eq!(receipt.index, 2);
     assert_eq!(f.registry.owner_history("zenith").unwrap().frozen, Some(2));
 }
+
+#[test]
+fn one_co_signer_change_waits_at_a_time_and_only_real_cancellations_are_timed() {
+    let mut f = Fixture::new("cosigners");
+    let a = keypair(60, "acme.a");
+    let x = keypair(70, "trustee.x");
+    let y = keypair(71, "trustee.y");
+    f.register("acme", &[&a], &[]);
+    // A cancellation of nothing waiting is not timed.
+    let nothing = f.submit("acme", "cancel 0", 1, &[&a]).unwrap();
+    assert!(f.registry.request_timing(nothing).is_none());
+    let change = f
+        .submit("acme", &format!("cosigners 1 {}", key_text(&x.1)), 1, &[&a])
+        .unwrap();
+    assert!(f.registry.request_timing(change).is_some());
+    f.cosign(&[0, 1], NOW);
+    // A second co-signer change while the first waits is refused.
+    assert_eq!(
+        f.submit("acme", &format!("cosigners 1 {}", key_text(&y.1)), 1, &[&a])
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::PendingCosignerChange)
+    );
+    // A cancellation of the waiting change is timed: its seven days bound an overruling.
+    let cancel = f
+        .submit("acme", &format!("cancel {change}"), 1, &[&a])
+        .unwrap();
+    assert!(f.registry.request_timing(cancel).is_some());
+    f.cosign(&[0, 1], NOW);
+    // Reopened, the same cancellations are timed.
+    let reopened = f.reopen();
+    assert!(reopened.request_timing(cancel).is_some());
+    assert!(reopened.request_timing(nothing).is_none());
+    // Once cancelled, a new co-signer change may wait.
+    f.submit("acme", &format!("cosigners 1 {}", key_text(&y.1)), 1, &[&a])
+        .unwrap();
+}
+
+#[test]
+fn settled_requests_leave_the_scans() {
+    let mut f = Fixture::new("prune");
+    let z = keypair(62, "zenith.z");
+    let d = keypair(64, "zenith.d");
+    let o = keypair(67, "orbit.o");
+    f.register("zenith", &[&z], &[]);
+    let dispute = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
+    let receipt = f.registry.request(dispute.as_bytes(), false).unwrap();
+    let disputed = f.logged(&owner_chain("zenith"), receipt);
+    f.cosign(&[0, 1], NOW);
+    f.register("orbit", &[&o], &[]);
+    assert_eq!(f.registry.active_requests_count(), 1);
+    let later = NOW + RECOVERY_DELAY + 100;
+    f.set_time(later);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    let deadline = f.registry.deadline_of(disputed).unwrap();
+    f.cosign(&[0, 1], later);
+    // The deadline is fixed, but its pinned multiple of 64 is still ahead: it stays active.
+    assert_eq!(f.registry.active_requests_count(), 1);
+    while f.registry.size() < 64 {
+        f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    }
+    assert!(deadline < 64);
+    f.cosign(&[0, 1], later);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    assert_eq!(f.registry.active_requests_count(), 0);
+}

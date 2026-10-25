@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use una_project::client::{
-    Accepted, Marks, Retired, YankStanding, accept_checkpoint, apply_yank, owner_of,
+    Accepted, CADENCE, Marks, Retired, YankStanding, accept_checkpoint, apply_yank, owner_of,
 };
 use una_project::content::read_archive;
 use una_project::tlog::map::Head;
@@ -81,6 +81,8 @@ const STATE_SIZE: &str = "state/size";
 const STATE_WITNESSES: &str = "state/witnesses";
 /// The store path of the notices' state: the cursor, the failures and the last error.
 const STATE_NOTICES: &str = "state/notices";
+/// The store path of the cancellations that are timed, one index per line.
+const STATE_TIMED_CANCELS: &str = "state/timed-cancels";
 /// The store path of each timed request's deadline checkpoint, the service's own state: the
 /// clock at which a checkpoint was signed is in no checkpoint, so it is kept here.
 const STATE_DEADLINES: &str = "state/deadlines";
@@ -368,6 +370,13 @@ pub struct Registry {
     /// The recoveries, disputes, co-signer changes and cancellations of recoveries, by index,
     /// with their starts and deadlines (`crate::timing`).
     requests: BTreeMap<u64, Timed>,
+    /// The timed requests whose obligations may still bind: every one but those settled
+    /// ([`Registry::prune`]), so the scans of each submission and cosignature of the newest
+    /// checkpoint are bounded by the requests still waiting, not by every one ever logged.
+    active: BTreeSet<u64>,
+    /// The cancellations the client's replay records as cancelling a waiting request, kept in
+    /// `state/timed-cancels`: the cancellations that are timed.
+    timed_cancels: BTreeSet<u64>,
     /// Where notices to owners go (`crate::notify`).
     notifier: Arc<dyn Notifier>,
     /// The notices' state, kept in `state/notices`.
@@ -457,6 +466,8 @@ impl Registry {
             published: None,
             broken: None,
             requests: BTreeMap::new(),
+            active: BTreeSet::new(),
+            timed_cancels: BTreeSet::new(),
             notifier,
             notices: NoticeStatus::default(),
         };
@@ -482,6 +493,14 @@ impl Registry {
     }
 
     fn replay(&mut self) -> Result<(), String> {
+        if let Some(bytes) = self.store.get(STATE_TIMED_CANCELS, MAX_DOCUMENT)? {
+            let text = String::from_utf8(bytes).map_err(|_| "state/timed-cancels is not UTF-8")?;
+            for line in text.lines() {
+                let index =
+                    decimal(line).ok_or("state/timed-cancels has a line of the wrong form")?;
+                self.timed_cancels.insert(index);
+            }
+        }
         let size = match self.store.get(STATE_SIZE, 32)? {
             Some(bytes) => std::str::from_utf8(&bytes)
                 .ok()
@@ -587,7 +606,44 @@ impl Registry {
                 request.start = start;
             }
         }
+        self.prune();
         Ok(())
+    }
+
+    /// The timed requests whose obligations may still bind, in index order.
+    fn active_requests(&self) -> impl Iterator<Item = &Timed> {
+        self.active
+            .iter()
+            .filter_map(|index| self.requests.get(index))
+    }
+
+    /// How many timed requests may still bind the obligations of the newest checkpoint.
+    pub fn active_requests_count(&self) -> usize {
+        self.active.len()
+    }
+
+    /// Drops from the active requests each one settled: its deadline D fixed and the log grown
+    /// past the first multiple of 64 at or after D, so D, the checkpoint before it and that
+    /// pinned checkpoint all carried the threshold before the log grew (no later cosignature of
+    /// the newest checkpoint can move its deadline); or its start checkpoint passed without
+    /// the threshold, so it has no target. A cosignature of an older checkpoint is still
+    /// checked against every request. O(A) for A active requests.
+    fn prune(&mut self) {
+        let size = self.tree.size();
+        let settled: Vec<u64> = self
+            .active_requests()
+            .filter(|request| match request.deadline {
+                Some(deadline) => {
+                    let pinned = deadline.div_ceil(CADENCE).saturating_mul(CADENCE);
+                    size > pinned
+                }
+                None => request.start.is_none() && size > request.index.saturating_add(1),
+            })
+            .map(|request| request.index)
+            .collect();
+        for index in settled {
+            self.active.remove(&index);
+        }
     }
 
     /// The stored checkpoint of `size`, accepted as a client accepts it
@@ -742,7 +798,7 @@ impl Registry {
     /// [`Registry::waiting`], with the obligation it waits for.
     pub fn owed(&self) -> Option<(Obligation, String)> {
         let size = self.tree.size();
-        let due = obligation(size, self.clock.now(), self.requests.values());
+        let due = obligation(size, self.clock.now(), self.active_requests());
         if due.is_empty() || self.accepted(size).is_some() {
             return None;
         }
@@ -757,7 +813,7 @@ impl Registry {
                 self.own_threshold(&signed)
             });
         let now = self.clock.now();
-        if uncompletable(size, now, self.requests.values(), &lines, cap, need).is_some() {
+        if uncompletable(size, now, self.active_requests(), &lines, cap, need).is_some() {
             return None;
         }
         let blocking = due.into_iter().next()?;
@@ -1294,7 +1350,7 @@ impl Registry {
                 )));
             }
         }
-        self.append(entry, Some((&blob, &archive)))
+        self.append(entry, Some((&blob, &archive)), false)
     }
 
     /// Logs a yank, an advisory or an owner's key event.
@@ -1302,6 +1358,7 @@ impl Registry {
         self.ready()?;
         let entry = parse_entry(bytes).map_err(invalid)?;
         self.admit(&entry)?;
+        let mut timed_cancel = false;
         match &entry.kind {
             Kind::Release(_) => {
                 return Err(invalid("a release is published with its archive"));
@@ -1398,11 +1455,19 @@ impl Registry {
                     ));
                 }
                 _ => {
-                    self.check_owner_entry(&entry)?;
+                    let position = self.tree.size();
+                    let replayed = self.check_owner_entry(&entry)?;
+                    timed_cancel = matches!(read.event, Event::Cancel(_))
+                        && replayed.is_some_and(|history| {
+                            history
+                                .cancellations
+                                .values()
+                                .any(|cancels| cancels.contains(&position))
+                        });
                 }
             },
         }
-        self.append(entry, None)
+        self.append(entry, None, timed_cancel)
     }
 
     /// The names and public keys of every owner key the chain of `owner_name` names, in any
@@ -1532,7 +1597,25 @@ impl Registry {
                     ));
                 }
             }
-            Event::Cosigners(_) => stated(threshold_now, "a co-signer change")?,
+            Event::Cosigners(_) => {
+                stated(threshold_now, "a co-signer change")?;
+                // One co-signer change waits at a time: each would bind the next.
+                let waiting = current.as_ref().and_then(|history| {
+                    history
+                        .pending
+                        .iter()
+                        .find(|pending| matches!(pending.change, Change::Cosigners(_)))
+                        .map(|pending| pending.index)
+                });
+                if let Some(waiting) = waiting {
+                    return Err(rule(
+                        Cause::PendingCosignerChange,
+                        format!(
+                            "the co-signer change at {waiting} of `{owner_name}` still waits: one waits at a time"
+                        ),
+                    ));
+                }
+            }
             Event::Cancel(_) => stated(threshold_now, "a cancellation")?,
             Event::Overrule(_) => stated(threshold_now, "an overruling")?,
             Event::Recover(key) | Event::Dispute(key) => {
@@ -1594,7 +1677,7 @@ impl Registry {
                 names::Refusal::Held(m) => Refusal::Held(m),
             })?;
         self.check_owner_entry(&entry)?;
-        self.append(entry, None)
+        self.append(entry, None, false)
     }
 
     /// Logs a recovery or a dispute (ADR 0122 rule 38.1), which only the operator asks, after
@@ -1638,7 +1721,7 @@ impl Registry {
                 "this request competes with a request of the owner still waiting, which freezes the owner's chain for good; log it only with the operator's explicit confirmation",
             ));
         }
-        self.append(entry, None)
+        self.append(entry, None, false)
     }
 
     /// Takes a witness's cosignature of the checkpoint of `size` (rule 36): the witness is one
@@ -1729,7 +1812,14 @@ impl Registry {
         // which every client's threshold for it is at least.
         let lines = claimed(&signed, size);
         let k = self.own_threshold(&signed);
-        for request in self.requests.values() {
+        // The newest checkpoint answers to the active requests; an older one, which a witness
+        // that never cosigned may still cosign, to every request ever timed.
+        let requests: Vec<&Timed> = if size == self.tree.size() {
+            self.active_requests().collect()
+        } else {
+            self.requests.values().collect()
+        };
+        for request in requests {
             admits(request, size, time, &lines, k)
                 .map_err(|why| rule(Cause::CrossesTarget, why))?;
         }
@@ -1853,16 +1943,12 @@ impl Registry {
                 // each is timed (`crate::timing`).
                 let timed = match &read.event {
                     Event::Recover(_) | Event::Dispute(_) | Event::Cosigners(_) => true,
-                    Event::Cancel(target) => self.owners.get(&owner_name).is_some_and(|chain| {
-                        chain.iter().any(|recorded| {
-                            recorded.index == *target
-                                && matches!(recorded.entry.event, Event::Recover(_))
-                        })
-                    }),
+                    Event::Cancel(_) => self.timed_cancels.contains(&index),
                     _ => false,
                 };
                 if timed {
                     self.requests.insert(index, Timed::new(index));
+                    self.active.insert(index);
                 }
                 self.owners.entry(owner_name).or_default().push(Recorded {
                     index,
@@ -1876,7 +1962,14 @@ impl Registry {
 
     /// Logs an entry checked by the caller: writes it, the tiles and the map, then the size,
     /// then signs the checkpoint, then applies it.
-    fn append(&mut self, entry: Entry, blob: Option<(&str, &[u8])>) -> Result<Receipt, Refusal> {
+    /// `timed_cancel` says that the entry is a cancellation the client's replay records as
+    /// cancelling a waiting request: it is timed, and kept so in `state/timed-cancels`.
+    fn append(
+        &mut self,
+        entry: Entry,
+        blob: Option<(&str, &[u8])>,
+        timed_cancel: bool,
+    ) -> Result<Receipt, Refusal> {
         if let Some((obligation, why)) = self.owed() {
             return Err(wait(Cause::Obligation(obligation), why));
         }
@@ -1886,8 +1979,7 @@ impl Registry {
         // passed by the service's clock and that has none yet: signed at or after the target.
         let now = self.clock.now();
         let due: Vec<u64> = self
-            .requests
-            .values()
+            .active_requests()
             .filter(|request| {
                 request.deadline.is_none()
                     && request.index < index
@@ -1947,6 +2039,15 @@ impl Registry {
             if let Some(deadlines) = &deadlines {
                 self.store.put(STATE_DEADLINES, deadlines.as_bytes())?;
             }
+            if timed_cancel {
+                let cancels: String = self
+                    .timed_cancels
+                    .iter()
+                    .chain(std::iter::once(&index))
+                    .map(|cancel| format!("{cancel}\n"))
+                    .collect();
+                self.store.put(STATE_TIMED_CANCELS, cancels.as_bytes())?;
+            }
             self.store.put(STATE_SIZE, size.to_string().as_bytes())?;
             self.sign_checkpoint()
         })();
@@ -1961,7 +2062,11 @@ impl Registry {
                 request.deadline = Some(size);
             }
         }
+        if timed_cancel {
+            self.timed_cancels.insert(index);
+        }
         self.apply(&entry);
+        self.prune();
         // The owner is notified at once, after the entry is logged: sending never delays or
         // conditions logging, and a notice the notifier cannot take is only counted.
         if let Some(notice) = entry
