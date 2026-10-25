@@ -1397,7 +1397,9 @@ impl Registry {
                         "a recovery or a dispute is logged by the registry's operator after verifying the account",
                     ));
                 }
-                _ => self.check_owner_entry(&entry)?,
+                _ => {
+                    self.check_owner_entry(&entry)?;
+                }
             },
         }
         self.append(entry, None)
@@ -1460,9 +1462,9 @@ impl Registry {
     /// no key held twice, by any owner; no dispute of an owner with cosigners in effect; a
     /// registration's cosigners are not its own keys. Then the client's replay of the chain with
     /// the entry, which checks the signatures each action needs, MUST accept it.
-    fn check_owner_entry(&self, entry: &Entry) -> Result<(), Refusal> {
+    fn check_owner_entry(&self, entry: &Entry) -> Result<Option<History>, Refusal> {
         let Some(read) = entry.owner_entry() else {
-            return Ok(());
+            return Ok(None);
         };
         let owner_name = read.owner.as_str();
         if owner_name == owner::ITAUNA {
@@ -1572,7 +1574,7 @@ impl Registry {
                 ),
             ));
         }
-        Ok(())
+        Ok(Some(replayed))
     }
 
     /// Registers an owner (rules 38 and 44 to 45). The operator calls it after verifying the
@@ -1600,7 +1602,12 @@ impl Registry {
     /// log's key, which both need, beside the cosigners' threshold that a recovery of an owner
     /// with cosigners carries already. `bytes` is the signed note, or, for an entry no one but
     /// the log signs, as a dispute, its text alone. Every check of an owner's entry applies.
-    pub fn request(&mut self, bytes: &[u8]) -> Result<Receipt, Refusal> {
+    ///
+    /// A recovery or a dispute that competes with a request of the owner still waiting freezes
+    /// the owner's chain for good (`spec/30 §14` rule 5); the client's replay with it shows the
+    /// freeze, and it is refused ([`Cause::CompetingRequest`]) unless `confirm_freeze` is the
+    /// operator's explicit confirmation.
+    pub fn request(&mut self, bytes: &[u8], confirm_freeze: bool) -> Result<Receipt, Refusal> {
         self.ready()?;
         let document = std::str::from_utf8(bytes).map_err(|_| invalid("an entry is not UTF-8"))?;
         let signed = if document.contains("\n\n") {
@@ -1623,7 +1630,14 @@ impl Registry {
             ));
         }
         self.admit(&entry)?;
-        self.check_owner_entry(&entry)?;
+        let position = self.tree.size();
+        let replayed = self.check_owner_entry(&entry)?;
+        if replayed.is_some_and(|history| history.frozen == Some(position)) && !confirm_freeze {
+            return Err(rule(
+                Cause::CompetingRequest,
+                "this request competes with a request of the owner still waiting, which freezes the owner's chain for good; log it only with the operator's explicit confirmation",
+            ));
+        }
         self.append(entry, None)
     }
 

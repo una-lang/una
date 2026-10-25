@@ -287,13 +287,13 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
     let receipt = f
         .registry
-        .request(note_of(&recover, &[&c]).as_bytes())
+        .request(note_of(&recover, &[&c]).as_bytes(), false)
         .unwrap();
     let recovery = f.logged(&owner_chain("acme"), receipt);
     assert_eq!(recovery, 2);
     // Its start checkpoint must carry the threshold before anything more is logged.
     let dispute = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
-    let refusal = f.registry.request(dispute.as_bytes()).unwrap_err();
+    let refusal = f.registry.request(dispute.as_bytes(), false).unwrap_err();
     assert!(matches!(
         refusal,
         Refusal::Wait(Cause::Obligation(Obligation::Start(2)), _)
@@ -301,7 +301,7 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     f.cosign(&[0, 1], t0 + 20);
 
     // zenith has no cosigners: the operator logs a dispute, which only the log's key signs.
-    let receipt = f.registry.request(dispute.as_bytes()).unwrap();
+    let receipt = f.registry.request(dispute.as_bytes(), false).unwrap();
     let disputed = f.logged(&owner_chain("zenith"), receipt);
     assert_eq!(disputed, 3);
     f.cosign(&[0, 1], t0 + 30);
@@ -538,7 +538,10 @@ fn void_entries_are_never_logged() {
         key_text(&x.1)
     );
     assert_eq!(
-        f.registry.request(itauna.as_bytes()).unwrap_err().cause(),
+        f.registry
+            .request(itauna.as_bytes(), false)
+            .unwrap_err()
+            .cause(),
         Some(&Cause::ItaunaHasNoChain)
     );
 }
@@ -638,7 +641,7 @@ fn dispute_just_before_a_target(f: &mut Fixture, witnesses: &[usize]) -> u64 {
     let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
     let receipt = f
         .registry
-        .request(note_of(&recover, &[&c]).as_bytes())
+        .request(note_of(&recover, &[&c]).as_bytes(), false)
         .unwrap();
     assert_eq!(f.logged(&owner_chain("acme"), receipt), 1);
     f.cosign(witnesses, NOW + 10);
@@ -646,7 +649,7 @@ fn dispute_just_before_a_target(f: &mut Fixture, witnesses: &[usize]) -> u64 {
     f.register("zenith", &[&z], &[]);
     f.set_time(target - 60);
     let dispute = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
-    let receipt = f.registry.request(dispute.as_bytes()).unwrap();
+    let receipt = f.registry.request(dispute.as_bytes(), false).unwrap();
     assert_eq!(f.logged(&owner_chain("zenith"), receipt), 3);
     // The dispute's start checkpoint owes the threshold: until then, the log waits.
     assert_eq!(
@@ -714,7 +717,7 @@ fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines(
     let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
     let receipt = f
         .registry
-        .request(note_of(&recover, &[&c]).as_bytes())
+        .request(note_of(&recover, &[&c]).as_bytes(), false)
         .unwrap();
     let recovery = f.logged(&owner_chain("acme"), receipt);
     // Its start, the second earliest of three cosignatures, is t0 + 20.
@@ -822,4 +825,31 @@ fn notices_not_taken_before_a_crash_are_sent_again_on_reopening() {
     assert_eq!(indices, vec![2, 3]);
     let status = reopened.notice_status();
     assert_eq!((status.notified, status.failures), (Some(3), 2));
+}
+
+#[test]
+fn a_request_that_would_freeze_the_chain_needs_the_operators_confirmation() {
+    let mut f = Fixture::new("competing");
+    let z = keypair(62, "zenith.z");
+    let d = keypair(64, "zenith.d");
+    let e = keypair(66, "zenith.e");
+    f.register("zenith", &[&z], &[]);
+    let first = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
+    let receipt = f.registry.request(first.as_bytes(), false).unwrap();
+    f.logged(&owner_chain("zenith"), receipt);
+    f.cosign(&[0, 1], NOW);
+    // A second dispute while the first waits competes with it: the chain would freeze.
+    let second = f.event("zenith", &format!("dispute {}", key_text(&e.1)), 1);
+    assert_eq!(
+        f.registry
+            .request(second.as_bytes(), false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::CompetingRequest)
+    );
+    assert_eq!(f.registry.size(), 2);
+    // With the operator's explicit confirmation, it is logged, and the chain is frozen there.
+    let receipt = f.registry.request(second.as_bytes(), true).unwrap();
+    assert_eq!(receipt.index, 2);
+    assert_eq!(f.registry.owner_history("zenith").unwrap().frozen, Some(2));
 }

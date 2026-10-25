@@ -15,7 +15,8 @@
 //!   operator verified the account; `Ita-Review: accepted` releases a name held for review;
 //! - `/request`: an owner's recovery or dispute (`recover` or `dispute`), only with the
 //!   operator's bearer token, after the operator verified the account; the registry signs it
-//!   with the log's key;
+//!   with the log's key; one that would freeze the owner's chain, competing with a request
+//!   still waiting, needs `Ita-Confirm: freeze`;
 //! - `/cosign`: a checkpoint's size in decimal, a line feed, and a witness's cosignature line;
 //! - `/notices`: the notices' state (`registry::NoticeStatus`), only with the operator's
 //!   bearer token: the cursor, the failures and the last error.
@@ -416,7 +417,10 @@ impl Service {
                 let logged = if request.path == "register" {
                     registry.register(&request.body, reviewed)
                 } else {
-                    registry.request(&request.body)
+                    registry.request(
+                        &request.body,
+                        request.header("ita-confirm") == Some("freeze"),
+                    )
                 };
                 match logged {
                     Ok(receipt) => text(200, receipt.promise.trim_end().to_owned()),
