@@ -134,11 +134,15 @@ fn prepare(
     let (mut registry, notes) =
         crate::registry::open_first(&declared, &places, &point, itaoca, None)
             .map_err(|(code, why)| at(code, why))?;
-    let state = NameState::read(&mut registry, name).map_err(|why| at(Code::U7010, why))?;
+    // A failure's code comes from the client's record of omissions, never its message: a
+    // document no place serves leaves the state unavailable (U7013), never different.
+    registry.take_omitted();
+    let state = NameState::read(&mut registry, name)
+        .map_err(|why| at(crate::registry::code_of(&mut registry), why))?;
     let owner = owner_of(name);
     let history = registry
         .history(owner)
-        .map_err(|why| at(Code::U7010, why))?;
+        .map_err(|why| at(crate::registry::code_of(&mut registry), why))?;
     let snapshot = history
         .at(registry.point.checkpoint.size)
         .cloned()
@@ -165,7 +169,7 @@ fn prepare(
                 Some(statement) => {
                     let bytes = registry
                         .archive(&statement.digest)
-                        .map_err(|why| at(Code::U7010, why))?;
+                        .map_err(|why| at(crate::registry::code_of(&mut registry), why))?;
                     let tree = VerifiedTree::from_archive(&bytes)
                         .map_err(|why| at(Code::U7010, why))?;
                     if tree.digest() != statement.digest {
@@ -698,8 +702,10 @@ fn registry_source(locked: &ita::LockPackage) -> Option<&str> {
     }
 }
 
-/// What the audit reads of each locked package: its facts, from the verified client.
-type FactsOf<'f> = dyn FnMut(&audit::Locked) -> Result<audit::Facts, String> + 'f;
+/// What the audit reads of each locked package: its facts, from the verified client, or the
+/// code of the failure and why: U7013 when a document no place serves made them unavailable,
+/// U7010 when what was served does not verify ([`crate::registry::code_of`]).
+type FactsOf<'f> = dyn FnMut(&audit::Locked) -> Result<audit::Facts, (Code, String)> + 'f;
 
 /// The diagnostics of `una ita audit` on `project`, each package's facts from `facts_of`, and
 /// the lines it prints.
@@ -749,10 +755,10 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
     }
     let mut lines = Vec::new();
     let result = audit::audit(&packages, facts_of);
-    for (index, why) in &result.unverified {
+    for (index, (code, why)) in &result.unverified {
         if let (Some(locked), Some(package)) = (lines_of.get(*index), packages.get(*index)) {
             problems.push(problem(
-                Code::U7010,
+                *code,
                 locked.range.clone(),
                 format!(
                     "the state of `{}` at `{}` cannot be verified at a fresh checkpoint: {why}; the audit reports nothing as clean that it did not verify",
@@ -862,7 +868,7 @@ pub(crate) fn audit_command(
             )
         })
         .collect();
-    let mut opened: BTreeMap<String, Result<Registry<'_>, String>> = BTreeMap::new();
+    let mut opened: BTreeMap<String, Result<Registry<'_>, (Code, String)>> = BTreeMap::new();
     // Notes of mirrors skipped and of floors not stored: said, never a failure.
     let mut notes: Vec<String> = Vec::new();
     for (source, (declared, list)) in &places {
@@ -871,16 +877,25 @@ pub(crate) fn audit_command(
                 .map(|(registry, opened)| {
                     notes.extend(opened);
                     registry
-                })
-                .map_err(|(_, why)| why);
+                });
         opened.insert(source.clone(), registry);
     }
+    // A failure's code comes from the client's record of omissions, never from its message:
+    // a document no place serves makes the facts unavailable (U7013), never different.
     let mut facts_of = |locked: &audit::Locked| match opened.get_mut(&locked.source) {
-        Some(Ok(registry)) => audit::facts(registry, locked),
-        Some(Err(why)) => Err(why.clone()),
-        None => Err(format!(
-            "`{}` is not a source of ita.una's `sources`",
-            locked.source
+        Some(Ok(registry)) => {
+            // Omissions of an earlier package's reading are its own.
+            registry.take_omitted();
+            audit::facts(registry, locked)
+                .map_err(|why| (crate::registry::code_of(registry), why))
+        }
+        Some(Err(failure)) => Err(failure.clone()),
+        None => Err((
+            Code::U7010,
+            format!(
+                "`{}` is not a source of ita.una's `sources`",
+                locked.source
+            ),
         )),
     };
     let (mut diagnostics, lines) = audit_project(&project, &mut facts_of);
@@ -930,9 +945,13 @@ fn evidence_diagnostics(
 
 /// The codes `una ita audit` reports for the package at `path`, each package's facts from
 /// `facts_of`.
-pub(crate) fn audit_codes(path: &Path, facts_of: &mut FactsOf<'_>) -> Vec<Code> {
+pub(crate) fn audit_codes(
+    path: &Path,
+    facts_of: &mut dyn FnMut(&audit::Locked) -> Result<audit::Facts, String>,
+) -> Vec<Code> {
+    let mut coded = |locked: &audit::Locked| facts_of(locked).map_err(|why| (Code::U7010, why));
     match project(path) {
-        Ok(project) => audit_project(&project, facts_of)
+        Ok(project) => audit_project(&project, &mut coded)
             .0
             .iter()
             .map(|diagnostic| diagnostic.code)
@@ -1019,13 +1038,19 @@ pub(crate) fn watch_command(
         Ok(None) => watch::Position::start(source, owner),
         Err(why) => return usage(out, &why),
     };
+    registry.take_omitted();
     let mut chain = |name: &str| watch::chain_of(&mut registry, name);
-    let mut report = match watch::watch(&mut chain, &stored, names) {
+    let followed = watch::watch(&mut chain, &stored, names);
+    let mut report = match followed {
         Ok(report) => report,
         Err(why) => {
+            // Unavailable when no place serves a document the chains need (U7013), from the
+            // client's record of omissions; otherwise what was served does not verify (U7010).
+            let code = crate::registry::code_of(&mut registry);
             writeln!(
                 out.stderr,
-                "error[U7010]: the chains of `{owner}` at `{source}` cannot be followed: {why}"
+                "error[{}]: the chains of `{owner}` at `{source}` cannot be followed: {why}",
+                code.as_str()
             )?;
             return Ok(ExitStatus::Errors);
         }
@@ -1064,14 +1089,24 @@ pub(crate) fn watch_command(
                 ));
             }
             for leaf in judged {
+                registry.take_omitted();
                 let assessment = match judge_submission(itaoca, source, &leaf, &mut registry) {
                     Ok(assessment) => assessment,
                     Err(why) => {
                         failed = true;
-                        lines.push(format!(
-                            "error: the submission sha256:{leaf} cannot be judged: {}",
-                            shown(&why)
-                        ));
+                        // A document no place serves leaves it unavailable (U7013), from the
+                        // client's record of omissions, never a verdict.
+                        if registry.take_omitted().is_empty() {
+                            lines.push(format!(
+                                "error: the submission sha256:{leaf} cannot be judged: {}",
+                                shown(&why)
+                            ));
+                        } else {
+                            lines.push(format!(
+                                "error[U7013]: the submission sha256:{leaf} is unavailable, since no place serves what judging it needs: {}",
+                                shown(&why)
+                            ));
+                        }
                         continue;
                     }
                 };
@@ -1350,6 +1385,12 @@ type Bundled = (
     BTreeMap<String, Vec<u8>>,
 );
 
+/// A failure of `registry`'s reading for the package at `at`: U7013 when a document no place
+/// serves made it unavailable, U7010 otherwise ([`crate::registry::code_of`]).
+fn coded(registry: &mut Registry<'_>, at: usize, why: String) -> (Code, usize, String) {
+    (crate::registry::code_of(registry), at, why)
+}
+
 /// Reads `declared`'s registry for `packages`, all of one source, at the lock's resolution
 /// point, from its first place that verifies, through a [`bundle::Recording`] of that place's
 /// transport.
@@ -1402,10 +1443,19 @@ fn bundle_source(
         for (at, (one, _)) in packages.iter().enumerate() {
             let fail = |why: String| (Code::U7010, at, why);
             let version = Version::parse_full(&one.version).map_err(fail)?;
-            let release = registry.release(&one.name, &version).map_err(fail)?;
-            registry.marks(&one.name).map_err(fail)?;
+            // What the client cannot read is coded from its record of omissions, never from
+            // its message: unavailable (U7013) or a copy that does not verify (U7010).
+            registry.take_omitted();
+            let release = registry
+                .release(&one.name, &version)
+                .map_err(|why| coded(&mut registry, at, why))?;
+            registry
+                .marks(&one.name)
+                .map_err(|why| coded(&mut registry, at, why))?;
             // Read so the kept checkpoints that time its entry travel in the bundle (rule 33).
-            registry.logged_at(release.index).map_err(fail)?;
+            registry
+                .logged_at(release.index)
+                .map_err(|why| coded(&mut registry, at, why))?;
             if release.index != one.logged || release.statement.digest != one.digest {
                 return Err(fail(format!(
                     "the registry's `{} {}` is not the lock's: its log index or digest differs",
@@ -1425,10 +1475,14 @@ fn bundle_source(
                         one.name
                     ))
                 })?;
-            let provenance = registry.provenance(&release, &key).map_err(fail)?;
+            let provenance = registry
+                .provenance(&release, &key)
+                .map_err(|why| coded(&mut registry, at, why))?;
             una_project::provenance::verify(&provenance, one)
                 .map_err(|why| fail(shown(&why)))?;
-            let archive = registry.archive(&one.digest).map_err(fail)?;
+            let archive = registry
+                .archive(&one.digest)
+                .map_err(|why| coded(&mut registry, at, why))?;
             let tree = VerifiedTree::from_archive(&archive).map_err(|why| fail(shown(&why)))?;
             if tree.digest() != one.digest {
                 return Err(fail(format!(
@@ -1490,6 +1544,27 @@ pub(crate) fn unbundle_command(
         Err(ended) => return ended.finish("unbundle", out),
     };
     let sources = &project.package.sources;
+    // The places of each source, behind the bundle's copy of it: a registry file the bundle
+    // lacks is an omission, which a place may fill (`transport::Fallback`).
+    let mirrors = match crate::registry::load_mirrors(Some(itaoca)) {
+        Ok(mirrors) => mirrors,
+        Err(errors) => {
+            let diagnostics = located(sources, project.manifest_id, errors);
+            return finish("unbundle", &[], &[], &diagnostics, sources, out);
+        }
+    };
+    let read = project.manifest.ita.as_deref();
+    // The first place of the source carries the others behind it (`places_of`).
+    let behind = |source: &str| -> Vec<Box<dyn Transport>> {
+        read.and_then(|read| crate::registry::declared(read, source))
+            .and_then(|declared| {
+                crate::registry::places_of(declared, &mirrors)
+                    .into_iter()
+                    .find_map(|(_, place)| place.ok())
+            })
+            .into_iter()
+            .collect()
+    };
     let (expected, mut problems) = expected_packages(&project);
     // A package Itaoca holds already, verified, needs nothing from the bundle.
     let mut wanted: Vec<(Expected, &ita::LockPackage)> = Vec::new();
@@ -1501,7 +1576,7 @@ pub(crate) fn unbundle_command(
     }
     if problems.is_empty() {
         let list: Vec<Expected> = wanted.iter().map(|(one, _)| one.clone()).collect();
-        match bundle::unbundle(&bytes, itaoca, &list) {
+        match bundle::unbundle(&bytes, itaoca, &list, &behind) {
             Ok(done) => {
                 let mut lines: Vec<String> = done
                     .stored
@@ -1522,8 +1597,9 @@ pub(crate) fn unbundle_command(
             }
             Err((index, failure)) => {
                 let (code, why) = match failure {
-                    vendor::Problem::Absent(why) => (Code::U7011, why),
-                    vendor::Problem::Refused(why) => (Code::U7010, why),
+                    bundle::Failure::Absent(why) => (Code::U7011, why),
+                    bundle::Failure::Refused(why) => (Code::U7010, why),
+                    bundle::Failure::Unavailable(why) => (Code::U7013, why),
                 };
                 let range = index
                     .and_then(|index| wanted.get(index))

@@ -19,7 +19,7 @@ use una_project::mirrors::{Attempt, first_verified};
 use una_project::provenance::{Expected, signed_name};
 use una_project::registry::audit::{self, Facts, Kind, Locked};
 use una_project::tlog::state::{Signers, parse_advisory};
-use una_project::registry::bundle::{self, Memory, Recording};
+use una_project::registry::bundle::{self, Failure, Memory, Recording};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
 use una_project::registry::submit::{self, NameState, PROMISE_WINDOW, Promise, check_promise};
 use una_project::registry::watch::{
@@ -30,11 +30,15 @@ use una_project::tlog::owner::Unsettled;
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
 use una_project::transport::{Directory, Transport};
-use una_project::vendor::Problem;
 use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
 
 const D: &str = "sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b";
+
+/// No place behind a bundle's copy: the bundle alone serves.
+fn no_place(_: &str) -> Vec<Box<dyn Transport>> {
+    Vec::new()
+}
 
 fn v(text: &str) -> Version {
     Version::parse_full(text).unwrap()
@@ -878,7 +882,8 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     let store = Itaoca {
         root: scratch("unbundle"),
     };
-    let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected)).unwrap();
+    let done =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
     assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
     assert!(done.unused.is_empty(), "{:?}", done.unused);
     // What was stored loads verified, as every load does, and the checkpoint is the floor.
@@ -898,9 +903,12 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
         root: scratch("unbundle-tampered"),
     };
     let refused = |bytes: &[u8]| -> (Option<usize>, String) {
-        match bundle::unbundle(bytes, &store, std::slice::from_ref(&b.expected)).unwrap_err() {
-            (at, Problem::Refused(why)) => (at, why),
-            (at, Problem::Absent(why)) => (at, format!("absent: {why}")),
+        match bundle::unbundle(bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+            .unwrap_err()
+        {
+            (at, Failure::Refused(why)) => (at, why),
+            (at, Failure::Absent(why)) => (at, format!("absent: {why}")),
+            (at, Failure::Unavailable(why)) => (at, format!("unavailable: {why}")),
         }
     };
     // Another package's archive under the digest's path: its digest is not the lock's.
@@ -926,9 +934,10 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
     entry[middle] ^= 1;
     let (at, why) = refused(&bundle_of(&b, &b.archive, &b.provenance, &files));
     assert_eq!(at, Some(0), "{why}");
-    // A bundle without the registry's files: its state cannot be verified.
+    // A bundle without the registry's files, and no place behind it: the state is
+    // unavailable, an omission, not a refusal.
     let (_, why) = refused(&bundle_of(&b, &b.archive, &b.provenance, &BTreeMap::new()));
-    assert!(why.contains("absent") && why.contains("no copy of the registry"), "{why}");
+    assert!(why.starts_with("unavailable: "), "{why}");
     // A byte of the bundle changed: its listing's hash refuses it.
     let mut bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let last = bytes.len() - 1;
@@ -954,9 +963,10 @@ fn unbundling_respects_the_root_version_floor() {
     let id = registry_id(&b.expected.root);
     store.store_root_version(&id, 2).unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
-    let (_, problem) = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected))
-        .unwrap_err();
-    assert!(matches!(problem, Problem::Refused(_)), "{problem:?}");
+    let (_, problem) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+            .unwrap_err();
+    assert!(matches!(problem, Failure::Refused(_)), "{problem:?}");
     assert!(!store.contains(&b.expected.digest).unwrap());
     assert_eq!(store.load_root_version(&id).unwrap(), Some(2));
     assert!(store.load_checkpoint(&id).unwrap().is_none());
@@ -986,7 +996,7 @@ fn unbundling_keeps_a_larger_floor() {
         }
     }
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
-    let result = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected));
+    let result = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place);
     let stored = store.load_checkpoint(&id).unwrap().unwrap();
     assert_eq!(stored, document, "{result:?}");
 }
@@ -1017,7 +1027,8 @@ fn unbundling_notes_a_floor_it_cannot_store() {
         return;
     }
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
-    let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected)).unwrap();
+    let done =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
     assert!(!done.notes.is_empty(), "the floor not stored is said");
@@ -1915,4 +1926,38 @@ fn a_promise_missed_never_makes_a_verdict_kept() {
         now,
     );
     assert!(matches!(broken.verdict, Verdict::Broken(_)), "{broken:?}");
+}
+
+/// A registry file the bundle lacks is an omission, as any place's is: with no place behind
+/// the bundle, the state is unavailable (U7013), never refused; with a place behind it that
+/// serves the file, the bundle unbundles.
+#[test]
+fn a_file_the_bundle_lacks_is_an_omission() {
+    let b = bundled();
+    let mut files = b.files.clone();
+    let tile = files
+        .keys()
+        .find(|path| path.starts_with("tile/entries/"))
+        .unwrap()
+        .clone();
+    files.remove(&tile);
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let store = Itaoca {
+        root: scratch("unbundle-omission"),
+    };
+    let (at, failure) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+            .unwrap_err();
+    assert_eq!(at, Some(0));
+    assert!(matches!(failure, Failure::Unavailable(_)), "{failure:?}");
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    // A place behind the bundle serves the file: verified like the rest, it fills the gap.
+    let registry = Memory {
+        source: "acme".to_owned(),
+        files: b.test.files.clone(),
+    };
+    let behind = |_: &str| -> Vec<Box<dyn Transport>> { vec![Box::new(registry.clone())] };
+    let done =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &behind).unwrap();
+    assert_eq!(done.stored.len(), 1, "{done:?}");
 }

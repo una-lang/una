@@ -37,6 +37,12 @@
 //! Itaoca's floor lock, so neither ever moves backwards. No
 //! clock freshness is asked: the lock's digests and the proofs decide.
 //!
+//! **A bundle is a place.** Its listing commits to the entries it holds, not to the registry
+//! files it should hold, so a registry file it lacks is an omission, as any place's is: the
+//! copy is read under [`Fallback`], with the places of the source the caller gives behind it,
+//! and a document that none of them serves leaves the state unavailable
+//! ([`Failure::Unavailable`], U7013), never a refusal and never a different result.
+//!
 //! Costs: O(B) for a bundle of B bytes, read and hashed once, with memory O(B); O(e log e) to
 //! sort e entries; and per package the provenance's O(log L) hashes.
 
@@ -47,11 +53,11 @@ use std::ops::Range;
 use sha2::{Digest, Sha256};
 
 use super::{decimal, digest_hex, hex};
-use crate::client::{Floors, Point, Registry, shown};
+use crate::client::{Floors, OpenError, Point, Registry, shown};
 use crate::content::check_path;
 use crate::itaoca::{Itaoca, registry_id};
 use crate::provenance::{self, Expected};
-use crate::transport::{Refusal, Transport, segments};
+use crate::transport::{Fallback, Refusal, Transport, segments};
 use crate::tree::VerifiedTree;
 use crate::vendor::{Problem, check_source};
 
@@ -421,18 +427,53 @@ fn verify_parts(
     })
 }
 
-/// Opens `copy` with the registry client at the resolution point of the packages of its source
-/// among `expected`, against `floors`, the checkpoint and the root version Itaoca stores (rules
-/// 35 to 39, no freshness), proves that the point extends the lock's ([`Registry::extends`]),
-/// and checks that each of those packages is the release the client reads there, by log index
-/// and digest, and that its name's yanks and advisories verify. Returns the checkpoint read and
-/// the last root version, to store as the source's floors; `Err` gives the package's index and
-/// why.
+/// Why unbundling stopped, as the command codes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// A package the bundle does not hold (U7011).
+    Absent(String),
+    /// What the bundle, or a place behind it, holds does not verify (U7010).
+    Refused(String),
+    /// A file of a source's registry that neither the bundle nor any place behind it serves:
+    /// the state is unavailable (U7013), never different, since a bundle's listing does not
+    /// commit to the registry files it should hold.
+    Unavailable(String),
+}
+
+impl From<Problem> for Failure {
+    fn from(problem: Problem) -> Failure {
+        match problem {
+            Problem::Absent(why) => Failure::Absent(why),
+            Problem::Refused(why) => Failure::Refused(why),
+        }
+    }
+}
+
+/// The places behind a bundle's copy of a source: given the source's name, the transports of
+/// the other places that serve it, in their order, for the documents the copy omits.
+pub type Behind<'b> = dyn Fn(&str) -> Vec<Box<dyn Transport>> + 'b;
+
+/// The copy `copy` as a place, with the places `behind` gives for its source behind it.
+fn place_of(copy: &Memory, behind: &Behind<'_>) -> Fallback {
+    Fallback::new(Box::new(copy.clone()), behind(&copy.source))
+}
+
+/// Opens `copy`, with the places `behind` gives behind it ([`Fallback`]), with the registry
+/// client at the resolution point of the packages of its source among `expected`, against
+/// `floors`, the checkpoint and the root version Itaoca stores (rules 35 to 39, no freshness),
+/// proves that the point extends the lock's ([`Registry::extends`]), and checks that each of
+/// those packages is the release the client reads there, by log index and digest, and that its
+/// name's yanks and advisories verify. Returns the checkpoint read and the last root version,
+/// to store as the source's floors; `Err` gives the package's index and the failure:
+/// unavailable when no place serves a document it needs, from the client's typed records
+/// ([`OpenError::Unavailable`], [`Registry::take_omitted`]), never from a message.
 fn verify_source(
     copy: &Memory,
+    behind: &Behind<'_>,
     expected: &[Expected],
     floors: &Floors<'_>,
-) -> Result<(String, u64), (usize, String)> {
+) -> Result<(String, u64), (usize, Failure)> {
+    let place = place_of(copy, behind);
     let mut opened: Option<Registry<'_>> = None;
     for (index, package) in expected.iter().enumerate() {
         if package.source != copy.source {
@@ -443,46 +484,70 @@ fn verify_source(
                 size: package.checkpoint_size,
                 hash: package.checkpoint_hash.clone(),
             };
-            let mut registry =
-                Registry::open_with(&copy.source, copy, &package.root, &point, floors)
-                    .map_err(|error| (index, error.message()))?;
-            registry
-                .extends(package.checkpoint_size, &package.checkpoint_hash)
-                .map_err(|why| (index, why))?;
-            opened = Some(registry);
+            match Registry::open_with(&copy.source, &place, &package.root, &point, floors) {
+                Ok(mut registry) => {
+                    if let Err(why) =
+                        registry.extends(package.checkpoint_size, &package.checkpoint_hash)
+                    {
+                        return Err((index, coded(&mut registry, why)));
+                    }
+                    opened = Some(registry);
+                }
+                // Neither the copy nor a place behind it serves the root or the checkpoint.
+                Err(OpenError::Unavailable(why)) => {
+                    return Err((index, Failure::Unavailable(why)));
+                }
+                Err(error @ OpenError::Refused(_)) => {
+                    return Err((index, Failure::Refused(error.message())));
+                }
+            }
         }
         let Some(registry) = opened.as_mut() else {
             continue;
         };
-        if registry.point.checkpoint.size != package.checkpoint_size {
-            return Err((
-                index,
-                "the lock names two resolution points of one source".to_owned(),
-            ));
+        if let Err(why) = check_opened(registry, package) {
+            return Err((index, coded(registry, why)));
         }
-        let version =
-            crate::version::Version::parse_full(&package.version).map_err(|why| (index, why))?;
-        let release = registry
-            .release(&package.name, &version)
-            .map_err(|why| (index, why))?;
-        if release.index != package.logged || release.statement.digest != package.digest {
-            return Err((
-                index,
-                format!(
-                    "the registry's `{} {}` is not the lock's: its log index or digest differs",
-                    package.name, package.version
-                ),
-            ));
-        }
-        registry.marks(&package.name).map_err(|why| (index, why))?;
-        // Its logged time, from the kept checkpoints the bundle carries (rule 33).
-        registry
-            .logged_at(release.index)
-            .map_err(|why| (index, why))?;
     }
     opened
         .map(|registry| (registry.point.document.clone(), registry.root.version))
-        .ok_or_else(|| (0, format!("no package of `{}` is locked", copy.source)))
+        .ok_or_else(|| {
+            (
+                0,
+                Failure::Refused(format!("no package of `{}` is locked", copy.source)),
+            )
+        })
+}
+
+/// A failure of `registry`'s reading: unavailable when the client recorded a document no place
+/// serves ([`Registry::take_omitted`]), otherwise a copy that does not verify.
+fn coded(registry: &mut Registry<'_>, why: String) -> Failure {
+    if registry.take_omitted().is_empty() {
+        Failure::Refused(why)
+    } else {
+        Failure::Unavailable(why)
+    }
+}
+
+/// The checks of [`verify_source`] on `package`, with the source's registry opened: it is the
+/// lock's release, its name's state verifies, and its logged time is read.
+fn check_opened(registry: &mut Registry<'_>, package: &Expected) -> Result<(), String> {
+    if registry.point.checkpoint.size != package.checkpoint_size {
+        return Err("the lock names two resolution points of one source".to_owned());
+    }
+    let version = crate::version::Version::parse_full(&package.version)?;
+    let release = registry.release(&package.name, &version)?;
+    if release.index != package.logged || release.statement.digest != package.digest {
+        return Err(format!(
+            "the registry's `{} {}` is not the lock's: its log index or digest differs",
+            package.name, package.version
+        ));
+    }
+    registry.marks(&package.name)?;
+    // Its logged time, from the kept checkpoints the bundle carries (rule 33), or a place
+    // behind it.
+    registry.logged_at(release.index)?;
+    Ok(())
 }
 
 /// What unbundling did.
@@ -499,18 +564,22 @@ pub struct Unbundled {
 
 /// Unbundles `bytes` into `itaoca` for the registry packages `expected` of a lock: reads the
 /// bundle, verifies every package ([`verify_package`]), and only when all verify, stores each
-/// archive and provenance. `Err` gives the index of the package that failed, or none for the
-/// bundle itself, and why; then nothing is written.
+/// archive and provenance. Each source's copy is read as a place with the places `behind`
+/// gives behind it ([`Fallback`]), so a registry file the bundle lacks is an omission. `Err`
+/// gives the index of the package that failed, or none for the bundle itself, and the failure;
+/// then nothing is written.
 pub fn unbundle(
     bytes: &[u8],
     itaoca: &Itaoca,
     expected: &[Expected],
-) -> Result<Unbundled, (Option<usize>, Problem)> {
-    let read = read(bytes).map_err(|refusal| (None, Problem::Refused(refusal)))?;
+    behind: &Behind<'_>,
+) -> Result<Unbundled, (Option<usize>, Failure)> {
+    let read = read(bytes).map_err(|refusal| (None, Failure::Refused(refusal)))?;
     let mut verified = Vec::with_capacity(expected.len());
     let mut used: BTreeSet<String> = BTreeSet::new();
     for (index, package) in expected.iter().enumerate() {
-        let packed = verify_package(bytes, &read, package).map_err(|why| (Some(index), why))?;
+        let packed = verify_package(bytes, &read, package)
+            .map_err(|why| (Some(index), Failure::from(why)))?;
         used.extend(package_path(&package.digest));
         used.extend(provenance_path(
             &package.source,
@@ -526,16 +595,9 @@ pub fn unbundle(
     let mut notes: Vec<String> = Vec::new();
     let sources: BTreeSet<&str> = expected.iter().map(|e| e.source.as_str()).collect();
     for source in sources {
+        // A copy with no file is a place that omits everything: the places behind it may serve
+        // it, and with none, the state is unavailable.
         let copy = memory(bytes, &read, source);
-        let first = expected.iter().position(|e| e.source == source);
-        if copy.files.is_empty() {
-            return Err((
-                first,
-                Problem::Absent(format!(
-                    "the bundle holds no copy of the registry `{source}`, whose state its packages need"
-                )),
-            ));
-        }
         for path in copy.files.keys() {
             used.insert(format!("registry/{source}/{path}"));
         }
@@ -556,13 +618,13 @@ pub fn unbundle(
             checkpoint: floor.as_deref(),
             root_version,
         };
-        let (document, version) = verify_source(&copy, expected, &stored)
-            .map_err(|(index, why)| (Some(index), Problem::Refused(why)))?;
+        let (document, version) = verify_source(&copy, behind, expected, &stored)
+            .map_err(|(index, failure)| (Some(index), failure))?;
         floors.push((copy, package.clone(), document, version));
     }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
-        let fail = |why: String| (Some(index), Problem::Refused(why));
+        let fail = |why: String| (Some(index), Failure::Refused(why));
         itaoca
             .store(&packed.archive)
             .map_err(|why| fail(format!("cannot store `{}`: {why}", package.name)))?;
@@ -592,7 +654,8 @@ pub fn unbundle(
             size: package.checkpoint_size,
             hash: package.checkpoint_hash.clone(),
         };
-        match Registry::open_with(source, copy, &package.root, &point, &Floors::default()) {
+        let place = place_of(copy, behind);
+        match Registry::open_with(source, &place, &package.root, &point, &Floors::default()) {
             Ok(mut registry) => {
                 let mut consistent = |stored: &str| registry.consistent_with(stored);
                 if let Err(why) = itaoca.store_checkpoint(&id, document, &mut consistent) {

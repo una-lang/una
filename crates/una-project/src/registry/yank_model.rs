@@ -215,6 +215,8 @@ fn check_yanks(depth: usize, stride: u64, sample_cap: u64) -> Counts {
         depth,
         stride,
         sample_cap,
+        // The adversarial place is the owner-chain model's own check; yanks add none to it.
+        adversarial_cap: 0,
         registrations: registrations(),
         extra: None,
         checker: Some(&mut checker),

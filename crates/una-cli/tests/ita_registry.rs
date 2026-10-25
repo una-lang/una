@@ -428,6 +428,21 @@ fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
     );
 }
 
+/// A document that no place serves leaves the audit's state unavailable (U7013), told apart
+/// from a copy that does not verify (U7010) by the client's record of omissions, never by a
+/// message: here every map tile is gone from the only place that has a transport.
+#[test]
+fn audit_reports_an_omission_as_unavailable() {
+    let (registry, _, _) = published_registry("omission");
+    let (dir, mirror, itaoca) = project("omission", &registry);
+    let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
+    assert_eq!(status, 0, "{out}{err}");
+    std::fs::remove_dir_all(mirror.join("map")).unwrap();
+    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7013"], "{out}");
+}
+
 #[test]
 fn audit_of_a_lock_with_no_registry_package_is_clean() {
     let store = scratch("ita-registry-store", "audit-plain");

@@ -319,24 +319,28 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
 }
 
 /// The result of an audit: the findings, and each package whose facts could not be had,
-/// verified, with why.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Audit {
+/// verified, with the failure `facts_of` gave: why, and for the command whether it is an
+/// omission (unavailable, U7013) or a copy that does not verify (U7010).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Audit<E = Refusal> {
     /// The findings, by package, in the order audited.
     pub findings: Vec<Finding>,
-    /// The packages not verified, by index, and why: none of them is called clean.
-    pub unverified: Vec<(usize, Refusal)>,
+    /// The packages not verified, by index, and the failure: none of them is called clean.
+    pub unverified: Vec<(usize, E)>,
 }
 
 /// Audits `packages`, each with the facts `facts_of` gives, which a verified client reads. A
-/// package whose facts cannot be had verified is listed in [`Audit::unverified`], and the audit
-/// goes on with the next: nothing is reported as clean that was not verified, and one failure
-/// hides no finding of another. O(P) calls of `facts_of`.
-pub fn audit(
+/// package whose facts cannot be had verified is listed in [`Audit::unverified`] with the
+/// failure, and the audit goes on with the next: nothing is reported as clean that was not
+/// verified, and one failure hides no finding of another. O(P) calls of `facts_of`.
+pub fn audit<E>(
     packages: &[Locked],
-    facts_of: &mut dyn FnMut(&Locked) -> Result<Facts, Refusal>,
-) -> Audit {
-    let mut out = Audit::default();
+    facts_of: &mut dyn FnMut(&Locked) -> Result<Facts, E>,
+) -> Audit<E> {
+    let mut out = Audit {
+        findings: Vec::new(),
+        unverified: Vec::new(),
+    };
     for (index, locked) in packages.iter().enumerate() {
         match facts_of(locked) {
             Ok(facts) => out.findings.extend(findings(index, &facts)),
