@@ -553,7 +553,7 @@ fn vendoring_copies_the_release_and_every_load_verifies_it() {
     let mut bytes = std::fs::read(&beside).unwrap();
     let at = bytes.len() - 10;
     bytes[at] ^= 1;
-    std::fs::write(&beside, &bytes).unwrap();
+    std::fs::write(&beside, bytes).unwrap();
     assert!(matches!(
         vendor::load(&root, None, &release.expected),
         Err(Problem::Refused(_))

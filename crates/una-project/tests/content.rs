@@ -260,7 +260,7 @@ fn the_archive_reader_is_robust_to_mutated_archives() {
                 3 => {
                     bytes.remove(at);
                 }
-                _ => bytes[at] = [b'\0', b'\n', b'/', b'.', b'0', b'9'][(next() % 6) as usize],
+                _ => bytes[at] = b"\0\n/.09"[(next() % 6) as usize],
             }
         }
         if let Ok(read) = read_archive(&bytes) {

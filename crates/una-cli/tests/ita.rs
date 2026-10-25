@@ -594,8 +594,12 @@ fn a_write_that_fails_exits_1_and_changes_nothing() {
 }
 
 /// When the lock is written and `ita.una` then cannot be, the lock is put back, byte for byte,
-/// and the command exits with code 1. `ita.una` is a link to a file in a directory that cannot
-/// be written, which the write either refuses as a link or fails to write beside its target.
+/// and the command exits with code 1. `ita.una` is a link to a file in a directory of the
+/// package that cannot be written, so its write fails whether the writer follows a link inside
+/// the package (it cannot write beside the target) or refuses every link (it refuses this
+/// one), while the lock, in the package's own directory, is written. Only a user the
+/// permissions do not bind, such as root, with a writer that follows the link, writes it; the
+/// test then has nothing to check.
 #[cfg(unix)]
 #[test]
 fn the_lock_is_put_back_when_ita_una_cannot_be_written() {
@@ -820,7 +824,7 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
         .filter(|line| !line.starts_with("  consented") && !line.starts_with("  trusted modules"))
         .map(|line| format!("{line}\n"))
         .collect();
-    std::fs::write(dir.join("ita.lock"), &stripped).unwrap();
+    std::fs::write(dir.join("ita.lock"), stripped).unwrap();
     let (code, out, err) = una(&["una", "ita", "lock", "--accept-trust", &fresh, path(&dir)]);
     assert_eq!(code, 0, "{err}");
     assert!(
