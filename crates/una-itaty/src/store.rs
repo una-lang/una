@@ -58,21 +58,62 @@ pub fn check_path(path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// A store in a directory of the file system.
+/// A store in a directory of the file system. One process writes it: opening it takes an
+/// exclusive lock on its file `store.lock`, held while the store is open, which the operating
+/// system releases when the process ends. Tooling that runs beside a serving registry goes
+/// through the service's operator endpoints; opening the store beside it is refused.
 #[derive(Debug)]
 pub struct FileStore {
     root: PathBuf,
     counter: AtomicU64,
+    /// The locked `store.lock`, held while the store is open.
+    _lock: fs::File,
+}
+
+/// Why a store directory does not open.
+#[derive(Debug)]
+pub enum OpenError {
+    /// Another writer holds the store's lock: another process has it open.
+    Locked,
+    /// The directory or its lock file cannot be made or opened, or the lock cannot be taken
+    /// for another reason: why.
+    Io(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Locked => f.write_str(
+                "another process has this store open: one writer at a time; use the service's operator endpoints beside a serving registry",
+            ),
+            OpenError::Io(why) => f.write_str(why),
+        }
+    }
 }
 
 impl FileStore {
-    /// A store in the directory `root`, created if missing.
-    pub fn open(root: impl Into<PathBuf>) -> Result<FileStore, Error> {
+    /// A store in the directory `root`, created if missing, locked for this process.
+    pub fn open(root: impl Into<PathBuf>) -> Result<FileStore, OpenError> {
         let root = root.into();
-        fs::create_dir_all(&root).map_err(|e| format!("cannot create the store: {e}"))?;
+        fs::create_dir_all(&root)
+            .map_err(|e| OpenError::Io(format!("cannot create the store: {e}")))?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join("store.lock"))
+            .map_err(|e| OpenError::Io(format!("cannot open the store's lock: {e}")))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Err(OpenError::Locked),
+            Err(fs::TryLockError::Error(e)) => {
+                return Err(OpenError::Io(format!("cannot lock the store: {e}")));
+            }
+        }
         Ok(FileStore {
             root,
             counter: AtomicU64::new(0),
+            _lock: lock,
         })
     }
 

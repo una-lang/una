@@ -937,3 +937,13 @@ fn an_outbox_is_never_a_link() {
     let _ = std::fs::remove_file(&target);
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn a_store_has_one_writer() {
+    let f = Fixture::new("lock");
+    // The fixture's registry holds the store: a second writer is refused.
+    assert!(matches!(
+        FileStore::open(&f.dir),
+        Err(una_itaty::store::OpenError::Locked)
+    ));
+}
