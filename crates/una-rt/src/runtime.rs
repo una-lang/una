@@ -374,6 +374,10 @@ pub struct Meta {
     /// Whether the program has a `for ever`, so the run takes host stops: the executable then
     /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
     pub stops: bool,
+    /// Whether the program holds a task construct or a `for ever`: the run then starts every
+    /// worker and both helper pools at full size before `main`, so that no thread starts at a
+    /// moment that earlier code decided (ADR 0116 amendment, P8; `spec/27 §1` rule 4; #1145).
+    pub threads: bool,
 }
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
@@ -478,8 +482,13 @@ impl Meta {
             None => "`[run] grants`".to_owned(),
         };
         let stops = value.get("stops").and_then(Value::as_bool).unwrap_or(false);
+        let threads = value
+            .get("threads")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Some(Meta {
             stops,
+            threads,
             grants,
             uses,
             sites,
@@ -799,7 +808,8 @@ fn unshielded(cancel: &[Cancel], shielded: usize) -> bool {
 
 impl State {
     /// What the tasks of a block at `site` start from.
-    /// The run's scheduler is made here, at its first block.
+    /// An executable's scheduler is made before `main`, its threads started (#1145); one is
+    /// made here, its threads started on demand, only for code without that start, as tests.
     pub(crate) fn for_tasks(&mut self, site: usize) -> TaskTemplate {
         let depth = HOT.with(|hot| hot.depth.get());
         let left = self.max_depth.saturating_sub(depth);
@@ -1535,7 +1545,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if let Clock::Virtual(virtual_clock) = clock() {
         virtual_clock.restart();
     }
-    let state = State {
+    let threads = meta.threads;
+    let mut state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
         failed_write: None,
@@ -1578,6 +1589,26 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return if written.is_ok() { 1 } else { USAGE };
         }
         FLOATS.store(true, Ordering::SeqCst);
+    }
+    // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever` starts
+    // its scheduler, every worker and both helper pools at full size, and fills the stack pool
+    // with stacks of the size a block at the top asks for, the largest any task asks for, here,
+    // before `main`. Whether a thread exists, or how many stacks are pooled, is then never
+    // state that earlier code left, and no construct pays a thread's start or a stack's
+    // mapping because of it. A thread that cannot start, or a stack that cannot be mapped,
+    // stops the run here, with U6003 and no position, rather than leave a lazy start for
+    // later. A program without these constructs starts no thread (`spec/27 §1` rule 4).
+    if threads {
+        let sched = crate::sched::Scheduler::new(state.concurrency);
+        if sched.start_all(stack).is_err() {
+            let written = writeln!(
+                stderr,
+                "[{}] Error: the threads and stacks of this run's tasks could not be made",
+                Code::U6003
+            );
+            return if written.is_ok() { 1 } else { USAGE };
+        }
+        state.sched = Some(sched);
     }
     let budget = options.max_memory.saturating_mul(1024 * 1024);
     let worker = std::thread::Builder::new()
@@ -2451,6 +2482,41 @@ mod tests {
             0
         });
         assert_eq!(reused, 3);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_program_with_tasks_starts_every_thread_before_main() {
+        // #1145, ADR 0116 amendment P8: when the description says the program holds a task
+        // construct or a `for ever`, the scheduler exists before `main` runs, with every worker
+        // and both helper pools started at full size and the stack pool full; otherwise no thread
+        // starts.
+        let args: Vec<String> = "--workers 3 --io-threads 5 --file-threads 2"
+            .split(' ')
+            .map(str::to_owned)
+            .collect();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for meta in [
+            r#"{"grants":[],"uses":[],"threads":true}"#,
+            r#"{"grants":[],"uses":[]}"#,
+        ] {
+            let record = Arc::clone(&seen);
+            let status = start(&args, meta, move || {
+                let observed = with_state(|state| {
+                    state
+                        .sched
+                        .as_ref()
+                        .map(|sched| (sched.started(), sched.stacks()))
+                });
+                record.lock().unwrap().push(observed);
+                0
+            });
+            assert_eq!(status, 0);
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]
+        );
     }
 
     #[test]

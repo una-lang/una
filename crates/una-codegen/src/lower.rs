@@ -793,6 +793,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let Expr::Loop {
             source,
             var,
@@ -1564,6 +1566,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let value = match expr {
             Expr::Together { tasks, span } => {
                 let site = self.site(*span);
@@ -1696,6 +1700,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145): a `within` counts as a task
+        // construct for P8, so its cost never depends on whether earlier code started them.
+        self.emitter.threads = true;
         let (ms, _) = self.atom(deadline, env)?;
         let id = self.call("una_rt_within_enter", &[ms])?;
         let succeeded = self.join();
