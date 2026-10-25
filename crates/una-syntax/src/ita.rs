@@ -1579,12 +1579,12 @@ pub struct LockRegistry {
     pub checkpoint_size: At<u64>,
     /// The resolution point: the checkpoint's root hash.
     pub checkpoint_hash: At<String>,
-    /// `accepted <owner> <index> …`: per owner, the recoveries and disputes of its chain
-    /// pending at the resolution point whose pending state the lock was written under
+    /// `accepted <owner> <index> …`: per owner, the recoveries, disputes and co-signer changes
+    /// of its chain pending at the resolution point whose pending state the lock was written under
     /// (`spec/30 §14`).
     pub accepted: Vec<LockAccepted>,
-    /// `effect <owner> <index> …`: per owner, the recoveries and disputes of its chain in effect
-    /// at the resolution point whose taking effect the lock was written under.
+    /// `effect <owner> <index> …`: per owner, the recoveries, disputes and co-signer changes of
+    /// its chain in effect at the resolution point whose taking effect the lock was written under.
     pub effects: Vec<LockAccepted>,
 }
 

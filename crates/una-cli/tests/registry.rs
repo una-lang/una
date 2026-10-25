@@ -438,6 +438,38 @@ fn a_pending_recovery_needs_accept_key() {
     assert_eq!(code, 0, "{err}");
 }
 
+/// A co-signer change waits seven days as a recovery does, and until it takes effect it is a
+/// pending key change to consent to.
+#[test]
+fn a_pending_cosigner_change_needs_accept_key() {
+    let (mut registry, key) = acme();
+    let trustee = keypair(70, "trustee.a");
+    registry.owner_event(
+        "acme",
+        &format!("cosigners 1 {}", key_text(&trustee.1)),
+        1,
+        &[&key],
+    );
+    registry.checkpoint(now() - 30);
+    let (dir, _, itaoca) = project("pending-cosigners", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("U7014")
+            && err.contains("a co-signer change logged at")
+            && err.contains("`trustee.a`"),
+        "{err}"
+    );
+    assert!(!dir.join("ita.lock").exists());
+    let (code, _, err) = una_in(
+        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &itaoca,
+    );
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(lock.contains("accepted acme "), "{lock}");
+}
+
 /// A locked release that counts as signed only with a key compromised before it was logged is
 /// not fetched.
 #[test]

@@ -979,7 +979,10 @@ fn every_owner_entry_after_a_point_is_a_key_change() {
     let mut client = open(&memory, &registry).unwrap();
     let history = client.history("acme").unwrap();
     assert_eq!(history.pending.len(), 1);
-    assert!(history.pending[0].dispute);
+    assert!(matches!(
+        history.pending[0].change,
+        owner::Change::Dispute(_)
+    ));
     assert!(history.changed_after(1));
 }
 
@@ -1595,4 +1598,276 @@ fn revoking_a_key_whose_addition_is_void_changes_nothing() {
             assert!(!releases[0].compromised);
         }
     }
+}
+
+/// The history of `acme` read from `registry` at its latest checkpoint.
+fn history_of(registry: &TestRegistry) -> Result<owner::History, String> {
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, registry)?;
+    client.history("acme")
+}
+
+/// The chain that locked a single-key owner out: a thief holding its only key designates
+/// cosigners of its own, which a recovery would need and which bar a dispute. The designation
+/// waits seven days, so the cosigners in effect are still none and the owner's dispute is
+/// logged; once it takes effect, the owner claims the stolen key. The designation is void, the
+/// thief's release is skipped, and the new key signs what counts.
+#[test]
+fn a_designation_after_a_theft_no_longer_blocks_the_owners_dispute() {
+    let a = keypair(60, "acme.a");
+    let thiefs = keypair(71, "thief.cosigner");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 30 * DAY);
+    let designation = registry.owner_event(
+        "acme",
+        &format!("cosigners 1 {}", key_text(&thiefs.1)),
+        1,
+        &[&a],
+    );
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 29 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 28 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&n]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&n]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert!(history.voided.contains(&designation));
+    assert!(history.took_effect.contains_key(&dispute));
+    assert_eq!(history.cosigners, None);
+    assert_eq!(history.frozen, None);
+    assert_eq!(history.compromised.get(&a.1.public), Some(&0));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 2);
+    assert!(releases[0].compromised);
+    assert!(!releases[1].compromised);
+    assert_eq!(releases[1].signers, vec![n.1.clone()]);
+}
+
+/// A co-signer change waits seven days; any one current key of the owner cancels it meanwhile,
+/// and then it never takes effect. Uncancelled, it takes effect.
+#[test]
+fn a_pending_designation_is_cancelled_by_any_current_key() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let z = keypair(71, "thief.cosigner");
+    let build = |cancel: bool| -> (TestRegistry, u64, Option<u64>) {
+        let mut registry = TestRegistry::new("acme");
+        registry.register_keys("acme", &[&a, &b], 1, &[], 0);
+        registry.checkpoint(NOW - 30 * DAY);
+        let designation = registry.owner_event(
+            "acme",
+            &format!("cosigners 1 {}", key_text(&z.1)),
+            1,
+            &[&a],
+        );
+        registry.checkpoint(NOW - 29 * DAY);
+        let cancelled = cancel.then(|| {
+            registry.owner_event("acme", &format!("cancel {designation}"), 1, &[&b])
+        });
+        registry.append("other", "filler");
+        registry.checkpoint(NOW);
+        (registry, designation, cancelled)
+    };
+    let (registry, designation, cancelled) = build(true);
+    let history = history_of(&registry).unwrap();
+    assert_eq!(history.cosigners, None);
+    assert!(history.took_effect.is_empty());
+    assert!(history.pending.is_empty());
+    let cancel = cancelled.unwrap();
+    assert!(
+        history
+            .cancellations
+            .get(&designation)
+            .is_some_and(|cancels| cancels.contains(&cancel)),
+        "{:?}",
+        history.cancellations
+    );
+    let (registry, designation, _) = build(false);
+    let history = history_of(&registry).unwrap();
+    assert_eq!(history.cosigners, Some((1, vec![z.1.clone()])));
+    assert!(history.took_effect.contains_key(&designation));
+}
+
+/// A thief's designation is pending, so reported, for seven days, and a dispute can be logged
+/// meanwhile; once its seven days pass with nobody cancelling it, it is in effect, and a dispute
+/// logged after it refuses the chain, as one of an owner with cosigners does.
+#[test]
+fn a_thiefs_designation_takes_effect_only_after_seven_days_uncancelled() {
+    let a = keypair(60, "acme.a");
+    let z = keypair(71, "thief.cosigner");
+    let n = keypair(63, "acme.n");
+    // The designation logged `days` ago, a checkpoint two days ago, then a dispute if asked.
+    let build = |days: u64, dispute: bool| -> (TestRegistry, u64) {
+        let mut registry = TestRegistry::new("acme");
+        registry.register("acme", &a);
+        registry.checkpoint(NOW - 40 * DAY);
+        let designation = registry.owner_event(
+            "acme",
+            &format!("cosigners 1 {}", key_text(&z.1)),
+            1,
+            &[&a],
+        );
+        registry.checkpoint(NOW - days * DAY);
+        registry.append("other", "filler");
+        registry.checkpoint(NOW - 2 * DAY);
+        if dispute {
+            registry.recover("acme", "dispute", &n.1, &[]);
+        } else {
+            registry.append("other", "another filler");
+        }
+        registry.checkpoint(NOW);
+        (registry, designation)
+    };
+    // Logged three days ago: pending, and reported as such.
+    let (registry, designation) = build(3, false);
+    let history = history_of(&registry).unwrap();
+    assert_eq!(history.cosigners, None);
+    assert_eq!(
+        history.pending,
+        vec![owner::Pending {
+            index: designation,
+            change: owner::Change::Cosigners(Some((1, vec![z.1.clone()]))),
+        }]
+    );
+    assert!(history.took_effect.is_empty());
+    // A dispute logged while it is pending is one of an owner with no cosigners in effect.
+    let (registry, _) = build(3, true);
+    let history = history_of(&registry).unwrap();
+    assert_eq!(history.pending.len(), 2);
+    // Logged ten days ago: in effect from the checkpoint two days ago.
+    let (registry, designation) = build(10, false);
+    let history = history_of(&registry).unwrap();
+    assert_eq!(history.cosigners, Some((1, vec![z.1.clone()])));
+    assert!(history.took_effect.contains_key(&designation));
+    assert!(history.pending.is_empty());
+    // A dispute logged after it took effect is one of an owner with cosigners: refused.
+    let (registry, _) = build(10, true);
+    assert!(history_of(&registry).is_err());
+}
+
+/// Two disputes whose waits overlap: none takes effect, and the chain is frozen from the
+/// second. The release logged before stands; those logged after are skipped, whoever signs
+/// them, and the name is not resolved.
+#[test]
+fn competing_disputes_freeze_the_chain() {
+    let a = keypair(60, "acme.a");
+    let m = keypair(72, "acme.m");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 30 * DAY);
+    registry.recover("acme", "dispute", &m.1, &[]);
+    registry.checkpoint(NOW - 29 * DAY);
+    let second = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 28 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&m]);
+    let last = registry.release("acme/ledger", "0.3.3", "none", "none", &[&n]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.frozen, Some(second));
+    assert!(history.took_effect.is_empty());
+    assert!(history.pending.is_empty());
+    assert_eq!(history.at(last).unwrap().keys, vec![a.1.clone()]);
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 3);
+    assert!(!releases[0].compromised);
+    assert!(releases[1].compromised && releases[2].compromised);
+    let refusal = client.state("acme/ledger", Line::Zero(3)).unwrap_err();
+    assert!(refusal.contains("frozen"), "{refusal}");
+}
+
+/// A dispute logged once the chain is frozen changes nothing, nor does a recovery or a key
+/// event; a revocation with `since` still makes its claim.
+#[test]
+fn a_dispute_after_the_freeze_changes_nothing() {
+    let a = keypair(60, "acme.a");
+    let m = keypair(72, "acme.m");
+    let n = keypair(63, "acme.n");
+    let p = keypair(64, "acme.p");
+    let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &b], 1, &[], 0);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 40 * DAY);
+    registry.recover("acme", "dispute", &m.1, &[]);
+    let second = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 39 * DAY);
+    let third = registry.recover("acme", "dispute", &p.1, &[]);
+    registry.owner_event("acme", &format!("add {}", key_text(&c.1)), 1, &[&a, &c]);
+    registry.owner_event("acme", "revoke acme.a since 1", 1, &[&b]);
+    registry.checkpoint(NOW - 38 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.frozen, Some(second));
+    assert!(history.requests.contains_key(&second));
+    assert!(!history.requests.contains_key(&third));
+    assert!(history.took_effect.is_empty());
+    assert!(history.pending.is_empty());
+    let keys = &history.snapshots.last().unwrap().keys;
+    assert_eq!(keys, &vec![a.1.clone(), b.1.clone()]);
+    assert_eq!(history.compromised.get(&a.1.public), Some(&1));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 1);
+    assert!(!releases[0].compromised);
+}
+
+/// A revocation that the key it names signs is that key's own word, which a thief holding it can
+/// give: it states nothing of the past, so what the key signed before it still counts. The same
+/// claim signed by another key reaches back.
+#[test]
+fn a_claim_signed_by_the_key_it_names_states_nothing_of_the_past() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let build = |signer: &(ed25519_dalek::SigningKey, una_project::tlog::note::Key)| {
+        let mut registry = TestRegistry::new("acme");
+        registry.register_keys("acme", &[&a, &b], 1, &[], 0);
+        registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+        registry.checkpoint(NOW - DAY);
+        let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[signer]);
+        registry.release("acme/ledger", "0.3.2", "none", "none", &[&b]);
+        registry.checkpoint(NOW);
+        (registry, claim)
+    };
+    let (registry, claim) = build(&a);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&claim));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(!releases[0].compromised && !releases[1].compromised);
+    let (registry, _) = build(&b);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&a.1.public), Some(&0));
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised && !releases[1].compromised);
 }

@@ -63,7 +63,7 @@ use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Checkpoint, Key, Note};
-use crate::tlog::owner::{self, History};
+use crate::tlog::owner::{self, History, Standing};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
 use crate::tlog::state::{self, Advisory, Signers, Yank};
@@ -983,27 +983,18 @@ impl<'t> Registry<'t> {
                 )));
             }
             let index = entry.index;
-            let signers = history.signers(&entry.note, index);
-            let threshold = history.at(index).map_or(usize::MAX, |s| s.threshold);
-            let sound: Vec<Key> = signers
-                .iter()
-                .filter(|key| history.sound(key, index))
-                .cloned()
-                .collect();
-            // Keys that only void entries of the owner's chain bring in: what they sign is
-            // skipped as a compromised key's is.
-            let tainted = history
-                .void_keys
-                .iter()
-                .filter(|key| entry.note.signed_by(key))
-                .count();
-            let compromised = sound.len() < threshold;
-            if compromised && signers.len() + tainted < threshold {
-                return Err(self.refuse(format!(
-                    "`{name} {}` is not signed by the threshold of its owner's keys valid at its log position {index}",
-                    statement.version
-                )));
-            }
+            // Keys compromised before it, keys that only void entries of the owner's chain
+            // bring in, and a chain frozen by then: what they sign is skipped, never counted.
+            let (signers, compromised) = match history.judge(&entry.note, index) {
+                Standing::Counts(sound) => (sound, false),
+                Standing::Skipped(signers) => (signers, true),
+                Standing::Unsigned => {
+                    return Err(self.refuse(format!(
+                        "`{name} {}` is not signed by the threshold of its owner's keys valid at its log position {index}",
+                        statement.version
+                    )));
+                }
+            };
             // Rule 26, against the highest release of the identity logged before it. A release
             // skipped as compromised is neither checked nor counted: what a thief signs cannot
             // refuse the name.
@@ -1028,7 +1019,7 @@ impl<'t> Registry<'t> {
                 index,
                 document: entry.document,
                 statement,
-                signers: if compromised { signers } else { sound },
+                signers,
                 compromised,
             });
         }
@@ -1086,29 +1077,27 @@ impl<'t> Registry<'t> {
                     // The owner's keys valid at its position, after the cascade of compromises
                     // (`History::signed`): a yank that reaches the threshold only with a key
                     // compromised before it is void, as such a release is, and is ignored.
-                    if let Err(why) = history.signed(&entry.note, index) {
-                        // As `releases` decides a release skipped as compromised: the threshold
-                        // met only with keys compromised before it, or keys that only void
-                        // entries of the owner's chain brought in (the replay's cascade).
-                        let threshold = history.at(index).map_or(usize::MAX, |s| s.threshold);
-                        let tainted = history
-                            .void_keys
-                            .iter()
-                            .filter(|key| entry.note.signed_by(key))
-                            .count();
-                        if history.signers(&entry.note, index).len() + tainted >= threshold {
+                    // How it stands is the owner replay's, never derived here
+                    // (`History::judge`): counted; skipped, when it counts only with a key
+                    // compromised before it, with keys only void entries bring in, or from a
+                    // freeze on, which makes the yank void; or not signed as required.
+                    match history.judge(&entry.note, index) {
+                        Standing::Counts(_) => {}
+                        Standing::Skipped(_) => {
                             marks.voided.push(Void {
                                 index,
                                 version: yank.version.clone(),
-                                why: "it counts only with a key revoked as compromised before it"
+                                why: "it counts only with keys compromised or void before it, or is logged once its owner's chain was frozen"
                                     .to_owned(),
                             });
                             continue;
                         }
-                        return Err(self.refuse(format!(
-                            "the yank of `{name} {}` at log entry {index} does not stand: {why}",
-                            yank.version
-                        )));
+                        Standing::Unsigned => {
+                            return Err(self.refuse(format!(
+                                "the yank of `{name} {}` at log entry {index} is not signed by the threshold of its owner's keys valid there",
+                                yank.version
+                            )));
+                        }
                     }
                     if marks.yanked.contains_key(&yank.version) {
                         marks.voided.push(Void {
@@ -1130,15 +1119,19 @@ impl<'t> Registry<'t> {
                     // The owner's signers are counted without any key of the root's security
                     // set, so the two counts are of disjoint keys, and one key that is both
                     // never counts twice (§11 rule 11).
-                    let owner_threshold = history.at(index).is_some_and(|snapshot| {
-                        let owners = history
-                            .signers(&entry.note, index)
-                            .into_iter()
-                            .filter(|key| history.sound(key, index))
-                            .filter(|key| !security.iter().any(|s| s.public == key.public))
-                            .count();
-                        snapshot.threshold > 0 && owners >= snapshot.threshold
-                    });
+                    // The owner's threshold counts as the owner replay judges the entry
+                    // (`History::judge`), its sound signers taken without the root's security
+                    // keys, so the two counts are of disjoint keys (§11 rule 11).
+                    let owner_threshold = match history.judge(&entry.note, index) {
+                        Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
+                            let owners = sound
+                                .iter()
+                                .filter(|key| !security.iter().any(|s| s.public == key.public))
+                                .count();
+                            snapshot.threshold > 0 && owners >= snapshot.threshold
+                        }),
+                        Standing::Skipped(_) | Standing::Unsigned => false,
+                    };
                     let signers = Signers {
                         security: entry.note.signers(&security),
                         owner_threshold,
@@ -1195,8 +1188,17 @@ impl<'t> Registry<'t> {
     /// The releases of the identity `name` on `line` as resolution reads them (rules 23 and 24):
     /// each version, with the time it was logged; yanked when a yank stands or when it was signed
     /// after its key's stated compromise; advised when an advisory names it; and whether an
-    /// advisory that lifts the cooldown names it as its fix ([`Registry::marks`]).
+    /// advisory that lifts the cooldown names it as its fix ([`Registry::marks`]). A name whose
+    /// owner's chain is frozen is refused.
     pub fn state(&mut self, name: &str, line: Line) -> Result<Vec<Release>, Refusal> {
+        // A chain frozen by competing recoveries or disputes resolves to no one (rule 38.1).
+        let history = self.history(owner_of(name))?;
+        if let Some(from) = history.frozen {
+            return Err(self.refuse(format!(
+                "the chain of the owner `{}` is frozen from the log position {from} by competing recoveries or disputes, so `{name}` is not resolved; the owner registers again under a new owner name",
+                history.owner
+            )));
+        }
         let releases = self.releases(name)?;
         let marks = self.marks(name)?;
         let mut out = Vec::new();
