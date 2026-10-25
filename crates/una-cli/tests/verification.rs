@@ -1578,6 +1578,12 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     // The override names the key file, as the report shows it.
     let named = scratch.join("team.key");
     std::fs::write(&named, [7u8; 32]).unwrap();
+    // A key file is used only when it is a private regular file of the user (#1164).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let shown = json!(named.to_str().unwrap());
     assert_eq!(report("carol", Some(&named)).1, shown);
     let _ = std::fs::remove_dir_all(&scratch);
