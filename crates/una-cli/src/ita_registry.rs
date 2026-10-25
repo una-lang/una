@@ -1455,7 +1455,7 @@ fn bundle_source(
                 notes.extend(opened);
                 registry
             }
-            Err(OpenError::Unavailable(why)) => {
+            Err(OpenError::Unavailable(why) | OpenError::Omitted(_, why)) => {
                 reasons.push(format!("`{from}`: {why}"));
                 continue;
             }
@@ -1625,7 +1625,9 @@ pub(crate) fn unbundle_command(
                 let (code, why) = match failure {
                     bundle::Failure::Absent(why) => (Code::U7011, why),
                     bundle::Failure::Refused(why) => (Code::U7010, why),
-                    bundle::Failure::Unavailable(why) => (Code::U7013, why),
+                    bundle::Failure::Unavailable(why) | bundle::Failure::Omitted(_, why) => {
+                        (Code::U7013, why)
+                    }
                 };
                 let range = index
                     .and_then(|index| wanted.get(index))

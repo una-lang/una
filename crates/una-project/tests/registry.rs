@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use support::{NOW, TestRegistry, hash_hex, keypair};
-use una_project::client::{Misbehavior, Point, Registry};
+use una_project::client::{Misbehavior, Omission, Point, Registry};
 use una_project::content::File;
 use una_project::itaoca::{Itaoca, registry_id};
 use una_project::mirrors::{Attempt, first_verified};
@@ -968,7 +968,9 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
         {
             (at, Failure::Refused(why)) => (at, why),
             (at, Failure::Absent(why)) => (at, format!("absent: {why}")),
-            (at, Failure::Unavailable(why)) => (at, format!("unavailable: {why}")),
+            (at, Failure::Unavailable(why) | Failure::Omitted(_, why)) => {
+                (at, format!("unavailable: {why}"))
+            }
         }
     };
     // Another package's archive under the digest's path: its digest is not the lock's.
@@ -2157,7 +2159,7 @@ fn a_bundle_without_its_last_root_version_is_unavailable() {
     let (_, failure) =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
             .unwrap_err();
-    assert!(matches!(failure, Failure::Unavailable(_)), "{failure:?}");
+    assert!(matches!(failure, Failure::Unavailable(_) | Failure::Omitted(..)), "{failure:?}");
     assert!(!store.contains(&b.expected.digest).unwrap());
 }
 
@@ -2180,7 +2182,9 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
             .unwrap();
         assert_eq!(done.stored.len(), 1, "{count}");
     }
-    // Two of three witnesses retired, below the threshold of two: the point needs the proof.
+    // Two of three witnesses retired, below the threshold of two: the point needs the proof,
+    // and without the latest checkpoint it is an omission of the prefix proof, unavailable
+    // (U7013), never a refusal.
     let b = bundled_with(Rotation::AfterPoint(2));
     let mut files = b.files.clone();
     files.remove("checkpoint");
@@ -2192,7 +2196,10 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
             .unwrap_err();
     assert!(
-        matches!(failure, Failure::Unavailable(_) | Failure::Refused(_)),
+        matches!(
+            failure,
+            Failure::Omitted(Omission::PrefixProof(size), _) if size == b.expected.checkpoint_size
+        ),
         "{failure:?}"
     );
     assert!(!store.contains(&b.expected.digest).unwrap());

@@ -56,7 +56,7 @@ use std::ops::Range;
 use sha2::{Digest, Sha256};
 
 use super::{decimal, digest_hex, hex};
-use crate::client::{Floors, OpenError, Point, Registry, shown};
+use crate::client::{Floors, Omission, OpenError, Point, Registry, shown};
 use crate::content::check_path;
 use crate::itaoca::{Itaoca, registry_id};
 use crate::provenance::{self, Expected};
@@ -490,6 +490,9 @@ pub enum Failure {
     /// the state is unavailable (U7013), never different, since a bundle's listing does not
     /// commit to the registry files it should hold.
     Unavailable(String),
+    /// What a proof needs that neither the bundle nor a place behind it serves, typed by the
+    /// client when it opens the copy ([`OpenError::Omitted`]): unavailable (U7013) too.
+    Omitted(Omission, String),
 }
 
 impl From<Problem> for Failure {
@@ -548,6 +551,9 @@ fn verify_source(
                 // Neither the copy nor a place behind it serves the root or the checkpoint.
                 Err(OpenError::Unavailable(why)) => {
                     return Err((index, Failure::Unavailable(why)));
+                }
+                Err(OpenError::Omitted(omission, why)) => {
+                    return Err((index, Failure::Omitted(omission, why)));
                 }
                 Err(error @ OpenError::Refused(_)) => {
                     return Err((index, Failure::Refused(error.message())));
