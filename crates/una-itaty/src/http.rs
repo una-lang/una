@@ -185,6 +185,8 @@ pub struct Service {
     config: ServerConfig,
     connections: AtomicUsize,
     publishing: AtomicUsize,
+    /// Held while notices are delivered, so deliveries are recorded in log order.
+    delivering: Mutex<()>,
 }
 
 impl std::fmt::Debug for Service {
@@ -253,6 +255,7 @@ impl Service {
             return Err(StartError::NoNotifier);
         };
         registry.set_notifier(Arc::new(Outbox::open(path).map_err(StartError::Outbox)?));
+        registry.defer_notices(true);
         Ok(Service::unnotified_for_tests(store, registry, config))
     }
 
@@ -270,6 +273,7 @@ impl Service {
             config,
             connections: AtomicUsize::new(0),
             publishing: AtomicUsize::new(0),
+            delivering: Mutex::new(()),
         }
     }
 
@@ -293,7 +297,11 @@ impl Service {
     pub fn route(&self, request: Request) -> Response {
         match request.method.as_str() {
             "GET" => self.read(&request.path),
-            "POST" => self.write(request),
+            "POST" => {
+                let response = self.write(request);
+                self.deliver_notices();
+                response
+            }
             _ => text(405, "only GET and POST are served"),
         }
     }
@@ -344,6 +352,28 @@ impl Service {
             Ok(())
         } else {
             Err(text(401, "this endpoint needs the operator's token"))
+        }
+    }
+
+    /// Delivers the notices queued by the registry outside its lock, one delivery at a time so
+    /// that they are recorded in log order, and records the results under the lock again.
+    fn deliver_notices(&self) {
+        let Ok(_delivering) = self.delivering.lock() else {
+            return;
+        };
+        let (notifier, queue) = match self.locked() {
+            Ok(mut registry) => registry.take_notices(),
+            Err(_) => return,
+        };
+        if queue.is_empty() {
+            return;
+        }
+        let delivered = queue
+            .iter()
+            .map(|notice| (notice.index, notifier.notify(notice)))
+            .collect();
+        if let Ok(mut registry) = self.locked() {
+            registry.record_deliveries(delivered);
         }
     }
 

@@ -381,6 +381,10 @@ pub struct Registry {
     notifier: Arc<dyn Notifier>,
     /// The notices' state, kept in `state/notices`.
     notices: NoticeStatus,
+    /// The notices logged and not yet handed to the notifier, in log order.
+    queue: Vec<Notice>,
+    /// Whether notices are delivered by the registry's holder, outside its lock.
+    deferred: bool,
 }
 
 impl std::fmt::Debug for Registry {
@@ -470,6 +474,8 @@ impl Registry {
             timed_cancels: BTreeSet::new(),
             notifier,
             notices: NoticeStatus::default(),
+            queue: Vec::new(),
+            deferred: false,
         };
         registry.replay()?;
         registry.load_notices()?;
@@ -862,25 +868,62 @@ impl Registry {
         }
     }
 
-    /// Hands `notice` to the notifier: on success, the cursor moves to it unless a notice
-    /// before it failed since opening, so that one is sent again on the next opening; on
-    /// failure, the failure is counted, its error kept, and a failure record handed to the
-    /// notifier, which an outbox appends when it can. Sending never conditions logging.
+    /// Queues `notice`; unless notices are deferred ([`Registry::defer_notices`]), hands every
+    /// queued notice to the notifier at once ([`Registry::flush_notices`]).
     fn deliver(&mut self, notice: &Notice) {
-        match self.notifier.notify(notice) {
-            Ok(()) => {
-                if !self.notices.behind {
-                    self.notices.notified = Some(notice.index);
+        self.queue.push(notice.clone());
+        if !self.deferred {
+            self.flush_notices();
+        }
+    }
+
+    /// Defers the delivery of notices: they are queued, and whoever holds the registry takes
+    /// them ([`Registry::take_notices`]) and delivers them outside its lock, then records the
+    /// results ([`Registry::record_deliveries`]), as the HTTP service does after each request.
+    pub fn defer_notices(&mut self, deferred: bool) {
+        self.deferred = deferred;
+    }
+
+    /// The notifier and the notices queued, in log order, taken out of the queue.
+    pub fn take_notices(&mut self) -> (Arc<dyn Notifier>, Vec<Notice>) {
+        (Arc::clone(&self.notifier), std::mem::take(&mut self.queue))
+    }
+
+    /// Records how the notifier took each notice of `delivered`, in order: on success, the
+    /// cursor moves to it unless a notice before it failed since opening, so that one is sent
+    /// again on the next opening; on failure, the failure is counted, its error kept, and a
+    /// failure record handed to the notifier, which an outbox appends when it can. Sending
+    /// never conditions logging.
+    pub fn record_deliveries(&mut self, delivered: Vec<(u64, Result<(), String>)>) {
+        for (index, result) in delivered {
+            match result {
+                Ok(()) => {
+                    if !self.notices.behind {
+                        self.notices.notified = Some(index);
+                    }
                 }
-            }
-            Err(why) => {
-                self.notices.behind = true;
-                self.notices.failures = self.notices.failures.saturating_add(1);
-                let _ = self.notifier.record_failure(notice.index, &why);
-                self.notices.last_error = Some(why);
+                Err(why) => {
+                    self.notices.behind = true;
+                    self.notices.failures = self.notices.failures.saturating_add(1);
+                    let _ = self.notifier.record_failure(index, &why);
+                    self.notices.last_error = Some(why);
+                }
             }
         }
         self.save_notices();
+    }
+
+    /// Hands every queued notice to the notifier now, and records the results.
+    pub fn flush_notices(&mut self) {
+        let (notifier, queue) = self.take_notices();
+        if queue.is_empty() {
+            return;
+        }
+        let delivered = queue
+            .iter()
+            .map(|notice| (notice.index, notifier.notify(notice)))
+            .collect();
+        self.record_deliveries(delivered);
     }
 
     /// Sends again the notice of every `ita-key/1` entry after the cursor, in log order.

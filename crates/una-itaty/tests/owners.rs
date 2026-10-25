@@ -618,6 +618,8 @@ fn a_service_starts_only_with_a_named_outbox() {
         digest_string(&receipt.leaf)
     );
     registry.submit(note_of(&event, &[&a]).as_bytes()).unwrap();
+    // The service delivers notices outside the registry's lock; held here, flush them.
+    registry.flush_notices();
     drop(registry);
     let lines = std::fs::read_to_string(&outbox).unwrap();
     assert_eq!(lines.lines().count(), 1, "{lines}");
@@ -918,4 +920,20 @@ fn settled_requests_leave_the_scans() {
     f.cosign(&[0, 1], later);
     f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
     assert_eq!(f.registry.active_requests_count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_outbox_is_never_a_link() {
+    let target = temp_dir("outbox-target");
+    std::fs::write(&target, b"").unwrap();
+    let link = temp_dir("outbox-link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(una_itaty::notify::Outbox::open(&link).is_err());
+    let directory = temp_dir("outbox-dir");
+    std::fs::create_dir_all(&directory).unwrap();
+    assert!(una_itaty::notify::Outbox::open(&directory).is_err());
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&target);
+    let _ = std::fs::remove_dir_all(&directory);
 }

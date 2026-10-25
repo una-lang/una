@@ -103,14 +103,59 @@ pub struct Outbox {
     file: Mutex<File>,
 }
 
+/// `O_NOFOLLOW` on macOS (`<sys/fcntl.h>`).
+#[cfg(target_os = "macos")]
+const NO_FOLLOW: Option<i32> = Some(0x0100);
+/// `O_NOFOLLOW` on Linux on x86-64.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const NO_FOLLOW: Option<i32> = Some(0x2_0000);
+/// `O_NOFOLLOW` on Linux on AArch64.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const NO_FOLLOW: Option<i32> = Some(0x8000);
+/// Any other platform: no outbox is opened.
+#[cfg(not(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+)))]
+const NO_FOLLOW: Option<i32> = None;
+
+#[cfg(unix)]
+fn no_follow(options: &mut OpenOptions, flags: i32) {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(flags);
+}
+
+#[cfg(not(unix))]
+fn no_follow(_: &mut OpenOptions, _: i32) {}
+
 impl Outbox {
-    /// The outbox at `path`, created if missing and appended to otherwise.
+    /// The outbox at `path`, created if missing and appended to otherwise, opened with no
+    /// symbolic link followed at its last component (`O_NOFOLLOW`, by this crate's constant
+    /// for the platform, as `una-project` opens package files), and refused unless the file
+    /// opened is a regular file, checked on the open handle.
     pub fn open(path: &Path) -> Result<Outbox, String> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
+        let flags = NO_FOLLOW.ok_or_else(|| {
+            "this release knows no way to open the outbox without following a link on this platform".to_owned()
+        })?;
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        no_follow(&mut options, flags);
+        let file = options
             .open(path)
             .map_err(|e| format!("cannot open the outbox {}: {e}", path.display()))?;
+        let regular = file
+            .metadata()
+            .map_err(|e| format!("cannot read the outbox {}: {e}", path.display()))?
+            .is_file();
+        if !regular {
+            return Err(format!(
+                "the outbox {} is not a regular file",
+                path.display()
+            ));
+        }
         Ok(Outbox {
             path: path.to_path_buf(),
             file: Mutex::new(file),
@@ -121,6 +166,23 @@ impl Outbox {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Appends `line` whole and syncs it; a write that fails part way is cut back to the
+    /// length before it, so the outbox never holds part of a line.
+    fn append(&self, line: &[u8]) -> Result<(), String> {
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| "the outbox is unavailable".to_owned())?;
+        let failed =
+            |e: std::io::Error| format!("cannot append to the outbox {}: {e}", self.path.display());
+        let before = file.metadata().map_err(failed)?.len();
+        if let Err(e) = file.write_all(line).and_then(|()| file.sync_data()) {
+            let _ = file.set_len(before);
+            return Err(failed(e));
+        }
+        Ok(())
+    }
 }
 
 impl Notifier for Outbox {
@@ -129,23 +191,11 @@ impl Notifier for Outbox {
             .chars()
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
-        let mut file = self
-            .file
-            .lock()
-            .map_err(|_| "the outbox is unavailable".to_owned())?;
-        file.write_all(format!("ita-notice-failure/1 {index} {why}\n").as_bytes())
-            .and_then(|()| file.sync_data())
-            .map_err(|e| format!("cannot append to the outbox {}: {e}", self.path.display()))
+        self.append(format!("ita-notice-failure/1 {index} {why}\n").as_bytes())
     }
 
     fn notify(&self, notice: &Notice) -> Result<(), String> {
-        let mut file = self
-            .file
-            .lock()
-            .map_err(|_| "the outbox is unavailable".to_owned())?;
-        file.write_all(notice.line().as_bytes())
-            .and_then(|()| file.sync_data())
-            .map_err(|e| format!("cannot append to the outbox {}: {e}", self.path.display()))
+        self.append(notice.line().as_bytes())
     }
 }
 
