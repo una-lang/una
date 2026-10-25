@@ -98,13 +98,15 @@ fn lock_never_writes_through_a_planted_link() {
     );
 
     let outside = dir.parent().unwrap().join("planted-link-outside.lock");
-    std::fs::write(&outside, "outside\n").unwrap();
+    // A valid lock that differs from the one the command writes, so the run reaches the write.
+    let pinned = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 7\n  seed 3\n";
+    std::fs::write(&outside, pinned).unwrap();
     std::fs::remove_file(dir.join("ita.lock")).unwrap();
     std::os::unix::fs::symlink(&outside, dir.join("ita.lock")).unwrap();
     let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
     assert_ne!(code, 0);
     assert!(err.contains("outside the package"), "{err}");
-    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside\n");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), pinned);
     let _ = std::fs::remove_file(&victim);
     let _ = std::fs::remove_file(&outside);
 }
