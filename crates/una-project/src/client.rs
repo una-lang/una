@@ -2211,9 +2211,7 @@ impl<'t> Registry<'t> {
                             Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
                                 let owners = sound
                                     .iter()
-                                    .filter(|key| {
-                                        !security.iter().any(|s| s.public == key.public)
-                                    })
+                                    .filter(|key| !security.iter().any(|s| s.public == key.public))
                                     .count();
                                 snapshot.threshold > 0 && owners >= snapshot.threshold
                             }),

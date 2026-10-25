@@ -241,10 +241,7 @@ fn is_entry(path: &str) -> bool {
         ["provenance", source, hex, file] => {
             check_source(source).is_ok()
                 && is_hex(hex)
-                && file
-                    .strip_prefix("checkpoint-")
-                    .and_then(decimal)
-                    .is_some()
+                && file.strip_prefix("checkpoint-").and_then(decimal).is_some()
         }
         ["registry", source, rest @ ..] => {
             check_source(source).is_ok() && !rest.is_empty() && segments(&rest.join("/")).is_ok()
@@ -458,9 +455,8 @@ fn verify_parts(
     what: &str,
     expected: &Expected,
 ) -> Result<Packed, String> {
-    let tree = VerifiedTree::from_archive(archive).map_err(|refusal| {
-        format!("the archive of {what} in the bundle: {}", shown(&refusal))
-    })?;
+    let tree = VerifiedTree::from_archive(archive)
+        .map_err(|refusal| format!("the archive of {what} in the bundle: {}", shown(&refusal)))?;
     if tree.digest() != expected.digest {
         return Err(format!(
             "the archive of {what} in the bundle has the digest {}, not the lock's {}",
@@ -469,10 +465,16 @@ fn verify_parts(
         ));
     }
     let document = provenance::parse(provenance).map_err(|refusal| {
-        format!("the provenance of {what} in the bundle: {}", shown(&refusal))
+        format!(
+            "the provenance of {what} in the bundle: {}",
+            shown(&refusal)
+        )
     })?;
     let statement = provenance::verify(&document, expected).map_err(|refusal| {
-        format!("the provenance of {what} in the bundle: {}", shown(&refusal))
+        format!(
+            "the provenance of {what} in the bundle: {}",
+            shown(&refusal)
+        )
     })?;
     let manifest = tree
         .file("ita.una")
@@ -689,11 +691,15 @@ pub fn unbundle(
         let id = registry_id(&package.root);
         // A floor that cannot be read is no floor: it is a note, and the copy is still verified.
         let floor = itaoca.load_checkpoint(&id).unwrap_or_else(|why| {
-            notes.push(format!("note: the floor of `{source}` does not read: {why}"));
+            notes.push(format!(
+                "note: the floor of `{source}` does not read: {why}"
+            ));
             None
         });
         let root_version = itaoca.load_root_version(&id).unwrap_or_else(|why| {
-            notes.push(format!("note: the root floor of `{source}` does not read: {why}"));
+            notes.push(format!(
+                "note: the root floor of `{source}` does not read: {why}"
+            ));
             None
         });
         let stored = Floors {

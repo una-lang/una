@@ -146,7 +146,9 @@ impl Position {
             .ok_or("a watch position names its source")?;
         check_source(named)?;
         if named != source {
-            return Err(format!("the watch position is of `{named}`, not of `{source}`"));
+            return Err(format!(
+                "the watch position is of `{named}`, not of `{source}`"
+            ));
         }
         let (named, owner_count) = lines
             .next()
@@ -155,7 +157,9 @@ impl Position {
             .and_then(|(owner, count)| Some((owner, decimal(count)?)))
             .ok_or("a watch position has `owner <owner> <count>`")?;
         if named != owner {
-            return Err(format!("the watch position is of `{named}`, not of `{owner}`"));
+            return Err(format!(
+                "the watch position is of `{named}`, not of `{owner}`"
+            ));
         }
         let mut position = Position::start(source, owner);
         position.owner_count = owner_count;
@@ -175,7 +179,9 @@ impl Position {
                 continue;
             }
             if position.names.len() == MAX_NAMES {
-                return Err(format!("a watch position follows at most {MAX_NAMES} names"));
+                return Err(format!(
+                    "a watch position follows at most {MAX_NAMES} names"
+                ));
             }
             let (name, count) = line
                 .strip_prefix("name ")
@@ -584,14 +590,21 @@ pub fn watch(
                 "the chain of `{label}` has {count} entries, fewer than the {held} already seen"
             ));
         }
-        for entry in entries.into_iter().skip(usize::try_from(held).unwrap_or(usize::MAX)) {
+        for entry in entries
+            .into_iter()
+            .skip(usize::try_from(held).unwrap_or(usize::MAX))
+        {
             report.entries.push((label.to_owned(), entry));
         }
         Ok(count)
     };
     let owner_chain = owner::chain_name(&position.owner);
-    report.position.owner_count =
-        follow(&position.owner, &owner_chain, position.owner_count, &mut report)?;
+    report.position.owner_count = follow(
+        &position.owner,
+        &owner_chain,
+        position.owner_count,
+        &mut report,
+    )?;
     let mut names: BTreeSet<&str> = position.names.keys().map(String::as_str).collect();
     names.extend(more.iter().map(String::as_str));
     if names.len() > MAX_NAMES {

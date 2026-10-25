@@ -89,7 +89,13 @@ fn now() -> u64 {
 /// A registry `acme`: the owner `acme` registered with the key of seed 60, its checkpoint
 /// cosigned `ago` seconds before now. Returns it, the owner's key pair, and its signing key as a
 /// publisher holds it.
-fn acme(ago: u64) -> (TestRegistry, (ed25519_dalek::SigningKey, una_project::tlog::note::Key), SigningKey) {
+fn acme(
+    ago: u64,
+) -> (
+    TestRegistry,
+    (ed25519_dalek::SigningKey, una_project::tlog::note::Key),
+    SigningKey,
+) {
     let mut registry = TestRegistry::new("acme");
     let pair = keypair(60, "acme.laptop");
     registry.register("acme", &pair);
@@ -126,7 +132,9 @@ fn log_submission(registry: &mut TestRegistry, inbox: &Path, submission: &Submis
             .digest()
             .to_owned();
         let hex = digest.strip_prefix("sha256:").unwrap();
-        registry.files.insert(format!("blobs/sha256/{hex}"), archive);
+        registry
+            .files
+            .insert(format!("blobs/sha256/{hex}"), archive);
     }
     let entry = std::fs::read_to_string(dir.join("entry")).unwrap();
     registry.append(name, &entry);
@@ -186,7 +194,9 @@ fn published_registry(name: &str) -> (TestRegistry, SigningKey, PathBuf) {
     let checkpoint =
         String::from_utf8(registry.files[&format!("checkpoint/{size}")].clone()).unwrap();
     let note = una_project::tlog::note::parse_note(&checkpoint).unwrap();
-    let root = una_project::tlog::note::parse_checkpoint(&note.text).unwrap().root;
+    let root = una_project::tlog::note::parse_checkpoint(&note.text)
+        .unwrap()
+        .root;
     let memory = una_project::registry::bundle::Memory {
         source: "acme".to_owned(),
         files: registry.files.clone(),
@@ -275,7 +285,10 @@ fn publish_refuses_what_rule_43_names_and_sends_nothing() {
         let dir = package(&format!("publish-{name}"), &manifest);
         let (status, out, _) = una_in(&["una", "--json", "ita", "publish", path(&dir)], &store);
         assert_eq!(status, 1, "{name}");
-        assert!(codes_of(&out).contains(&"U7013".to_owned()), "{name}: {out}");
+        assert!(
+            codes_of(&out).contains(&"U7013".to_owned()),
+            "{name}: {out}"
+        );
         assert!(out.contains(part), "{name}: {out}");
     }
     // A package that does not check is refused too.
@@ -300,7 +313,10 @@ fn publish_refuses_a_package_in_a_git_repository() {
         status == 1 && out.contains("uncommitted changes is not available yet")
     };
     // This repository's own checkout holds the test's target directory.
-    assert!(refused(&package("publish-in-repository", &published("acme"))));
+    assert!(refused(&package(
+        "publish-in-repository",
+        &published("acme")
+    )));
     let dir = package_outside_git("git-dir", &published("acme"));
     assert!(!refused(&dir));
     std::fs::create_dir(dir.join(".git")).unwrap();
@@ -325,13 +341,19 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         assert!(out.contains(part), "{part}: {out}");
     };
     let itaty = package_outside_git("itaty", &published("itaty"));
-    codes_and(&["una", "--json", "ita", "publish", path(&itaty)], "no https transport yet");
+    codes_and(
+        &["una", "--json", "ita", "publish", path(&itaty)],
+        "no https transport yet",
+    );
     codes_and(
         &["una", "--json", "ita", "yank", "0.1.0", path(&itaty)],
         "no https transport yet",
     );
     let lone = package_outside_git("lone", &published("acme"));
-    codes_and(&["una", "--json", "ita", "publish", path(&lone)], "declared by no");
+    codes_and(
+        &["una", "--json", "ita", "publish", path(&lone)],
+        "declared by no",
+    );
     let member = package_outside_git("member", &published("acme"));
     std::fs::write(
         member.parent().unwrap().join("itaty.una"),
@@ -341,7 +363,10 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
         ),
     )
     .unwrap();
-    codes_and(&["una", "--json", "ita", "publish", path(&member)], "no https transport yet");
+    codes_and(
+        &["una", "--json", "ita", "publish", path(&member)],
+        "no https transport yet",
+    );
     let (status, _, err) = una_in(&["una", "ita", "yank", "0.1", path(&member)], &store);
     assert_eq!(status, 2);
     assert!(err.contains("full version"), "{err}");
@@ -483,16 +508,27 @@ fn a_bundle_carries_the_lock_to_an_air_gapped_itaoca() {
     assert!(out.contains("bundled 1 registry packages"), "{out}");
     // On another machine: a fresh Itaoca, with no mirror, filled from the bundle alone.
     let isolated = scratch("ita-registry-store", "bundle-isolated");
-    let (status, out, err) =
-        una_in(&["una", "ita", "unbundle", path(&file), path(&dir)], &isolated);
+    let (status, out, err) = una_in(
+        &["una", "ita", "unbundle", path(&file), path(&dir)],
+        &isolated,
+    );
     assert_eq!(status, 0, "{out}{err}");
     assert!(out.contains("stored acme/ledger 0.3.1 in Itaoca"), "{out}");
-    assert!(isolated.join("registry/acme/checkpoint").exists(), "the floor is stored");
+    assert!(
+        isolated.join("registry/acme/checkpoint").exists(),
+        "the floor is stored"
+    );
     let (status, out, _) = una_in(&["una", "ita", "verify", path(&dir)], &isolated);
     assert_eq!(status, 0, "{out}");
-    assert!(out.contains("verified acme/ledger 0.3.1 in Itaoca"), "{out}");
+    assert!(
+        out.contains("verified acme/ledger 0.3.1 in Itaoca"),
+        "{out}"
+    );
     // Again: Itaoca holds it already.
-    let (status, out, _) = una_in(&["una", "ita", "unbundle", path(&file), path(&dir)], &isolated);
+    let (status, out, _) = una_in(
+        &["una", "ita", "unbundle", path(&file), path(&dir)],
+        &isolated,
+    );
     assert_eq!(status, 0, "{out}");
 }
 
@@ -574,7 +610,10 @@ fn add_binds_an_owner_to_the_source_that_serves_it() {
     );
     assert_eq!(code, 2);
     assert!(err.contains("served by the source `acme`"), "{err}");
-    assert_eq!(std::fs::read_to_string(dir.join("ita.una")).unwrap(), manifest);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        manifest
+    );
 }
 
 // --- review fixes: floors, symlinks and the environment --------------------------------------
@@ -684,8 +723,10 @@ fn unbundle_follows_no_link() {
     let link = base.join("link.bundle");
     std::os::unix::fs::symlink(&file, &link).unwrap();
     let isolated = scratch("ita-registry-store", "bundle-link-isolated");
-    let (status, _, err) =
-        una_in(&["una", "ita", "unbundle", path(&link), path(&dir)], &isolated);
+    let (status, _, err) = una_in(
+        &["una", "ita", "unbundle", path(&link), path(&dir)],
+        &isolated,
+    );
     assert_eq!(status, 2, "{err}");
     assert!(!isolated.join("packages").exists());
 }
@@ -721,8 +762,10 @@ fn unbundle_refuses_a_link_to_a_large_file() {
     std::os::unix::fs::symlink(&large, &link).unwrap();
     let isolated = scratch("ita-registry-store", "bundle-large-isolated");
     for file in [&link, &large] {
-        let (status, _, err) =
-            una_in(&["una", "ita", "unbundle", path(file), path(&dir)], &isolated);
+        let (status, _, err) = una_in(
+            &["una", "ita", "unbundle", path(file), path(&dir)],
+            &isolated,
+        );
         assert_eq!(status, 2, "{err}");
     }
     assert!(!isolated.join("packages").exists());

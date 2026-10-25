@@ -22,8 +22,8 @@ use crate::client::{Marks, Misbehavior, Observation, Registry, owner_of, shown};
 use crate::tlog::owner::Unsettled;
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
-use una_diag::Code;
 use crate::version::{Line, Version};
+use una_diag::Code;
 
 /// A registry package of the lock, as the audit reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,7 +254,9 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, (Cod
                 earliest,
             } => {
                 if *name == locked.name
-                    && !eligibility_delays.iter().any(|delay| delay.version == *version)
+                    && !eligibility_delays
+                        .iter()
+                        .any(|delay| delay.version == *version)
                 {
                     eligibility_delays.push(Delay {
                         version: version.clone(),
@@ -402,7 +404,12 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
             since: facts.compromised_since,
         });
     }
-    kinds.extend(facts.pending.iter().map(|index| Kind::PendingRecovery(*index)));
+    kinds.extend(
+        facts
+            .pending
+            .iter()
+            .map(|index| Kind::PendingRecovery(*index)),
+    );
     kinds.extend(facts.key_changes.iter().map(|from| Kind::KeyChange(*from)));
     kinds.extend(facts.void_yanks.iter().map(|index| Kind::VoidYank(*index)));
     kinds.extend(

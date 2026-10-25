@@ -18,7 +18,6 @@ use una_project::itaoca::{Itaoca, registry_id};
 use una_project::mirrors::{Attempt, first_verified};
 use una_project::provenance::{Expected, signed_name};
 use una_project::registry::audit::{self, Delay, Facts, Kind, Locked};
-use una_project::tlog::state::{Signers, parse_advisory};
 use una_project::registry::bundle::{self, Failure, Memory, Recording};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
 use una_project::registry::submit::{self, NameState, PROMISE_WINDOW, Promise, check_promise};
@@ -30,6 +29,7 @@ use una_project::tlog::note::parse_note;
 use una_project::tlog::owner::Unsettled;
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
+use una_project::tlog::state::{Signers, parse_advisory};
 use una_project::transport::{Directory, Fallback, Transport};
 use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
@@ -92,11 +92,21 @@ fn the_directory_transport_writes_once_and_reads_back() {
     ] {
         assert!(transport.put(path, b"x").is_err(), "{path}");
     }
-    assert!(transport.get("submit/abc/entry", 2).is_err(), "over the limit");
+    assert!(
+        transport.get("submit/abc/entry", 2).is_err(),
+        "over the limit"
+    );
     // No staged copy is left behind, whether the link succeeded or found the file there.
     let staged = std::fs::read_dir(dir.join("submit/abc"))
         .unwrap()
-        .filter(|entry| entry.as_ref().unwrap().file_name().to_string_lossy().starts_with('.'))
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with('.')
+        })
         .count();
     assert_eq!(staged, 0);
     // An https location has no transport yet: it never writes.
@@ -259,8 +269,22 @@ fn publishing_refuses_what_rules_26_and_43_name() {
         .join("; ")
     };
     let first = first_state();
-    assert!(refusal(&published("0.3.1", "\nneeds\n  util from path \"../util\"\n"), &first, &[&publisher]).contains("path dependency"));
-    assert!(refusal(&published("0.3.1", "\nneeds\n  json 2.1\n"), &first, &[&publisher]).contains("needs only packages of `acme`"));
+    assert!(
+        refusal(
+            &published("0.3.1", "\nneeds\n  util from path \"../util\"\n"),
+            &first,
+            &[&publisher]
+        )
+        .contains("path dependency")
+    );
+    assert!(
+        refusal(
+            &published("0.3.1", "\nneeds\n  json 2.1\n"),
+            &first,
+            &[&publisher]
+        )
+        .contains("needs only packages of `acme`")
+    );
     assert!(refusal(&published("0.3", ""), &first, &[&publisher]).contains("full version"));
     assert!(refusal(&published("0.3.1", ""), &first, &[]).contains("no signing key"));
     // A state of another name is not used.
@@ -268,14 +292,18 @@ fn publishing_refuses_what_rules_26_and_43_name() {
         name: "acme/other".to_owned(),
         ..first_state()
     };
-    assert!(refusal(&published("0.3.1", ""), &other, &[&publisher]).contains("not of `acme/ledger`"));
+    assert!(
+        refusal(&published("0.3.1", ""), &other, &[&publisher]).contains("not of `acme/ledger`")
+    );
     // An earlier release of the line that needed less: authority grows only in a major.
     let earlier = format!(
         "ita-release/1\nsource acme\nname acme/ledger\nversion 0.3.0\nprevious none\ndigest {D}\nmanifest {D}\nedition 0.4\nauthority Http[get]\ntrust none\n"
     );
     let mut state = first_state();
     state.head = Some((7, D.to_owned()));
-    state.statements.insert(v("0.3.0"), parse_statement(&earlier).unwrap());
+    state
+        .statements
+        .insert(v("0.3.0"), parse_statement(&earlier).unwrap());
     assert!(refusal(&published("0.3.1", ""), &state, &[&publisher]).contains("Http[post]"));
     assert!(refusal(&published("0.3.0", ""), &state, &[&publisher]).contains("already released"));
     // Rule 26 compares in log order, against the highest release of the line, even above the new
@@ -294,7 +322,9 @@ fn publishing_refuses_what_rules_26_and_43_name() {
         .statements
         .insert(v("0.3.5"), statement_of("0.3.5", "Http[get]"));
     assert_eq!(
-        submit::highest_of_line(&ordered, &v("0.3.2")).unwrap().version,
+        submit::highest_of_line(&ordered, &v("0.3.2"))
+            .unwrap()
+            .version,
         v("0.3.5")
     );
     assert!(refusal(&published("0.3.2", ""), &ordered, &[&publisher]).contains("Http[post]"));
@@ -319,7 +349,17 @@ fn publishing_refuses_what_rules_26_and_43_name() {
         path: "src/native.c".to_owned(),
         bytes: b"int main;".to_vec(),
     });
-    assert!(submit::release(&manifest, with_c, &BTreeMap::new(), &none, &state, &[&publisher]).is_err());
+    assert!(
+        submit::release(
+            &manifest,
+            with_c,
+            &BTreeMap::new(),
+            &none,
+            &state,
+            &[&publisher]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -347,7 +387,10 @@ fn promises_are_judged_once_by_the_time_their_entry_was_logged() {
         time: 1000,
         sent: 1000,
     };
-    assert_eq!(Submitted::parse(&submitted.leaf, &submitted.encode()).unwrap(), submitted);
+    assert_eq!(
+        Submitted::parse(&submitted.leaf, &submitted.encode()).unwrap(),
+        submitted
+    );
     let promise = |by: u64| Promise {
         source: "acme".to_owned(),
         leaf: format!("sha256:{}", submitted.leaf),
@@ -356,15 +399,24 @@ fn promises_are_judged_once_by_the_time_their_entry_was_logged() {
     };
     let window = 1000 + PROMISE_WINDOW + una_project::client::SKEW;
     // Logged by `by`: kept, whatever the checkpoint's time now.
-    assert_eq!(judge(&submitted, Some(&promise(2000)), Some(1990), 9_000_000), Verdict::Kept);
+    assert_eq!(
+        judge(&submitted, Some(&promise(2000)), Some(1990), 9_000_000),
+        Verdict::Kept
+    );
     // Logged after `by`: broken.
     assert!(matches!(
         judge(&submitted, Some(&promise(2000)), Some(2001), 9_000_000),
         Verdict::Broken(_)
     ));
     // Not logged: pending until `by`, broken after.
-    assert_eq!(judge(&submitted, Some(&promise(2000)), None, 2000), Verdict::Pending);
-    assert!(matches!(judge(&submitted, Some(&promise(2000)), None, 2001), Verdict::Broken(_)));
+    assert_eq!(
+        judge(&submitted, Some(&promise(2000)), None, 2000),
+        Verdict::Pending
+    );
+    assert!(matches!(
+        judge(&submitted, Some(&promise(2000)), None, 2001),
+        Verdict::Broken(_)
+    ));
     // A `by` past the window is itself a broken promise.
     assert!(matches!(
         judge(&submitted, Some(&promise(window + 1)), Some(1100), 1100),
@@ -372,14 +424,18 @@ fn promises_are_judged_once_by_the_time_their_entry_was_logged() {
     ));
     // No promise: pending within the window, broken after it, kept if logged within it.
     assert_eq!(judge(&submitted, None, None, window), Verdict::Pending);
-    assert!(matches!(judge(&submitted, None, None, window + 1), Verdict::Broken(_)));
-    assert_eq!(judge(&submitted, None, Some(window), window + 10), Verdict::Kept);
+    assert!(matches!(
+        judge(&submitted, None, None, window + 1),
+        Verdict::Broken(_)
+    ));
+    assert_eq!(
+        judge(&submitted, None, Some(window), window + 10),
+        Verdict::Kept
+    );
     // A settled submission is recorded in the position, for a name not followed too, and a
     // second run, which reads the position back, sees it settled.
     let mut first_run = Position::start("acme", "acme");
-    first_run
-        .settle(&submitted.leaf, &Verdict::Kept)
-        .unwrap();
+    first_run.settle(&submitted.leaf, &Verdict::Kept).unwrap();
     let second_run = Position::parse(&first_run.encode(), "acme", "acme").unwrap();
     assert!(!second_run.names.contains_key("acme/other"));
     assert!(second_run.settled.contains(&submitted.leaf));
@@ -403,9 +459,15 @@ fn lifting_the_cooldown_needs_the_roots_security_threshold() {
     assert!(signers(1, false).valid());
     assert!(!signers(1, false).lifts_cooldown(1), "never fewer than two");
     assert!(signers(2, false).lifts_cooldown(1));
-    assert!(!signers(2, false).lifts_cooldown(3), "the root asks for three");
+    assert!(
+        !signers(2, false).lifts_cooldown(3),
+        "the root asks for three"
+    );
     assert!(signers(3, false).lifts_cooldown(3));
-    assert!(signers(1, true).lifts_cooldown(3), "one and the owner's threshold");
+    assert!(
+        signers(1, true).lifts_cooldown(3),
+        "one and the owner's threshold"
+    );
     assert!(!signers(0, true).lifts_cooldown(1));
 }
 
@@ -417,7 +479,10 @@ fn an_advisory_names_each_version_once_and_its_fix_past_them() {
         )
     };
     assert!(parse_advisory(&advisory("0.3.0, 0.3.2", &format!("0.3.3 {D}"))).is_ok());
-    assert!(parse_advisory(&advisory("0.3.0, 0.3.0", "none")).is_err(), "twice");
+    assert!(
+        parse_advisory(&advisory("0.3.0, 0.3.0", "none")).is_err(),
+        "twice"
+    );
     assert!(
         parse_advisory(&advisory("0.3.0, 0.3.2", &format!("0.3.1 {D}"))).is_err(),
         "a fix within the affected range"
@@ -455,7 +520,10 @@ fn advisory(id: &str) -> Advisory {
 
 #[test]
 fn audit_reports_yanks_advisories_compromises_and_owner_events() {
-    let packages = [locked("acme/ledger", "0.3.1"), locked("acme/ledger", "0.3.2")];
+    let packages = [
+        locked("acme/ledger", "0.3.1"),
+        locked("acme/ledger", "0.3.2"),
+    ];
     // Withheld cosignatures delay the eligibility of the advisory's fix, a finding, and of
     // another release, a note.
     let fixed_late = Delay {
@@ -621,8 +689,12 @@ fn watch_reports_new_entries_and_checks_its_position() {
     assert!(Position::parse(&position.encode(), "acme", "other").is_err());
     assert!(Position::parse("ita-watch/1\nsource acme\nowner acme 01\n", "acme", "acme").is_err());
     assert!(
-        Position::parse("ita-watch/1\nsource acme\nowner acme 0\nname Acme/X 1\n", "acme", "acme")
-            .is_err()
+        Position::parse(
+            "ita-watch/1\nsource acme\nowner acme 0\nname Acme/X 1\n",
+            "acme",
+            "acme"
+        )
+        .is_err()
     );
     let report = watch(&mut chain, &position, &[]).unwrap();
     let new: Vec<(String, u64)> = report
@@ -681,7 +753,10 @@ fn the_client_reads_yanks_and_advisories() {
     let marks = client.marks("acme/ledger").unwrap();
     assert!(marks.yanked.contains_key(&v("0.3.0")));
     assert_eq!(marks.advised[&v("0.3.0")], ["ITA-1"]);
-    assert!(marks.threshold_fix.contains(&v("0.3.1")), "two signers lift the cooldown");
+    assert!(
+        marks.threshold_fix.contains(&v("0.3.1")),
+        "two signers lift the cooldown"
+    );
     let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
     let old = state.iter().find(|r| r.version == v("0.3.0")).unwrap();
     assert!(old.yanked && old.advised);
@@ -841,7 +916,9 @@ fn header_advice_names_public_headers_removed_or_changed() {
 
 /// The archive of `acme/ledger` at `version`.
 fn package_archive(version: &str) -> Vec<u8> {
-    let mut files = files(&format!("ita acme/ledger\n  version {version}\n  edition 0.4\n"));
+    let mut files = files(&format!(
+        "ita acme/ledger\n  version {version}\n  edition 0.4\n"
+    ));
     una_project::content::archive(&mut files).unwrap()
 }
 
@@ -897,8 +974,9 @@ fn bundled_with(rotation: Rotation) -> Bundled {
         files: test.files.clone(),
     };
     let recording = Recording::new(&served);
-    let checkpoint = parse_note(std::str::from_utf8(&test.files[&format!("checkpoint/{size}")]).unwrap())
-        .unwrap();
+    let checkpoint =
+        parse_note(std::str::from_utf8(&test.files[&format!("checkpoint/{size}")]).unwrap())
+            .unwrap();
     let root = una_project::tlog::note::parse_checkpoint(&checkpoint.text)
         .unwrap()
         .root;
@@ -910,7 +988,8 @@ fn bundled_with(rotation: Rotation) -> Bundled {
     let release = client.release("acme/ledger", &v("0.3.1")).unwrap();
     client.marks("acme/ledger").unwrap();
     let provenance = client.provenance(&release, &owner.1).unwrap().encode();
-    let archive = served.files[&format!("blobs/sha256/{}", digest.strip_prefix("sha256:").unwrap())].clone();
+    let archive =
+        served.files[&format!("blobs/sha256/{}", digest.strip_prefix("sha256:").unwrap())].clone();
     drop(client);
     let files = recording.seen.into_inner();
     let expected = Expected {
@@ -933,7 +1012,12 @@ fn bundled_with(rotation: Rotation) -> Bundled {
     }
 }
 
-fn bundle_of(b: &Bundled, archive: &[u8], provenance: &[u8], files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+fn bundle_of(
+    b: &Bundled,
+    archive: &[u8],
+    provenance: &[u8],
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Vec<u8> {
     bundle::write(
         bundle::entries(
             &[(
@@ -955,7 +1039,11 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     let b = bundled();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let read = bundle::read(&bytes).unwrap();
-    assert!(read.entries.keys().any(|path| path.starts_with("registry/acme/root/")));
+    assert!(
+        read.entries
+            .keys()
+            .any(|path| path.starts_with("registry/acme/root/"))
+    );
     let store = Itaoca {
         root: scratch("unbundle"),
     };
@@ -964,7 +1052,11 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
     assert!(done.unused.is_empty(), "{:?}", done.unused);
     // What was stored loads verified, as every load does, and the checkpoint is the floor.
-    assert!(una_project::vendor::stored(&store, &b.expected).unwrap().is_some());
+    assert!(
+        una_project::vendor::stored(&store, &b.expected)
+            .unwrap()
+            .is_some()
+    );
     let id = registry_id(&b.expected.root);
     assert!(store.load_checkpoint(&id).unwrap().is_some());
     assert_eq!(store.load_root_version(&id).unwrap(), Some(1));
@@ -1025,7 +1117,12 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
     assert_eq!(at, None);
     // Nothing was written by any of them.
     assert!(!store.contains(&b.expected.digest).unwrap());
-    assert!(store.load_checkpoint(&registry_id(&b.expected.root)).unwrap().is_none());
+    assert!(
+        store
+            .load_checkpoint(&registry_id(&b.expected.root))
+            .unwrap()
+            .is_none()
+    );
     // A path the bundle does not name is refused when writing.
     assert!(bundle::write(vec![("../x".to_owned(), Vec::new())]).is_err());
     assert!(bundle::write(vec![("packages/zz".to_owned(), Vec::new())]).is_err());
@@ -1043,8 +1140,7 @@ fn unbundling_respects_the_root_version_floor() {
     store.store_root_version(&id, 2).unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let (_, problem) =
-        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
-            .unwrap_err();
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
     assert!(matches!(problem, Failure::Refused(_)), "{problem:?}");
     assert!(!store.contains(&b.expected.digest).unwrap());
     assert_eq!(store.load_root_version(&id).unwrap(), Some(2));
@@ -1060,9 +1156,11 @@ fn unbundling_keeps_a_larger_floor() {
     };
     // The client has seen a larger checkpoint of the same log.
     let owner = keypair(60, "acme.laptop");
-    b.test.release("acme/ledger", "0.3.2", "none", "none", &[&owner]);
+    b.test
+        .release("acme/ledger", "0.3.2", "none", "none", &[&owner]);
     let larger = b.test.checkpoint(NOW + 10);
-    let document = String::from_utf8(b.test.files[&format!("checkpoint/{larger}")].clone()).unwrap();
+    let document =
+        String::from_utf8(b.test.files[&format!("checkpoint/{larger}")].clone()).unwrap();
     let id = registry_id(&b.expected.root);
     store
         .store_checkpoint(&id, &document, &mut |_: &str| Ok(()))
@@ -1089,7 +1187,10 @@ fn unbundling_notes_a_floor_it_cannot_store() {
     let store = Itaoca {
         root: scratch("unbundle-floor-note"),
     };
-    let dir = store.root.join("registry").join(registry_id(&b.expected.root));
+    let dir = store
+        .root
+        .join("registry")
+        .join(registry_id(&b.expected.root));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
     // A process that ignores file modes, as root does, can write here anyway.
@@ -1173,7 +1274,10 @@ fn bundles_read_in_linear_time() {
         per_entry.push(elapsed / count as f64);
     }
     // Time per entry may vary with caches, never by the factor quadratic growth would give.
-    assert!(per_entry[2] < per_entry[0] * 20.0 + 50_000.0, "{per_entry:?}");
+    assert!(
+        per_entry[2] < per_entry[0] * 20.0 + 50_000.0,
+        "{per_entry:?}"
+    );
 }
 
 // --- The owner's key files, the source's URL and git (rules 8, 38 and 43) --------------------
@@ -1197,7 +1301,11 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
         use std::os::unix::fs::PermissionsExt;
         // A directory others can enter is refused first.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(owner_keys(&dir, "acme", &[], 1).unwrap_err().contains("0700"));
+        assert!(
+            owner_keys(&dir, "acme", &[], 1)
+                .unwrap_err()
+                .contains("0700")
+        );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     let a = key(80, "acme.a");
@@ -1213,9 +1321,16 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
     let registered = [a.key().clone(), b.key().clone()];
     let chosen = owner_keys(&dir, "acme", &registered, 2).unwrap();
     let names: Vec<&str> = chosen.iter().map(|k| k.key().name.as_str()).collect();
-    assert_eq!(names, ["acme.b", "acme.a"], "by file name, registered keys only");
+    assert_eq!(
+        names,
+        ["acme.b", "acme.a"],
+        "by file name, registered keys only"
+    );
     let refusal = owner_keys(&dir, "acme", &registered, 3).unwrap_err();
-    assert!(refusal.contains("fewer than its threshold of 3"), "{refusal}");
+    assert!(
+        refusal.contains("fewer than its threshold of 3"),
+        "{refusal}"
+    );
     // A key registered under another name does not sign: its line would carry another key hash.
     let renamed = [una_project::tlog::note::Key {
         name: "acme.renamed".to_owned(),
@@ -1231,8 +1346,11 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir.join("acme-0a.key"), std::fs::Permissions::from_mode(0o644))
-            .unwrap();
+        std::fs::set_permissions(
+            dir.join("acme-0a.key"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
         let refusal = owner_keys(&dir, "acme", &registered, 1).unwrap_err();
         assert!(refusal.contains("readable by its owner only"), "{refusal}");
     }
@@ -1245,9 +1363,15 @@ fn a_git_entry_in_the_directory_or_an_ancestor_is_found() {
     let package = base.join("a/b");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(base.join(".git"), "gitdir: elsewhere\n").unwrap();
-    assert_eq!(submit::git_entry(&package).unwrap(), Some(base.join(".git")));
+    assert_eq!(
+        submit::git_entry(&package).unwrap(),
+        Some(base.join(".git"))
+    );
     std::fs::create_dir(package.join(".git")).unwrap();
-    assert_eq!(submit::git_entry(&package).unwrap(), Some(package.join(".git")));
+    assert_eq!(
+        submit::git_entry(&package).unwrap(),
+        Some(package.join(".git"))
+    );
     // It fails closed: a directory that cannot be resolved refuses.
     assert!(submit::git_entry(&base.join("missing")).is_err());
 }
@@ -1274,7 +1398,11 @@ fn a_published_source_is_the_one_its_workspace_declares() {
         submit::declared_source(&package, "acme").unwrap().url.value,
         "https://ita.acme.example"
     );
-    assert!(submit::declared_source(&package, "other").unwrap_err().contains("not a source"));
+    assert!(
+        submit::declared_source(&package, "other")
+            .unwrap_err()
+            .contains("not a source")
+    );
     assert!(
         submit::declared_source(&package, "itaty")
             .unwrap_err()
@@ -1551,7 +1679,12 @@ fn an_honest_promise_with_latency_is_kept() {
         document: String::new(),
     };
     assert_eq!(
-        judge(&record, Some(&promise), Some(sent + PROMISE_WINDOW + 60), sent + 3 * 3600),
+        judge(
+            &record,
+            Some(&promise),
+            Some(sent + PROMISE_WINDOW + 60),
+            sent + 3 * 3600
+        ),
         Verdict::Kept
     );
 }
@@ -1603,8 +1736,16 @@ fn a_replaced_promise_is_evidence_and_the_earliest_by_is_judged() {
     );
     assert!(replaced.replaced);
     assert!(replaced.first.is_none(), "the first one stays");
-    assert!(replaced.notes.iter().any(|note| note.contains("replaced its promise")));
-    assert!(matches!(replaced.verdict, Verdict::Broken(_)), "logged at 4000, after 2000");
+    assert!(
+        replaced
+            .notes
+            .iter()
+            .any(|note| note.contains("replaced its promise"))
+    );
+    assert!(
+        matches!(replaced.verdict, Verdict::Broken(_)),
+        "logged at 4000, after 2000"
+    );
     // The same promise again is no replacement.
     let same = assess(
         &record,
@@ -1672,8 +1813,14 @@ fn the_audit_honors_accepted_indices_as_the_lock_does() {
     };
     let facts = audit::facts(&mut client, &locked).unwrap();
     assert_eq!(facts.accepted_effects, [request], "{facts:?}");
-    let kinds: Vec<Kind> = audit::findings(0, &facts).into_iter().map(|f| f.kind).collect();
-    assert!(kinds.contains(&Kind::AcceptedTookEffect(request)), "{kinds:?}");
+    let kinds: Vec<Kind> = audit::findings(0, &facts)
+        .into_iter()
+        .map(|f| f.kind)
+        .collect();
+    assert!(
+        kinds.contains(&Kind::AcceptedTookEffect(request)),
+        "{kinds:?}"
+    );
     // An index at or past the resolution point is not honored: the event is reported.
     locked.resolution = request;
     locked.accepted = [request].into_iter().collect();
@@ -1951,15 +2098,7 @@ fn a_promise_missed_never_makes_a_verdict_kept() {
     .into_bytes();
     let now = 10_000;
     // Logged within the window: kept with no promise served, unavailable with one missed.
-    let none = assess(
-        &record,
-        Ok(None),
-        None,
-        log.key(),
-        "acme",
-        Some(1500),
-        now,
-    );
+    let none = assess(&record, Ok(None), None, log.key(), "acme", Some(1500), now);
     assert_eq!(none.verdict, Verdict::Kept);
     let bad = assess(
         &record,
@@ -1980,7 +2119,10 @@ fn a_promise_missed_never_makes_a_verdict_kept() {
         Some(1500),
         now,
     );
-    assert!(matches!(unread.verdict, Verdict::Unavailable(_)), "{unread:?}");
+    assert!(
+        matches!(unread.verdict, Verdict::Unavailable(_)),
+        "{unread:?}"
+    );
     let stored = assess(
         &record,
         Ok(None),
@@ -1990,7 +2132,10 @@ fn a_promise_missed_never_makes_a_verdict_kept() {
         Some(1500),
         now,
     );
-    assert!(matches!(stored.verdict, Verdict::Unavailable(_)), "{stored:?}");
+    assert!(
+        matches!(stored.verdict, Verdict::Unavailable(_)),
+        "{stored:?}"
+    );
     // An unavailable verdict is not settled.
     let mut position = Position::start("acme", "acme");
     position.settle(&leaf, &unread.verdict).unwrap();
@@ -2026,8 +2171,7 @@ fn a_file_the_bundle_lacks_is_an_omission() {
         root: scratch("unbundle-omission"),
     };
     let (at, failure) =
-        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
-            .unwrap_err();
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
     assert_eq!(at, Some(0));
     assert!(
         matches!(failure, Failure::Omitted(Omission::Document(_), _)),
@@ -2137,7 +2281,11 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
     let evidence = audit::evidence(&client);
     assert_eq!(evidence.len(), 1, "{evidence:?}");
     assert!(!evidence[0].attributed(), "{evidence:?}");
-    assert!(evidence[0].text("acme").contains("2 of them served the same copy"));
+    assert!(
+        evidence[0]
+            .text("acme")
+            .contains("2 of them served the same copy")
+    );
     let missing = audit::Evidence::from(Misbehavior::MissingDeadline {
         owner: "acme".to_owned(),
         index: 7,
@@ -2178,9 +2326,11 @@ fn a_bundle_without_its_last_root_version_is_unavailable() {
     };
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
     let (_, failure) =
-        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
-            .unwrap_err();
-    assert!(matches!(failure, Failure::Unavailable(_) | Failure::Omitted(..)), "{failure:?}");
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
+    assert!(
+        matches!(failure, Failure::Unavailable(_) | Failure::Omitted(..)),
+        "{failure:?}"
+    );
     assert!(!store.contains(&b.expected.digest).unwrap());
 }
 
@@ -2199,8 +2349,8 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
             root: scratch(&format!("unbundle-retired-{count}")),
         };
         let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
-        let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
-            .unwrap();
+        let done =
+            bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
         assert_eq!(done.stored.len(), 1, "{count}");
     }
     // Two of three witnesses retired, below the threshold of two: the point needs the proof,
@@ -2214,8 +2364,7 @@ fn a_point_cosigned_by_retired_witnesses_unbundles() {
     };
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
     let (_, failure) =
-        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
-            .unwrap_err();
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
     assert!(
         matches!(
             failure,
@@ -2290,7 +2439,10 @@ fn a_stored_promise_survives_a_rotation_of_the_log_key() {
         Some(1500),
         10_000,
     );
-    assert!(matches!(wrong.verdict, Verdict::Unavailable(_)), "{wrong:?}");
+    assert!(
+        matches!(wrong.verdict, Verdict::Unavailable(_)),
+        "{wrong:?}"
+    );
     // A root the chain read does not hold: the promise does not verify, never kept.
     let lost = assess(
         &record,
