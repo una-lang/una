@@ -3968,6 +3968,63 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
     );
 }
 
+/// The program of the second review of #1146: `main` computes alone for a time its `secret`
+/// key decides, with no park, then starts a long task and runs a short public computation
+/// under a 6 ms deadline, and prints its value, or 0 when the deadline passed.
+fn phase_program(key: u8) -> String {
+    format!(
+        "module phase\n\nimport std.time (millisecond)\n\nkey() -> secret Int = {key}\n\ncrunch(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(100000) within 6 * millisecond\n      if error use 0\n    @console.print(\"{{v}}\")\n"
+    )
+}
+
+#[test]
+fn time_the_root_spent_alone_never_changes_a_later_deadline_under_real_time() {
+    // #1146, second review, ADR 0117 rule 2: a turn's end is `SLICE` after the later of its
+    // start and the moment a second task became ready on its worker, so the time `main` spent
+    // computing alone before its first `start`, decided by a `secret` key, never decides
+    // whether a public deadline after it passes. The same program is built twice, with only
+    // the key changed, and each executable runs 20 times on one worker under the real clock:
+    // the outcomes must be distributed the same, and the short computation always ends in time.
+    //
+    // Before this, a turn was timed from its start on the worker, and the root's began at
+    // `main`. With key 0 the root forked at once and finished its short computation in its
+    // turn, printing its value every run; with key 1 it had computed alone past 10 ms, so the
+    // `start` made it yield at once to `burn`, whose turn outlasted the 6 ms deadline, and
+    // every run printed `0`: a public value read the secret key.
+    const RUNS: usize = 20;
+    let mut outcomes = Vec::new();
+    for key in [0u8, 1] {
+        let name = format!("phaseleak{key}");
+        let dir = within_package(&name, "phase", &phase_program(key));
+        let exe = dir.join(format!("target/una/{name}"));
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for _ in 0..RUNS {
+            let native = Command::new(&exe)
+                .args(["--workers", "1"])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(native.status.code(), Some(0), "key {key}: {native:?}");
+            *counts
+                .entry(String::from_utf8_lossy(&native.stdout).into_owned())
+                .or_default() += 1;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        outcomes.push(counts);
+    }
+    assert_eq!(
+        outcomes.first(),
+        outcomes.last(),
+        "the deadline's outcomes differ with the secret key"
+    );
+    assert!(
+        outcomes
+            .first()
+            .is_some_and(|counts| counts.len() == 1 && !counts.contains_key("0\n")),
+        "{outcomes:?}"
+    );
+}
+
 /// A program that runs `rounds` races, each between a branch that computes a little and
 /// returns, and one that builds a list of a thousand items and then computes for minutes, so
 /// the winner cancels it with the list alive, and prints how many the first branch won.
