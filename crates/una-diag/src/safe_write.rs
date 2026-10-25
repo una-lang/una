@@ -177,22 +177,21 @@ pub fn private_dir(root: &Path, near: &Path) -> io::Result<PrivateDir> {
 }
 
 /// Moves the file `produced`, which an external program wrote inside `root` (in a
-/// [`PrivateDir`]), onto `target`, with the rules of [`write_atomically`] for the destination.
+/// [`PrivateDir`]), onto `target`, under the rules of [`checked_output`] for the destination.
 ///
 /// `produced` must be a regular file, not a link, in a directory that resolves inside `root`.
 /// It is opened, checked again through the open file (the same device and inode, still a
-/// regular file), synced to disk, and renamed onto the destination: `target`, or the file a
-/// link at `target` resolves to when that file and its directory are inside `root`. A link
-/// that leads outside `root` is refused, even one planted after the program ran. The rename
-/// replaces the destination's name and never writes through it, and the file keeps the
-/// permissions the program gave it.
+/// regular file), synced to disk, and renamed onto `target`, whose directory must resolve
+/// inside `root`. A link at `target` is refused, wherever it leads, even one planted after the
+/// program ran: a build output is not a source, so it is never written through. The file keeps
+/// the permissions the program gave it.
 ///
 /// # Errors
 ///
 /// Any error of the file system (the rename needs `produced` and the destination on the same
 /// file system, as a private directory next to `target` is), the refusal of a source that is
-/// not a regular file inside `root` or of a destination outside it, with
-/// [`io::ErrorKind::PermissionDenied`].
+/// not a regular file inside `root`, of a link at `target` or of a destination outside `root`,
+/// with [`io::ErrorKind::PermissionDenied`].
 pub fn install(root: &Path, produced: &Path, target: &Path) -> io::Result<()> {
     let root = canonical_root(root)?;
     let named = std::fs::symlink_metadata(produced)?;
@@ -217,8 +216,9 @@ pub fn install(root: &Path, produced: &Path, target: &Path) -> io::Result<()> {
     }
     file.sync_all()?;
     drop(file);
-    let (directory, name) = checked_destination(&root, target, true)?;
-    std::fs::rename(&source, directory.join(name))
+    // A build output is not a source: a link at its name is refused, even one inside `root`.
+    let destination = checked_output(&root, target)?;
+    std::fs::rename(&source, destination)
 }
 
 /// Whether `first` and `second` are the metadata of the same file.
@@ -544,6 +544,16 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"linked");
         let mode = std::fs::metadata(&target).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
+        // A link at the target is refused even when it leads inside the root: a build output
+        // is never written through.
+        let again = private.path().join("again");
+        std::fs::write(&again, b"linked again").unwrap();
+        let inner = made.join("inner");
+        std::os::unix::fs::symlink(&target, &inner).unwrap();
+        let error = install(&package, &again, &inner).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&target).unwrap(), b"linked");
+        std::fs::remove_file(&inner).unwrap();
         // A source that is a link is not installed.
         let fake = private.path().join("fake");
         std::os::unix::fs::symlink(&victim, &fake).unwrap();

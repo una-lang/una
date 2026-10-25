@@ -545,6 +545,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     fn placed_err(root: &Path, output: &Path) -> bool {
         placed(root, false, output, b"object").is_err()
     }

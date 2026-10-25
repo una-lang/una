@@ -421,7 +421,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_entry_is_read_only_from_a_small_regular_file_and_never_written_through_a_link() {
-        // #1163: a link at an entry's name, even one inside the package, is a miss when read
+        // #1160, #1164: a link at an entry's name, even one inside the package, is a miss when read
         // and is replaced, never followed, when the entry is stored; a file over the cap is a
         // miss and is not read whole.
         let base = std::env::temp_dir().join(format!("una-cache-entry-{}", std::process::id()));
