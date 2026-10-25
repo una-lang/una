@@ -1147,3 +1147,33 @@ Existing codes cover the rest:
 
 **ADR 0121, Note, appended on its acceptance, coordinated with Question 8.1.** In edition `0.4`, the edition switch of rule 2 and its opt-ins are read from `ita.una` (ADR 0122), where rule 2 says `una.toml`. The `0.3`-to-`0.4` pair of the edition test (rule 11) runs `una migrate` on each `0.3` package of the suite, then compares; a difference that the migration alone causes is not a clash. `una.toml` naming edition `0.4` is U7002 if no released `una` accepted that form when ADR 0122's files land, and a U7007 ledger entry otherwise.
 
+## Amendment of 2026-10-25: co-signer changes wait
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Rule 38.1 gives an owner whose keys are lost or stolen two fallbacks: recovery co-signers designated in advance, and, for an owner with none, a registry dispute. A co-signer designation logged after a key was stolen defeats both, since rule 38 lets the owner's threshold change the co-signers at once. The minimal chain:
+- Entry 0, `ita-owner/1`: the owner registers one key `A`, threshold one, no co-signers. A thief copies `A`.
+- Entry 1, `ita-key/1`, signed by `A`: `cosigners 1 X <key>`, naming a co-signer key `X` that the thief holds. `A` is a current key, so the registry logs it.
+
+From then on a recovery needs `X`'s signature, which only the thief gives, and a dispute is refused, since the owner has co-signers. The owner cannot revoke `A`, its only key. It can log `cosigners none` with its own copy of `A`, but the thief logs a new designation after each one. Every release the thief signs with `A` counts, for good.
+
+**Decision.**
+1. **Co-signer changes wait.** Every change to the recovery co-signers, a designation, a replacement or a removal (`cosigners <k> …` or `cosigners none`), is a pending key event. It takes effect only on a checkpoint whose witness time is at least seven days after the time it was logged, measured as a recovery's (rules 36.4 and 38.1), with no cancellation between, and governs the entries logged after that checkpoint.
+2. **Cancellation.** Any one current key of the owner can cancel it while it is pending, by `cancel <index>`. Such a cancellation cannot be overruled.
+3. **The co-signers in effect.** While a change is pending, the co-signers in effect are the old ones, for every rule that names them: recoveries, revocations, overrules and disputes. With none in effect, a dispute is available.
+4. **Recoveries and disputes end waiting changes.** When a recovery or a dispute takes effect, every co-signer change logged before that and still pending never takes effect, since keys the recovery or the dispute replaces signed it. A recovery leaves in effect the co-signers that were in effect when it was logged; a dispute leaves none.
+5. **Overrules.** A cancellation of a recovery is overruled by the threshold of the co-signers that were in effect when the recovery was logged, so a co-signer change that takes effect while the recovery waits cannot take the overrule away from them.
+6. **Reporting.** `una ita lock` and `una ita update`, and `una ita audit` once it reads registries, report a pending co-signer change as U7014, as a pending recovery: it is consented to with `--accept-key`, and its taking effect is a key change of its own (rule 25).
+7. **Competing requests.**
+   - **Two attacker classes.** An attacker holding only a stolen key of the owner (key-only) can log whatever that key's signature allows, but cannot obtain a recovery or a dispute: the registry logs those only after it verifies the account, by rule 38's registration checks and rule 38.1. An attacker who also took the account over (key and account) can obtain them. Competing requests arise only with an account takeover.
+   - **The rule.** A dispute logged while another recovery or dispute of the same chain waits, or a recovery logged while a dispute waits, competes. A request waits from its log position until it takes effect. A recovery waits even when cancelled, since its co-signers may overrule the cancellation, unless it was logged with no co-signers in effect, so that nothing can. None of the competing requests takes effect, and the owner's chain is frozen from the log position of the later one.
+   - **A frozen chain stays frozen.** No co-signers can settle it: a dispute is logged only for an owner with no co-signers in effect, so the co-signers in effect at the first dispute's position are always none, and an overrule by them cannot exist. No later entry changes the owner's keys, its co-signers or its requests, and a dispute or a recovery logged after the freeze changes nothing. A revocation with `since <p>` logged after the freeze, signed as rule 38 requires by the keys in effect at the freeze, still states a key's compromise.
+   - **Resolution.** A name of a frozen owner is refused (U7010), and the refusal gives the freeze's position. The name's owner registers anew, under a new owner name.
+   - **Releases.** A release logged before the freeze stands, unless it is signed by a key compromised before its position. A release logged from the freeze on never counts, whoever signs it.
+   - **Why it is safe.** Nothing in the log tells the owner's request from the attacker's, so a rule that picked a winner would give the name to the attacker in some chain. A freeze gives it to no one: no request takes effect, so the attacker never ends up with the name. The freeze is the outcome only with an account takeover, and the owner's guarantee that a stolen key cannot keep it from its names is stated for the key-only attacker.
+8. **The bound.** The bound on the key-and-account attacker rests on the registry's account verification, rule 38's registration and rule 38.1's disputes. A compromised registry is outside this model: the log's transparency, the witnesses and `una ita audit` cover it.
+
+**Consequences.**
+- A co-signer change takes seven days, as a recovery does; an owner designates its co-signers a week before it may need them.
+- A single-key owner whose key is stolen keeps the dispute: the thief's designation waits, the dispute is logged meanwhile, and when it takes effect it ends the designation.
+- `spec/30 §14` rule 5 states these rules as normative text.
