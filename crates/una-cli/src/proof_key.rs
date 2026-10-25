@@ -59,8 +59,20 @@ pub(crate) enum Refusal {
     Shared,
     /// The file has another hard link, a name someone else may have made for it.
     HardLinked,
-    /// The file is shorter than 16 bytes or longer than 4 KiB, so it is not a key.
+    /// The file holds fewer than 16 bytes, too few for a key, or more than 4 KiB.
     Size,
+}
+
+impl Refusal {
+    /// What the user can do about the refusal, when there is one obvious remedy.
+    pub(crate) fn hint(self) -> Option<&'static str> {
+        match self {
+            Refusal::Shared => Some("chmod 600 it"),
+            Refusal::HardLinked => Some("remove its other links"),
+            Refusal::Link => Some("name the file itself, not a link to it"),
+            Refusal::NotRegular | Refusal::NotOwned | Refusal::Size => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Refusal {
@@ -71,21 +83,8 @@ impl std::fmt::Display for Refusal {
             Refusal::NotOwned => "another user owns it",
             Refusal::Shared => "the group or others have permissions on it",
             Refusal::HardLinked => "it has another hard link",
-            Refusal::Size => "it is not 16 to 4096 bytes long",
+            Refusal::Size => "its size is outside 16 to 4096 bytes",
         })
-    }
-}
-
-impl Refusal {
-    /// What the user can do about the refusal, which ends the note the command line prints.
-    pub(crate) fn hint(self) -> &'static str {
-        match self {
-            Refusal::Shared => "chmod 600 it",
-            Refusal::Link | Refusal::NotRegular | Refusal::NotOwned | Refusal::HardLinked => {
-                "replace it with a private regular file"
-            }
-            Refusal::Size => "remove it, and a new key is made",
-        }
     }
 }
 

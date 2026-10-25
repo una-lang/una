@@ -305,12 +305,15 @@ where
             // `tcb.proof_cache_key: null` is the signal there. A note that cannot be written
             // changes nothing about the command.
             if !json {
+                let hint = refused
+                    .reason
+                    .hint()
+                    .map(|hint| format!(" ({hint})"))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     stderr,
-                    "note: the proof cache key `{}` is not a private regular file of the user ({}); the proof cache is off ({})",
-                    refused.shown,
-                    refused.reason,
-                    refused.reason.hint()
+                    "note: the proof cache key `{}` is not used, since {}; the proof cache is off{hint}",
+                    refused.shown, refused.reason
                 );
             }
             None

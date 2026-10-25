@@ -1014,7 +1014,7 @@ fn a_planted_proof_cache_entry_never_proves_a_false_contract_1164() {
         // An existing key file that is refused is named in a note on stderr, with the reason.
         let output = run(None, Some(named.as_path()), &["check"]);
         let note = format!(
-            "note: the proof cache key `{}` is not a private regular file of the user (the group or others have permissions on it); the proof cache is off (chmod 600 it)\n",
+            "note: the proof cache key `{}` is not used, since the group or others have permissions on it; the proof cache is off (chmod 600 it)\n",
             named.to_str().unwrap()
         );
         assert!(stderr(&output).contains(&note), "{}", stderr(&output));
@@ -1027,7 +1027,7 @@ fn a_planted_proof_cache_entry_never_proves_a_false_contract_1164() {
         let output = run(None, Some(link.as_path()), &["check"]);
         assert!(
             stderr(&output).contains(
-                "(it is a symbolic link); the proof cache is off (replace it with a private regular file)\n"
+                "is not used, since it is a symbolic link; the proof cache is off (name the file itself, not a link to it)\n"
             ),
             "{}",
             stderr(&output)
