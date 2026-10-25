@@ -65,11 +65,14 @@ use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
 use crate::timing::{Obligation, Timed, admits, completable, obligation};
+
+mod rotation;
 use crate::tree::{Tree, root as tree_root};
 use crate::{
     MAX_ARCHIVE, MAX_ENTRY, MAX_NEEDS, MAX_RELEASES_PER_NAME, PROMISE_WINDOW, decimal,
     digest_string, hex,
 };
+pub use rotation::Rotation;
 
 /// The store path of the log's size, the service's own state.
 const STATE_SIZE: &str = "state/size";
@@ -488,6 +491,21 @@ impl Registry {
             })
             .collect();
         (lines, self.threshold_named(version))
+    }
+
+    /// The witness threshold of the root version the checkpoint `signed` names, the current
+    /// one's when it names none of the chain.
+    fn own_threshold(&self, signed: &Note) -> usize {
+        let version = parse_checkpoint(&signed.text)
+            .ok()
+            .and_then(|checkpoint| roots::named(&checkpoint.extensions).ok())
+            .map_or(self.root.version, |(version, _)| version);
+        self.chain
+            .iter()
+            .find(|(root, _)| root.version == version)
+            .map_or(self.root.witnesses.threshold, |(root, _)| {
+                root.witnesses.threshold
+            })
     }
 
     /// The counted cosignatures of the stored checkpoint of `size`, and their threshold.
@@ -1221,6 +1239,18 @@ impl Registry {
     /// previous one nor far ahead of the registry's clock, and the witness has not cosigned a
     /// larger checkpoint. With the threshold reached, the checkpoint is served as `checkpoint`.
     pub fn cosign(&mut self, size: u64, line: &str) -> Result<(), Refusal> {
+        self.add_cosignature(size, line, None)
+    }
+
+    /// Takes the cosignature `line` of the checkpoint of `size`, by a witness of the root
+    /// metadata, or by `planned`, a witness of a rotation not installed yet
+    /// ([`Registry::backfill`]), with every check of [`Registry::cosign`].
+    fn add_cosignature(
+        &mut self,
+        size: u64,
+        line: &str,
+        planned: Option<&Key>,
+    ) -> Result<(), Refusal> {
         self.ready()?;
         if size > self.tree.size() {
             return Err(invalid(format!("the log has no checkpoint of size {size}")));
@@ -1243,17 +1273,29 @@ impl Registry {
             .first()
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        let witness = self
-            .root
-            .witnesses
-            .keys
-            .iter()
-            .find(|k| k.name == name)
-            .ok_or_else(|| invalid(format!("`{name}` is not a witness of the root metadata")))?;
+        let witness: Key = match planned {
+            Some(key) if key.name == name => key.clone(),
+            Some(key) => {
+                return Err(invalid(format!(
+                    "the cosignature is by `{name}`, not by `{}`",
+                    key.name
+                )));
+            }
+            None => self
+                .root
+                .witnesses
+                .keys
+                .iter()
+                .find(|k| k.name == name)
+                .cloned()
+                .ok_or_else(|| {
+                    invalid(format!("`{name}` is not a witness of the root metadata"))
+                })?,
+        };
         let time = single
-            .cosignature(witness)
+            .cosignature(&witness)
             .ok_or_else(|| invalid(format!("the cosignature by `{name}` does not verify")))?;
-        if signed.cosignature(witness).is_some() {
+        if signed.cosignature(&witness).is_some() {
             return Err(invalid(format!(
                 "`{name}` cosigned this checkpoint already"
             )));
@@ -1275,8 +1317,11 @@ impl Registry {
                 "the cosignature by `{name}` is from the future"
             )));
         }
-        // Every checkpoint stays on its side of each request's target (`crate::timing`).
-        let (lines, k) = self.counted(&signed, size);
+        // Every checkpoint stays on its side of each request's target (`crate::timing`),
+        // every cosignature line it carries counted, by the threshold of the root it names,
+        // which every client's threshold for it is at least.
+        let lines = claimed(&signed, size);
+        let k = self.own_threshold(&signed);
         for request in self.requests.values() {
             admits(request, size, time, &lines, k).map_err(invalid)?;
         }
@@ -1511,6 +1556,25 @@ impl Registry {
             promise: note(&text, &[&self.log]),
         })
     }
+}
+
+/// Every cosignature line `signed` carries, by the time it states, verified or not: a line of a
+/// `cosignature/v1`, eight bytes of time and a signature of 64, after its key hash. The service
+/// adds only lines it verified, so these are the cosignatures any root may count. O(S).
+fn claimed(signed: &Note, size: u64) -> Vec<Cosigned> {
+    signed
+        .signatures
+        .iter()
+        .filter(|signature| signature.bytes.len() == 72)
+        .filter_map(|signature| {
+            let time: [u8; 8] = signature.bytes.get(..8)?.try_into().ok()?;
+            Some(Cosigned {
+                witness: signature.name.clone(),
+                size,
+                time: u64::from_be_bytes(time),
+            })
+        })
+        .collect()
 }
 
 /// The pending recovery or dispute of `history` whose new key signs `note`, by its index: an
