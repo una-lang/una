@@ -541,9 +541,44 @@ impl Registry {
     /// The start of the request logged at `index`: the k-th earliest cosignature on its start
     /// checkpoint, once that carries the threshold, as the client takes it.
     fn start_of(&self, index: u64) -> Option<u64> {
-        let accepted = self.accepted(index.saturating_add(1))?;
-        let k = self.threshold_named(accepted.version);
+        self.start_under(&self.chain, index)
+    }
+
+    /// [`Registry::start_of`] as a client walking the root chain `chain` would read it: the
+    /// start checkpoint's cosignatures counted and its threshold taken under that chain.
+    fn start_under(&self, chain: &[(Root, String)], index: u64) -> Option<u64> {
+        let bytes = self
+            .store
+            .get(&checkpoint_path(index.saturating_add(1)), MAX_DOCUMENT)
+            .ok()??;
+        let document = String::from_utf8(bytes).ok()?;
+        let accepted = accept_checkpoint(&document, chain, Retired::Count).ok()?;
+        let last = chain.last().map(|(root, _)| root)?;
+        let named = chain
+            .iter()
+            .find(|(root, _)| root.version == accepted.version)
+            .map_or(last.witnesses.threshold, |(root, _)| {
+                root.witnesses.threshold
+            });
+        let k = named.max(last.witnesses.threshold);
         logged_at(index, &accepted.cosigned, k).ok()
+    }
+
+    /// The timed request logged at `index`, with its start and deadline (`crate::timing`).
+    pub fn request_timing(&self, index: u64) -> Option<&Timed> {
+        self.requests.get(&index)
+    }
+
+    /// The text of `state/deadlines`: each timed request's deadline, by index.
+    fn deadlines_text(&self) -> String {
+        self.requests
+            .values()
+            .filter_map(|request| {
+                request
+                    .deadline
+                    .map(|deadline| format!("{} {deadline}\n", request.index))
+            })
+            .collect()
     }
 
     /// The cosignatures of the checkpoint `signed`, of `size`, that count as `spec/30 §11` rule

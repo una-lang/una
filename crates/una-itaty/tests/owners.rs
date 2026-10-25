@@ -127,6 +127,20 @@ impl Fixture {
         }
     }
 
+    /// The registry opened again on the same store, as after a restart.
+    fn reopen(&self) -> Registry {
+        let shared: Arc<dyn Store> = self.store.clone();
+        Registry::open(
+            shared,
+            &Config {
+                pin: self.pin.clone(),
+                log_seed: [20; 32],
+            },
+            self.clock.clone(),
+        )
+        .unwrap()
+    }
+
     fn set_time(&self, time: u64) {
         self.clock.0.store(time, Ordering::SeqCst);
     }
@@ -370,7 +384,7 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     let short = f.registry.rotation_text(&raised).unwrap_err();
     assert_eq!(short.cause(), Some(&Cause::ThresholdShort), "{short:?}");
     let document = note_of(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
-    f.registry.install_root(&document).unwrap();
+    f.registry.install_root(&document, false).unwrap();
     f.keys.witnesses[2] = rotated;
     // A revoked key is never a witness again.
     let back = Rotation::new(
@@ -673,4 +687,88 @@ fn an_outage_across_a_target_lets_the_log_grow_past_an_uncompletable_checkpoint(
     let o = keypair(67, "orbit.o");
     assert_eq!(f.register("orbit", &[&o], &[]), 4);
     assert_eq!(f.registry.deadline_of(1), Some(5));
+}
+
+#[test]
+fn a_rotation_that_moves_a_waiting_start_needs_confirmation_and_keeps_deadlines() {
+    let mut f = Fixture::new("rotation-start");
+    let a = keypair(60, "acme.a");
+    let c = keypair(61, "trustee.c");
+    let r = keypair(63, "acme.r");
+    let z = keypair(62, "zenith.z");
+    let o = keypair(67, "orbit.o");
+    let t0 = NOW;
+    f.register("acme", &[&a], &[&c]);
+    let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
+    let receipt = f
+        .registry
+        .request(note_of(&recover, &[&c]).as_bytes())
+        .unwrap();
+    let recovery = f.logged(&owner_chain("acme"), receipt);
+    // Its start, the second earliest of three cosignatures, is t0 + 20.
+    f.cosign_at(2, 0, t0 + 10).unwrap();
+    f.cosign_at(2, 1, t0 + 20).unwrap();
+    f.cosign_at(2, 2, t0 + 30).unwrap();
+    assert_eq!(
+        f.registry
+            .request_timing(recovery)
+            .and_then(|timed| timed.start),
+        Some(t0 + 20)
+    );
+    f.register("zenith", &[&z], &[]);
+
+    // Revoking the witness of seed 31 leaves t0 + 10 and t0 + 30: the start moves to t0 + 30.
+    let compromised = f.keys.witnesses[1].1.clone();
+    let incoming = keypair(96, "witness.rotated.1");
+    let rotation = Rotation::new(
+        EXPIRES,
+        vec![
+            f.keys.witnesses[0].1.clone(),
+            f.keys.witnesses[2].1.clone(),
+            incoming.1.clone(),
+        ],
+        2,
+    )
+    .compromise(vec![compromised]);
+    let text = f.registry.rotation_text(&rotation).unwrap();
+    let document = note_of(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
+    assert_eq!(
+        f.registry
+            .install_root(&document, false)
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::StartMoves(recovery))
+    );
+    f.registry.install_root(&document, true).unwrap();
+    f.keys.witnesses[1] = incoming;
+    assert_eq!(
+        f.registry
+            .request_timing(recovery)
+            .and_then(|timed| timed.start),
+        Some(t0 + 30)
+    );
+
+    // Between the old target and the new one, no deadline is fixed.
+    let between = t0 + 25 + RECOVERY_DELAY;
+    f.set_time(between);
+    f.register("orbit", &[&o], &[]);
+    assert_eq!(f.registry.deadline_of(recovery), None);
+    f.cosign(&[0, 2], between);
+    let later = t0 + 30 + RECOVERY_DELAY + 100;
+    f.set_time(later);
+    f.submit("orbit", "cancel 3", 1, &[&o]).unwrap();
+    assert_eq!(f.registry.deadline_of(recovery), Some(5));
+    f.cosign(&[0, 2], later);
+
+    // Opened again, the registry keeps its starts and deadlines; the client agrees.
+    let reopened = f.reopen();
+    assert_eq!(
+        reopened.request_timing(recovery),
+        f.registry.request_timing(recovery)
+    );
+    let directory = Directory::new(&f.dir);
+    let mut client = Client::open("itaty", &directory, &f.pin, &Point::Served, None).unwrap();
+    assert_eq!(client.recovery_effect(recovery).unwrap(), Some(5));
+    assert_eq!(client.earliest_effect(recovery).unwrap(), Some(5));
+    assert!(client.misbehavior().is_empty());
 }

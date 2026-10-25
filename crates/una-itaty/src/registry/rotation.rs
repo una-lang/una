@@ -285,7 +285,18 @@ impl Registry {
     /// again), keep the log's key, and, raising the threshold, leave no kept checkpoint short
     /// ([`Registry::short_of`]). The checkpoints signed before it are kept as they are; the
     /// next size is signed under it.
-    pub fn install_root(&mut self, document: &str) -> Result<(), Refusal> {
+    ///
+    /// A rotation changes which cosignatures count, so it can move the start, the k-th earliest
+    /// counted cosignature on a start checkpoint, of a request whose deadline is not fixed yet,
+    /// and with it the target every client computes. Such a rotation is refused
+    /// ([`Cause::StartMoves`]) unless `confirm_start_moves` is the operator's explicit
+    /// confirmation; once installed, every request's start is recomputed from the stored
+    /// checkpoints under the new chain, and the deadlines are written again.
+    pub fn install_root(
+        &mut self,
+        document: &str,
+        confirm_start_moves: bool,
+    ) -> Result<(), Refusal> {
         self.ready()?;
         let (first, _) = self
             .chain
@@ -332,6 +343,26 @@ impl Registry {
                 return Err(Registry::raise_refusal(&short, last.witnesses.threshold));
             }
         }
+        let next_chain: Vec<(Root, String)> = walked
+            .iter()
+            .map(|root| (root.clone(), root.digest.clone()))
+            .collect();
+        let moved = self
+            .requests
+            .values()
+            .filter(|request| request.deadline.is_none())
+            .find(|request| self.start_under(&next_chain, request.index) != request.start)
+            .map(|request| request.index);
+        if let Some(index) = moved
+            && !confirm_start_moves
+        {
+            return Err(rule(
+                Cause::StartMoves(index),
+                format!(
+                    "the rotation changes which cosignatures count on the start checkpoint of the request at {index}, whose deadline is not fixed, and so its start and target; install it only with the operator's explicit confirmation"
+                ),
+            ));
+        }
         self.store
             .put(&format!("root/{next}"), document.as_bytes())
             .map_err(|why| rule(Cause::Store, why))?;
@@ -343,6 +374,17 @@ impl Registry {
             })
             .collect();
         self.root = last;
+        let indices: Vec<u64> = self.requests.keys().copied().collect();
+        for index in indices {
+            let start = self.start_of(index);
+            if let Some(request) = self.requests.get_mut(&index) {
+                request.start = start;
+            }
+        }
+        let deadlines = self.deadlines_text();
+        self.store
+            .put(super::STATE_DEADLINES, deadlines.as_bytes())
+            .map_err(|why| rule(Cause::Store, why))?;
         Ok(())
     }
 
