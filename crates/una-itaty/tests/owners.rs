@@ -1836,3 +1836,59 @@ fn a_request_is_cancelled_once_and_its_cancellation_never_waits_on_the_bucket() 
         Some(&Cause::AlreadyCancelled)
     );
 }
+
+/// Two waiting requests, the first's target passed and the second's not, with the newest
+/// checkpoint above both: a line late for the first is early for the second, and held.
+fn between_two_targets(f: &mut Fixture) -> (u64, u64) {
+    let o = keypair(67, "orbit.o");
+    let (first, target) = disputed_zenith(f);
+    let second_start = NOW + 3 * 24 * 3600;
+    f.set_time(second_start);
+    f.dispute("orbit", &keypair(68, "orbit.d")).unwrap();
+    f.cosign(&[0, 1, 2], second_start);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    f.cosign(&[0, 1, 2], second_start);
+    f.set_time(target + 10);
+    f.submit("orbit", "cancel 2", 1, &[&o]).unwrap();
+    (first, target)
+}
+
+#[test]
+fn held_lines_count_toward_a_deadline_only_as_clients_count_them() {
+    // A planned witness's held line counts for nothing.
+    let mut f = Fixture::new("held-planned");
+    let (first, target) = between_two_targets(&mut f);
+    let size = f.registry.size();
+    f.cosign_at(size, 0, target + 10).unwrap();
+    let (pair, key) = keypair(98, "witness.planned");
+    let line = cosign_line(&pair, &key, &f.checkpoint_text(size), target + 10);
+    f.registry.backfill(size, &line, &key).unwrap();
+    assert_eq!(f.registry.deadline_of(first), None);
+
+    // Nor does a held line of a witness a rotation then revokes.
+    let mut f = Fixture::new("held-revoked");
+    let (first, target) = between_two_targets(&mut f);
+    let size = f.registry.size();
+    f.cosign_at(size, 2, target + 10).unwrap();
+    let compromised = f.keys.witnesses[2].1.clone();
+    let incoming = keypair(99, "witness.rotated.2");
+    let rotation = Rotation::new(
+        EXPIRES,
+        vec![
+            f.keys.witnesses[0].1.clone(),
+            f.keys.witnesses[1].1.clone(),
+            incoming.1.clone(),
+        ],
+        2,
+    )
+    .compromise(vec![compromised]);
+    let text = f.registry.rotation_text(&rotation).unwrap();
+    let document = signed(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
+    f.registry.install_root(&document, false).unwrap();
+    f.keys.witnesses[2] = incoming;
+    f.cosign_at(size, 0, target + 10).unwrap();
+    assert_eq!(f.registry.deadline_of(first), None);
+    // Two current witnesses do.
+    f.cosign_at(size, 1, target + 10).unwrap();
+    assert_eq!(f.registry.deadline_of(first), Some(size));
+}

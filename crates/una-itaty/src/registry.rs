@@ -1125,21 +1125,21 @@ impl Registry {
         })
     }
 
-    /// The counted lines of the checkpoint of `size`, published and held, one per witness,
-    /// and the threshold that counts them.
+    /// The counted lines of the checkpoint of `size`, published and held, and the threshold
+    /// that counts them: the stored checkpoint with its held lines, counted by `counted` as a
+    /// client counts the lines once published, so a planned witness's line or a revoked
+    /// witness's counts for nothing.
     fn all_lines(&self, size: u64) -> Option<(Vec<Cosigned>, usize)> {
-        let signed = self.stored_note(size)?;
-        let (mut lines, k) = self.counted(&signed, size);
+        let bytes = self
+            .store
+            .get(&checkpoint_path(size), MAX_DOCUMENT)
+            .ok()??;
+        let mut document = String::from_utf8(bytes).ok()?;
         for held in self.held.get(&size).into_iter().flatten() {
-            if !lines.iter().any(|line| line.witness == held.witness) {
-                lines.push(Cosigned {
-                    witness: held.witness.clone(),
-                    size,
-                    time: held.time,
-                });
-            }
+            document.push_str(&held.line);
         }
-        Some((lines, k))
+        let signed = parse_note(&document).ok()?;
+        Some(self.counted(&signed, size))
     }
 
     /// A held line of the checkpoint of `size`, read back: its witness and time from the line.
