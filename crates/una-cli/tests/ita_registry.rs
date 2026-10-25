@@ -517,3 +517,104 @@ fn add_binds_an_owner_to_the_source_that_serves_it() {
     assert!(err.contains("served by the source `acme`"), "{err}");
     assert_eq!(std::fs::read_to_string(dir.join("ita.una")).unwrap(), manifest);
 }
+
+// --- review fixes: floors, symlinks and the environment --------------------------------------
+
+/// Runs `una` with `variables` as the whole environment.
+fn una_with(args: &[&str], variables: &[(&str, &str)]) -> (u8, String, String) {
+    let variables: Vec<(String, String)> = variables
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = una_cli::run(
+        args.iter().copied(),
+        &mut stdout,
+        &mut stderr,
+        false,
+        &|name| {
+            Ok(variables
+                .iter()
+                .find(|(set, _)| set == name)
+                .map(|(_, value)| value.clone()))
+        },
+        una_cli::Heap::unmeasured(),
+    );
+    (
+        status.code(),
+        String::from_utf8(stdout).unwrap(),
+        String::from_utf8(stderr).unwrap(),
+    )
+}
+
+/// The audit proves that the fresh checkpoint extends the lock's resolution point, with no floor
+/// stored: an empty Itaoca that holds only `mirrors.una`.
+#[test]
+fn audit_proves_the_lock_point_with_an_empty_itaoca() {
+    let (_, dir, _, itaoca) = fetched("audit-lock-point");
+    let empty = scratch("ita-registry-store", "audit-lock-point-empty");
+    std::fs::copy(itaoca.join("mirrors.una"), empty.join("mirrors.una")).unwrap();
+    let (status, out, err) = una_in(&["una", "ita", "audit", path(&dir)], &empty);
+    assert_eq!(status, 0, "{out}{err}");
+    // A lock whose resolution point the registry's log does not extend: not audited as clean.
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let at = lock.find("  checkpoint ").unwrap();
+    let start = at + lock[at..].find("\"sha256:").unwrap() + 1;
+    let forked = format!(
+        "{}sha256:{}{}",
+        &lock[..start],
+        "00".repeat(32),
+        &lock[start + 71..]
+    );
+    std::fs::write(dir.join("ita.lock"), forked).unwrap();
+    let empty = scratch("ita-registry-store", "audit-lock-point-empty-2");
+    std::fs::copy(itaoca.join("mirrors.una"), empty.join("mirrors.una")).unwrap();
+    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &empty);
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7010"], "{out}");
+}
+
+/// A floor that cannot be stored fails the command: the audit does not call anything clean.
+#[test]
+fn a_floor_that_cannot_be_stored_fails_the_command() {
+    let (_, dir, _, itaoca) = fetched("floor-unstored");
+    // Another run seems to hold the floor lock, and never releases it.
+    std::fs::create_dir_all(itaoca.join("registry/acme")).unwrap();
+    std::fs::write(itaoca.join("registry/acme/floor.lock"), "").unwrap();
+    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7010"], "{out}");
+}
+
+/// A bundle reached through a symbolic link is refused, and nothing is written.
+#[cfg(unix)]
+#[test]
+fn unbundle_follows_no_link() {
+    let (_, dir, _, itaoca) = fetched("bundle-link");
+    let base = scratch("ita-registry-bundles", "link");
+    let file = base.join("demo.bundle");
+    let (status, _, _) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &itaoca);
+    assert_eq!(status, 0);
+    let link = base.join("link.bundle");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let isolated = scratch("ita-registry-store", "bundle-link-isolated");
+    let (status, _, err) =
+        una_in(&["una", "ita", "unbundle", path(&link), path(&dir)], &isolated);
+    assert_eq!(status, 2, "{err}");
+    assert!(!isolated.join("packages").exists());
+}
+
+/// `GIT_DIR` or `GIT_WORK_TREE` set can put any directory in a repository: publish refuses.
+#[test]
+fn publish_refuses_with_git_variables_set() {
+    let dir = package_outside_git("git-variables", &published("acme"));
+    for variable in ["GIT_DIR", "GIT_WORK_TREE"] {
+        let (status, out, _) = una_with(
+            &["una", "--json", "ita", "publish", path(&dir)],
+            &[(variable, "/elsewhere")],
+        );
+        assert_eq!(status, 1, "{variable}");
+        assert!(out.contains(&format!("`{variable}` is set")), "{out}");
+    }
+}
