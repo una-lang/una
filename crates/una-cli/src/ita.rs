@@ -666,8 +666,7 @@ fn resolve_and_lock(
             },
             _ => Point::Latest { now: options.now },
         };
-        let floor = old.as_ref().map(|(size, _)| *size);
-        match crate::registry::open_first(declared, list, &point, options.itaoca, floor) {
+        match crate::registry::open_first(declared, list, &point, options.itaoca, old.as_ref()) {
             Ok((registry, skipped)) => {
                 notes.extend(skipped);
                 registries.insert(source.clone(), RefCell::new(registry));
@@ -852,6 +851,16 @@ fn resolve_and_lock(
                 continue;
             }
         };
+        if release.compromised {
+            found.push(problem(
+                Code::U7010,
+                format!(
+                    "`{} {version}` counts as signed only with a key of its owner revoked as compromised before it was logged",
+                    identity.name
+                ),
+            ));
+            continue;
+        }
         let Some(signed) = crate::registry::signed_of(&release) else {
             found.push(problem(
                 Code::U7010,
@@ -934,6 +943,42 @@ fn resolve_and_lock(
                     found.push(problem(Code::U7010, message));
                     continue;
                 }
+            }
+        }
+        // A pending recovery or dispute of the owner (rule 38.1): reported, and consented to
+        // only with `--accept-key`, as a key change is.
+        match registry.history(una_project::client::owner_of(&identity.name)) {
+            Ok(history) if !history.pending.is_empty()
+                && !options.accept_key.contains(&identity.name) =>
+            {
+                let pending: Vec<String> = history
+                    .pending
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "{} logged at {} naming the key `{}`",
+                            if p.dispute { "a dispute" } else { "a recovery" },
+                            p.index,
+                            una_project::client::shown(&p.key.name)
+                        )
+                    })
+                    .collect();
+                found.push(problem(
+                    Code::U7014,
+                    format!(
+                        "the owner of `{}` has {} pending: {}; review it in the registry's log, then run `una ita {repair} --accept-key {}`",
+                        identity.name,
+                        if pending.len() == 1 { "a key change" } else { "key changes" },
+                        pending.join("; "),
+                        identity.name
+                    ),
+                ));
+                continue;
+            }
+            Ok(_) => {}
+            Err(message) => {
+                found.push(problem(Code::U7010, message));
+                continue;
             }
         }
         // Trust (rules 10, 25 and 53), from the statement, which its archive is checked against
@@ -1846,6 +1891,7 @@ fn with_need(text: &str, line: &str) -> String {
 /// `una ita lock` refuses them.
 fn newest_release(
     read: &ita::Manifest,
+    lock_floor: Option<&(u64, String)>,
     source: &str,
     name: &str,
     options: &LockOptions<'_>,
@@ -1888,7 +1934,7 @@ fn newest_release(
         &places,
         &Point::Latest { now: options.now },
         options.itaoca,
-        None,
+        lock_floor,
     )
     .map_err(|(code, message)| refuse(code, message))?;
     let releases = registry
@@ -2009,7 +2055,19 @@ pub(crate) fn add_command(
             // Rule 25: the newest release of the newest major line past the cooldown, from the
             // registry's verified state.
             let source = from.clone().unwrap_or_else(|| una_project::ita::ITATY.to_owned());
-            match newest_release(&before, &source, name, &options) {
+            // The lock's resolution point of the source, which the new point must extend.
+            let lock_floor = std::fs::read_to_string(path.join("ita.lock"))
+                .ok()
+                .and_then(|text| {
+                    parse_ita_lock(&text)
+                        .0
+                        .read
+                        .registries
+                        .iter()
+                        .find(|r| r.source.value == source)
+                        .map(|r| (r.checkpoint_size.value, r.checkpoint_hash.value.clone()))
+                });
+            match newest_release(&before, lock_floor.as_ref(), &source, name, &options) {
                 Ok(version) => version.to_string(),
                 Err(error) => {
                     let mut sources = SourceDb::new();
@@ -2354,6 +2412,11 @@ fn fetch_one(
     let what = format!("{} {}", expected.name, expected.version);
     let version = Version::parse_full(&expected.version)?;
     let release = registry.release(&expected.name, &version)?;
+    if release.compromised {
+        return Err(format!(
+            "{what} counts as signed only with a key of its owner revoked as compromised before it was logged, so it is not fetched"
+        ));
+    }
     if release.index != expected.logged {
         return Err(format!(
             "the release statement of {what} is logged at {}, not at the lock's {}",
@@ -2417,8 +2480,12 @@ fn fetch_one(
 
 /// What the code of a verified archive uses, checked at tier 0 from the archive's own bytes
 /// (ADR 0122 rule 37): the package is read from the verified bytes in memory, so no byte of it
-/// is read from a file that could have changed since it was verified. The modules of its own needs are
-/// not loaded, so what its calls into them use is counted where its own headers write it.
+/// is read from a file that could have changed since it was verified. Its own needs are not
+/// loaded, so the only diagnostics it may have are those that says: the lock an archive never
+/// holds (U7009), its registry needs, which a package read alone cannot load or name the source
+/// of (U7008 at its `ita.una`), and imports of their modules (U1001). Any other diagnostic, a module that does
+/// not parse or check, or a platform the checker cannot run on, is refused: what such code
+/// uses cannot be counted, and a count that is short would let a statement understate it.
 fn archive_authority(
     tree: &una_project::tree::VerifiedTree,
 ) -> Result<una_project::authority::Authority, String> {
@@ -2432,6 +2499,38 @@ fn archive_authority(
         })
         .collect::<Result<_, _>>()?;
     let package = crate::package::load_files(&files).map_err(|error| error.to_string())?;
+    let locals: Vec<String> = package
+        .manifest
+        .map(|id| una_syntax::ita::parse_manifest(package.sources.file(id).text()).0)
+        .map(|read| {
+            read.needs
+                .iter()
+                .map(|need| una_project::ita::local_name(need).value)
+                .collect()
+        })
+        .unwrap_or_default();
     let analysis = crate::on_large_stack(|| crate::analyze(&package, None));
+    let allowed = |diagnostic: &Diagnostic| match diagnostic.code {
+        Code::U7009 => diagnostic.primary.file == "ita.una",
+        Code::U7008 => {
+            diagnostic.primary.file == "ita.una"
+                && (diagnostic.message.contains("cannot be needed")
+                    || diagnostic.message.contains("names no source"))
+        }
+        Code::U1001 => locals.iter().any(|local| {
+            diagnostic
+                .message
+                .starts_with(&format!("module `{local}."))
+        }),
+        _ => false,
+    };
+    if let Some(diagnostic) = analysis.diagnostics.iter().find(|d| !allowed(d)) {
+        return Err(format!(
+            "the archive's code does not check ({} at {}: {}), so what it uses cannot be counted",
+            diagnostic.code,
+            una_project::client::shown(&diagnostic.primary.file),
+            una_project::client::shown(&diagnostic.message)
+        ));
+    }
     Ok(crate::report::authority_under(&analysis, ""))
 }
