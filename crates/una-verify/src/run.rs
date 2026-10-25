@@ -35,8 +35,9 @@ pub struct Settings {
     pub lock: Lock,
     /// The wall-clock guard (`spec/12 §5`).
     pub wallclock: Duration,
-    /// The proof cache, `.una/cache/proofs` of the package, when there is one.
-    pub cache: Option<PathBuf>,
+    /// The proof cache, `.una/cache/proofs` of the package with the user's key, when there is
+    /// one; without a key there is no cache, and every obligation is solved.
+    pub cache: Option<cache::ProofCache>,
 }
 
 /// How an obligation ended.
@@ -252,8 +253,8 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
         .map(|(_, _, key)| {
             settings
                 .cache
-                .as_deref()
-                .and_then(|dir| cache::get(dir, key))
+                .as_ref()
+                .and_then(|cache| cache::get(cache, key))
         })
         .collect();
     if cached.iter().any(Option::is_none) {
@@ -272,8 +273,8 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
                 id: obligation.id.clone(),
                 message: failure.0,
             })?;
-            if let Some(dir) = &settings.cache {
-                cache::put(dir, key, &answer);
+            if let Some(cache) = &settings.cache {
+                cache::put(cache, key, &answer);
             }
             Ok((answer, false))
         })
@@ -301,8 +302,8 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             query.as_ref().and_then(|(_, key)| {
                 settings
                     .cache
-                    .as_deref()
-                    .and_then(|dir| cache::get(dir, key))
+                    .as_ref()
+                    .and_then(|cache| cache::get(cache, key))
             })
         })
         .collect();
@@ -330,8 +331,8 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
                 id: obligation.id.clone(),
                 message: failure.0,
             })?;
-            if let Some(dir) = &settings.cache {
-                cache::put(dir, key, &answer);
+            if let Some(cache) = &settings.cache {
+                cache::put(cache, key, &answer);
             }
             Ok(Some(answer))
         })

@@ -364,6 +364,7 @@ tcb:
   host capabilities: Console, Keys
   solver: z3 5.1.0
   proof cache: .una/cache/
+  proof cache key: ~/.una/proof-cache.key
 requirements:
   EVENTS_3 (active): events.seating.availability
 coverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures

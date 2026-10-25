@@ -9,6 +9,7 @@
 mod args;
 mod contract;
 mod package;
+mod proof_key;
 mod report;
 mod runtime;
 mod trace;
@@ -29,6 +30,7 @@ use una_syntax::{FileId, Interner, Lexed, SourceDb, lex, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
+use crate::verification::Solving;
 pub use crate::verification::{DEFAULT_WALLCLOCK, Verification};
 
 /// The exit status of a `una` command (`spec/13 §5`).
@@ -83,14 +85,20 @@ pub struct Checked {
 }
 
 /// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
-/// default wall-clock guard of the solver.
+/// default wall-clock guard of the solver and no proof cache.
 pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
     check_with(path, tier, DEFAULT_WALLCLOCK)
 }
 
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
-/// reports nothing, every proof obligation.
+/// reports nothing, every proof obligation, solved with the guard `wallclock`. No proof cache
+/// is read or written: only the command line has the user's key that authenticates one (#1164).
 pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
+    check_solving(path, tier, Solving::uncached(wallclock))
+}
+
+/// [`check_with`] with the proof cache of `solving`, when it has a key.
+fn check_solving(path: &Path, tier: Tier, solving: Solving<'_>) -> Result<Checked, LoadError> {
     let package = load(path)?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
@@ -98,7 +106,7 @@ pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checke
     });
     let mut verification = None;
     if tier == Tier::One && diagnostics.is_empty() {
-        let found = verification::tier_one(&package, &program, wallclock);
+        let found = verification::tier_one(&package, &program, solving);
         diagnostics.extend(found.diagnostics);
         verification = found.verification;
     }
@@ -267,6 +275,11 @@ fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
 /// `Env.get` aborts on it (S-16, ADR 0086).
 pub type Environment<'a> = &'a (dyn Fn(&str) -> Result<Option<String>, una_interp::NotText> + Sync);
 
+/// The variable `name` for the toolchain's own use: unset when its value is not valid UTF-8.
+pub(crate) fn variable(environment: Environment<'_>, name: &str) -> Option<String> {
+    environment(name).ok().flatten()
+}
+
 /// Runs the `una` command line. `args` starts with the program name; `stderr_is_terminal`
 /// decides `--color auto`, since human diagnostics go to stderr (ADR 0015 D1).
 ///
@@ -282,6 +295,9 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
+    // never makes one (#1164).
+    let resolve_key = || proof_key::resolve(environment);
     let status = match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             Command::Check {
@@ -290,6 +306,12 @@ where
                 dump_core,
                 solver_wallclock,
             } => {
+                // Tier 0 never verifies, so it needs no key.
+                let key = if matches!(tier, TierArg::One) {
+                    resolve_key()
+                } else {
+                    None
+                };
                 let options = CheckOptions {
                     tier: match tier {
                         TierArg::Zero => Tier::Zero,
@@ -297,7 +319,10 @@ where
                     },
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -305,10 +330,14 @@ where
                 requirement,
                 solver_wallclock,
             } => {
+                let key = resolve_key();
                 let options = trace::TraceOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
@@ -316,10 +345,14 @@ where
                 path,
                 solver_wallclock,
             } => {
+                let key = resolve_key();
                 let options = report::ReportOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
@@ -327,10 +360,14 @@ where
                 path,
                 solver_wallclock,
             } => {
+                let key = resolve_key();
                 let options = verification::ObligationsOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -352,13 +389,17 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
+                let key = resolve_key();
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -367,13 +408,17 @@ where
                 max_depth,
                 solver_wallclock,
             } => {
+                let key = resolve_key();
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: Solving {
+                        wallclock: Duration::from_secs(solver_wallclock),
+                        proof_key: key.as_ref(),
+                    },
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
@@ -400,23 +445,23 @@ where
 
 /// The options of `una check`.
 #[derive(Clone, Copy, Debug)]
-struct CheckOptions {
+struct CheckOptions<'a> {
     tier: Tier,
     json: bool,
     color: bool,
-    wallclock: Duration,
+    solving: Solving<'a>,
 }
 
 /// `una check [path]`: prints the diagnostics of [`check`], as JSON on stdout (ADR 0012) or
 /// for people on stderr (ADR 0015 D1).
 fn check_command(
     path: &Path,
-    options: CheckOptions,
+    options: CheckOptions<'_>,
     dump_core: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let checked = match check_with(path, options.tier, options.wallclock) {
+    let checked = match check_solving(path, options.tier, options.solving) {
         Ok(checked) => checked,
         // A usage error goes to stderr even with --json; it happens before the
         // command runs, like the usage errors clap reports.

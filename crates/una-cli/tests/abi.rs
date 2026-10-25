@@ -17,6 +17,9 @@ fn repository() -> PathBuf {
 
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository().join(dir))
         .output()
@@ -79,8 +82,10 @@ fn the_report_of_the_events_example() {
         report["tcb"]["trusted_modules"],
         json!([{"module": "events.keys", "lines": 17}])
     );
-    // ADR 0041: the proof cache is part of the Trusted zone.
+    // #1164: the proof cache keeps its field, and the key file that authenticates its entries
+    // is in the Trusted zone instead of the cache (ADR 0041 until v0.1.12).
     assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
+    assert_eq!(report["tcb"]["proof_cache_key"], "~/.una/proof-cache.key");
     assert_eq!(
         report["requirements"],
         json!([{"id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"]}])
@@ -111,7 +116,8 @@ fn the_report_of_the_events_example() {
         stdout(&output)
     );
     assert!(
-        stdout(&output).contains("\n  proof cache: .una/cache/\n"),
+        stdout(&output)
+            .contains("\n  proof cache: .una/cache/\n  proof cache key: ~/.una/proof-cache.key\n"),
         "{}",
         stdout(&output)
     );
@@ -309,6 +315,9 @@ pub double(x: Int) -> Int
     assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown; 1 cached\n"));
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        // The proof cache's key lives under this home, never the user's (#1164).
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "trace", "NUM_1"])
         .current_dir(&root)
         .output()
@@ -455,6 +464,9 @@ fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
         let first = una_in(dir, &args);
         let second = una_in(dir, &args);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
+            // The proof cache's key lives under this home, never the user's (#1164).
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(&args)
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(repository().join(dir))
