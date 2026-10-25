@@ -16,13 +16,24 @@
 //! --test-threads=1`. They run in release form, `una` and the runtime both release builds
 //! (`common/native_build.rs` builds the release runtime under `--release`): timings of the
 //! debug runtime, with its checks of reference counts, are not meaningful. Each oracle follows
-//! ADR 0116, amendment §G: an outcome of a deadline, two inputs compared with each other, 20
-//! runs of each, alternating, judged by the equivalence bound that §G states.
+//! ADR 0116, amendment §G: a deadline over `public` work, two inputs compared with each other,
+//! 20 runs of each, alternating.
+//!
+//! The statistic is the Mann-Whitney U rank test of the two inputs' times (`common/rank.rs`),
+//! with every run that timed out, or never reached the measured point, ranked above every
+//! time; the oracle fails at a two-sided p below 0.001. It replaced the majority rule of §G's
+//! equivalence bound, which missed the channel of #1145 on the old code: medians of 71 and
+//! 45 ms, 9 and 1 timeouts in 20, and the same majority. A control compares one input with
+//! itself, 20 runs against 20, and must pass, so a machine whose noise alone would fail the
+//! test is seen as such. The deterministic test of P8 in `crates/una-rt/src/sched.rs` remains
+//! the primary guard at this slice.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 #[path = "common/native_build.rs"]
 mod native_build;
+#[path = "common/rank.rs"]
+mod rank;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -33,6 +44,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use native_build::{root, una};
+use rank::{RankTest, mann_whitney};
 
 /// How long the server holds the request under the deadline, in milliseconds.
 const HOLD_MS: u64 = 50;
@@ -175,19 +187,10 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
     // `/hold`, and the deadline is the slowest of them, plus the hold, plus 25 ms. Then key 0
     // and key 1 are built with it and run 20 times each, alternating.
     //
-    // The judgment is §G's equivalence bound: each key's outcome is the majority of its 20
-    // runs, and the two majorities must agree. Its power: a channel that flips a run's outcome
-    // with probability 0.25 or more is caught with probability above 0.97 for each input,
-    // while a run that the machine's noise alone pushes past the deadline does not fail it.
+    // The judgment is the rank test of the header: key 0's 20 times against key 1's, failing at
+    // p < 0.001, with timeouts ranked above every time. The control runs key 1 twice as often
+    // and compares its two halves, which must pass at p >= 0.001.
     //
-    // What it can see at this slice: before the fix, P8, the lazy start of worker threads, is
-    // the only history this program carries, and it amplifies only the cost of starting
-    // threads (1,023 of them for key 0 inside the deadline). Whether that clears the noise
-    // depends on the machine. So the deterministic test of `crates/una-rt/src/sched.rs`,
-    // `a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before`, which counts the
-    // threads started and stacks mapped inside a construct after any history, is the primary
-    // guard of P8 here, and this oracle the end-to-end one. P6, the placement, is checked by
-    // the unit tests of `sched.rs` and by the parity amplifier of ADR 0117 S4.
     let spans = Arc::new(Mutex::new(Vec::new()));
     let port = holding_server(Arc::clone(&spans));
     let calibration = placement_package("calibration", 1, 60_000, port);
@@ -204,28 +207,48 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
         placement_package("key0", 0, deadline, port),
         placement_package("key1", 1, deadline, port),
     ];
-    let mut outcomes: [Vec<bool>; 2] = [Vec::new(), Vec::new()];
+    // Per run, key 0, key 1 and key 1 again: the time from `/mark` to `/hold` in ms, or
+    // infinity for a run that timed out or whose deadline passed before `/hold` started.
+    let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for run in 0..20 {
-        for (key, dir) in dirs.iter().enumerate() {
+        for (sample, (key, dir)) in [(0, &dirs[0]), (1, &dirs[1]), (1, &dirs[1])]
+            .into_iter()
+            .enumerate()
+        {
             spans.lock().unwrap().clear();
-            let late = timed_out(dir, run);
-            // A run whose deadline passed before `/hold` started never reached the server.
-            let span = spans.lock().unwrap().first().map(|span| span / 1000);
-            eprintln!("run {run} key {key}: /mark to /hold {span:?} ms, timed out {late}");
-            outcomes[key].push(late);
+            let late = timed_out(dir, run * 3 + sample);
+            let span = spans.lock().unwrap().first().copied();
+            let value = match span {
+                Some(span) if !late => span as f64 / 1000.0,
+                _ => f64::INFINITY,
+            };
+            eprintln!("run {run} key {key}: /mark to /hold {span:?} us, timed out {late}");
+            samples[sample].push(value);
         }
     }
-    let majority = |runs: &[bool]| {
-        let late = runs.iter().filter(|&&late| late).count();
-        assert_ne!(late * 2, runs.len(), "no majority: {runs:?}");
-        late * 2 > runs.len()
+    let report = |what: &str, test: &RankTest, a: &[f64], b: &[f64]| {
+        eprintln!(
+            "{what}: U = {}, z = {:.3}, p = {:.3e}; {a:?} against {b:?}",
+            test.u, test.z, test.p
+        );
     };
-    let (key0, key1) = (majority(&outcomes[0]), majority(&outcomes[1]));
-    eprintln!("majorities: key 0 timed out {key0}, key 1 timed out {key1}");
-    assert_eq!(
-        key0, key1,
-        "the majorities differ: key 0 {:?}, key 1 {:?}; deadline {deadline} ms",
-        outcomes[0], outcomes[1]
+    let secret = mann_whitney(&samples[0], &samples[1]);
+    report("key 0 against key 1", &secret, &samples[0], &samples[1]);
+    let control = mann_whitney(&samples[1], &samples[2]);
+    report(
+        "control, key 1 against key 1",
+        &control,
+        &samples[1],
+        &samples[2],
+    );
+    assert!(
+        control.p >= 0.001,
+        "the control failed: the machine's noise alone separates one input from itself"
+    );
+    assert!(
+        secret.p >= 0.001,
+        "key 0 and key 1 differ: p = {:.3e}; deadline {deadline} ms",
+        secret.p
     );
     for dir in dirs.iter().chain([&calibration]) {
         let _ = std::fs::remove_dir_all(dir);
