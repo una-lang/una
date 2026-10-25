@@ -1183,3 +1183,30 @@ From then on a recovery needs `X`'s signature, which only the thief gives, and a
 - **The owner response window.** The guarantees against a stolen key hold for an owner that responds within seven days of the attacker's first pending change; where the attacker makes no pending change, there is no deadline. An owner that does not respond in time can lose its names to a thief holding only a key, and an owner that never acts cannot be protected against a valid key. With an account taken over too, a thief's dispute that the owner does not answer takes effect, and an answer forces at worst a freeze. So a registry notifies the owner's verified contact as soon as any pending key event, co-signer change, recovery or dispute is logged against the owner's chain, and clients report each such pending event as U7014 to everyone who locks, updates or audits a package of that owner.
 - A single-key owner whose key is stolen keeps the dispute: the thief's designation waits, the dispute is logged meanwhile, and when it takes effect it ends the designation.
 - `spec/30 §14` rule 5 states these rules as normative text.
+
+## Amendment 9 (2026-10-25): stated thresholds as known at logging
+
+- Status: Accepted, recorded under the project's delegation.
+
+**Context.** Every `ita-key/1` entry states a `threshold`: the current one for a cancellation, an overruling, a co-signer change and a claim on a former or last key, and one within the keys after the event for an addition or a revocation. A mismatch refuses the chain. A claim of compromise, `revoke <key> since <p>`, is retroactive: it can void entries logged before it, and so change the state at every later position. The rules did not say against which state an entry's stated threshold is checked. Checked against the state a later claim rewrote, an honest entry can become a mismatch, which refuses the whole chain:
+- Entry 0: the owner registers keys `A` and `B`, threshold two, and the co-signer `X` at threshold one. A thief copies `A`.
+- Entry 1: the owner, below its threshold without `A`, asks a recovery naming `R`, signed by the log's key and `X`.
+- Entry 2, six and a half days later: the thief cancels the recovery with `A`.
+- Entry 3, a day later, after the recovery's seven days: `X` overrules the cancellation, stating `threshold 2`, the owner's threshold then.
+- Entry 4, a week later: `R` claims `revoke A since 0`.
+
+The claim voids the thief's cancellation, so the recovery takes effect at its deadline, the overruling's own position, with threshold one. Checked against that state, the overruling's `threshold 2` is a mismatch, and the chain is refused: the registry must refuse the owner's claim, and the owner loses its names to the thief. A claim from a later position instead leaves the thief's releases counting. The replay also refused a chain for a mismatch found in a pass that assumes every claim, even one that the fixpoint later drops.
+
+**Decision.**
+1. **Stated thresholds, as known at logging.** An entry's stated `threshold`, the current one or one within the keys after the event, is checked against the state known when the entry was logged: the replay of the entries logged before it, with the claims they settle to. It is never checked against a state that a claim logged later rewrote. A mismatch at its logging still refuses the chain (U7010); a later claim never makes an earlier entry's stated threshold a refusal, and no pass of the fixpoint that assumes a claim refuses an entry for its stated threshold. The fixpoint's rules for which keys are valid are otherwise unchanged.
+2. **Timings that differ, for keys and consent.** The comparison of a request's served and earliest timings (`spec/30 §14` rule 1) also covers rule 8's verdict: which requests took effect, from which position, and so whether the owner's keys changed since a lock's point. When the two timings give different histories, the owner's names are unavailable (U7013), and each request's missing deadline checkpoint is recorded, never decided on the served timing.
+
+**Alternatives rejected.**
+- **A mismatch voids the entry** instead of refusing the chain. A thief's claim could then rewrite the state so that a victim's honest entries mismatch, and drop them: an overruling, a cancellation of the thief's request, or a co-signer change would be lost to a later claim.
+- **Refusals count only in the settled pass.** It removes the refusal of a pass that assumes a claim, but in the scenario above the settled pass is the one where the claim stands, and the overruling still mismatches there: the owner's claim is still refused.
+
+**Consequences.**
+- An owner's response by the rules can always be logged after honest entries whose stated thresholds were right when they were logged; a registry checks a new entry against the chain it holds, as a client does.
+- The client settles one replay of a prefix of the chain per revocation from the first claim on, to know the claims at each logging: O(S · P · E · K) for S such revocations, P passes, E entries and K keys, and nothing more for a chain with no claim. Revocations are rare events of a chain.
+- More names are unavailable when a place withholds cosignatures: whenever the two timings give different histories, not only when a release's verdict differs.
+- `spec/30 §14` rules 1 and 5 and the `ita-key/1` table state these rules as normative text.
