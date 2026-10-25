@@ -28,8 +28,11 @@ use una_itaty::digest_string;
 use una_itaty::entry::owner_chain;
 use una_itaty::http::{ServerConfig, Service};
 use una_itaty::notify::Recording;
-use una_itaty::registry::{Clock, Config, Receipt, Refusal, Registry, Rotation, checkpoint_path};
+use una_itaty::registry::{
+    Cause, Clock, Config, Receipt, Refusal, Registry, Rotation, checkpoint_path,
+};
 use una_itaty::store::{FileStore, Store};
+use una_itaty::timing::Obligation;
 use una_project::client::{Point, Registry as Client};
 use una_project::tlog::note::{Key, parse_note};
 use una_project::tlog::owner::{History, RECOVERY_DELAY, fingerprint};
@@ -263,12 +266,10 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     // Its start checkpoint must carry the threshold before anything more is logged.
     let dispute = f.event("zenith", &format!("dispute {}", key_text(&d.1)), 1);
     let refusal = f.registry.request(dispute.as_bytes()).unwrap_err();
-    assert!(matches!(refusal, Refusal::Unavailable(_)), "{refusal:?}");
-    assert!(
-        refusal
-            .message()
-            .contains("first checkpoint that includes the request at 2")
-    );
+    assert!(matches!(
+        refusal,
+        Refusal::Wait(Cause::Obligation(Obligation::Start(2)), _)
+    ));
     f.cosign(&[0, 1], t0 + 20);
 
     // zenith has no cosigners: the operator logs a dispute, which only the log's key signs.
@@ -281,8 +282,7 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     let early = f
         .submit("acme", &format!("add {}", key_text(&s.1)), 1, &[&r, &s])
         .unwrap_err();
-    assert!(matches!(early, Refusal::Unavailable(_)), "{early:?}");
-    assert!(early.message().contains("request at 2"), "{early:?}");
+    assert_eq!(early.cause(), Some(&Cause::ReliesOnPending(2)), "{early:?}");
 
     // Seven days of witness time later, the next checkpoint the log signs is the deadline of
     // both requests. A late cosignature of the checkpoint before it is fine while fewer than
@@ -301,15 +301,13 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     // The deadline checkpoint takes no cosignature before the target, and must carry the
     // threshold before the log grows: until then, every submission waits.
     let early = f.cosign_at(5, 0, t0 + 20 + RECOVERY_DELAY).unwrap_err();
-    assert!(
-        early.message().contains("takes no cosignature before it"),
-        "{early:?}"
-    );
+    assert_eq!(early.cause(), Some(&Cause::CrossesTarget), "{early:?}");
     let waiting = f
         .submit("acme", &format!("add {}", key_text(&s.1)), 1, &[&r, &s])
         .unwrap_err();
-    assert!(
-        waiting.message().contains("deadline checkpoint"),
+    assert_eq!(
+        waiting.cause(),
+        Some(&Cause::Obligation(Obligation::Deadline(2))),
         "{waiting:?}"
     );
     f.cosign(&[0, 1], later);
@@ -347,7 +345,10 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     // Rotating a compromised witness out unlisted needs the operator's confirmation.
     let mut unlisted = rotation.clone();
     unlisted.list_compromised = false;
-    assert!(f.registry.rotation_text(&unlisted).is_err());
+    assert_eq!(
+        f.registry.rotation_text(&unlisted).unwrap_err().cause(),
+        Some(&Cause::CompromisedUnlisted)
+    );
     unlisted.confirmed_unlisted = true;
     assert!(
         !f.registry
@@ -359,10 +360,7 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
     let mut raised = rotation.clone();
     raised.threshold = 3;
     let short = f.registry.rotation_text(&raised).unwrap_err();
-    assert!(
-        short.message().contains("raising the witness threshold"),
-        "{short:?}"
-    );
+    assert_eq!(short.cause(), Some(&Cause::ThresholdShort), "{short:?}");
     let document = note_of(&text, &[&f.keys.roots[0], &f.keys.roots[1]]);
     f.registry.install_root(&document).unwrap();
     f.keys.witnesses[2] = rotated;
@@ -372,7 +370,10 @@ fn the_client_verifies_the_owner_chains_itaty_serves() {
         vec![f.keys.witnesses[0].1.clone(), compromised.clone()],
         1,
     );
-    assert!(f.registry.rotation_text(&back).is_err());
+    assert_eq!(
+        f.registry.rotation_text(&back).unwrap_err().cause(),
+        Some(&Cause::RevokedWitness)
+    );
     // The next size is signed under the new root; the older checkpoints are kept as they are.
     assert_eq!(f.submit("orbit", "cancel 4", 1, &[&o]).unwrap(), 7);
     assert!(f.checkpoint_text(8).contains("ita-root 2 sha256:"));
@@ -447,27 +448,36 @@ fn entries_the_clients_replay_refuses_are_never_logged() {
     f.register("acme", &[&a], &[]);
 
     // Not signed as its kind requires: a key added signs, and so does the owner's threshold.
-    assert!(matches!(
-        f.submit("acme", &format!("add {}", key_text(&x.1)), 1, &[&x]),
-        Err(Refusal::Invalid(_))
-    ));
+    assert_eq!(
+        f.submit("acme", &format!("add {}", key_text(&x.1)), 1, &[&x])
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::ReplayRefused)
+    );
     // Fixed thresholds: a cancellation states the current one.
-    assert!(f.submit("acme", "cancel 0", 2, &[&a]).is_err());
+    assert_eq!(
+        f.submit("acme", "cancel 0", 2, &[&a]).unwrap_err().cause(),
+        Some(&Cause::StatedThreshold)
+    );
     // A key's name is never used twice.
     let renamed = keypair(68, "acme.a");
-    assert!(
+    assert_eq!(
         f.submit(
             "acme",
             &format!("add {}", key_text(&renamed.1)),
             1,
             &[&a, &renamed]
         )
-        .is_err()
+        .unwrap_err()
+        .cause(),
+        Some(&Cause::KeyReused)
     );
     // A recovery or a dispute goes through the operator, never `submit`.
-    assert!(
+    assert_eq!(
         f.submit("acme", &format!("dispute {}", key_text(&x.1)), 1, &[&a])
-            .is_err()
+            .unwrap_err()
+            .cause(),
+        Some(&Cause::OperatorOnly)
     );
 
     // A chain that would not settle: `T`, added by `A`, alone claims `A` compromised since 0.
@@ -476,10 +486,7 @@ fn entries_the_clients_replay_refuses_are_never_logged() {
     let unsettled = f
         .submit("acme", "revoke acme.a since 0", 1, &[&t])
         .unwrap_err();
-    assert!(
-        unsettled.message().contains("would not settle"),
-        "{unsettled:?}"
-    );
+    assert_eq!(unsettled.cause(), Some(&Cause::Unsettled), "{unsettled:?}");
 }
 
 #[test]
@@ -495,10 +502,17 @@ fn void_entries_are_never_logged() {
     let void = f
         .submit("acme", &format!("add {}", key_text(&x.1)), 1, &[&a, &x])
         .unwrap_err();
-    assert!(void.message().contains("void"), "{void:?}");
+    assert_eq!(void.cause(), Some(&Cause::Void), "{void:?}");
     // Itaúna has no chain, and so no recovery or dispute.
-    let itauna = f.event("itauna", &format!("dispute {}", key_text(&x.1)), 1);
-    assert!(f.registry.request(itauna.as_bytes()).is_err());
+    let itauna = format!(
+        "ita-key/1\nsource itaty\nowner itauna\nprevious 0 {}\ndispute {}\nthreshold 1\n",
+        digest_string(&[0u8; 32]),
+        key_text(&x.1)
+    );
+    assert_eq!(
+        f.registry.request(itauna.as_bytes()).unwrap_err().cause(),
+        Some(&Cause::ItaunaHasNoChain)
+    );
 }
 
 #[test]
@@ -511,12 +525,18 @@ fn every_multiple_of_64_carries_the_threshold_and_every_event_one_notice() {
     }
     assert_eq!(f.registry.size(), 64);
     let waiting = f.submit("acme", "cancel 0", 1, &[&a]).unwrap_err();
-    assert!(matches!(waiting, Refusal::Unavailable(_)), "{waiting:?}");
-    assert!(waiting.message().contains("multiple of 64"), "{waiting:?}");
+    assert_eq!(
+        waiting.cause(),
+        Some(&Cause::Obligation(Obligation::Cadence)),
+        "{waiting:?}"
+    );
     assert!(f.registry.waiting().is_some());
     // One witness is not enough; the second completes the threshold.
     f.cosign(&[0], NOW);
-    assert!(f.submit("acme", "cancel 0", 1, &[&a]).is_err());
+    assert_eq!(
+        f.submit("acme", "cancel 0", 1, &[&a]).unwrap_err().cause(),
+        Some(&Cause::Obligation(Obligation::Cadence))
+    );
     f.cosign(&[1], NOW);
     assert!(f.registry.waiting().is_none());
     f.submit("acme", "cancel 0", 1, &[&a]).unwrap();

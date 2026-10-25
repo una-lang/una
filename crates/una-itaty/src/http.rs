@@ -301,6 +301,8 @@ impl Service {
             Refusal::Invalid(m) => text(400, m.clone()),
             Refusal::Held(m) => text(409, m.clone()),
             Refusal::Unavailable(m) => text(503, m.clone()),
+            Refusal::Rule(_, m) => text(400, m.clone()),
+            Refusal::Wait(_, m) => text(503, m.clone()),
         }
     }
 

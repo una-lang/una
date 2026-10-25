@@ -33,7 +33,7 @@ use una_project::tlog::note::{Key, Note, encode_base64, parse_checkpoint, parse_
 use una_project::tlog::owner::fingerprint;
 use una_project::tlog::root::{self as roots, Keys, Root, walk_all};
 
-use super::{MAX_DOCUMENT, Refusal, Registry, checkpoint_path, invalid};
+use super::{Cause, MAX_DOCUMENT, Refusal, Registry, checkpoint_path, invalid, rule};
 use crate::MAX_ENTRY;
 
 /// A rotation of the registry's witnesses: what the next root version holds.
@@ -179,10 +179,13 @@ impl Registry {
         } else {
             String::new()
         };
-        invalid(format!(
-            "raising the witness threshold to {k} would leave older history unavailable to clients: the kept checkpoints of sizes {}{tail} carry fewer cosignatures that would count; have the incoming witnesses cosign them first, in ascending order of size, then rotate",
-            listed.join(", ")
-        ))
+        rule(
+            Cause::ThresholdShort,
+            format!(
+                "raising the witness threshold to {k} would leave older history unavailable to clients: the kept checkpoints of sizes {}{tail} carry fewer cosignatures that would count; have the incoming witnesses cosign them first, in ascending order of size, then rotate",
+                listed.join(", ")
+            ),
+        )
     }
 
     /// The text of the next root version for `rotation`, for the root keys of the current
@@ -207,10 +210,13 @@ impl Registry {
             .iter()
             .find(|witness| revoked.contains(&fingerprint(&witness.public)))
         {
-            return Err(invalid(format!(
-                "the witness `{}` has a key a root version revoked, which is never a witness again",
-                witness.name
-            )));
+            return Err(rule(
+                Cause::RevokedWitness,
+                format!(
+                    "the witness `{}` has a key a root version revoked, which is never a witness again",
+                    witness.name
+                ),
+            ));
         }
         for key in &rotation.compromised {
             let current = self
@@ -221,15 +227,19 @@ impl Registry {
                 .any(|witness| witness.public == key.public);
             let kept = witnesses.iter().any(|witness| witness.public == key.public);
             if !current || kept {
-                return Err(invalid(format!(
-                    "the compromised key `{}` is not a current witness rotated out",
-                    key.name
-                )));
+                return Err(rule(
+                    Cause::CompromisedNotRotated,
+                    format!(
+                        "the compromised key `{}` is not a current witness rotated out",
+                        key.name
+                    ),
+                ));
             }
         }
         if !rotation.compromised.is_empty() && !rotation.list_compromised {
             if !rotation.confirmed_unlisted {
-                return Err(invalid(
+                return Err(rule(
+                    Cause::CompromisedUnlisted,
                     "a rotation caused by a compromise lists the compromised witnesses' keys in `witnesses-revoked`; rotating them out without listing them needs the operator's explicit confirmation, since their cosignatures would still count on older checkpoints",
                 ));
             }
@@ -287,8 +297,8 @@ impl Registry {
             let bytes = self
                 .store
                 .get(&format!("root/{version}"), MAX_ENTRY)
-                .map_err(Refusal::Unavailable)?
-                .ok_or_else(|| Refusal::Unavailable(format!("root/{version} is missing")))?;
+                .map_err(|why| rule(Cause::Store, why))?
+                .ok_or_else(|| rule(Cause::Store, format!("root/{version} is missing")))?;
             documents
                 .push(String::from_utf8(bytes).map_err(|_| invalid("root metadata is not UTF-8"))?);
         }
@@ -324,7 +334,7 @@ impl Registry {
         }
         self.store
             .put(&format!("root/{next}"), document.as_bytes())
-            .map_err(Refusal::Unavailable)?;
+            .map_err(|why| rule(Cause::Store, why))?;
         self.chain = walked
             .into_iter()
             .map(|root| {
@@ -347,10 +357,13 @@ impl Registry {
             .revoked_fingerprints()
             .contains(&fingerprint(&witness.public))
         {
-            return Err(invalid(format!(
-                "the key of `{}` is revoked, and never a witness again",
-                witness.name
-            )));
+            return Err(rule(
+                Cause::RevokedWitness,
+                format!(
+                    "the key of `{}` is revoked, and never a witness again",
+                    witness.name
+                ),
+            ));
         }
         if let Some((last_size, _)) = self.witnesses.get(&witness.name)
             && size <= *last_size

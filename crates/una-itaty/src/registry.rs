@@ -128,6 +128,66 @@ pub struct Config {
     pub log_seed: [u8; 32],
 }
 
+/// Why a submission or a cosignature is refused, by the rule it meets: what callers and tests
+/// match, never the message's text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// The client's replay of the owner's chain refuses the chain with the entry.
+    ReplayRefused,
+    /// The owner's chain with the entry would not settle within the replay's pass cap.
+    Unsettled,
+    /// The entry would be void at its position.
+    Void,
+    /// The entry is signed with the key that the pending request at this index names: it
+    /// relies on that request before its deadline, and waits.
+    ReliesOnPending(u64),
+    /// The entry is not signed by the threshold its owner's keys need.
+    NotSigned,
+    /// Itaúna has no chain, no recovery and no dispute.
+    ItaunaHasNoChain,
+    /// The entry states a threshold other than the one its action fixes.
+    StatedThreshold,
+    /// A key the owner holds or held, by name or public key, is named again.
+    KeyReused,
+    /// A key another owner holds or held.
+    KeyOfAnotherOwner,
+    /// A registration names one of its own keys as a cosigner.
+    CosignerIsOwnKey,
+    /// A dispute of an owner with recovery cosigners in effect.
+    DisputeWithCosigners,
+    /// A `since` at or past the entry's own position.
+    SinceNotReached,
+    /// An entry only the operator logs, sent to another endpoint.
+    OperatorOnly,
+    /// A recovery or a dispute that would freeze the owner's chain, competing with a request
+    /// still waiting, sent without the operator's confirmation.
+    CompetingRequest,
+    /// A co-signer change while another of the owner's waits.
+    PendingCosignerChange,
+    /// An advisory whose identifier the name's chain holds already.
+    AdvisoryIdRepeated,
+    /// A release that needs more authority or trust than the highest earlier release of its
+    /// identity (rule 26).
+    Rule26,
+    /// The newest checkpoint owes the witness threshold of cosignatures before the log grows.
+    Obligation(Obligation),
+    /// A cosignature that would move a checkpoint across a request's target.
+    CrossesTarget,
+    /// A rotation that lists as a witness a key a root version revoked.
+    RevokedWitness,
+    /// A rotation whose compromised key is not a current witness rotated out.
+    CompromisedNotRotated,
+    /// A rotation that leaves compromised witnesses unlisted without confirmation.
+    CompromisedUnlisted,
+    /// A rotation that raises the witness threshold while kept checkpoints fall short.
+    ThresholdShort,
+    /// A rotation that would move the start of the waiting request at this index, without
+    /// the operator's confirmation.
+    StartMoves(u64),
+    /// The store could not be read or written.
+    Store,
+}
+
 /// Why a submission is not logged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -137,19 +197,45 @@ pub enum Refusal {
     Held(String),
     /// The registry cannot log now.
     Unavailable(String),
+    /// It breaks the rule its cause names: never logged as sent.
+    Rule(Cause, String),
+    /// It waits for what its cause names, and may be sent again.
+    Wait(Cause, String),
 }
 
 impl Refusal {
     /// The sentence that says why.
     pub fn message(&self) -> &str {
         match self {
-            Refusal::Invalid(m) | Refusal::Held(m) | Refusal::Unavailable(m) => m,
+            Refusal::Invalid(m)
+            | Refusal::Held(m)
+            | Refusal::Unavailable(m)
+            | Refusal::Rule(_, m)
+            | Refusal::Wait(_, m) => m,
+        }
+    }
+
+    /// Its cause, when it has a typed one.
+    pub fn cause(&self) -> Option<&Cause> {
+        match self {
+            Refusal::Rule(cause, _) | Refusal::Wait(cause, _) => Some(cause),
+            _ => None,
         }
     }
 }
 
 fn invalid(message: impl Into<String>) -> Refusal {
     Refusal::Invalid(message.into())
+}
+
+/// A refusal by the rule `cause` names.
+fn rule(cause: Cause, message: impl Into<String>) -> Refusal {
+    Refusal::Rule(cause, message.into())
+}
+
+/// A refusal of what may be sent again once what `cause` names is met.
+fn wait(cause: Cause, message: impl Into<String>) -> Refusal {
+    Refusal::Wait(cause, message.into())
 }
 
 /// What a logged submission returns: its index, its leaf hash, and the registry's signed
@@ -535,6 +621,11 @@ impl Registry {
     /// Witnesses read that checkpoint at `witness/next` and send their cosignatures to
     /// [`Registry::cosign`]; the service never stops taking them, and never times out.
     pub fn waiting(&self) -> Option<String> {
+        self.owed().map(|(_, why)| why)
+    }
+
+    /// [`Registry::waiting`], with the obligation it waits for.
+    pub fn owed(&self) -> Option<(Obligation, String)> {
         let size = self.tree.size();
         let due = obligation(size, self.clock.now(), self.requests.values());
         if due.is_empty() || self.accepted(size).is_some() {
@@ -549,9 +640,12 @@ impl Registry {
                 .is_some_and(|target| completable(&lines, target, k)),
             _ => true,
         })?;
-        Some(format!(
-            "the log grows only once its checkpoint of size {size} carries the witness threshold of cosignatures, since {}; it keeps serving it at `{WITNESS_NEXT}` for its witnesses to cosign: try again shortly",
-            blocking.describe()
+        Some((
+            blocking,
+            format!(
+                "the log grows only once its checkpoint of size {size} carries the witness threshold of cosignatures, since {}; it keeps serving it at `{WITNESS_NEXT}` for its witnesses to cosign: try again shortly",
+                blocking.describe()
+            ),
         ))
     }
 
@@ -689,6 +783,12 @@ impl Registry {
 
     /// The common checks: the source, and the entry's place in its chain.
     fn admit(&self, entry: &Entry) -> Result<(), Refusal> {
+        if entry.chain == owner::chain_name(owner::ITAUNA) {
+            return Err(rule(
+                Cause::ItaunaHasNoChain,
+                "Itaúna has no chain: its keys are the root metadata's, with no recovery or dispute",
+            ));
+        }
         if entry.source != self.root.source {
             return Err(invalid(format!(
                 "the entry names the source `{}`; this registry is `{}`",
@@ -760,10 +860,11 @@ impl Registry {
             &mut effect,
         )
         .map_err(|error| match error {
-            ReplayError::Refused(why) => invalid(format!(
-                "the chain of `{owner_name}` does not replay with this entry: {why}"
-            )),
-            ReplayError::Unsettled(unsettled) => invalid(format!(
+            ReplayError::Refused(why) => rule(
+                Cause::ReplayRefused,
+                format!("the chain of `{owner_name}` does not replay with this entry: {why}"),
+            ),
+            ReplayError::Unsettled(unsettled) => rule(Cause::Unsettled, format!(
                 "the chain of `{owner_name}` with this entry would not settle within {} replays of its claims of compromise, first at the log index {}, so every client would refuse it",
                 unsettled.passes, unsettled.index
             )),
@@ -784,14 +885,20 @@ impl Registry {
         let history = self.replayed(owner_of(name), None)?;
         match history.judge(note, position) {
             Standing::Counts(_) => Ok(()),
-            Standing::Skipped(_) => Err(invalid(format!(
-                "the entry about `{name}` would be void at the log position {position}: its signatures reach its owner's threshold only with a key compromised before it or one that only void entries bring in, or its owner's chain is frozen"
-            ))),
+            Standing::Skipped(_) => Err(rule(
+                Cause::Void,
+                format!(
+                    "the entry about `{name}` would be void at the log position {position}: its signatures reach its owner's threshold only with a key compromised before it or one that only void entries bring in, or its owner's chain is frozen"
+                ),
+            )),
             Standing::Unsigned => match relies_on_pending(&history, note) {
                 Some(request) => Err(waits(request)),
-                None => Err(invalid(format!(
-                    "the entry about `{name}` is not signed by the threshold of its owner's keys valid at the log position {position}"
-                ))),
+                None => Err(rule(
+                    Cause::NotSigned,
+                    format!(
+                        "the entry about `{name}` is not signed by the threshold of its owner's keys valid at the log position {position}"
+                    ),
+                )),
             },
         }
     }
@@ -1028,18 +1135,24 @@ impl Registry {
                             .voided
                             .last()
                             .map_or_else(String::new, |void| void.why.clone());
-                        return Err(invalid(format!(
-                            "the yank of {} {} would be void at the log position {position}: {why}",
-                            yank.name, yank.version
-                        )));
+                        return Err(rule(
+                            Cause::Void,
+                            format!(
+                                "the yank of {} {} would be void at the log position {position}: {why}",
+                                yank.name, yank.version
+                            ),
+                        ));
                     }
                     YankStanding::Unsigned => {
                         return Err(match relies_on_pending(&history, &entry.note) {
                             Some(request) => waits(request),
-                            None => invalid(format!(
-                                "the yank of {} {} is not signed by the threshold of its owner's keys valid at the log position {position}",
-                                yank.name, yank.version
-                            )),
+                            None => rule(
+                                Cause::NotSigned,
+                                format!(
+                                    "the yank of {} {} is not signed by the threshold of its owner's keys valid at the log position {position}",
+                                    yank.name, yank.version
+                                ),
+                            ),
                         });
                     }
                 }
@@ -1067,10 +1180,14 @@ impl Registry {
             }
             Kind::Owner(read) => match &read.event {
                 Event::Register { .. } => {
-                    return Err(invalid("an owner is registered by the registry's operator"));
+                    return Err(rule(
+                        Cause::OperatorOnly,
+                        "an owner is registered by the registry's operator",
+                    ));
                 }
                 Event::Recover(_) | Event::Dispute(_) => {
-                    return Err(invalid(
+                    return Err(rule(
+                        Cause::OperatorOnly,
                         "a recovery or a dispute is logged by the registry's operator after verifying the account",
                     ));
                 }
@@ -1113,17 +1230,20 @@ impl Registry {
             .get(&key.public)
             .is_some_and(|other| other != owner_name)
         {
-            return Err(invalid(format!(
-                "the key `{}` is another owner's",
-                key.name
-            )));
+            return Err(rule(
+                Cause::KeyOfAnotherOwner,
+                format!("the key `{}` is another owner's", key.name),
+            ));
         }
         let (names, publics) = self.named_by(owner_name);
         if names.contains(&key.name) || publics.contains(&key.public) {
-            return Err(invalid(format!(
-                "`{owner_name}` holds or held a key named `{}` or with its public key: a key's name and public key are never used twice",
-                key.name
-            )));
+            return Err(rule(
+                Cause::KeyReused,
+                format!(
+                    "`{owner_name}` holds or held a key named `{}` or with its public key: a key's name and public key are never used twice",
+                    key.name
+                ),
+            ));
         }
         Ok(())
     }
@@ -1140,7 +1260,8 @@ impl Registry {
         };
         let owner_name = read.owner.as_str();
         if owner_name == owner::ITAUNA {
-            return Err(invalid(
+            return Err(rule(
+                Cause::ItaunaHasNoChain,
                 "Itaúna has no chain: its keys are the root metadata's, with no recovery or dispute",
             ));
         }
@@ -1155,10 +1276,13 @@ impl Registry {
             .map(|snapshot| snapshot.threshold);
         let stated = |expected: Option<usize>, what: &str| -> Result<(), Refusal> {
             match expected {
-                Some(expected) if expected != read.threshold => Err(invalid(format!(
-                    "{what} states the threshold {expected}, not {}",
-                    read.threshold
-                ))),
+                Some(expected) if expected != read.threshold => Err(rule(
+                    Cause::StatedThreshold,
+                    format!(
+                        "{what} states the threshold {expected}, not {}",
+                        read.threshold
+                    ),
+                )),
                 _ => Ok(()),
             }
         };
@@ -1166,10 +1290,13 @@ impl Registry {
             Event::Register { keys, cosigners } => {
                 for key in keys {
                     if !entry.note.signed_by(key) {
-                        return Err(invalid(format!(
-                            "each key registered signs the registration; `{}` does not",
-                            key.name
-                        )));
+                        return Err(rule(
+                            Cause::NotSigned,
+                            format!(
+                                "each key registered signs the registration; `{}` does not",
+                                key.name
+                            ),
+                        ));
                     }
                     self.fresh_key(owner_name, key)?;
                 }
@@ -1179,16 +1306,22 @@ impl Registry {
                             .any(|key| key.name == cosigner.name || key.public == cosigner.public)
                     })
                 {
-                    return Err(invalid(format!(
-                        "the cosigner `{}` is one of the owner's own keys, of its name or its public key",
-                        cosigner.name
-                    )));
+                    return Err(rule(
+                        Cause::CosignerIsOwnKey,
+                        format!(
+                            "the cosigner `{}` is one of the owner's own keys, of its name or its public key",
+                            cosigner.name
+                        ),
+                    ));
                 }
             }
             Event::Add(key) => self.fresh_key(owner_name, key)?,
             Event::Revoke { since, .. } => {
                 if since.is_some_and(|p| p >= position) {
-                    return Err(invalid("`since` names an index the log has not reached"));
+                    return Err(rule(
+                        Cause::SinceNotReached,
+                        "`since` names an index the log has not reached",
+                    ));
                 }
             }
             Event::Cosigners(_) => stated(threshold_now, "a co-signer change")?,
@@ -1201,9 +1334,12 @@ impl Registry {
                     .as_ref()
                     .is_some_and(|history| history.cosigners.is_some());
                 if matches!(read.event, Event::Dispute(_)) && cosigners {
-                    return Err(invalid(format!(
-                        "`{owner_name}` has recovery cosigners in effect: they recover it, and it has no dispute"
-                    )));
+                    return Err(rule(
+                        Cause::DisputeWithCosigners,
+                        format!(
+                            "`{owner_name}` has recovery cosigners in effect: they recover it, and it has no dispute"
+                        ),
+                    ));
                 }
             }
         }
@@ -1223,9 +1359,12 @@ impl Registry {
             }
         };
         if replayed.voided.contains(&position) {
-            return Err(invalid(format!(
-                "the entry would be void at the log position {position}: it is signed as its kind requires only with a key compromised before it, or it depends on a void entry, and a registry never logs a void entry"
-            )));
+            return Err(rule(
+                Cause::Void,
+                format!(
+                    "the entry would be void at the log position {position}: it is signed as its kind requires only with a key compromised before it, or it depends on a void entry, and a registry never logs a void entry"
+                ),
+            ));
         }
         Ok(())
     }
@@ -1371,7 +1510,8 @@ impl Registry {
         let lines = claimed(&signed, size);
         let k = self.own_threshold(&signed);
         for request in self.requests.values() {
-            admits(request, size, time, &lines, k).map_err(invalid)?;
+            admits(request, size, time, &lines, k)
+                .map_err(|why| rule(Cause::CrossesTarget, why))?;
         }
         let document = format!("{document}{line}");
         let all = parse_note(&document).map_err(invalid)?;
@@ -1507,8 +1647,8 @@ impl Registry {
     /// Logs an entry checked by the caller: writes it, the tiles and the map, then the size,
     /// then signs the checkpoint, then applies it.
     fn append(&mut self, entry: Entry, blob: Option<(&str, &[u8])>) -> Result<Receipt, Refusal> {
-        if let Some(why) = self.waiting() {
-            return Err(Refusal::Unavailable(why));
+        if let Some((obligation, why)) = self.owed() {
+            return Err(wait(Cause::Obligation(obligation), why));
         }
         let index = self.tree.size();
         let leaf = entry.leaf();
@@ -1648,9 +1788,12 @@ fn relies_on_pending(history: &History, note: &Note) -> Option<u64> {
 
 /// The refusal of an entry that relies on the request logged at `request` before its deadline.
 fn waits(request: u64) -> Refusal {
-    Refusal::Unavailable(format!(
-        "the entry is signed by the key that the request at {request} names, which governs only from that request's deadline checkpoint: it can be logged once that checkpoint is signed and cosigned"
-    ))
+    wait(
+        Cause::ReliesOnPending(request),
+        format!(
+            "the entry is signed by the key that the request at {request} names, which governs only from that request's deadline checkpoint: it can be logged once that checkpoint is signed and cosigned"
+        ),
+    )
 }
 
 /// The number of entries of a bundle's bytes.
