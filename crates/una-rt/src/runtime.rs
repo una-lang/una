@@ -1078,14 +1078,24 @@ impl State {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(trace) = self.trace.as_mut() {
-            let local = format!("#@{task}#");
+            // Each string made at its exact size, as the adoption's bound counts them (ADR
+            // 0113 rule 3).
+            let mut local = String::with_capacity(task.len() + 3);
+            local.push_str("#@");
+            local.push_str(task);
+            local.push('#');
             for mut event in events {
                 if let Some(rest) = event.instance.strip_prefix("with:")
                     && let Some((name, count)) = rest.split_once(&local)
                     && let Ok(count) = count.parse::<usize>()
                 {
-                    let base = counts.get(name).copied().unwrap_or(0);
-                    event.instance = format!("with:{name}#{}", base + count);
+                    let number = counts.get(name).copied().unwrap_or(0) + count;
+                    let mut id = String::with_capacity(6 + name.len() + digits(number));
+                    id.push_str("with:");
+                    id.push_str(name);
+                    id.push('#');
+                    let _ = std::fmt::Write::write_fmt(&mut id, format_args!("{number}"));
+                    event.instance = id;
                 }
                 trace.push(event);
             }

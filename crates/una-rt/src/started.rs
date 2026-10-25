@@ -56,7 +56,7 @@ struct Sink {
 impl RunShared {
     /// What a run's tasks share, with no trace.
     pub(crate) fn new() -> Arc<RunShared> {
-        Arc::new(RunShared {
+        let shared = Arc::new(RunShared {
             installs: Mutex::new(BTreeMap::new()),
             sink: Mutex::new(Sink {
                 file: None,
@@ -65,7 +65,13 @@ impl RunShared {
             }),
             live: AtomicUsize::new(0),
             cap: una_interp::concurrency::task_cap(),
-        })
+        });
+        // A mutex may allocate its lock at its first use (macOS): used once here, so the
+        // checked steps of a join, which take the installations' lock, allocate nothing for it
+        // (ADR 0113 rule 3).
+        drop(lock(&shared.installs));
+        drop(lock(&shared.sink));
+        shared
     }
 
     /// What a run's tasks share, with the trace file `path`, made now: a file that cannot be
