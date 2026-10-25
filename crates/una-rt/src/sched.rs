@@ -1482,9 +1482,10 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn requests_four_times_the_pool_never_take_more_threads_than_its_helpers() {
-        // #1148: a request resolves its name and connects on its helper, the client starting
-        // no thread of its own, so `N` requests in flight take at most the pool's `--io-threads`
-        // threads, whatever `N`. Eight tasks request a server that never answers, through a
+        // #1148: a request connects on its helper, and looks a name up on the bounded resolver
+        // pool, the client starting no thread per request, so `N` requests in flight take at most
+        // the pool's `--io-threads` threads, whatever `N` (the resolver pool's own bound is
+        // `una-http`'s `tests/resolve.rs`). Eight tasks request a server that never answers, through a
         // pool of 2: only the 2 helpers run the client, the pool starts no more, and the server
         // never holds more than 2 connections at once.
         use std::io::Read;

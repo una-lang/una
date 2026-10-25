@@ -1896,13 +1896,25 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // ADR 0116 amendment, P8 (#1148): a run whose grants include `Http` builds the client's TLS
     // settings here, before `main`, with the other state it starts up front. Built at the run's
     // first `https` request, they would be state that earlier code left, saving a later request
-    // the time of building them. A run without such a grant never builds them.
+    // the time of building them. A run without such a grant never builds them. The same run
+    // starts its resolver pool here, all `max(2, --io-threads / 4)` threads at once, so whether
+    // a resolver thread exists is never history either; a thread that cannot start stops the
+    // run before `main` with U6003, as the scheduler's do (`spec/24 §4` rule 2).
     if state
         .grants
         .iter()
         .any(|grant| matches!(grant, Grant::Http(_)))
     {
         una_http::client::prepare();
+        let size = una_http::resolve::pool_size(state.concurrency.io_threads);
+        if una_http::resolve::start(size).is_err() {
+            let written = writeln!(
+                stderr,
+                "[{}] Error: the resolver threads of this run's requests could not be made",
+                Code::U6003
+            );
+            return if written.is_ok() { 1 } else { USAGE };
+        }
     }
     // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
     // any code of the program runs; each thread the program runs on writes it too.
@@ -2955,14 +2967,22 @@ mod tests {
         // builds none, before or during `main`; one with such a grant has them before `main`
         // runs, before any request.
         start(&[], r#"{"grants":[],"uses":[]}"#, || {
-            eprintln!("{STEP}: without http {}", una_http::client::tls_ready());
+            eprintln!(
+                "{STEP}: without http {} resolvers {}",
+                una_http::client::tls_ready(),
+                una_http::resolve::threads()
+            );
             0
         });
         start(
-            &strings(&["--grant", "http:https://example.com"]),
+            &strings(&["--grant", "http:https://example.com", "--io-threads", "12"]),
             r#"{"grants":[],"uses":[]}"#,
             || {
-                eprintln!("{STEP}: with http {}", una_http::client::tls_ready());
+                eprintln!(
+                    "{STEP}: with http {} resolvers {}",
+                    una_http::client::tls_ready(),
+                    una_http::resolve::threads()
+                );
                 0
             },
         );
@@ -2971,15 +2991,20 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn the_tls_settings_exist_before_main_exactly_when_a_grant_includes_http() {
-        // #1148, ADR 0116 amendment P8: the client's TLS settings are state a run starts up
+        // #1148, ADR 0116 amendment P8: the client's TLS settings and resolver pool are state a run starts up
         // front when its grants include `Http`, so no request after earlier `secret` code finds
         // them built while another builds them. Before the fix they were built at the first
         // `https` request, and `main` found none in either run.
         let (code, stderr) = scenario("the_tls_settings_scenario");
         assert_eq!(code, Some(0), "{stderr}");
         assert_eq!(steps(&stderr), 2, "{stderr}");
-        assert!(stderr.contains("without http false"), "{stderr}");
-        assert!(stderr.contains("with http true"), "{stderr}");
+        // The resolver pool too: none without the grant, and `max(2, 12 / 4)` threads, all
+        // started before `main`, with it.
+        assert!(
+            stderr.contains("without http false resolvers 0"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("with http true resolvers 3"), "{stderr}");
     }
 
     #[test]

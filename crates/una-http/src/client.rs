@@ -2,7 +2,7 @@
 //! within one deadline for the whole request, its redirects included.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -269,19 +269,19 @@ pub fn send_governed(
 /// When `interrupt` waits, the socket is non-blocking from the connection on: every read,
 /// write and step of the TLS handshake that would block waits through `interrupt` instead, and
 /// a stop is checked before each try, so a slow or stalled peer cannot hold a stopped request.
-/// Name resolution and the TCP connection run on the calling thread, which for an engine is the
-/// request's helper of the bounded I/O pool: the client starts no thread of its own, so `N`
-/// requests in flight never take more threads than the pool has (#1148). Each is one step: the
-/// host's resolver has no timeout, so a resolution runs to its end and the deadline, a stop and
-/// an abandon are seen once it returns; a connection attempt is bounded by the time left.
+/// Name resolution runs on the bounded resolver pool ([`crate::resolve`]), which the request
+/// waits for only until its deadline or its abandon, and the TCP connection on the calling
+/// thread, which for an engine is the request's helper of the bounded I/O pool: the client starts
+/// no thread per request (#1148). A connection attempt is bounded by the time left.
 ///
 /// **A cancelled task** (ADR 0116 P9, ADR 0117 rule 4, #1148). `abandon` reaches the exchange
-/// too, whether `interrupt` waits or not, with no polling: a step that waits on the socket ends
-/// when the abandon's hook shuts the socket down, a resolution or a connection attempt in
-/// progress finishes its one step and then sees the flag, and the exchange checks the flag after
-/// each I/O step and before it parses or decodes the response. So an abandoned exchange does at
-/// most one I/O step more: one read or write, one step of the TLS handshake, the resolution of
-/// a name, or one connection attempt, bounded by the request's deadline. It then fails with
+/// too, whether `interrupt` waits or not, with no polling: the wait for a lookup ends at once
+/// through the abandon's hook, a step that waits on the socket ends when the hook shuts the
+/// socket down, a connection attempt in progress finishes its one step and then sees the flag,
+/// and the exchange checks the flag after each I/O step and before it parses or decodes the
+/// response. So an abandoned exchange does at most one I/O step more on its helper: one read or
+/// write, one step of the TLS handshake, or one connection attempt, bounded by the request's
+/// deadline; a lookup it left runs on to its end on its resolver thread. It then fails with
 /// `Interrupted`, which the engine drops, and its connection is closed.
 ///
 /// **The covering deadline** `cover` bounds the exchange's deadline as an instant, so a request
@@ -439,25 +439,20 @@ fn left(deadline: Instant) -> Result<Duration, Error> {
     Ok(deadline - now)
 }
 
-/// A TCP connection to `host` and `port`, within the deadline, made on the calling thread, the
-/// request's helper (#1148): no thread per request. The resolution of the name is one step,
-/// which nothing in the process can cut and which the host's resolver bounds; then the
-/// deadline, a stop and an abandon are looked at, before each connection attempt, each bounded by
-/// the time left. An abandon during a step is seen when the step returns.
+/// A TCP connection to `host` and `port`, within the deadline (#1148). The name is looked up on
+/// the bounded resolver pool ([`crate::resolve`]), which the request waits for only until its
+/// deadline or its abandon; the connection is made on the calling thread, the request's helper,
+/// each attempt bounded by the time left, and a stop and an abandon are looked at before each.
 fn reach(
     host: &str,
     port: u16,
     deadline: Instant,
     interrupt: &dyn Interrupt,
+    abandon: &Abandon,
 ) -> Result<TcpStream, Error> {
     let name = host.trim_start_matches('[').trim_end_matches(']');
-    let addrs = (name, port).to_socket_addrs();
-    if interrupt.stopped() {
-        return Err(Error::Interrupted);
-    }
-    left(deadline)?;
-    let addrs = addrs.map_err(|_| Error::Unreachable)?;
-    connect_any(addrs, deadline, interrupt)
+    let addrs = crate::resolve::resolve(name, port, deadline, interrupt, abandon)?;
+    connect_any(addrs.into_iter(), deadline, interrupt)
 }
 
 /// The first of `addrs` that accepts a connection within the deadline.
@@ -726,7 +721,7 @@ fn connect(
     interrupt: &dyn Interrupt,
     abandon: &Abandon,
 ) -> Result<Connection, Error> {
-    let stream = reach(&url.host, url.port, deadline, interrupt)?;
+    let stream = reach(&url.host, url.port, deadline, interrupt, abandon)?;
     // The abandon's hook holds a second handle of the socket, which it shuts down, so a wait on
     // it ends at once, with no polling. A socket whose handle cannot be made, as when the
     // process is out of descriptors, is not used: its waits could not be woken.

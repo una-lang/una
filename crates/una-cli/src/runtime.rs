@@ -416,6 +416,19 @@ pub(crate) fn run_command(
         .any(|grant| matches!(grant, una_interp::Grant::Http(_)))
     {
         una_http::client::prepare();
+        // The resolver pool, all its threads at once (`spec/24 §4` rule 2).
+        let io_threads = options
+            .tasks
+            .io_threads
+            .unwrap_or(una_interp::concurrency::DEFAULT_IO_THREADS);
+        if una_http::resolve::start(una_http::resolve::pool_size(io_threads)).is_err() {
+            writeln!(
+                stderr,
+                "[{}] Error: the resolver threads of this run's requests could not be made",
+                Code::U6003
+            )?;
+            return Ok(ExitStatus::Errors);
+        }
     }
     let host = Host {
         grants,
