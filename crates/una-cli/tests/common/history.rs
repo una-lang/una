@@ -1,48 +1,21 @@
 //! The program of the history of a limit (ADR 0116 P8, issue #1147), and how one of its runs
 //! looks from outside, interpreted or native: shared by the deterministic half of its
-//! differential (`http_limits.rs`) and the real-clock oracle (`timing_channels.rs`).
+//! differential (`http_limits.rs`) and the real-clock oracle (`timing_channels.rs`), each of
+//! which also includes `common/native_build.rs` as `native_build`.
 
 // Each test file uses its own subset of these helpers.
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-/// Builds the runtime library next to the `una` binary, once.
-fn runtime() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
-            .current_dir(root())
-            .status()
-            .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
-    });
-}
-
-fn una(dir: &Path, args: &[&str]) -> Output {
-    runtime();
-    Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .args(args)
-        .current_dir(dir)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap()
-}
+// The repository root and `una`, from `native_build.rs`, which each test file that includes
+// this one includes too: under `cargo test --release` it builds the release runtime.
+use super::native_build::{root, una};
 
 /// A server on `127.0.0.1` that answers 200 to every request and counts them.
 pub struct CountingServer {
@@ -65,8 +38,7 @@ impl CountingServer {
                 std::thread::spawn(move || {
                     read_head(&mut stream);
                     counted.fetch_add(1, Ordering::SeqCst);
-                    let _ = stream
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
                 });
             }
         });

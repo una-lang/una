@@ -767,7 +767,11 @@ mod tests {
         // Two per second, five requests: at 0, 0, 500, 1000 and 1500 virtual milliseconds.
         let clock = Arc::new(Virtual::default());
         let g = Governor::with_clock(
-            vec![Grant::parse_limited("http:http://h;2/second").unwrap().unwrap()],
+            vec![
+                Grant::parse_limited("http:http://h;2/second")
+                    .unwrap()
+                    .unwrap(),
+            ],
             Arc::clone(&clock) as Arc<dyn RunClock>,
         );
         let target = url("http://h/");
@@ -791,13 +795,23 @@ mod tests {
         // A refill past the request's deadline on the run's clock: the clock moves to the
         // deadline, and the request fails there.
         let hourly = Governor::with_clock(
-            vec![Grant::parse_limited("http:http://h;1/hour").unwrap().unwrap()],
+            vec![
+                Grant::parse_limited("http:http://h;1/hour")
+                    .unwrap()
+                    .unwrap(),
+            ],
             Arc::clone(&clock) as Arc<dyn RunClock>,
         );
         let at = clock.now_millis();
         drop(
             hourly
-                .acquire_until(&target, Method::Get, (soon(60_000), u64::MAX), &Never, &Abandon::new())
+                .acquire_until(
+                    &target,
+                    Method::Get,
+                    (soon(60_000), u64::MAX),
+                    &Never,
+                    &Abandon::new(),
+                )
                 .unwrap(),
         );
         let late = hourly.acquire_until(

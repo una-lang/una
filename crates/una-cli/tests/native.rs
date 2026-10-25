@@ -11,50 +11,18 @@
 //! the test until it leaves the list, so the list stays exact.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/native_build.rs"]
+mod native_build;
 #[path = "common/timing.rs"]
 mod timing;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// The repository root.
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-/// Builds the runtime library next to the `una` binary, once: `cargo test` builds `una-rt`'s
-/// static library only when asked.
-fn runtime() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
-            .current_dir(root())
-            .status()
-            .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
-    });
-}
-
-/// Runs `una` in `dir`, once the runtime library is built: `una build` links it, and cargo
-/// builds the test binaries before the staticlib on a cold target directory.
-fn una(dir: &Path, args: &[&str]) -> Output {
-    runtime();
-    Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .args(args)
-        .current_dir(dir)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap()
-}
+use native_build::{root, runtime, una};
 
 /// A fresh copy of `source`, a package directory or a single file, in a temporary directory:
 /// builds and proof caches never touch the repository.
@@ -1818,6 +1786,85 @@ fn one_worker_runs_blocks_nested_three_levels_deep_without_deadlock() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether the executable at `exe` embeds the description key that starts its threads before
+/// `main` (#1145): `una build` writes the description as compact JSON, so the key reads
+/// `"threads":true` in the binary, and the runtime's own code never holds that text.
+fn embeds_threads(exe: &Path) -> bool {
+    let bytes = std::fs::read(exe).unwrap();
+    bytes
+        .windows(br#""threads":true"#.len())
+        .any(|window| window == br#""threads":true"#)
+}
+
+#[test]
+fn the_description_starts_threads_exactly_for_tasks_and_for_ever() {
+    // #1145, ADR 0116 amendment P8, `spec/27 §1` rule 4: codegen marks a program that holds a
+    // `together`, a `together for`, a `first of`, a `tasks` statement, a `for ever` or a
+    // `within`, and `una build` embeds `"threads": true`, which makes the runtime start its
+    // threads and fill its stack pool before `main`; a program with none of them has no such
+    // key and starts no thread.
+    let cases = [
+        (
+            "flagtogether",
+            "module flagtogether\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = 1\n    let b = 2\n  @console.print(\"{a} {b}\")\n",
+            true,
+        ),
+        (
+            "flagfor",
+            "module flagfor\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let squares = together for i in 1..3\n    i * i\n  @console.print(\"{squares.len}\")\n",
+            true,
+        ),
+        (
+            "flagnone",
+            "module flagnone\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"plain\")\n",
+            false,
+        ),
+    ];
+    for (name, program, threads) in cases {
+        let dir = tasks_package(name, name, program);
+        let exe = dir.join(format!("target/una/{name}"));
+        assert_eq!(embeds_threads(&exe), threads, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // `for ever`, from its conformance case, in edition 0.4.
+    let scratch = std::env::temp_dir().join(format!("una-flag-ever-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let dir = copy(
+        &root().join("tests/conformance/runtime/for_ever_on_stop"),
+        &scratch,
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&dir.join("target/una/for_ever_on_stop")));
+    // `within`, from its conformance case, in edition 0.4: a deadline counts as a task
+    // construct for P8, so its program starts its threads before `main` too.
+    let within = copy(
+        &root().join("tests/conformance/runtime/within_runs"),
+        &scratch,
+    );
+    let built = una(&within, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&within.join("target/una/within_runs")));
+    // `first of`, from its conformance case: its branches are tasks.
+    let race = copy(
+        &root().join("tests/conformance/runtime/first_of_runs"),
+        &scratch,
+    );
+    let built = una(&race, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&race.join("target/una/first_of_runs")));
+    // A `tasks` statement and its `start`s, from their conformance case.
+    let started = copy(
+        &root().join("tests/conformance/runtime/tasks_runs"),
+        &scratch,
+    );
+    let built = una(&started, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&started.join("target/una/tasks_runs")));
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 #[test]
@@ -3629,19 +3676,50 @@ fn a_deadline_cuts_a_long_computation_at_a_check_point_in_both_engines() {
 
 #[test]
 fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
-    // ADR 0117 rule 5: tasks started inside `e` are cancelled with it, and `e` ends once they
-    // have stopped; the `within` then fails with its time-out. Natively each task sees the
-    // `within`'s cancellation at its own check points, with one worker and with several.
-    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    // ADR 0117 rule 5 and `spec/27 §5` rule 7: tasks started inside `e` are cancelled with it,
+    // and `e` ends once they have stopped; the `within` then fails with its time-out. Every task
+    // of the block that had not returned ends with its `cancelled` event, started or not, in
+    // task order, so the trace is the interpreter's whatever the number of workers.
+    let program = "module tasks\n\nimport std.time (millisecond)\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\npair(n: Int) -> Int\n=\n  together\n    let a = spin(n)\n    let b = spin(n)\n    let c = spin(n)\n  a + b + c\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(4000000000) within 20 * millisecond\n    if error use -1\n  @console.print(\"total {total}\")\n";
     let dir = within_package("tasks", "tasks", program);
     let started = std::time::Instant::now();
-    let interpreted = una(&dir, &["run", "."]);
+    let interpreted = una(&dir, &["--json", "run", "."]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "total -1\n");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["total -1"]),
+        "{document}"
+    );
+    let kinds: Vec<String> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            format!(
+                "{}:{}",
+                event["task"].as_str().unwrap_or(""),
+                event["outcome"]["kind"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "1:cancelled",
+            "2:cancelled",
+            "3:cancelled",
+            ":timeout",
+            ":ok"
+        ],
+        "{document}"
+    );
     let exe = dir.join("target/una/tasks");
-    for workers in ["1", "2"] {
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
         let native = Command::new(&exe)
-            .args(["--workers", workers])
+            .args(["--workers", workers, "--trace"])
+            .arg(&trace)
             .current_dir(&dir)
             .output()
             .unwrap();
@@ -3651,11 +3729,56 @@ fn a_deadline_cancels_the_tasks_started_inside_its_expression() {
             "--workers {workers}: {native:?}"
         );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "total -1\n");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
     }
     assert!(
         started.elapsed() < std::time::Duration::from_secs(60),
         "the deadline cut nothing"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tasks_inside_a_within_have_one_trace_under_virtual_time() {
+    // `spec/27 §5` rule 7 and `spec/26 §8`: under `--virtual-time` no deadline passes inside
+    // `e`, so a `within` over a block of tasks that print has the same output and trace in both
+    // engines, with one worker and with several.
+    let program = "module vt\n\nimport std.time (second)\n\nleaf(label: Text, n: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(label)\n  n\n\npair(n: Int) -> Int\n  uses @console: Console[print]\n=\n  together\n    let a = leaf(\"a\", n: n)\n    let b = leaf(\"b\", n: n + 1)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = pair(20) within 1 * second\n    if error use -1\n  @console.print(\"total {total}\")\n";
+    let dir = within_package("vt", "vt", program);
+    let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["a", "b", "total 41"]),
+        "{document}"
+    );
+    for workers in ["1", "4"] {
+        let trace = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(dir.join("target/una/vt"))
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        let mut lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.pop().as_deref(), Some("total 41"));
+        lines.sort();
+        assert_eq!(lines, ["a", "b"], "--workers {workers}");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        assert_eq!(written, document["trace"], "--workers {workers}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3714,7 +3837,11 @@ fn ten_thousand_cuts_release_what_they_cut_in_both_engines() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -3744,7 +3871,7 @@ fn the_memory_that_cuts_hold_stays_flat_as_they_grow() {
 
 /// A program whose races print in their branches, at the top level, plus a race that ties and
 /// three levels of `first of` and `together`.
-const RACES: &str = "module race\n\npub kind Refusal = No\n\nsay(line: Text, value: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(line)\n  value\n\nrefuse(line: Text) -> Int\n  uses @console: Console[print]\n  fails Refusal\n=\n  @console.print(line)\n  if line == \"\" then 0 else fail No\n\nrace() -> Int\n  uses @console: Console[print]\n  fails Refusal\n=\n  first of\n    refuse(\"a\")\n      if error pass\n    say(\"b\", value: 2)\n    say(\"c\", value: 3)\n\ntie() -> Int\n  uses @console: Console[print]\n=\n  first of\n    say(\"t1\", value: 1)\n    say(\"t2\", value: 2)\n\ndouble(n: Int) -> Int = n * 2\n\nleaf(n: Int) -> secret Int\n=\n  first of\n    double(n)\n    double(n + 1)\n\nmiddle(n: Int) -> secret Int\n=\n  together\n    let a = leaf(n)\n    let b = leaf(n + 10)\n  a + b\n\ntop(n: Int) -> secret Int\n=\n  first of\n    middle(n)\n    middle(n + 100)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let got = race()\n    if error use -1\n  @console.print(\"won {got}\")\n  let tied = tie()\n  @console.print(\"tie {tied}\")\n  let deep = top(1)\n  @console.print(\"deep done\")\n";
+const RACES: &str = "module race\n\npub kind Refusal = | No\n\nsay(line: Text, value: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(line)\n  value\n\nrefuse(line: Text) -> Int\n  uses @console: Console[print]\n  fails Refusal\n=\n  @console.print(line)\n  if line == \"\" then 0 else fail No\n\nrace() -> Int\n  uses @console: Console[print]\n  fails Refusal\n=\n  first of\n    refuse(\"a\")\n      if error pass\n    say(\"b\", value: 2)\n    say(\"c\", value: 3)\n\ntie() -> Int\n  uses @console: Console[print]\n=\n  first of\n    say(\"t1\", value: 1)\n    say(\"t2\", value: 2)\n\ndouble(n: Int) -> Int = n * 2\n\nleaf(n: Int) -> restricted Int\n=\n  first of\n    double(n)\n    double(n + 1)\n\nmiddle(n: Int) -> restricted Int\n=\n  together\n    let a = leaf(n)\n    let b = leaf(n + 10)\n  a + b\n\ntop(n: Int) -> restricted Int\n=\n  first of\n    middle(n)\n    middle(n + 100)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let got = race()\n    if error use -1\n  @console.print(\"won {got}\")\n  let tied = tie()\n  @console.print(\"tie {tied}\")\n  let deep = top(1)\n  @console.print(\"deep done\")\n";
 
 #[test]
 fn a_race_has_the_same_winner_output_and_trace_in_both_engines_under_virtual_time() {
@@ -3785,7 +3912,11 @@ fn a_race_has_the_same_winner_output_and_trace_in_both_engines_under_virtual_tim
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(
             String::from_utf8_lossy(&native.stdout),
             "a\nb\nwon 2\nt1\ntie 1\ndeep done\n"
@@ -3809,9 +3940,16 @@ fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         let output = String::from_utf8_lossy(&native.stdout).into_owned();
-        assert!(output.ends_with("deep done\n"), "--workers {workers}: {output}");
+        assert!(
+            output.ends_with("deep done\n"),
+            "--workers {workers}: {output}"
+        );
         // The race prints `a` and `b` and maybe `c`, and one of the branches that return wins.
         assert!(
             output.contains("won 2\n") || output.contains("won 3\n"),
@@ -3827,7 +3965,7 @@ fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
 /// the winner cancels it with the list alive, and prints how many the first branch won.
 fn races_program(rounds: u64) -> String {
     format!(
-        "module losers\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nsettle(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit won = 0\n  for round in 1..{rounds}\n    let got = first of\n      settle(20000)\n      grow(4000000000)\n    if got == 1\n      won = won + 1\n  @console.print(\"won {{won}}\")\n"
+        "module losers\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nsettle(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit won = 0\n  for round in 1..{rounds}\n    let got = first of\n      settle(1000)\n      grow(4000000000)\n    if got == 1\n      won = won + 1\n  @console.print(\"won {{won}}\")\n"
     )
 }
 
@@ -3848,7 +3986,11 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "won 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -3872,7 +4014,11 @@ fn a_branch_too_deep_for_task_depth_aborts_the_run_in_both_engines() {
         .current_dir(&dir)
         .output()
         .unwrap();
-    assert_eq!(native.status.code(), interpreted.status.code(), "{native:?}");
+    assert_eq!(
+        native.status.code(),
+        interpreted.status.code(),
+        "{native:?}"
+    );
     assert_eq!(String::from_utf8_lossy(&native.stdout), "shallow 5\n");
     assert!(
         String::from_utf8_lossy(&native.stderr).contains("U6003"),
@@ -3902,7 +4048,11 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
         .iter()
         .map(|line| line.as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(output.last().map(String::as_str), Some("done"), "{document}");
+    assert_eq!(
+        output.last().map(String::as_str),
+        Some("done"),
+        "{document}"
+    );
     // The spinners outlast one turn, so their lines interleave.
     let spun: Vec<&str> = output
         .iter()
@@ -3912,7 +4062,10 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
     assert_eq!(spun.len(), 8, "{output:?}");
     assert_ne!(
         spun,
-        ["a 1 400", "a 2 800", "a 3 1200", "a 4 1600", "b 1 400", "b 2 800", "b 3 1200", "b 4 1600"],
+        [
+            "a 1 400", "a 2 800", "a 3 1200", "a 4 1600", "b 1 400", "b 2 800", "b 3 1200",
+            "b 4 1600"
+        ],
         "the spinners never switched: {output:?}"
     );
     let tasks: BTreeSet<&str> = document["trace"]
@@ -3921,7 +4074,10 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
         .iter()
         .filter_map(|event| event["task"].as_str())
         .collect();
-    assert!(tasks.contains("s1.1") && tasks.contains("s1.4"), "{document}");
+    assert!(
+        tasks.contains("s1.1") && tasks.contains("s1.4"),
+        "{document}"
+    );
     let expected = format!("{}\n", output.join("\n"));
     let exe = dir.join("target/una/tasksvirtual");
     for workers in ["1", "4"] {
@@ -3932,8 +4088,16 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
-        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "--workers {workers}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            expected,
+            "--workers {workers}"
+        );
         let written: Value =
             serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
         assert_eq!(written, document["trace"], "--workers {workers}");
@@ -3954,7 +4118,11 @@ fn started_tasks_run_on_every_worker_count_under_real_time() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         let output = String::from_utf8_lossy(&native.stdout).into_owned();
         let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.last(), Some(&"done"), "--workers {workers}: {output}");
@@ -4084,7 +4252,7 @@ fn a_host_stop_ends_the_for_ever_of_a_tasks_block_and_its_tasks_drain_in_both_en
 /// had a turn, which cancels the task with its list alive; it prints how many failed.
 fn cancelled_program(rounds: u64) -> String {
     format!(
-        "module cancelled\n\npub kind Round = Over\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nhold() -> Unit\n=\n  let total = grow(4000000000)\n  unit\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nover(n: Int) -> Unit\n  fails Round\n=\n  if n > 0 then fail Over else unit\n\nround() -> Unit\n  fails Round\n=\n  tasks\n    start hold()\n    let spun = spin(1100)\n    over(spun)\n      if error pass\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit failed = 0\n  for r in 1..{rounds}\n    let outcome = attempt round()\n    if outcome.is_ok() == false\n      failed = failed + 1\n  @console.print(\"failed {{failed}}\")\n"
+        "module cancelled\n\npub kind Round = | Over\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nhold() -> Unit\n=\n  let total = grow(4000000000)\n  unit\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nover(n: Int) -> Unit\n  fails Round\n=\n  if n > 0 then fail Over else unit\n\nround() -> Unit\n  fails Round\n=\n  tasks\n    start hold()\n    let spun = spin(1100)\n    over(spun)\n      if error pass\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit failed = 0\n  for r in 1..{rounds}\n    let outcome = attempt round()\n    if outcome.is_ok() == false\n      failed = failed + 1\n  @console.print(\"failed {{failed}}\")\n"
     )
 }
 
@@ -4092,19 +4260,33 @@ fn cancelled_program(rounds: u64) -> String {
 fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines() {
     // `spec/27 §7`, ADR 0117 rule 7 and the amendment of 2026-10-19 on S2: a block that fails
     // cancels the tasks it started, each of which leaves its frames by the failure path and
-    // ends with its heap. Ten thousand rounds, each cancelling a task that holds a list of a
-    // thousand items, run under a 16 MiB budget, which a leak would exceed many times over.
-    let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
-    let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
+    // ends with its heap. Ten thousand rounds natively, each cancelling a task that holds a list
+    // of a thousand items, run under a 16 MiB budget, which a leak would exceed many times over.
+    // The interpreter runs two thousand, about 16 s in a debug build (ten thousand take 80 s),
+    // which a leak of the same size would still exceed.
+    let interpreted_dir = within_package("cancelledi", "cancelled", &cancelled_program(2_000));
+    let interpreted = una(&interpreted_dir, &["run", ".", "--max-memory", "16"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "failed 10000\n");
-    for workers in ["1", "4"] {
+    assert_eq!(
+        String::from_utf8_lossy(&interpreted.stdout),
+        "failed 2000\n"
+    );
+    let _ = std::fs::remove_dir_all(&interpreted_dir);
+    let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
+    // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
+    // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
+    // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
+    for (workers, budget) in [("1", "16"), ("2", "24"), ("4", "24")] {
         let native = Command::new(dir.join("target/una/cancelled"))
-            .args(["--max-memory", "16", "--workers", workers])
+            .args(["--max-memory", budget, "--workers", workers])
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "failed 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);

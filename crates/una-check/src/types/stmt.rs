@@ -6,9 +6,9 @@ use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
-    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
-    Literal, PatternKind, StartStmt, Stmt, StopStmt, TasksStmt, TextPart, TogetherFor, TogetherStmt,
-    UntilStmt, WhenExpr,
+    ExprKind, FirstOf, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt,
+    LetValue, Literal, PatternKind, StartStmt, Stmt, StopStmt, TasksStmt, TextPart, TogetherFor,
+    TogetherStmt, UntilStmt, WhenExpr,
 };
 
 use super::Report;
@@ -824,10 +824,9 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.task_functions.insert(current);
         }
-        let placed = self
-            .tasks_frames
-            .last()
-            .is_some_and(|&(tasks, lambdas)| tasks == self.task_depth && lambdas == self.lambda_depth);
+        let placed = self.tasks_frames.last().is_some_and(|&(tasks, lambdas)| {
+            tasks == self.task_depth && lambdas == self.lambda_depth
+        });
         if !placed {
             let inside = if self.lambda_depth > 0
                 && self
@@ -844,7 +843,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.report.error(
                 Code::U2035,
                 stmt.keyword,
-                format!("`start` stands {inside}; start tasks from the block of a `tasks` statement"),
+                format!(
+                    "`start` stands {inside}; start tasks from the block of a `tasks` statement"
+                ),
             );
         }
         if let Some(binding) = stmt.handled.with.first() {
@@ -1154,6 +1155,9 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if !handled.handlings.is_empty() {
             self.outside_rl(handled.span, || "a handling clause".to_owned());
+        }
+        if handled.within.is_some() {
+            self.outside_rl(handled.span, || "`within`".to_owned());
         }
         // Edition 0.4: `e within d` (ADR 0117 rule 5). `d` is evaluated first, outside the
         // `with` bindings; the timing label's seed covers the handlers they install.

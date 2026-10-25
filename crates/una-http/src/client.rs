@@ -163,7 +163,14 @@ pub fn send_interruptible(
     interrupt: &dyn Interrupt,
 ) -> Result<Response, Error> {
     let governor = Governor::new(grants.to_vec());
-    send_governed(request, &governor, settings, interrupt, &Abandon::new(), None)
+    send_governed(
+        request,
+        &governor,
+        settings,
+        interrupt,
+        &Abandon::new(),
+        None,
+    )
 }
 
 /// Sends `request` where the grants of `governor` allow, within `settings` and their limits

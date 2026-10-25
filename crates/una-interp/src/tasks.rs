@@ -196,6 +196,10 @@ impl<'p, 'w> Run<'p, 'w> {
     }
 }
 
+/// A started task the driver has not made a coroutine for yet: its body, the bytes of its stack,
+/// and its `start`.
+type Pending<'w> = (Box<dyn FnOnce() + 'w>, usize, Span);
+
 /// The scheduler of a run: the queue of ready tasks, the task that runs and its turn, and the
 /// tasks started but not yet given a coroutine.
 #[derive(Default)]
@@ -205,7 +209,7 @@ pub(crate) struct Sched<'w> {
     turn: u32,
     /// The started tasks whose coroutine the driver has not made yet: their body, the bytes
     /// of their stack, and their `start`.
-    pending: BTreeMap<usize, (Box<dyn FnOnce() + 'w>, usize, Span)>,
+    pending: BTreeMap<usize, Pending<'w>>,
     /// The id of the next task; the root's is 0.
     next: usize,
 }
@@ -302,7 +306,7 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
         let Some(id) = next else {
             break;
         };
-        if !table.contains_key(&id) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = table.entry(id) {
             let pending = run.sched.borrow_mut().pending.remove(&id);
             let Some((body, bytes, span)) = pending else {
                 continue;
@@ -313,7 +317,7 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
                 .map(|at| pool.swap_remove(at));
             match reused.or_else(|| Stack::new(bytes).ok()) {
                 Some(stack) => {
-                    table.insert(id, scope.spawn(stack, body));
+                    slot.insert(scope.spawn(stack, body));
                 }
                 None => {
                     run.abort_run(Abort::Unstarted {
@@ -401,9 +405,11 @@ mod tests {
             log.borrow_mut().push("root starts");
             for label in ["a", "b"] {
                 let (log, span) = (&log, span());
-                run.sched
-                    .borrow_mut()
-                    .start(Box::new(move || log.borrow_mut().push(label)), 64 * 1024, span);
+                run.sched.borrow_mut().start(
+                    Box::new(move || log.borrow_mut().push(label)),
+                    64 * 1024,
+                    span,
+                );
             }
             log.borrow_mut().push("root goes on");
             for _ in 0..TURN {

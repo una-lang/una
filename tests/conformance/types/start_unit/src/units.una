@@ -1,7 +1,7 @@
 -- test: the expression of `start` has type `Unit`, since nothing receives its value: another type is U2011 (spec/27 §7, ADR 0117 rule 7)
 -- spec: spec/27 §7
--- expect: error U2011 at src/unit.una:11:11
-module unit
+-- expect: error U2011 at src/units.una:11:11
+module units
 
 double(n: Int) -> Int = n * 2
 

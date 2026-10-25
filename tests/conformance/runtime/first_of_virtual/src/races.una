@@ -57,20 +57,20 @@ pub both_fail(n: Int) -> Int
 
 double(n: Int) -> Int = n * 2
 
-leaf(n: Int) -> secret Int
+leaf(n: Int) -> restricted Int
 =
   first of
     double(n)
     double(n + 1)
 
-middle(n: Int) -> secret Int
+middle(n: Int) -> restricted Int
 =
   together
     let a = leaf(n)
     let b = leaf(n + 10)
   a + b
 
-pub top(n: Int) -> secret Int
+pub top(n: Int) -> restricted Int
 =
   first of
     middle(n)

@@ -948,10 +948,13 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
                 Some(cap) => format!(
                     "this `start` exceeds the {cap} started tasks this system allows at once, a quarter of `vm.max_map_count`"
                 ),
-                None => "this `start` could not run its task: no stack could be mapped for it"
-                    .to_owned(),
+                None if span.is_some() => {
+                    "this `start` could not run its task: no stack could be mapped for it"
+                        .to_owned()
+                }
+                None => "the root task could not run: no stack could be mapped for it".to_owned(),
             },
-            sources.location(*span),
+            span.map_or_else(|| root.clone(), |span| sources.location(span)),
         ),
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,

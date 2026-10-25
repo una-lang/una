@@ -2317,7 +2317,11 @@ pub(crate) fn limit_timing(
         }
         let (by, raised) = match &site.raiser {
             Some(super::timing::Raiser::Ancestor(name, label, own)) => {
-                let how = if *own { "which makes it" } else { "which leads to it" };
+                let how = if *own {
+                    "which makes it"
+                } else {
+                    "which leads to it"
+                };
                 (format!("the work of {name}, {how}"), label.clone())
             }
             Some(super::timing::Raiser::Beside) | None => (

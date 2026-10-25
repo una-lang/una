@@ -592,7 +592,7 @@ pub extern "C" fn una_rt_tasks_begin(bound: i64, bounded: i64, site: i64) -> i64
 /// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`:
 /// 0, or 2 when the task stops instead ([`crate::started::start`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_start(closure: i64, site: i64) -> i64 {
+pub extern "C" fn una_rt_start_task(closure: i64, site: i64) -> i64 {
     crate::started::start(closure, usize::try_from(site).unwrap_or(usize::MAX), invoke)
 }
 

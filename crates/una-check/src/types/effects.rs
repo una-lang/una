@@ -149,6 +149,16 @@ impl Scan<'_, '_> {
     fn handled(&mut self, handled: &Handled) {
         let of_param =
             matches!(&handled.expr.kind, ExprKind::Call { callee, .. } if self.is_param(callee));
+        // A `within` passes its time-out as the function's own `TimedOut` (ADR 0117 rule 5): a
+        // failure of the function itself, whatever it passes on besides.
+        if handled.within.is_some()
+            && handled
+                .handlings
+                .iter()
+                .any(|h| matches!(h.kind, HandlingKind::ErrorPass))
+        {
+            self.found.own_failures = true;
+        }
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorPass if of_param => self.found.passed = true,

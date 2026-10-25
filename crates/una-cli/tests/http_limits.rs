@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 #[path = "common/history.rs"]
 mod history;
+#[path = "common/native_build.rs"]
+mod native_build;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -72,7 +74,9 @@ impl Server {
                     let path = read_path(&mut stream);
                     counted.fetch_add(1, Ordering::SeqCst);
                     let answer = match path.as_str() {
-                        "/hop" => "HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 0\r\n\r\n",
+                        "/hop" => {
+                            "HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 0\r\n\r\n"
+                        }
                         _ => "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
                     };
                     let _ = stream.write_all(answer.as_bytes());
@@ -153,7 +157,11 @@ fn both(dir: &Path, name: &str, flags: &[&str]) -> [(Duration, serde_json::Value
     let interpreted_time = started.elapsed();
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
-    assert_eq!(document["output"], serde_json::json!(["done"]), "{document}");
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["done"]),
+        "{document}"
+    );
 
     let built = una(dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
@@ -273,7 +281,9 @@ pub main() -> Unit
     );
     let dir = package(
         "hops",
-        &format!("    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 at once\n"),
+        &format!(
+            "    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 at once\n"
+        ),
         &program,
     );
     for (time, trace) in both(&dir, "hops", &["--http-timeout", "20"]) {
@@ -307,7 +317,9 @@ pub main() -> Unit
     );
     let dir = package(
         "cut",
-        &format!("    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"),
+        &format!(
+            "    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"
+        ),
         &program,
     );
     for (time, trace) in both(&dir, "cut", &["--http-timeout", "30"]) {
@@ -340,7 +352,9 @@ pub main() -> Unit
     );
     let dir = package(
         "timed",
-        &format!("    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"),
+        &format!(
+            "    console\n    http \"http://127.0.0.1:{port}\" get\n      at most 1 per hour\n"
+        ),
         &program,
     );
     for (time, trace) in both(&dir, "timed", &["--http-timeout", "1"]) {
@@ -386,7 +400,11 @@ fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
     let interpreted_time = started.elapsed();
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
-    assert_eq!(document["output"], serde_json::json!(readings), "{document}");
+    assert_eq!(
+        document["output"],
+        serde_json::json!(readings),
+        "{document}"
+    );
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
@@ -523,7 +541,10 @@ fn a_limited_grant_flag_is_refused_before_main_when_l_lim_is_secret() {
                 );
             }
             // Without the flag, the executable starts.
-            let unlimited = Command::new(&executable).current_dir(&dir).output().unwrap();
+            let unlimited = Command::new(&executable)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
             assert_eq!(unlimited.status.code(), Some(0), "{unlimited:?}");
             // `una check` reports U4001 at the request once `run grants` carry limits.
             std::fs::write(

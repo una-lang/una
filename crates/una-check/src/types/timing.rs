@@ -428,10 +428,7 @@ pub(crate) fn limit_labels(
             edges.push(to);
         }
     }
-    fn op_edges(
-        ops: &BTreeMap<(CapId, String), usize>,
-        uses: &[super::env::Need],
-    ) -> Vec<usize> {
+    fn op_edges(ops: &BTreeMap<(CapId, String), usize>, uses: &[super::env::Need]) -> Vec<usize> {
         let mut out = Vec::new();
         for need in uses {
             if let Some(cap) = need.usage.capability {
@@ -637,24 +634,25 @@ pub(crate) fn limit_labels(
     }
     let ops_start = functions + handlers + capabilities;
     let name = |node: usize| -> String {
-        let qualified = |module: usize, name: &str| {
-            match env.modules.get(module).map(|m| m.path.as_str()) {
+        let qualified =
+            |module: usize, name: &str| match env.modules.get(module).map(|m| m.path.as_str()) {
                 Some(path) if !path.is_empty() => format!("`{path}.{name}`"),
                 _ => format!("`{name}`"),
-            }
-        };
+            };
         match node {
             f if f < functions => env
                 .functions
                 .get(f)
                 .map_or_else(String::new, |def| qualified(def.module, def.name)),
             h if h < functions + handlers => {
-                env.handlers.get(h - functions).map_or_else(String::new, |h| {
-                    format!(
-                        "the handler {}",
-                        qualified(h.module, env.text(h.module, h.ast.name.name))
-                    )
-                })
+                env.handlers
+                    .get(h - functions)
+                    .map_or_else(String::new, |h| {
+                        format!(
+                            "the handler {}",
+                            qualified(h.module, env.text(h.module, h.ast.name.name))
+                        )
+                    })
             }
             c if c < ops_start => env
                 .capabilities

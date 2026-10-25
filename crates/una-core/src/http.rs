@@ -559,10 +559,7 @@ mod tests {
         assert!(grant.allows(&url("https://api.example.com/x"), Method::Post));
         // In any order; without suffixes, no limits.
         let reordered = Grant::parse_limited("http:http://[::1]:8080;waiting=3;2/second").unwrap();
-        assert_eq!(
-            reordered.unwrap().limits().rate,
-            Some((2, Period::Second))
-        );
+        assert_eq!(reordered.unwrap().limits().rate, Some((2, Period::Second)));
         let plain = Grant::parse_limited("http:https://h").unwrap().unwrap();
         assert!(!plain.limits().any());
         // `una.toml` reads no limits (U7002 there).

@@ -432,7 +432,10 @@ mod tests {
             "http:https://h".to_owned(),
             "http:https://h:get;1/once".to_owned(),
         ];
-        assert_eq!(check_limited_flags(&flags, Some(("internal", true))), Ok(()));
+        assert_eq!(
+            check_limited_flags(&flags, Some(("internal", true))),
+            Ok(())
+        );
         assert_eq!(
             check_limited_flags(&flags, Some(("secret", false))),
             Err(

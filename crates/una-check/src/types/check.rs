@@ -84,8 +84,10 @@ pub(crate) struct Ctx {
     pub(crate) floor: Option<Label>,
     /// Inside `e within d`, its timing label `τ(e)` and the `within`: the timing floor that
     /// raises the program counter of every operation and every call with effects in `e`, since
-    /// the deadline can cut `e` before any of them (ADR 0117 IF2).
-    pub(crate) timing: Option<(Label, Span)>,
+    /// the deadline can cut `e` before any of them (ADR 0117 IF2). Inside a branch of `first
+    /// of`, the join of `τ` of every branch and the race, since a sibling that wins can cut the
+    /// branch (IF3). The construct is the innermost one that raised the floor.
+    pub(crate) timing: Option<(Label, Span, super::within::Construct)>,
 }
 
 impl Ctx {

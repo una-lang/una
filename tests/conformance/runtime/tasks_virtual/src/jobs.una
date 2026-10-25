@@ -9,7 +9,7 @@ pub capability Log
 pub handler quiet() for Log
   op write(line) = unit
 
-pub kind JobError = Broken
+pub kind JobError = Broken | Lost
 
 log_job(n: Int) -> Unit
   uses @log: Log[write]
@@ -29,7 +29,7 @@ dive(n: Int) -> Unit
   let d = deep(n)
   @log.write("dove {d}")
 
-pub all(n: Int) -> Int
+pub every(n: Int) -> Int
   uses @log: Log[write]
 =
   tasks at most 2 at once
@@ -69,7 +69,7 @@ pub serve() -> Int
 
 example "a tasks statement waits for its tasks, two at once"
   given @log = quiet()
-  do all(5)
+  do every(5)
   expect result == 5
   expect performed @log.write
 

@@ -70,16 +70,25 @@ fn serve() {
     let mut wheel = lock(timers);
     loop {
         let now = crate::runtime::clock().now();
+        // Under the lock, only the timers that are due move out of the wheel, O(1) each, into
+        // a list whose capacity is kept; their entries are set once the lock is released, so
+        // a task that arms or cancels a timer never waits for that work (ADR 0117 amendment of
+        // 2026-10-19, point 4).
         let next = match wheel.as_mut() {
             Some(wheel) => {
-                wheel.advance(now, &mut fired);
+                wheel.advance_unordered(now, &mut fired);
                 wheel.next_expiration()
             }
             None => return,
         };
-        for (_, flag) in fired.drain(..) {
-            // The `within`'s cancellation entry: cancelled once its count is below 1.
-            flag.store(0, Ordering::SeqCst);
+        if !fired.is_empty() {
+            drop(wheel);
+            for (_, flag) in fired.drain(..) {
+                // The `within`'s cancellation entry: cancelled once its count is below 1.
+                flag.store(0, Ordering::SeqCst);
+            }
+            wheel = lock(timers);
+            continue;
         }
         wheel = match next {
             None => timers

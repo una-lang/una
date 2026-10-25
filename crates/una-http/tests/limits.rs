@@ -23,10 +23,7 @@ struct Server {
 }
 
 impl Server {
-    fn start(
-        delay: Duration,
-        answer: impl Fn(&str) -> String + Send + Sync + 'static,
-    ) -> Server {
+    fn start(delay: Duration, answer: impl Fn(&str) -> String + Send + Sync + 'static) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(AtomicUsize::new(0));
@@ -204,7 +201,10 @@ fn the_request_deadline_covers_a_wait_and_the_request_is_never_sent() {
     let server = Server::start(Duration::ZERO, |_| ok());
     let g = governor(&[format!("http:{};1/hour", server.origin())]);
     let url = format!("{}/x", server.origin());
-    assert_eq!(get(&g, &url, Duration::from_secs(5), &Abandon::new()), Ok(200));
+    assert_eq!(
+        get(&g, &url, Duration::from_secs(5), &Abandon::new()),
+        Ok(200)
+    );
     let started = Instant::now();
     assert_eq!(
         get(&g, &url, Duration::from_millis(200), &Abandon::new()),
@@ -238,7 +238,10 @@ fn a_slot_stays_held_until_its_exchange_returns() {
         Err(Error::TimedOut)
     );
     assert_eq!(first.join().unwrap(), Ok(200));
-    assert_eq!(get(&g, &url, Duration::from_secs(5), &Abandon::new()), Ok(200));
+    assert_eq!(
+        get(&g, &url, Duration::from_secs(5), &Abandon::new()),
+        Ok(200)
+    );
 }
 
 #[test]
@@ -246,7 +249,10 @@ fn an_abandoned_wait_is_never_sent() {
     let server = Server::start(Duration::ZERO, |_| ok());
     let g = governor(&[format!("http:{};1/hour", server.origin())]);
     let url = format!("{}/x", server.origin());
-    assert_eq!(get(&g, &url, Duration::from_secs(5), &Abandon::new()), Ok(200));
+    assert_eq!(
+        get(&g, &url, Duration::from_secs(5), &Abandon::new()),
+        Ok(200)
+    );
     let abandon = Abandon::new();
     let waiting = {
         let (g, url, abandon) = (Arc::clone(&g), url.clone(), abandon.clone());

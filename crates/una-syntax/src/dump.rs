@@ -651,9 +651,7 @@ impl Dumper<'_> {
                     self.block(&together.block),
                 ],
             ),
-            BlockExpr::FirstOf(first) => {
-                list("first-of", first.body.iter().map(|s| self.stmt(s)))
-            }
+            BlockExpr::FirstOf(first) => list("first-of", first.body.iter().map(|s| self.stmt(s))),
         }
     }
 

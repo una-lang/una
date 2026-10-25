@@ -602,12 +602,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // and operations of the locked headers that they do not grant.
     lock::resolve(&mut env, package.locks, &mut report);
     lock::drift(&env, &mut report);
-    // ADR 0117 IF2: the timing label of each `within` needs the whole package's call graph, so
-    // pass 2 is probed, its diagnostics dropped, until no label rises. Labels only rise, and
-    // each round that goes on raises one by at least one atom, so a round past that bound is an
-    // internal error, never a silent stop with a label too low. Before the file-state probe,
-    // whose label the timing labels can raise.
-    if withins {
+    // Two labels need a pass of their own before pass 2 checks with them, and each can raise
+    // the other, so they are probed together, pass 2 run with its diagnostics dropped, until
+    // neither rises:
+    // - ADR 0117 IF2: the timing label of each `within` needs the whole package's call graph;
+    // - S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
+    //   operation with what decides its writes, so that a read checked before a write has the
+    //   label too, and a failure so labeled can raise a program counter that a `within`'s
+    //   timing label reads.
+    // Labels only rise, and each round that goes on raises one by at least one atom, so a round
+    // past that bound is an internal error, never a silent stop with a label too low. Both are
+    // confirmed after pass 2 (`authority::within_timing`, `file_state`).
+    if withins || env.files_written {
         let atoms = 4 + env.categories.len() + 1;
         let mut rounds = 0usize;
         loop {
@@ -628,10 +634,19 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     );
                 }
             }
-            let labels = authority::within_labels(&env, &probe);
-            if labels == env.within_timing {
-                break;
-            }
+            let labels = if withins {
+                authority::within_labels(&env, &probe)
+            } else {
+                std::collections::BTreeMap::new()
+            };
+            let state = if env.files_written {
+                env.file_state.join(&file_state(&env).0)
+            } else {
+                env.file_state.clone()
+            };
+            env.file_writes.clear();
+            env.file_calls.clear();
+            env.file_escaped.clear();
             let joined: std::collections::BTreeMap<Span, label::Label> = labels
                 .into_iter()
                 .map(|(key, label)| match env.within_timing.get(&key) {
@@ -639,47 +654,25 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     None => (key, label),
                 })
                 .collect();
-            if rounds > joined.len() * atoms + 2 {
+            let stable = joined == env.within_timing && state == env.file_state;
+            env.within_timing = joined;
+            env.file_state = state;
+            // Without a `within`, one probe gives the file-state label's least fixpoint, as
+            // before (ADR 0085): what the label raises in pass 2 is below it.
+            if stable || !withins {
+                break;
+            }
+            if rounds > (env.within_timing.len() + 1) * atoms + 2 {
                 if let Some(site) = probe.withins.first() {
                     report.error(
                         Code::U8001,
                         site.span,
-                        "internal error: the timing labels of `within` and `first of` did not reach a fixpoint (ADR 0117 IF2, IF3)".to_owned(),
+                        "internal error: the timing labels of `within` and `first of` and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0085)".to_owned(),
                     );
                 }
                 break;
             }
-            if joined == env.within_timing {
-                break;
-            }
-            env.within_timing = joined;
         }
-    }
-    // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
-    // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
-    // so that a read checked before a write has the label too. The probe's label is the least
-    // fixpoint: what the label itself raises in pass 2 is below it.
-    if env.files_written {
-        let mut scratch = Report::new(package.sources);
-        let mut findings = Findings::default();
-        let mut unused = authority::Collected::default();
-        for module in 0..package.modules.len() {
-            if env.reports(module) {
-                check::module(
-                    &mut env,
-                    &facts,
-                    &mut scratch,
-                    &mut findings,
-                    &mut unused,
-                    authority::Pass::Check,
-                    module,
-                );
-            }
-        }
-        env.file_state = file_state(&env).0;
-        env.file_writes.clear();
-        env.file_calls.clear();
-        env.file_escaped.clear();
     }
     let mut findings = Findings::default();
     let mut unused = authority::Collected::default();
