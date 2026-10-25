@@ -1,6 +1,6 @@
 -- test: a handler operation result fed by a literal checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 25:14
+-- expect: error U5001 at 22:14
 module sweep_flow_handler_literal
 
 pub kind Pos = Int where it > 0
@@ -18,14 +18,8 @@ pub kind Boom = | Bang
 pub capability SrcR
   op get() -> Pos
 
-pub handler r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
-  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) for SrcR
+pub handler r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcR
   op get() = 0
 
-pub handler r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
-  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) for SrcR
+pub handler r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcR
   op get() = 1

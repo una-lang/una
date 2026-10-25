@@ -1,7 +1,7 @@
 -- test: a list element fed by a generic call checks every flow (function result refinement, function parameter refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 25:34
--- expect: error U5001 at 32:34
+-- expect: error U5001 at 23:34
+-- expect: error U5001 at 28:34
 module sweep_flow_list_generic
 
 pub kind Pos = Int where it > 0
@@ -18,23 +18,17 @@ pub kind Boom = | Bang
 
 pub id[T](x: T) -> T = x
 
-pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]
-) -> Int
+pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
 =
   let xs: List[fn(Int) -> Pos] = [id(g)]
   0
 
-pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]
-) -> Int
+pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
 =
   let xs: List[fn(Int) -> Int] = [id(w)]
   0
 
-pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]
-) -> Int
+pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
 =
   let xs: List[fn(Int) -> Int] = [id(g)]
   0

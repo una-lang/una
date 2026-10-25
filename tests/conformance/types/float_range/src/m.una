@@ -1,12 +1,10 @@
 -- test: a float literal that rounds to an infinity, or is not zero and rounds to zero, is U2031; the largest finite value, a literal that rounds down to it, the smallest subnormal and a literal that rounds up to it are accepted
 -- spec: spec/29 §2
+-- expect: error U2031 at src/m.una:9:26
 -- expect: error U2031 at src/m.una:11:26
--- expect: error U2031 at src/m.una:13:26
 module m
 
-pub edges() -> List[F64] = [1.7976931348623157e308, 1.7976931348623158e308, 5.0e-324,
-  2.4703282292062328e-324
-]
+pub edges() -> List[F64] = [1.7976931348623157e308, 1.7976931348623158e308, 5.0e-324, 2.4703282292062328e-324]
 
 pub too_large() -> F64 = 1.7976931348623159e308
 

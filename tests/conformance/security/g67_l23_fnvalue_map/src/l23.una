@@ -6,6 +6,4 @@ module l23
 
 flag[T](a: T) -> Int = if a == a then 1 else 0
 
-pub leak(xs: List[secret Int]) -> Int = xs.map(each: flag).fold(initial: 0, step: fn(acc,
-    v
-  ) -> acc + v)
+pub leak(xs: List[secret Int]) -> Int = xs.map(each: flag).fold(initial: 0, step: fn(acc, v) -> acc + v)

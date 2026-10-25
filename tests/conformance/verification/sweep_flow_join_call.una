@@ -1,11 +1,11 @@
 -- test: an if and a when branch join fed by a call checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 44:19
--- expect: error U5001 at 54:10
--- expect: error U5001 at 74:19
+-- expect: error U5001 at 41:218
+-- expect: error U5001 at 48:10
+-- expect: error U5001 at 59:218
+-- expect: error U5001 at 66:10
+-- expect: error U5001 at 77:218
 -- expect: error U5001 at 84:10
--- expect: error U5001 at 104:19
--- expect: error U5001 at 114:10
 module sweep_flow_join_call
 
 pub kind Pos = Int where it > 0
@@ -38,90 +38,54 @@ pub take_f(v: fn(Int) -> Pos) -> Int = 0
 
 pub take_e(v: fn(Int) -> Int) -> Int = 0
 
-pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  c: Bool
-) -> Int = take_r(if c then zero(1) else 1)
+pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], c: Bool) -> Int = take_r(if c then zero(1) else 1)
 
-pub rw_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  o: Option[Int]
-) -> Int
+pub rw_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], o: Option[Int]) -> Int
 =
   let y = when o
     is Some(v) -> zero(1)
     is None -> 1
   take_r(y)
 
-pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  c: Bool
-) -> Int = take_r(if c then one(1) else 1)
+pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], c: Bool) -> Int = take_r(if c then one(1) else 1)
 
-pub rw_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  o: Option[Int]
-) -> Int
+pub rw_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], o: Option[Int]) -> Int
 =
   let y = when o
     is Some(v) -> one(1)
     is None -> 1
   take_r(y)
 
-pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  c: Bool
-) -> Int = take_f(if c then make() else one)
+pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], c: Bool) -> Int = take_f(if c then make() else one)
 
-pub fw_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  o: Option[Int]
-) -> Int
+pub fw_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], o: Option[Int]) -> Int
 =
   let y = when o
     is Some(v) -> make()
     is None -> one
   take_f(y)
 
-pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  c: Bool
-) -> Int = take_f(if c then make_pos() else one)
+pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], c: Bool) -> Int = take_f(if c then make_pos() else one)
 
-pub fw_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  o: Option[Int]
-) -> Int
+pub fw_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], o: Option[Int]) -> Int
 =
   let y = when o
     is Some(v) -> make_pos()
     is None -> one
   take_f(y)
 
-pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  c: Bool
-) -> Int = take_e(if c then taker() else zero)
+pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], c: Bool) -> Int = take_e(if c then taker() else zero)
 
-pub pw_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  o: Option[Int]
-) -> Int
+pub pw_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], o: Option[Int]) -> Int
 =
   let y = when o
     is Some(v) -> taker()
     is None -> zero
   take_e(y)
 
-pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  c: Bool
-) -> Int = take_e(if c then make() else zero)
+pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], c: Bool) -> Int = take_e(if c then make() else zero)
 
-pub pw_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print],
-  o: Option[Int]
-) -> Int
+pub pw_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print], o: Option[Int]) -> Int
 =
   let y = when o
     is Some(v) -> make()

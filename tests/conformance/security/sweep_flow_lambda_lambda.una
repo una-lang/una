@@ -1,8 +1,8 @@
 -- test: a lambda result fed by a lambda checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 25:48
--- expect: error U3003 at 35:48
--- expect: error U3007 at 45:48
+-- expect: error U4001 at 22:238
+-- expect: error U3003 at 26:238
+-- expect: error U3007 at 30:238
 module sweep_flow_lambda_lambda
 
 pub kind Pos = Int where it > 0
@@ -19,27 +19,12 @@ pub kind Boom = | Bang
 
 pub apply_e(f: fn(Int) -> fn(Int) -> Int) -> Int = 0
 
-pub m_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> s)
+pub m_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> s)
 
-pub m_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> y)
+pub m_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> y)
 
-pub e_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> q(y))
+pub e_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> q(y))
 
-pub e_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> g(y))
+pub e_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> g(y))
 
-pub x_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> z(y))
+pub x_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> fn(y: Int) -> z(y))

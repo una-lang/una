@@ -13,9 +13,7 @@ pub area(shape: Shape) -> Int
     is Circle(radius) -> 3 * radius * radius
     is Square(side: length) -> length * length
 
-pub largest[T](items: List[T], size: fn(T) -> Int) -> Int = fold(items, initial: 0,
-  step: fn(best: Int, item: T) -> max(best, b: size(item))
-)
+pub largest[T](items: List[T], size: fn(T) -> Int) -> Int = fold(items, initial: 0, step: fn(best: Int, item: T) -> max(best, b: size(item)))
 
 pub find(key: Int) -> Int
   fails LookupError

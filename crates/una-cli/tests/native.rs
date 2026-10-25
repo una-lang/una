@@ -853,8 +853,8 @@ fn a_wide_range_in_a_task_stops_it_with_u6003_in_both_backends() {
 }
 
 /// A program of edition 0.2 named `name` whose `main` builds two equal trees of 30 levels of 64
-/// forks each, about 2,000 forks a tree, and compares them with `==`: at line 27, column 14, in
-/// `main`, or with `in_task` at line 28, column 16, in a branch of a `together`. Each fork's
+/// forks each, about 2,000 forks a tree, and compares them with `==`: at line 25, column 14, in
+/// `main`, or with `in_task` at line 26, column 16, in a branch of a `together`. Each fork's
 /// children are at `step * j` and `step * j + 1` of the level below, with steps 2 and 3: the trees
 /// share their parts differently, and the comparison meets 76,480 distinct pairs of forks (#815),
 /// counted at 128 bytes each, over a budget of 4 MiB (32,768 pairs) and within one of 16 MiB.
@@ -875,9 +875,7 @@ fn meeting_trees(name: &str, in_task: bool) -> PathBuf {
          grow(step: Int) -> Tree\n=\n  let edit level: List[Tree] = []\n  for j in 0..<64\n\
          \x20   level = level.append(item: Leaf)\n  for depth in 0..<30\n\
          \x20   let edit next: List[Tree] = []\n    for j in 0..<64\n\
-         \x20     next = next.append(item: Fork(l: pick(level, index: step * j), r: pick(level,\n\
-         \x20           index: step * j + 1\n\
-         \x20         )))\n\
+         \x20     next = next.append(item: Fork(l: pick(level, index: step * j), r: pick(level, index: step * j + 1)))\n\
          \x20   level = next\n  pick(level, index: 0)\n\n\
          pub main() -> Unit\n  uses @console: Console[print]\n=\n\
          \x20 let x = grow(2)\n  let y = grow(3)\n  @console.print(\"built\")\n{compare}"
@@ -904,7 +902,7 @@ fn a_comparison_over_the_budget_is_u6003_at_its_site_in_both_backends() {
         let dir = meeting_trees(name, in_task);
         let built = una(&dir, &["build"]);
         assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let site = if in_task { ":28:16" } else { ":27:14" };
+        let site = if in_task { ":26:16" } else { ":25:14" };
         let expected = "[U6003] Error: this call exceeds the memory limit of 4 MiB\n";
         let run = una(&dir, &["run", "--max-memory", "4"]);
         let native = native_run(&dir, name, "4");
@@ -1131,7 +1129,7 @@ fn a_copy_between_tasks_over_the_budget_is_u6003_in_both_backends() {
 fn an_executable_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: the executable takes `--max-memory` as `una run` does, and the call that
     // finds the run over its budget is U6003.
-    let program = "module hog\n\ngrow(t: Text,\n  n: Int\n) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n    n: n - 1\n  ), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
+    let program = "module hog\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
     let dir = package(
         "hog",
         "\n[run]\nentry = \"hog\"\ngrants = [\"console\"]\n",
@@ -1871,7 +1869,7 @@ fn a_task_counts_its_depth_from_its_block() {
 fn the_tasks_of_a_run_share_its_memory_budget() {
     // `spec/19 §8` rule 3: `--max-memory` bounds the heaps of all tasks together, and the call
     // of a task that finds the run over its budget is U6003.
-    let program = "module hogs\n\ngrow(t: Text,\n  n: Int\n) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n    n: n - 1\n  ), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
+    let program = "module hogs\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
     let dir = tasks_package("hogs", "hogs", program);
     let output = Command::new(dir.join("target/una/hogs"))
         .args(["--max-memory", "64"])
@@ -2310,7 +2308,7 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
 /// Functions that consume their list parameter on one path only, and let it escape on the
 /// other: returned, stored in a record or a list, captured, or passed to an owned parameter
 /// of another function (#284).
-const BORROWED_ENTRY_FUNCTIONS: &str = "module rc\n\npub kind Box\n  items: List[Int]\n\ncons(xs: List[Int], i: Int) -> Int = if i < 0 then xs.append(item: i).len else xs.len\n\nkeep(xs: List[Int], i: Int) -> List[Int] = if i < 0 then xs.append(item: i) else xs\n\nboxed(xs: List[Int],\n  i: Int\n) -> Box = if i < 0 then Box(items: xs.append(item: i)) else Box(items: xs)\n\nlisted(xs: List[Int], i: Int) -> List[List[Int]] = if i < 0 then [xs.append(item: i)] else [xs, xs]\n\nadder(xs: List[Int],\n  i: Int\n) -> fn(Int) -> Int = if i < 0 then fn(n) -> xs.append(item: n).len else fn(n) -> xs.len + n\n\ngrown(xs: List[Int], i: Int) -> List[Int] = xs.append(item: i)\n\nnested(xs: List[Int], i: Int) -> Int = if i < 0 then grown(xs, i: i).len else xs.len\n\nboth(xs: List[Int], ys: List[Int],\n  i: Int\n) -> Int = if i < 0 then xs.append(item: i).len + ys.append(item: i).len else xs.len + ys.len\n\ngo(acc: List[Int], i: Int, n: Int) -> List[Int] = if i == n then acc else go(acc.append(item: i),\n  i: i + 1, n: n\n)\n\nfill(acc: List[Int], n: Int) -> List[Int]\n=\n  let edit a: List[Int] = acc\n  for i in 0..<n\n    a = grown(a, i: i)\n  a\n";
+const BORROWED_ENTRY_FUNCTIONS: &str = "module rc\n\npub kind Box\n  items: List[Int]\n\ncons(xs: List[Int], i: Int) -> Int = if i < 0 then xs.append(item: i).len else xs.len\n\nkeep(xs: List[Int], i: Int) -> List[Int] = if i < 0 then xs.append(item: i) else xs\n\nboxed(xs: List[Int], i: Int) -> Box = if i < 0 then Box(items: xs.append(item: i)) else Box(items: xs)\n\nlisted(xs: List[Int], i: Int) -> List[List[Int]] = if i < 0 then [xs.append(item: i)] else [xs, xs]\n\nadder(xs: List[Int], i: Int) -> fn(Int) -> Int = if i < 0 then fn(n) -> xs.append(item: n).len else fn(n) -> xs.len + n\n\ngrown(xs: List[Int], i: Int) -> List[Int] = xs.append(item: i)\n\nnested(xs: List[Int], i: Int) -> Int = if i < 0 then grown(xs, i: i).len else xs.len\n\nboth(xs: List[Int], ys: List[Int], i: Int) -> Int = if i < 0 then xs.append(item: i).len + ys.append(item: i).len else xs.len + ys.len\n\ngo(acc: List[Int], i: Int, n: Int) -> List[Int] = if i == n then acc else go(acc.append(item: i), i: i + 1, n: n)\n\nfill(acc: List[Int], n: Int) -> List[Int]\n=\n  let edit a: List[Int] = acc\n  for i in 0..<n\n    a = grown(a, i: i)\n  a\n";
 
 /// Moves the package at `dir` to edition 0.2, whose `edit` bindings the programs use.
 fn edition_0_2(dir: &Path) {
@@ -2688,7 +2686,7 @@ fn appends_through_function_values(shape: &str, steps: usize) -> String {
         ),
     };
     format!(
-        "module grow\n\nr1(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\nrun_with(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int]\n=\n  let edit acc: List[Int] = []\n  for i in 0..<n\n    acc = f(acc, i)\n  acc\n\nlayered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = run_with(fn(acc, i) -> f(acc, i),\n  n: n\n)\n\ntwice_layered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = layered(fn(acc,\n    i\n  ) -> f(acc, i), n: n)\n\nnumbers(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<n\n    xs = xs.append(item: i)\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{body}"
+        "module grow\n\nr1(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\nrun_with(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int]\n=\n  let edit acc: List[Int] = []\n  for i in 0..<n\n    acc = f(acc, i)\n  acc\n\nlayered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = run_with(fn(acc, i) -> f(acc, i), n: n)\n\ntwice_layered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = layered(fn(acc, i) -> f(acc, i), n: n)\n\nnumbers(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<n\n    xs = xs.append(item: i)\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{body}"
     )
 }
 

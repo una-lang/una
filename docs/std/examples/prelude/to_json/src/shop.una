@@ -4,8 +4,6 @@ module shop
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let fields = empty_map().with(key: "price", value: Number(1999)).with(key: "name",
-    value: Str("Desk lamp")
-  )
+  let fields = empty_map().with(key: "price", value: Number(1999)).with(key: "name", value: Str("Desk lamp"))
   let text = Object(fields).to_json()
   @console.print(text)

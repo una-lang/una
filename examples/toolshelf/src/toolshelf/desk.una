@@ -1,8 +1,6 @@
 module toolshelf.desk
 
-import toolshelf.tools (Checkout, CheckoutError, Day, KeepDays, Member, Shelf, Tool, can_check_out,
-  check_out, shelf_with
-)
+import toolshelf.tools (Checkout, CheckoutError, Day, KeepDays, Member, Shelf, Tool, can_check_out, check_out, shelf_with)
 
 --- Checks out from the main shelf, or from the backup shelf when the main one cannot.
 pub check_out_anywhere(member: Member, name: Text, today: Day, days: KeepDays) -> Checkout

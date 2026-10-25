@@ -6,6 +6,4 @@ module l56
 
 pick[U](x: U, y: U, p: U, q: U) -> List[U] = [if x == y then p else q]
 
-pub leak(s: secret Int) -> Int = pick([s], y: [0], p: [], q: [s, s]).fold(initial: 0, step: fn(acc,
-    row
-  ) -> acc + row.len)
+pub leak(s: secret Int) -> Int = pick([s], y: [0], p: [], q: [s, s]).fold(initial: 0, step: fn(acc, row) -> acc + row.len)

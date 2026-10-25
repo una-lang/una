@@ -1,6 +1,6 @@
 -- test: an operation argument fed by a lambda checks every flow (label of a function parameter, sink); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/07 §7
--- expect: error U4001 at 40:19
+-- expect: error U4001 at 38:19
 module sweep_flow_oparg_lambda
 
 pub kind Pos = Int where it > 0
@@ -32,16 +32,12 @@ zero(x: Int) -> Int = 0
 
 ident[T](x: T) -> T = x
 
-pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_l]
 =
   @p.take_l(fn(y: Int) -> y)
 
-pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_l]
 =
   @p.take_l(fn(y: secret Int) -> 0)

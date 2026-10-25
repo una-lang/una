@@ -9,9 +9,7 @@ pub capability Catalog
   op journal(note: Text) -> Unit
 
 pub update(sku: Int, cents: Int, dry_run: Bool, limit: Int) -> Int
-  uses @catalog: Catalog[price, set_price where not dry_run and cents <= limit,
-    journal where not dry_run
-  ]
+  uses @catalog: Catalog[price, set_price where not dry_run and cents <= limit, journal where not dry_run]
 =
   if not dry_run and cents <= limit
     @catalog.set_price(sku, cents: cents)

@@ -241,26 +241,8 @@ fn a_list_literal_gives_one_obligation_per_element() {
     let counts: Vec<usize> = [10, 100, 1000]
         .iter()
         .map(|&k| {
-            let mut source = format!("{POS}pub many(p: Pos) -> List[Pos] = [");
-            let mut column = source.rsplit('\n').next().unwrap().chars().count();
-            let mut wrapped = false;
-            for index in 0..k {
-                if index > 0 && column + 3 > 99 {
-                    source.push_str(",\n  ");
-                    column = 2;
-                    wrapped = true;
-                } else if index > 0 {
-                    source.push_str(", ");
-                    column += 2;
-                }
-                source.push('p');
-                column += 1;
-            }
-            if wrapped {
-                source.push_str("\n]\n");
-            } else {
-                source.push_str("]\n");
-            }
+            let items = vec!["p"; k].join(", ");
+            let source = format!("{POS}pub many(p: Pos) -> List[Pos] = [{items}]\n");
             refinement_goals(&format!("literal_{k}"), &source).len()
         })
         .collect();

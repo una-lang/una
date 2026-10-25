@@ -1,16 +1,10 @@
 -- test: ADR 0067 recheck of #231, N07c_l20b_odd: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
 -- spec: spec/07 §7
--- expect: error U4001 at src/n07c.una:16:34
+-- expect: error U4001 at src/n07c.una:10:34
 module n07c
 
-f[T, U](a: T, b: U, kb: U, ka: T, n: Int) -> List[Int] = if n <= 0 then [] else g(b, b: a, kb: ka,
-  ka: kb, n: n - 1
-)
+f[T, U](a: T, b: U, kb: U, ka: T, n: Int) -> List[Int] = if n <= 0 then [] else g(b, b: a, kb: ka, ka: kb, n: n - 1)
 
-g[T, U](a: T, b: U, kb: U, ka: T,
-  n: Int
-) -> List[Int] = if n == 1 then (if b == kb then [1] else []) else f(a, b, kb: kb, ka: ka,
-  n: n - 1
-)
+g[T, U](a: T, b: U, kb: U, ka: T, n: Int) -> List[Int] = if n == 1 then (if b == kb then [1] else []) else f(a, b, kb: kb, ka: ka, n: n - 1)
 
 pub leak(s: secret Int) -> Int = f(s, b: 0, kb: 0, ka: 5, n: 2).len

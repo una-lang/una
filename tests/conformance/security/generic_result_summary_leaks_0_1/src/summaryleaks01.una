@@ -1,25 +1,23 @@
 -- test: the edition 0.1 twin of `generic_result_summary_leaks`: D-137 raises every position, so each leak is rejected at least where edition 0.2 rejects it; comparisons on `T` are equalities, since edition 0.1 has no `Ord` (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
--- expect: error U4001 at src/summaryleaks01.una:27:41
--- expect: error U4001 at src/summaryleaks01.una:30:71
--- expect: error U4001 at src/summaryleaks01.una:32:48
--- expect: error U4001 at src/summaryleaks01.una:34:78
--- expect: error U4001 at src/summaryleaks01.una:40:9
--- expect: error U4001 at src/summaryleaks01.una:43:51
--- expect: error U4001 at src/summaryleaks01.una:46:45
--- expect: error U4001 at src/summaryleaks01.una:51:3
--- expect: error U4001 at src/summaryleaks01.una:56:49
--- expect: error U4001 at src/summaryleaks01.una:59:56
--- expect: error U4001 at src/summaryleaks01.una:61:40
+-- expect: error U4001 at src/summaryleaks01.una:25:41
+-- expect: error U4001 at src/summaryleaks01.una:28:71
+-- expect: error U4001 at src/summaryleaks01.una:30:48
+-- expect: error U4001 at src/summaryleaks01.una:32:78
+-- expect: error U4001 at src/summaryleaks01.una:35:134
+-- expect: error U4001 at src/summaryleaks01.una:37:51
+-- expect: error U4001 at src/summaryleaks01.una:40:45
+-- expect: error U4001 at src/summaryleaks01.una:45:3
+-- expect: error U4001 at src/summaryleaks01.una:50:49
+-- expect: error U4001 at src/summaryleaks01.una:53:56
+-- expect: error U4001 at src/summaryleaks01.una:55:40
 module summaryleaks01
 
 pub kind Box[T]
   item: T
   count: Int
 
-pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc,
-    x
-  ) -> acc.append(item: x))
+pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
 
 --- The shape depends on a comparison of `T` values: the top carries `T`.
 smaller[T](a: T, b: T) -> List[T] = if a == b then [a] else [b, a]
@@ -34,11 +32,7 @@ pub leak_filter(xs: List[secret Int]) -> Int = below(xs, pivot: 0).len
 pub leak_first(xs: List[secret Int]) -> Bool = xs.first_where(keep: fn(x) -> x > 0).is_some()
 
 --- Recursion: a branch on `T` values deep in the recursion still reaches the top.
-matches[T](xs: List[T], x: T,
-  n: Int
-) -> List[Int] = if n <= 0 then (if xs.contains(item: x) then [1] else []) else concat([],
-  back: matches(xs, x, n: n - 1)
-)
+matches[T](xs: List[T], x: T, n: Int) -> List[Int] = if n <= 0 then (if xs.contains(item: x) then [1] else []) else concat([], back: matches(xs, x, n: n - 1))
 
 pub leak_recursion(xs: List[secret Int]) -> Int = matches(xs, x: 1, n: 3).len
 

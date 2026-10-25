@@ -9,6 +9,4 @@ kind Card
 
 pick[U](x: U, y: U, p: U, q: U) -> U = if x == y then p else q
 
-pub leak(s: secret Int) -> Int = pick(Card(pin: s, tag: 0), y: Card(pin: 1234, tag: 0),
-  p: Card(pin: 0, tag: 1), q: Card(pin: 0, tag: 2)
-).tag
+pub leak(s: secret Int) -> Int = pick(Card(pin: s, tag: 0), y: Card(pin: 1234, tag: 0), p: Card(pin: 0, tag: 1), q: Card(pin: 0, tag: 2)).tag

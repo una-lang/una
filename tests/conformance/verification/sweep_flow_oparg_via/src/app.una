@@ -1,6 +1,6 @@
 -- test: an operation argument fed by a value derived from a policy call checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/12 §3
--- expect: error U5001 at src/app.una:40:13
+-- expect: error U5001 at src/app.una:38:13
 module app
 
 import release (Pos, lower, lower_pos, mask)
@@ -32,16 +32,12 @@ zero(x: Int) -> Int = 0
 
 ident[T](x: T) -> T = x
 
-pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_r]
 =
   @p.take_r(lower_pos(s) - 1)
 
-pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_r]
 =
   @p.take_r(lower_pos(s) + 1)

@@ -14,9 +14,7 @@ pub main() -> Unit
     for i in 0..<r
       acc = acc.append(item: i)
     acc.len
-  let shown = base.fold(initial: "", step: fn(line,
-      x
-    ) -> if line == "" then "{x}" else "{line} {x}")
+  let shown = base.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
   @console.print("sizes {sizes}, base {shown}")
   let edit outer: List[Int] = []
   let inner = together for r in [0, 1]

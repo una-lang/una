@@ -1,20 +1,20 @@
 -- test: nested kinds and generics holding a secret: prelude results carry the field labels of their element and argument types (label sweep); the structural functions, whose results the field labels no longer reach unless they read them, are accepted (ADR 0051)
 -- spec: spec/07 §7
 -- expect: error U4001 at 34:70
--- expect: error U4001 at 56:87
+-- expect: error U4001 at 54:87
+-- expect: error U4001 at 58:57
 -- expect: error U4001 at 60:57
 -- expect: error U4001 at 62:57
--- expect: error U4001 at 64:57
--- expect: error U4001 at 70:72
--- expect: error U4001 at 92:91
+-- expect: error U4001 at 68:72
+-- expect: error U4001 at 88:91
+-- expect: error U4001 at 92:59
+-- expect: error U4001 at 94:59
 -- expect: error U4001 at 96:59
--- expect: error U4001 at 98:59
--- expect: error U4001 at 100:59
--- expect: error U4001 at 106:51
--- expect: error U4001 at 130:53
--- expect: error U4001 at 136:38
--- expect: error U4001 at 138:38
--- expect: error U4001 at 140:38
+-- expect: error U4001 at 102:51
+-- expect: error U4001 at 122:53
+-- expect: error U4001 at 126:38
+-- expect: error U4001 at 128:38
+-- expect: error U4001 at 130:38
 module sweep_label_nested_prelude
 
 kind Acct
@@ -43,9 +43,7 @@ pub p_filter_boxed_list(xs: List[Box[List[secret Int]]]) -> Int = xs.filter(keep
 
 pub p_map_boxed_list(xs: List[Box[List[secret Int]]]) -> List[Int] = xs.map(each: fn(y) -> 1)
 
-pub p_fold_boxed_list(xs: List[Box[List[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n,
-    y
-  ) -> n + 1)
+pub p_fold_boxed_list(xs: List[Box[List[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n, y) -> n + 1)
 
 pub p_is_some_boxed_list(o: Option[Box[List[secret Int]]]) -> Bool = o.is_some()
 
@@ -79,9 +77,7 @@ pub p_filter_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.filter(ke
 
 pub p_map_option_box(xs: List[Option[Box[secret Int]]]) -> List[Int] = xs.map(each: fn(y) -> 1)
 
-pub p_fold_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n,
-    y
-  ) -> n + 1)
+pub p_fold_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.fold(initial: 0, step: fn(n, y) -> n + 1)
 
 pub p_is_some_option_box(o: Option[Option[Box[secret Int]]]) -> Bool = o.is_some()
 
@@ -103,9 +99,7 @@ pub p_len_twin_option_box(xs: List[Option[Box[secret Int]]]) -> Int = xs.len
 
 grab_wallet(x: Wallet) -> secret Int = x.acct.pin
 
-pub p_contains_wallet(xs: List[Wallet]) -> Bool = xs.contains(item: Wallet(acct: Acct(id: 1,
-      pin: 2
-    )))
+pub p_contains_wallet(xs: List[Wallet]) -> Bool = xs.contains(item: Wallet(acct: Acct(id: 1, pin: 2)))
 
 pub p_first_wallet(xs: List[Wallet]) -> Bool = xs.first() is Some
 
@@ -123,13 +117,9 @@ pub p_is_some_wallet(o: Option[Wallet]) -> Bool = o.is_some()
 
 pub p_is_ok_wallet(r: Result[Wallet, Int]) -> Bool = r.is_ok()
 
-pub p_append_wallet(xs: List[Wallet]) -> Int = xs.append(item: Wallet(acct: Acct(id: 1,
-      pin: 2
-    ))).len
+pub p_append_wallet(xs: List[Wallet]) -> Int = xs.append(item: Wallet(acct: Acct(id: 1, pin: 2))).len
 
-pub p_or_else_wallet(o: Option[Wallet]) -> Wallet = o.or_else(default: Wallet(acct: Acct(id: 1,
-      pin: 2
-    )))
+pub p_or_else_wallet(o: Option[Wallet]) -> Wallet = o.or_else(default: Wallet(acct: Acct(id: 1, pin: 2)))
 
 pub p_is_empty_wallet(xs: List[Wallet]) -> Bool = xs.is_empty()
 

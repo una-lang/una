@@ -16,9 +16,7 @@ pub kind LinkError = BadSlug | Unknown(slug: Text) | StoreDown
 pub kind StoreError = | Offline
 
 --- Format check only. The solver sees an opaque symbol; `checked` establishes it.
-pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t,
-  prefix: "-"
-)
+pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t, prefix: "-")
 
 --- Where short links are kept.
 pub capability Links

@@ -2071,7 +2071,7 @@ fn every_family_of_the_prelude_verifies_without_an_internal_error() {
         ),
         (
             "http",
-            "module family\n\npub status(city: Text) -> internal Int\n  ensures result >= 0\n  uses @http: Http[get]\n=\n  let accept = Header(name: \"Accept\", value: \"application/json\")\n  let r = attempt @http.get(\"https://api.example.com/v1/now?city={city}\", headers: [accept],\n    key_name: None\n  )\n  when r\n    is Ok(response) -> if response.status >= 0 then response.status else 0\n    is Err(e) ->\n      when e\n        is Denied -> 1\n        else -> 0\n",
+            "module family\n\npub status(city: Text) -> internal Int\n  ensures result >= 0\n  uses @http: Http[get]\n=\n  let accept = Header(name: \"Accept\", value: \"application/json\")\n  let r = attempt @http.get(\"https://api.example.com/v1/now?city={city}\", headers: [accept], key_name: None)\n  when r\n    is Ok(response) -> if response.status >= 0 then response.status else 0\n    is Err(e) ->\n      when e\n        is Denied -> 1\n        else -> 0\n",
         ),
         (
             "files",
@@ -2263,7 +2263,7 @@ fn locks_give_one_obligation_per_locked_condition_and_grow_linearly() {
 const EFFECT_SITES: &[(&str, &[&str])] = &[
     (
         "authority/op_condition_accepted",
-        &["src/pricing.una:17:5 @catalog.set_price"],
+        &["src/pricing.una:15:5 @catalog.set_price"],
     ),
     (
         "verification/effect_condition_call",

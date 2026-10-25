@@ -218,9 +218,7 @@ module shop.notes
 
 import shop.release (length_band)
 
-pub note_size(note: confidential[Private] Text,
-  flag: secret Bool
-) -> secret Nat = if flag then length_band(note) else 0
+pub note_size(note: confidential[Private] Text, flag: secret Bool) -> secret Nat = if flag then length_band(note) else 0
 ```
 
 Further rules:

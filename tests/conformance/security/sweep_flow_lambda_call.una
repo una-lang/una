@@ -1,6 +1,6 @@
 -- test: a lambda result fed by a call checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at 27:34
+-- expect: error U4001 at 24:224
 module sweep_flow_lambda_call
 
 pub kind Pos = Int where it > 0
@@ -21,12 +21,6 @@ pub secret_of(x: secret Int) -> secret Int = x
 
 pub apply_l(f: fn(Int) -> Int) -> Int = 0
 
-pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_l(fn(x: Int) -> secret_of(s))
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_l(fn(x: Int) -> secret_of(s))
 
-pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = apply_l(fn(x: Int) -> zero(1))
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_l(fn(x: Int) -> zero(1))

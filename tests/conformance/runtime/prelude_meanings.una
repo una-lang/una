@@ -19,9 +19,7 @@ show_opt(o: Option[Int]) -> Text
     is Some(v) -> "Some({v})"
     is None -> "None"
 
-show(xs: List[Int]) -> Text = fold(xs, initial: "", step: fn(acc,
-    x
-  ) -> if acc.len == 0 then "{x}" else "{acc} {x}")
+show(xs: List[Int]) -> Text = fold(xs, initial: "", step: fn(acc, x) -> if acc.len == 0 then "{x}" else "{acc} {x}")
 
 pub main() -> Unit
   uses @console: Console[print]

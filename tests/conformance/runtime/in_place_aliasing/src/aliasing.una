@@ -15,9 +15,7 @@ pub kind Point
   x: Int
   y: Int
 
-pub show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line,
-    x
-  ) -> if line == "" then "{x}" else "{line} {x}")
+pub show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
 
 pub apply_each(xs: List[Int], f: fn(Int) -> Int) -> Int
   uses of f

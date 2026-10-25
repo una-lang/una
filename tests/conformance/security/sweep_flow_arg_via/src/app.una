@@ -1,6 +1,6 @@
 -- test: a call argument fed by a value derived from a policy call checks every flow (label); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/10 §2
--- expect: error U4001 at src/app.una:23:19
+-- expect: error U4001 at src/app.una:20:209
 module app
 
 import release (Pos, lower, lower_pos, mask)
@@ -17,12 +17,6 @@ pub kind Boom = | Bang
 
 pub take_l(v: Int) -> Int = 0
 
-pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = take_l(mask(s) + 1)
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = take_l(mask(s) + 1)
 
-pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int,
-  w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) -> Int = take_l(lower(s) + 1)
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = take_l(lower(s) + 1)

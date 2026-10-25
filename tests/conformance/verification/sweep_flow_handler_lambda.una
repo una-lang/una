@@ -1,7 +1,7 @@
 -- test: a handler operation result fed by a lambda checks every flow (function result refinement, function parameter refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
 -- spec: spec/12 §3
--- expect: error U5001 at 29:28
--- expect: error U5001 at 41:14
+-- expect: error U5001 at 26:28
+-- expect: error U5001 at 32:14
 module sweep_flow_handler_lambda
 
 pub kind Pos = Int where it > 0
@@ -22,26 +22,14 @@ pub capability SrcF
 pub capability SrcE
   op get() -> fn(Int) -> Int
 
-pub handler f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
-  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) for SrcF
+pub handler f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcF
   op get() = fn(y: Int) -> 0
 
-pub handler f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
-  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) for SrcF
+pub handler f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcF
   op get() = fn(y: Int) -> 1
 
-pub handler p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
-  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) for SrcE
+pub handler p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcE
   op get() = fn(y: Pos) -> y
 
-pub handler p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos,
-  t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom,
-  q: fn(Int) -> Int uses @c: Console[print]
-) for SrcE
+pub handler p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) for SrcE
   op get() = fn(y: Int) -> y

@@ -3,9 +3,7 @@ module toolshelf.main
 import toolshelf.tools (CheckoutError, Member, Tool, check_out, late_days, shelf_with)
 
 --- The tools of the community shelf.
-catalog() -> List[Tool] = [Tool(name: "drill", deposit: 20), Tool(name: "ladder", deposit: 35),
-  Tool(name: "saw", deposit: 15)
-]
+catalog() -> List[Tool] = [Tool(name: "drill", deposit: 20), Tool(name: "ladder", deposit: 35), Tool(name: "saw", deposit: 15)]
 
 pub main() -> Unit
   uses @console: Console[print]
@@ -14,9 +12,7 @@ pub main() -> Unit
 =
   let now = @clock.now()
   let today = now / 86_400_000
-  let checkout = check_out(Member(name: "Ana", holding: 0), name: "ladder", today,
-    days: 30
-  ) with @shelf = shelf_with(tools: catalog())
+  let checkout = check_out(Member(name: "Ana", holding: 0), name: "ladder", today, days: 30) with @shelf = shelf_with(tools: catalog())
     if error pass
   @console.print("{checkout.member.name} took the {checkout.tool.name} for 14 days")
   let late = late_days(checkout, today: today + 20)

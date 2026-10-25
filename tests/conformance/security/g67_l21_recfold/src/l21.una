@@ -1,15 +1,11 @@
 -- test: ADR 0067 adversarial check of #231, L21_recfold: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
 -- expect: error U4001 at src/l21.una:7:71
--- expect: error U4001 at src/l21.una:15:41
+-- expect: error U4001 at src/l21.una:11:41
 module l21
 
-walk[T](xs: List[T], p: T, n: Int) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + step_of(x,
-    p, n
-  ))
+walk[T](xs: List[T], p: T, n: Int) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + step_of(x, p, n))
 
-step_of[T](x: T, p: T, n: Int) -> Int = if n <= 0 then (if x == p then 1 else 0) else walk([x], p,
-  n: n - 1
-)
+step_of[T](x: T, p: T, n: Int) -> Int = if n <= 0 then (if x == p then 1 else 0) else walk([x], p, n: n - 1)
 
 pub leak(xs: List[secret Int]) -> Int = walk(xs, p: 1, n: 2)

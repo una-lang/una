@@ -1,15 +1,11 @@
 -- test: ADR 0067 adversarial check of #231, L35_rankedby_secret: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
 -- spec: spec/07 §7
--- expect: error U4001 at src/l35.una:20:88
+-- expect: error U4001 at src/l35.una:16:88
 module l35
 
-concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc,
-    x
-  ) -> acc.append(item: x))
+concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
 
-ranked_by[T](items: List[T], before: fn(T, T) -> Bool) -> List[T] = items.fold(initial: [],
-  step: fn(sorted, item) -> place(sorted, item, before)
-)
+ranked_by[T](items: List[T], before: fn(T, T) -> Bool) -> List[T] = items.fold(initial: [], step: fn(sorted, item) -> place(sorted, item, before))
 
 place[T](sorted: List[T], item: T, before: fn(T, T) -> Bool) -> List[T]
 =

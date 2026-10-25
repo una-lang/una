@@ -151,9 +151,9 @@ Change the parameter of `average` to `counts: List[Int]`. The solver finds the e
 
 ```text una="check ." after="mistakes/2"
 [U5001] Error: division obligation `counts.len != 0` is refuted
-    ╭─[ src/pantry/stock.una:71:41 ]
+    ╭─[ src/pantry/stock.una:67:41 ]
     │
- 71 │ pub average(counts: List[Int]) -> Int = counts.sum() / counts.len
+ 67 │ pub average(counts: List[Int]) -> Int = counts.sum() / counts.len
     │                                         ────────────┬────────────
     │                                                     ╰────────────── division obligation `counts.len != 0` is refuted
     │
@@ -175,9 +175,9 @@ Delete the `is None -> 0` arm of `amount_of`:
 
 ```text una="check ." after="mistakes/3"
 [U2007] Error: `when` does not match variant `None` of `Option`
-    ╭─[ src/pantry/stock.una:60:3 ]
+    ╭─[ src/pantry/stock.una:56:3 ]
     │
- 60 │   when find(items, name)
+ 56 │   when find(items, name)
     │   ──┬─
     │     ╰─── `when` does not match variant `None` of `Option`
     │

@@ -47,9 +47,7 @@ pub swap[A, B](p: Pair[A, B]) -> Pair[B, A] = Pair(first: p.second, second: p.fi
 
 pub describe(v: Venue) -> Text = "{v.name} seats {v.seats}, large: {v.large()}"
 
-pub total(xs: List[Int]) -> Int = xs.map(each: fn(x) -> x * 2).fold(initial: 0, step: fn(acc,
-    x
-  ) -> acc + x)
+pub total(xs: List[Int]) -> Int = xs.map(each: fn(x) -> x * 2).fold(initial: 0, step: fn(acc, x) -> acc + x)
 
 pub rank(level: Level) -> Int = if level < High then 0 else 1
 

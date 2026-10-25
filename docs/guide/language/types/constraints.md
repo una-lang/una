@@ -16,9 +16,7 @@ Learn more: [Generic kinds and constraints](/learn/kinds/generic-kinds-and-const
 ```una
 module shop
 
-pub largest[T: Ord](prices: List[T], floor: T) -> T = prices.fold(initial: floor, step: fn(best,
-    price
-  ) -> max(best, b: price))
+pub largest[T: Ord](prices: List[T], floor: T) -> T = prices.fold(initial: floor, step: fn(best, price) -> max(best, b: price))
 
 pub total[T: Integer](prices: List[T]) -> Int = prices.map(each: fn(price) -> price.to_int()).sum()
 

@@ -826,9 +826,7 @@ pub with_status(items: List[Int]) -> List[Int]
   acc
 
 example "the three keep the first 100 items"
-  do kept([1, 2, 3]) == checked_first([1, 2, 3]) and checked_first([1, 2, 3]) == with_status([1, 2,
-      3
-    ])
+  do kept([1, 2, 3]) == checked_first([1, 2, 3]) and checked_first([1, 2, 3]) == with_status([1, 2, 3])
   expect result == true
 ```
 
@@ -883,9 +881,7 @@ A type parameter of a function may carry one built-in constraint (`spec/20`): `E
 ```una
 module demo
 
-pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best,
-    x
-  ) -> max(best, b: x))
+pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
 
 pub total[T: Integer](xs: List[T]) -> Int = xs.map(each: fn(x) -> x.to_int()).sum()
 
@@ -1016,9 +1012,7 @@ pub port(text: internal Text) -> internal Int
     else -> 8080
 
 --- The configuration written back, with the port replaced.
-pub with_port(fields: Map[Text, Json], port: Int) -> Text = Object(fields.with(key: "port",
-    value: Number(port)
-  )).to_json()
+pub with_port(fields: Map[Text, Json], port: Int) -> Text = Object(fields.with(key: "port", value: Number(port))).to_json()
 ```
 
 ## 16. Text
@@ -1089,9 +1083,7 @@ pub temperature(city: Text) -> internal Option[internal Int]
   uses @http: Http[get]
 =
   let accept = Header(name: "Accept", value: "application/json")
-  let r = attempt @http.get("https://api.example.com/v1/now?city={city}", headers: [accept],
-    key_name: Some("weather")
-  )
+  let r = attempt @http.get("https://api.example.com/v1/now?city={city}", headers: [accept], key_name: Some("weather"))
   when r
     is Ok(response) -> if response.status == 200 then degrees(response.body) else None
     is Err(e) -> None

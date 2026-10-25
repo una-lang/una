@@ -14,16 +14,12 @@ eval(e: Expr) -> Int
     is Neg(operand) -> 0 - eval(operand)
 
 --- A sum of `n` ones, nested to the right.
-ones(n: Int) -> Expr = if n <= 1 then Lit(value: 1) else Add(left: Lit(value: 1),
-  right: ones(n - 1)
-)
+ones(n: Int) -> Expr = if n <= 1 then Lit(value: 1) else Add(left: Lit(value: 1), right: ones(n - 1))
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let e = Add(left: Lit(value: 2), right: Neg(operand: Add(left: Lit(value: 3),
-        right: Lit(value: 4)
-      )))
+  let e = Add(left: Lit(value: 2), right: Neg(operand: Add(left: Lit(value: 3), right: Lit(value: 4))))
   let deep = ones(5000)
   let same = deep == ones(5000)
   let total = eval(deep)

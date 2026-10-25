@@ -9,9 +9,7 @@ pub kind Card
   number: secret Text
 
 pub capability Vault
-  op keep(tag: Text, card: Card, extra: List[secret Text], maybe: Option[secret Text],
-    raw: secret Text
-  ) -> Unit
+  op keep(tag: Text, card: Card, extra: List[secret Text], maybe: Option[secret Text], raw: secret Text) -> Unit
     accepts secret
 
 pub handler vault() for Vault

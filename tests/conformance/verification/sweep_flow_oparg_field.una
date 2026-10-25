@@ -1,6 +1,6 @@
 -- test: an operation argument fed by a field read checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/12 §3
--- expect: error U5001 at 40:13
+-- expect: error U5001 at 38:13
 module sweep_flow_oparg_field
 
 pub kind Pos = Int where it > 0
@@ -32,16 +32,12 @@ zero(x: Int) -> Int = 0
 
 ident[T](x: T) -> T = x
 
-pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_f]
 =
   @p.take_f(h.run)
 
-pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_f]
 =
   @p.take_f(h.pos)

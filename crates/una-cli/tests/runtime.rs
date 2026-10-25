@@ -427,11 +427,7 @@ fn a_huge_max_depth_reserves_a_bounded_stack_and_ends_with_u6003() {
 // ADR 0072), and the program would hold only O(n).
 const HOG: &str = "module hog
 
-grow(t: Text,
-  n: Int
-) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",
-    n: n - 1
-  ), b: t.len)
+grow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)
 
 pub main() -> Unit
   uses @console: Console[print]
@@ -727,7 +723,7 @@ fn a_run_over_its_memory_budget_is_u6003() {
         "this call exceeds the memory limit of 64 MiB"
     );
     // The call that found the run over its budget.
-    assert_eq!(document["diagnostics"][0]["primary"]["start"]["line"], 5);
+    assert_eq!(document["diagnostics"][0]["primary"]["start"]["line"], 3);
     let output = una(&["run", &large, "--grant", "console", "--max-memory", "many"]);
     assert_eq!(output.status.code(), Some(2));
 }
@@ -1530,34 +1526,6 @@ fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
     );
 }
 
-/// Builds a canonical list literal with the formatter's 100-scalar soft width for this test's
-/// fixed ASCII integer values.
-fn formatted_int_list(values: &[String]) -> String {
-    let mut out = String::from("  let xs = [");
-    let mut column = out.chars().count();
-    let mut wrapped = false;
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            if column + 2 + value.chars().count() >= 100 {
-                out.push_str(",\n    ");
-                column = 4;
-                wrapped = true;
-            } else {
-                out.push_str(", ");
-                column += 2;
-            }
-        }
-        out.push_str(value);
-        column += value.chars().count();
-    }
-    if wrapped {
-        out.push_str("\n  ]");
-    } else {
-        out.push(']');
-    }
-    out
-}
-
 #[test]
 fn a_million_deep_value_is_released_compared_and_rendered_within_the_call_depth() {
     // ADR 0060 R5, `spec/11 §7`: a value has no depth limit, and only calls count toward the
@@ -1581,14 +1549,13 @@ fn a_million_deep_value_is_released_compared_and_rendered_within_the_call_depth(
     )
     .unwrap();
     let numbers: Vec<String> = (0..1000).map(|n| n.to_string()).collect();
-    let list = formatted_int_list(&numbers);
     let source = format!(
         "module deep\n\npub kind Chain = End | Link(value: Int, rest: Chain)\n\n\
          --- A chain of a million links, built by two nested folds over a thousand numbers.\n\
-         pub build() -> Chain\n=\n{}\n  xs.fold(initial: End, step: fn(outer: Chain, x: Int) -> xs.fold(initial: outer,\n      step: fn(inner: Chain, y: Int) -> Link(value: y, rest: inner)\n    ))\n\n\
+         pub build() -> Chain\n=\n  let xs = [{}]\n  xs.fold(initial: End, step: fn(outer: Chain, x: Int) -> xs.fold(initial: outer, step: fn(inner: Chain, y: Int) -> Link(value: y, rest: inner)))\n\n\
          pub main() -> Unit\n  uses @console: Console[print]\n=\n  let a = build()\n  let b = build()\n  let same = a == b\n  @console.print(\"same: {{same}}\")\n\n\
          example \"a million links render in the failure message\"\n  do build()\n  expect result == End\n",
-        list
+        numbers.join(", ")
     );
     std::fs::write(root.join("src/deep.una"), source).unwrap();
     let started = std::time::Instant::now();
@@ -1799,11 +1766,9 @@ pub main() -> Unit
   @console.print(\"{counts.keys()} {counts.values()} {counts.entries()}\")
   let none_yet: Map[Int, Bool] = empty_map()
   @console.print(\"{none_yet} {none_yet.has(key: 1)} {none_yet.get(key: 1)}\")
-  let by_int = none_yet.with(key: -3, value: true).with(key: 10, value: false).with(key: 2,
-    value: true
-  )
+  let by_int = none_yet.with(key: -3, value: true).with(key: 10, value: false).with(key: 2, value: true)
   @console.print(\"{by_int}\")
-  let by_color: Map[Color, Text] = empty_map().with(key: Blue, value: \"b\").with(key: Red,\n    value: \"r\"\n  )
+  let by_color: Map[Color, Text] = empty_map().with(key: Blue, value: \"b\").with(key: Red, value: \"r\")
   @console.print(\"{by_color} {by_color == by_color} {by_color == by_color.without(key: Red)}\")
 ";
 
@@ -2275,11 +2240,7 @@ fn appends_through_function_values(shape: &str, steps: usize) -> String {
         ),
     };
     format!(
-        "module grow\n\nr1(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\nrun_with(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int]\n=\n  let edit acc: List[Int] = []\n  for i in 0..<n\n    acc = f(acc, i)\n  acc\n\nlayered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = run_with(fn(acc, i) -> f(acc, i),
-  n: n
-)\n\ntwice_layered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = layered(fn(acc,
-    i
-  ) -> f(acc, i), n: n)\n\nnumbers(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<n\n    xs = xs.append(item: i)\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{body}"
+        "module grow\n\nr1(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\nrun_with(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int]\n=\n  let edit acc: List[Int] = []\n  for i in 0..<n\n    acc = f(acc, i)\n  acc\n\nlayered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = run_with(fn(acc, i) -> f(acc, i), n: n)\n\ntwice_layered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = layered(fn(acc, i) -> f(acc, i), n: n)\n\nnumbers(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<n\n    xs = xs.append(item: i)\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{body}"
     )
 }
 

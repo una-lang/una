@@ -1,7 +1,7 @@
 -- test: an operation argument fed by a generic call checks every flow (label of a function parameter, sink); each _bad probe is rejected and each _ok twin accepted (flow sweep, ADR 0050)
 -- spec: spec/07 §7
--- expect: error U4001 at 41:13
--- expect: error U4003 at 55:13
+-- expect: error U4001 at 39:13
+-- expect: error U4003 at 49:13
 module sweep_flow_oparg_generic
 
 pub kind Pos = Int where it > 0
@@ -33,30 +33,22 @@ zero(x: Int) -> Int = 0
 
 ident[T](x: T) -> T = x
 
-pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_l]
 =
   @p.take_l(ident(g))
 
-pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_l]
 =
   @p.take_l(ident(u))
 
-pub d_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub d_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_d]
 =
   @p.take_d(ident(s))
 
-pub d_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int,
-  t: fn(Int) -> secret Int
-) -> Int
+pub d_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, u: fn(secret Int) -> Int, t: fn(Int) -> secret Int) -> Int
   uses @p: Probe[take_d]
 =
   @p.take_d(ident(1))

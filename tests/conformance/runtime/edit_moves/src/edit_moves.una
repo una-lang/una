@@ -10,9 +10,7 @@ module edit_moves
 
 pub kind Limit = | Full
 
-show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line,
-    x
-  ) -> if line == "" then "{x}" else "{line} {x}")
+show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
 
 push_one(edit acc: List[Int], i: Int) -> Unit
 =

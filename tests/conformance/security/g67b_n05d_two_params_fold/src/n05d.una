@@ -5,6 +5,4 @@ module n05d
 
 pick[T, U](a: T, b: T, p: U, q: U) -> U = if a == b then p else q
 
-pub leak(s: secret Int) -> Int = pick(s, b: 0, p: [1], q: [2]).fold(initial: 0, step: fn(acc,
-    x
-  ) -> acc + x)
+pub leak(s: secret Int) -> Int = pick(s, b: 0, p: [1], q: [2]).fold(initial: 0, step: fn(acc, x) -> acc + x)
