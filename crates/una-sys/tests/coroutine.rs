@@ -276,3 +276,12 @@ fn child_panics_in_a_body() {
         coroutine.resume();
     });
 }
+
+#[test]
+fn sanitizer_interface_is_absent_outside_asan_builds() {
+    // #1145: the switch is announced to AddressSanitizer only in builds with `--cfg una_asan`,
+    // which only scripts/sanitize.sh sets, and that script never runs this test. Every other
+    // build, the ordinary tests and every release, has no reference to the sanitizer's
+    // interface; scripts/check-release.sh checks the packed binary and runtime for the symbols.
+    assert!(!cfg!(una_asan));
+}

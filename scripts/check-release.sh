@@ -57,6 +57,15 @@ for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
         exit 1
     fi
 done
+# AddressSanitizer's fiber interface is declared only in builds with `--cfg una_asan`, which
+# scripts/sanitize.sh alone sets (#1145): no shipped `una` or `libuna_rt.a` may refer to it.
+for artifact in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a"; do
+    if nm -a "$artifact" 2>/dev/null | grep -q -e __sanitizer_start_switch_fiber -e __sanitizer_finish_switch_fiber \
+        || LC_ALL=C grep -a -q '__sanitizer_start_switch_fiber' "$artifact"; then
+        echo "error: $artifact refers to AddressSanitizer's fiber interface (#1145)" >&2
+        exit 1
+    fi
+done
 # The guides, byte for byte the tree's, and nothing else under docs/ (#410, N-65): an agent's
 # first contact with Una is the archive.
 guides=$(cd "$tmp/$name/docs" && LC_ALL=C find . -type f | LC_ALL=C sort | tr '\n' ' ')
