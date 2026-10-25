@@ -819,10 +819,8 @@ mod tests {
 
     /// A fresh package directory with the path dependency `deps/util`, whose module says `say`.
     fn with_dependency(name: &str, say: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "una-cli-package-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("una-cli-package-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join("deps/util/src")).unwrap();

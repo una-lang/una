@@ -593,7 +593,10 @@ fn remove_edits_an_ita_una_with_crlf_line_ends() {
     assert_eq!(code, 0, "{err}");
     let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.starts_with("drop util 0.2.0 (path deps/util)\n"), "{out}");
+    assert!(
+        out.starts_with("drop util 0.2.0 (path deps/util)\n"),
+        "{out}"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.join("ita.una")).unwrap(),
         "ita demo\n  version 0.1.0\n  edition 0.4\n\nneeds\n  tool from path \"deps/tool\"\n    accept name\n"
@@ -635,10 +638,7 @@ fn a_write_that_fails_exits_1_and_changes_nothing() {
         assert_eq!(document["command"], "remove");
         assert_eq!(document["written"], serde_json::json!([]));
         assert!(
-            document["error"]
-                .as_str()
-                .unwrap()
-                .contains("cannot write"),
+            document["error"].as_str().unwrap().contains("cannot write"),
             "{json}"
         );
         assert_eq!(
@@ -775,7 +775,10 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
         err.contains("U7012") && err.contains("--accept-trust util@sha256:"),
         "{err}"
     );
-    assert!(out.contains("to accept, after reviewing: una ita lock "), "{out}");
+    assert!(
+        out.contains("to accept, after reviewing: una ita lock "),
+        "{out}"
+    );
     assert!(!dir.join("ita.lock").exists());
     let flag = trust_flag(&err);
     // Consent to a package the root does not need is a usage error, and so is consent to two
@@ -858,14 +861,7 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
     assert_eq!(code, 1);
     assert!(err.contains("--accept-trust util@sha256:"), "{err}");
     // The consent to the old content is stale: refused, and said so.
-    let (code, _, err) = una(&[
-        "una",
-        "ita",
-        "lock",
-        "--accept-trust",
-        &flag,
-        path(&dir),
-    ]);
+    let (code, _, err) = una(&["una", "ita", "lock", "--accept-trust", &flag, path(&dir)]);
     assert_eq!(code, 1);
     assert!(err.contains("consents to other content"), "{err}");
     let fresh = trust_flag(&err);

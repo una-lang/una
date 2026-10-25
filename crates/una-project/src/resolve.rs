@@ -465,7 +465,12 @@ impl Resolver<'_> {
             if need.version.is_pre() {
                 named.insert(need.identity());
             }
-            self.queue(&mut work, &mut queued, need.identity(), need.version.clone())?;
+            self.queue(
+                &mut work,
+                &mut queued,
+                need.identity(),
+                need.version.clone(),
+            )?;
         }
         let mut dirty: BTreeSet<Identity> = BTreeSet::new();
         loop {

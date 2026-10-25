@@ -457,9 +457,7 @@ fn an_interrupted_provenance_store_is_repaired_on_load() {
     itaoca
         .store_provenance(SOURCE, NAME, VERSION, 2, &bytes)
         .unwrap();
-    let release_dir = itaoca
-        .root
-        .join("registry/acme/releases/acme+ledger-0.3.1");
+    let release_dir = itaoca.root.join("registry/acme/releases/acme+ledger-0.3.1");
     let stray = release_dir.join(".una-fresh-9-9-9");
     std::fs::create_dir(&stray).unwrap();
     std::fs::hard_link(
@@ -483,9 +481,7 @@ fn a_provenance_is_never_stored_through_a_link() {
     let itaoca = Itaoca {
         root: fresh("provenance-link"),
     };
-    let release_dir = itaoca
-        .root
-        .join("registry/acme/releases/acme+ledger-0.3.1");
+    let release_dir = itaoca.root.join("registry/acme/releases/acme+ledger-0.3.1");
     std::fs::create_dir_all(&release_dir).unwrap();
     let target = fresh("provenance-link-target").join("kept");
     std::fs::write(&target, b"kept").unwrap();
