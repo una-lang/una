@@ -25,7 +25,7 @@ dive(n: Int) -> Unit
   let d = deep(n)
   @console.print("dove {d}")
 
-all() -> Unit
+every() -> Unit
   uses @console: Console[print]
 =
   tasks at most 2 at once
@@ -53,6 +53,6 @@ dives() -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  all()
+  every()
   first_two()
   dives()

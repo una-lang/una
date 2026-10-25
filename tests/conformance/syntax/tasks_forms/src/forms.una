@@ -5,7 +5,7 @@ module forms
 
 import std.time (millisecond)
 
-pub kind JobError = Broken
+pub kind JobError = Broken | Lost
 
 run_job(n: Int) -> Unit
   fails JobError
@@ -14,7 +14,7 @@ run_job(n: Int) -> Unit
 
 note(n: Int) -> Unit = unit
 
-pub all(jobs: List[Int]) -> Unit
+pub every(jobs: List[Int]) -> Unit
 =
   tasks
     for job in jobs

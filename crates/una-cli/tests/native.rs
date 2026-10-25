@@ -4205,7 +4205,7 @@ fn a_host_stop_ends_the_for_ever_of_a_tasks_block_and_its_tasks_drain_in_both_en
 /// had a turn, which cancels the task with its list alive; it prints how many failed.
 fn cancelled_program(rounds: u64) -> String {
     format!(
-        "module cancelled\n\npub kind Round = Over\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nhold() -> Unit\n=\n  let total = grow(4000000000)\n  unit\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nover(n: Int) -> Unit\n  fails Round\n=\n  if n > 0 then fail Over else unit\n\nround() -> Unit\n  fails Round\n=\n  tasks\n    start hold()\n    let spun = spin(1100)\n    over(spun)\n      if error pass\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit failed = 0\n  for r in 1..{rounds}\n    let outcome = attempt round()\n    if outcome.is_ok() == false\n      failed = failed + 1\n  @console.print(\"failed {{failed}}\")\n"
+        "module cancelled\n\npub kind Round = | Over\n\nkeep(items: List[Int], total: Int) -> Int = total\n\ngrow(n: Int) -> Int\n=\n  let edit items = [0]\n  for i in 1..1000\n    items = items.append(item: i)\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  keep(items, total: total)\n\nhold() -> Unit\n=\n  let total = grow(4000000000)\n  unit\n\nspin(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nover(n: Int) -> Unit\n  fails Round\n=\n  if n > 0 then fail Over else unit\n\nround() -> Unit\n  fails Round\n=\n  tasks\n    start hold()\n    let spun = spin(1100)\n    over(spun)\n      if error pass\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit failed = 0\n  for r in 1..{rounds}\n    let outcome = attempt round()\n    if outcome.is_ok() == false\n      failed = failed + 1\n  @console.print(\"failed {{failed}}\")\n"
     )
 }
 
@@ -4213,15 +4213,16 @@ fn cancelled_program(rounds: u64) -> String {
 fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines() {
     // `spec/27 §7`, ADR 0117 rule 7 and the amendment of 2026-10-19 on S2: a block that fails
     // cancels the tasks it started, each of which leaves its frames by the failure path and
-    // ends with its heap. Ten thousand rounds, each cancelling a task that holds a list of a
-    // thousand items, run under a 16 MiB budget, which a leak would exceed many times over.
-    let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
-    let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
+    // ends with its heap. Ten thousand rounds natively, each cancelling a task that holds a list
+    // of a thousand items, run under a 16 MiB budget, which a leak would exceed many times over.
+    // The interpreter runs two thousand, about 16 s in a debug build (ten thousand take 80 s),
+    // which a leak of the same size would still exceed.
+    let interpreted_dir = within_package("cancelledi", "cancelled", &cancelled_program(2_000));
+    let interpreted = una(&interpreted_dir, &["run", ".", "--max-memory", "16"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&interpreted.stdout),
-        "failed 10000\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "failed 2000\n");
+    let _ = std::fs::remove_dir_all(&interpreted_dir);
+    let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
     for workers in ["1", "4"] {
         let native = Command::new(dir.join("target/una/cancelled"))
             .args(["--max-memory", "16", "--workers", workers])
