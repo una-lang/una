@@ -12,18 +12,29 @@
 //! deterministic function of the entries before it (Ed25519 signatures are deterministic), so
 //! one opened again after a crash signs the same checkpoint, never a fork.
 //!
+//! **Owners' chains are the client's.** An owner's entries are read by the client's parser and
+//! its state is the client's replay of the chain (`una_project::tlog::owner::replay`), never a
+//! state of the service's own: the keys valid at each position, the recovery cosigners, the
+//! pending recoveries, disputes and co-signer changes, and the claims of compromise. An entry
+//! about to be logged is replayed with the chain, at the index it would have, and refused when
+//! the replay refuses it; a release or a yank is judged by the replayed history at its index
+//! (`History::judge`), as every client judges it.
+//!
 //! Costs: a submission is O(log L) for the log's tree, O(32 · 8 k) for the map's path, and
 //! O(B) for an archive of B bytes; checks of names and keys are O(1) lookups by hash, but the
-//! distance check of a new owner (`crate::names`).
+//! distance check of a new owner (`crate::names`); an owner's entry, a release or a yank adds
+//! the replay of its owner's chain, O(P · E · K) for its E entries (`owner::replay`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
+use una_project::client::owner_of;
 use una_project::content::read_archive;
 use una_project::tlog::map::Head;
 use una_project::tlog::merkle::Hash;
 use una_project::tlog::note::{Key, Note, encode_base64, parse_checkpoint, parse_note};
+use una_project::tlog::owner::{self, Event, History, Logged, ReplayError, Standing};
 use una_project::tlog::release::{Statement, within};
 use una_project::tlog::root::{Root, trust_first, walk};
 use una_project::tlog::{map, publish};
@@ -31,7 +42,7 @@ use una_project::version::Version;
 use una_syntax::ita::parse_manifest;
 
 use crate::authority::interface;
-use crate::entry::{Entry, KeyAction, Kind, parse_entry, previous_text};
+use crate::entry::{Entry, Kind, parse_entry, previous_text};
 use crate::namemap::NameMap;
 use crate::names::{self, Names};
 use crate::sign::{Signer, note};
@@ -39,8 +50,8 @@ use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
 use crate::tree::{Tree, root as tree_root};
 use crate::{
-    MAX_ARCHIVE, MAX_ENTRY, MAX_NEEDS, MAX_OWNER_KEYS, MAX_RELEASES_PER_NAME, PROMISE_WINDOW,
-    decimal, digest_string, hex,
+    MAX_ARCHIVE, MAX_ENTRY, MAX_NEEDS, MAX_RELEASES_PER_NAME, PROMISE_WINDOW, decimal,
+    digest_string, hex,
 };
 
 /// The store path of the log's size, the service's own state.
@@ -129,26 +140,12 @@ pub struct Receipt {
     pub promise: String,
 }
 
+/// An entry of an owner's chain, as logged: what the client's replay reads.
 #[derive(Clone, Debug)]
-struct OwnerKey {
-    key: Key,
-    revoked: bool,
-}
-
-#[derive(Clone, Debug)]
-struct Owner {
-    keys: Vec<OwnerKey>,
-    threshold: usize,
-}
-
-impl Owner {
-    fn valid(&self) -> Vec<Key> {
-        self.keys
-            .iter()
-            .filter(|k| !k.revoked)
-            .map(|k| k.key.clone())
-            .collect()
-    }
+struct Recorded {
+    index: u64,
+    note: Note,
+    entry: owner::Entry,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -176,7 +173,11 @@ pub struct Registry {
     bundle: Vec<u8>,
     map: NameMap,
     heads: HashMap<String, Head>,
-    owners: HashMap<String, Owner>,
+    /// Each owner's chain, in log order.
+    owners: HashMap<String, Vec<Recorded>>,
+    /// Every owner key a chain names (registered, added, recovered or disputed), by public
+    /// key, with its owner: a key is never two owners'.
+    held: HashMap<[u8; 32], String>,
     packages: HashMap<String, Package>,
     names: Names,
     witnesses: BTreeMap<String, (u64, u64)>,
@@ -234,6 +235,7 @@ impl Registry {
             map: NameMap::new(),
             heads: HashMap::new(),
             owners: HashMap::new(),
+            held: HashMap::new(),
             packages: HashMap::new(),
             names: Names::new(),
             witnesses: BTreeMap::new(),
@@ -413,30 +415,91 @@ impl Registry {
         Ok(())
     }
 
-    /// The keys that sign for the package `name`, and how many must: its owner's valid keys,
-    /// or the keys of Itaúna for an unscoped name (rule 44).
-    fn package_keys(&self, name: &str) -> Result<(Vec<Key>, usize), Refusal> {
-        match names::split(name) {
-            (None, _) => Ok((self.root.itauna.keys.clone(), self.root.itauna.threshold)),
-            (Some(owner), _) => {
-                let owner = self
-                    .owners
-                    .get(owner)
-                    .ok_or_else(|| invalid(format!("the owner `{owner}` is not registered")))?;
-                Ok((owner.valid(), owner.threshold))
-            }
-        }
+    /// The history of `owner_name`'s keys over the log, replayed by the client's replay from
+    /// its chain; Itaúna's are the root metadata's (rule 38.1). O(P · E · K) for E entries.
+    pub fn owner_history(&self, owner_name: &str) -> Result<History, Refusal> {
+        self.replayed(owner_name, None)
     }
 
-    fn signed_for(&self, note: &Note, name: &str) -> Result<(), Refusal> {
-        let (keys, threshold) = self.package_keys(name)?;
-        let found = note.signers(&keys);
-        if found < threshold {
+    /// The client's replay of the chain of `owner_name`, with `candidate`, an entry of that
+    /// chain about to be logged at the next index, when given. Its refusal is one sentence.
+    fn replayed(&self, owner_name: &str, candidate: Option<&Entry>) -> Result<History, Refusal> {
+        if owner_name == owner::ITAUNA {
+            return Ok(History::fixed(
+                self.root.itauna.threshold,
+                &self.root.itauna.keys,
+            ));
+        }
+        let index = self.tree.size();
+        let chain = self
+            .owners
+            .get(owner_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut logged: Vec<Logged<'_>> = chain
+            .iter()
+            .map(|recorded| Logged {
+                index: recorded.index,
+                note: &recorded.note,
+                entry: &recorded.entry,
+            })
+            .collect();
+        if let Some(candidate) = candidate
+            && let Some(entry) = candidate.owner_entry()
+        {
+            logged.push(Logged {
+                index,
+                note: &candidate.note,
+                entry,
+            });
+        }
+        if logged.is_empty() {
             return Err(invalid(format!(
-                "`{name}` needs {threshold} signatures of its keys valid now; the entry has {found}"
+                "the owner `{owner_name}` is not registered"
             )));
         }
-        Ok(())
+        let mut effect =
+            |request: u64| -> Result<Option<u64>, String> { Ok(self.effect_of(request)) };
+        owner::replay(
+            owner_name,
+            &self.root.source,
+            &logged,
+            &self.root.log,
+            &mut effect,
+        )
+        .map_err(|error| match error {
+            ReplayError::Refused(why) => invalid(format!(
+                "the chain of `{owner_name}` does not replay with this entry: {why}"
+            )),
+            ReplayError::Unsettled(unsettled) => invalid(format!(
+                "the chain of `{owner_name}` with this entry would not settle within {} replays of its claims of compromise, first at the log index {}, so every client would refuse it",
+                unsettled.passes, unsettled.index
+            )),
+        })
+    }
+
+    /// The first position the request logged at `request` governs, as a client finds it: its
+    /// deadline, once known.
+    fn effect_of(&self, request: u64) -> Option<u64> {
+        let _ = request;
+        None
+    }
+
+    /// Whether `note`, about the package `name` and logged at the next index, counts as its
+    /// owner's (rule 6): judged by the replayed history of its owner, or Itaúna's keys for an
+    /// unscoped name, as every client judges it.
+    fn signed_for(&self, note: &Note, name: &str) -> Result<(), Refusal> {
+        let position = self.tree.size();
+        let history = self.replayed(owner_of(name), None)?;
+        match history.judge(note, position) {
+            Standing::Counts(_) => Ok(()),
+            Standing::Skipped(_) => Err(invalid(format!(
+                "the entry about `{name}` would be void at the log position {position}: its signatures reach its owner's threshold only with a key compromised before it or one that only void entries bring in, or its owner's chain is frozen"
+            ))),
+            Standing::Unsigned => Err(invalid(format!(
+                "the entry about `{name}` is not signed by the threshold of its owner's keys valid at the log position {position}"
+            ))),
+        }
     }
 
     /// Checks a release against its archive (rules 27 to 29, 37 and 43), with no state of the
@@ -449,7 +512,7 @@ impl Registry {
         let Kind::Release(statement) = &entry.kind else {
             return Err(invalid("a publication sends a release statement"));
         };
-        let statement = statement.clone();
+        let statement: Statement = statement.as_ref().clone();
         let read = read_archive(&archive).map_err(invalid)?;
         if read.digest != statement.digest {
             return Err(invalid(format!(
@@ -645,9 +708,6 @@ impl Registry {
             Kind::Release(_) => {
                 return Err(invalid("a release is published with its archive"));
             }
-            Kind::Owner(_) => {
-                return Err(invalid("an owner is registered by the registry's operator"));
-            }
             Kind::Yank(yank) => {
                 self.signed_for(&entry.note, &yank.name)?;
                 let package = self
@@ -688,75 +748,149 @@ impl Registry {
                     )));
                 }
             }
-            Kind::Key(event) => {
-                let owner = self.owners.get(&event.owner).ok_or_else(|| {
-                    invalid(format!("the owner `{}` is not registered", event.owner))
-                })?;
-                let valid = owner.valid();
-                let found = entry.note.signers(&valid);
-                if found < owner.threshold {
-                    return Err(invalid(format!(
-                        "a key event of `{}` needs {} signatures of its keys; it has {found}",
-                        event.owner, owner.threshold
-                    )));
+            Kind::Owner(read) => match &read.event {
+                Event::Register { .. } => {
+                    return Err(invalid("an owner is registered by the registry's operator"));
                 }
-                let after = match &event.action {
-                    KeyAction::Add(key) => {
-                        if owner
-                            .keys
-                            .iter()
-                            .any(|k| k.key.name == key.name || k.key.public == key.public)
-                        {
-                            return Err(invalid(format!(
-                                "the key `{}` is held by the owner already, or was",
-                                key.name
-                            )));
-                        }
-                        if self.key_taken(key) {
-                            return Err(invalid(format!("the key `{}` is another's", key.name)));
-                        }
-                        if !entry.note.signed_by(key) {
-                            return Err(invalid(format!(
-                                "a key added signs its own event; `{}` does not",
-                                key.name
-                            )));
-                        }
-                        if owner.keys.len() >= MAX_OWNER_KEYS {
-                            return Err(invalid(format!(
-                                "an owner holds at most {MAX_OWNER_KEYS} keys"
-                            )));
-                        }
-                        valid.len() + 1
-                    }
-                    KeyAction::Revoke { name, since } => {
-                        if !valid.iter().any(|k| k.name == *name) {
-                            return Err(invalid(format!(
-                                "`{name}` is not a valid key of `{}`",
-                                event.owner
-                            )));
-                        }
-                        if since.is_some_and(|p| p >= self.tree.size()) {
-                            return Err(invalid("`since` names an index the log has not reached"));
-                        }
-                        valid.len() - 1
-                    }
-                };
-                if event.threshold > after {
-                    return Err(invalid(format!(
-                        "the threshold {} is above the {after} keys the owner would hold",
-                        event.threshold
-                    )));
+                Event::Recover(_) | Event::Dispute(_) => {
+                    return Err(invalid(
+                        "a recovery or a dispute is logged by the registry's operator after verifying the account",
+                    ));
                 }
-            }
+                _ => self.check_owner_entry(&entry)?,
+            },
         }
         self.append(entry, None)
     }
 
-    fn key_taken(&self, key: &Key) -> bool {
-        self.owners
-            .values()
-            .flat_map(|o| o.keys.iter())
-            .any(|k| k.key.public == key.public)
+    /// The names and public keys of every owner key the chain of `owner_name` names, in any
+    /// entry, applied or void: a key added, recovered or disputed is never one of these
+    /// (`spec/30 §14` rule 5). O(E) for E entries.
+    fn named_by(&self, owner_name: &str) -> (BTreeSet<String>, BTreeSet<[u8; 32]>) {
+        let mut names = BTreeSet::new();
+        let mut publics = BTreeSet::new();
+        for recorded in self
+            .owners
+            .get(owner_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let keys: Vec<&Key> = match &recorded.entry.event {
+                Event::Register { keys, .. } => keys.iter().collect(),
+                Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => vec![key],
+                _ => Vec::new(),
+            };
+            for key in keys {
+                names.insert(key.name.clone());
+                publics.insert(key.public);
+            }
+        }
+        (names, publics)
+    }
+
+    /// Refuses `key`, a key `owner_name` is about to hold, when another owner holds or held it,
+    /// or when `owner_name` holds or held a key of its name or its public key.
+    fn fresh_key(&self, owner_name: &str, key: &Key) -> Result<(), Refusal> {
+        if self
+            .held
+            .get(&key.public)
+            .is_some_and(|other| other != owner_name)
+        {
+            return Err(invalid(format!(
+                "the key `{}` is another owner's",
+                key.name
+            )));
+        }
+        let (names, publics) = self.named_by(owner_name);
+        if names.contains(&key.name) || publics.contains(&key.public) {
+            return Err(invalid(format!(
+                "`{owner_name}` holds or held a key named `{}` or with its public key: a key's name and public key are never used twice",
+                key.name
+            )));
+        }
+        Ok(())
+    }
+
+    /// The checks of an owner's entry before it is logged (`spec/30 §14` rule 5), each refusal
+    /// one sentence: Itaúna has no chain; the threshold each action states (one for a recovery
+    /// or a dispute, the current one for a co-signer change, a cancellation or an overruling);
+    /// no key held twice, by any owner; no dispute of an owner with cosigners in effect; a
+    /// registration's cosigners are not its own keys. Then the client's replay of the chain with
+    /// the entry, which checks the signatures each action needs, MUST accept it.
+    fn check_owner_entry(&self, entry: &Entry) -> Result<(), Refusal> {
+        let Some(read) = entry.owner_entry() else {
+            return Ok(());
+        };
+        let owner_name = read.owner.as_str();
+        if owner_name == owner::ITAUNA {
+            return Err(invalid(
+                "Itaúna has no chain: its keys are the root metadata's, with no recovery or dispute",
+            ));
+        }
+        let position = self.tree.size();
+        let current = match &read.event {
+            Event::Register { .. } => None,
+            _ => Some(self.replayed(owner_name, None)?),
+        };
+        let threshold_now = current
+            .as_ref()
+            .and_then(|history| history.at(position))
+            .map(|snapshot| snapshot.threshold);
+        let stated = |expected: Option<usize>, what: &str| -> Result<(), Refusal> {
+            match expected {
+                Some(expected) if expected != read.threshold => Err(invalid(format!(
+                    "{what} states the threshold {expected}, not {}",
+                    read.threshold
+                ))),
+                _ => Ok(()),
+            }
+        };
+        match &read.event {
+            Event::Register { keys, cosigners } => {
+                for key in keys {
+                    if !entry.note.signed_by(key) {
+                        return Err(invalid(format!(
+                            "each key registered signs the registration; `{}` does not",
+                            key.name
+                        )));
+                    }
+                    self.fresh_key(owner_name, key)?;
+                }
+                if let Some((_, list)) = cosigners
+                    && let Some(cosigner) = list.iter().find(|cosigner| {
+                        keys.iter()
+                            .any(|key| key.name == cosigner.name || key.public == cosigner.public)
+                    })
+                {
+                    return Err(invalid(format!(
+                        "the cosigner `{}` is one of the owner's own keys, of its name or its public key",
+                        cosigner.name
+                    )));
+                }
+            }
+            Event::Add(key) => self.fresh_key(owner_name, key)?,
+            Event::Revoke { since, .. } => {
+                if since.is_some_and(|p| p >= position) {
+                    return Err(invalid("`since` names an index the log has not reached"));
+                }
+            }
+            Event::Cosigners(_) => stated(threshold_now, "a co-signer change")?,
+            Event::Cancel(_) => stated(threshold_now, "a cancellation")?,
+            Event::Overrule(_) => stated(threshold_now, "an overruling")?,
+            Event::Recover(key) | Event::Dispute(key) => {
+                stated(Some(1), "a recovery or a dispute")?;
+                self.fresh_key(owner_name, key)?;
+                let cosigners = current
+                    .as_ref()
+                    .is_some_and(|history| history.cosigners.is_some());
+                if matches!(read.event, Event::Dispute(_)) && cosigners {
+                    return Err(invalid(format!(
+                        "`{owner_name}` has recovery cosigners in effect: they recover it, and it has no dispute"
+                    )));
+                }
+            }
+        }
+        self.replayed(owner_name, Some(entry)).map(|_| ())
     }
 
     /// Registers an owner (rules 38 and 44 to 45). The operator calls it after verifying the
@@ -764,30 +898,45 @@ impl Registry {
     pub fn register(&mut self, bytes: &[u8], reviewed: bool) -> Result<Receipt, Refusal> {
         self.ready()?;
         let entry = parse_entry(bytes).map_err(invalid)?;
-        let Kind::Owner(registration) = &entry.kind else {
-            return Err(invalid("a registration is an `ita-owner/1` entry"));
+        let owner_name = match entry.owner_entry() {
+            Some(read) if matches!(read.event, Event::Register { .. }) => read.owner.clone(),
+            _ => return Err(invalid("a registration is an `ita-owner/1` entry")),
         };
         self.admit(&entry)?;
         self.names
-            .check_owner(&registration.owner, reviewed)
+            .check_owner(&owner_name, reviewed)
             .map_err(|r| match r {
                 names::Refusal::Refused(m) => invalid(m),
                 names::Refusal::Held(m) => Refusal::Held(m),
             })?;
-        for key in &registration.keys {
-            if !entry.note.signed_by(key) {
-                return Err(invalid(format!(
-                    "each key registered signs the registration; `{}` does not",
-                    key.name
-                )));
-            }
-            if self.key_taken(key) {
-                return Err(invalid(format!(
-                    "the key `{}` is another owner's",
-                    key.name
-                )));
-            }
+        self.check_owner_entry(&entry)?;
+        self.append(entry, None)
+    }
+
+    /// Logs a recovery or a dispute (ADR 0122 rule 38.1), which only the operator asks, after
+    /// verifying the account by the checks of registration: the registry signs it with the
+    /// log's key, which both need, beside the cosigners' threshold that a recovery of an owner
+    /// with cosigners carries already. Every check of an owner's entry applies.
+    pub fn request(&mut self, bytes: &[u8]) -> Result<Receipt, Refusal> {
+        self.ready()?;
+        let sent = parse_entry(bytes).map_err(invalid)?;
+        let asked = sent
+            .owner_entry()
+            .is_some_and(|read| matches!(read.event, Event::Recover(_) | Event::Dispute(_)));
+        if !asked {
+            return Err(invalid(
+                "an operator's request is an `ita-key/1` recovery or dispute",
+            ));
         }
+        let document = std::str::from_utf8(bytes).map_err(|_| invalid("an entry is not UTF-8"))?;
+        let signed = if sent.note.signed_by(&self.root.log) {
+            document.to_owned()
+        } else {
+            format!("{document}{}", self.log.line(&sent.note.text))
+        };
+        let entry = parse_entry(signed.as_bytes()).map_err(invalid)?;
+        self.admit(&entry)?;
+        self.check_owner_entry(&entry)?;
         self.append(entry, None)
     }
 
@@ -917,7 +1066,7 @@ impl Registry {
                     .entry(statement.name.clone())
                     .or_default()
                     .releases
-                    .insert(statement.version.clone(), statement.clone());
+                    .insert(statement.version.clone(), statement.as_ref().clone());
             }
             Kind::Yank(yank) => {
                 self.packages
@@ -927,38 +1076,27 @@ impl Registry {
                     .insert(yank.version.clone());
             }
             Kind::Advisory(_) => {}
-            Kind::Owner(registration) => {
-                self.names.add_owner(&registration.owner);
-                self.owners.insert(
-                    registration.owner.clone(),
-                    Owner {
-                        keys: registration
-                            .keys
-                            .iter()
-                            .map(|key| OwnerKey {
-                                key: key.clone(),
-                                revoked: false,
-                            })
-                            .collect(),
-                        threshold: registration.threshold,
-                    },
-                );
-            }
-            Kind::Key(event) => {
-                if let Some(owner) = self.owners.get_mut(&event.owner) {
-                    match &event.action {
-                        KeyAction::Add(key) => owner.keys.push(OwnerKey {
-                            key: key.clone(),
-                            revoked: false,
-                        }),
-                        KeyAction::Revoke { name, .. } => {
-                            for key in owner.keys.iter_mut().filter(|k| k.key.name == *name) {
-                                key.revoked = true;
-                            }
-                        }
+            Kind::Owner(read) => {
+                let index = self.tree.size().saturating_sub(1);
+                let owner_name = read.owner.clone();
+                let keys: Vec<&Key> = match &read.event {
+                    Event::Register { keys, .. } => {
+                        self.names.add_owner(&owner_name);
+                        keys.iter().collect()
                     }
-                    owner.threshold = event.threshold;
+                    Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => vec![key],
+                    _ => Vec::new(),
+                };
+                for key in keys {
+                    self.held
+                        .entry(key.public)
+                        .or_insert_with(|| owner_name.clone());
                 }
+                self.owners.entry(owner_name).or_default().push(Recorded {
+                    index,
+                    note: entry.note.clone(),
+                    entry: read.as_ref().clone(),
+                });
             }
         }
     }

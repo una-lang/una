@@ -9,9 +9,13 @@
 //! **Writing** (`POST`) takes a submission and answers the registry's signed promise:
 //! - `/publish`: `ita-publish/1`, a line feed, the release statement's length in decimal and a
 //!   line feed, the signed statement, then the archive;
-//! - `/submit`: a signed yank, advisory or key event;
+//! - `/submit`: a signed yank, advisory or owner's key event other than a recovery or a
+//!   dispute;
 //! - `/register`: an owner's registration, only with the operator's bearer token, after the
 //!   operator verified the account; `Ita-Review: accepted` releases a name held for review;
+//! - `/request`: an owner's recovery or dispute (`recover` or `dispute`), only with the
+//!   operator's bearer token, after the operator verified the account; the registry signs it
+//!   with the log's key;
 //! - `/cosign`: a checkpoint's size in decimal, a line feed, and a witness's cosignature line.
 //!
 //! **Limits, before allocation.** A request's head is at most 16 KiB and 64 header lines, read
@@ -54,7 +58,8 @@ const MAX_PUBLISHING: usize = 2;
 /// How the endpoints run.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
-    /// The operator's bearer token for `/register`; registration is closed without one.
+    /// The operator's bearer token for `/register` and `/request`; both are closed without
+    /// one.
     pub register_token: Option<String>,
     /// How many connections are served at once.
     pub max_connections: usize,
@@ -223,7 +228,7 @@ impl Service {
     fn body_limit(method: &str, path: &str) -> Option<usize> {
         match (method, path) {
             ("POST", "publish") => Some(MAX_PUBLISH_BODY),
-            ("POST", "submit" | "register") => Some(MAX_NOTE_BODY),
+            ("POST", "submit" | "register" | "request") => Some(MAX_NOTE_BODY),
             ("POST", "cosign") => Some(MAX_COSIGN_BODY),
             _ => None,
         }
@@ -311,23 +316,28 @@ impl Service {
                     Err(refusal) => Service::refused(&refusal),
                 }
             }
-            "register" => {
+            "register" | "request" => {
                 let Some(token) = &self.config.register_token else {
-                    return text(403, "registration is closed");
+                    return text(403, "the operator's endpoints are closed");
                 };
                 let given = request
                     .header("authorization")
                     .and_then(|v| v.strip_prefix("Bearer "))
                     .unwrap_or_default();
                 if !same_secret(given.as_bytes(), token.as_bytes()) {
-                    return text(401, "registration needs the operator's token");
+                    return text(401, "this endpoint needs the operator's token");
                 }
                 let reviewed = request.header("ita-review") == Some("accepted");
                 let mut registry = match self.locked() {
                     Ok(registry) => registry,
                     Err(response) => return response,
                 };
-                match registry.register(&request.body, reviewed) {
+                let logged = if request.path == "register" {
+                    registry.register(&request.body, reviewed)
+                } else {
+                    registry.request(&request.body)
+                };
+                match logged {
                     Ok(receipt) => text(200, receipt.promise.trim_end().to_owned()),
                     Err(refusal) => Service::refused(&refusal),
                 }

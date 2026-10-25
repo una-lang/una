@@ -9,16 +9,16 @@
 //!
 //! It speaks the formats of the client in `una-project` (`tlog`, `content`) by reusing that
 //! code: the Merkle tree, strict Ed25519, signed notes, checkpoints and cosignatures, root
-//! metadata, release statements, yanks, advisories, the name map, the archive and the content
-//! digest. What only a registry does is here: the log's storage and tiles, the map's tiles,
-//! the checks of rules 26, 37, 38 and 43 to 45 at submission, cosignature collection, signed
-//! promises, and the HTTP endpoints.
+//! metadata, release statements, yanks, advisories, the owner formats and the replay of an
+//! owner's chain, the name map, the archive and the content digest. What only a registry does
+//! is here: the log's storage and tiles, the map's tiles, the checks of rules 26, 37, 38 and
+//! 43 to 45 at submission, cosignature collection, signed promises, and the HTTP endpoints.
 //!
 //! The parts:
 //! - [`store`]: the file-backed store behind a trait, which is also what HTTP serves;
 //! - [`tree`] and [`tiles`]: the log's hashes, proofs and C2SP tiles;
 //! - [`namemap`]: the incremental name map and its tiles;
-//! - [`entry`]: the entries of the log and the owner formats;
+//! - [`entry`]: the entries of the log, read by the client's reader;
 //! - [`names`]: the name rules of rules 44 and 45 at registration;
 //! - [`authority`]: a package's authority and trust, computed from its archive (rule 37);
 //! - [`registry`]: the state of the registry and the checks at submission;
