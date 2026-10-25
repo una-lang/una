@@ -142,6 +142,20 @@ pub struct TestRegistry {
     /// registry that breaks the cadence rule leaves them; by default they carry the same
     /// cosignatures as the checkpoint that follows them.
     pub bare: bool,
+    /// Whether witnesses cosign as a registry that keeps the rules but no more asks them to:
+    /// exactly each request's start checkpoint, its deadline checkpoint and the one before it,
+    /// and one checkpoint per 64 sizes, each size with a time of its own, increasing between
+    /// the times the checkpoints are asked at. The latest checkpoint, as served, is always
+    /// cosigned; its kept copy only when one of these asks it.
+    pub sparse: bool,
+    /// The log indices of the recoveries, disputes and co-signer changes logged.
+    pub requests: Vec<u64>,
+    /// The sparse mode's state: each size's time and text, the last size and time asked at,
+    /// and each request's deadline target and whether its deadline checkpoint was cosigned.
+    sparse_times: BTreeMap<u64, u64>,
+    sparse_texts: BTreeMap<u64, String>,
+    sparse_last: Option<(u64, u64)>,
+    sparse_deadlines: Vec<(u64, bool)>,
 }
 
 impl TestRegistry {
@@ -164,6 +178,12 @@ impl TestRegistry {
             files: BTreeMap::new(),
             sizes: Vec::new(),
             bare: false,
+            sparse: false,
+            requests: Vec::new(),
+            sparse_times: BTreeMap::new(),
+            sparse_texts: BTreeMap::new(),
+            sparse_last: None,
+            sparse_deadlines: Vec::new(),
         };
         registry
             .files
@@ -278,7 +298,14 @@ impl TestRegistry {
             self.previous(&chain)
         );
         let document = signed(&text, signers);
-        self.append(&chain, &document)
+        let index = self.append(&chain, &document);
+        let request = ["recover ", "dispute ", "cosigners "]
+            .iter()
+            .any(|kind| action.starts_with(kind));
+        if request {
+            self.requests.push(index);
+        }
+        index
     }
 
     /// A recovery or a dispute (`kind`) of `owner` naming `key`, signed by the log's key and
@@ -408,6 +435,10 @@ impl TestRegistry {
             .map(|(name, head)| (name.clone(), *head))
             .collect();
         let (map_root, tiles) = build_tiles(&heads);
+        if self.sparse {
+            let time = times.iter().flatten().copied().max().unwrap_or_default();
+            self.sparse_kept(size, time, &leaves, &map_root);
+        }
         // A registry signs a checkpoint after every entry: every size below this one that has
         // none gets one the log signs, cosigned as this one is, the witnesses cosigning them
         // together; with `bare`, cosigned by none.
@@ -449,8 +480,10 @@ impl TestRegistry {
                 document.push_str(&cosign_line(pair, key, &text, *time));
             }
         }
-        self.files
-            .insert(format!("checkpoint/{size}"), document.clone().into_bytes());
+        if !self.sparse {
+            self.files
+                .insert(format!("checkpoint/{size}"), document.clone().into_bytes());
+        }
         self.files
             .insert("checkpoint".to_owned(), document.into_bytes());
         if self.sizes.last() != Some(&size) {
@@ -462,6 +495,73 @@ impl TestRegistry {
             self.files.insert(path, bytes);
         }
         size
+    }
+
+    /// The sparse mode's kept checkpoints of the sizes up to `size`, asked at `time`: each new
+    /// size gets a time of its own, increasing from the last size asked at, and witnesses
+    /// cosign only the start and deadline checkpoints of requests, the checkpoint before each
+    /// deadline, and one per 64 sizes.
+    fn sparse_kept(&mut self, size: u64, time: u64, leaves: &[Hash], map_root: &Hash) {
+        let (from, start) = self.sparse_last.unwrap_or((0, time.saturating_sub(size)));
+        let mut previous = start;
+        let mut cosign: Vec<u64> = Vec::new();
+        for kept in from + 1..=size {
+            let span = size - from;
+            let share = time.saturating_sub(start).saturating_mul(kept - from) / span.max(1);
+            let at = (start + share).max(previous + 1).min(time);
+            previous = at;
+            self.sparse_times.insert(kept, at);
+            let prefix = leaves.get(..kept as usize).unwrap_or_default();
+            let text = format!(
+                "{}\n{kept}\n{}\nita-map {}\n{}\n",
+                self.keys.log.1.name,
+                encode_base64(&tree_root(prefix)),
+                encode_base64(map_root),
+                self.root_line()
+            );
+            self.sparse_texts.insert(kept, text);
+            if kept % 64 == 0 {
+                cosign.push(kept);
+            }
+            if self.requests.contains(&(kept - 1)) {
+                cosign.push(kept);
+                self.sparse_deadlines.push((at + 7 * 24 * 3600, false));
+            }
+            for (target, done) in &mut self.sparse_deadlines {
+                if !*done && at >= *target {
+                    *done = true;
+                    cosign.push(kept);
+                    cosign.push(kept - 1);
+                }
+            }
+        }
+        for kept in from + 1..=size {
+            self.write_sparse(kept, cosign.contains(&kept));
+        }
+        // A size before this call cosigned now, as the one before a deadline.
+        for kept in cosign.iter().filter(|kept| **kept <= from) {
+            self.write_sparse(*kept, true);
+        }
+        self.sparse_last = Some((size, time));
+    }
+
+    /// Writes the sparse mode's kept checkpoint of `size`, cosigned at its time when asked.
+    fn write_sparse(&mut self, size: u64, cosigned: bool) {
+        let (Some(text), Some(at)) = (self.sparse_texts.get(&size), self.sparse_times.get(&size))
+        else {
+            return;
+        };
+        let mut document = format!(
+            "{text}\n{}",
+            sign_line(&self.keys.log.0, &self.keys.log.1, text)
+        );
+        if cosigned {
+            for (pair, key) in &self.keys.witnesses {
+                document.push_str(&cosign_line(pair, key, text, *at));
+            }
+        }
+        self.files
+            .insert(format!("checkpoint/{size}"), document.into_bytes());
     }
 
     /// [`TestRegistry::checkpoint_with`], every witness cosigning at `time`.

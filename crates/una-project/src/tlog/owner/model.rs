@@ -1613,6 +1613,8 @@ impl crate::transport::Transport for Files {
 /// last checkpoint. Returns the registry and the witness time of its last checkpoint.
 fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64, Vec<u64>) {
     let mut registry = support::TestRegistry::new("model");
+    // Witnesses cosign as a registry that keeps the rules and no more asks them to.
+    registry.sparse = true;
     let pair = |k: K| (keys.pairs[k as usize].clone(), keys.key(k).clone());
     let mut index_of: Vec<u64> = Vec::new();
     let mut time = support::NOW - 90 * DAY;
