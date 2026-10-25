@@ -778,7 +778,7 @@ fn resolve_and_lock(
         options.edited.clone()
     } else {
         let mut text = sources.file(manifest_id).text().to_owned();
-        edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+        edits.sort_by_key(|a| std::cmp::Reverse(a.0.start));
         for (range, version) in &edits {
             if text.get(range.clone()).is_some() {
                 text.replace_range(range.clone(), version);

@@ -202,10 +202,13 @@ fn a_release_verifies_from_its_provenance() {
     );
 }
 
+/// A named change to what a lock expects.
+type Change<'a> = (&'a str, Box<dyn Fn(&mut Expected)>);
+
 #[test]
 fn each_thing_the_lock_says_is_verified() {
     let release = good();
-    let changes: Vec<(&str, Box<dyn Fn(&mut Expected)>)> = vec![
+    let changes: Vec<Change> = vec![
         (
             "root",
             Box::new(|e: &mut Expected| e.root = format!("sha256:{}", "0".repeat(64))),
