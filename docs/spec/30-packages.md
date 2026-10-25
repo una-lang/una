@@ -312,21 +312,42 @@ A registry is a set of static files below a base (ADR 0122 rule 34). `una ita lo
    - **Floors.** Itaoca keeps, in `registry/<source>/checkpoint`, the largest checkpoint of the source accepted; it is replaced only by a larger one. A checkpoint is accepted only with a consistency proof (§11 rule 1) between it and the stored one, computed from the tiles, in either direction; a resolution never accepts one below the stored one or below the resolution point of the lock it replaces. A failure is U7010: it is evidence that the log forked.
    - **Monotonic witnesses.** Across every cosignature the client holds, a witness's timestamps never decrease as the log grows (U7010).
 4. **Entries and chains.** An entry is read from its bundle, and its leaf hash, SHA-256 of `0x00` and its bytes, MUST be included in the checkpoint by an inclusion proof computed from the tiles. A name's state is its head in the name map, read from the map's tiles on the name's path from the root of the checkpoint's `ita-map` extension line, each tile checked against the hash that names it, and proven against that root (§11 rule 9), then its whole chain, walked from the head by §11 rule 10, each entry verified in the log. An entry is a signed note whose text is a release statement (§11 rule 6) or an owner's entry (rule 5); an entry of any other kind refuses the name (U7010), so nothing is resolved from a part of a name's state.
-5. **Owners' keys** (ADR 0122 rules 36.3, 38 and 38.1). An owner's entry is, in this order: `ita-owner/1`; `source <source>`; `owner <owner>`; `previous <index> <leaf hash>` or `previous none`; `event <kind>`; then the lines of its kind, and nothing after:
+5. **Owners' keys** (ADR 0122 rules 36.3, 38 and 38.1). An owner's chain is the chain of the name-map name `owner:<owner>`, which no package name can be, since a package name has no `:`. Its entries are signed notes of two formats. In each, every line after the format line is `<field> <value>`, one form per line, in the order stated, each once unless stated, and nothing after; an entry longer than a note may be (64 KiB) is refused before it is read. Anything else is refused (U7010).
+   - **`ita-owner/1`, the registration,** is the chain's first entry: `source <source>`; `owner <owner>`; `previous none`; `threshold <k>`; one `key <name> <base64 key>` line per key, 1 to 32 of them and at least `k`; then, optionally, the owner's recovery cosigners: one `cosigner <name> <base64 key>` line each, 1 to 32, followed by `cosigners <k>`, `k` from 1 to their number. A key's name is 1 to 128 bytes with no space, control character or `+`; no name or key is listed twice. It is signed by every key it registers.
 
-   | Event | Lines | Signed by |
-   | --- | --- | --- |
-   | `register` | `key <name> <base64 key>` | the log's key; only as the chain's first entry |
-   | `add` | `key <name> <base64 key>` | the owner's threshold of current keys |
-   | `revoke` | `fingerprint <hex>`, then optionally `compromised <index>` | the owner's threshold, or the recovery cosigners' threshold |
-   | `threshold` | `threshold <k>` | the owner's threshold |
-   | `cosigners` | `threshold <k>`, then a `key` line per recovery cosigner | the owner's threshold |
-   | `recover` | `key <name> <base64 key>` | the log's key, and the cosigners' threshold when the owner has cosigners |
-   | `cancel` | `recovery <index>` | any one current key of the owner |
-   | `overrule` | `cancel <index>` | the cosigners' threshold |
-   | `dispute` | `key <name> <base64 key>` | the log's key; only for an owner with no cosigners |
+     ```text
+     ita-owner/1
+     source itaty
+     owner acme
+     previous none
+     threshold 1
+     key acme.laptop 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
+     cosigner trustee.a 9Pxw7lyLbsDgQ2ib5Wb3sTsXdrWmHYcnbq1Qr6eKXCM=
+     cosigners 1
+     ```
 
-   A key's fingerprint is the hex SHA-256 of its public key. The client replays the owner's whole chain: an event governs the entries logged after it. A recovery or a dispute takes effect at the first kept checkpoint whose witness time is at least seven days after the witness time of the first checkpoint that includes it, and governs the entries logged after that checkpoint; the new key is then the owner's only key, with a threshold of one. A recovery that a current key cancelled before it took effect, unless the cosigners overruled the cancellation, never takes effect; a dispute cannot be cancelled. A key revoked as `compromised <p>` is not valid after the log position `p`. An entry that is not signed as the table states refuses the chain (U7010). The unscoped names belong to Itaúna, whose keys and threshold are the root metadata's: it has no chain, no recovery and no dispute.
+   - **`ita-key/1`, every later event:** `source <source>`; `owner <owner>`; `previous <index> sha256:<hex>`, the owner's previous entry; one action line; then `threshold <k>`, the owner's threshold once the event takes effect, from 1 to 32:
+
+     | Action line | Signed by | `threshold` |
+     | --- | --- | --- |
+     | `add <name> <base64 key>` | the owner's threshold of current keys, and the key added | 1 to the keys after |
+     | `revoke <name>` or `revoke <name> since <p>` | the owner's threshold, or the cosigners' threshold | 1 to the keys after |
+     | `cosigners <k> <name> <base64 key> …`, one or more cosigners, `k` at most their number; or `cosigners none` | the owner's threshold | the current one |
+     | `recover <name> <base64 key>`: a pending recovery naming the new key | the log's key, and the cosigners' threshold when the owner has cosigners | 1 |
+     | `cancel <index>`: of the pending recovery logged at that index | any one current key of the owner | the current one |
+     | `overrule <index>`: of the cancellation logged at that index | the cosigners' threshold | the current one |
+     | `dispute <name> <base64 key>`: a registry dispute naming the new key | the log's key; only for an owner with no cosigners | 1 |
+
+     ```text
+     ita-key/1
+     source itaty
+     owner acme
+     previous 48211 sha256:0b7e3c110b7e3c110b7e3c110b7e3c110b7e3c110b7e3c110b7e3c110b7e3c11
+     revoke acme.laptop since 48190
+     threshold 1
+     ```
+
+   A key's fingerprint is the hex SHA-256 of its public key. A key added, recovered or disputed is never a name or a key the owner holds or held. The client replays the owner's whole chain: an event governs the entries logged after it. A recovery or a dispute takes effect at the first kept checkpoint whose witness time is at least seven days after the witness time of the first checkpoint that includes it, and governs the entries logged after that checkpoint; the new key is then the owner's only key, with a threshold of one, and the change is a key change (rule 8). A recovery that a current key cancelled before it took effect, unless the cosigners overruled the cancellation, never takes effect; a cancellation of a dispute, of a recovery in effect, or of no recovery changes nothing, and a dispute cannot be cancelled. A key revoked `since <p>` is compromised: not valid after the log position `p`. An entry that is not signed as the table states, or whose `threshold` is not the one stated, refuses the chain (U7010). The unscoped names belong to Itaúna, whose keys and threshold are the root metadata's: it has no chain, no recovery and no dispute.
 6. **Releases.** A release of a name is a release statement of its chain, of the source and name it is read for, each version once (a second statement of a version is U7010: a release is immutable), signed by the owner's threshold of keys valid at its log position. A statement whose signers reach the threshold only with a key revoked as compromised before its position is skipped by resolution as a yanked release is. A statement that needs a capability, an operation or a trusted module that the highest release of its identity logged before it did not need breaks rule 26 of ADR 0122, and refuses the name (U7010). The key the lock names is the first signer by fingerprint, as `ed25519:<owner>:<fingerprint>`, `itauna` for an unscoped name.
 7. **Logged time.** A release is logged at the k-th earliest of the distinct witnesses' earliest cosignatures on the kept checkpoints that include it, k the witness threshold (§11 rule 5). The kept checkpoints are read by size, `checkpoint/<size>` from the entry's index plus one on, each signed by the log's key and a prefix of the resolution point by a consistency proof, until k witnesses are seen, at most 64 of them; past that the resolution point's cosignatures count too, which can only make the time later and a wait longer; the cooldown of §10 rule 4 is measured from it to the witness time of the resolution point, the earliest of the registries' when a program reads several.
 8. **Resolution and the lock.** `una ita lock`, `update` and `add` resolve each registry need by §10 over the releases of rule 6, and lock each release of the build list as `package <name> <version>`, `from <source>`, `digest`, `signed`, `logged <index>`, its `needs` lines from its statement, and, for a need of the root with `may` lines, `granted by <root> may <ceiling>`; each source with a release in the lock is recorded as `registry <source>`, `root "<pin>"`, `checkpoint <size> "<root hash>"`. Consent is §10 rule 8's, and for a release with trusted modules, by its statement's `trust`, as §13 states. Beside it:

@@ -13,7 +13,7 @@ mod registry;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use registry::{NOW, TestRegistry, fingerprint_of, hash_hex, keypair, key_text};
+use registry::{NOW, TestRegistry, hash_hex, keypair, key_text};
 use una_project::client::{LoggedRelease, Point, Registry, owner_of};
 use una_project::provenance::{Expected, signed_name, verify};
 use una_project::tlog::merkle::{
@@ -209,7 +209,7 @@ fn locations_never_use_plain_http() {
 /// The owner `acme`, registered with its first key, and the key itself.
 fn acme(registry: &mut TestRegistry) -> (ed25519_dalek::SigningKey, una_project::tlog::note::Key) {
     let key = keypair(60, "acme.laptop");
-    registry.register("acme", &key.1);
+    registry.register("acme", &key);
     key
 }
 
@@ -540,8 +540,12 @@ fn statements_need_the_owners_keys_valid_at_their_position() {
     // a position, and the release it signed after that is skipped as yanked.
     let mut registry = TestRegistry::new("acme");
     let first_again = acme(&mut registry);
-    registry.owner_event("acme", "add", &format!("key {}", key_text(&second.1)), &[&first_again]);
-    registry.owner_event("acme", "threshold", "threshold 2", &[&first_again]);
+    registry.owner_event(
+        "acme",
+        &format!("add {}", key_text(&second.1)),
+        2,
+        &[&first_again, &second],
+    );
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&first_again]);
     registry.checkpoint(NOW);
     let memory = Memory {
@@ -551,14 +555,19 @@ fn statements_need_the_owners_keys_valid_at_their_position() {
 
     let mut registry = TestRegistry::new("acme");
     let first = first;
-    registry.register("acme", &first.1);
-    registry.owner_event("acme", "add", &format!("key {}", key_text(&second.1)), &[&first]);
+    registry.register("acme", &first);
+    registry.owner_event(
+        "acme",
+        &format!("add {}", key_text(&second.1)),
+        1,
+        &[&first, &second],
+    );
     let (good, _) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&first]);
     let (late, _) = registry.release("acme/ledger", "0.3.2", "none", "none", &[&first]);
     registry.owner_event(
         "acme",
-        "revoke",
-        &format!("fingerprint {}\ncompromised {good}", fingerprint_of(&first.1)),
+        &format!("revoke {} since {good}", first.1.name),
+        1,
         &[&second],
     );
     registry.release("acme/ledger", "0.3.3", "none", "none", &[&second]);
@@ -592,12 +601,12 @@ fn recoveries_wait_seven_days_of_witness_time_and_can_be_cancelled() {
     let recovered = keypair(63, "acme.new");
     let build = |gap: u64, cancel: bool| -> TestRegistry {
         let mut registry = TestRegistry::new("acme");
-        registry.register("acme", &lost.1);
+        registry.register("acme", &lost);
         registry.checkpoint(NOW - 30 * DAY);
         let request = registry.recover("acme", "recover", &recovered.1, &[]);
         registry.checkpoint(NOW - 20 * DAY);
         if cancel {
-            registry.owner_event("acme", "cancel", &format!("recovery {request}"), &[&lost]);
+            registry.owner_event("acme", &format!("cancel {request}"), 1, &[&lost]);
             registry.checkpoint(NOW - 19 * DAY);
         }
         // Another name's entry, so the next checkpoint is a new size.
@@ -635,7 +644,7 @@ fn a_recovery_not_yet_in_effect_is_pending() {
     let lost = keypair(60, "acme.laptop");
     let recovered = keypair(63, "acme.new");
     let mut registry = TestRegistry::new("acme");
-    registry.register("acme", &lost.1);
+    registry.register("acme", &lost);
     registry.recover("acme", "recover", &recovered.1, &[]);
     registry.checkpoint(NOW - 6 * DAY);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&recovered]);
@@ -652,25 +661,65 @@ fn a_recovery_not_yet_in_effect_is_pending() {
 #[test]
 fn owner_entries_are_read_strictly() {
     let key = keypair(60, "acme.laptop");
+    let other = keypair(61, "acme.desktop");
     let good = format!(
-        "ita-owner/1\nsource acme\nowner acme\nprevious none\nevent register\nkey {}\n",
+        "ita-owner/1\nsource acme\nowner acme\nprevious none\nthreshold 1\nkey {}\n",
         key_text(&key.1)
     );
-    assert!(owner::parse_entry(&good).is_ok());
-    for (from, to) in [
-        ("event register", "event adopt"),
-        ("previous none", "previous 01 sha256:00"),
-        ("ita-owner/1", "ita-owner/2"),
-        ("\nkey ", "\nkeys "),
+    let read = owner::parse_entry(&good).unwrap();
+    assert_eq!(read.threshold, 1);
+    assert!(matches!(read.event, owner::Event::Register { cosigners: None, .. }));
+    let previous = "previous 4 sha256:aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04aa04";
+    for bad in [
+        good.replace("threshold 1", "threshold 2"),
+        good.replace("threshold 1", "threshold 0"),
+        good.replace("previous none", previous),
+        good.replace("ita-owner/1", "ita-owner/2"),
+        good.replace("owner acme\n", ""),
+        good.replace("\nkey ", "\nkeys "),
+        format!("{good}key {}\n", key_text(&key.1)),
+        format!("{good}cosigner {}\n", key_text(&other.1)),
+        format!("{good}cosigners 1\n"),
+        format!("{good}extra line\n"),
+        format!("{}{}", good, "x".repeat(70_000)),
     ] {
-        assert!(owner::parse_entry(&good.replacen(from, to, 1)).is_err(), "{to}");
+        assert!(owner::parse_entry(&bad).is_err(), "{bad}");
     }
-    assert!(owner::parse_entry(&format!("{good}extra\n")).is_err());
-    let cosigners = format!(
-        "ita-owner/1\nsource acme\nowner acme\nprevious none\nevent cosigners\nthreshold 2\nkey {}\n",
-        key_text(&key.1)
-    );
-    assert!(owner::parse_entry(&cosigners).is_err(), "threshold above the keys");
+    let with_cosigners = format!("{good}cosigner {}\ncosigners 1\n", key_text(&other.1));
+    let read = owner::parse_entry(&with_cosigners).unwrap();
+    assert!(matches!(read.event, owner::Event::Register { cosigners: Some((1, _)), .. }));
+    let event = |action: &str, threshold: &str| {
+        format!("ita-key/1\nsource acme\nowner acme\n{previous}\n{action}\nthreshold {threshold}\n")
+    };
+    for action in [
+        format!("add {}", key_text(&other.1)),
+        "revoke acme.laptop".to_owned(),
+        "revoke acme.laptop since 3".to_owned(),
+        format!("cosigners 1 {}", key_text(&other.1)),
+        "cosigners none".to_owned(),
+        format!("recover {}", key_text(&other.1)),
+        "cancel 5".to_owned(),
+        "overrule 6".to_owned(),
+        format!("dispute {}", key_text(&other.1)),
+    ] {
+        assert!(owner::parse_entry(&event(&action, "1")).is_ok(), "{action}");
+    }
+    for (action, threshold) in [
+        ("rotate acme.laptop".to_owned(), "1"),
+        ("revoke acme.laptop since x".to_owned(), "1"),
+        (format!("cosigners 2 {}", key_text(&other.1)), "1"),
+        ("cosigners 1".to_owned(), "1"),
+        ("cancel 05".to_owned(), "1"),
+        ("revoke acme.laptop".to_owned(), "0"),
+    ] {
+        assert!(owner::parse_entry(&event(&action, threshold)).is_err(), "{action}");
+    }
+    // A key event is never a chain's first entry, and has one action.
+    let first = event("revoke acme.laptop", "1").replace(previous, "previous none");
+    assert!(owner::parse_entry(&first).is_err());
+    let two = event("revoke acme.laptop", "1").replace("threshold 1\n", "cancel 3\nthreshold 1\n");
+    assert!(owner::parse_entry(&two).is_err());
+    assert_eq!(owner::chain_name("acme"), "owner:acme");
 }
 
 #[test]

@@ -75,7 +75,7 @@ fn una_at(dir: &Path, args: &[&str], itaoca: &Path) -> (u8, String, String) {
 fn acme() -> (TestRegistry, (ed25519_dalek::SigningKey, una_project::tlog::note::Key)) {
     let mut registry = TestRegistry::new("acme");
     let key = keypair(60, "acme.laptop");
-    registry.register("acme", &key.1);
+    registry.register("acme", &key);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
     registry.checkpoint(now() - 30 * DAY);
     registry.release("acme/ledger", "0.3.2", "none", "none", &[&key]);
@@ -319,7 +319,12 @@ fn a_change_of_the_owners_keys_needs_accept_key() {
     assert_eq!(code, 0, "{err}");
     // The owner adds a key after the lock's resolution point.
     let second = keypair(61, "acme.desktop");
-    registry.owner_event("acme", "add", &format!("key {}", key_text(&second.1)), &[&key]);
+    registry.owner_event(
+        "acme",
+        &format!("add {}", key_text(&second.1)),
+        1,
+        &[&key, &second],
+    );
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (code, _, err) = una_in(
@@ -390,7 +395,7 @@ fn add_takes_the_newest_release_past_the_cooldown_from_its_owners_source() {
 fn a_registry_that_logged_a_breach_of_rule_26_is_refused() {
     let mut registry = TestRegistry::new("acme");
     let key = keypair(60, "acme.laptop");
-    registry.register("acme", &key.1);
+    registry.register("acme", &key);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
     registry.release("acme/ledger", "0.3.2", "Http[post]", "none", &[&key]);
     registry.checkpoint(now() - 20 * DAY);

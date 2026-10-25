@@ -19,7 +19,7 @@ use una_project::provenance::sha256_digest;
 use una_project::tlog::map::{Head, build_tiles};
 use una_project::tlog::merkle::{Hash, leaf_hash, root as tree_root};
 use una_project::tlog::note::{Key, encode_base64};
-use una_project::tlog::owner::fingerprint;
+use una_project::tlog::owner::{chain_name as owner_chain, fingerprint};
 use una_project::tlog::root::digest;
 use una_project::tlog::tile::{WIDTH, entries_path, tile_path};
 
@@ -182,40 +182,41 @@ impl TestRegistry {
         index
     }
 
-    /// Registers `owner` with `key`, signed by the log's key.
-    pub fn register(&mut self, owner: &str, key: &Key) -> u64 {
+    /// Registers `owner` with the key of `pair`, threshold 1, signed by that key: the first
+    /// entry of the chain `owner:<owner>`.
+    pub fn register(&mut self, owner: &str, pair: &(SigningKey, Key)) -> u64 {
+        let chain = owner_chain(owner);
         let text = format!(
-            "ita-owner/1\nsource {}\nowner {owner}\n{}\nevent register\nkey {}",
+            "ita-owner/1\nsource {}\nowner {owner}\n{}\nthreshold 1\nkey {}",
             self.source,
-            self.previous(owner),
-            key_text(key)
+            self.previous(&chain),
+            key_text(&pair.1)
         );
-        let document = signed(&text, &[&self.keys.log]);
-        self.append(owner, &document)
+        let document = signed(&text, &[pair]);
+        self.append(&chain, &document)
     }
 
-    /// An owner's event, its lines after `event <kind>`, signed by `signers`.
+    /// A key event of `owner`: its action line, and the threshold after it, signed by
+    /// `signers`.
     pub fn owner_event(
         &mut self,
         owner: &str,
-        kind: &str,
-        lines: &str,
+        action: &str,
+        threshold: usize,
         signers: &[&(SigningKey, Key)],
     ) -> u64 {
-        let mut text = format!(
-            "ita-owner/1\nsource {}\nowner {owner}\n{}\nevent {kind}",
+        let chain = owner_chain(owner);
+        let text = format!(
+            "ita-key/1\nsource {}\nowner {owner}\n{}\n{action}\nthreshold {threshold}",
             self.source,
-            self.previous(owner)
+            self.previous(&chain)
         );
-        if !lines.is_empty() {
-            text.push('\n');
-            text.push_str(lines);
-        }
         let document = signed(&text, signers);
-        self.append(owner, &document)
+        self.append(&chain, &document)
     }
 
-    /// A recovery or a dispute of `owner` naming `key`, signed by the log's key and `more`.
+    /// A recovery or a dispute (`kind`) of `owner` naming `key`, signed by the log's key and
+    /// `more`.
     pub fn recover(
         &mut self,
         owner: &str,
@@ -223,20 +224,14 @@ impl TestRegistry {
         key: &Key,
         more: &[&(SigningKey, Key)],
     ) -> u64 {
-        let text = format!(
-            "ita-owner/1\nsource {}\nowner {owner}\n{}\nevent {kind}\nkey {}",
-            self.source,
-            self.previous(owner),
-            key_text(key)
-        );
         let log = (
             SigningKey::from_bytes(&self.keys.log.0.to_bytes()),
             self.keys.log.1.clone(),
         );
         let mut signers: Vec<&(SigningKey, Key)> = vec![&log];
         signers.extend_from_slice(more);
-        let document = signed(&text, &signers);
-        self.append(owner, &document)
+        let action = format!("{kind} {}", key_text(key));
+        self.owner_event(owner, &action, 1, &signers)
     }
 
     /// Stores the archive of `files` as a blob and returns its digest and its ita.una's digest.

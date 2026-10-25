@@ -24,7 +24,8 @@
 //!   the checkpoint's map root and proven against it ([`crate::tlog::map::prove_from_tiles`]),
 //!   and its whole chain walked from the head, with the count of rule 36.1
 //!   ([`crate::tlog::map::walk`]);
-//! - **an owner's keys** are replayed from its chain ([`crate::tlog::owner::replay`]), the
+//! - **an owner's keys** are replayed from its chain, the name `owner:<owner>`
+//!   ([`crate::tlog::owner::replay`]), the
 //!   recovery delay measured in witness time from the checkpoints kept by size,
 //!   `checkpoint/<size>`, each verified when it is read;
 //! - **a release** is a release statement of the name's chain, signed by its owner's threshold of
@@ -242,7 +243,9 @@ pub fn read_entry(document: &str) -> Result<(Note, Kind), Refusal> {
     let first = signed.text.split('\n').next().unwrap_or_default();
     let kind = match first {
         release::FORMAT => Kind::Release(Box::new(release::parse_statement(&signed.text)?)),
-        owner::FORMAT => Kind::Owner(Box::new(owner::parse_entry(&signed.text)?)),
+        owner::REGISTRATION | owner::KEY_EVENT => {
+            Kind::Owner(Box::new(owner::parse_entry(&signed.text)?))
+        }
         other => {
             return Err(format!(
                 "the log holds an entry `{other}` of a kind this client does not read yet, so the state of its name cannot be known"
@@ -709,7 +712,7 @@ impl<'t> Registry<'t> {
         let history = if owner_name == owner::ITAUNA {
             History::fixed(self.root.itauna.threshold, &self.root.itauna.keys)
         } else {
-            let chain = self.chain(owner_name)?;
+            let chain = self.chain(&owner::chain_name(owner_name))?;
             let mut entries: Vec<(u64, Note, owner::Entry)> = Vec::new();
             for entry in chain {
                 match entry.kind {
