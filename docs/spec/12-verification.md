@@ -185,6 +185,8 @@ The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-25
 - An entry whose tag is missing or does not match is not an answer. The query is solved again, and the entry is rewritten.
 - The key lives outside the package, in the file `UNA_PROOF_KEY` names, else `$HOME/.una/proof-cache.key`. `una` makes it on first use with 32 random bytes, readable by the user only.
 - With no key to read or make, a run uses no cache.
+- (ADR 0064, amendment of 2026-10-25; advisory UNA-SA-018.) An existing key file is used only when it is a regular file, not a symbolic link, with exactly one link, owned by the user running `una`, whose mode grants nothing to group or others, and of 16 to 4096 bytes, checked on the name and again on the opened file. Otherwise the run uses no cache, and `una` prints a note naming the key file and the reason, except under `--json` (`spec/13 §5`), where the report's `tcb.proof_cache_key` is `null`.
+- An entry is read only when it is a regular file of at most 64 KiB; anything else is a miss. An entry is written through a fresh temporary file renamed onto its own name: a link at that name is replaced, never followed.
 - The key file, not the cache, is part of the Trusted zone (`00-charter.md §3`).
 
 (v0.4, ADR 0122 rule 48.) For a package of edition `0.4`, the key is the domain-tagged, length-prefixed hash of the lock's `solver` section and the query of `spec/30 §7`, not the whole lock, so adding a dependency invalidates nothing; the tag keeps it apart from the key above.
