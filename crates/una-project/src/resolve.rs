@@ -16,9 +16,10 @@
 //! release that is not one, and O(S) per raise for the S releases it examines, each counted as
 //! work; O(P log P) to sort the build list of P packages. A pass is repeated only when it
 //! discovers an identity named with a pre-release beyond the root. There is no backtracking
-//! and no search. Every bound of rule 23 is checked as the walk goes, the releases visited
-//! counted over every pass and bounding the stack too, so no input makes it do more than the
-//! bounds allow.
+//! and no search. Every bound of rule 23 is checked as the walk goes, each distinct release
+//! visited counted once over every pass and bounding the stack too, so no input makes it do
+//! more than the bounds allow. A pass that fails reports its least failure by identity and
+//! version, never the first one its walk met.
 
 // A `Problem` ends a resolution, once: its size costs nothing on the path that succeeds.
 #![allow(clippy::result_large_err)]
@@ -230,7 +231,11 @@ pub struct Resolution {
 /// Costs: O(N + R) per pass, plus O(log K) per visit to find a release and O(S) per raise for
 /// the S releases it examines; a pass is repeated only when it discovers a pre-release named
 /// beyond the root, at most once per such identity, and the bound of releases visited counts
-/// every pass, so no input does more than the bounds allow.
+/// each distinct release once over every pass, so no input does more than the bounds allow.
+/// A need that names a pre-release admits pre-releases of its identity itself, in every pass.
+/// A pass that fails and admits no new identity reports its least failure by identity and
+/// version; one that admits a new identity is run again, since the failure may be a need that
+/// only an admitted pre-release meets.
 pub fn resolve(
     root: &[Need],
     index: &dyn Index,
@@ -255,16 +260,22 @@ pub fn resolve(
             .filter(|need| need.version.is_pre())
             .map(Need::identity)
             .collect(),
-        visits: 0,
+        visited: HashSet::new(),
         work: 0,
     };
     let named = loop {
-        let named = resolver.pass(root)?;
+        let pass = resolver.pass(root)?;
         let before = resolver.pre_allowed.len();
-        resolver.pre_allowed.extend(named.iter().cloned());
-        if resolver.pre_allowed.len() == before {
-            break named;
+        resolver.pre_allowed.extend(pass.named.iter().cloned());
+        if resolver.pre_allowed.len() > before {
+            // A pass that admits more is run again, even when this one failed: the failure
+            // may be a need that only an admitted pre-release meets.
+            continue;
         }
+        if let Some((_, problem)) = pass.failed {
+            return Err(problem);
+        }
+        break pass.named;
     };
     let resolution = resolver.list(root)?;
     // A set only grows, so it may hold an identity that only a release of an earlier pass
@@ -348,6 +359,24 @@ fn bad(policy: &Policy, identity: &Identity, release: &Release) -> bool {
             .is_some_and(|avoid| avoid.contains(&release.version))
 }
 
+/// What one pass of [`resolve`] found: the identities its needs name with a pre-release, and
+/// its least failure, if any.
+struct Pass {
+    named: HashSet<Identity>,
+    failed: Option<((Identity, Version), Problem)>,
+}
+
+/// Keeps `problem`, met at `at`, when it is the least failure of the pass so far.
+fn fail(
+    failed: &mut Option<((Identity, Version), Problem)>,
+    at: (Identity, Version),
+    problem: Problem,
+) {
+    if failed.as_ref().is_none_or(|(least, _)| at < *least) {
+        *failed = Some((at, problem));
+    }
+}
+
 /// The releases of an identity, read once: ascending, on its line, each version once.
 struct Held {
     releases: Vec<Release>,
@@ -401,8 +430,8 @@ struct Resolver<'a> {
     needs: HashMap<(Identity, Version), Vec<Need>>,
     /// The identities whose pre-releases a need may reach in this pass (rule 22).
     pre_allowed: HashSet<Identity>,
-    /// Releases visited, over every pass, for the bound of rule 23.
-    visits: usize,
+    /// Each (identity, version) visited, over every pass, for the bound of rule 23.
+    visited: HashSet<(Identity, Version)>,
     /// Visits, need edges, lookups and releases examined by raises, for the scaling test.
     work: usize,
 }
@@ -411,9 +440,13 @@ impl Resolver<'_> {
     /// One pass of minimal version selection with the admitted pre-releases fixed: the
     /// selection in `sel`, and the identities that a need of the root or of a release reached
     /// names with a pre-release, which the next pass admits.
-    fn pass(&mut self, root: &[Need]) -> Result<HashSet<Identity>, Problem> {
+    fn pass(&mut self, root: &[Need]) -> Result<Pass, Problem> {
         self.sel.clear();
         let mut named: HashSet<Identity> = HashSet::new();
+        // The least failure of the pass, by identity and version: a pass does not stop at the
+        // first failure it meets, so which one it reports never depends on the order of the
+        // walk.
+        let mut failed: Option<((Identity, Version), Problem)> = None;
         // Each (identity, version) is queued once a pass, so the stack never holds more entries
         // than releases the bound lets be visited.
         let mut queued: HashSet<(Identity, Version)> = HashSet::new();
@@ -427,9 +460,14 @@ impl Resolver<'_> {
         let mut dirty: BTreeSet<Identity> = BTreeSet::new();
         loop {
             while let Some((identity, version)) = work.pop() {
-                self.visits += 1;
                 self.work += 1;
-                let release = self.release(&identity, &version)?;
+                let release = match self.release(&identity, &version) {
+                    Ok(release) => release,
+                    Err(problem) => {
+                        fail(&mut failed, (identity, version), problem);
+                        continue;
+                    }
+                };
                 let raise = match self.sel.get(&identity) {
                     Some(current) => *current < release.version,
                     None => true,
@@ -438,12 +476,24 @@ impl Resolver<'_> {
                     self.sel.insert(identity.clone(), release.version.clone());
                     dirty.insert(identity.clone());
                 }
-                let needs = self.needs_of(&identity, &release.version)?;
+                let needs = match self.needs_of(&identity, &release.version) {
+                    Ok(needs) => needs,
+                    Err(problem) => {
+                        fail(&mut failed, (identity, release.version), problem);
+                        continue;
+                    }
+                };
                 for need in needs {
                     self.work += 1;
                     let next = need.identity();
                     if next == identity {
-                        return Err(Problem::SelfNeed(identity));
+                        let problem = Problem::SelfNeed(identity.clone());
+                        fail(
+                            &mut failed,
+                            (identity.clone(), release.version.clone()),
+                            problem,
+                        );
+                        continue;
                     }
                     if need.version.is_pre() {
                         named.insert(next.clone());
@@ -457,21 +507,25 @@ impl Resolver<'_> {
                 let Some(current) = self.sel.get(&identity).cloned() else {
                     continue;
                 };
-                if let Some(target) = self.raise(&identity, &current)? {
-                    self.queue(&mut work, &mut queued, identity, target)?;
+                match self.raise(&identity, &current) {
+                    Ok(Some(target)) => self.queue(&mut work, &mut queued, identity, target)?,
+                    Ok(None) => {}
+                    Err(problem) => fail(&mut failed, (identity, current), problem),
                 }
             }
             if work.is_empty() {
                 break;
             }
         }
-        Ok(named)
+        Ok(Pass { named, failed })
     }
 
-    /// Queues a visit of `version` of `identity`, once a pass. Every entry queued is visited,
-    /// so the bound of releases visited, over every pass, bounds the stack too.
+    /// Queues a visit of `version` of `identity`, once a pass. Every entry queued is visited;
+    /// the bound of releases visited counts each distinct (identity, version) once, over every
+    /// pass, so a pass run again visits what it visited before at no cost to the bound, and the
+    /// bound limits the stack too.
     fn queue(
-        &self,
+        &mut self,
         work: &mut Vec<(Identity, Version)>,
         queued: &mut HashSet<(Identity, Version)>,
         identity: Identity,
@@ -481,11 +535,14 @@ impl Resolver<'_> {
         if queued.contains(&entry) {
             return Ok(());
         }
-        if self.visits.saturating_add(work.len()) >= self.bounds.visited {
-            return Err(Problem::Bound(format!(
-                "more than {} releases visited",
-                self.bounds.visited
-            )));
+        if !self.visited.contains(&entry) {
+            if self.visited.len() >= self.bounds.visited {
+                return Err(Problem::Bound(format!(
+                    "more than {} releases visited",
+                    self.bounds.visited
+                )));
+            }
+            self.visited.insert(entry.clone());
         }
         queued.insert(entry.clone());
         work.push(entry);
@@ -511,9 +568,11 @@ impl Resolver<'_> {
     }
 
     /// The release a need of `version` reaches: the least release of the identity at or
-    /// above it, a pre-release only when the pass admits one (rule 22). O(log K).
+    /// above it, a pre-release only when the need names one or the pass admits one (rule 22).
+    /// O(log K).
     fn release(&mut self, identity: &Identity, version: &Version) -> Result<Release, Problem> {
-        let pre_allowed = self.pre_allowed.contains(identity);
+        // A need that names a pre-release admits pre-releases itself (rule 22).
+        let pre_allowed = version.is_pre() || self.pre_allowed.contains(identity);
         self.work += 1;
         let held = self.releases_of(identity)?;
         let from = held.releases.partition_point(|r| r.version < *version);
@@ -558,7 +617,8 @@ impl Resolver<'_> {
         current: &Version,
     ) -> Result<Option<Version>, Problem> {
         let policy = self.policy;
-        let pre_allowed = self.pre_allowed.contains(identity);
+        // A pre-release selected was admitted by the need that reached it (rule 22).
+        let pre_allowed = current.is_pre() || self.pre_allowed.contains(identity);
         self.work += 1;
         let held = self.releases_of(identity)?;
         let at = held

@@ -177,7 +177,9 @@ impl Itaoca {
     }
 
     /// The provenance of a release at the resolution point of `size`, read once with no link
-    /// followed, or `None` when it is not stored. It is verified by the caller, on every load.
+    /// followed, or `None` when it is not stored. A second link that an interrupted
+    /// [`Itaoca::store_provenance`] left beside it is removed first
+    /// ([`tree::clear_stray_links`]). It is verified by the caller, on every load.
     pub fn load_provenance(
         &self,
         source: &str,
@@ -189,7 +191,12 @@ impl Itaoca {
         let relative: Vec<&str> = parts.iter().map(String::as_str).collect();
         tree::not_a_link(&self.root)?;
         match tree::locate(&self.root, &relative)? {
-            Some(path) => tree::read_file(&path, provenance::MAX_BYTES as u64).map(Some),
+            Some(path) => {
+                // A store interrupted after its link leaves a second link in a fresh
+                // directory beside the file, which would refuse it forever.
+                tree::clear_stray_links(&path)?;
+                tree::read_file(&path, provenance::MAX_BYTES as u64).map(Some)
+            }
             None => Ok(None),
         }
     }

@@ -443,6 +443,37 @@ fn a_stray_file_in_a_vendored_copy_is_named() {
     );
 }
 
+/// A store of a provenance interrupted after its link, which left a second link in a fresh
+/// directory beside it, does not refuse the provenance forever: the stray link is removed when
+/// it is next loaded.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_provenance_store_is_repaired_on_load() {
+    let release = good();
+    let itaoca = Itaoca {
+        root: fresh("provenance-stray"),
+    };
+    let bytes = release.provenance.encode();
+    itaoca
+        .store_provenance(SOURCE, NAME, VERSION, 2, &bytes)
+        .unwrap();
+    let release_dir = itaoca
+        .root
+        .join("registry/acme/releases/acme+ledger-0.3.1");
+    let stray = release_dir.join(".una-fresh-9-9-9");
+    std::fs::create_dir(&stray).unwrap();
+    std::fs::hard_link(
+        release_dir.join("checkpoint-2.provenance"),
+        stray.join("file"),
+    )
+    .unwrap();
+    assert_eq!(
+        itaoca.load_provenance(SOURCE, NAME, VERSION, 2).unwrap(),
+        Some(bytes)
+    );
+    assert!(!stray.exists());
+}
+
 /// A link planted at the name of a provenance to store is never written through: the store is
 /// refused and the link's target keeps its bytes.
 #[cfg(unix)]

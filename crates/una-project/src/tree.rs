@@ -973,6 +973,58 @@ pub fn store_file_once(
     fresh.link_file(INSIDE, name)
 }
 
+/// Removes the links to the file at `path` that an interrupted [`store_file_once`] left: when
+/// the file has more than one link, each `.una-fresh-*` directory beside it, not a link, whose
+/// one entry `file` is the same file by device and inode, loses that entry, and the fresh
+/// directory is removed when it is then empty. Only this module creates such directories, in a
+/// store of the user's own, and the same inode shows the entry is the stored file's own
+/// second link, so nothing else is touched. Then the file must have one link; otherwise the
+/// refusal says so. O(e) for the e entries of its directory, only when a stray is there.
+pub fn clear_stray_links(path: &Path) -> Result<(), Refusal> {
+    let meta = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
+    if !meta.is_file() || links(&meta) <= 1 {
+        return Ok(());
+    }
+    let ours = identity(&meta);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("`{}` has no parent", path.display()))?;
+    for entry in fs::read_dir(parent).map_err(|e| cannot("list", parent, &e))? {
+        let entry = entry.map_err(|e| cannot("list", parent, &e))?;
+        let is_fresh = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".una-fresh-"));
+        if !is_fresh {
+            continue;
+        }
+        let dir = entry.path();
+        let Ok(dir_meta) = fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+            continue;
+        }
+        let stray = dir.join("file");
+        let Ok(stray_meta) = fs::symlink_metadata(&stray) else {
+            continue;
+        };
+        if stray_meta.is_file() && identity(&stray_meta) == ours {
+            fs::remove_file(&stray).map_err(|e| cannot("remove", &stray, &e))?;
+            // Removed only when empty: anything else in it is left as it is.
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+    let now = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
+    if links(&now) != 1 {
+        return Err(format!(
+            "`{}` has more than one hard link, and none of the others is a link an interrupted store left",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,6 +1137,35 @@ mod tests {
             .filter(|name| name.starts_with(".una-fresh-"))
             .collect();
         assert!(left.is_empty(), "{left:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An interrupted store, which left the file's second link in its fresh directory, is
+    /// repaired: that link and its directory are removed, and the file reads again. A link of
+    /// another file in a fresh directory, and another hard link elsewhere, are left alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_stray_link_of_an_interrupted_store_is_cleared() {
+        let dir = scratch("stray-link");
+        store_file_once(&dir, "doc", b"stored", true).unwrap();
+        let doc = dir.join("doc");
+        // What an interruption between the link and the removal leaves.
+        let stray = dir.join(".una-fresh-1-0-0");
+        fs::create_dir(&stray).unwrap();
+        fs::hard_link(&doc, stray.join("file")).unwrap();
+        // Another fresh directory, holding another file: not ours.
+        let other = dir.join(".una-fresh-2-0-0");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("file"), b"other").unwrap();
+        assert!(read_file(&doc, 100).is_err());
+        clear_stray_links(&doc).unwrap();
+        assert!(!stray.exists());
+        assert!(other.join("file").exists());
+        assert_eq!(read_file(&doc, 100).unwrap(), b"stored");
+        // A hard link that no interrupted store left is refused, and kept.
+        fs::hard_link(&doc, dir.join("elsewhere")).unwrap();
+        assert!(clear_stray_links(&doc).is_err());
+        assert!(dir.join("elsewhere").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

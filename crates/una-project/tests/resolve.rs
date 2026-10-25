@@ -416,19 +416,87 @@ fn pre_release_admission_does_not_depend_on_the_order_of_needs() {
     );
 }
 
+/// A transitive need that names a pre-release reaches it when only pre-releases meet it:
+/// `x 1.0.0` needs `b 2.0.0-rc.1`, b's only release.
+#[test]
+fn a_transitive_pre_release_need_resolves() {
+    let mut r = Registry::default();
+    r.add("x", "1.0.0", &[("b", "2.0.0-rc.1")]);
+    r.add("b", "2.0.0-rc.1", &[]);
+    assert_eq!(
+        list(&[need("x", "1.0")], &r, &policy()),
+        ["b 2.0.0-rc.1", "x 1.0.0"]
+    );
+}
+
+/// The bound of releases visited counts each distinct release once, so the pass that rule 22
+/// runs again costs it nothing.
+#[test]
+fn a_pass_run_again_does_not_eat_the_bound() {
+    let mut r = Registry::default();
+    r.add("x", "1.0.0", &[("a", "1.1.0-beta")]);
+    r.add("a", "1.1.0-beta", &[]);
+    r.add("a", "1.2.0", &[]);
+    let root = [need("a", "1.0"), need("x", "1.0")];
+    let bounds = |visited| Bounds {
+        visited,
+        ..Bounds::default()
+    };
+    // Three distinct releases are visited, a 1.0, x 1.0 and a 1.1.0-beta, in each of the two
+    // passes: three is enough, two is not.
+    assert!(resolve(&root, &r, &policy(), bounds(3)).is_ok());
+    assert!(matches!(
+        resolve(&root, &r, &policy(), bounds(2)),
+        Err(Problem::Bound(_))
+    ));
+}
+
+/// A pass that fails reports its least failure, by identity and version, whatever the order of
+/// the needs.
+#[test]
+fn the_failure_reported_does_not_depend_on_the_order_of_needs() {
+    let r = Registry::default();
+    let expected = Problem::NoRelease {
+        identity: need("p", "1.0").identity(),
+        version: v("1.0"),
+    };
+    for root in [
+        [need("p", "1.0"), need("q", "1.0")],
+        [need("q", "1.0"), need("p", "1.0")],
+    ] {
+        assert_eq!(
+            resolve(&root, &r, &policy(), Bounds::default()),
+            Err(expected.clone())
+        );
+    }
+}
+
 /// A release of [`a_shuffled_graph_resolves_the_same`]: its version, whether it is yanked, and
 /// its needs, each the index of a name and a version.
 type Shuffled = (&'static str, bool, Vec<(usize, &'static str)>);
 
-/// A fixed random graph with pre-releases, pre-release needs and yanked releases, resolved with
-/// its root's needs, each release's needs and the order of each name's releases shuffled by a
-/// fixed seed: every order gives the same result, a build list or the same refusal (rule 23).
+/// A fixed random graph in two layers, resolved with its root's needs, each release's needs and
+/// the order of each name's releases shuffled by a fixed seed: every order resolves, to the
+/// same build list (rule 23). The upper layer has no pre-releases, yanked releases but its
+/// last, and needs on both layers, those on the lower layer naming pre-releases too; the lower
+/// layer has pre-releases, yanked releases but its last, no needs, and one name whose only
+/// releases are pre-releases, needed only by pre-release versions. So every need is met, every
+/// raise has somewhere to go, and the needs a pass reaches never depend on which pre-releases
+/// it admits.
 #[test]
 fn a_shuffled_graph_resolves_the_same() {
     let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
-    let n = 40;
-    let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
-    let versions = [
+    let upper = 20;
+    let lower = 20;
+    // The names: the upper layer, the lower layer, then the pre-release-only one.
+    let names: Vec<String> = (0..upper)
+        .map(|i| format!("u{i}"))
+        .chain((0..lower).map(|i| format!("l{i}")))
+        .chain(["pre".to_owned()])
+        .collect();
+    let only_pre = upper + lower;
+    let finals = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"];
+    let mixed = [
         "1.0.0",
         "1.1.0-beta.1",
         "1.1.0",
@@ -437,24 +505,41 @@ fn a_shuffled_graph_resolves_the_same() {
         "1.2.0",
         "1.3.0",
     ];
-    // Per name, its releases: the version, whether it is yanked, and its needs.
+    let pre_only = ["1.1.0-beta.1", "1.2.0-rc.1"];
     let mut graph: Vec<Vec<Shuffled>> = Vec::new();
-    for i in 0..n {
+    for i in 0..names.len() {
         let mut releases = Vec::new();
-        for (at, version) in versions.iter().enumerate() {
-            // The last release is never yanked, so every raise has somewhere to go.
-            let yanked = at + 1 < versions.len() && rng.below(5) == 0;
-            let needs: Vec<(usize, &str)> = (0..3)
-                .map(|_| (rng.below(n), versions[rng.below(versions.len())]))
-                .filter(|(to, _)| *to != i)
-                .collect();
-            releases.push((*version, yanked, needs));
+        if i < upper {
+            for (at, version) in finals.iter().enumerate() {
+                let yanked = at + 1 < finals.len() && rng.below(5) == 0;
+                let mut needs: Vec<(usize, &'static str)> = Vec::new();
+                for _ in 0..2 {
+                    let to = rng.below(upper);
+                    if to != i {
+                        needs.push((to, finals[rng.below(finals.len())]));
+                    }
+                }
+                needs.push((upper + rng.below(lower), mixed[rng.below(mixed.len())]));
+                if rng.below(3) == 0 {
+                    needs.push((only_pre, pre_only[rng.below(pre_only.len())]));
+                }
+                releases.push((*version, yanked, needs));
+            }
+        } else if i < only_pre {
+            for (at, version) in mixed.iter().enumerate() {
+                let yanked = at + 1 < mixed.len() && rng.below(5) == 0;
+                releases.push((*version, yanked, Vec::new()));
+            }
+        } else {
+            for version in pre_only {
+                releases.push((version, false, Vec::new()));
+            }
         }
         graph.push(releases);
     }
-    let root: Vec<Need> = (0..n)
+    let root: Vec<Need> = (0..upper)
         .step_by(3)
-        .map(|i| need(&names[i], versions[rng.below(versions.len())]))
+        .map(|i| need(&names[i], finals[rng.below(finals.len())]))
         .collect();
     let mut shuffle = |len: usize| -> Vec<usize> {
         let mut order: Vec<usize> = (0..len).collect();
@@ -466,14 +551,14 @@ fn a_shuffled_graph_resolves_the_same() {
     let mut results = Vec::new();
     for round in 0..12 {
         let mut r = Registry::default();
-        for i in shuffle(n) {
+        for i in shuffle(names.len()) {
             for at in shuffle(graph[i].len()) {
                 let (version, yanked, needs) = &graph[i][at];
                 let mut order: Vec<(&str, &str)> = needs
                     .iter()
                     .map(|(to, version)| (names[*to].as_str(), *version))
                     .collect();
-                if round > 0 {
+                if round % 2 == 1 {
                     order.reverse();
                 }
                 r.add(&names[i], version, &order).yanked = *yanked;
@@ -482,6 +567,7 @@ fn a_shuffled_graph_resolves_the_same() {
         let order = shuffle(root.len());
         let shuffled: Vec<Need> = order.iter().map(|at| root[*at].clone()).collect();
         let result = resolve(&shuffled, &r, &policy(), Bounds::default()).map(|r| r.list);
+        assert!(result.is_ok(), "round {round}: {result:?}");
         results.push(result);
     }
     for result in &results[1..] {
