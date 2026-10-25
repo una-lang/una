@@ -151,7 +151,13 @@ fn tile_reads_grow_with_the_logarithm_of_the_log() {
         let size = (1u64 << bits) + 12_345;
         let mut tiles = Tiles::new(&uniform, size);
         let proof = tiles.inclusion(size / 3).unwrap();
-        assert!(proof.len() <= bits as usize + 2);
+        // RFC 9162 §2.1.3: an inclusion proof holds at most ceil(log2 size) hashes.
+        let height = (size - 1).ilog2() as usize + 1;
+        assert!(
+            proof.len() <= height,
+            "{} hashes for {size} leaves",
+            proof.len()
+        );
         let mut consistency = Tiles::new(&uniform, size);
         consistency.consistency(size / 2 + 1).unwrap();
         reads.push(tiles.reads() + consistency.reads());
@@ -438,6 +444,17 @@ fn checkpoints_need_witnesses_freshness_and_their_floor() {
 
 #[test]
 fn the_root_chain_rotates_and_expires() {
+    // Serves `document` as root version 2 and signs the latest checkpoint under it: a
+    // checkpoint names the last root version a place serves (spec/30 §11 rule 9), so serving a
+    // newer root under an older checkpoint would only stand for a checkpoint withheld.
+    fn serve_root_2(registry: &mut TestRegistry, document: String) {
+        registry
+            .files
+            .insert("root/2".to_owned(), document.clone().into_bytes());
+        registry.roots.truncate(1);
+        registry.roots.push(document);
+        registry.checkpoint(NOW);
+    }
     let mut registry = TestRegistry::new("acme");
     let key = acme(&mut registry);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
@@ -445,16 +462,14 @@ fn the_root_chain_rotates_and_expires() {
     // Version 2 rotates the third root key, signed by two keys of version 1 and of its own,
     // and expires before the checkpoint's witness time.
     let new_root = keypair(13, "acme.root.13");
-    let roots = [
-        &registry.keys.roots[0].1,
-        &registry.keys.roots[1].1,
-        &new_root.1,
+    let kept = [
+        registry.keys.roots[0].1.clone(),
+        registry.keys.roots[1].1.clone(),
     ];
+    let roots = [&kept[0], &kept[1], &new_root.1];
     let text = registry::root_text("acme", 2, NOW - 1, &registry.keys, &roots);
     let document = registry::signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
-    registry
-        .files
-        .insert("root/2".to_owned(), document.into_bytes());
+    serve_root_2(&mut registry, document);
     let memory = Memory {
         files: registry.files.clone(),
     };
@@ -463,17 +478,13 @@ fn the_root_chain_rotates_and_expires() {
     // Signed by one root key of version 1 only: refused.
     let text = registry::root_text("acme", 2, registry::EXPIRES, &registry.keys, &roots);
     let document = registry::signed(&text, &[&registry.keys.roots[0], &new_root]);
-    registry
-        .files
-        .insert("root/2".to_owned(), document.into_bytes());
+    serve_root_2(&mut registry, document);
     let memory = Memory {
         files: registry.files.clone(),
     };
     assert!(open(&memory, &registry).is_err());
     let document = registry::signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
-    registry
-        .files
-        .insert("root/2".to_owned(), document.into_bytes());
+    serve_root_2(&mut registry, document);
     let memory = Memory {
         files: registry.files.clone(),
     };
@@ -813,7 +824,8 @@ fn back_dating_one_witness_moves_no_time() {
         "acme",
         &memory,
         &registry.pin(),
-        &Point::Latest { now: NOW },
+        // Less than 24 hours after the witness time, NOW - DAY: fresh (rule 3).
+        &Point::Latest { now: NOW - 60 },
         None,
     )
     .unwrap();
@@ -903,7 +915,7 @@ fn map_tiles_prove_what_the_map_proves() {
 
 #[test]
 fn map_tiles_are_read_strictly() {
-    use una_project::tlog::map::{MAX_TILE, decode_tile};
+    use una_project::tlog::map::{MAX_TILE, decode_tile, empty_at};
     assert!(
         decode_tile(&[0u8; 31], 0, &[]).is_err(),
         "short of its bitmap"
@@ -912,7 +924,9 @@ fn map_tiles_are_read_strictly() {
     let mut one = vec![0u8; 32];
     one[0] = 1;
     assert!(decode_tile(&one, 0, &[]).is_err(), "cut inside a hash");
-    one.extend_from_slice(&[0u8; 32]);
+    // The empty subtree at the height of a level-0 tile's bottom nodes, 256 - 8: a node there
+    // that is the empty subtree is never listed.
+    one.extend_from_slice(&empty_at(248));
     assert!(
         decode_tile(&one, 0, &[]).is_err(),
         "an empty subtree listed"
@@ -2000,19 +2014,25 @@ fn a_claim_signed_by_the_key_it_names_states_nothing_of_the_past() {
     assert!(releases[0].compromised && !releases[1].compromised);
 }
 
-/// A chain that does not settle, which a registry must never log, fed directly: `A` adds the
-/// thief's `T`, then `T` alone claims `A` compromised since 0. Assuming the claim voids `T`'s
-/// addition and so the claim; dropping it brings both back. The replay stops at its pass cap,
-/// the same on every run, refuses the owner's names, and records the registry's misbehavior.
+/// A chain that does not settle, which a registry must never log, fed directly: `A` adds `C`,
+/// then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since 0. Assuming both
+/// claims voids the addition of `C`; both revocations are then void, stand as revocations that
+/// cancel each other, and are each their key's own word, so each claim starts at its own index.
+/// From there both apply with another sound signer, so each reaches back to the registration
+/// again: the claims alternate. The replay stops at its pass cap, the same on every run,
+/// refuses the owner's names, and records the registry's misbehavior.
 #[test]
 fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
     let a = keypair(60, "acme.a");
-    let t = keypair(66, "acme.t");
+    let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
+    let d = keypair(64, "acme.d");
     let mut registry = TestRegistry::new("acme");
-    registry.register("acme", &a);
-    registry.owner_event("acme", &format!("add {}", key_text(&t.1)), 1, &[&a, &t]);
-    let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[&t]);
-    registry.release("acme/ledger", "0.3.1", "none", "none", &[&t]);
+    registry.register_keys("acme", &[&a, &b, &d], 1, &[], 0);
+    registry.owner_event("acme", &format!("add {}", key_text(&c.1)), 1, &[&a, &c]);
+    let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
+    registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),
@@ -2037,7 +2057,7 @@ fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
         &[Misbehavior::Unsettled(owner::Unsettled {
             owner: "acme".to_owned(),
             index: claim,
-            passes: 4,
+            passes: 6,
         })]
     );
     assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
@@ -2090,6 +2110,9 @@ fn a_cancellation_after_an_overruling_does_not_count() {
     let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
     registry.owner_event("acme", &format!("overrule {cancel}"), 1, &[&x]);
     let again = registry.owner_event("acme", &format!("cancel {recovery}"), 1, &[&a]);
+    // The cancellations and the overruling inside the seven days: their sizes are cosigned
+    // well before the deadline.
+    registry.checkpoint(NOW - 28 * DAY);
     registry.append("other", "filler");
     let effect = registry.checkpoint(NOW - 21 * DAY);
     registry.release("acme/ledger", "0.3.1", "none", "none", &[&n]);
@@ -2695,6 +2718,9 @@ fn withholding_the_cadence_after_a_fix_is_unavailable() {
         .insert(path, resigned(&registry, &text, &[], 0));
     let mut client = open(&withholding, &registry).unwrap();
     assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
+    // The older release's logged time rests on the same withheld checkpoint, and `state` stops
+    // at the first release it cannot time; the fix's own logged time is unavailable too.
+    assert!(client.logged_at(fix).is_err());
     assert!(
         client
             .take_omitted()
