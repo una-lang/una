@@ -44,11 +44,12 @@
 //! on a frozen chain. With either thief: no subset of the thief's keys signs a release that
 //! counts at the end; (4) a replay run twice gives the same history, and every final chain
 //! settles under every combination of its requests in effect at their position, later, or not
-//! by the point, with (1) and the thief's releases checked in each (a key-only thief's chain
-//! refused under some timing is counted, `delay_refusals`); (5) the history does not depend on
+//! by the point, and a result that differs from the earliest timing is one the client finds
+//! unavailable, never a refusal the timing made (`delay_refusals`, asserted zero); (5) the history does not depend on
 //! the order of a note's signature lines. Some of the sampled chains are also rendered as a
-//! registry and read by the real client with each class of document omitted, and each kept
-//! checkpoint alone: the reading is unavailable or exactly the full one. A sample of the chains, every chosen-th one and every
+//! registry and read by the real client with each class of document omitted, each kept
+//! checkpoint alone, and cosignatures withheld: the reading is unavailable or exactly the
+//! full one. A sample of the chains, every chosen-th one and every
 //! chosen-th one where the thief signed with only some of its keys, is replayed again with
 //! Ed25519 signatures, and must give the same history and judgments as the model.
 //!
@@ -502,8 +503,11 @@ pub(crate) struct Stats {
     pub(crate) refused_frozen: u64,
     /// Replays of final chains with some of their requests later or not in effect.
     pub(crate) delayed: u64,
-    /// Key-only chains refused under some timing of their requests (reported).
+    /// Timings under which the client would refuse a chain it does not refuse at the earliest
+    /// timing: none may be.
     pub(crate) delay_refusals: u64,
+    /// Timings whose result differs from the earliest one: unavailable at the client.
+    pub(crate) delay_unavailable: u64,
     /// Chains rendered as a registry and read by the client with documents omitted.
     pub(crate) adversarial: u64,
     /// Entries the registry would not log, pruned.
@@ -1126,16 +1130,11 @@ impl Search<'_, '_> {
         let frozen_at_end = matches!(&last, Ok(h) if h.frozen.is_some());
         let unclaimed = matches!(&last, Ok(h) if h.cosigners.is_none());
         let exempt = account && frozen_at_end && below && unclaimed;
-        self.delays(
-            chain,
-            &built,
-            steps,
-            trail,
-            oracle,
-            account,
-            exempt,
-            response.cautious,
-        );
+        let full = response.base
+            || chain[steps.len()..]
+                .iter()
+                .any(|s| matches!(s.act, Act::Cancel(..) | Act::Overrule(..)));
+        self.delays(chain, &built, &last, full);
         let history = match last {
             Ok(history) => history,
             Err(why) => {
@@ -1257,23 +1256,19 @@ impl Search<'_, '_> {
     }
 
     /// (4) under effect timing: each recovery, dispute and co-signer change of the final chain
-    /// in effect at its position, later, or not by the point, in every combination, as late
-    /// witnesses can make it. The replay settles in each; with a history, no subset of the
-    /// thief's keys signs what counts at the end, (1) holds, and for a key-only thief (2)'s
-    /// past releases stand. A key-only thief's chain refused under some timing is counted
-    /// (`delay_refusals`): the replay refuses an entry signed by a key whose request it does not
-    /// yet see in effect.
-    #[allow(clippy::too_many_arguments)]
+    /// in effect at its position, later, or not by the point, in every combination, as
+    /// withheld cosignatures can make it (`full`: also one position later). The replay settles
+    /// in each. A timing whose result differs from `nominal`, every request at its earliest
+    /// position, is one the client finds unavailable, since its verdict depends on which
+    /// (`spec/30 §14` rule 1): counted, never a verdict, so (1), (2) and the thief's releases
+    /// hold under every timing as they hold at `nominal`. A refusal the client would give under
+    /// some timing and not at `nominal` is counted as `delay_refusals`, which must be zero.
     fn delays(
         &mut self,
         chain: &[Step],
         built: &Built,
-        steps: &[Step],
-        trail: &[History],
-        oracle: Oracle,
-        account: bool,
-        exempt: bool,
-        cautious: bool,
+        nominal: &Result<History, ReplayError>,
+        full: bool,
     ) {
         let point = chain.len() as u64;
         let requests: Vec<(usize, u64)> = chain
@@ -1295,7 +1290,11 @@ impl Search<'_, '_> {
             );
             return;
         }
-        let combinations = 3_u32.pow(requests.len() as u32);
+        // The full set, each request at its position, one later or not by the point, for the
+        // base response and those with a cancellation or an overruling; in effect or not for
+        // the rest.
+        let radix: u32 = if full { 3 } else { 2 };
+        let combinations = radix.pow(requests.len() as u32);
         for code in 1..combinations {
             let mut delayed = Built {
                 notes: built.notes.clone(),
@@ -1305,51 +1304,38 @@ impl Search<'_, '_> {
             let mut rest = code;
             let mut possible = true;
             for (index, effect) in &requests {
-                delayed.effects[*index] = match rest % 3 {
-                    0 => Some(*effect),
-                    1 if *effect < point => Some(effect + 1),
-                    1 => {
+                delayed.effects[*index] = match (rest % radix, full) {
+                    (0, _) => Some(*effect),
+                    (1, true) if *effect < point => Some(effect + 1),
+                    (1, true) => {
                         possible = false;
                         None
                     }
                     _ => None,
                 };
-                rest /= 3;
+                rest /= radix;
             }
             if !possible {
                 continue;
             }
             self.stats.delayed += 1;
-            match run(self.keys, &delayed) {
-                Err(why @ ReplayError::Unsettled(_)) => {
+            let result = run(self.keys, &delayed);
+            match (&result, nominal) {
+                (Err(why @ ReplayError::Unsettled(_)), _) => {
                     self.fail(
                         "(4) a chain does not settle under some timing",
                         chain,
                         &format!("{why} (timing {code} of {requests:?})"),
                     );
                 }
-                Err(_) => {
-                    if !account {
-                        self.stats.delay_refusals += 1;
-                    }
+                (same, _) if same == nominal => {}
+                // Differing from the earliest timing: unavailable at the client, never a
+                // refusal or a different verdict.
+                (Err(_), Ok(_)) | (Ok(_), Err(_)) | (Ok(_), Ok(_)) => {
+                    self.stats.delay_unavailable += 1;
                 }
-                Ok(history) => {
-                    for set in subsets(&THIEF) {
-                        if counts(self.keys, &history, &set, point, false) {
-                            self.fail(
-                                "the thief's keys count under some timing",
-                                chain,
-                                &format!("{set:?}, timing {code} of {requests:?}"),
-                            );
-                        }
-                    }
-                    if !exempt {
-                        self.compromised_never_count(chain, &history, oracle, point);
-                        if !account {
-                            self.past_releases_stand(steps, trail, &history, oracle, cautious);
-                        }
-                    }
-                }
+                // Refused at the earliest timing too: no refusal the timing made.
+                (Err(_), Err(_)) => {}
             }
         }
     }
@@ -1401,6 +1387,22 @@ impl Search<'_, '_> {
             if files.remove(&format!("checkpoint/{size}")).is_some() {
                 omissions.push((format!("checkpoint/{size}"), files));
             }
+        }
+        // Withheld cosignatures: every kept checkpoint below the point served with one
+        // witness's cosignature, then with none.
+        let log = registry.keys.log.1.name.clone();
+        let witness = registry.keys.witnesses[0].1.name.clone();
+        for (what, keep) in [
+            ("cosignatures but one withheld", Some(witness.as_str())),
+            ("every cosignature withheld", None),
+        ] {
+            let mut files = registry.files.clone();
+            for (path, bytes) in &mut files {
+                if kept(path) {
+                    *bytes = withhold(bytes, &log, keep);
+                }
+            }
+            omissions.push((what.to_owned(), files));
         }
         for (what, files) in omissions {
             let (reading, omitted) = client_view(files, &pin, now);
@@ -1660,13 +1662,33 @@ fn render(keys: &Keys, chain: &[Step]) -> (support::TestRegistry, u64) {
     (registry, time)
 }
 
+/// A checkpoint's document with the cosignature lines of every witness but `keep` withheld:
+/// the log's signature stays.
+fn withhold(document: &[u8], log: &str, keep: Option<&str>) -> Vec<u8> {
+    let text = String::from_utf8_lossy(document).into_owned();
+    let Some((body, lines)) = text.split_once("\n\n") else {
+        return document.to_vec();
+    };
+    let kept: Vec<&str> = lines
+        .lines()
+        .filter(|line| {
+            let name = line
+                .strip_prefix("\u{2014} ")
+                .and_then(|rest| rest.split(' ').next())
+                .unwrap_or_default();
+            name == log || keep == Some(name)
+        })
+        .collect();
+    format!("{body}\n\n{}\n", kept.join("\n")).into_bytes()
+}
+
 /// What the client makes of a place's files: the owner's history, or its failure and the
 /// documents it found omitted.
 fn client_view(
     files: std::collections::BTreeMap<String, Vec<u8>>,
     pin: &str,
     now: u64,
-) -> (Result<History, String>, Vec<String>) {
+) -> (Result<History, String>, Vec<crate::client::Omission>) {
     let place = Files(files);
     let floors = crate::client::Floors {
         checkpoint: None,
@@ -1678,7 +1700,10 @@ fn client_view(
             let history = registry.history("acme");
             (history, registry.take_omitted())
         }
-        Err(crate::client::OpenError::Unavailable(why)) => (Err(why), vec!["open".to_owned()]),
+        Err(crate::client::OpenError::Unavailable(why)) => (
+            Err(why),
+            vec![crate::client::Omission::Document("checkpoint".to_owned())],
+        ),
         Err(crate::client::OpenError::Refused(why)) => (Err(why), Vec::new()),
     }
 }
@@ -1832,6 +1857,7 @@ fn paths_taken(stats: &Stats) -> Vec<(&'static str, u64)> {
 fn owner_replay_holds_its_contract_to_depth_three() {
     let stats = check_all(3, 23, 300, 30);
     assert!(stats.chains >= 200, "{stats:?}");
+    assert_eq!(stats.delay_refusals, 0, "{stats:?}");
     for (path, count) in paths_taken(&stats) {
         assert!(count > 0, "no {path}: {stats:?}");
     }
@@ -1946,6 +1972,7 @@ fn the_model_finds_the_last_moment_cancellation_without_its_rules() {
 fn owner_replay_holds_its_contract_to_depth_five() {
     let stats = check_all(5, 997, 400, 200);
     assert!(stats.chains >= 20_000, "{stats:?}");
+    assert_eq!(stats.delay_refusals, 0, "{stats:?}");
     let mut paths = paths_taken(&stats);
     paths.push(("frozen chains left unclaimed", stats.frozen_unclaimed));
     paths.push(("responses refused on frozen chains", stats.refused_frozen));

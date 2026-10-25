@@ -188,6 +188,18 @@ pub struct Floors<'f> {
     pub root_version: Option<u64>,
 }
 
+/// What a place left out that made a result unavailable (`spec/30 §14` rule 1): never a reason
+/// to change a result, only to give none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Omission {
+    /// A document no place served, by its path.
+    Document(String),
+    /// Witnesses' cosignatures that may be withheld: the verdict of the name, given, depends
+    /// on whether a recovery, a dispute or a co-signer change of its owner is in effect at the
+    /// earliest position its seven days allow, or later, as the cosignatures served say.
+    Cosignatures(String),
+}
+
 /// Why a place does not open: it did not serve, or it served what does not verify.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenError {
@@ -397,10 +409,13 @@ pub struct Registry<'t> {
     kept: BTreeMap<u64, Option<Kept>>,
     seen: Vec<Cosigned>,
     histories: BTreeMap<String, History>,
+    /// For an owner whose requests could be in effect earlier than the cosignatures served say,
+    /// its history with each at the earliest position its seven days allow.
+    eager: BTreeMap<String, History>,
     /// The owner chains seen not to settle, evidence against the registry, in the order seen.
     misbehavior: Vec<Unsettled>,
-    /// The documents no place served since [`Registry::take_omitted`] was last called.
-    omitted: Vec<String>,
+    /// The omissions met since [`Registry::take_omitted`] was last called.
+    omitted: Vec<Omission>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
 }
 
@@ -544,6 +559,7 @@ impl<'t> Registry<'t> {
             point: accepted,
             kept: BTreeMap::new(),
             histories: BTreeMap::new(),
+            eager: BTreeMap::new(),
             misbehavior: Vec::new(),
             omitted: Vec::new(),
             releases: BTreeMap::new(),
@@ -685,7 +701,7 @@ impl<'t> Registry<'t> {
             read
         };
         let proved = map::prove_from_tiles(&root, name, &mut fetch);
-        self.omitted.extend(missing);
+        self.omitted.extend(missing.into_iter().map(Omission::Document));
         let (head, proof) = proved.map_err(|why| self.refuse(why))?;
         if !map::verify(&root, name, head.as_ref(), &proof) {
             return Err(self.refuse(format!(
@@ -749,17 +765,57 @@ impl<'t> Registry<'t> {
         let path = format!("checkpoint/{size}");
         // A registry keeps the checkpoint of every size it signed, each size up to the point:
         // one no place serves is an omission, which makes what needs it unavailable, never a
-        // checkpoint that does not exist.
-        let Some(bytes) = self
+        // checkpoint that does not exist. Every place's copy is read, and the cosignatures of
+        // those that verify are merged by witness, so a place that withholds cosignatures
+        // cannot make the witness time later when another place serves them.
+        let copies = self
             .transport
-            .get(&path, note::MAX_NOTE as u64)
-            .map_err(|why| self.refuse(why))?
-        else {
-            self.omitted.push(path.clone());
+            .get_all(&path, note::MAX_NOTE as u64)
+            .map_err(|why| self.refuse(why))?;
+        if copies.is_empty() {
+            self.omitted.push(Omission::Document(path.clone()));
             return Err(self.refuse(format!(
                 "no place serves `{path}`, a checkpoint below the point that a registry keeps"
             )));
-        };
+        }
+        let mut cosigned: Vec<Cosigned> = Vec::new();
+        let mut verified = false;
+        let mut failure: Option<Refusal> = None;
+        for bytes in copies {
+            match self.verify_kept(size, &path, bytes) {
+                Ok(lines) => {
+                    verified = true;
+                    for line in lines {
+                        if !cosigned.contains(&line) {
+                            cosigned.push(line);
+                        }
+                    }
+                }
+                Err(why) => {
+                    failure.get_or_insert(why);
+                }
+            }
+        }
+        if !verified {
+            return Err(failure.unwrap_or_else(|| self.refuse(format!("`{path}` does not verify"))));
+        }
+        let time = witness::checkpoint_time(&cosigned, self.root.witnesses.threshold).ok();
+        self.seen.extend(cosigned.iter().cloned());
+        witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
+        let kept = Kept { cosigned, time };
+        self.kept.insert(size, Some(kept.clone()));
+        Ok(Some(kept))
+    }
+
+    /// One place's copy of the kept checkpoint of `size`, verified: a checkpoint of the log of
+    /// that size, signed by the log's key and a prefix of the point by a consistency proof. Its
+    /// cosignatures by the root's witnesses that verify.
+    fn verify_kept(
+        &mut self,
+        size: u64,
+        path: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Vec<Cosigned>, Refusal> {
         let document =
             String::from_utf8(bytes).map_err(|_| self.refuse(format!("`{path}` is not UTF-8")))?;
         let signed = note::parse_note(&document).map_err(|why| self.refuse(why))?;
@@ -788,13 +844,7 @@ impl<'t> Registry<'t> {
                 self.point.checkpoint.size
             )));
         }
-        let cosigned = cosignatures(&signed, size, &self.root);
-        let time = witness::checkpoint_time(&cosigned, self.root.witnesses.threshold).ok();
-        self.seen.extend(cosigned.iter().cloned());
-        witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
-        let kept = Kept { cosigned, time };
-        self.kept.insert(size, Some(kept.clone()));
-        Ok(Some(kept))
+        Ok(cosignatures(&signed, size, &self.root))
     }
 
     /// When the entry `index` was logged (rule 36.4): for each distinct witness, its earliest
@@ -847,6 +897,60 @@ impl<'t> Registry<'t> {
         Ok((point, self.point.time))
     }
 
+    /// The earliest position the seven days of the request logged at `index` could allow,
+    /// whatever cosignatures a place withholds, which can only make a time later: the first
+    /// size whose last entry was logged ([`Registry::logged_at`]) at least seven days after the
+    /// earliest cosignature on a kept checkpoint that includes the request, when that is before
+    /// its effect ([`Registry::recovery_effect`]); its effect otherwise. A checkpoint whose
+    /// cosignatures are withheld is reached through the logged time of its last entry, which
+    /// later checkpoints' cosignatures bound. By binary search over sizes, since logged times
+    /// never decrease as the log grows: O(log L) probes.
+    pub fn earliest_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
+        let effect = self.recovery_effect(index)?;
+        let point = self.point.checkpoint.size;
+        if index >= point {
+            return Ok(effect);
+        }
+        let last = point.min(index.saturating_add(MAX_SCAN as u64));
+        let mut start: Option<u64> = None;
+        for size in index.saturating_add(1)..=last {
+            if let Some(kept) = self.kept(size)?
+                && let Some(time) = kept.cosigned.iter().map(|c| c.time).min()
+            {
+                start = Some(time);
+                break;
+            }
+        }
+        // With no cosignature served on any checkpoint that includes it, nothing bounds when
+        // the request was logged: it could be in effect right after it.
+        let Some(start) = start else {
+            let earliest = index.saturating_add(1);
+            return Ok(match effect {
+                Some(effect) if effect <= earliest => Some(effect),
+                _ if earliest <= point => Some(earliest),
+                _ => effect,
+            });
+        };
+        let target = start.saturating_add(owner::RECOVERY_DELAY);
+        let end = effect.unwrap_or(point).min(point);
+        let (mut low, mut high) = (index.saturating_add(1), end);
+        if low > high || self.logged_at(high - 1)? < target {
+            return Ok(effect);
+        }
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if self.logged_at(middle - 1)? >= target {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        Ok(match effect {
+            Some(effect) if effect <= low => Some(effect),
+            _ => Some(low),
+        })
+    }
+
     /// The first log position a recovery or a dispute logged at `index` governs (rule 38.1): the
     /// size of the first kept checkpoint whose witness time is at least seven days after the
     /// time the request was logged ([`Registry::logged_at`]); `None` when no checkpoint up to the
@@ -882,9 +986,16 @@ impl<'t> Registry<'t> {
     /// needed it unavailable, never a different result (`spec/30 §14` rule 1). A caller that
     /// meets an error and finds an omission here reports the source as unserved (U7013),
     /// otherwise as a copy that does not verify (U7010).
-    pub fn take_omitted(&mut self) -> Vec<String> {
-        let mut omitted = std::mem::take(&mut self.omitted);
-        omitted.extend(self.tiles.take_missing());
+    pub fn take_omitted(&mut self) -> Vec<Omission> {
+        let mut omitted: Vec<Omission> = Vec::new();
+        let met = std::mem::take(&mut self.omitted)
+            .into_iter()
+            .chain(self.tiles.take_missing().into_iter().map(Omission::Document));
+        for omission in met {
+            if !omitted.contains(&omission) {
+                omitted.push(omission);
+            }
+        }
         omitted
     }
 
@@ -926,8 +1037,46 @@ impl<'t> Registry<'t> {
                 .collect();
             let log = self.root.log.clone();
             let source = self.source.clone();
-            let mut effect = |index: u64| self.recovery_effect(index);
-            let replayed = owner::replay(owner_name, &source, &logged, &log, &mut effect);
+            let replayed = {
+                let mut effect = |index: u64| self.recovery_effect(index);
+                owner::replay(owner_name, &source, &logged, &log, &mut effect)
+            };
+            // The timing no place can withhold: each recovery, dispute and co-signer change at
+            // the earliest position its seven days could allow. When the owner's verdict depends
+            // on which, a place may be withholding cosignatures: unavailable, never decided.
+            let mut eager_needed = false;
+            for (index, _, entry) in &entries {
+                let request = matches!(
+                    entry.event,
+                    owner::Event::Recover(_) | owner::Event::Dispute(_) | owner::Event::Cosigners(_)
+                );
+                if request && self.earliest_effect(*index)? != self.recovery_effect(*index)? {
+                    eager_needed = true;
+                }
+            }
+            let eager = if eager_needed {
+                let mut effect = |index: u64| self.earliest_effect(index);
+                let eager = owner::replay(owner_name, &source, &logged, &log, &mut effect);
+                Some(eager)
+            } else {
+                None
+            };
+            let withheld = match (&replayed, &eager) {
+                (Err(ReplayError::Unsettled(_)), _) => false,
+                (Ok(_), Some(Err(_))) | (Err(_), Some(Ok(_))) => true,
+                _ => false,
+            };
+            if withheld {
+                self.omitted
+                    .push(Omission::Cosignatures(owner_name.to_owned()));
+                return Err(format!(
+                    "the registry `{source}`: the keys of the owner `{}` cannot be decided at this point, since whether a recovery, a dispute or a co-signer change is in effect depends on witnesses' cosignatures that no place served, which a place may withhold; its names are unavailable here: try another place or a later checkpoint",
+                    shown(owner_name)
+                ));
+            }
+            if let Some(Ok(eager)) = eager {
+                self.eager.insert(owner_name.to_owned(), eager);
+            }
             match replayed {
                 Ok(history) => history,
                 Err(ReplayError::Refused(why)) => {
@@ -985,7 +1134,18 @@ impl<'t> Registry<'t> {
             let index = entry.index;
             // Keys compromised before it, keys that only void entries of the owner's chain
             // bring in, and a chain frozen by then: what they sign is skipped, never counted.
-            let (signers, compromised) = match history.judge(&entry.note, index) {
+            let standing = history.judge(&entry.note, index);
+            // A verdict that depends on cosignatures a place may withhold is no verdict.
+            if let Some(eager) = self.eager.get(owner_of(name))
+                && eager.judge(&entry.note, index) != standing
+            {
+                self.omitted.push(Omission::Cosignatures(name.to_owned()));
+                return Err(self.refuse(format!(
+                    "`{name} {}` counts or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint",
+                    statement.version
+                )));
+            }
+            let (signers, compromised) = match standing {
                 Standing::Counts(sound) => (sound, false),
                 Standing::Skipped(signers) => (signers, true),
                 Standing::Unsigned => {
@@ -1075,7 +1235,7 @@ impl<'t> Registry<'t> {
         match self.transport.get(&path, limit).map_err(|why| self.refuse(why))? {
             Some(bytes) => Ok(bytes),
             None => {
-                self.omitted.push(path.clone());
+                self.omitted.push(Omission::Document(path.clone()));
                 Err(self.refuse(format!("no place serves `{path}`")))
             }
         }
