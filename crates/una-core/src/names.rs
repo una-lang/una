@@ -278,7 +278,10 @@ pub fn has_tasks(program: &crate::Program) -> bool {
     while let Some(expr) = pending.pop() {
         match expr {
             Expr::Tasks { .. } => return true,
-            Expr::Atom { .. } | Expr::Fail { .. } | Expr::Exit { .. } | Expr::Unreachable { .. } => {}
+            Expr::Atom { .. }
+            | Expr::Fail { .. }
+            | Expr::Exit { .. }
+            | Expr::Unreachable { .. } => {}
             Expr::Let { value, body, .. } => {
                 match value.as_ref() {
                     Bound::Rhs(inner) => pending.extend(rhs(inner)),

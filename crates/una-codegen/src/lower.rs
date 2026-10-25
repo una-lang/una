@@ -1627,10 +1627,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         };
         // A block stopped, status 2, goes on as [`STOPPED`] by the failure path.
         let status = self.call("una_rt_together_status", &[])?;
-        let stopped = self
-            .builder
-            .ins()
-            .icmp_imm_s(IntCC::Equal, status, 2);
+        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
         let word = self.builder.ins().iconst(types::I64, STOPPED);
         let value = self.builder.ins().select(stopped, word, value);
         self.check(value, status, scope, catch);
@@ -2294,7 +2291,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let stopping = self.call("una_rt_enter", &[call_site])?;
         let refused = self.builder.create_block();
         let calling = self.builder.create_block();
-        self.builder.ins().brif(stopping, refused, &[], calling, &[]);
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
         self.builder.switch_to_block(refused);
         self.runtime("una_rt_operation_end", &[]);
         let word = self.builder.ins().iconst(types::I64, STOPPED);
@@ -2968,14 +2967,18 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let stopping = self.call("una_rt_enter", &[site])?;
         let refused = self.builder.create_block();
         let calling = self.builder.create_block();
-        self.builder.ins().brif(stopping, refused, &[], calling, &[]);
+        self.builder
+            .ins()
+            .brif(stopping, refused, &[], calling, &[]);
         self.builder.switch_to_block(refused);
         for &arg in args {
             self.release(arg, Kind::Any);
         }
         let word = self.builder.ins().iconst(types::I64, STOPPED);
         let two = self.builder.ins().iconst(types::I64, 2);
-        self.builder.ins().jump(returned, &[word.into(), two.into()]);
+        self.builder
+            .ins()
+            .jump(returned, &[word.into(), two.into()]);
         self.builder.switch_to_block(calling);
         let call = self.builder.ins().call_indirect(signature, code, &values);
         let results = self.builder.inst_results(call).to_vec();

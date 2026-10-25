@@ -3714,7 +3714,11 @@ fn ten_thousand_cuts_release_what_they_cut_in_both_engines() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "cut 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -3785,7 +3789,11 @@ fn a_race_has_the_same_winner_output_and_trace_in_both_engines_under_virtual_tim
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(
             String::from_utf8_lossy(&native.stdout),
             "a\nb\nwon 2\nt1\ntie 1\ndeep done\n"
@@ -3809,9 +3817,16 @@ fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         let output = String::from_utf8_lossy(&native.stdout).into_owned();
-        assert!(output.ends_with("deep done\n"), "--workers {workers}: {output}");
+        assert!(
+            output.ends_with("deep done\n"),
+            "--workers {workers}: {output}"
+        );
         // The race prints `a` and `b` and maybe `c`, and one of the branches that return wins.
         assert!(
             output.contains("won 2\n") || output.contains("won 3\n"),
@@ -3848,7 +3863,11 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "won 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -3872,7 +3891,11 @@ fn a_branch_too_deep_for_task_depth_aborts_the_run_in_both_engines() {
         .current_dir(&dir)
         .output()
         .unwrap();
-    assert_eq!(native.status.code(), interpreted.status.code(), "{native:?}");
+    assert_eq!(
+        native.status.code(),
+        interpreted.status.code(),
+        "{native:?}"
+    );
     assert_eq!(String::from_utf8_lossy(&native.stdout), "shallow 5\n");
     assert!(
         String::from_utf8_lossy(&native.stderr).contains("U6003"),
@@ -3902,7 +3925,11 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
         .iter()
         .map(|line| line.as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(output.last().map(String::as_str), Some("done"), "{document}");
+    assert_eq!(
+        output.last().map(String::as_str),
+        Some("done"),
+        "{document}"
+    );
     // The spinners outlast one turn, so their lines interleave.
     let spun: Vec<&str> = output
         .iter()
@@ -3912,7 +3939,10 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
     assert_eq!(spun.len(), 8, "{output:?}");
     assert_ne!(
         spun,
-        ["a 1 400", "a 2 800", "a 3 1200", "a 4 1600", "b 1 400", "b 2 800", "b 3 1200", "b 4 1600"],
+        [
+            "a 1 400", "a 2 800", "a 3 1200", "a 4 1600", "b 1 400", "b 2 800", "b 3 1200",
+            "b 4 1600"
+        ],
         "the spinners never switched: {output:?}"
     );
     let tasks: BTreeSet<&str> = document["trace"]
@@ -3921,7 +3951,10 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
         .iter()
         .filter_map(|event| event["task"].as_str())
         .collect();
-    assert!(tasks.contains("s1.1") && tasks.contains("s1.4"), "{document}");
+    assert!(
+        tasks.contains("s1.1") && tasks.contains("s1.4"),
+        "{document}"
+    );
     let expected = format!("{}\n", output.join("\n"));
     let exe = dir.join("target/una/tasksvirtual");
     for workers in ["1", "4"] {
@@ -3932,8 +3965,16 @@ fn started_tasks_have_the_same_output_and_trace_in_both_engines_under_virtual_ti
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
-        assert_eq!(String::from_utf8_lossy(&native.stdout), expected, "--workers {workers}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            expected,
+            "--workers {workers}"
+        );
         let written: Value =
             serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
         assert_eq!(written, document["trace"], "--workers {workers}");
@@ -3954,7 +3995,11 @@ fn started_tasks_run_on_every_worker_count_under_real_time() {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         let output = String::from_utf8_lossy(&native.stdout).into_owned();
         let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.last(), Some(&"done"), "--workers {workers}: {output}");
@@ -4097,14 +4142,21 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
     let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "failed 10000\n");
+    assert_eq!(
+        String::from_utf8_lossy(&interpreted.stdout),
+        "failed 10000\n"
+    );
     for workers in ["1", "4"] {
         let native = Command::new(dir.join("target/una/cancelled"))
             .args(["--max-memory", "16", "--workers", workers])
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(native.status.code(), Some(0), "--workers {workers}: {native:?}");
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "--workers {workers}: {native:?}"
+        );
         assert_eq!(String::from_utf8_lossy(&native.stdout), "failed 10000\n");
     }
     let _ = std::fs::remove_dir_all(&dir);
