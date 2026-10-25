@@ -335,7 +335,7 @@ pub(crate) fn lock_command(
             out,
         );
     }
-    if let Err(error) = crate::write_through_rename_or_create(&lock_path, &text) {
+    if let Err(error) = crate::write_through_rename_or_create(path, &lock_path, &text) {
         writeln!(
             out.stderr,
             "error: cannot write `{}`: {error}",
@@ -450,7 +450,9 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
         diagnostics.extend(una_fmt::differences(&sources, id, &canonical));
     } else if text != canonical || sources.file(id).first_crlf().is_some() {
         let target: PathBuf = path.to_path_buf();
-        if let Err(error) = crate::write_through_rename(&target, &canonical) {
+        if let Err(error) =
+            crate::write_through_rename(&crate::write_root(path), &target, &canonical)
+        {
             writeln!(
                 out.stderr,
                 "error: cannot write `{}`: {error}",
