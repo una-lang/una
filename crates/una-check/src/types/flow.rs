@@ -361,7 +361,7 @@ impl Checker<'_, '_, '_> {
         let timing = self.ctx.timing.clone();
         let effect_pc = timing
             .as_ref()
-            .map_or_else(|| effect_pc.clone(), |(t, _)| effect_pc.join(t));
+            .map_or_else(|| effect_pc.clone(), |(t, _, _)| effect_pc.join(t));
         if effect_pc.is_public() {
             return;
         }
@@ -381,19 +381,26 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let floored = floor.as_ref().map_or_else(|| pc.clone(), |f| pc.join(f));
-        if let Some((t, within)) = timing
+        if let Some((t, within, construct)) = timing
             && floored.flows_to(&bound)
         {
+            let place = match construct {
+                super::within::Construct::Within => "inside a `within` whose deadline can cut it",
+                super::within::Construct::FirstOf => {
+                    "in a branch of `first of`, which a sibling that wins can cut"
+                }
+            };
+            let words = construct.words();
             let mut diagnostic = self.report.make(
                 Code::U4002,
                 span,
                 format!(
-                    "{callee} has effects that accept at most `{bound}` data, and it is {action} inside a `within` whose deadline can cut it, depending on `{t}` timing, which whether its effects happen would reveal"
+                    "{callee} has effects that accept at most `{bound}` data, and it is {action} {place}, depending on `{t}` timing, which whether its effects happen would reveal"
                 ),
             );
             diagnostic
                 .related
-                .push(self.report.related(within, "the `within`"));
+                .push(self.report.related(within, format!("the `{words}`")));
             self.report.push(diagnostic);
             return;
         }
@@ -498,21 +505,30 @@ impl Checker<'_, '_, '_> {
         let timing = self.ctx.timing.clone();
         let pc = timing
             .as_ref()
-            .map_or_else(|| floored.clone(), |(t, _)| floored.join(t));
-        if let Some((t, within)) = timing
+            .map_or_else(|| floored.clone(), |(t, _, _)| floored.join(t));
+        if let Some((t, within, construct)) = timing
             && floored.flows_to(accepts)
             && !pc.flows_to(accepts)
         {
+            let place = match construct {
+                super::within::Construct::Within => {
+                    "inside a `within` whose deadline can cut the code before it"
+                }
+                super::within::Construct::FirstOf => {
+                    "in a branch of `first of`, which a sibling that wins can cut before it"
+                }
+            };
+            let words = construct.words();
             let mut diagnostic = self.report.make(
                 Code::U4003,
                 span,
                 format!(
-                    "{what} accepts `{accepts}` data, and it runs inside a `within` whose deadline can cut the code before it, depending on `{t}` timing, which whether it runs would reveal"
+                    "{what} accepts `{accepts}` data, and it runs {place}, depending on `{t}` timing, which whether it runs would reveal"
                 ),
             );
             diagnostic
                 .related
-                .push(self.report.related(within, "the `within`"));
+                .push(self.report.related(within, format!("the `{words}`")));
             self.report.push(diagnostic);
             return;
         }

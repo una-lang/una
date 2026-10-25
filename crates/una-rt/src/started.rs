@@ -264,7 +264,11 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
     let stack = template.stack;
     let ended = Arc::clone(&scope);
     let alive = Arc::clone(&shared);
+    // The task's place in its statement places it: the `k`-th `start` of the statement, counted
+    // from 1, is part `k`, which runs on worker `(w + k) mod N`, `w` being the starting task's
+    // worker, 0 for the root (`spec/27 §1` rule 2, #1145). It also names the task's path.
     let spawned = sched.spawn_started(
+        k,
         stack,
         move || {
             // A panic of the runtime is caught on the task's own stack, so nothing unwinds

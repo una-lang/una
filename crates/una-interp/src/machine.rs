@@ -1396,6 +1396,26 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
+    /// The `cancelled` events of the branches `from..to` of the `race`-th `first of` of the task
+    /// in progress, which a cut stopped or kept from starting (`spec/27 §5`, `§6`), in index
+    /// order, as for the tasks of a block ([`Self::cut_events`]).
+    fn race_cut_events(&mut self, race: usize, from: usize, to: usize) {
+        for index in from..to {
+            let mut path: Vec<String> = self.task.iter().map(ToString::to_string).collect();
+            path.push(format!("f{race}"));
+            path.push((index + 1).to_string());
+            self.emit(Event {
+                seq: 0,
+                task: path.join("."),
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
+
     /// Appends the `timeout` event of a `within` of the task in progress (`spec/27 §5`).
     fn within_timeout_event(&mut self) {
         let task = self.task.join(".");
@@ -2494,8 +2514,15 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut parts: Vec<Part> = Vec::with_capacity(tasks.len());
         let mut failure = None;
         for (index, task) in tasks.iter().enumerate() {
-            let (result, part) = self.branch(env, caps, (race, index), task);
-            parts.push(part);
+            // The start of each branch is a check point for a cut (`spec/27 §5`).
+            let result = match self.passed_within(self.within_shield) {
+                Some(id) => Err(Stop::Cut(id)),
+                None => {
+                    let (result, part) = self.branch(env, caps, (race, index), task);
+                    parts.push(part);
+                    result
+                }
+            };
             match result {
                 Ok(value) => {
                     // The winner's events first, then those of the branches before it.
@@ -2510,6 +2537,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 }
                 Err(stop) => {
                     self.adopt(start, &parts.iter().collect::<Vec<_>>());
+                    if matches!(stop, Stop::Cut(_)) {
+                        self.race_cut_events(race, index, tasks.len());
+                    }
                     return Err(stop);
                 }
             }
