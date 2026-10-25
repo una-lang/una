@@ -69,6 +69,7 @@ fn get(timeout: Duration, abandon_after: Option<Duration>) -> (Result<(), Error>
 fn an_abandon_during_a_hung_connect_returns_at_once_and_deadlines_still_hold() {
     resolve::use_test_lookup(blackhole);
     resolve::use_test_connect(hangs);
+    // 2 helpers: a connect pool of 2, and a lookup pool of 2.
     resolve::start(2).unwrap();
     // An abandon while the connection attempt hangs: the request returns at once, long before
     // its deadline of 30 seconds; before #1148 its helper connected itself, and could not be
@@ -90,5 +91,5 @@ fn an_abandon_during_a_hung_connect_returns_at_once_and_deadlines_still_hold() {
             "{took:?}"
         );
     }
-    assert_eq!(resolve::threads(), 2);
+    assert_eq!(resolve::threads(), (2, 2));
 }

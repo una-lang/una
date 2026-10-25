@@ -2201,6 +2201,7 @@ pub(crate) fn drive_timing(
     env: &Env<'_>,
     findings: &Findings,
     settings: &Manifest,
+    residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) {
     let Some(drive) = &settings.drive else {
@@ -2250,7 +2251,7 @@ pub(crate) fn drive_timing(
     );
     // ADR 0116 P9 and C: the residue of cancelled requests slows the step, through its
     // requests and through the helpers' work on the machine's cores, and so the tick.
-    let timing = super::timing::residue_of(env, findings).join_into(timing);
+    let timing = residue.join_into(timing);
     let declared = input.ty.base.deep_label(kinds);
     let tau = timing.label.clone();
     if tau.flows_to(&declared) {
@@ -2289,12 +2290,12 @@ pub(crate) fn limit_timing(
     env: &Env<'_>,
     findings: &Findings,
     settings: &Manifest,
+    residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) -> Label {
     let concurrent = super::timing::concurrent_functions(findings);
     let graph = super::timing::graph(env, findings);
-    let residue = super::timing::residue(env, findings, &graph, &concurrent);
-    let limits = super::timing::limit_labels(env, findings, &graph, &concurrent, &residue);
+    let limits = super::timing::limit_labels(env, findings, &graph, &concurrent, residue);
     let internal = Label {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()
@@ -2363,13 +2364,13 @@ pub(crate) fn limit_timing(
 pub(crate) fn deadline_timing(
     env: &Env<'_>,
     findings: &Findings,
+    residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) -> Vec<(&'static str, String, Span, Label)> {
     if findings.deadline_loops.is_empty() {
         return Vec::new();
     }
     let concurrent = super::timing::concurrent_functions(findings);
-    let residue = super::timing::residue_of(env, findings);
     let mut loops: Vec<&super::DeadlineLoop> = findings.deadline_loops.iter().collect();
     loops.sort_by_key(|site| (site.span.file, site.span.start));
     let mut sites = Vec::new();
@@ -2470,13 +2471,13 @@ pub(crate) fn within_labels(
 pub(crate) fn within_timing(
     env: &Env<'_>,
     findings: &Findings,
+    residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) -> Vec<(&'static str, String, Span, Label)> {
     if findings.withins.is_empty() {
         return Vec::new();
     }
     let concurrent = super::timing::concurrent_functions(findings);
-    let residue = super::timing::residue_of(env, findings);
     let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.key);

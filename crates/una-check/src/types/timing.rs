@@ -891,44 +891,55 @@ pub(crate) fn residue(
     residue
 }
 
-/// The task constructs outside the root package that its code can reach, each `⊤` for `L_res`,
-/// with the message that names its function (#1148, failing closed until #1166 makes them
-/// precise). The `tasks` statements and races of the standard modules are not recorded in the
-/// package's findings, and those of a dependency are recorded with labels its own checking set,
-/// so until #1166 feeds them to `L_res` precisely, each function of a standard module or of a
-/// dependency whose body holds a `tasks` statement or a `first of`, and which a function or a
-/// handler of the root package can reach in the graph of P1, counts as `⊤`.
-///
-/// Linear: one search of the graph from the root package's nodes, O(V + E), and one scan of the
-/// body of each reachable function outside the root package, O(the size of those bodies).
-fn outside_constructs(env: &Env<'_>, graph: &Graph) -> Vec<(Label, String)> {
-    let top = Label::top(&env.categories);
-    let root = |module: usize| {
-        module < env.prelude && env.modules.get(module).is_some_and(|m| m.mount.is_none())
-    };
-    let mut seen = vec![false; graph.succ.len()];
+/// Why a function the package reaches makes `L_res` `⊤` (#1148, failing closed until #1166).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unseen {
+    /// A function of a standard module whose body holds a `tasks` statement or a `first of`:
+    /// the standard modules are checked apart, so their constructs are not in the findings.
+    StandardTasks,
+    /// A function of a dependency whose code the checker does not see in the findings: a module
+    /// of a dependency that was not checked with the package, or a function without a body.
+    UncheckedDependency,
+}
+
+/// Whether a reached function makes `L_res` `⊤`, and why: `standard` when its module is a
+/// standard one; `dependency` when it belongs to a dependency of the package; `checked` when
+/// its body was checked into the package's findings, so its constructs count precisely; and
+/// `holds_construct` when it has a body holding a `tasks` statement or a `first of`, `None`
+/// when it has no body. The root package's own functions never make it `⊤`: their constructs
+/// are in the findings.
+pub(crate) fn unseen(
+    standard: bool,
+    dependency: bool,
+    checked: bool,
+    holds_construct: Option<bool>,
+) -> Option<Unseen> {
+    if standard {
+        return (holds_construct == Some(true)).then_some(Unseen::StandardTasks);
+    }
+    if dependency && (!checked || holds_construct.is_none()) {
+        return Some(Unseen::UncheckedDependency);
+    }
+    None
+}
+
+/// The nodes reachable along `succ` from `roots`, the roots included: one search, O(V + E).
+pub(crate) fn reached_from(
+    succ: &[Vec<usize>],
+    roots: impl IntoIterator<Item = usize>,
+) -> Vec<bool> {
+    let mut seen = vec![false; succ.len()];
     let mut stack: Vec<usize> = Vec::new();
-    let roots = env
-        .functions
-        .iter()
-        .enumerate()
-        .filter(|(_, def)| root(def.module))
-        .map(|(f, _)| f)
-        .chain(
-            env.handlers
-                .iter()
-                .enumerate()
-                .filter(|(_, handler)| root(handler.module))
-                .map(|(h, _)| graph.handler_node(h)),
-        );
     for node in roots {
-        if let Some(slot) = seen.get_mut(node) {
+        if let Some(slot) = seen.get_mut(node)
+            && !*slot
+        {
             *slot = true;
             stack.push(node);
         }
     }
     while let Some(node) = stack.pop() {
-        for &to in graph.succ.get(node).map_or(&[][..], Vec::as_slice) {
+        for &to in succ.get(node).map_or(&[][..], Vec::as_slice) {
             if let Some(slot) = seen.get_mut(to)
                 && !*slot
             {
@@ -937,26 +948,79 @@ fn outside_constructs(env: &Env<'_>, graph: &Graph) -> Vec<(Label, String)> {
             }
         }
     }
+    seen
+}
+
+/// The functions outside what the package's findings hold precisely that its code can reach,
+/// each `⊤` for `L_res`, with the message that names it (#1148, failing closed until #1166):
+/// - a function of a standard module whose body holds a `tasks` statement or a `first of`,
+///   since the standard modules are checked apart and their constructs are not in the findings
+///   (none does today, which `tests/std_constructs.rs` keeps);
+/// - a function of a dependency whose code the checker does not see: a module not checked with
+///   the package, or a function without a body. A path dependency's modules are checked with the
+///   package, so its constructs count precisely, like the root's.
+///
+/// Linear: one search of the graph from the package's own nodes, O(V + E), and one scan of the
+/// body of each reachable standard function, O(the size of those bodies).
+fn outside_constructs(env: &Env<'_>, graph: &Graph) -> Vec<(Label, String)> {
+    let top = Label::top(&env.categories);
+    let dependency = |module: usize| {
+        module < env.prelude && env.modules.get(module).is_some_and(|m| m.mount.is_some())
+    };
+    let own = |module: usize| module < env.prelude && !dependency(module);
+    let roots = env
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| own(def.module))
+        .map(|(f, _)| f)
+        .chain(
+            env.handlers
+                .iter()
+                .enumerate()
+                .filter(|(_, handler)| own(handler.module))
+                .map(|(h, _)| graph.handler_node(h)),
+        );
+    let seen = reached_from(&graph.succ, roots);
     let mut out = Vec::new();
     for (f, def) in env.functions.iter().enumerate() {
-        if root(def.module) || !seen.get(f).copied().unwrap_or(false) {
+        if own(def.module) || !seen.get(f).copied().unwrap_or(false) {
             continue;
         }
-        let super::env::FnAst::Function(decl) = def.ast else {
+        let standard = def.module >= env.prelude;
+        let holds = match def.ast {
+            // A dependency's bodies are only scanned when unchecked; a standard one always.
+            super::env::FnAst::Function(decl) if standard || !env.reports(def.module) => {
+                let text =
+                    |ident: &una_syntax::ast::Ident| env.text(def.module, ident.name).to_owned();
+                Some(super::effects::holds_task_construct(&decl.body, &text))
+            }
+            super::env::FnAst::Function(_) => Some(false),
+            // A predicate or a policy of a checked module has its body in the findings too.
+            _ if standard || env.reports(def.module) => Some(false),
+            _ => None,
+        };
+        let Some(why) = unseen(
+            standard,
+            dependency(def.module),
+            env.reports(def.module),
+            holds,
+        ) else {
             continue;
         };
-        let text = |ident: &una_syntax::ast::Ident| env.text(def.module, ident.name).to_owned();
-        if !super::effects::holds_task_construct(&decl.body, &text) {
-            continue;
-        }
         let name = match env.modules.get(def.module).map(|m| m.path.as_str()) {
             Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
             _ => format!("`{}`", def.name),
         };
-        out.push((
-            top.clone(),
-            format!("the tasks that {name}, outside this package, may leave running"),
-        ));
+        let source = match why {
+            Unseen::StandardTasks => {
+                format!("the tasks that {name}, outside this package, may leave running")
+            }
+            Unseen::UncheckedDependency => format!(
+                "the tasks that {name}, outside this package, may leave running, since its code is not checked with the package"
+            ),
+        };
+        out.push((top.clone(), source));
     }
     out
 }
@@ -1342,5 +1406,48 @@ pub(crate) fn timing(
         label,
         sources,
         ops: seen,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Unseen, reached_from, unseen};
+
+    #[test]
+    fn an_unchecked_dependency_or_a_standard_task_construct_is_top_and_nothing_else_is() {
+        // #1148, failing closed until #1166. A dependency's function whose code the checker
+        // does not see, a module not checked with the package or a function without a body,
+        // is `⊤` whenever the package reaches it, whatever its body would hold.
+        assert_eq!(
+            unseen(false, true, false, Some(false)),
+            Some(Unseen::UncheckedDependency)
+        );
+        assert_eq!(
+            unseen(false, true, true, None),
+            Some(Unseen::UncheckedDependency)
+        );
+        // A checked dependency counts precisely, through the findings.
+        assert_eq!(unseen(false, true, true, Some(true)), None);
+        assert_eq!(unseen(false, true, true, Some(false)), None);
+        // A standard function only when its body holds a construct: those without a body are
+        // the host's, which run no Una code (ADR 0116 P0).
+        assert_eq!(
+            unseen(true, false, false, Some(true)),
+            Some(Unseen::StandardTasks)
+        );
+        assert_eq!(unseen(true, false, false, Some(false)), None);
+        assert_eq!(unseen(true, false, false, None), None);
+        // The root package's own functions never.
+        assert_eq!(unseen(false, false, true, Some(true)), None);
+    }
+
+    #[test]
+    fn only_what_the_package_reaches_counts() {
+        // Node 0 is the package's, 1 a dependency function it calls, 2 one it does not.
+        let succ = vec![vec![1], vec![], vec![1]];
+        assert_eq!(reached_from(&succ, [0]), [true, true, false]);
+        // A cycle, and a root given twice.
+        let succ = vec![vec![1], vec![0], vec![]];
+        assert_eq!(reached_from(&succ, [1, 1]), [true, true, false]);
     }
 }

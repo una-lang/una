@@ -458,41 +458,49 @@ crunch(n: {label}Int) -> {label}Int
     total = total + 1
   total
 
---- Works for a time `n` decides, then makes a request to a server that never answers.
-churn(n: {label}Int) -> Unit
+--- Works for a time `n` decides, then makes a request to a server that never answers, tagged
+--- with the run.
+churn(n: {label}Int, run: internal Text) -> Unit
   uses @http: Http[get]
 =
   let spent = crunch(n)
-  let outcome = attempt @http.get("{silent}", headers: [], key_name: None)
+  let outcome = attempt @http.get("{silent}?r={{run}}", headers: [], key_name: None)
   unit
 
 --- Starts `churn`, then fails its block after public work, which cancels its task.
-burst(n: {label}Int) -> Unit
+burst(n: {label}Int, run: internal Text) -> Unit
   uses @http: Http[get]
   fails Burst
 =
   tasks
-    start churn(n)
+    start churn(n, run)
     let waited = crunch(30000000)
     fail Ended
 
 pub main() -> Unit
+  uses @env: Env[get]
   uses @http: Http[get]
 =
   let n = if key() > 0 then 2000000000 else 0
-  let tried = attempt burst(n)
+  let run = when @env.get("UNA_RESIDUE_RUN")
+    is Some(text) -> text
+    is None -> "0"
+  let tried = attempt burst(n, run)
   let later = attempt @http.get("{fast}", headers: [], key_name: None) within 300 * millisecond
   unit
 "#
     )
 }
 
-/// A server for the residue oracle: it holds `/silent` open without answering, counting those
-/// requests, and answers `/fast` at once. Returns its port and the count of `/silent` requests.
-fn residue_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+/// The `/silent` requests the residue server received, by the run each was tagged with.
+type Silent = Arc<Mutex<BTreeMap<String, usize>>>;
+
+/// A server for the residue oracle: it holds `/silent?r=<run>` open without answering, counting
+/// those requests by run, and answers `/fast` at once. Returns its port and those counts.
+fn residue_server() -> (u16, Silent) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let silent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let silent: Silent = Arc::default();
     let counted = Arc::clone(&silent);
     std::thread::spawn(move || {
         let held: Arc<Mutex<Vec<std::net::TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
@@ -514,7 +522,9 @@ fn residue_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
                 if request.split(' ').nth(1) == Some("/fast") {
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
                 } else {
-                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let target = request.split(' ').nth(1).unwrap_or("");
+                    let run = target.split("?r=").nth(1).unwrap_or("").to_owned();
+                    *counted.lock().unwrap().entry(run).or_default() += 1;
                     held.lock().unwrap().push(stream);
                 }
             });
@@ -534,7 +544,7 @@ fn residue_package(name: &str, label: &str, key: u8, port: u16, build: bool) -> 
     std::fs::write(
         dir.join("ita.una"),
         format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry residue\n  grants\n    http \"http://127.0.0.1:{port}\" get\n"
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry residue\n  grants\n    env\n    http \"http://127.0.0.1:{port}\" get\n"
         ),
     )
     .unwrap();
@@ -570,6 +580,7 @@ fn residue_timed_out(dir: &Path, name: &str, run: usize) -> bool {
             "--trace",
         ])
         .arg(&trace)
+        .env("UNA_RESIDUE_RUN", run.to_string())
         .current_dir(dir)
         .output()
         .unwrap();
@@ -613,7 +624,7 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
         String::from_utf8_lossy(&checked.stderr)
     );
     assert_ne!(checked.status.code(), Some(0), "{said}");
-    // U4001 at the later `within`, line 39 of the program, at its `attempt`: the diagnostic
+    // U4001 at the later `within`, line 44 of the program, at its `attempt`: the diagnostic
     // that names U4001, up to the next one, holds that position.
     let at_within = said.match_indices("U4001").any(|(at, _)| {
         let rest = &said[at..];
@@ -621,7 +632,7 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
             .get(1..)
             .and_then(|tail| tail.find("[U"))
             .map_or(rest.len(), |e| e + 1);
-        rest[..end].contains("src/residue.una:39:15")
+        rest[..end].contains("src/residue.una:44:15")
     });
     assert!(at_within, "{said}");
     let _ = std::fs::remove_dir_all(&refused);
@@ -631,18 +642,24 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
     ];
     let names = ["residuekey0", "residuekey1"];
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut expected: BTreeMap<String, usize> = BTreeMap::new();
     for run in 0..20 {
         for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
-            silent.store(0, std::sync::atomic::Ordering::SeqCst);
-            let late = residue_timed_out(&dirs[key], names[key], run * 3 + sample);
-            // The power check: the amplifier works on this run, key 0 leaving its request at
-            // the server and key 1 none, so the outcomes compared are those of the channel.
-            let left = silent.load(std::sync::atomic::Ordering::SeqCst);
-            eprintln!("run {run} key {key}: timed out {late}, /silent requests {left}");
-            assert_eq!(left, usize::from(key == 0), "run {run} key {key}");
+            let tag = run * 3 + sample;
+            let late = residue_timed_out(&dirs[key], names[key], tag);
+            eprintln!("run {run} key {key}: timed out {late}");
+            if key == 0 {
+                expected.insert(tag.to_string(), 1);
+            }
             samples[sample].push(if late { 1.0 } else { 0.0 });
         }
     }
+    // The power check: the amplifier worked on every run, each key-0 run leaving exactly one
+    // request at the server, tagged with its run, and no key-1 run any, so the outcomes compared
+    // are those of the channel. Each request carries its run, so one the server read late is
+    // never counted for another run.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(*silent.lock().unwrap(), expected, "/silent requests by run");
     let secret = mann_whitney(&samples[0], &samples[1]);
     let control = mann_whitney(&samples[1], &samples[2]);
     eprintln!(

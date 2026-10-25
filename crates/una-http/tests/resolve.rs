@@ -66,8 +66,9 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     // queue behind them, and every request still fails with `TimedOut` at its own deadline,
     // within a tight bound, while the pool never starts a third thread.
     resolve::use_test_lookup(hangs);
-    resolve::start(2).unwrap();
-    assert_eq!(resolve::threads(), 2);
+    // 8 helpers: a lookup pool of 2, and a connect pool of 8, which no request reaches here.
+    resolve::start(8).unwrap();
+    assert_eq!(resolve::threads(), (2, 8));
     let deadline = Duration::from_millis(300);
     let requests: Vec<_> = (0..4)
         .map(|_| std::thread::spawn(move || get(deadline, None)))
@@ -80,7 +81,7 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
             "{took:?}"
         );
     }
-    assert_eq!(resolve::threads(), 2);
+    assert_eq!(resolve::threads(), (2, 8));
     // With the pool still full of hung lookups, a request whose task is cancelled stops waiting
     // at the abandon, long before its deadline, and the next one still meets its own deadline.
     let (result, took) = get(Duration::from_secs(30), Some(Duration::from_millis(100)));
@@ -89,5 +90,5 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     let (result, took) = get(deadline, None);
     assert_eq!(result, Err(Error::TimedOut));
     assert!(took < deadline + Duration::from_millis(150), "{took:?}");
-    assert_eq!(resolve::threads(), 2);
+    assert_eq!(resolve::threads(), (2, 8));
 }

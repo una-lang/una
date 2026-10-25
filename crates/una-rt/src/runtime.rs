@@ -1897,17 +1897,17 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // settings here, before `main`, with the other state it starts up front. Built at the run's
     // first `https` request, they would be state that earlier code left, saving a later request
     // the time of building them. A run without such a grant never builds them. The same run
-    // starts its resolver pool here, all `max(2, --io-threads / 4)` threads at once, so whether
-    // a resolver thread exists is never history either; a thread that cannot start stops the
-    // run before `main` with U6003, as the scheduler's do (`spec/24 §4` rule 2).
+    // starts the client's pools here, `max(2, --io-threads / 4)` lookup threads and
+    // `--io-threads` connect threads, all at once, so whether such a thread exists is never
+    // history either; a thread that cannot start stops the run before `main` with U6003, as the
+    // scheduler's do (`spec/24 §4` rule 2).
     if state
         .grants
         .iter()
         .any(|grant| matches!(grant, Grant::Http(_)))
     {
         una_http::client::prepare();
-        let size = una_http::resolve::pool_size(state.concurrency.io_threads);
-        if una_http::resolve::start(size).is_err() {
+        if una_http::resolve::start(state.concurrency.io_threads).is_err() {
             let written = writeln!(
                 stderr,
                 "[{}] Error: the resolver threads of this run's requests could not be made",
@@ -2968,7 +2968,7 @@ mod tests {
         // runs, before any request.
         start(&[], r#"{"grants":[],"uses":[]}"#, || {
             eprintln!(
-                "{STEP}: without http {} resolvers {}",
+                "{STEP}: without http {} pools {:?}",
                 una_http::client::tls_ready(),
                 una_http::resolve::threads()
             );
@@ -2979,7 +2979,7 @@ mod tests {
             r#"{"grants":[],"uses":[]}"#,
             || {
                 eprintln!(
-                    "{STEP}: with http {} resolvers {}",
+                    "{STEP}: with http {} pools {:?}",
                     una_http::client::tls_ready(),
                     una_http::resolve::threads()
                 );
@@ -2998,13 +2998,13 @@ mod tests {
         let (code, stderr) = scenario("the_tls_settings_scenario");
         assert_eq!(code, Some(0), "{stderr}");
         assert_eq!(steps(&stderr), 2, "{stderr}");
-        // The resolver pool too: none without the grant, and `max(2, 12 / 4)` threads, all
-        // started before `main`, with it.
+        // The client's pools too: none without the grant, and with it `max(2, 12 / 4)` lookup
+        // threads and 12 connect threads, all started before `main`.
         assert!(
-            stderr.contains("without http false resolvers 0"),
+            stderr.contains("without http false pools (0, 0)"),
             "{stderr}"
         );
-        assert!(stderr.contains("with http true resolvers 3"), "{stderr}");
+        assert!(stderr.contains("with http true pools (3, 12)"), "{stderr}");
     }
 
     #[test]

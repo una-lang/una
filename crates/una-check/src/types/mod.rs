@@ -735,10 +735,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
-    authority::drive_timing(&env, &findings, package.settings, &mut report);
-    let limit_label = authority::limit_timing(&env, &findings, package.settings, &mut report);
-    let mut timing_sites = authority::deadline_timing(&env, &findings, &mut report);
-    timing_sites.extend(authority::within_timing(&env, &findings, &mut report));
+    // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
+    let residue = timing::residue_of(&env, &findings);
+    authority::drive_timing(&env, &findings, package.settings, &residue, &mut report);
+    let limit_label =
+        authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
+    let mut timing_sites = authority::deadline_timing(&env, &findings, &residue, &mut report);
+    timing_sites.extend(authority::within_timing(
+        &env,
+        &findings,
+        &residue,
+        &mut report,
+    ));
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.

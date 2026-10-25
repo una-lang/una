@@ -1527,14 +1527,36 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn requests_four_times_the_pool_never_take_more_threads_than_its_helpers() {
-        // #1148: a request resolves its name and connects on the bounded pool of
-        // `una_http::resolve`, and runs its exchange on its helper, the client starting no
-        // thread per request. With 2 helpers and a pool of 2, both started first, 8 requests whose
-        // connections hang all fail with `TimedOut` at their 300 ms deadline, while the process
-        // gains no thread: a thread per request would add 8 that live as long as the hang.
-        // The pools' own counts stay at their sizes.
+        // #1148: the scenario below, in a process of its own, where no other test starts a
+        // thread, and whose connection threads stay parked in `stall_connect` until it ends.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "sched::tests::requests_four_times_the_pool_scenario",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{stderr}");
+        assert!(stderr.contains("requests-scenario-done"), "{stderr}");
+    }
+
+    #[test]
+    #[ignore = "run by `requests_four_times_the_pool_never_take_more_threads_than_its_helpers`, in a process of its own"]
+    fn requests_four_times_the_pool_scenario() {
+        // #1148: a request looks its name up on the lookup pool and connects on the connect pool
+        // of `una_http::resolve`, and runs its exchange on its helper, the client starting no
+        // thread per request. With 2 helpers, a lookup pool of 2 and a connect pool of 2, all
+        // started first, 8 requests whose connections hang all fail with `TimedOut` at their
+        // 300 ms deadline, while the process gains at most one thread: a thread per request
+        // would add 8 that live as long as the hang. The pools' own counts stay at their sizes,
+        // within the bound of `2 × --io-threads + max(2, --io-threads / 4)`.
         const POOL: usize = 2;
         una_http::resolve::use_test_lookup(stall_lookup);
         una_http::resolve::use_test_connect(stall_connect);
@@ -1597,16 +1619,22 @@ mod tests {
             // Each waited at most its deadline and a little: never behind another's hang.
             assert!(*took < std::time::Duration::from_millis(500), "{took:?}");
         }
-        assert_eq!(una_http::resolve::threads(), POOL);
+        let (lookups, connects) = una_http::resolve::threads();
+        assert_eq!((lookups, connects), (POOL, POOL));
         assert_eq!(sched.started().2, POOL);
-        // Other tests of this binary may start threads meanwhile, so a margin below the 8 a
-        // thread per request would add.
+        assert!(
+            sched.started().2 + lookups + connects <= una_http::resolve::thread_bound(POOL),
+            "{:?} {lookups} {connects}",
+            sched.started()
+        );
+        // Alone in its process, the burst may add one thread at most, never one per request.
         if let (Some(before), Some(most)) = (before, most) {
             assert!(
-                most < before + 4 * POOL,
+                most <= before + 1,
                 "{before} threads before the requests, {most} while they waited"
             );
         }
+        eprintln!("requests-scenario-done");
     }
 
     #[test]

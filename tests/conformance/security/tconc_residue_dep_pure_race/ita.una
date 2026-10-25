@@ -4,5 +4,4 @@ ita case
 
 needs
   util from path "deps/util"
-    may Http[get]
     accept name
