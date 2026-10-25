@@ -1,7 +1,8 @@
 //! The guard of #1160: the non-test sources of `una-cli`, `una-verify`, `una-codegen` and
 //! `una-project` write into a package directory only through `una_diag::safe_write`, which
 //! never follows a link planted there out of the package, or, for the package store of
-//! `una ita`, through `una-project`'s `tree` module, whose sites the allowlist names. A raw write ([`RAW_WRITES`]: `fs::write`, `File::create`,
+//! `una ita`, through `una-project`'s `tree` module, whose sites the allowlist names. A raw
+//! write ([`RAW_WRITES`]: `fs::write`, `File::create`,
 //! `.create(true)`, `create_dir_all`, `create_dir`, `OpenOptions::new`, `DirBuilder`,
 //! `fs::rename`, `fs::copy` or `hard_link`) fails this test unless the allowlist below names
 //! it, with its exact count and reason. The helper itself, `crates/una-diag/src/safe_write.rs`,
