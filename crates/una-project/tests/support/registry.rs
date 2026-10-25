@@ -275,7 +275,7 @@ impl TestRegistry {
     ) -> (u64, String) {
         let module = name.rsplit('/').next().unwrap();
         let manifest_text = format!("ita {name}\n  version {version}\n  edition 0.4\n");
-        let module_text = format!("module {module}\n\npub fn answer() -> Int\n  42\n");
+        let module_text = format!("module {module}\n\npub answer() -> Int = 42\n");
         let source_path = format!("src/{module}.una");
         let (content, manifest) = self.blob(&[
             ("ita.una", manifest_text.as_str()),

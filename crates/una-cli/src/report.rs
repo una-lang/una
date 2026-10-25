@@ -140,7 +140,7 @@ pub(crate) struct DependencyDoc {
     package: String,
     version: String,
     local: String,
-    source: &'static str,
+    source: String,
     path: Option<String>,
     digest: Option<String>,
     signed: Option<String>,
@@ -232,8 +232,8 @@ struct TcbDoc {
     /// The key file that authenticates the cache's entries, part of the Trusted zone, or `null`
     /// when the run used no cache (ADR 0064).
     proof_cache_key: Option<String>,
-    /// Each registry source of the program, with the digest of its root metadata (ADR 0122
-    /// rule 58): none while only path dependencies load.
+    /// Each registry source of the program's mounted releases, with the digest of its root
+    /// metadata that the lock records (ADR 0122 rule 58).
     registries: Vec<RegistryDoc>,
     /// The trusted modules of dependencies that the root consented to, with their line counts,
     /// by package: none while trust lines do not load.
@@ -700,7 +700,7 @@ fn build(
             solver: format!("z3 {}", lock.solver_version),
             proof_cache: PROOF_CACHE,
             proof_cache_key,
-            registries: Vec::new(),
+            registries: registries_of(package, &manifest),
             dependency_trust,
         },
         requirements,
@@ -1163,56 +1163,40 @@ pub(crate) fn dependencies(
         let effective_ceiling = render_authority(effective.get(1).cloned().unwrap_or_default());
         // What its code uses: the `uses` of its functions and handlers.
         let prefix = format!("{}.", mount.local);
-        let mut used = una_project::authority::Authority::new();
-        for header in analysis
-            .headers
-            .iter()
-            .filter(|h| h.module.starts_with(&prefix))
-        {
-            for u in &header.uses {
-                for op in &u.ops {
-                    used.insert((u.capability.clone(), op.clone()));
-                }
-            }
-        }
-        for module in analysis
-            .program
-            .modules
-            .iter()
-            .filter(|m| m.path.starts_with(&prefix))
-        {
-            for decl in &module.decls {
-                if let Decl::Handler { uses, .. } = decl {
-                    for u in uses {
-                        for op in &u.ops {
-                            used.insert((u.capability.clone(), op.clone()));
-                        }
-                    }
-                }
-            }
-        }
-        let digest = lock.as_ref().and_then(|lock| {
-            lock.read
-                .packages
-                .iter()
-                .find(|p| {
-                    p.name.value == need.name.value
-                        && matches!(
-                            p.from.as_ref().map(|f| &f.value),
-                            Some(una_syntax::ita::LockOrigin::Path(dir)) if dir.trim_end_matches('/') == dependency.dir
-                        )
-                })
-                .and_then(|p| p.digest.as_ref())
-                .map(|d| d.value.clone())
+        let used = authority_under(analysis, &prefix);
+        // The lock's line of the package: by its index for a registry release, by its directory
+        // for a path package.
+        let locked = lock.as_ref().and_then(|lock| match &dependency.registry {
+            Some(origin) => lock.read.packages.get(origin.lock),
+            None => lock.read.packages.iter().find(|p| {
+                p.name.value == need.name.value
+                    && matches!(
+                        p.from.as_ref().map(|f| &f.value),
+                        Some(una_syntax::ita::LockOrigin::Path(dir)) if dir.trim_end_matches('/') == dependency.dir
+                    )
+            }),
         });
+        let digest = locked
+            .and_then(|p| p.digest.as_ref())
+            .map(|d| d.value.clone());
+        let (source, path, signed) = match &dependency.registry {
+            Some(origin) => (
+                origin.source.clone(),
+                None,
+                locked
+                    .and_then(|p| p.signed.as_ref())
+                    .map(|s| s.value.clone()),
+            ),
+            None => ("path".to_owned(), Some(dependency.dir.clone()), None),
+        };
         out.push(DependencyDoc {
             package: need.name.value.to_string(),
             version,
             local: mount.local.clone(),
-            source: "path",
-            path: Some(dependency.dir.clone()),
+            source,
+            path,
             digest,
-            signed: None,
+            signed,
             replaced: false,
             edition,
             profile: "app",
@@ -1237,6 +1221,78 @@ pub(crate) fn dependencies(
     out
 }
 
+/// What the code of the modules whose path starts with `prefix` uses: the union of the `uses` of
+/// their functions and handlers, as the report's `authority` of a dependency gives it (ADR 0122
+/// rule 58), and as a release statement's `authority` must cover it (rule 37). An empty prefix
+/// takes every module. O(H) for H headers and handlers.
+pub(crate) fn authority_under(
+    analysis: &crate::Analysis,
+    prefix: &str,
+) -> una_project::authority::Authority {
+    let mut used = una_project::authority::Authority::new();
+    for header in analysis
+        .headers
+        .iter()
+        .filter(|h| h.module.starts_with(prefix))
+    {
+        for u in &header.uses {
+            for op in &u.ops {
+                used.insert((u.capability.clone(), op.clone()));
+            }
+        }
+    }
+    for module in analysis
+        .program
+        .modules
+        .iter()
+        .filter(|m| m.path.starts_with(prefix))
+    {
+        for decl in &module.decls {
+            if let Decl::Handler { uses, .. } = decl {
+                for u in uses {
+                    for op in &u.ops {
+                        used.insert((u.capability.clone(), op.clone()));
+                    }
+                }
+            }
+        }
+    }
+    used
+}
+
+/// The registry sources of the program's mounted releases, each with the digest of its root
+/// metadata that the lock records (ADR 0122 rule 58), in source order.
+fn registries_of(package: &Package, manifest: &una_project::Manifest) -> Vec<RegistryDoc> {
+    let Some(id) = package.lock else {
+        return Vec::new();
+    };
+    let lock = una_project::ita::parse_ita_lock(package.sources.file(id).text()).0;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for dependency in &package.dependencies {
+        let Some(origin) = &dependency.registry else {
+            continue;
+        };
+        let mounted = manifest
+            .mounts
+            .iter()
+            .any(|mount| mount.src == format!("{}/src/", dependency.dir));
+        if !mounted {
+            continue;
+        }
+        if let Some(registry) = lock
+            .read
+            .registries
+            .iter()
+            .find(|r| r.source.value == origin.source)
+        {
+            out.insert(origin.source.clone(), registry.root.value.clone());
+        }
+    }
+    out.into_iter()
+        .map(|(source, root)| RegistryDoc { source, root })
+        .collect()
+}
+
 /// A set of operations as `Cap[op, op]` entries, by capability.
 fn render_authority(set: una_project::authority::Authority) -> Vec<String> {
     let mut by_capability: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1252,9 +1308,14 @@ fn render_authority(set: una_project::authority::Authority) -> Vec<String> {
 /// The human line of a dependency (ADR 0122 rule 58): `http 1.4.2 (itaty): may Http[get] (by
 /// store); uses Http[get]; trust none`.
 pub(crate) fn dependency_line(dependency: &DependencyDoc) -> String {
-    let origin = match &dependency.path {
-        Some(path) => format!("path {path}"),
-        None => dependency.source.to_owned(),
+    let origin = match (&dependency.path, &dependency.signed) {
+        (Some(path), _) => format!("path {path}"),
+        (None, Some(signed)) => format!(
+            "{}, signed {}",
+            dependency.source,
+            signed.split(':').nth(1).unwrap_or_default()
+        ),
+        (None, None) => dependency.source.clone(),
     };
     let granted: Vec<String> = dependency
         .granted_by

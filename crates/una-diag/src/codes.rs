@@ -284,13 +284,16 @@ pub enum Code {
     U7012,
     /// No resolution: no release meets a need, or a bound of resolution is exceeded.
     U7013,
+    /// A locked release yanked, under an advisory or signed after a stated compromise, or a
+    /// pending recovery, a key change or a transfer of its owner.
+    U7014,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 110] = [
+    pub const ALL: [Code; 111] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -400,6 +403,7 @@ impl Code {
         Code::U7011,
         Code::U7012,
         Code::U7013,
+        Code::U7014,
         Code::U8001,
     ];
 
@@ -964,6 +968,11 @@ impl Code {
                 code: "U7013",
                 domain: Domain::Project,
                 meaning: "No resolution: no release meets a need, or a bound of resolution is exceeded",
+            },
+            Code::U7014 => &Entry {
+                code: "U7014",
+                domain: Domain::Project,
+                meaning: "A locked release yanked, under an advisory or signed after a stated compromise, or a pending recovery, a key change or a transfer of its owner",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

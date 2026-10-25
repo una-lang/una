@@ -309,7 +309,9 @@ impl<'t> Registry<'t> {
                     "no root metadata among its first {MAX_ROOTS} versions has the pinned digest"
                 )));
             }
-            let Some(bytes) = transport.get(&format!("root/{version}"), note::MAX_NOTE as u64)?
+            let Some(bytes) = transport
+                .get(&format!("root/{version}"), note::MAX_NOTE as u64)
+                .map_err(&fail)?
             else {
                 return Err(fail("no root metadata has the pinned digest".to_owned()));
             };
@@ -335,7 +337,10 @@ impl<'t> Registry<'t> {
                 )));
             }
             let next = pinned.version + roots.len() as u64;
-            match transport.get(&format!("root/{next}"), note::MAX_NOTE as u64)? {
+            match transport
+                .get(&format!("root/{next}"), note::MAX_NOTE as u64)
+                .map_err(&fail)?
+            {
                 Some(bytes) => roots.push(
                     String::from_utf8(bytes)
                         .map_err(|_| fail("a root metadata document is not UTF-8".to_owned()))?,
@@ -351,7 +356,8 @@ impl<'t> Registry<'t> {
             Point::At { size, .. } => format!("checkpoints/{size}"),
         };
         let bytes = transport
-            .get(&path, note::MAX_NOTE as u64)?
+            .get(&path, note::MAX_NOTE as u64)
+            .map_err(&fail)?
             .ok_or_else(|| fail(format!("it has no `{path}`")))?;
         let document =
             String::from_utf8(bytes).map_err(|_| fail("its checkpoint is not UTF-8".to_owned()))?;
@@ -504,7 +510,8 @@ impl<'t> Registry<'t> {
         );
         let bytes = self
             .transport
-            .get(&path, map::MAX_PROOF_DOCUMENT as u64)?
+            .get(&path, map::MAX_PROOF_DOCUMENT as u64)
+            .map_err(|why| self.refuse(why))?
             .ok_or_else(|| self.refuse(format!("it has no `{path}`")))?;
         let (head, proof) = map::parse_proof(&bytes).map_err(|why| self.refuse(why))?;
         if !map::verify(&root, name, head.as_ref(), &proof) {
@@ -557,7 +564,8 @@ impl<'t> Registry<'t> {
         }
         let bytes = self
             .transport
-            .get("checkpoints/index", MAX_DOCUMENT)?
+            .get("checkpoints/index", MAX_DOCUMENT)
+            .map_err(|why| self.refuse(why))?
             .unwrap_or_default();
         let text =
             String::from_utf8(bytes).map_err(|_| self.refuse("`checkpoints/index` is not UTF-8"))?;
@@ -600,7 +608,8 @@ impl<'t> Registry<'t> {
         let path = format!("checkpoints/{size}");
         let bytes = self
             .transport
-            .get(&path, note::MAX_NOTE as u64)?
+            .get(&path, note::MAX_NOTE as u64)
+            .map_err(|why| self.refuse(why))?
             .ok_or_else(|| self.refuse(format!("it has no `{path}`")))?;
         let document =
             String::from_utf8(bytes).map_err(|_| self.refuse(format!("`{path}` is not UTF-8")))?;
@@ -826,7 +835,8 @@ impl<'t> Registry<'t> {
         let path = format!("blobs/sha256/{hex}");
         let limit = crate::content::MAX_BYTES + MAX_DOCUMENT;
         self.transport
-            .get(&path, limit)?
+            .get(&path, limit)
+            .map_err(|why| self.refuse(why))?
             .ok_or_else(|| self.refuse(format!("it has no `{path}`")))
     }
 

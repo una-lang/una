@@ -272,6 +272,16 @@ pub(crate) enum ItaCommand {
         #[arg(long, value_name = "PACKAGE")]
         accept_trust: Vec<String>,
 
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
+
+        /// Read the registry `SOURCE` from `LOCATION`, a mirror directory or a `file://` URL:
+        /// `--mirror acme=/srv/ita-mirror`. Plain `http://` is never used
+        #[arg(long, value_name = "SOURCE=LOCATION")]
+        mirror: Vec<String>,
+
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
@@ -298,6 +308,16 @@ pub(crate) enum ItaCommand {
         #[arg(long, value_name = "PACKAGE")]
         accept_trust: Vec<String>,
 
+        /// Record a change of the keys of this package's owner: a key added or revoked, a
+        /// threshold, a recovery or a dispute, or another signing key
+        #[arg(long, value_name = "PACKAGE")]
+        accept_key: Vec<String>,
+
+        /// Read the registry `SOURCE` from `LOCATION`, a mirror directory or a `file://` URL:
+        /// `--mirror acme=/srv/ita-mirror`. Plain `http://` is never used
+        #[arg(long, value_name = "SOURCE=LOCATION")]
+        mirror: Vec<String>,
+
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
@@ -322,9 +342,25 @@ pub(crate) enum ItaCommand {
         #[arg(long)]
         now: bool,
 
+        /// Read the registry `SOURCE` from `LOCATION`, a mirror directory or a `file://` URL:
+        /// `--mirror acme=/srv/ita-mirror`. Plain `http://` is never used
+        #[arg(long, value_name = "SOURCE=LOCATION")]
+        mirror: Vec<String>,
+
         /// Print the review of the changes, and write nothing
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Fetch each locked registry package into Itaoca, verified, with its provenance
+    Fetch {
+        /// The package directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Read the registry `SOURCE` from `LOCATION`, a mirror directory or a `file://` URL:
+        /// `--mirror acme=/srv/ita-mirror`. Plain `http://` is never used
+        #[arg(long, value_name = "SOURCE=LOCATION")]
+        mirror: Vec<String>,
     },
     /// Copy each locked registry package from Itaoca into vendor/ita/, with its provenance
     Vendor {
