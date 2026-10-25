@@ -13,7 +13,7 @@
 //! log itaty.log <base64 key>
 //! witnesses 3
 //! key witness.a <base64 key>           (one line per witness)
-//! witnesses-revoked witness.old …       (optional: witnesses whose cosignatures never count)
+//! witnesses-revoked <hex fingerprint> … (optional: witness keys whose cosignatures never count)
 //! security 2
 //! key security.a <base64 key>          (one line per security key)
 //! itauna 2
@@ -56,7 +56,8 @@ pub struct Root {
     pub log: Key,
     /// The witnesses, and how many co-signatures a checkpoint needs.
     pub witnesses: Keys,
-    /// The witnesses revoked, by name: their cosignatures count for nothing at any version.
+    /// The witnesses revoked, by the fingerprint of their keys, the hex SHA-256 of the public
+    /// key: their cosignatures count for nothing at any version, under any name.
     pub witnesses_revoked: Vec<String>,
     /// The security keys that sign advisories, and how many lift a cooldown (rule 41).
     pub security: Keys,
@@ -126,26 +127,36 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
     let root = set("root", &mut next)?;
     let log = key_line(&next("log")?)?;
     let witnesses = set("witnesses", &mut next)?;
-    // Optional: `witnesses-revoked <name> …`, each a key name, at least one, none twice, none a
-    // witness of this version.
+    // Optional: `witnesses-revoked <fingerprint> …`, each the hex SHA-256 of a witness's
+    // public key, 64 lowercase hex digits, at least one, none twice, none a witness of this
+    // version: a key, so no renaming escapes it and no reused name is caught by it.
     let witnesses_revoked: Vec<String> = match next("witnesses-revoked") {
         Ok(value) => {
-            let names: Vec<String> = value.split(' ').map(str::to_owned).collect();
-            for (at, name) in names.iter().enumerate() {
-                let valid = !name.is_empty()
-                    && !name.contains('+')
-                    && !name.chars().any(|c| c.is_whitespace() || c.is_control());
+            let revoked: Vec<String> = value.split(' ').map(str::to_owned).collect();
+            for (at, fingerprint) in revoked.iter().enumerate() {
+                let valid = fingerprint.len() == 64
+                    && fingerprint
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
                 if !valid {
-                    return Err(format!("`{name}` is not a witness's key name"));
+                    return Err(format!(
+                        "`{fingerprint}` is not a witness key's fingerprint, 64 lowercase hex digits"
+                    ));
                 }
-                if names.iter().take(at).any(|other| other == name) {
-                    return Err(format!("the witness `{name}` is revoked twice"));
+                if revoked.iter().take(at).any(|other| other == fingerprint) {
+                    return Err(format!("the witness key {fingerprint} is revoked twice"));
                 }
-                if witnesses.keys.iter().any(|key| key.name == *name) {
-                    return Err(format!("the witness `{name}` is both a witness and revoked"));
+                if witnesses
+                    .keys
+                    .iter()
+                    .any(|key| super::owner::fingerprint(&key.public) == *fingerprint)
+                {
+                    return Err(format!(
+                        "the witness key {fingerprint} is both a witness and revoked"
+                    ));
                 }
             }
-            names
+            revoked
         }
         Err(_) => Vec::new(),
     };

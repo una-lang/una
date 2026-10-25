@@ -7,7 +7,7 @@ key root.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
 log acme.example/log 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFE=
 witnesses 1
 key witness.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFI=
-witnesses-revoked witness.old witness.older
+witnesses-revoked abababababababababababababababababababababababababababababababab cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
 security 1
 key security.a 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFM=
 itauna 1

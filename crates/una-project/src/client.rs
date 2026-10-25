@@ -46,7 +46,8 @@
 //! **Costs.** Opening: O(R) root versions and one checkpoint, O(log L) hashes for its consistency
 //! proof in a log of L entries. An entry: O(log L) hashes and tiles. A name: at most 32 map tiles
 //! and O(256 + 8 k) hashes for its head, and O(E log L) for its E entries. A logged time: at most
-//! [`MAX_SCAN`] kept checkpoints; a recovery's effect: O(log L) probes by binary search.
+//! [`MAX_SCAN`] kept checkpoints; a recovery's effect: O(W) kept checkpoints for the W sizes
+//! from the request to its deadline, by one linear scan of the running maximum of witness time.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -145,14 +146,17 @@ pub fn named_root<'r>(
 
 /// Accepts the checkpoint `document` under the root of `chain` it names (rules 36 and 36.4;
 /// [`named_root`]): its origin is that root's log key name and it is signed by that log key;
-/// its cosignatures are counted by [`counted`], `retired` saying whether it is proven a prefix
-/// of a checkpoint signed under the last root, and the threshold of the version it names of
-/// them cosign it; its witness time is the k-th latest of their timestamps, k that threshold.
-/// Too few cosignatures make it unavailable: a place that withheld them may be read again.
+/// its cosignatures are counted as `spec/30 §11` rule 9 states, `retired` saying whether a
+/// retired witness's count, and at least k of them cosign it, k the larger of the threshold
+/// of the version it names and the last root's, so it never drops below the current one; its
+/// witness time is the k-th latest of their timestamps. Too few cosignatures make it
+/// unavailable: a place that withheld them may be read again. A retired witness's line with
+/// no proof to count it by makes it unavailable, an omission of the prefix proof
+/// ([`Omission::PrefixProof`]).
 pub fn accept_checkpoint(
     document: &str,
     chain: &[(Root, String)],
-    retired: bool,
+    retired: Retired,
 ) -> Result<Accepted, OpenError> {
     let signed = note::parse_note(document).map_err(OpenError::Refused)?;
     let checkpoint = note::parse_checkpoint(&signed.text).map_err(OpenError::Refused)?;
@@ -169,8 +173,15 @@ pub fn accept_checkpoint(
             "the checkpoint is not signed by the log's key".to_owned(),
         ));
     }
-    let cosigned = counted(&signed, checkpoint.size, root, chain, retired);
-    let time = witness::checkpoint_time(&cosigned, root.witnesses.threshold).map_err(
+    let (cosigned, unproven) = counted(&signed, checkpoint.size, root, chain, retired);
+    if unproven {
+        return Err(OpenError::Omitted(
+            Omission::PrefixProof(checkpoint.size),
+            "the proof that its checkpoint is a prefix of the latest one, which a retired witness's cosignature needs to count, could not be completed: no place serves what it needs".to_owned(),
+        ));
+    }
+    let k = threshold_of(root, chain);
+    let time = witness::checkpoint_time(&cosigned, k).map_err(
         |problem| match problem {
             witness::Problem::TooFew { .. } => OpenError::Unavailable(witness_problem(&problem)),
             witness::Problem::Decreasing { .. } => {
@@ -192,34 +203,45 @@ pub fn accept_checkpoint(
 /// The cosignatures of `signed`, a checkpoint naming the root version `named`, that verify and
 /// count, one per distinct witness (`spec/30 §11` rule 9): every witness of the last root of
 /// `chain` counts; a witness of `named` that is not one of the last root's, a retired witness,
-/// counts only when `retired`, the checkpoint proven a prefix of a checkpoint signed under the
-/// last root; a witness that any root of the chain revokes (`witnesses-revoked`) never counts.
+/// counts when `retired` is [`Retired::Count`], the checkpoint proven a prefix of a checkpoint
+/// signed under the last root; with [`Retired::Unproven`], a line of one present makes the
+/// flag returned true, and the result that would count it unavailable. A witness that any root
+/// of the chain revokes (`witnesses-revoked`, by key fingerprint) never counts.
 fn counted(
     signed: &Note,
     size: u64,
     named: &Root,
     chain: &[(Root, String)],
-    retired: bool,
-) -> Vec<Cosigned> {
+    retired: Retired,
+) -> (Vec<Cosigned>, bool) {
     let last = chain.last().map_or(named, |(last, _)| last);
     let revoked: Vec<&str> = chain
         .iter()
         .flat_map(|(root, _)| root.witnesses_revoked.iter().map(String::as_str))
         .collect();
+    let revoked_key = |key: &Key| revoked.contains(&owner::fingerprint(&key.public).as_str());
     let current = last.witnesses.keys.iter();
     let retired_keys = named
         .witnesses
         .keys
         .iter()
-        .filter(|key| retired && !last.witnesses.keys.iter().any(|k| k.public == key.public));
+        .filter(|key| !last.witnesses.keys.iter().any(|k| k.public == key.public));
     let mut cosigned = Vec::new();
     let mut seen: Vec<[u8; 32]> = Vec::new();
-    for witness in current.chain(retired_keys) {
-        if seen.contains(&witness.public) || revoked.contains(&witness.name.as_str()) {
+    let mut unproven = false;
+    for (at, witness) in current.chain(retired_keys).enumerate() {
+        if seen.contains(&witness.public) || revoked_key(witness) {
             continue;
         }
         seen.push(witness.public);
+        let is_retired = at >= last.witnesses.keys.len();
         if let Some(time) = signed.cosignature(witness) {
+            if is_retired && retired == Retired::Unproven {
+                // A retired witness's line a result would count, with no proof to count it
+                // by: the result is unavailable, never decided on fewer cosignatures.
+                unproven = true;
+                continue;
+            }
             cosigned.push(Cosigned {
                 witness: witness.name.clone(),
                 size,
@@ -227,7 +249,98 @@ fn counted(
             });
         }
     }
-    cosigned
+    (cosigned, unproven)
+}
+
+/// The threshold that counts the cosignatures of a checkpoint naming `named`: the larger of its
+/// own and the last root's, so it never drops below the current one.
+fn threshold_of(named: &Root, chain: &[(Root, String)]) -> usize {
+    let last = chain.last().map_or(named, |(last, _)| last);
+    named.witnesses.threshold.max(last.witnesses.threshold)
+}
+
+/// The prefix proof of a lock's point that names an older root version: what [`prefix_proof`]
+/// found.
+enum Proof {
+    /// The latest checkpoint names the last root version and extends the point.
+    Proven,
+    /// No place serves a document the proof needs: the documents unserved, the tiles' paths,
+    /// and why, one sentence.
+    Missing(Vec<String>, String),
+}
+
+/// Proves the lock's point, the checkpoint of `size` and root `hash`, a prefix of the latest
+/// checkpoint, which must name the last root version of `chain`: one more checkpoint read and
+/// a consistency proof of O(log L) hashes. The latest checkpoint unserved, naming an older
+/// version, or short of cosignatures, or a tile of the proof unserved, leaves it
+/// [`Proof::Missing`]; anything served that does not verify, the log forked included, is an
+/// error, one sentence.
+fn prefix_proof(
+    transport: &dyn Transport,
+    chain: &[(Root, String)],
+    size: u64,
+    hash: &str,
+) -> Result<Proof, Refusal> {
+    let missing = |why: &str| Ok(Proof::Missing(Vec::new(), why.to_owned()));
+    let latest = match transport.get("checkpoint", note::MAX_NOTE as u64) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) | Err(_) => return missing("no place serves the latest checkpoint"),
+    };
+    let latest = String::from_utf8(latest).map_err(|_| "`checkpoint` is not UTF-8".to_owned())?;
+    let latest = match accept_checkpoint(&latest, chain, Retired::Count) {
+        Ok(latest) => latest,
+        Err(OpenError::Refused(why)) => return Err(why),
+        Err(other) => return missing(&other.message()),
+    };
+    let last = chain.last().map_or(0, |(root, _)| root.version);
+    if latest.version != last {
+        return missing(
+            "the latest checkpoint served names an older root version, so a newer one is withheld",
+        );
+    }
+    let at_root = parse_hash_text(hash)
+        .ok_or_else(|| "the lock's checkpoint hash is not a digest".to_owned())?;
+    let to = latest.checkpoint.size;
+    if to < size {
+        return Err(format!(
+            "its latest checkpoint, of size {to}, is below the lock's point of size {size}"
+        ));
+    }
+    let mut tiles = Tiles::new(transport, to);
+    let proof = match tiles.consistency(size) {
+        Ok(proof) => proof,
+        Err(why) => {
+            let unserved = tiles.take_missing();
+            if unserved.is_empty() {
+                return Err(why);
+            }
+            return Ok(Proof::Missing(unserved, why));
+        }
+    };
+    if !merkle::verify_consistency(
+        size,
+        to,
+        &at_root,
+        &latest.checkpoint.root,
+        &proof,
+    ) {
+        return Err(format!(
+            "its latest checkpoint does not extend the lock's point of size {size}, so the log forked"
+        ));
+    }
+    Ok(Proof::Proven)
+}
+
+/// Whether a retired witness's cosignatures count on the checkpoints a client reads
+/// (`spec/30 §11` rule 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retired {
+    /// The point names the last root, or is proven a prefix of a checkpoint that does: they
+    /// count on it and on every checkpoint the consistency proof binds to it.
+    Count,
+    /// The proof could not be completed, a document of it served by no place: a result that
+    /// would count one is unavailable ([`Omission::PrefixProof`]).
+    Unproven,
 }
 
 fn witness_problem(problem: &witness::Problem) -> Refusal {
@@ -247,10 +360,21 @@ fn witness_problem(problem: &witness::Problem) -> Refusal {
 struct Kept {
     cosigned: Vec<Cosigned>,
     time: Option<u64>,
-    /// The witness threshold of the root version it names, which counts its cosignatures.
+    /// The threshold that counts its cosignatures: the larger of the threshold of the root
+    /// version it names and the last root's.
     k: usize,
     /// How many places served a copy that verifies with exactly the merged cosignatures.
     agreeing: usize,
+}
+
+/// One place's copy of a kept checkpoint, verified ([`Registry::verify_kept`]).
+struct KeptCopy {
+    /// Its cosignatures counted.
+    lines: Vec<Cosigned>,
+    /// The threshold that counts them.
+    threshold: usize,
+    /// The root version it names.
+    version: u64,
 }
 
 /// The floors Itaoca stores for a source (rule 39).
@@ -300,6 +424,16 @@ pub enum Misbehavior {
         /// the merged cosignatures.
         places_agreeing: usize,
     },
+    /// Copies of the checkpoint of one size, each signed by the log's key, that name different
+    /// root versions: the log signed two checkpoints of that size, so the client refused it.
+    Equivocation {
+        /// The size.
+        size: u64,
+        /// The root versions named, ascending.
+        versions: Vec<u64>,
+        /// The places read.
+        places: Vec<String>,
+    },
 }
 
 /// What the client observed that changes no result (`spec/30 §14` rule 1): for `una ita
@@ -329,6 +463,10 @@ pub enum Omission {
     /// A root version a verified checkpoint names, past the end of the root chain the places
     /// serve: a newer root is hidden, and nothing is decided under the older key set.
     RootVersion(u64),
+    /// The proof that a lock's point naming an older root version is a prefix of the latest
+    /// checkpoint, which retired witnesses need to count on it: a checkpoint or a tile of it
+    /// served by no place. The lock point's size.
+    PrefixProof(u64),
     /// No checkpoint of the witness threshold among these sizes, every place's copy merged,
     /// short of the point: the registry's cadence of one per 64 sizes is broken, or withheld.
     Cadence {
@@ -351,6 +489,9 @@ pub enum Omission {
 pub enum OpenError {
     /// A document it must serve is missing, or it cannot be read: a refusal of service.
     Unavailable(String),
+    /// A document a proof needs is served by no place: an omission, typed, unavailable as
+    /// [`OpenError::Unavailable`] is (U7013), never a refusal.
+    Omitted(Omission, String),
     /// What it served does not verify: evidence against it (U7010).
     Refused(String),
 }
@@ -359,7 +500,9 @@ impl OpenError {
     /// The sentence that says why.
     pub fn message(self) -> String {
         match self {
-            OpenError::Unavailable(why) | OpenError::Refused(why) => why,
+            OpenError::Unavailable(why)
+            | OpenError::Omitted(_, why)
+            | OpenError::Refused(why) => why,
         }
     }
 }
@@ -563,8 +706,14 @@ pub struct Registry<'t> {
     named: BTreeMap<u64, u64>,
     /// Whether the point is signed under the last root or proven a prefix of a checkpoint that
     /// is: then the retired witnesses of an earlier version count on the checkpoints below it.
-    retired: bool,
-    /// The witness threshold of the version the point names.
+    retired: Retired,
+    /// When the prefix proof could not be completed, its omissions, recorded again by each
+    /// result that would count a retired witness, and why, one sentence.
+    unproven: (Vec<Omission>, String),
+    /// The deadlines found, by request index and target ([`Registry::deadline`]).
+    deadlines: BTreeMap<(u64, u64), (Option<u64>, Option<u64>)>,
+    /// The threshold that counts the point's cosignatures: the larger of the version it names
+    /// and the last root's.
     point_k: usize,
     /// For an owner whose requests could be in effect earlier than the cosignatures served say,
     /// its history with each at the earliest position its seven days allow.
@@ -686,44 +835,52 @@ impl<'t> Registry<'t> {
             read(&path)?.ok_or_else(|| unavailable(format!("it has no `{path}`")))?;
         // A lock's point may name an older root version: its retired witnesses count only once
         // it is proven a prefix of the latest checkpoint, which must name the last version, by a
-        // consistency proof from the tiles (one more checkpoint read and O(log L) hashes). With
-        // no such proof, only the last root's witnesses count on it.
-        let retired = match point {
-            Point::At { size, hash } => {
-                let latest = read("checkpoint")
-                    .ok()
-                    .flatten()
-                    .and_then(|latest| accept_checkpoint(&latest, &chain, true).ok())
-                    .filter(|latest| {
-                        latest.version == chain.last().map_or(0, |(root, _)| root.version)
-                    });
-                match (latest, parse_hash_text(hash)) {
-                    (Some(latest), Some(at_root)) if latest.checkpoint.size >= *size => {
-                        let mut tiles = Tiles::new(transport, latest.checkpoint.size);
-                        tiles.consistency(*size).is_ok_and(|proof| {
-                            merkle::verify_consistency(
-                                *size,
-                                latest.checkpoint.size,
-                                &at_root,
-                                &latest.checkpoint.root,
-                                &proof,
-                            )
-                        })
+        // consistency proof from the tiles (one more checkpoint read and O(log L) hashes). A
+        // proof that fails is a fork (U7010); one no place serves what it needs to complete is an
+        // omission of the prefix proof, which makes every result that would count a retired
+        // witness unavailable (U7013), never one decided on fewer cosignatures.
+        let last_version = chain.last().map_or(0, |(root, _)| root.version);
+        let mut unproven: Vec<Omission> = Vec::new();
+        let mut unproven_why = String::new();
+        if let Point::At { size, hash } = point {
+            let named = note::parse_note(&document)
+                .ok()
+                .and_then(|signed| note::parse_checkpoint(&signed.text).ok())
+                .and_then(|checkpoint| root::named(&checkpoint.extensions).ok())
+                .map_or(last_version, |(version, _)| version);
+            if named != last_version {
+                match prefix_proof(transport, &chain, *size, hash) {
+                    Ok(Proof::Proven) => {}
+                    Ok(Proof::Missing(documents, why)) => {
+                        unproven.push(Omission::PrefixProof(*size));
+                        unproven.extend(documents.into_iter().map(Omission::Document));
+                        unproven_why = why;
                     }
-                    _ => false,
+                    Err(why) => return Err(refused(why)),
                 }
             }
-            Point::Latest { .. } | Point::Served => true,
+        }
+        let retired = if unproven.is_empty() {
+            Retired::Count
+        } else {
+            Retired::Unproven
         };
         let accepted =
             accept_checkpoint(&document, &chain, retired).map_err(|error| match error {
                 OpenError::Unavailable(why) => unavailable(why),
+                OpenError::Omitted(Omission::PrefixProof(size), _) => OpenError::Omitted(
+                    Omission::PrefixProof(size),
+                    says(format!(
+                        "the proof that the lock's point is a prefix of the latest checkpoint could not be completed: {unproven_why}"
+                    )),
+                ),
+                OpenError::Omitted(omission, why) => OpenError::Omitted(omission, says(why)),
                 OpenError::Refused(why) => refused(why),
             })?;
         let point_k = chain
             .iter()
             .find(|(root, _)| root.version == accepted.version)
-            .map_or(1, |(root, _)| root.witnesses.threshold);
+            .map_or(1, |(root, _)| threshold_of(root, &chain));
         // The resolution point names the last root version the place serves: one that names an
         // older version while a newer one is served stands for a newer checkpoint withheld.
         let served = chain.last().map_or(0, |(root, _)| root.version);
@@ -768,6 +925,8 @@ impl<'t> Registry<'t> {
             root: last,
             named: BTreeMap::from([(accepted.checkpoint.size, accepted.version)]),
             retired,
+            unproven: (unproven, unproven_why),
+            deadlines: BTreeMap::new(),
             point_k,
             chain,
             tiles: Tiles::new(transport, accepted.checkpoint.size),
@@ -849,7 +1008,7 @@ impl<'t> Registry<'t> {
                 ));
             }
         }
-        let lines = counted(&signed, floor.size, &self.root, &self.chain, false);
+        let (lines, _) = counted(&signed, floor.size, &self.root, &self.chain, Retired::Count);
         self.seen.extend(lines);
         witness::monotonic(&self.seen).map_err(|problem| witness_problem(&problem))
     }
@@ -998,32 +1157,70 @@ impl<'t> Registry<'t> {
             )));
         }
         let mut cosigned: Vec<Cosigned> = Vec::new();
-        let mut verified = false;
+        let mut versions: Vec<u64> = Vec::new();
         let mut k = self.root.witnesses.threshold;
         let mut views: Vec<Vec<Cosigned>> = Vec::new();
         let mut failure: Option<Refusal> = None;
+        let mut unproven = false;
         for bytes in copies {
             match self.verify_kept(size, &path, bytes) {
-                Ok((lines, threshold)) => {
-                    verified = true;
-                    k = threshold;
-                    let mut view = lines.clone();
+                Ok(Some(copy)) => {
+                    k = copy.threshold;
+                    if !versions.contains(&copy.version) {
+                        versions.push(copy.version);
+                    }
+                    let mut view = copy.lines.clone();
                     view.sort_by(|a, b| (&a.witness, a.time).cmp(&(&b.witness, b.time)));
                     views.push(view);
-                    for line in lines {
+                    for line in copy.lines {
                         if !cosigned.contains(&line) {
                             cosigned.push(line);
                         }
                     }
                 }
+                Ok(None) => unproven = true,
                 Err(why) => {
                     failure.get_or_insert(why);
                 }
             }
         }
-        if !verified {
-            return Err(failure.unwrap_or_else(|| self.refuse(format!("`{path}` does not verify"))));
+        // A retired witness's line on any copy, with the point's prefix proof not completed:
+        // the result is unavailable, never decided on the cosignatures of the other copies.
+        if unproven {
+            let (omissions, why) = self.unproven.clone();
+            self.omitted.extend(omissions);
+            return Err(self.refuse(format!(
+                "`{path}` carries a retired witness's cosignature, and the proof that the lock's point is a prefix of the latest checkpoint, which it needs to count, could not be completed: {why}"
+            )));
         }
+        // Two copies of one size naming different root versions: the log signed two
+        // checkpoints of that size, evidence against the registry, refused (U7010).
+        if versions.len() > 1 {
+            versions.sort_unstable();
+            let named: Vec<String> = versions.iter().map(u64::to_string).collect();
+            self.evidence(Misbehavior::Equivocation {
+                size,
+                versions: versions.clone(),
+                places: self.transport.describe_all(),
+            });
+            return Err(self.refuse(format!(
+                "its copies of `{path}` name different root versions, {}, so the log signed two checkpoints of size {size}",
+                named.join(" and ")
+            )));
+        }
+        let Some(&version) = versions.first() else {
+            return Err(failure.unwrap_or_else(|| self.refuse(format!("`{path}` does not verify"))));
+        };
+        // The root version a checkpoint names never decreases as the log grows; one recorded
+        // for a size is never replaced.
+        let below = self.named.range(..size).next_back().map(|(_, v)| *v);
+        let above = self.named.range(size + 1..).next().map(|(_, v)| *v);
+        if below.is_some_and(|v| v > version) || above.is_some_and(|v| v < version) {
+            return Err(self.refuse(format!(
+                "`{path}` names root version {version}, out of order with the checkpoints around it: the version a checkpoint names never decreases as the log grows"
+            )));
+        }
+        self.named.entry(size).or_insert(version);
         let time = witness::checkpoint_time(&cosigned, k).ok();
         self.seen.extend(cosigned.iter().cloned());
         witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
@@ -1048,7 +1245,7 @@ impl<'t> Registry<'t> {
         size: u64,
         path: &str,
         bytes: Vec<u8>,
-    ) -> Result<(Vec<Cosigned>, usize), Refusal> {
+    ) -> Result<Option<KeptCopy>, Refusal> {
         let document =
             String::from_utf8(bytes).map_err(|_| self.refuse(format!("`{path}` is not UTF-8")))?;
         let signed = note::parse_note(&document).map_err(|why| self.refuse(why))?;
@@ -1063,7 +1260,9 @@ impl<'t> Registry<'t> {
                 }
                 return Err(self.refuse(why));
             }
-            Err(OpenError::Refused(why)) => return Err(self.refuse(why)),
+            Err(OpenError::Refused(why) | OpenError::Omitted(_, why)) => {
+                return Err(self.refuse(why));
+            }
         };
         if checkpoint.size != size || checkpoint.origin != root.log.name {
             return Err(self.refuse(format!(
@@ -1073,16 +1272,6 @@ impl<'t> Registry<'t> {
         if !signed.signed_by(&root.log) {
             return Err(self.refuse(format!("`{path}` is not signed by the log's key")));
         }
-        // The root version a checkpoint names never decreases as the log grows.
-        let version = root.version;
-        let below = self.named.range(..size).next_back().map(|(_, v)| *v);
-        let above = self.named.range(size + 1..).next().map(|(_, v)| *v);
-        if below.is_some_and(|v| v > version) || above.is_some_and(|v| v < version) {
-            return Err(self.refuse(format!(
-                "`{path}` names root version {version}, out of order with the checkpoints around it: the version a checkpoint names never decreases as the log grows"
-            )));
-        }
-        self.named.insert(size, version);
         let proof = self
             .tiles
             .consistency(size)
@@ -1099,11 +1288,20 @@ impl<'t> Registry<'t> {
                 self.point.checkpoint.size
             )));
         }
-        // Counted as rule 9 of spec/30 §11 states, with the threshold of the version it names:
-        // a prefix of the point, which is itself signed under the last root or proven a prefix
-        // of a checkpoint that is, its retired witnesses count unless revoked.
-        let lines = counted(&signed, size, &root, &self.chain, self.retired);
-        Ok((lines, root.witnesses.threshold))
+        // Counted as rule 9 of spec/30 §11 states, with k the larger of the threshold of the
+        // version it names and the last root's: a prefix of the point, which is itself signed
+        // under the last root or proven a prefix of a checkpoint that is, its retired witnesses
+        // count unless revoked; with the proof not completed, a retired witness's line leaves
+        // the copy uncounted (`None`).
+        let (lines, unproven) = counted(&signed, size, &root, &self.chain, self.retired);
+        if unproven {
+            return Ok(None);
+        }
+        Ok(Some(KeptCopy {
+            lines,
+            threshold: threshold_of(&root, &self.chain),
+            version: root.version,
+        }))
     }
 
     /// When the entry `index` was logged (rule 36.4): for each distinct witness, its earliest
@@ -1144,23 +1342,51 @@ impl<'t> Registry<'t> {
             .map_err(|problem| self.refuse(witness_problem(&problem)))
     }
 
-    /// The first kept checkpoint at or after `from` that has a witness time, read by size, at
-    /// most [`MAX_SCAN`] of them, the point included when it is that near; with none, every
-    /// place's copy merged, an omission ([`Omission::Cadence`]), never the point's time.
-    fn first_timed(&mut self, from: u64) -> Result<(u64, u64), Refusal> {
+    /// The deadline of a wait from the entry at `index` that ends at witness time `target`:
+    /// the first kept checkpoint above it, read by size up to the point, whose witness time is
+    /// at least `target`, with the size of the last one before it that has a witness time, or
+    /// `None` for each when there is none. Its size is the first at which the running maximum
+    /// of witness time over sizes reaches `target`: a checkpoint's witness time, the k-th latest
+    /// of the cosignatures counted, need not grow with the size when the witnesses cosigning
+    /// differ, so no search that assumes it does is used. More than [`MAX_SCAN`] sizes in a row
+    /// with no witness time, short of the point, every place's copy merged, is an omission
+    /// ([`Omission::Cadence`]), never the point's time. A linear scan, O(W) kept checkpoints
+    /// for W sizes from the entry to its deadline, each read once and cached; the result is
+    /// cached by `index` and `target`.
+    fn deadline(&mut self, index: u64, target: u64) -> Result<(Option<u64>, Option<u64>), Refusal> {
+        if let Some(found) = self.deadlines.get(&(index, target)) {
+            return Ok(*found);
+        }
         let point = self.point.checkpoint.size;
-        let last = point.min(from.saturating_add(MAX_SCAN as u64));
+        let mut previous: Option<u64> = None;
+        let mut gap_from = index.saturating_add(1);
         let mut agreeing = usize::MAX;
-        for size in from..=last {
+        let mut found = (None, None);
+        for size in index.saturating_add(1)..=point {
             match self.kept(size)? {
                 Some(Kept {
                     time: Some(time), ..
-                }) => return Ok((size, time)),
+                }) => {
+                    if time >= target {
+                        found = (Some(size), previous);
+                        break;
+                    }
+                    previous = Some(size);
+                    gap_from = size.saturating_add(1);
+                    agreeing = usize::MAX;
+                }
                 Some(kept) => agreeing = agreeing.min(kept.agreeing),
                 None => {}
             }
+            if size.saturating_sub(gap_from) >= MAX_SCAN as u64 {
+                return Err(self.cadence(gap_from, size, agreeing));
+            }
         }
-        Err(self.cadence(from, last, agreeing))
+        if found.0.is_none() {
+            found.1 = previous;
+        }
+        self.deadlines.insert((index, target), found);
+        Ok(found)
     }
 
     /// No checkpoint of the witness threshold among the sizes `from` to `to`, short of the
@@ -1181,11 +1407,11 @@ impl<'t> Registry<'t> {
 
     /// The earliest position the seven days of the request logged at `index` could allow,
     /// whatever cosignatures a place withholds, which can only lower a checkpoint's witness
-    /// time or leave it without one: the first size `s` after the request whose first kept
-    /// checkpoint with a witness time, at or after `s`, has a witness time at least seven
-    /// days after the request's start, when that is before its effect
-    /// ([`Registry::recovery_effect`]); its effect otherwise. By binary search over sizes:
-    /// O(log L) probes of at most [`MAX_SCAN`] checkpoints each.
+    /// time or leave it without one: one past the last kept checkpoint with a witness time
+    /// before the deadline of a wait from the request's start ([`Registry::deadline`]), the
+    /// same scan, over the same sizes, as [`Registry::recovery_effect`], when that is before
+    /// its effect; its effect otherwise. O(W) kept checkpoints, W the sizes from the request
+    /// to its deadline.
     pub fn earliest_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         let effect = self.recovery_effect(index)?;
         let point = self.point.checkpoint.size;
@@ -1197,32 +1423,22 @@ impl<'t> Registry<'t> {
         // than k witnesses, back-dating or withheld, cannot move it.
         let start = self.start_time(index)?;
         let target = start.saturating_add(owner::RECOVERY_DELAY);
-        let end = effect.unwrap_or(point).min(point);
         // Why this agrees with the served effect for an honest registry, whatever k up to n:
         // both read a checkpoint's witness time by the same order statistic, the k-th latest of
-        // its counted cosignatures. The served effect is the first checkpoint D whose witness
-        // time reaches the target. For a size s, the first checkpoint with a witness time at or
-        // after s is D for every s between the last such checkpoint below the target and D,
-        // and an earlier one, below the target, before it. The registry cosigns the checkpoint
-        // just before D by the threshold, and its witness time is below the target (else it
-        // would be D), so the predicate first turns true at s = D. Withheld cosignatures can
-        // only make the served D later, or make the checkpoint before it lose its witness time,
-        // and either makes the two differ.
-        let reaches = |registry: &mut Registry<'t>, s: u64| -> Result<bool, Refusal> {
-            Ok(registry.first_timed(s)?.1 >= target)
-        };
-        let (mut low, mut high) = (index.saturating_add(1), end);
-        if low > high || !reaches(self, high)? {
+        // its counted cosignatures, and find the deadline D by the same scan, the first
+        // checkpoint whose witness time reaches the target, the running maximum of witness time
+        // first reaching it there. Withheld cosignatures can only lower a checkpoint's witness
+        // time or leave it without one, so the deadline of the served copies is D or later, and
+        // the earliest position is one past the last checkpoint with a witness time before D:
+        // the registry cosigns the one just before D by the threshold, so for an honest
+        // registry that is D itself. A checkpoint before D cosigned later than D by a witness
+        // they share changes neither: its witness time is still below the target, else it
+        // would be D.
+        let (deadline, previous) = self.deadline(index, target)?;
+        if deadline.is_none() {
             return Ok(effect);
         }
-        while low < high {
-            let middle = low + (high - low) / 2;
-            if reaches(self, middle)? {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
+        let low = previous.map_or(index.saturating_add(1), |p| p.saturating_add(1));
         Ok(match effect {
             Some(effect) if effect <= low => Some(effect),
             _ => Some(low),
@@ -1254,8 +1470,9 @@ impl<'t> Registry<'t> {
     /// size of the first kept checkpoint whose witness time is at least seven days after the
     /// time the request was logged ([`Registry::logged_at`]); `None` when no checkpoint up to the
     /// point is. A kept checkpoint that no place serves makes it unavailable, never later: a
-    /// registry keeps one for every size. By binary search over sizes, since witness times never
-    /// decrease as the log grows: O(log L) probes of at most [`MAX_SCAN`] checkpoints each.
+    /// registry keeps one for every size. By the running maximum of witness time over sizes
+    /// ([`Registry::deadline`]), the same scan as [`Registry::earliest_effect`]: O(W) kept
+    /// checkpoints, W the sizes from the request to its deadline.
     pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
         let point = self.point.checkpoint.size;
         if index >= point {
@@ -1266,19 +1483,7 @@ impl<'t> Registry<'t> {
         // whatever a place leaves out. It ends at a checkpoint's witness time, the k-th LATEST.
         let start = self.logged_at(index)?;
         let target = start.saturating_add(owner::RECOVERY_DELAY);
-        if self.point.time < target {
-            return Ok(None);
-        }
-        let (mut low, mut high) = (index + 1, point);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            if self.first_timed(middle)?.1 >= target {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        Ok(Some(self.first_timed(low)?.0))
+        Ok(self.deadline(index, target)?.0)
     }
 
     /// The documents no place served since the last call: each one made the result that
@@ -1301,7 +1506,7 @@ impl<'t> Registry<'t> {
     /// The registry misbehavior this client has seen, every place of the source read
     /// ([`Misbehavior`]): an owner chain that does not settle, whose names it refused (U7010);
     /// a request with no deadline checkpoint; a gap of more than 64 sizes with no checkpoint of
-    /// the witness threshold. For `una ita audit` to report as evidence against the registry.
+    /// the witness threshold; two checkpoints of one size naming different root versions. For `una ita audit` to report as evidence against the registry.
     pub fn misbehavior(&self) -> &[Misbehavior] {
         &self.misbehavior
     }

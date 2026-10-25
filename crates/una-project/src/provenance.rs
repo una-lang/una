@@ -284,9 +284,9 @@ pub fn verify(provenance: &Provenance, expected: &Expected) -> Result<Statement,
     // Verified under the root version it names, which the stored chain must hold.
     let last = crate::client::named_root(&checkpoint, &chain)
         .map_err(|error| match error {
-            crate::client::OpenError::Unavailable(why) | crate::client::OpenError::Refused(why) => {
-                why
-            }
+            crate::client::OpenError::Unavailable(why)
+            | crate::client::OpenError::Omitted(_, why)
+            | crate::client::OpenError::Refused(why) => why,
         })?
         .clone();
     if checkpoint.origin != last.log.name {

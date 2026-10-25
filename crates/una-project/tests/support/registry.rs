@@ -251,7 +251,7 @@ impl TestRegistry {
         let n = self.keys.witnesses.len();
         for (at, witness) in self.keys.witnesses.iter_mut().enumerate() {
             if at + count >= n {
-                revoked.push(witness.1.name.clone());
+                revoked.push(fingerprint(&witness.1.public));
                 let seed = 90 + (version as u8) * 4 + at as u8;
                 *witness = keypair(seed, &format!("witness.rotated.{version}.{at}"));
             }

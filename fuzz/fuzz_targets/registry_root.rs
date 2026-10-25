@@ -5,6 +5,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use una_project::tlog::owner::fingerprint;
 use una_project::tlog::root::{digest, trust_first, walk};
 
 fuzz_target!(|bytes: &[u8]| {
@@ -14,9 +15,11 @@ fuzz_target!(|bytes: &[u8]| {
             assert!(1 <= keys.threshold && keys.threshold <= keys.keys.len());
         }
         // A revoked witness is never one of the version's witnesses, nor revoked twice.
-        for (at, name) in root.witnesses_revoked.iter().enumerate() {
-            assert!(root.witnesses.keys.iter().all(|key| key.name != *name));
-            assert!(root.witnesses_revoked.iter().take(at).all(|other| other != name));
+        for (at, revoked) in root.witnesses_revoked.iter().enumerate() {
+            assert_eq!(revoked.len(), 64);
+            assert!(revoked.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+            assert!(root.witnesses.keys.iter().all(|key| fingerprint(&key.public) != *revoked));
+            assert!(root.witnesses_revoked.iter().take(at).all(|other| other != revoked));
         }
         let _ = walk(&root, &[&text], 0);
     }
