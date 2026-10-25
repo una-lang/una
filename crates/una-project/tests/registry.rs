@@ -22,7 +22,9 @@ use una_project::tlog::state::{Signers, parse_advisory};
 use una_project::registry::bundle::{self, Memory, Recording};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
 use una_project::registry::submit::{self, NameState, PROMISE_WINDOW, Promise, check_promise};
-use una_project::registry::watch::{Position, Seen, Submitted, Verdict, judge, watch};
+use una_project::registry::watch::{
+    MAX_SETTLED, Position, Seen, Submitted, Verdict, assess, judge, watch,
+};
 use una_project::tlog::note::parse_note;
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
@@ -329,6 +331,7 @@ fn promises_are_judged_once_by_the_time_their_entry_was_logged() {
         url: "file:///srv/ita".to_owned(),
         name: "acme/other".to_owned(),
         time: 1000,
+        sent: 1000,
     };
     assert_eq!(Submitted::parse(&submitted.leaf, &submitted.encode()).unwrap(), submitted);
     let promise = |by: u64| Promise {
@@ -360,10 +363,12 @@ fn promises_are_judged_once_by_the_time_their_entry_was_logged() {
     // A settled submission is recorded in the position, for a name not followed too, and a
     // second run, which reads the position back, sees it settled.
     let mut first_run = Position::start("acme", "acme");
-    first_run.settled.insert(submitted.leaf.clone(), true);
+    first_run
+        .settle(&submitted.leaf, &Verdict::Kept)
+        .unwrap();
     let second_run = Position::parse(&first_run.encode(), "acme", "acme").unwrap();
     assert!(!second_run.names.contains_key("acme/other"));
-    assert_eq!(second_run.settled.get(&submitted.leaf), Some(&true));
+    assert!(second_run.settled.contains(&submitted.leaf));
     // The chains a second run follows keep the settled submissions.
     let mut chain = |_: &str| -> Result<Vec<Seen>, String> { Ok(Vec::new()) };
     let report = watch(&mut chain, &second_run, &[]).unwrap();
@@ -1166,4 +1171,243 @@ fn a_published_source_is_the_one_its_workspace_declares() {
             .unwrap_err()
             .contains("no https transport yet")
     );
+}
+
+// --- Recheck: void owner events, the promise window, disjoint signers, bad promises ----------
+
+/// The attack: a thief who stole the owner's key K adds a key T, yanks with T and publishes with
+/// T; the owner revokes K as compromised since before the theft. The yank is void and reported,
+/// the release is skipped as compromised, and the name is never refused.
+#[test]
+fn entries_signed_only_through_a_void_owner_event_are_void() {
+    let mut test = TestRegistry::new("acme");
+    let stolen = keypair(60, "acme.laptop");
+    let kept = keypair(61, "acme.desktop");
+    let thief = keypair(66, "acme.thief");
+    test.register_keys("acme", &[&stolen, &kept], 1, &[], 0);
+    let (good, _) = test.release("acme/ledger", "0.3.0", "none", "none", &[&stolen]);
+    test.owner_event(
+        "acme",
+        &format!("add {}", support::key_text(&thief.1)),
+        1,
+        &[&stolen, &thief],
+    );
+    let yank = format!(
+        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
+        test.previous("acme/ledger")
+    );
+    let document = support::signed(&yank, &[&thief]);
+    test.append("acme/ledger", &document);
+    test.release("acme/ledger", "0.3.1", "none", "none", &[&thief]);
+    test.owner_event(
+        "acme",
+        &format!("revoke {} since {good}", stolen.1.name),
+        1,
+        &[&kept],
+    );
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let marks = client.marks("acme/ledger").unwrap();
+    assert!(marks.yanked.is_empty(), "{marks:?}");
+    assert_eq!(marks.voided.len(), 1);
+    let releases = client.releases("acme/ledger").unwrap();
+    let late = releases
+        .iter()
+        .find(|r| r.statement.version == v("0.3.1"))
+        .unwrap();
+    assert!(late.compromised);
+    let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
+    assert!(state.iter().any(|r| r.version == v("0.3.1") && r.yanked));
+}
+
+/// The window runs from the later of the witness time and the local clock less the skew: an
+/// honest submission read at a checkpoint 20 hours old is not broken. Kept is final; broken is
+/// provisional, and a broken verdict from incomplete kept checkpoints becomes kept once they are
+/// served complete.
+#[test]
+fn the_promise_window_is_anchored_and_only_kept_is_settled() {
+    let hour = 3600;
+    let sent = 2_000_000_000;
+    let honest = Submitted {
+        leaf: "cd".repeat(32),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/ledger".to_owned(),
+        time: sent - 20 * hour,
+        sent,
+    };
+    assert_eq!(honest.anchor(), sent - una_project::client::SKEW);
+    let promise = Promise {
+        source: "acme".to_owned(),
+        leaf: format!("sha256:{}", honest.leaf),
+        by: sent + hour / 2,
+        document: String::new(),
+    };
+    assert_eq!(
+        judge(&honest, Some(&promise), Some(sent + hour / 4), sent + hour),
+        Verdict::Kept
+    );
+    // A mirror served too few kept checkpoints: the entry looks logged late.
+    let provisional = judge(&honest, Some(&promise), Some(sent + hour), sent + 2 * hour);
+    assert!(matches!(provisional, Verdict::Broken(_)));
+    let mut position = Position::start("acme", "acme");
+    position.settle(&honest.leaf, &provisional).unwrap();
+    assert!(position.settled.is_empty(), "broken is never settled");
+    // The complete checkpoints give its true logged-at time: kept, and settled.
+    let complete = judge(&honest, Some(&promise), Some(sent), sent + 3 * hour);
+    assert_eq!(complete, Verdict::Kept);
+    position.settle(&honest.leaf, &complete).unwrap();
+    assert!(position.settled.contains(&honest.leaf));
+}
+
+/// Settled lines whose record is gone are pruned; past the limit, settling is refused with a
+/// message that says what to remove.
+#[test]
+fn settled_lines_are_pruned_and_bounded() {
+    let mut position = Position::start("acme", "acme");
+    for i in 0..3u32 {
+        position
+            .settle(&format!("{i:064x}"), &Verdict::Kept)
+            .unwrap();
+    }
+    let existing: BTreeSet<String> = [format!("{:064x}", 1)].into_iter().collect();
+    position.prune(&existing);
+    assert_eq!(position.settled, existing);
+    let mut full = Position::start("acme", "acme");
+    full.settled = (0..MAX_SETTLED).map(|i| format!("{i:064x}")).collect();
+    let refusal = full
+        .settle(&format!("{:064x}", MAX_SETTLED), &Verdict::Kept)
+        .unwrap_err();
+    assert!(refusal.contains("remove old records"), "{refusal}");
+}
+
+/// One key that is both a security key of the root and the owner's key counts once, as a
+/// security key: it holds a release back, and never lifts the cooldown alone.
+#[test]
+fn a_key_both_security_and_owner_does_not_lift_the_cooldown_alone() {
+    let mut test = TestRegistry::new("acme");
+    let both = (
+        ed25519_dalek::SigningKey::from_bytes(&test.keys.security.0.to_bytes()),
+        test.keys.security.1.clone(),
+    );
+    test.register("acme", &both);
+    test.release("acme/ledger", "0.3.0", "none", "none", &[&both]);
+    let (_, fix) = test.release("acme/ledger", "0.3.1", "none", "none", &[&both]);
+    let advisory = format!(
+        "ita-advisory/1\nsource acme\nname acme/ledger\n{}\nid ITA-1\nline 0.3\naffected 0.3.0\nfixed 0.3.1 {fix}\nseverity high\nsummary An overflow",
+        test.previous("acme/ledger")
+    );
+    let document = support::signed(&advisory, &[&both]);
+    test.append("acme/ledger", &document);
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let marks = client.marks("acme/ledger").unwrap();
+    assert_eq!(marks.advised[&v("0.3.0")], ["ITA-1"], "it holds back");
+    assert!(marks.threshold_fix.is_empty(), "it does not hurry in");
+}
+
+/// One bad promise among good ones: it is reported and counts as none, and the others are
+/// judged as usual.
+#[test]
+fn a_bad_promise_is_reported_and_counts_as_none() {
+    let log = key(20, "acme.example/log");
+    let stranger = key(21, "acme.example/other");
+    // Past the window of a submission at 1000: an hour, and the hour of skew.
+    let now = 10_000;
+    let record = |leaf: &str| Submitted {
+        leaf: leaf.to_owned(),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/ledger".to_owned(),
+        time: 1000,
+        sent: 1000,
+    };
+    let promise_of = |leaf: &str, signer: &SigningKey, source: &str| {
+        sign_note(
+            &format!("ita-promise/1\nsource {source}\nleaf sha256:{leaf}\nby 2000\n"),
+            &[signer],
+        )
+        .unwrap()
+        .into_bytes()
+    };
+    let good = "aa".repeat(32);
+    let forged = "bb".repeat(32);
+    let elsewhere = "cc".repeat(32);
+    let ok = assess(
+        &record(&good),
+        Ok(Some(promise_of(&good, &log, "acme"))),
+        log.key(),
+        "acme",
+        Some(1500),
+        now,
+    );
+    assert_eq!(ok.verdict, Verdict::Kept);
+    assert!(ok.notes.is_empty());
+    for (leaf, served) in [
+        (&forged, promise_of(&forged, &stranger, "acme")),
+        (&elsewhere, promise_of(&elsewhere, &log, "other")),
+        (&forged, b"not a promise".to_vec()),
+    ] {
+        let bad = assess(&record(leaf), Ok(Some(served)), log.key(), "acme", None, now);
+        assert_eq!(bad.notes.len(), 1, "{bad:?}");
+        assert!(bad.notes[0].contains("counts as none"));
+        // Judged as no promise: past the window, not logged, broken.
+        assert!(matches!(bad.verdict, Verdict::Broken(_)));
+    }
+}
+
+/// Rule 26 compares a backfill release, 0.3.1 published after 0.3.5, against 0.3.5, the highest
+/// release of the line in log order.
+#[test]
+fn a_backfill_release_is_checked_against_the_highest_of_its_line() {
+    let publisher = key(50, "acme.publisher");
+    let none = BTreeSet::new();
+    let mut state = first_state();
+    state.statements.insert(
+        v("0.3.5"),
+        parse_statement(&format!(
+            "ita-release/1\nsource acme\nname acme/ledger\nversion 0.3.5\nprevious none\ndigest {D}\nmanifest {D}\nedition 0.4\nauthority Http[get]\ntrust none\n"
+        ))
+        .unwrap(),
+    );
+    let text = published("0.3.1", "");
+    let (manifest, _) = parse_manifest(&text);
+    let grows = submit::release(
+        &manifest,
+        files(&text),
+        &authority(&[("Http", &["get", "post"])]),
+        &none,
+        &state,
+        &[&publisher],
+    );
+    assert!(grows.unwrap_err().join("; ").contains("Http[post]"));
+    let same = submit::release(
+        &manifest,
+        files(&text),
+        &authority(&[("Http", &["get"])]),
+        &none,
+        &state,
+        &[&publisher],
+    );
+    assert!(same.is_ok());
 }

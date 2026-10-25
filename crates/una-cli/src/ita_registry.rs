@@ -525,6 +525,8 @@ fn submitted(submission: &submit::Submission, url: &str, name: &str, time: u64) 
         url: url.to_owned(),
         name: name.to_owned(),
         time,
+        // The local clock when it is sent: with the witness time, the anchor of its window.
+        sent: crate::local_clock(),
     }
 }
 
@@ -1003,33 +1005,44 @@ pub(crate) fn watch_command(
             lines.push(format!("error: the submissions recorded cannot be read: {why}"));
         }
         Ok(list) => {
+            // Settled lines whose record is gone are pruned, so the position stays bounded.
+            let existing: std::collections::BTreeSet<String> = list.iter().cloned().collect();
+            report.position.prune(&existing);
             for leaf in list {
-                if report.position.settled.contains_key(&leaf) {
+                if report.position.settled.contains(&leaf) {
                     continue;
                 }
-                match judge_submission(itaoca, source, &leaf, &mut registry) {
-                    Ok(watch::Verdict::Pending) => {
-                        lines.push(format!("pending: the submission sha256:{leaf} is not logged yet"));
-                    }
-                    Ok(watch::Verdict::Kept) => {
-                        lines.push(format!("kept: the submission sha256:{leaf} is logged as promised"));
-                        report.position.settled.insert(leaf, true);
-                    }
-                    Ok(watch::Verdict::Broken(why)) => {
-                        failed = true;
-                        lines.push(format!(
-                            "broken: the registry's promise for sha256:{leaf}: {}; publish the promise as evidence",
-                            shown(&why)
-                        ));
-                        report.position.settled.insert(leaf, false);
-                    }
+                let assessment = match judge_submission(itaoca, source, &leaf, &mut registry) {
+                    Ok(assessment) => assessment,
                     Err(why) => {
                         failed = true;
                         lines.push(format!(
                             "error: the submission sha256:{leaf} cannot be judged: {}",
                             shown(&why)
                         ));
+                        continue;
                     }
+                };
+                lines.extend(assessment.notes.iter().map(|note| format!("note: {note}")));
+                match &assessment.verdict {
+                    watch::Verdict::Pending => {
+                        lines.push(format!("pending: the submission sha256:{leaf} is not logged yet"));
+                    }
+                    watch::Verdict::Kept => {
+                        lines.push(format!("kept: the submission sha256:{leaf} is logged as promised"));
+                    }
+                    watch::Verdict::Broken(why) => {
+                        // Provisional: judged from what the places served, so judged again on
+                        // every run, never settled.
+                        failed = true;
+                        lines.push(format!(
+                            "broken: the registry's promise for sha256:{leaf}: {why}; publish the promise as evidence"
+                        ));
+                    }
+                }
+                if let Err(why) = report.position.settle(&leaf, &assessment.verdict) {
+                    failed = true;
+                    lines.push(format!("error: {why}"));
                 }
             }
         }
@@ -1091,26 +1104,16 @@ fn judge_submission(
     source: &str,
     leaf: &str,
     registry: &mut Registry<'_>,
-) -> Result<watch::Verdict, String> {
+) -> Result<watch::Assessment, String> {
     let file = tree::locate(&itaoca.root, &["registry", source, "submitted", leaf])?
         .ok_or("the record is gone")?;
     let text = String::from_utf8(tree::read_file(&file, 4096)?)
         .map_err(|_| "the record is not UTF-8".to_owned())?;
     let record = watch::Submitted::parse(leaf, &text)?;
-    let transport = transport::open(&Location::parse(&record.url)?);
-    let promise = match transport.get(&format!("submit/{leaf}/promise"), 1 << 16)? {
-        None => None,
-        Some(bytes) => {
-            let document =
-                String::from_utf8(bytes).map_err(|_| "its promise is not UTF-8".to_owned())?;
-            Some(submit::check_promise(
-                &document,
-                &registry.root.log,
-                source,
-                &format!("sha256:{leaf}"),
-            )?)
-        }
-    };
+    // What the place serves is judged by `assess`: a promise that does not verify is reported
+    // and counts as none; a place that cannot serve is reported too.
+    let served = Location::parse(&record.url)
+        .and_then(|location| transport::open(&location).get(&format!("submit/{leaf}/promise"), 1 << 16));
     let target = format!("sha256:{leaf}");
     let index = watch::chain_of(registry, &record.name)?
         .into_iter()
@@ -1120,9 +1123,11 @@ fn judge_submission(
         Some(index) => Some(registry.logged_at(index)?),
         None => None,
     };
-    Ok(watch::judge(
+    Ok(watch::assess(
         &record,
-        promise.as_ref(),
+        served,
+        &registry.root.log,
+        source,
         logged_at,
         registry.point.time,
     ))

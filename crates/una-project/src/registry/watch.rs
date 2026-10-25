@@ -1,6 +1,6 @@
 //! `una ita watch <owner>` (ADR 0122 rules 36 and 36.2): the entries of an owner's chains since a
 //! stored position, so an owner learns of a release, yank or key event it did not make, and the
-//! registry's promises to log its submissions, each settled once as kept or broken.
+//! registry's promises to log its submissions, each settled once it is kept.
 //!
 //! The position is stored in Itaoca, `registry/<source>/watch/<owner>.position`:
 //!
@@ -9,15 +9,18 @@
 //! source acme
 //! owner acme 12              the owner's chain: entries already seen
 //! name acme/ledger 5         one line per package name followed, sorted, with its count
-//! settled <hex> kept         one line per submission settled, sorted: `kept` or `broken`
+//! settled <hex>              one line per submission settled as kept, sorted
 //! ```
 //!
 //! Each chain is read verified from its stored count ([`Registry`]), and a count below the one
 //! stored is refused (U7010): a chain never shrinks. A submission (`registry/<source>/submitted/`,
 //! [`Submitted`]) is judged by [`judge`]: kept when its entry is in the log at a time no later
 //! than its promise's `by`; broken when it is not and the time has passed, when the promise names
-//! a `by` past the submission's time and the window, or when no promise came within the window.
-//! A settled submission is recorded in the position, and never judged again.
+//! a `by` past the window, or when no promise came within the window. Kept is final: the
+//! submission is settled in the position and never judged again. Broken is provisional: it is
+//! judged from what the places served, whose kept checkpoints may be incomplete and make a
+//! logged-at time later than it is, so it is reported on every run until it is kept. Settled
+//! lines whose submission record is gone are pruned ([`Position::prune`]).
 //!
 //! Costs: one chain per name followed, and O(E) for its E entries; O(N log N) to keep the N
 //! names and settled submissions sorted.
@@ -38,6 +41,13 @@ pub const MAX_NAMES: usize = 10_000;
 
 /// The most submissions a position records as settled.
 pub const MAX_SETTLED: usize = 100_000;
+
+/// Why a position cannot settle more submissions.
+fn too_many(source: &str) -> String {
+    format!(
+        "the watch position records {MAX_SETTLED} settled submissions, its most; remove old records in `registry/{source}/submitted/` of Itaoca, and their settled lines are pruned"
+    )
+}
 
 /// Whether `name` is a package's name: `name` or `owner/name`, each part a lowercase identifier
 /// of at most 64 bytes.
@@ -68,8 +78,8 @@ pub struct Position {
     pub owner_count: u64,
     /// The entries seen of each package name's chain.
     pub names: BTreeMap<String, u64>,
-    /// The submissions settled, by the hex of their leaf hash: kept (`true`) or broken.
-    pub settled: BTreeMap<String, bool>,
+    /// The submissions settled as kept, by the hex of their leaf hash.
+    pub settled: BTreeSet<String>,
 }
 
 impl Position {
@@ -80,8 +90,28 @@ impl Position {
             owner: owner.to_owned(),
             owner_count: 0,
             names: BTreeMap::new(),
-            settled: BTreeMap::new(),
+            settled: BTreeSet::new(),
         }
+    }
+
+    /// Settles `leaf` when `verdict` is kept, which is final; a broken verdict is provisional and
+    /// never settled. Refused past [`MAX_SETTLED`], telling the user to remove old submission
+    /// records.
+    pub fn settle(&mut self, leaf: &str, verdict: &Verdict) -> Result<(), String> {
+        if *verdict != Verdict::Kept {
+            return Ok(());
+        }
+        if self.settled.len() >= MAX_SETTLED && !self.settled.contains(leaf) {
+            return Err(too_many(&self.source));
+        }
+        self.settled.insert(leaf.to_owned());
+        Ok(())
+    }
+
+    /// Prunes the settled lines whose submission record is gone: `existing` holds the hex of
+    /// every record in `registry/<source>/submitted/`. O(S log S).
+    pub fn prune(&mut self, existing: &BTreeSet<String>) {
+        self.settled.retain(|leaf| existing.contains(leaf));
     }
 
     /// The document's one encoding.
@@ -93,15 +123,14 @@ impl Position {
         for (name, count) in &self.names {
             out.push_str(&format!("name {name} {count}\n"));
         }
-        for (leaf, kept) in &self.settled {
-            let verdict = if *kept { "kept" } else { "broken" };
-            out.push_str(&format!("settled {leaf} {verdict}\n"));
+        for leaf in &self.settled {
+            out.push_str(&format!("settled {leaf}\n"));
         }
         out
     }
 
     /// Reads a position strictly, for `source` and `owner`, the ones it MUST name: its format,
-    /// each name a package's name, each settled submission a leaf hash's hex and a verdict, and
+    /// each name a package's name, each settled submission a leaf hash's hex, and
     /// its one encoding.
     pub fn parse(text: &str, source: &str, owner: &str) -> Result<Position, String> {
         let body = text
@@ -131,28 +160,18 @@ impl Position {
         let mut position = Position::start(source, owner);
         position.owner_count = owner_count;
         for line in lines {
-            if let Some(rest) = line.strip_prefix("settled ") {
+            if let Some(leaf) = line.strip_prefix("settled ") {
                 if position.settled.len() == MAX_SETTLED {
-                    return Err(format!(
-                        "a watch position records at most {MAX_SETTLED} submissions"
-                    ));
+                    return Err(too_many(source));
                 }
-                let (leaf, verdict) = rest
-                    .split_once(' ')
-                    .ok_or("a line of a watch position is `settled <hex> kept|broken`")?;
                 let hex_ok = leaf.len() == 64
                     && leaf
                         .bytes()
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-                let kept = match verdict {
-                    "kept" => true,
-                    "broken" => false,
-                    _ => return Err(format!("`{verdict}` is not `kept` or `broken`")),
-                };
                 if !hex_ok {
                     return Err(format!("`{leaf}` is not the hex of a leaf hash"));
                 }
-                position.settled.insert(leaf.to_owned(), kept);
+                position.settled.insert(leaf.to_owned());
                 continue;
             }
             if position.names.len() == MAX_NAMES {
@@ -186,10 +205,14 @@ pub const SUBMITTED: &str = "ita-submitted/1";
 /// url file:///srv/ita
 /// name acme/ledger
 /// time 1900000000
+/// sent 1900070000
 /// ```
 ///
-/// the URL it was sent to, where its promise appears; the name whose chain its entry joins; and
-/// the witness time of the checkpoint read when it was sent, from which its window runs.
+/// the URL it was sent to, where its promise appears; the name whose chain its entry joins; the
+/// witness time of the checkpoint read when it was sent; and the local clock when it was sent.
+/// Its window runs from the later of the witness time and the local clock less the allowed skew
+/// ([`Submitted::anchor`]), so an honest submission read at a checkpoint up to 24 hours old is
+/// not judged against a window that ended before it was sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Submitted {
     /// The hex of its entry's leaf hash.
@@ -198,17 +221,25 @@ pub struct Submitted {
     pub url: String,
     /// The name whose chain its entry joins.
     pub name: String,
-    /// The witness time when it was sent, in seconds.
+    /// The witness time of the checkpoint read when it was sent, in seconds.
     pub time: u64,
+    /// The local clock when it was sent, in seconds.
+    pub sent: u64,
 }
 
 impl Submitted {
     /// The record's one encoding.
     pub fn encode(&self) -> String {
         format!(
-            "{SUBMITTED}\nurl {}\nname {}\ntime {}\n",
-            self.url, self.name, self.time
+            "{SUBMITTED}\nurl {}\nname {}\ntime {}\nsent {}\n",
+            self.url, self.name, self.time, self.sent
         )
+    }
+
+    /// Where its window starts: the later of the checkpoint's witness time and the local clock
+    /// at sending less the allowed skew (rule 36.4).
+    pub fn anchor(&self) -> u64 {
+        self.time.max(self.sent.saturating_sub(SKEW))
     }
 
     /// Reads the record of the submission of leaf `leaf` strictly.
@@ -231,6 +262,7 @@ impl Submitted {
         let url = field("url")?;
         let name = field("name")?;
         let time = decimal(&field("time")?).ok_or("`time` is a decimal of seconds")?;
+        let sent = decimal(&field("sent")?).ok_or("`sent` is a decimal of seconds")?;
         if url.chars().any(char::is_control) || !is_package_name(&name) {
             return Err("a submission's record names no URL or package".to_owned());
         }
@@ -239,6 +271,7 @@ impl Submitted {
             url,
             name,
             time,
+            sent,
         };
         if submitted.encode() != text {
             return Err("a submission's record is not in its one encoding".to_owned());
@@ -263,8 +296,8 @@ pub enum Verdict {
 /// checkpoint, by its inclusion in the name's verified chain, the witness time it was logged at
 /// ([`Registry::logged_at`]).
 ///
-/// - A promise whose `by` is later than the submission's time, plus [`PROMISE_WINDOW`], plus the
-///   allowed clock skew, is itself a broken promise.
+/// - A promise whose `by` is later than the submission's anchor ([`Submitted::anchor`]), plus
+///   [`PROMISE_WINDOW`], plus the allowed clock skew, is itself a broken promise.
 /// - Kept: the entry is logged at a time no later than `by`, or, with no promise, within the
 ///   window.
 /// - Broken: logged later than `by`; not logged once `now` is past `by`; or no promise and not
@@ -277,7 +310,7 @@ pub fn judge(
     now: u64,
 ) -> Verdict {
     let window = submitted
-        .time
+        .anchor()
         .saturating_add(PROMISE_WINDOW)
         .saturating_add(SKEW);
     if let Some(promise) = promise
@@ -298,6 +331,65 @@ pub fn judge(
             format!("no promise came, and it is not logged by {by}")
         }),
         None => Verdict::Pending,
+    }
+}
+
+/// What watching says of one submission: its verdict, and notes, such as a promise served that
+/// does not verify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Assessment {
+    /// The verdict.
+    pub verdict: Verdict,
+    /// Notes to print with it.
+    pub notes: Vec<String>,
+}
+
+/// Assesses `submitted` from what was served at its place: `served`, the promise's bytes, none,
+/// or why the place could not serve; `log`, the log's key of the last root; `logged_at` and
+/// `now` as [`judge`] takes them. A promise that does not verify (a bad signature, another
+/// source or leaf, a text that does not read) is reported, and judged as no promise, so the
+/// window rule decides. It never fails: one submission's trouble is its own.
+pub fn assess(
+    submitted: &Submitted,
+    served: Result<Option<Vec<u8>>, String>,
+    log: &crate::tlog::note::Key,
+    source: &str,
+    logged_at: Option<u64>,
+    now: u64,
+) -> Assessment {
+    let mut notes = Vec::new();
+    let leaf = format!("sha256:{}", submitted.leaf);
+    let promise = match served {
+        Ok(None) => None,
+        Ok(Some(bytes)) => match String::from_utf8(bytes) {
+            Ok(document) => match super::submit::check_promise(&document, log, source, &leaf) {
+                Ok(promise) => Some(promise),
+                Err(why) => {
+                    notes.push(format!(
+                        "the promise served for {leaf} does not verify, and counts as none: {}",
+                        crate::client::shown(&why)
+                    ));
+                    None
+                }
+            },
+            Err(_) => {
+                notes.push(format!(
+                    "the promise served for {leaf} is not UTF-8, and counts as none"
+                ));
+                None
+            }
+        },
+        Err(why) => {
+            notes.push(format!(
+                "the promise for {leaf} cannot be read, and counts as none: {}",
+                crate::client::shown(&why)
+            ));
+            None
+        }
+    };
+    Assessment {
+        verdict: judge(submitted, promise.as_ref(), logged_at, now),
+        notes,
     }
 }
 

@@ -412,22 +412,24 @@ pub struct Promise {
     pub document: String,
 }
 
-/// Reads and verifies a promise for the entry of leaf hash `leaf` at `source`: its format, and
-/// the signature of the log's key `log`.
-pub fn check_promise(
-    document: &str,
-    log: &Key,
-    source: &str,
-    leaf: &str,
-) -> Result<Promise, String> {
-    let signed = note::parse_note(document)?;
-    if !signed.signed_by(log) {
-        return Err("the promise is not signed by the log's key".to_owned());
-    }
-    let lines: Vec<&str> = signed
-        .text
+/// A promise's text, as read: before any signature or binding is checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromiseText {
+    /// The source it names.
+    pub source: String,
+    /// The leaf hash it names, `sha256:` and hex.
+    pub leaf: String,
+    /// The time it promises.
+    pub by: u64,
+}
+
+/// Reads a promise's text strictly: `ita-promise/1`, `source <source>`, `leaf sha256:<hex>` and
+/// `by <seconds>`, each on its line and nothing else. It checks no signature: that is
+/// [`check_promise`]'s.
+pub fn parse_promise(text: &str) -> Result<PromiseText, String> {
+    let lines: Vec<&str> = text
         .strip_suffix('\n')
-        .unwrap_or_default()
+        .ok_or("a promise ends with a line feed")?
         .split('\n')
         .collect();
     let [format, source_line, leaf_line, by_line] = lines.as_slice() else {
@@ -438,20 +440,49 @@ pub fn check_promise(
     if *format != PROMISE {
         return Err(format!("a promise starts with `{PROMISE}`"));
     }
-    if source_line.strip_prefix("source ") != Some(source) {
-        return Err(format!("the promise is not of `{source}`"));
-    }
-    if leaf_line.strip_prefix("leaf ") != Some(leaf) {
-        return Err("the promise is of another entry".to_owned());
-    }
+    let source = source_line
+        .strip_prefix("source ")
+        .filter(|source| crate::vendor::check_source(source).is_ok())
+        .ok_or("a promise's second line is `source <source>`")?;
+    let leaf = leaf_line
+        .strip_prefix("leaf ")
+        .filter(|leaf| crate::ita::is_digest(leaf))
+        .ok_or("a promise's third line is `leaf sha256:<hex>`")?;
     let by = by_line
         .strip_prefix("by ")
         .and_then(decimal)
         .ok_or("`by` is a decimal of seconds")?;
-    Ok(Promise {
+    Ok(PromiseText {
         source: source.to_owned(),
         leaf: leaf.to_owned(),
         by,
+    })
+}
+
+/// Reads and verifies a promise for the entry of leaf hash `leaf` at `source`: the signature of
+/// the log's key `log` on the note, then its text ([`parse_promise`]), which MUST name that
+/// source and leaf.
+pub fn check_promise(
+    document: &str,
+    log: &Key,
+    source: &str,
+    leaf: &str,
+) -> Result<Promise, String> {
+    let signed = note::parse_note(document)?;
+    if !signed.signed_by(log) {
+        return Err("the promise is not signed by the log's key".to_owned());
+    }
+    let text = parse_promise(&signed.text)?;
+    if text.source != source {
+        return Err(format!("the promise is not of `{source}`"));
+    }
+    if text.leaf != leaf {
+        return Err("the promise is of another entry".to_owned());
+    }
+    Ok(Promise {
+        source: text.source,
+        leaf: text.leaf,
+        by: text.by,
         document: document.to_owned(),
     })
 }

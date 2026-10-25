@@ -180,9 +180,15 @@ pub const MAX_KEY_FILE: u64 = 4096;
 /// most one byte more, and on Unix readable and writable by its owner only; in the form
 /// [`SigningKey::parse`] reads. Every copy of the file's bytes is wiped ([`wipe`]).
 pub fn read_key_file(path: &Path) -> Result<SigningKey, String> {
+    read_key_file_on(path).map(|(key, _)| key)
+}
+
+/// [`read_key_file`], with the device the opened file is on.
+fn read_key_file_on(path: &Path) -> Result<(SigningKey, u64), String> {
     let shown = path.display();
     let file = crate::tree::read_user_file(path, MAX_KEY_FILE)
         .map_err(|why| format!("the key file `{shown}`: {why}"))?;
+    let device = file.device;
     if !file.private {
         let mut bytes = file.bytes;
         wipe(&mut bytes);
@@ -198,7 +204,7 @@ pub fn read_key_file(path: &Path) -> Result<SigningKey, String> {
     let key = SigningKey::parse(&text).map_err(|why| format!("the key file `{shown}`: {why}"));
     let mut bytes = text.into_bytes();
     wipe(&mut bytes);
-    key
+    key.map(|key| (key, device))
 }
 
 /// The keys of `owner` in `dir`, `~/.una/keys/`, that sign for it (rule 38), read strictly:
@@ -227,8 +233,13 @@ pub fn owner_keys(
                 dir.display()
             ));
         }
-        _ => crate::tree::private_dir(dir)?,
+        _ => {}
     }
+    // A best-effort bound on a local attacker who can already write `~/.una`: the directory's
+    // device and inode, read with no link followed, are recorded before it is listed, each key
+    // file opened must be on that device, and after every read the directory must still be the
+    // same one and still private. Any change refuses.
+    let before = crate::tree::private_dir_identity(dir)?;
     let entries =
         std::fs::read_dir(dir).map_err(|error| format!("cannot list `{}`: {error}", dir.display()))?;
     let mut names: Vec<String> = entries
@@ -247,12 +258,24 @@ pub fn owner_keys(
     names.sort();
     let mut chosen: Vec<SigningKey> = Vec::new();
     for name in names {
-        let key = read_key_file(&dir.join(&name))?;
+        let (key, device) = read_key_file_on(&dir.join(&name))?;
+        if cfg!(unix) && device != before.0 {
+            return Err(format!(
+                "the key file `{name}` is not on the device of `{}`",
+                dir.display()
+            ));
+        }
         let is_registered = registered.contains(key.key());
         let seen = chosen.iter().any(|c| c.key().public == key.key().public);
         if is_registered && !seen {
             chosen.push(key);
         }
+    }
+    if crate::tree::private_dir_identity(dir)? != before {
+        return Err(format!(
+            "`{}` changed while its key files were read",
+            dir.display()
+        ));
     }
     if threshold == 0 || chosen.len() < threshold {
         return Err(format!(

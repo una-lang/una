@@ -191,11 +191,18 @@ pub struct Signers {
 }
 
 impl Signers {
-    /// Who of `security` and of `owner` (with `threshold`) signs `note`.
+    /// Who of `security` and of `owner` (with `threshold`) signs `note`. The owner's keys are
+    /// counted without any public key of `security`, so the two counts are of disjoint keys: one
+    /// key that is both a security key and the owner's counts as a security key only.
     pub fn of(note: &Note, security: &[Key], owner: &[Key], threshold: usize) -> Signers {
+        let owners: Vec<Key> = owner
+            .iter()
+            .filter(|key| !security.iter().any(|s| s.public == key.public))
+            .cloned()
+            .collect();
         Signers {
             security: note.signers(security),
-            owner_threshold: threshold > 0 && note.signers(owner) >= threshold,
+            owner_threshold: threshold > 0 && note.signers(&owners) >= threshold,
         }
     }
 

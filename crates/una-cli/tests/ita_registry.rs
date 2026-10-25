@@ -630,3 +630,28 @@ fn publish_refuses_with_git_variables_set() {
         assert!(out.contains(&format!("`{variable}` is set")), "{out}");
     }
 }
+
+/// A symbolic link to a large file is refused as a link, and the large file itself by its size
+/// on the opened descriptor, before any of it is read.
+#[cfg(unix)]
+#[test]
+fn unbundle_refuses_a_link_to_a_large_file() {
+    let (_, dir, _, _) = fetched("bundle-large");
+    let base = scratch("ita-registry-bundles", "large");
+    let large = base.join("large.bundle");
+    // Sparse: no disk is written for its length.
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len(una_project::registry::bundle::MAX_BYTES + 1)
+        .unwrap();
+    let link = base.join("link.bundle");
+    std::os::unix::fs::symlink(&large, &link).unwrap();
+    let isolated = scratch("ita-registry-store", "bundle-large-isolated");
+    for file in [&link, &large] {
+        let (status, _, err) =
+            una_in(&["una", "ita", "unbundle", path(file), path(&dir)], &isolated);
+        assert_eq!(status, 2, "{err}");
+    }
+    assert!(!isolated.join("packages").exists());
+    let _ = std::fs::remove_file(&large);
+}

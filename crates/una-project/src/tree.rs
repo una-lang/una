@@ -408,6 +408,8 @@ pub struct UserFile {
     /// Whether its permission bits, read from the opened descriptor, grant nothing to the group
     /// or to others.
     pub private: bool,
+    /// The device it is on, read from the opened descriptor (0 off Unix).
+    pub device: u64,
 }
 
 /// Reads a file the user names, such as a bundle or a key file, of at most `limit` bytes: opened
@@ -438,7 +440,38 @@ pub fn read_user_file(path: &Path, limit: u64) -> Result<UserFile, Refusal> {
     Ok(UserFile {
         bytes,
         private: private(&opened),
+        device: device_of(&opened),
     })
+}
+
+/// The device of `meta` (0 off Unix).
+#[cfg(unix)]
+fn device_of(meta: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    meta.dev()
+}
+
+#[cfg(not(unix))]
+fn device_of(_: &fs::Metadata) -> u64 {
+    0
+}
+
+/// The device and inode of the directory `path`, read with no link followed, after checking it
+/// is a private directory as [`private_dir`] does: to tell later that it is still the same
+/// directory ((0, 0) off Unix, where no such identity is read).
+pub fn private_dir_identity(path: &Path) -> Result<(u64, u64), Refusal> {
+    private_dir(path)?;
+    let meta = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        Ok((0, 0))
+    }
 }
 
 /// Whether `path` is a directory, not a link, whose permission bits grant nothing to the group

@@ -1113,9 +1113,21 @@ impl<'t> Registry<'t> {
                             advisory.name, advisory.source
                         )));
                     }
+                    // The owner's signers are counted without any key of the root's security
+                    // set, so the two counts are of disjoint keys, and one key that is both
+                    // never counts twice (§11 rule 11).
+                    let owner_threshold = history.at(index).is_some_and(|snapshot| {
+                        let owners = history
+                            .signers(&entry.note, index)
+                            .into_iter()
+                            .filter(|key| history.sound(key, index))
+                            .filter(|key| !security.iter().any(|s| s.public == key.public))
+                            .count();
+                        snapshot.threshold > 0 && owners >= snapshot.threshold
+                    });
                     let signers = Signers {
                         security: entry.note.signers(&security),
-                        owner_threshold: history.signed(&entry.note, index).is_ok(),
+                        owner_threshold,
                     };
                     if !signers.valid() {
                         return Err(self.refuse(format!(
