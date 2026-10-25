@@ -1154,6 +1154,23 @@ impl<'t> Registry<'t> {
             .is_some_and(|floor| floor.size > self.point.checkpoint.size)
     }
 
+    /// The root of `version` in the chain walked, when its digest is `digest`: what a document
+    /// stored under an earlier root, such as a submission's first promise (`spec/30 §15` rule
+    /// 5), is verified against again. O(R) for R versions.
+    pub fn root_at(&self, version: u64, digest: &str) -> Option<&Root> {
+        self.chain
+            .iter()
+            .find(|(root, walked)| root.version == version && walked == digest)
+            .map(|(root, _)| root)
+    }
+
+    /// The last root version walked, with its digest, `sha256:` and hex.
+    pub fn last_root(&self) -> Option<(u64, &str)> {
+        self.chain
+            .last()
+            .map(|(root, digest)| (root.version, digest.as_str()))
+    }
+
     /// Refuses, as unavailable, the judgment of `note`, an entry of `name`'s chain at `index`,
     /// by its owner's `history` when the earliest timing of the owner's requests would change
     /// it (`spec/30 §14` rule 1, withheld cosignatures): an omission of cosignatures, recorded
@@ -2023,26 +2040,41 @@ impl<'t> Registry<'t> {
                             advisory.name, advisory.source
                         )));
                     }
-                    // The owner's signers are counted without any key of the root's security
-                    // set, so the two counts are of disjoint keys, and one key that is both
-                    // never counts twice (§11 rule 11).
+                    // The security keys are judged first. The owner's signers count only when
+                    // they can matter: for a fix that the security keys alone do not lift. So
+                    // a doubt about the owner's timing never makes the name unavailable when
+                    // the owner's signers are not needed.
+                    let alone = Signers {
+                        security: entry.note.signers(&security),
+                        owner_threshold: false,
+                    };
+                    let needs_owner =
+                        alone.needs_owner(advisory.fixed.is_some(), security_threshold);
                     // The owner's threshold counts as the owner replay judges the entry
-                    // (`History::judge`), its sound signers taken without the root's security
-                    // keys, so the two counts are of disjoint keys (§11 rule 11).
-                    let what = format!("the advisory {}", advisory.id);
-                    self.timing_settled(name, &history, &entry.note, index, &what)?;
-                    let owner_threshold = match history.judge(&entry.note, index) {
-                        Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
-                            let owners = sound
-                                .iter()
-                                .filter(|key| !security.iter().any(|s| s.public == key.public))
-                                .count();
-                            snapshot.threshold > 0 && owners >= snapshot.threshold
-                        }),
-                        Standing::Skipped(_) | Standing::Unsigned => false,
+                    // (`History::judge`), once the earliest timing of the owner's requests
+                    // would not change it, its sound signers taken without the root's security
+                    // keys, so the two counts are of disjoint keys, and one key that is both
+                    // never counts twice (§11 rule 11).
+                    let owner_threshold = if needs_owner {
+                        let what = format!("the advisory {}", advisory.id);
+                        self.timing_settled(name, &history, &entry.note, index, &what)?;
+                        match history.judge(&entry.note, index) {
+                            Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
+                                let owners = sound
+                                    .iter()
+                                    .filter(|key| {
+                                        !security.iter().any(|s| s.public == key.public)
+                                    })
+                                    .count();
+                                snapshot.threshold > 0 && owners >= snapshot.threshold
+                            }),
+                            Standing::Skipped(_) | Standing::Unsigned => false,
+                        }
+                    } else {
+                        false
                     };
                     let signers = Signers {
-                        security: entry.note.signers(&security),
+                        security: alone.security,
                         owner_threshold,
                     };
                     if !signers.valid() {

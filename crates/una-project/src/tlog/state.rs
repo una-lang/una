@@ -217,4 +217,16 @@ impl Signers {
     pub fn lifts_cooldown(self, security_threshold: usize) -> bool {
         self.security >= security_threshold.max(2) || (self.security >= 1 && self.owner_threshold)
     }
+
+    /// Whether the owner's signers can change what an advisory with these security signers
+    /// does, so they must be judged: only for an advisory with a fix (`has_fix`) that is valid
+    /// and that the security keys alone do not lift. The security keys are judged first; the
+    /// owner's threshold is ignored here.
+    pub fn needs_owner(self, has_fix: bool, security_threshold: usize) -> bool {
+        let alone = Signers {
+            security: self.security,
+            owner_threshold: false,
+        };
+        has_fix && alone.valid() && !alone.lifts_cooldown(security_threshold)
+    }
 }

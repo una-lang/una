@@ -224,24 +224,30 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     for line in lines {
         registry.state(&locked.name, line)?;
     }
-    let eligibility_delays = registry
-        .observations()
-        .iter()
-        .filter_map(|observation| match observation {
+    // Each delayed release of the name once, by version: the first observation of it. The
+    // match names every kind of observation, so a new kind is a decision here, not a default.
+    let mut eligibility_delays: Vec<Delay> = Vec::new();
+    for observation in registry.observations() {
+        match observation {
             Observation::EligibilityDelay {
                 name,
                 version,
                 served,
                 earliest,
-            } if *name == locked.name => Some(Delay {
-                version: version.clone(),
-                served: *served,
-                earliest: *earliest,
-                fix: fixes.contains(&version),
-            }),
-            _ => None,
-        })
-        .collect();
+            } => {
+                if *name == locked.name
+                    && !eligibility_delays.iter().any(|delay| delay.version == *version)
+                {
+                    eligibility_delays.push(Delay {
+                        version: version.clone(),
+                        served: *served,
+                        earliest: *earliest,
+                        fix: fixes.contains(&version),
+                    });
+                }
+            }
+        }
+    }
     Ok(Facts {
         yanked: marks.yanked.contains_key(&locked.version),
         advisories,
@@ -387,13 +393,14 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
             .iter()
             .map(|index| Kind::AcceptedTookEffect(*index)),
     );
-    kinds.extend(
-        facts
-            .eligibility_delays
-            .iter()
-            .cloned()
-            .map(Kind::EligibilityDelay),
-    );
+    // Each delayed version once, as observed first.
+    let mut delayed: Vec<&Version> = Vec::new();
+    for delay in &facts.eligibility_delays {
+        if !delayed.contains(&&delay.version) {
+            delayed.push(&delay.version);
+            kinds.push(Kind::EligibilityDelay(delay.clone()));
+        }
+    }
     kinds
         .into_iter()
         .map(|kind| Finding { package, kind })

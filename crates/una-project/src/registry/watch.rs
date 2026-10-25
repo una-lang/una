@@ -378,10 +378,49 @@ fn verified(
     super::submit::check_promise(&document, log, source, leaf)
 }
 
+/// The first verified promise of a submission as Itaoca keeps it: its bytes, and the log key of
+/// the root in force when it was stored, which it is verified against again, so a later
+/// rotation of the log's key leaves it verifiable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stored {
+    /// The promise's bytes.
+    pub bytes: Vec<u8>,
+    /// The log key of the root version recorded with it, or why there is none: a version, or
+    /// digest, that the root chain read does not hold. Then the promise does not verify.
+    pub log: Result<crate::tlog::note::Key, String>,
+}
+
+/// The first line of the record of the root a promise was stored under.
+pub const STORED_ROOT: &str = "ita-promise-root/1";
+
+/// The record of the root version a first promise was stored under, `version` with its
+/// `digest`: `ita-promise-root/1`, then `root <version> sha256:<hex>`.
+pub fn encode_stored_root(version: u64, digest: &str) -> String {
+    format!("{STORED_ROOT}\nroot {version} {digest}\n")
+}
+
+/// The root version and digest of a record [`encode_stored_root`] wrote; refused for any
+/// other text. O(n).
+pub fn parse_stored_root(text: &str) -> Result<(u64, String), String> {
+    let refused = || "the record of a promise's root does not read".to_owned();
+    let rest = text
+        .strip_prefix(STORED_ROOT)
+        .and_then(|rest| rest.strip_prefix("\nroot "))
+        .and_then(|rest| rest.strip_suffix('\n'))
+        .ok_or_else(refused)?;
+    let (version, digest) = rest.split_once(' ').ok_or_else(refused)?;
+    let version = super::decimal(version).ok_or_else(refused)?;
+    if version == 0 || !crate::ita::is_digest(digest) {
+        return Err(refused());
+    }
+    Ok((version, digest.to_owned()))
+}
+
 /// Assesses `submitted` from what was served at its place, `served`, the promise's bytes, none,
 /// or why the place could not serve, and from `stored`, the first verified promise Itaoca keeps
-/// for it; `log` is the log's key of the last root; `logged_at` and `now` are as [`judge`] takes
-/// them.
+/// for it with the log key of the root it was stored under; `log` is the log's key of the last
+/// root, which a served promise is verified against; `logged_at` and `now` are as [`judge`]
+/// takes them.
 ///
 /// - No promise served (the place has none) is judged as no promise, by the window
 ///   ([`judge`]).
@@ -399,7 +438,7 @@ fn verified(
 pub fn assess(
     submitted: &Submitted,
     served: Result<Option<Vec<u8>>, String>,
-    stored: Option<Vec<u8>>,
+    stored: Option<Stored>,
     log: &crate::tlog::note::Key,
     source: &str,
     logged_at: Option<u64>,
@@ -409,7 +448,10 @@ pub fn assess(
     // Why a promise may be missing from the judgment: one unread, or that does not verify.
     let mut missed: Option<String> = None;
     let leaf = format!("sha256:{}", submitted.leaf);
-    let first = match stored.map(|bytes| verified(bytes, log, source, &leaf)) {
+    let first = match stored.map(|stored| match stored.log {
+        Ok(key) => verified(stored.bytes, &key, source, &leaf),
+        Err(why) => Err(why),
+    }) {
         Some(Ok(promise)) => Some(promise),
         Some(Err(why)) => {
             missed = Some("the promise stored does not verify".to_owned());

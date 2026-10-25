@@ -23,7 +23,8 @@ use una_project::registry::bundle::{self, Failure, Memory, Recording};
 use una_project::registry::keyfile::{SigningKey, owner_keys, sign_note};
 use una_project::registry::submit::{self, NameState, PROMISE_WINDOW, Promise, check_promise};
 use una_project::registry::watch::{
-    MAX_JUDGED, MAX_SETTLED, Position, Seen, Submitted, Verdict, assess, judge, to_judge, watch,
+    MAX_JUDGED, MAX_SETTLED, Position, Seen, Stored, Submitted, Verdict, assess,
+    encode_stored_root, judge, parse_stored_root, to_judge, watch,
 };
 use una_project::tlog::note::parse_note;
 use una_project::tlog::owner::Unsettled;
@@ -34,6 +35,14 @@ use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
 
 const D: &str = "sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b";
+
+/// A first promise stored under the root whose log key is `log`'s.
+fn stored_under(bytes: Vec<u8>, log: &SigningKey) -> Stored {
+    Stored {
+        bytes,
+        log: Ok(log.key().clone()),
+    }
+}
 
 /// No place behind a bundle's copy: the bundle alone serves.
 fn no_place(_: &str) -> Vec<Box<dyn Transport>> {
@@ -472,7 +481,15 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                 key_changes: vec![140],
                 void_yanks: vec![150],
                 accepted_effects: Vec::new(),
-                eligibility_delays: vec![fixed_late.clone(), other_late.clone()],
+                // The fix observed twice is one finding.
+                eligibility_delays: vec![
+                    fixed_late.clone(),
+                    other_late.clone(),
+                    Delay {
+                        served: 2_100,
+                        ..fixed_late.clone()
+                    },
+                ],
             }
         } else {
             Facts {
@@ -1578,7 +1595,7 @@ fn a_replaced_promise_is_evidence_and_the_earliest_by_is_judged() {
     let replaced = assess(
         &record,
         Ok(Some(late.into_bytes())),
-        Some(early.clone().into_bytes()),
+        Some(stored_under(early.clone().into_bytes(), &log)),
         log.key(),
         "acme",
         Some(4000),
@@ -1592,7 +1609,7 @@ fn a_replaced_promise_is_evidence_and_the_earliest_by_is_judged() {
     let same = assess(
         &record,
         Ok(Some(early.clone().into_bytes())),
-        Some(early.into_bytes()),
+        Some(stored_under(early.into_bytes(), &log)),
         log.key(),
         "acme",
         Some(1500),
@@ -1966,7 +1983,7 @@ fn a_promise_missed_never_makes_a_verdict_kept() {
     let stored = assess(
         &record,
         Ok(None),
-        Some(forged),
+        Some(stored_under(forged, &log)),
         log.key(),
         "acme",
         Some(1500),
@@ -2223,4 +2240,107 @@ fn the_audit_reports_an_equivocation_against_the_registry() {
             && text.contains("places read: a, b"),
         "{text}"
     );
+}
+
+/// A first promise is verified against the log key of the root it was stored under, which
+/// Itaoca records with it: a later rotation of the log's key leaves it verifiable, and the
+/// submission is judged, not left unavailable.
+#[test]
+fn a_stored_promise_survives_a_rotation_of_the_log_key() {
+    let old = key(20, "acme.example/log");
+    let new = key(22, "acme.example/log2");
+    let leaf = "aa".repeat(32);
+    let record = Submitted {
+        leaf: leaf.clone(),
+        url: "file:///srv/ita".to_owned(),
+        name: "acme/ledger".to_owned(),
+        time: 1000,
+        sent: 1000,
+    };
+    let promise = sign_note(
+        &format!("ita-promise/1\nsource acme\nleaf sha256:{leaf}\nby 2000\n"),
+        &[&old],
+    )
+    .unwrap()
+    .into_bytes();
+    // Stored under the old root, verified against its log key: kept, though the last root's
+    // log key is the new one and the place serves no promise any more.
+    let kept = assess(
+        &record,
+        Ok(None),
+        Some(stored_under(promise.clone(), &old)),
+        new.key(),
+        "acme",
+        Some(1500),
+        10_000,
+    );
+    assert_eq!(kept.verdict, Verdict::Kept, "{kept:?}");
+    assert!(kept.notes.is_empty(), "{kept:?}");
+    // Verified against the new key instead, it would not verify: never kept.
+    let wrong = assess(
+        &record,
+        Ok(None),
+        Some(stored_under(promise.clone(), &new)),
+        new.key(),
+        "acme",
+        Some(1500),
+        10_000,
+    );
+    assert!(matches!(wrong.verdict, Verdict::Unavailable(_)), "{wrong:?}");
+    // A root the chain read does not hold: the promise does not verify, never kept.
+    let lost = assess(
+        &record,
+        Ok(None),
+        Some(Stored {
+            bytes: promise,
+            log: Err("not in the chain".to_owned()),
+        }),
+        new.key(),
+        "acme",
+        Some(1500),
+        10_000,
+    );
+    assert!(matches!(lost.verdict, Verdict::Unavailable(_)), "{lost:?}");
+    // The record of the root reads back, and nothing else does.
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    let text = encode_stored_root(3, &digest);
+    assert_eq!(parse_stored_root(&text).unwrap(), (3, digest.clone()));
+    for bad in [
+        String::new(),
+        text.replace("root 3", "root 03"),
+        text.replace("root 3", "root 0"),
+        text.replace(&digest, "sha256:xyz"),
+        format!("{text}extra\n"),
+    ] {
+        assert!(parse_stored_root(&bad).is_err(), "{bad:?}");
+    }
+}
+
+/// The security keys of an advisory are judged first: the owner's signers, and so any doubt
+/// about the timing of the owner's requests, matter only for a fix the security keys alone do
+/// not lift. So an advisory with no fix, or one whose security keys alone lift its fix, never
+/// waits on the owner's timing.
+#[test]
+fn an_advisory_judges_its_security_keys_before_the_owner() {
+    let with = |security: usize| Signers {
+        security,
+        owner_threshold: false,
+    };
+    // Two security keys meet the lifting threshold of two alone: the owner is not needed.
+    assert!(!with(2).needs_owner(true, 2));
+    assert!(with(2).lifts_cooldown(2));
+    // One security key and a fix: only the owner's threshold can lift it.
+    assert!(with(1).needs_owner(true, 2));
+    // No fix: nothing to lift, the owner is not needed.
+    assert!(!with(1).needs_owner(false, 2));
+    // No security key: the advisory does not stand, whatever the owner signs.
+    assert!(!with(0).needs_owner(true, 2));
+    // A threshold above two: two security keys are not enough alone.
+    assert!(with(2).needs_owner(true, 3));
+    // The owner's threshold given does not change whether it must be judged.
+    let owner = Signers {
+        security: 1,
+        owner_threshold: true,
+    };
+    assert!(owner.needs_owner(true, 2));
 }

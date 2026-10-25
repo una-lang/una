@@ -784,10 +784,13 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
                 }
                 continue;
             }
-            by_package
-                .entry(finding.package)
-                .or_default()
-                .push(finding.text(package));
+            // Each finding once in its package's diagnostic: an eligibility delay of one
+            // version is said once, however many times it was observed.
+            let texts = by_package.entry(finding.package).or_default();
+            let text = finding.text(package);
+            if !texts.contains(&text) {
+                texts.push(text);
+            }
         }
     }
     for (index, texts) in by_package {
@@ -1141,7 +1144,7 @@ pub(crate) fn watch_command(
                     failed = true;
                 }
                 if let Some(first) = &assessment.first
-                    && let Err(why) = store_promise(itaoca, source, &leaf, first)
+                    && let Err(why) = store_promise(itaoca, source, &leaf, first, &registry)
                 {
                     failed = true;
                     lines.push(format!(
@@ -1250,9 +1253,33 @@ fn judge_submission(
     let record = watch::Submitted::parse(leaf, &text)?;
     // What the place serves is judged by `assess`: a promise that does not verify is reported
     // and counts as none; a place that cannot serve is reported too.
-    let stored = tree::locate(&itaoca.root, &["registry", source, "promises", leaf])?
-        .map(|file| tree::read_file(&file, 1 << 16))
-        .transpose()?;
+    // The first promise stored, verified against the log key of the root in force when it was
+    // stored, which its record names; one stored with no record, before records were kept, is
+    // verified against the last root's.
+    let stored = match tree::locate(&itaoca.root, &["registry", source, "promises", leaf])? {
+        None => None,
+        Some(file) => {
+            let bytes = tree::read_file(&file, 1 << 16)?;
+            let name = format!("{leaf}.root");
+            let log = match tree::locate(&itaoca.root, &["registry", source, "promises", &name])? {
+                None => Ok(registry.root.log.clone()),
+                Some(record) => String::from_utf8(tree::read_file(&record, 4096)?)
+                    .map_err(|_| "the record of a promise's root is not UTF-8".to_owned())
+                    .and_then(|text| watch::parse_stored_root(&text))
+                    .and_then(|(version, digest)| {
+                        registry
+                            .root_at(version, &digest)
+                            .map(|root| root.log.clone())
+                            .ok_or_else(|| {
+                                format!(
+                                    "the root version {version} the promise was stored under is not in the root chain read"
+                                )
+                            })
+                    }),
+            };
+            Some(watch::Stored { bytes, log })
+        }
+    };
     let served = Location::parse(&record.url)
         .and_then(|location| transport::open(&location).get(&format!("submit/{leaf}/promise"), 1 << 16));
     let target = format!("sha256:{leaf}");
@@ -1276,11 +1303,25 @@ fn judge_submission(
 }
 
 /// Stores `document`, the first verified promise for the submission `leaf`, at
-/// `registry/<source>/promises/<leaf>` in Itaoca, once.
-fn store_promise(itaoca: &Itaoca, source: &str, leaf: &str, document: &str) -> Result<(), String> {
+/// `registry/<source>/promises/<leaf>` in Itaoca, once, with the record of the root it was
+/// verified under, the last root of `registry`, at `<leaf>.root`: a later rotation of the
+/// log's key leaves it verifiable against that root's log key.
+fn store_promise(
+    itaoca: &Itaoca,
+    source: &str,
+    leaf: &str,
+    document: &str,
+    registry: &Registry<'_>,
+) -> Result<(), String> {
     vendor::check_source(source)?;
     tree::not_a_link(&itaoca.root)?;
+    let (version, digest) = registry
+        .last_root()
+        .ok_or("the registry read has no root chain")?;
     let parent = tree::make_dirs(&itaoca.root, &["registry", source, "promises"])?;
+    // The record first: a promise is never stored without the root it is verified against.
+    let record = watch::encode_stored_root(version, digest);
+    tree::store_file(&parent, &format!("{leaf}.root"), record.as_bytes(), true)?;
     tree::store_file(&parent, leaf, document.as_bytes(), true)
 }
 
