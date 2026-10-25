@@ -1366,9 +1366,10 @@ struct FmtOptions {
 /// `una fmt [path]` and `una fmt --check [path]` (`spec/13 §5`, ADR 0020).
 ///
 /// Files with syntax errors are reported and left untouched; the others are
-/// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
-/// printed on success. `--check` reports U7001 instead of writing.
+/// rewritten when they differ from their canonical form, each through a fresh temporary file
+/// and a rename onto the file itself or, for a symbolic link that resolves inside the package,
+/// onto its resolved target (a link leading outside it is refused), and nothing is printed on
+/// success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
