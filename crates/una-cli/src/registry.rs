@@ -140,7 +140,7 @@ pub(crate) fn open_first<'t>(
         // Nothing served is a refusal of service; anything served that fails is evidence. The
         // registry client tells the two apart by where the failure arose, never by its text.
         open(source, transport, point, itaoca, lock_floor).map_err(|error| match error {
-            OpenError::Unavailable(why) => Attempt::Unavailable(why),
+            OpenError::Unavailable(why) | OpenError::Omitted(_, why) => Attempt::Unavailable(why),
             OpenError::Refused(why) => Attempt::Refused(why),
         })
     });

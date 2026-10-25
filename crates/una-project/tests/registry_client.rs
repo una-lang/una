@@ -907,7 +907,7 @@ fn the_first_place_whose_copy_verifies_is_taken() {
         )
         .map(|registry| registry.point.checkpoint.size)
         .map_err(|error| match error {
-            OpenError::Unavailable(why) => Attempt::Unavailable(why),
+            OpenError::Unavailable(why) | OpenError::Omitted(_, why) => Attempt::Unavailable(why),
             OpenError::Refused(why) => Attempt::Refused(why),
         })
     });
@@ -2728,4 +2728,453 @@ fn a_revoked_witness_counts_for_nothing() {
         .insert("checkpoint/2".to_owned(), document.into_bytes());
     let mut client = open(&place, &registry).unwrap();
     assert_eq!(client.logged_at(1).unwrap(), NOW - 5 * DAY);
+}
+
+/// A registry whose lock's point, the checkpoint returned with its tree hash, is signed under
+/// root 1 and cosigned by every witness of it, before a rotation of the last two witnesses to
+/// root 2 and a later checkpoint signed under it.
+fn rotated_with_older_point(k: usize) -> (TestRegistry, Point) {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::with_witness_threshold("acme", k);
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let older = registry.checkpoint(NOW - 10 * DAY);
+    let leaves: Vec<Hash> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
+    let hash = hash_hex(&tree_root(&leaves));
+    registry.rotate_witnesses(2, false);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let at = Point::At { size: older, hash };
+    (registry, at)
+}
+
+/// A lock's point naming an older root, cosigned by retired witnesses, whose prefix proof no
+/// place lets the client complete, the latest checkpoint unserved or a tile of the proof
+/// unserved: an omission of the prefix proof (U7013), never a point counted on fewer
+/// cosignatures or refused.
+#[test]
+fn an_unserved_prefix_proof_makes_the_point_unavailable() {
+    let (registry, at) = rotated_with_older_point(2);
+    let Point::At { size, .. } = at else {
+        unreachable!()
+    };
+    let mut no_latest = Memory {
+        files: registry.files.clone(),
+    };
+    no_latest.files.remove("checkpoint");
+    let mut no_tiles = Memory {
+        files: registry.files.clone(),
+    };
+    no_tiles.files.retain(|path, _| !path.starts_with("tile/"));
+    for place in [&no_latest, &no_tiles] {
+        match Registry::open_with("acme", place, &registry.pin(), &at, &Floors::default()) {
+            Err(OpenError::Omitted(Omission::PrefixProof(at_size), why)) => {
+                assert_eq!(at_size, size);
+                assert!(why.contains("could not be completed"), "{why}");
+            }
+            Err(other) => panic!("{}", other.message()),
+            Ok(_) => panic!("a point counted without its prefix proof"),
+        }
+    }
+    // Served, the proof completes and the point verifies.
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let opened = Registry::open_with("acme", &memory, &registry.pin(), &at, &Floors::default());
+    assert!(opened.is_ok(), "{:?}", opened.err());
+}
+
+/// A lock's point counted on current witnesses alone, its prefix proof not completed: every
+/// kept checkpoint below it that carries a retired witness's cosignature is unavailable, an
+/// omission of the prefix proof, never a time read from fewer cosignatures, and never
+/// evidence of a cadence gap.
+#[test]
+fn an_unserved_prefix_proof_makes_kept_checkpoints_with_retired_witnesses_unavailable() {
+    let (registry, at) = rotated_with_older_point(1);
+    let Point::At { size, .. } = at else {
+        unreachable!()
+    };
+    let path = format!("checkpoint/{size}");
+    let log = registry.keys.log.1.name.clone();
+    let current = registry.keys.witnesses[0].1.name.clone();
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    place.files.remove("checkpoint");
+    let withheld = withhold(&registry.files[&path], &log, &current);
+    place.files.insert(path, withheld);
+    let mut client =
+        Registry::open_with("acme", &place, &registry.pin(), &at, &Floors::default()).unwrap();
+    assert!(client.logged_at(0).is_err());
+    assert!(client.take_omitted().contains(&Omission::PrefixProof(size)));
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A checkpoint naming an older root version is counted with the larger of its threshold and
+/// the last root's: one current witness's cosignature, enough under root 1's threshold of one,
+/// is too few under root 2's of two, so the point is unavailable.
+#[test]
+fn the_threshold_never_drops_below_the_last_roots() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::with_witness_threshold("acme", 1);
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let older = registry.checkpoint(NOW - 10 * DAY);
+    let leaves: Vec<Hash> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
+    let hash = hash_hex(&tree_root(&leaves));
+    registry.witness_k = 2;
+    registry.rotate_witnesses(0, false);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let at = Point::At { size: older, hash };
+    let path = format!("checkpoint/{older}");
+    let log = registry.keys.log.1.name.clone();
+    let witness = registry.keys.witnesses[0].1.name.clone();
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    let withheld = withhold(&registry.files[&path], &log, &witness);
+    place.files.insert(path, withheld);
+    let opened = Registry::open_with("acme", &place, &registry.pin(), &at, &Floors::default());
+    assert!(matches!(opened, Err(OpenError::Unavailable(_))));
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let opened = Registry::open_with("acme", &memory, &registry.pin(), &at, &Floors::default());
+    assert!(opened.is_ok(), "{:?}", opened.err());
+}
+
+/// Two places serving copies of one size's checkpoint, both signed by the log, that name
+/// different root versions: two checkpoints of that size, refused (U7010) and recorded as
+/// evidence, never one version taken over the other.
+#[test]
+fn copies_of_one_size_naming_different_roots_are_refused() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.rotate_witness();
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let older = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    let text = text_of(&registry.files["checkpoint/1"]).replace(&older, &registry.root_line());
+    let witnesses = registry.keys.witnesses.clone();
+    let mut other = Memory {
+        files: registry.files.clone(),
+    };
+    other.files.insert(
+        "checkpoint/1".to_owned(),
+        resigned(&registry, &text, &witnesses, NOW - 10 * DAY),
+    );
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let both = una_project::transport::Fallback::new(Box::new(honest), vec![Box::new(other)]);
+    let mut client = open(&both, &registry).unwrap();
+    assert!(client.logged_at(0).is_err());
+    assert!(client.take_omitted().is_empty());
+    assert_eq!(
+        client.misbehavior(),
+        &[Misbehavior::Equivocation {
+            size: 1,
+            versions: vec![1, 2],
+            places: vec!["memory".to_owned(), "memory".to_owned()],
+        }]
+    );
+}
+
+/// Sparse cosignatures spread three days apart with one witness needed: the checkpoint before
+/// a dispute's deadline is cosigned by a witness later than another witness cosigned the
+/// deadline checkpoint. The earliest and the served effect take the same scan of the running
+/// maximum of witness time, so they agree and the owner stays available.
+#[test]
+fn a_pre_deadline_checkpoint_cosigned_late_keeps_the_owner_available() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::with_witness_threshold("acme", 1);
+    registry.sparse = true;
+    registry.spread = 3 * DAY;
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 40 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    for at in 0..150 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&n]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&n]);
+    for at in 0..70 {
+        registry.append("other", &format!("later filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert_eq!(
+        client.earliest_effect(dispute).unwrap(),
+        client.recovery_effect(dispute).unwrap()
+    );
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A transport over files in memory that counts the kept checkpoints read.
+struct Counting {
+    memory: Memory,
+    reads: std::cell::Cell<usize>,
+}
+
+impl Transport for Counting {
+    fn get(&self, path: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
+        if path.starts_with("checkpoint/") {
+            self.reads.set(self.reads.get() + 1);
+        }
+        self.memory.get(path, limit)
+    }
+
+    fn describe(&self) -> String {
+        self.memory.describe()
+    }
+}
+
+/// A sparse log of a few thousand sizes over forty days, with a dispute near its start: the
+/// registry and the dispute's index.
+fn long_log() -> (TestRegistry, u64) {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.sparse = true;
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 40 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    for at in 0..3000 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    (registry, dispute)
+}
+
+/// The deadline of a request W sizes into a long log is found by reading the pinned multiples
+/// of 64 and then the sizes up to it: O(W/64 + 64) kept checkpoints, never W, and the honest
+/// sparse rendering stays available.
+#[test]
+fn a_deadline_reads_pinned_checkpoints_and_one_bracket() {
+    let (registry, dispute) = long_log();
+    let counting = Counting {
+        memory: Memory {
+            files: registry.files.clone(),
+        },
+        reads: std::cell::Cell::new(0),
+    };
+    let mut client = open(&counting, &registry).unwrap();
+    counting.reads.set(0);
+    let effect = client.recovery_effect(dispute).unwrap().unwrap();
+    let reads = counting.reads.get() as u64;
+    let w = effect - dispute;
+    assert!(w > 256, "{w}");
+    // The pinned ones, one bracket of at most 64, and the logged time's scan of at most 64.
+    assert!(reads <= w / 64 + 2 * 64 + 2, "{reads} reads for {w} sizes");
+    assert!(reads < w / 2, "{reads} reads for {w} sizes");
+    assert_eq!(client.earliest_effect(dispute).unwrap(), Some(effect));
+    assert!(client.history("acme").unwrap().took_effect.contains_key(&dispute));
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A deadline search that reaches the cap of sizes past the request without a deadline: an
+/// omission of its own kind, unavailable (U7013), never a later or absent effect.
+#[test]
+fn a_deadline_past_the_scan_cap_is_unavailable() {
+    let (registry, dispute) = long_log();
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    client.lower_scan_cap(128);
+    assert!(client.recovery_effect(dispute).is_err());
+    let omitted = client.take_omitted();
+    assert!(
+        omitted
+            .iter()
+            .any(|omission| matches!(omission, Omission::ScanCap { .. })),
+        "{omitted:?}"
+    );
+    assert!(client.misbehavior().is_empty());
+}
+
+/// The dip: a pinned checkpoint whose witness time reaches a dispute's target, then a later one,
+/// cosigned by another witness, whose witness time is below it. The first crossing is found,
+/// by both timings alike, reading the pinned checkpoints up to it and one bracket.
+#[test]
+fn a_dip_after_the_first_crossing_keeps_the_first() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let t0 = NOW - 40 * DAY;
+    let mut registry = TestRegistry::with_witness_threshold("acme", 1);
+    registry.register("acme", &a);
+    registry.checkpoint(t0);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    let fill = |registry: &mut TestRegistry, to: u64| {
+        while (registry.entries.len() as u64) < to {
+            let at = registry.entries.len();
+            registry.append("other", &format!("filler {at}"));
+        }
+    };
+    fill(&mut registry, 128);
+    registry.checkpoint(t0 + DAY);
+    fill(&mut registry, 192);
+    registry.checkpoint_with(&[Some(t0 + 9 * DAY), None, None]);
+    fill(&mut registry, 256);
+    registry.checkpoint_with(&[None, Some(t0 + 2 * DAY), None]);
+    fill(&mut registry, 300);
+    registry.checkpoint(NOW);
+    let counting = Counting {
+        memory: Memory {
+            files: registry.files.clone(),
+        },
+        reads: std::cell::Cell::new(0),
+    };
+    let mut client = open(&counting, &registry).unwrap();
+    counting.reads.set(0);
+    assert_eq!(client.recovery_effect(dispute).unwrap(), Some(129));
+    assert!(counting.reads.get() <= 8, "{} reads", counting.reads.get());
+    assert_eq!(client.earliest_effect(dispute).unwrap(), Some(129));
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// A root version that lists as a witness a key an earlier version revoked: the chain is
+/// refused (U7010), a revoked key never vouching again.
+#[test]
+fn a_revoked_witness_key_is_never_a_witness_again() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.rotate_witnesses(1, true);
+    registry.keys.witnesses[2] = keypair(32, "witness.32");
+    let roots = [
+        &registry.keys.roots[0].1,
+        &registry.keys.roots[1].1,
+        &registry.keys.roots[2].1,
+    ];
+    let (keys, expires) = (&registry.keys, registry::EXPIRES);
+    let text = registry::root_text_with("acme", 3, expires, keys, &roots, 2, &[]);
+    let document = registry::signed(&text, &[&registry.keys.roots[0], &registry.keys.roots[1]]);
+    registry
+        .files
+        .insert("root/3".to_owned(), document.clone().into_bytes());
+    registry.roots.push(document);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    match open(&memory, &registry) {
+        Err(why) => assert!(why.contains("an earlier version revoked"), "{why}"),
+        Ok(_) => panic!("a revoked witness key accepted again"),
+    }
+}
+
+/// An honest registry where a checkpoint between two multiples of 64, cosigned late by one
+/// witness, reaches a dispute's target, and the next multiple, cosigned by another, dips below
+/// it: the deadline is found from the first multiple that reaches the target, as the registry
+/// finds it, so both timings agree and the owner stays available.
+#[test]
+fn a_late_cosigned_checkpoint_between_multiples_is_not_the_deadline() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let t0 = NOW - 40 * DAY;
+    let mut registry = TestRegistry::with_witness_threshold("acme", 1);
+    registry.register("acme", &a);
+    registry.checkpoint(t0);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    let fill = |registry: &mut TestRegistry, to: u64| {
+        while (registry.entries.len() as u64) < to {
+            let at = registry.entries.len();
+            registry.append("other", &format!("filler {at}"));
+        }
+    };
+    fill(&mut registry, 128);
+    registry.checkpoint(t0 + DAY);
+    // N: sizes 129 to 150, one witness late, past the target of t0 + 8 days.
+    fill(&mut registry, 150);
+    registry.checkpoint_with(&[Some(t0 + 9 * DAY), None, None]);
+    // The multiple 192, another witness, below it.
+    fill(&mut registry, 192);
+    registry.checkpoint_with(&[None, Some(t0 + 2 * DAY), None]);
+    // The multiple 256, every witness, past it.
+    fill(&mut registry, 256);
+    registry.checkpoint(t0 + 10 * DAY);
+    fill(&mut registry, 300);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert_eq!(client.recovery_effect(dispute).unwrap(), Some(193));
+    assert_eq!(client.earliest_effect(dispute).unwrap(), Some(193));
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.took_effect.get(&dispute), Some(&193));
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// The deadline checkpoint signed at or after the target, every witness cosigning it then: a
+/// place that strips one cosignature leaves k, so the effect does not move; one that strips
+/// all but one leaves fewer than k, so the two timings differ and the name is unavailable,
+/// never a later effect taken unseen.
+#[test]
+fn stripping_the_deadline_cannot_move_the_effect_unseen() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 30 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    registry.checkpoint(NOW - 29 * DAY);
+    registry.append("other", "filler");
+    let effect = registry.checkpoint(NOW - 20 * DAY);
+    registry.append("other", "another filler");
+    registry.checkpoint(NOW);
+    let full = history_of(&registry).unwrap();
+    assert_eq!(full.took_effect.get(&dispute), Some(&effect));
+    let path = format!("checkpoint/{effect}");
+    let log = registry.keys.log.1.name.clone();
+    let last = registry.keys.witnesses[2].1.name.clone();
+    // One line stripped: k remain, all at or after the target.
+    let document = String::from_utf8(registry.files[&path].clone()).unwrap();
+    let stripped: Vec<&str> = document
+        .lines()
+        .filter(|line| !line.starts_with(&format!("\u{2014} {last} ")))
+        .collect();
+    let mut one = Memory {
+        files: registry.files.clone(),
+    };
+    let stripped = format!("{}\n", stripped.join("\n")).into_bytes();
+    one.files.insert(path.clone(), stripped);
+    let mut client = open(&one, &registry).unwrap();
+    assert_eq!(client.history("acme").unwrap(), full);
+    assert!(client.take_omitted().is_empty());
+    // All but one stripped: fewer than k, the timings differ, the name is unavailable.
+    let kept = registry.keys.witnesses[0].1.name.clone();
+    let mut most = Memory {
+        files: registry.files.clone(),
+    };
+    let withheld = withhold(&registry.files[&path], &log, &kept);
+    most.files.insert(path, withheld);
+    let mut client = open(&most, &registry).unwrap();
+    assert!(client.history("acme").is_err());
+    assert!(!client.take_omitted().is_empty());
+    assert_ne!(
+        client.earliest_effect(dispute).unwrap(),
+        client.recovery_effect(dispute).unwrap()
+    );
 }
