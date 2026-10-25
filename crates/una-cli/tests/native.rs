@@ -11,50 +11,18 @@
 //! the test until it leaves the list, so the list stays exact.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/native_build.rs"]
+mod native_build;
 #[path = "common/timing.rs"]
 mod timing;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// The repository root.
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-/// Builds the runtime library next to the `una` binary, once: `cargo test` builds `una-rt`'s
-/// static library only when asked.
-fn runtime() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
-            .current_dir(root())
-            .status()
-            .unwrap();
-        assert!(status.success(), "cargo build -p una-rt failed");
-    });
-}
-
-/// Runs `una` in `dir`, once the runtime library is built: `una build` links it, and cargo
-/// builds the test binaries before the staticlib on a cold target directory.
-fn una(dir: &Path, args: &[&str]) -> Output {
-    runtime();
-    Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .args(args)
-        .current_dir(dir)
-        .env("NO_COLOR", "1")
-        .output()
-        .unwrap()
-}
+use native_build::{root, runtime, una};
 
 /// A fresh copy of `source`, a package directory or a single file, in a temporary directory:
 /// builds and proof caches never touch the repository.
@@ -1776,6 +1744,59 @@ fn one_worker_runs_blocks_nested_three_levels_deep_without_deadlock() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether the executable at `exe` embeds the description key that starts its threads before
+/// `main` (#1145): `una build` writes the description as compact JSON, so the key reads
+/// `"threads":true` in the binary, and the runtime's own code never holds that text.
+fn embeds_threads(exe: &Path) -> bool {
+    let bytes = std::fs::read(exe).unwrap();
+    bytes
+        .windows(br#""threads":true"#.len())
+        .any(|window| window == br#""threads":true"#)
+}
+
+#[test]
+fn the_description_starts_threads_exactly_for_tasks_and_for_ever() {
+    // #1145, ADR 0116 amendment P8, `spec/27 §1` rule 4: codegen marks a program that holds a
+    // `together`, a `together for` or a `for ever`, and `una build` embeds `"threads": true`,
+    // which makes the runtime start its threads and fill its stack pool before `main`; a
+    // program with none of them has no such key and starts no thread.
+    let cases = [
+        (
+            "flagtogether",
+            "module flagtogether\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = 1\n    let b = 2\n  @console.print(\"{a} {b}\")\n",
+            true,
+        ),
+        (
+            "flagfor",
+            "module flagfor\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let squares = together for i in 1..3\n    i * i\n  @console.print(\"{squares.len}\")\n",
+            true,
+        ),
+        (
+            "flagnone",
+            "module flagnone\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"plain\")\n",
+            false,
+        ),
+    ];
+    for (name, program, threads) in cases {
+        let dir = tasks_package(name, name, program);
+        let exe = dir.join(format!("target/una/{name}"));
+        assert_eq!(embeds_threads(&exe), threads, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // `for ever`, from its conformance case, in edition 0.4.
+    let scratch = std::env::temp_dir().join(format!("una-flag-ever-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let dir = copy(
+        &root().join("tests/conformance/runtime/for_ever_on_stop"),
+        &scratch,
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    assert!(embeds_threads(&dir.join("target/una/for_ever_on_stop")));
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 #[test]
