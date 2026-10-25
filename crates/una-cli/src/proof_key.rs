@@ -61,6 +61,8 @@ pub(crate) enum Refusal {
     Shared,
     /// The file has another hard link, a name someone else may have made for it.
     HardLinked,
+    /// The file holds fewer than 16 or more than 4096 bytes, so it is no key.
+    Size,
 }
 
 impl std::fmt::Display for Refusal {
@@ -71,6 +73,7 @@ impl std::fmt::Display for Refusal {
             Refusal::NotOwned => "another user owns it",
             Refusal::Shared => "the group or others have permissions on it",
             Refusal::HardLinked => "it has another hard link",
+            Refusal::Size => "it is not 16 to 4096 bytes long",
         })
     }
 }
@@ -212,11 +215,8 @@ fn read_private(path: &Path) -> std::io::Result<Result<Vec<u8>, Refusal>> {
     }
     let mut bytes = Vec::new();
     file.take(MAXIMUM + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAXIMUM {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "the proof cache key file is larger than 4 KiB",
-        ));
+    if bytes.len() < MINIMUM || bytes.len() as u64 > MAXIMUM {
+        return Ok(Err(Refusal::Size));
     }
     Ok(Ok(bytes))
 }
@@ -324,7 +324,7 @@ mod tests {
         }
         assert_eq!(resolve(&environment), Ok(Some(made.clone())));
         assert!(!format!("{made:?}").contains(&format!("{:?}", made.secret)));
-        // The override names another file; a key too short, or no home, is no key.
+        // The override names another file; a key too short is refused, and no home is no key.
         let other = dir.join("other.key");
         std::fs::write(&other, b"short").unwrap();
         // Private, so that only its length keeps it from being a key (#1164).
@@ -334,8 +334,15 @@ mod tests {
             std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         let other_name = other.to_str().unwrap().to_owned();
+        let shown = other_name.clone();
         let overriding = move |name: &str| Ok((name == OVERRIDE).then(|| other_name.clone()));
-        assert_eq!(resolve(&overriding), Ok(None));
+        assert_eq!(
+            resolve(&overriding),
+            Err(Refused {
+                shown,
+                reason: Refusal::Size
+            })
+        );
         assert_eq!(resolve(&|_: &str| Ok(None)), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -376,11 +383,11 @@ mod tests {
         assert_eq!(read_or_make(&file), Err(Refusal::HardLinked));
         std::fs::remove_file(&second).unwrap();
         assert_eq!(read_or_make(&file), Ok(Some(key.to_vec())));
-        // A file over 4 KiB is not a key, and is not read whole.
+        // A file over 4 KiB is refused, and is not read whole.
         let large = dir.join("large.key");
         std::fs::write(&large, vec![7u8; 5000]).unwrap();
         std::fs::set_permissions(&large, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(read_or_make(&large), Ok(None));
+        assert_eq!(read_or_make(&large), Err(Refusal::Size));
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(read_or_make(&file), Err(Refusal::Shared));
         assert_eq!(std::fs::read(&file).unwrap(), key);

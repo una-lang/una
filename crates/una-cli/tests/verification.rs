@@ -1590,7 +1590,7 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     let noted = run("alice", Some(&unreadable), &["check"]);
     assert!(
         stderr(&noted).contains(&format!(
-            "note: the proof cache key `{}` is not a private regular file of the user (it is not a regular file); the proof cache is off (chmod 600 it)",
+            "note: the proof cache key `{}` is not a private regular file of the user (it is not a regular file); the proof cache is off\n",
             unreadable.display()
         )),
         "{}",
@@ -1609,6 +1609,22 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
         let noted = run("carol", Some(&named), &["check"]);
         assert!(
             stderr(&noted).contains("(the group or others have permissions on it); the proof cache is off (chmod 600 it)"),
+            "{}",
+            stderr(&noted)
+        );
+        // Under `--json`, stderr stays empty (`spec/13 §5`): `tcb.proof_cache_key: null` is
+        // the signal.
+        let quiet = run("carol", Some(&named), &["--json", "check"]);
+        assert_eq!(stderr(&quiet), "");
+        // A file that is too short is refused with a note, and no chmod hint.
+        let short = scratch.join("short.key");
+        std::fs::write(&short, b"short").unwrap();
+        std::fs::set_permissions(&short, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let noted = run("carol", Some(&short), &["check"]);
+        assert!(
+            stderr(&noted).contains(
+                "is not a key (it is not 16 to 4096 bytes long); the proof cache is off\n"
+            ),
             "{}",
             stderr(&noted)
         );
