@@ -791,8 +791,12 @@ impl Block<'_> {
             let caught = Arc::clone(&panicked);
             let stack = template.stack;
             let sched = Arc::clone(&template.sched);
+            // The task's index in its block places it: part `index + 1`, counted from 1 (ADR 0116
+            // amendment, P6), runs on worker `(w + index + 1) mod N`, `w` being this task's
+            // worker, 0 for the root, whatever earlier code forked (`spec/27 §1` rule 2, #1145).
             sched
                 .spawn(
+                    index + 1,
                     stack,
                     move || {
                         // A panic of the runtime is caught on the task's own stack, so nothing

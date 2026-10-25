@@ -215,7 +215,9 @@ fn under_virtual_time_the_ticks_and_the_clock_are_exact_and_never_wait() {
 #[test]
 fn on_the_real_clock_the_clock_reads_the_wall_clock() {
     let program = checked("wall", CLOCKED);
-    let (run, lines) = drive_on(&program, 1, 1, false);
+    // A tick an hour: the one step is due at once, at tick 0, and no slow machine can make a
+    // whole tick pass before it starts, so `at` and `missed` are 0 on any scheduler.
+    let (run, lines) = drive_on(&program, 1, 3_600_000, false);
     assert!(matches!(run.unwrap().completion, Completion::Ok(_)));
     // `Clock.now` reads the world's wall clock, and the first tick is at 0.
     assert_eq!(lines, ["step 1 at 0 missed 0 now 1234"].map(str::to_owned));
