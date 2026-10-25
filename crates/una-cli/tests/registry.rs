@@ -786,3 +786,36 @@ fn a_consented_index_past_the_checkpoint_is_refused_when_read() {
         assert!(codes.contains(&"U7009"), "{line}: {codes:?}");
     }
 }
+
+/// A lock holding a release of an owner whose chain froze after the lock's resolution point
+/// fails `--check` (U7010), naming the freeze's position: a frozen chain never thaws, so the
+/// newest checkpoint a place serves is evidence enough, fresh or not.
+#[test]
+fn check_fails_on_a_release_of_a_frozen_owner() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("frozen-check", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    // Two disputes wait at once: an account taken over, and the chain freezes.
+    registry.recover("acme", "dispute", &keypair(72, "acme.m").1, &[]);
+    let second = registry.recover("acme", "dispute", &keypair(73, "acme.n").1, &[]);
+    registry.checkpoint(now() - 2 * DAY);
+    registry.write(&mirror);
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("U7010")
+            && err.contains("frozen")
+            && err.contains(&format!("log position {second}")),
+        "{err}"
+    );
+    // A new lock, at a fresh checkpoint, refuses the name too.
+    registry.append("other", "later filler");
+    registry.checkpoint(now() - 60);
+    registry.write(&mirror);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7010") && err.contains("frozen"), "{err}");
+}

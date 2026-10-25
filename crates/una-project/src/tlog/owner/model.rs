@@ -1489,15 +1489,9 @@ fn check_all(depth: usize, stride: u64, sample_cap: u64) -> Stats {
     stats
 }
 
-/// The model to depth 4 in the ordinary test run, the thief signing with every subset of its
-/// keys and moving again inside the week of the owner's response.
-#[test]
-fn owner_replay_holds_its_contract_to_depth_four() {
-    let stats = check_all(4, 97, 300);
-    assert!(stats.chains >= 2_000, "{stats:?}");
-    assert!(stats.key_only > 0 && stats.with_account > 0, "{stats:?}");
-    assert!(stats.subset_chains >= 100, "{stats:?}");
-    for (path, count) in [
+/// The paths the model must take, each with its count: every one that the depth reaches.
+fn paths_taken(stats: &Stats) -> Vec<(&'static str, u64)> {
+    vec![
         ("below the threshold", stats.below_threshold),
         ("overrules", stats.overrules),
         ("claims voiding a thief's entry", stats.claims_voiding_thief),
@@ -1509,20 +1503,35 @@ fn owner_replay_holds_its_contract_to_depth_four() {
         ("over-cautious claims", stats.cautious),
         ("freezes", stats.frozen),
         ("delayed requests", stats.delayed),
-    ] {
+        ("subset chains", stats.subset_chains),
+        ("key-only chains", stats.key_only),
+        ("key-and-account chains", stats.with_account),
+    ]
+}
+
+/// The model to depth 3 in the ordinary test run, the thief signing with every subset of its
+/// keys and moving again inside the week of the owner's response. Each path of
+/// [`paths_taken`] is reached by a chain of three entries before the response, the
+/// registration included: a co-signer change's cancellation, the deepest, needs the owner's
+/// designation and the thief's cancellation after the registration.
+#[test]
+fn owner_replay_holds_its_contract_to_depth_three() {
+    let stats = check_all(3, 23, 300);
+    assert!(stats.chains >= 200, "{stats:?}");
+    for (path, count) in paths_taken(&stats) {
         assert!(count > 0, "no {path}: {stats:?}");
     }
     assert!(
-        stats.sampled >= 100_u64.min(stats.responses / 97),
+        stats.sampled >= 100_u64.min(stats.responses / 23),
         "{stats:?}"
     );
     assert!(
-        stats.sampled_subset >= 10_u64.min(stats.subset_chains / 97),
+        stats.sampled_subset >= 1_u64.min(stats.subset_chains / 23),
         "{stats:?}"
     );
     // Reported, not asserted: claims standing by the mutual rule, which the thief's entries
-    // cannot reach in this model (a revocation removes the key that would sign the other),
-    // frozen chains left unclaimed, the responses refused on them, and the entries pruned.
+    // cannot reach in this model (a revocation removes the key that would sign the other), and
+    // the entries pruned.
     println!(
         "mutual claims {}, frozen unclaimed {}, refused on frozen chains {}, pruned {}",
         stats.mutual_claims, stats.frozen_unclaimed, stats.refused_frozen, stats.pruned
@@ -1606,16 +1615,23 @@ fn the_model_finds_the_last_moment_cancellation_without_its_rules() {
     assert!(stats.adaptive > 0 && stats.overrules > 0, "{stats:?}");
 }
 
-/// The model to depth 5: the release gate `owner-replay` runs it (`docs/release-gates.md`).
-/// Depth 5, not 6: with the thief signing with every subset of its keys, depth 6 was estimated
-/// at well over half an hour in a release build.
+/// The model to depth 5: the release gate `owner-replay` runs it (`docs/release-gates.md`),
+/// every path asserted, frozen chains left unclaimed and the responses refused on them
+/// included; the mutual rule is reported, since the thief's entries cannot reach it. Depth 5,
+/// not 6: with the thief signing with every subset of its keys, depth 6 was estimated at well
+/// over half an hour in a release build.
 #[test]
 #[ignore = "exhaustive model of the owner-chain replay: run by the owner-replay release gate"]
 fn owner_replay_holds_its_contract_to_depth_five() {
     let stats = check_all(5, 997, 400);
     assert!(stats.chains >= 20_000, "{stats:?}");
+    let mut paths = paths_taken(&stats);
+    paths.push(("frozen chains left unclaimed", stats.frozen_unclaimed));
+    paths.push(("responses refused on frozen chains", stats.refused_frozen));
+    for (path, count) in paths {
+        assert!(count > 0, "no {path}: {stats:?}");
+    }
     assert!(stats.subset_chains >= 1_000, "{stats:?}");
-    assert!(stats.frozen > 0 && stats.adaptive > 0, "{stats:?}");
     assert!(
         stats.sampled >= 100_u64.min(stats.responses / 997),
         "{stats:?}"
@@ -1624,4 +1640,5 @@ fn owner_replay_holds_its_contract_to_depth_five() {
         stats.sampled_subset >= 10_u64.min(stats.subset_chains / 997),
         "{stats:?}"
     );
+    println!("mutual claims {}", stats.mutual_claims);
 }

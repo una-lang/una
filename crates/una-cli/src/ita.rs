@@ -1182,6 +1182,67 @@ fn resolve_and_lock(
         text.push_str(&entry.block);
     }
     if options.check {
+        // A freeze after the lock's resolution point (spec/30 §14 rule 5): a frozen chain
+        // never thaws, so the newest checkpoint a place serves, fresh or not, that extends the
+        // lock's point is evidence enough, and a locked release of a frozen owner fails.
+        let mut check_notes: Vec<String> = Vec::new();
+        if let Some((lock_id, lock, _)) = &existing {
+            for (source, list) in &places {
+                let (Some(declared), Some(old)) =
+                    (crate::registry::declared(read, source), locked_point(source))
+                else {
+                    continue;
+                };
+                let owners: BTreeMap<String, (String, std::ops::Range<usize>)> = lock
+                    .read
+                    .packages
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p.from.as_ref().map(|f| &f.value),
+                            Some(ita::LockOrigin::Source(s)) if s == source
+                        )
+                    })
+                    .map(|p| {
+                        let name = p.name.value.to_string();
+                        let owner = una_project::client::owner_of(&name).to_owned();
+                        (owner, (name, p.name.range.clone()))
+                    })
+                    .collect();
+                if owners.is_empty() {
+                    continue;
+                }
+                let served = Point::Served;
+                match crate::registry::open_first(declared, list, &served, None, Some(&old)) {
+                    Ok((mut newest, _)) => {
+                        for (owner, (name, range)) in &owners {
+                            let frozen = match newest.history(owner) {
+                                Ok(history) => history.frozen,
+                                Err(_) => None,
+                            };
+                            if let Some(from) = frozen {
+                                diagnostics.extend(located(
+                                    sources,
+                                    *lock_id,
+                                    vec![ProjectError {
+                                        code: Code::U7010,
+                                        range: range.clone(),
+                                        message: format!(
+                                            "the chain of the owner `{}` of `{}` is frozen from the log position {from} by competing recoveries or disputes, so its names are not resolved; its owner registers again under a new owner name",
+                                            una_project::client::shown(owner),
+                                            una_project::client::shown(name)
+                                        ),
+                                    }],
+                                ));
+                            }
+                        }
+                    }
+                    Err((_, why)) => check_notes.push(format!(
+                        "note: no checkpoint newer than the lock's could be read from `{source}`, so a freeze after it is not checked: {why}"
+                    )),
+                }
+            }
+        }
         let same = existing
             .as_ref()
             .is_some_and(|(id, _, _)| sources.file(*id).text() == text);
@@ -1197,7 +1258,7 @@ fn resolve_and_lock(
             let at = existing.as_ref().map_or(manifest_id, |(id, _, _)| *id);
             diagnostics.extend(located(sources, at, vec![error]));
         }
-        return finish_resolved(command, &[], &[], &[], &diagnostics, sources, out);
+        return finish_resolved(command, &[], &[], &check_notes, &diagnostics, sources, out);
     }
     let unchanged = edited.is_none()
         && existing

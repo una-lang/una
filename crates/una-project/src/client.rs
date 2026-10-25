@@ -282,6 +282,10 @@ pub enum Point {
         /// The local clock.
         now: u64,
     },
+    /// The newest checkpoint a place serves, with no freshness: what `una ita lock --check`
+    /// reads, beside the lock's point, to find an owner whose chain froze after it, since a
+    /// frozen chain never thaws and a later checkpoint showing it is evidence enough.
+    Served,
     /// A lock's resolution point: its size and root hash, `sha256:` and hex. No freshness.
     At {
         /// The checkpoint's size.
@@ -494,7 +498,7 @@ impl<'t> Registry<'t> {
         }
         // The checkpoint.
         let path = match point {
-            Point::Latest { .. } => "checkpoint".to_owned(),
+            Point::Latest { .. } | Point::Served => "checkpoint".to_owned(),
             Point::At { size, .. } => format!("checkpoint/{size}"),
         };
         let document =
@@ -524,6 +528,7 @@ impl<'t> Registry<'t> {
                 }
                 Ok(true) => {}
             },
+            Point::Served => {}
         }
         // The last root has not expired at the checkpoint's witness time.
         let last = root::walk(&pinned, &next, accepted.time).map_err(refused)?;

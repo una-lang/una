@@ -217,7 +217,7 @@ pub(crate) fn open<'t>(
         root_version,
     };
     let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
-    if let Point::Latest { .. } = point {
+    if matches!(point, Point::Latest { .. } | Point::Served) {
         let size = registry.point.checkpoint.size;
         if floor.as_deref().is_some_and(|stored| registry.below(stored)) {
             return Err(OpenError::Refused(format!(
