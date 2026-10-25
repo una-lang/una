@@ -412,7 +412,7 @@ pub(crate) fn publish_command(
         lines.extend(
             submit::header_advice(earlier, &files)
                 .into_iter()
-                .map(|advice| format!("advice: {}", shown(&advice))),
+                .map(|advice| format!("advice: {advice}")),
         );
     }
     let (project, _) = crate::package::project(&package);
@@ -714,20 +714,31 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
         let Ok(version) = Version::parse_full(&locked.version.value) else {
             continue;
         };
-        let resolution = project
+        let registry = project
             .lock
             .read
             .registries
             .iter()
-            .find(|r| r.source.value == source)
-            .map_or(0, |r| r.checkpoint_size.value);
+            .find(|r| r.source.value == source);
+        let resolution = registry.map_or(0, |r| r.checkpoint_size.value);
+        let name = locked.name.value.to_string();
+        // The consent the lock records for the owner's chain (`accepted <owner> <index> …`).
+        let accepted: std::collections::BTreeSet<u64> = registry
+            .and_then(|r| {
+                r.accepted
+                    .iter()
+                    .find(|line| line.owner.value == owner_of(&name))
+            })
+            .map(|line| line.indices.iter().map(|index| index.value).collect())
+            .unwrap_or_default();
         packages.push(audit::Locked {
             source: source.to_owned(),
-            name: locked.name.value.to_string(),
+            name,
             version,
             logged: locked.logged.as_ref().map(|l| l.value),
             digest: locked.digest.as_ref().map(|d| d.value.clone()),
             resolution,
+            accepted,
         });
         lines_of.push(locked);
     }
@@ -847,10 +858,15 @@ pub(crate) fn audit_command(
         })
         .collect();
     let mut opened: BTreeMap<String, Result<Registry<'_>, String>> = BTreeMap::new();
+    // Notes of mirrors skipped and of floors not stored: said, never a failure.
+    let mut notes: Vec<String> = Vec::new();
     for (source, (declared, list)) in &places {
         let registry =
             crate::registry::open_first(declared, list, &point, itaoca, lock_points.get(source))
-                .map(|(registry, _)| registry)
+                .map(|(registry, opened)| {
+                    notes.extend(opened);
+                    registry
+                })
                 .map_err(|(_, why)| why);
         opened.insert(source.clone(), registry);
     }
@@ -863,7 +879,8 @@ pub(crate) fn audit_command(
         )),
     };
     let (diagnostics, lines) = audit_project(&project, &mut facts_of);
-    finish("audit", &[], &lines, &diagnostics, &project.package.sources, out)
+    notes.extend(lines);
+    finish("audit", &[], &notes, &diagnostics, &project.package.sources, out)
 }
 
 /// The codes `una ita audit` reports for the package at `path`, each package's facts from
@@ -1179,6 +1196,7 @@ pub(crate) fn bundle_command(
     };
     let read = project.manifest.ita.as_deref();
     let mut packed = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     let mut registries: Vec<(String, BTreeMap<String, Vec<u8>>)> = Vec::new();
     let by_source: BTreeMap<&str, Vec<&(Expected, &ita::LockPackage)>> =
         expected.iter().fold(BTreeMap::new(), |mut map, one| {
@@ -1195,7 +1213,7 @@ pub(crate) fn bundle_command(
             ));
             continue;
         };
-        match bundle_source(declared, &packages, &mirrors, itaoca) {
+        match bundle_source(declared, &packages, &mirrors, itaoca, &mut notes) {
             Ok((one_source, files)) => {
                 packed.extend(one_source);
                 registries.push((source.to_owned(), files));
@@ -1225,7 +1243,8 @@ pub(crate) fn bundle_command(
         return usage(out, &format!("cannot write `{}`: {error}", file.display()));
     }
     let shown = file.display().to_string();
-    let lines = vec![format!("bundled {count} registry packages into {shown}")];
+    let mut lines = notes;
+    lines.push(format!("bundled {count} registry packages into {shown}"));
     finish("bundle", &[shown.as_str()], &lines, &[], sources, out)
 }
 
@@ -1244,6 +1263,7 @@ fn bundle_source(
     packages: &[&(Expected, &ita::LockPackage)],
     mirrors: &una_project::mirrors::Mirrors,
     itaoca: Option<&Itaoca>,
+    notes: &mut Vec<String>,
 ) -> Result<Bundled, (Code, usize, String)> {
     let Some((first, _)) = packages.first() else {
         return Ok((Vec::new(), BTreeMap::new()));
@@ -1268,7 +1288,11 @@ fn bundle_source(
         let recording = bundle::Recording::new(transport);
         let mut registry = match crate::registry::open(declared, &recording, &point, itaoca, None)
         {
-            Ok(registry) => registry,
+            // A floor not stored is a note of `open`; the bundle is still written.
+            Ok((registry, opened)) => {
+                notes.extend(opened);
+                registry
+            }
             Err(OpenError::Unavailable(why)) => {
                 reasons.push(format!("`{from}`: {why}"));
                 continue;
@@ -1389,6 +1413,7 @@ pub(crate) fn unbundle_command(
                     .iter()
                     .map(|what| format!("stored {what} in Itaoca"))
                     .collect();
+                lines.extend(done.notes.iter().cloned());
                 if !done.unused.is_empty() {
                     lines.push(format!(
                         "{} entries of the bundle were not used and not stored",

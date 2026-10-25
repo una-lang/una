@@ -2429,12 +2429,8 @@ pub(crate) fn fetch_command(
             Err(message) => refuse(Code::U7010, message),
         }
     }
-    // Each registry's resolution point becomes its floor when it is above the one stored.
-    for (source, registry) in &registries {
-        if let Err(why) = itaoca.store_checkpoint(source, &registry.point.document) {
-            lines.push(format!("note: the checkpoint of `{source}` was not stored: {why}"));
-        }
-    }
+    // Each registry's resolution point became its floor, under its registry's identity, when
+    // `open_first` accepted it (`crate::registry::open`), a failure there being a note.
     diagnostics.extend(located(sources, lock_id, problems));
     if lines.is_empty() && diagnostics.is_empty() {
         lines.push("no registry package is locked".to_owned());

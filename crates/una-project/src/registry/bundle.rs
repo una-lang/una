@@ -49,7 +49,7 @@ use sha2::{Digest, Sha256};
 use super::{decimal, digest_hex, hex};
 use crate::client::{Floors, Point, Registry, shown};
 use crate::content::check_path;
-use crate::itaoca::Itaoca;
+use crate::itaoca::{Itaoca, registry_id};
 use crate::provenance::{self, Expected};
 use crate::transport::{Refusal, Transport, segments};
 use crate::tree::VerifiedTree;
@@ -382,7 +382,7 @@ fn verify_held(bytes: &[u8], read: &Read, expected: &Expected) -> Result<Packed,
         .and_then(|range| bytes.get(range.clone()))
         .ok_or_else(|| refused(format!("the bundle holds {what} without its provenance")))?;
     // What the bundle served is quoted as a message may show it.
-    verify_parts(archive, provenance, &what, expected).map_err(|why| refused(shown(&why)))
+    verify_parts(archive, provenance, &what, expected).map_err(refused)
 }
 
 fn verify_parts(
@@ -391,8 +391,9 @@ fn verify_parts(
     what: &str,
     expected: &Expected,
 ) -> Result<Packed, String> {
-    let tree = VerifiedTree::from_archive(archive)
-        .map_err(|refusal| format!("the archive of {what} in the bundle: {refusal}"))?;
+    let tree = VerifiedTree::from_archive(archive).map_err(|refusal| {
+        format!("the archive of {what} in the bundle: {}", shown(&refusal))
+    })?;
     if tree.digest() != expected.digest {
         return Err(format!(
             "the archive of {what} in the bundle has the digest {}, not the lock's {}",
@@ -400,10 +401,12 @@ fn verify_parts(
             expected.digest
         ));
     }
-    let document = provenance::parse(provenance)
-        .map_err(|refusal| format!("the provenance of {what} in the bundle: {refusal}"))?;
-    let statement = provenance::verify(&document, expected)
-        .map_err(|refusal| format!("the provenance of {what} in the bundle: {refusal}"))?;
+    let document = provenance::parse(provenance).map_err(|refusal| {
+        format!("the provenance of {what} in the bundle: {}", shown(&refusal))
+    })?;
+    let statement = provenance::verify(&document, expected).map_err(|refusal| {
+        format!("the provenance of {what} in the bundle: {}", shown(&refusal))
+    })?;
     let manifest = tree
         .file("ita.una")
         .ok_or_else(|| format!("{what} in the bundle has no ita.una"))?;
@@ -490,6 +493,8 @@ pub struct Unbundled {
     /// The entries of the bundle that no locked package uses, or that this module does not
     /// store: documents of the per-name state, and packages the lock does not name.
     pub unused: Vec<String>,
+    /// Notes: a floor that could not be stored, or read, which is never a failure.
+    pub notes: Vec<String>,
 }
 
 /// Unbundles `bytes` into `itaoca` for the registry packages `expected` of a lock: reads the
@@ -516,7 +521,9 @@ pub fn unbundle(
     }
     // Each source's copy, opened by the client at the lock's resolution point, against the
     // floor Itaoca stores: the releases are the lock's, and their names' states verify.
-    let mut floors: Vec<(String, String, u64)> = Vec::new();
+    // Each source's floors, kept under its registry's identity (`registry_id`, from the pin).
+    let mut floors: Vec<(Memory, Expected, String, u64)> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     let sources: BTreeSet<&str> = expected.iter().map(|e| e.source.as_str()).collect();
     for source in sources {
         let copy = memory(bytes, &read, source);
@@ -532,19 +539,26 @@ pub fn unbundle(
         for path in copy.files.keys() {
             used.insert(format!("registry/{source}/{path}"));
         }
-        let floor = itaoca
-            .load_checkpoint(source)
-            .map_err(|why| (first, Problem::Refused(why)))?;
-        let root_version = itaoca
-            .load_root_version(source)
-            .map_err(|why| (first, Problem::Refused(why)))?;
+        let Some(package) = expected.iter().find(|e| e.source == source) else {
+            continue;
+        };
+        let id = registry_id(&package.root);
+        // A floor that cannot be read is no floor: it is a note, and the copy is still verified.
+        let floor = itaoca.load_checkpoint(&id).unwrap_or_else(|why| {
+            notes.push(format!("note: the floor of `{source}` does not read: {why}"));
+            None
+        });
+        let root_version = itaoca.load_root_version(&id).unwrap_or_else(|why| {
+            notes.push(format!("note: the root floor of `{source}` does not read: {why}"));
+            None
+        });
         let stored = Floors {
             checkpoint: floor.as_deref(),
             root_version,
         };
         let (document, version) = verify_source(&copy, expected, &stored)
             .map_err(|(index, why)| (Some(index), Problem::Refused(why)))?;
-        floors.push((source.to_owned(), document, version));
+        floors.push((copy, package.clone(), document, version));
     }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
@@ -568,14 +582,35 @@ pub fn unbundle(
             })?;
         stored.push(format!("{} {}", package.name, package.version));
     }
-    // Through the floor lock, each only forward (rule 39).
-    for (source, document, version) in &floors {
-        itaoca
-            .store_checkpoint(source, document)
-            .map_err(|why| (None, Problem::Refused(why)))?;
-        itaoca
-            .store_root_version(source, *version)
-            .map_err(|why| (None, Problem::Refused(why)))?;
+    // Through Itaoca's floor API, under its lock, each only forward (rule 39); the stored floor
+    // is proven consistent again against the copy, opened anew. A floor that cannot be stored is
+    // a note, never a failure: the packages are stored and verified already.
+    for (copy, package, document, version) in &floors {
+        let source = &copy.source;
+        let id = registry_id(&package.root);
+        let point = Point::At {
+            size: package.checkpoint_size,
+            hash: package.checkpoint_hash.clone(),
+        };
+        match Registry::open_with(source, copy, &package.root, &point, &Floors::default()) {
+            Ok(mut registry) => {
+                let mut consistent = |stored: &str| registry.consistent_with(stored);
+                if let Err(why) = itaoca.store_checkpoint(&id, document, &mut consistent) {
+                    notes.push(format!(
+                        "note: the checkpoint of `{source}` was not stored as its floor: {why}"
+                    ));
+                }
+            }
+            Err(error) => notes.push(format!(
+                "note: the checkpoint of `{source}` was not stored as its floor: {}",
+                error.message()
+            )),
+        }
+        if let Err(why) = itaoca.store_root_version(&id, *version) {
+            notes.push(format!(
+                "note: the root version of `{source}` was not stored as its floor: {why}"
+            ));
+        }
     }
     let unused = read
         .entries
@@ -583,5 +618,9 @@ pub fn unbundle(
         .filter(|path| !used.contains(*path))
         .cloned()
         .collect();
-    Ok(Unbundled { stored, unused })
+    Ok(Unbundled {
+        stored,
+        unused,
+        notes,
+    })
 }

@@ -1073,8 +1073,16 @@ impl<'t> Registry<'t> {
                     // (`History::signed`): a yank that reaches the threshold only with a key
                     // compromised before it is void, as such a release is, and is ignored.
                     if let Err(why) = history.signed(&entry.note, index) {
+                        // As `releases` decides a release skipped as compromised: the threshold
+                        // met only with keys compromised before it, or keys that only void
+                        // entries of the owner's chain brought in (the replay's cascade).
                         let threshold = history.at(index).map_or(usize::MAX, |s| s.threshold);
-                        if history.signers(&entry.note, index).len() >= threshold {
+                        let tainted = history
+                            .void_keys
+                            .iter()
+                            .filter(|key| entry.note.signed_by(key))
+                            .count();
+                        if history.signers(&entry.note, index).len() + tainted >= threshold {
                             marks.voided.push(Void {
                                 index,
                                 version: yank.version.clone(),

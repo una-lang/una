@@ -575,16 +575,28 @@ fn audit_proves_the_lock_point_with_an_empty_itaoca() {
     assert_eq!(codes_of(&out), ["U7010"], "{out}");
 }
 
-/// A floor that cannot be stored fails the command: the audit does not call anything clean.
+/// A floor that cannot be stored is a note, never a failure (rule 39): with the registry's
+/// floor directory read-only, the audit still verifies and succeeds, and says so.
+#[cfg(unix)]
 #[test]
-fn a_floor_that_cannot_be_stored_fails_the_command() {
-    let (_, dir, _, itaoca) = fetched("floor-unstored");
-    // Another run seems to hold the floor lock, and never releases it.
-    std::fs::create_dir_all(itaoca.join("registry/acme")).unwrap();
-    std::fs::write(itaoca.join("registry/acme/floor.lock"), "").unwrap();
-    let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
-    assert_eq!(status, 1, "{out}");
-    assert_eq!(codes_of(&out), ["U7010"], "{out}");
+fn a_floor_that_cannot_be_stored_is_a_note() {
+    use std::os::unix::fs::PermissionsExt;
+    let (registry, dir, _, itaoca) = fetched("floor-unstored");
+    let floors = itaoca
+        .join("registry")
+        .join(una_project::itaoca::registry_id(&registry.pin()));
+    std::fs::create_dir_all(&floors).unwrap();
+    // Neither the lock file nor the directory can be written: no floor can be stored.
+    let lock = floors.join("floor.lock");
+    if lock.exists() {
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
+    }
+    std::fs::set_permissions(&floors, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (status, out, err) = una_in(&["una", "ita", "audit", path(&dir)], &itaoca);
+    std::fs::set_permissions(&floors, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(status, 0, "{out}{err}");
+    assert!(out.contains("note: "), "{out}");
+    assert!(out.contains("audited 1 registry packages"), "{out}");
 }
 
 /// A bundle reached through a symbolic link is refused, and nothing is written.

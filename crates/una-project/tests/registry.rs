@@ -14,7 +14,7 @@ use pretty_assertions::assert_eq;
 use support::{NOW, TestRegistry, hash_hex, keypair};
 use una_project::client::{Point, Registry};
 use una_project::content::File;
-use una_project::itaoca::Itaoca;
+use una_project::itaoca::{Itaoca, registry_id};
 use una_project::mirrors::{Attempt, first_verified};
 use una_project::provenance::{Expected, signed_name};
 use una_project::registry::audit::{self, Facts, Kind, Locked};
@@ -415,6 +415,7 @@ fn locked(name: &str, version: &str) -> Locked {
         logged: Some(45),
         digest: None,
         resolution: 100,
+        accepted: BTreeSet::new(),
     }
 }
 
@@ -440,6 +441,7 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
             Facts {
                 yanked: true,
                 advisories: vec![advisory("ITA-1")],
+                compromised: true,
                 compromised_since: Some(40),
                 pending: vec![130],
                 key_changes: vec![140],
@@ -471,7 +473,7 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                 severity: "high".to_owned(),
                 summary: "An overflow".to_owned()
             },
-            Kind::Compromised { since: 40 },
+            Kind::Compromised { since: Some(40) },
             Kind::PendingRecovery(130),
             Kind::KeyChange(140),
             Kind::VoidYank(150),
@@ -711,6 +713,7 @@ fn a_yank_signed_after_its_keys_compromise_is_void() {
             logged: Some(good),
             digest: None,
             resolution: 0,
+            accepted: BTreeSet::new(),
         },
     )
     .unwrap();
@@ -723,6 +726,7 @@ fn a_yank_signed_after_its_keys_compromise_is_void() {
         logged: Some(good + 1),
         digest: None,
         resolution: 0,
+        accepted: BTreeSet::new(),
     };
     assert!(audit::facts(&mut client, &mismatch).is_err());
 }
@@ -869,8 +873,10 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     assert!(done.unused.is_empty(), "{:?}", done.unused);
     // What was stored loads verified, as every load does, and the checkpoint is the floor.
     assert!(una_project::vendor::stored(&store, &b.expected).unwrap().is_some());
-    assert!(store.load_checkpoint("acme").unwrap().is_some());
-    assert_eq!(store.load_root_version("acme").unwrap(), Some(1));
+    let id = registry_id(&b.expected.root);
+    assert!(store.load_checkpoint(&id).unwrap().is_some());
+    assert_eq!(store.load_root_version(&id).unwrap(), Some(1));
+    assert!(done.notes.is_empty(), "{:?}", done.notes);
 }
 
 /// A bundle is trusted for nothing: a tampered archive, provenance or registry file, or a
@@ -921,7 +927,7 @@ fn a_tampered_bundle_is_refused_and_writes_nothing() {
     assert_eq!(at, None);
     // Nothing was written by any of them.
     assert!(!store.contains(&b.expected.digest).unwrap());
-    assert!(store.load_checkpoint("acme").unwrap().is_none());
+    assert!(store.load_checkpoint(&registry_id(&b.expected.root)).unwrap().is_none());
     // A path the bundle does not name is refused when writing.
     assert!(bundle::write(vec![("../x".to_owned(), Vec::new())]).is_err());
     assert!(bundle::write(vec![("packages/zz".to_owned(), Vec::new())]).is_err());
@@ -935,14 +941,15 @@ fn unbundling_respects_the_root_version_floor() {
     let store = Itaoca {
         root: scratch("unbundle-root-floor"),
     };
-    store.store_root_version("acme", 2).unwrap();
+    let id = registry_id(&b.expected.root);
+    store.store_root_version(&id, 2).unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let (_, problem) = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected))
         .unwrap_err();
     assert!(matches!(problem, Problem::Refused(_)), "{problem:?}");
     assert!(!store.contains(&b.expected.digest).unwrap());
-    assert_eq!(store.load_root_version("acme").unwrap(), Some(2));
-    assert!(store.load_checkpoint("acme").unwrap().is_none());
+    assert_eq!(store.load_root_version(&id).unwrap(), Some(2));
+    assert!(store.load_checkpoint(&id).unwrap().is_none());
 }
 
 /// Unbundling never moves the checkpoint stored for a source backwards (rule 39).
@@ -957,7 +964,10 @@ fn unbundling_keeps_a_larger_floor() {
     b.test.release("acme/ledger", "0.3.2", "none", "none", &[&owner]);
     let larger = b.test.checkpoint(NOW + 10);
     let document = String::from_utf8(b.test.files[&format!("checkpoint/{larger}")].clone()).unwrap();
-    store.store_checkpoint("acme", &document).unwrap();
+    let id = registry_id(&b.expected.root);
+    store
+        .store_checkpoint(&id, &document, &mut |_: &str| Ok(()))
+        .unwrap();
     // The bundle's files hold the larger log's tiles too, so its consistency can be proven.
     let mut files = b.files.clone();
     for (path, bytes) in &b.test.files {
@@ -967,8 +977,70 @@ fn unbundling_keeps_a_larger_floor() {
     }
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &files);
     let result = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected));
-    let stored = store.load_checkpoint("acme").unwrap().unwrap();
+    let stored = store.load_checkpoint(&id).unwrap().unwrap();
     assert_eq!(stored, document, "{result:?}");
+}
+
+/// A floor that cannot be stored is a note, never a failure: the packages are stored.
+#[cfg(unix)]
+#[test]
+fn unbundling_notes_a_floor_it_cannot_store() {
+    use std::os::unix::fs::PermissionsExt;
+    let b = bundled();
+    let store = Itaoca {
+        root: scratch("unbundle-floor-note"),
+    };
+    let dir = store.root.join("registry").join(registry_id(&b.expected.root));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let done = bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected)).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
+    assert!(!done.notes.is_empty(), "the floor not stored is said");
+    assert!(done.notes.iter().all(|note| note.starts_with("note: ")));
+}
+
+/// Consent the lock records (`accepted <owner> <index>`) is not reported again by the audit; a
+/// pending event the lock did not accept is.
+#[test]
+fn the_audit_leaves_out_what_the_lock_accepted() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW - 100);
+    let resolution = test.entries.len() as u64;
+    let newcomer = keypair(64, "acme.new");
+    let request = test.recover("acme", "recover", &newcomer.1, &[]);
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let mut locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution,
+        accepted: BTreeSet::new(),
+    };
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert_eq!(facts.pending, [request]);
+    locked.accepted.insert(request);
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert!(facts.pending.is_empty(), "{facts:?}");
+    assert!(facts.key_changes.is_empty(), "{facts:?}");
 }
 
 /// Reading a bundle is one pass: its work grows with its bytes, entry by entry.

@@ -37,7 +37,7 @@ use una_syntax::ita;
 
 use super::keyfile::{SigningKey, sign_note};
 use super::{decimal, digest_hex, hex};
-use crate::client::{Registry, hash_text};
+use crate::client::{Registry, hash_text, shown};
 use crate::content::{self, File};
 use crate::provenance::sha256_digest;
 use crate::tlog::merkle;
@@ -147,8 +147,11 @@ pub fn header_advice(earlier: &[File], files: &[File]) -> Vec<String> {
         .into_iter()
         .filter(|header| !new.contains(header))
         .map(|(path, header)| {
+            // The earlier release was served: its header and path are quoted as shown.
             format!(
-                "`{header}` of `{path}` in the earlier release is removed or changed; a release of the same major line keeps every public header"
+                "`{}` of `{}` in the earlier release is removed or changed; a release of the same major line keeps every public header",
+                shown(&header),
+                shown(&path)
             )
         })
         .collect()

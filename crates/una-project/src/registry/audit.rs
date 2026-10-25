@@ -11,6 +11,8 @@
 //! Costs: per package, one verified state of its name and one of its owner, each cached by the
 //! client, then O(A + K) for its A advisories and its owner's K key events.
 
+use std::collections::BTreeSet;
+
 use crate::client::{Registry, owner_of, shown};
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
@@ -31,6 +33,10 @@ pub struct Locked {
     pub digest: Option<String>,
     /// The lock's resolution point at its source: the checkpoint's size.
     pub resolution: u64,
+    /// The entries of its owner's chain whose key change the lock records as consented to, the
+    /// lock's `accepted` line for the owner (`spec/30 §4` rule 2, §14 rule 8): never reported
+    /// again, as `una ita lock --check` does not report them.
+    pub accepted: BTreeSet<u64>,
 }
 
 /// What the verified state says of a locked release.
@@ -40,12 +46,16 @@ pub struct Facts {
     pub yanked: bool,
     /// The advisories that name it.
     pub advisories: Vec<Advisory>,
-    /// The log entry since which the key that signed it is compromised, when it counts only
-    /// with such a key.
+    /// Whether it counts only with keys compromised before it, or that only void entries of its
+    /// owner's chain brought in: skipped as compromised (rule 38).
+    pub compromised: bool,
+    /// The log entry since which the key that signed it is compromised, when one is.
     pub compromised_since: Option<u64>,
-    /// The log indexes of the recoveries and disputes pending for its owner.
+    /// The log indexes of the recoveries and disputes pending for its owner, but those the lock
+    /// accepted.
     pub pending: Vec<u64>,
-    /// The first log positions of its owner's key changes after the lock's resolution point.
+    /// The log indexes of its owner's key changes at or after the lock's resolution point, but
+    /// those the lock accepted and those still pending.
     pub key_changes: Vec<u64>,
     /// The log indexes of the yanks of it that are void: counted only with a compromised key,
     /// or repeating a yank.
@@ -81,7 +91,8 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
                 .collect()
         })
         .unwrap_or_default();
-    let compromised_since = if release.compromised {
+    let compromised = release.compromised;
+    let compromised_since = if compromised {
         release
             .signers
             .iter()
@@ -90,17 +101,39 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     } else {
         None
     };
+    // Recorded consent counts as `una ita lock --check` counts it
+    // (`History::changed_after_except`): an accepted entry, and the effect it requested, are
+    // not reported again; a new one is.
+    let pending: Vec<u64> = history
+        .pending
+        .iter()
+        .map(|p| p.index)
+        .filter(|index| !locked.accepted.contains(index))
+        .collect();
+    let mut changes: BTreeSet<u64> = history
+        .entries
+        .iter()
+        .copied()
+        .filter(|index| *index >= locked.resolution)
+        .collect();
+    changes.extend(
+        history
+            .snapshots
+            .iter()
+            .filter(|s| s.from > locked.resolution)
+            .map(|s| s.by),
+    );
+    let key_changes = changes
+        .into_iter()
+        .filter(|index| !locked.accepted.contains(index) && !pending.contains(index))
+        .collect();
     Ok(Facts {
         yanked: marks.yanked.contains_key(&locked.version),
         advisories,
+        compromised,
         compromised_since,
-        pending: history.pending.iter().map(|p| p.index).collect(),
-        key_changes: history
-            .snapshots
-            .iter()
-            .map(|s| s.from)
-            .filter(|from| *from > locked.resolution)
-            .collect(),
+        pending,
+        key_changes,
         void_yanks: marks
             .voided
             .iter()
@@ -124,10 +157,10 @@ pub enum Kind {
         /// Its summary.
         summary: String,
     },
-    /// The key that signed it was revoked as compromised since a log entry before it.
+    /// It counts only with keys compromised before it, or brought in by void entries.
     Compromised {
-        /// The entry since which the key is compromised.
-        since: u64,
+        /// The entry since which a key that signed it is compromised, when one is.
+        since: Option<u64>,
     },
     /// A recovery or a dispute of its owner is pending, logged at this index.
     PendingRecovery(u64),
@@ -158,18 +191,24 @@ impl Finding {
                 id,
                 severity,
                 summary,
-            } => shown(&format!(
-                "{version} is named by the advisory {id} ({severity}): {summary}"
-            )),
-            Kind::Compromised { since } => format!(
+            } => format!(
+                "{version} is named by the advisory {} ({}): {}",
+                shown(id),
+                shown(severity),
+                shown(summary)
+            ),
+            Kind::Compromised { since: Some(since) } => format!(
                 "{version} was signed by a key revoked as compromised since log entry {since}"
+            ),
+            Kind::Compromised { since: None } => format!(
+                "{version} counts only with keys that void entries of its owner's chain brought in"
             ),
             Kind::PendingRecovery(index) => format!(
                 "a recovery of the owner `{}` is pending (log entry {index})",
                 owner_of(&locked.name)
             ),
             Kind::KeyChange(index) => format!(
-                "the keys of the owner `{}` changed after the lock's resolution point (from log position {index})",
+                "the keys of the owner `{}` changed after the lock's resolution point (log entry {index}), with no consent the lock records",
                 owner_of(&locked.name)
             ),
             Kind::VoidYank(index) => format!(
@@ -193,8 +232,10 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
             summary: advisory.summary.clone(),
         });
     }
-    if let Some(since) = facts.compromised_since {
-        kinds.push(Kind::Compromised { since });
+    if facts.compromised {
+        kinds.push(Kind::Compromised {
+            since: facts.compromised_since,
+        });
     }
     kinds.extend(facts.pending.iter().map(|index| Kind::PendingRecovery(*index)));
     kinds.extend(facts.key_changes.iter().map(|from| Kind::KeyChange(*from)));
