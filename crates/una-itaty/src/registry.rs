@@ -66,13 +66,13 @@ use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
 use crate::timing::{Obligation, Timed, admits, completable, obligation};
-
-mod rotation;
 use crate::tree::{Tree, root as tree_root};
 use crate::{
     MAX_ARCHIVE, MAX_ENTRY, MAX_NEEDS, MAX_RELEASES_PER_NAME, PROMISE_WINDOW, decimal,
     digest_string, hex,
 };
+
+mod rotation;
 pub use rotation::Rotation;
 
 /// The store path of the log's size, the service's own state.
