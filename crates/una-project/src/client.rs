@@ -87,6 +87,8 @@ pub struct Accepted {
     pub cosigned: Vec<Cosigned>,
     /// The name map's root, from its `ita-map` extension line.
     pub map: Option<Hash>,
+    /// The root version it names, by its `ita-root` line.
+    pub version: u64,
 }
 
 /// `sha256:` and the hex of a hash, as the lock writes a checkpoint's root hash.
@@ -142,9 +144,10 @@ pub fn named_root<'r>(
 }
 
 /// Accepts the checkpoint `document` under the root of `chain` it names (rules 36 and 36.4;
-/// [`named_root`]): its origin is that root's log key name, it is signed by the log's key, and
-/// at least the witness threshold of the root's distinct witnesses cosign it; its witness time
-/// is the k-th latest of their timestamps.
+/// [`named_root`]): its origin is that root's log key name and it is signed by that log key;
+/// its cosignatures are counted against the last root's witnesses, whatever version it names,
+/// lines of any other witness ignored, and at least the last root's threshold of them cosign
+/// it; its witness time is the k-th latest of their timestamps.
 pub fn accept_checkpoint(
     document: &str,
     chain: &[(Root, String)],
@@ -152,6 +155,8 @@ pub fn accept_checkpoint(
     let signed = note::parse_note(document).map_err(OpenError::Refused)?;
     let checkpoint = note::parse_checkpoint(&signed.text).map_err(OpenError::Refused)?;
     let root = named_root(&checkpoint, chain)?;
+    let version = root.version;
+    let last = chain.last().map_or(root, |(last, _)| last);
     if checkpoint.origin != root.log.name {
         return Err(OpenError::Refused(format!(
             "the checkpoint is of the log `{}`, not of `{}`",
@@ -163,8 +168,8 @@ pub fn accept_checkpoint(
             "the checkpoint is not signed by the log's key".to_owned(),
         ));
     }
-    let cosigned = cosignatures(&signed, checkpoint.size, root);
-    let time = witness::checkpoint_time(&cosigned, root.witnesses.threshold)
+    let cosigned = cosignatures(&signed, checkpoint.size, last);
+    let time = witness::checkpoint_time(&cosigned, last.witnesses.threshold)
         .map_err(|problem| OpenError::Refused(witness_problem(&problem)))?;
     let map = map::root_of(&checkpoint.extensions);
     Ok(Accepted {
@@ -173,6 +178,7 @@ pub fn accept_checkpoint(
         time,
         cosigned,
         map,
+        version,
     })
 }
 
@@ -213,9 +219,8 @@ fn witness_problem(problem: &witness::Problem) -> Refusal {
 struct Kept {
     cosigned: Vec<Cosigned>,
     time: Option<u64>,
-    /// Whether at least two places served copies that verify, with the same cosignatures:
-    /// what evidence from an absence needs before it counts against the registry.
-    corroborated: bool,
+    /// How many places served a copy that verifies with exactly the merged cosignatures.
+    agreeing: usize,
 }
 
 /// The floors Itaoca stores for a source (rule 39).
@@ -227,17 +232,18 @@ pub struct Floors<'f> {
     pub root_version: Option<u64>,
 }
 
-/// Evidence against a registry that its logs and checkpoints break a rule a registry MUST
-/// keep (`spec/30 §14`), as every place of its source serves them: for `una ita audit` to
-/// report to its witnesses and to other places.
+/// What the client found against a rule a registry MUST keep (`spec/30 §14`), every place of
+/// the source read, for `una ita audit` to report to its witnesses and to other places. Only
+/// [`Misbehavior::Unsettled`], which signed entries show, is the registry's misbehavior; the
+/// others are evidence from an absence, which any place read may have caused, two places
+/// included, since two mirrors can be one party: they never assert the registry's fault.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Misbehavior {
-    /// An owner chain that does not settle within the pass cap.
+    /// An owner chain that does not settle within the pass cap: the registry's misbehavior.
     Unsettled(Unsettled),
     /// A request whose deadline checkpoint no place serves: the first checkpoint at or after
     /// its seven-day target with the witness threshold of cosignatures, which a registry
-    /// MUST keep, so the request's effect cannot be decided. Evidence from an absence: the
-    /// places read may have withheld it, unless at least two of them served the same view.
+    /// MUST keep, so the request's effect cannot be decided. Evidence from an absence.
     MissingDeadline {
         /// The owner whose chain holds the request.
         owner: String,
@@ -247,13 +253,12 @@ pub enum Misbehavior {
         target: u64,
         /// The places read.
         places: Vec<String>,
-        /// Whether at least two places served the same view of the checkpoints it rests on:
-        /// only then is it the registry's misbehavior rather than a place's.
-        attributed: bool,
+        /// The fewest places that served, of a checkpoint of the deadline range, a copy with
+        /// exactly the merged cosignatures.
+        places_agreeing: usize,
     },
     /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
-    /// the 64 a registry MAY leave between two such checkpoints. Evidence from an absence, as
-    /// a missing deadline is.
+    /// the 64 a registry MAY leave between two such checkpoints. Evidence from an absence.
     CadenceGap {
         /// The first size of the range.
         from: u64,
@@ -261,8 +266,27 @@ pub enum Misbehavior {
         to: u64,
         /// The places read.
         places: Vec<String>,
-        /// Whether at least two places served the same view of every checkpoint of the range.
-        attributed: bool,
+        /// The fewest places that served, of a checkpoint of the range, a copy with exactly
+        /// the merged cosignatures.
+        places_agreeing: usize,
+    },
+}
+
+/// What the client observed that changes no result (`spec/30 §14` rule 1): for `una ita
+/// audit` to report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Observation {
+    /// The withheld-eligibility delay: a release past the cooldown at the earliest time the
+    /// merged cosignatures allow, but not at its served logged time, which resolution keeps.
+    EligibilityDelay {
+        /// The package.
+        name: String,
+        /// The release.
+        version: Version,
+        /// Its logged time as served, in seconds.
+        served: u64,
+        /// The earliest it could have been logged, in seconds.
+        earliest: u64,
     },
 }
 
@@ -496,6 +520,9 @@ pub struct Registry<'t> {
     /// The root chain walked, each version with its digest, the one a kept checkpoint names
     /// verifying it.
     chain: Vec<(Root, String)>,
+    /// The root version each checkpoint read names, by size: it never decreases as the size
+    /// grows.
+    named: BTreeMap<u64, u64>,
     /// For an owner whose requests could be in effect earlier than the cosignatures served say,
     /// its history with each at the earliest position its seven days allow.
     eager: BTreeMap<String, History>,
@@ -503,6 +530,8 @@ pub struct Registry<'t> {
     misbehavior: Vec<Misbehavior>,
     /// The omissions met since [`Registry::take_omitted`] was last called.
     omitted: Vec<Omission>,
+    /// What the client observed that changes no result.
+    observations: Vec<Observation>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
 }
 
@@ -616,6 +645,15 @@ impl<'t> Registry<'t> {
             OpenError::Unavailable(why) => unavailable(why),
             OpenError::Refused(why) => refused(why),
         })?;
+        // The resolution point names the last root version the place serves: one that names an
+        // older version while a newer one is served stands for a newer checkpoint withheld.
+        let served = chain.last().map_or(0, |(root, _)| root.version);
+        if !matches!(point, Point::At { .. }) && accepted.version < served {
+            return Err(unavailable(format!(
+                "its latest checkpoint names root version {}, while root version {served} is served, so a newer checkpoint is withheld",
+                accepted.version
+            )));
+        }
         match point {
             Point::At { size, hash } => {
                 if accepted.checkpoint.size != *size
@@ -649,6 +687,7 @@ impl<'t> Registry<'t> {
             transport,
             roots,
             root: last,
+            named: BTreeMap::from([(accepted.checkpoint.size, accepted.version)]),
             chain,
             tiles: Tiles::new(transport, accepted.checkpoint.size),
             seen: accepted.cosigned.clone(),
@@ -658,6 +697,7 @@ impl<'t> Registry<'t> {
             eager: BTreeMap::new(),
             misbehavior: Vec::new(),
             omitted: Vec::new(),
+            observations: Vec::new(),
             releases: BTreeMap::new(),
         };
         if let Some(floor) = floors.checkpoint {
@@ -850,7 +890,7 @@ impl<'t> Registry<'t> {
             return Ok(Some(Kept {
                 cosigned: self.point.cosigned.clone(),
                 time: Some(self.point.time),
-                corroborated: false,
+                agreeing: 1,
             }));
         }
         if size > self.point.checkpoint.size || size == 0 {
@@ -903,12 +943,13 @@ impl<'t> Registry<'t> {
         let time = witness::checkpoint_time(&cosigned, self.root.witnesses.threshold).ok();
         self.seen.extend(cosigned.iter().cloned());
         witness::monotonic(&self.seen).map_err(|problem| self.refuse(witness_problem(&problem)))?;
-        let corroborated =
-            views.len() >= 2 && views.windows(2).all(|pair| pair.first() == pair.last());
+        let mut merged = cosigned.clone();
+        merged.sort_by(|a, b| (&a.witness, a.time).cmp(&(&b.witness, b.time)));
+        let agreeing = views.iter().filter(|view| **view == merged).count();
         let kept = Kept {
             cosigned,
             time,
-            corroborated,
+            agreeing,
         };
         self.kept.insert(size, Some(kept.clone()));
         Ok(Some(kept))
@@ -947,6 +988,16 @@ impl<'t> Registry<'t> {
         if !signed.signed_by(&root.log) {
             return Err(self.refuse(format!("`{path}` is not signed by the log's key")));
         }
+        // The root version a checkpoint names never decreases as the log grows.
+        let version = root.version;
+        let below = self.named.range(..size).next_back().map(|(_, v)| *v);
+        let above = self.named.range(size + 1..).next().map(|(_, v)| *v);
+        if below.is_some_and(|v| v > version) || above.is_some_and(|v| v < version) {
+            return Err(self.refuse(format!(
+                "`{path}` names root version {version}, out of order with the checkpoints around it: the version a checkpoint names never decreases as the log grows"
+            )));
+        }
+        self.named.insert(size, version);
         let proof = self
             .tiles
             .consistency(size)
@@ -963,7 +1014,9 @@ impl<'t> Registry<'t> {
                 self.point.checkpoint.size
             )));
         }
-        Ok(cosignatures(&signed, size, &root))
+        // Counted against the last root's witnesses, whatever version it names: an older
+        // witness's lines are ignored.
+        Ok(cosignatures(&signed, size, &self.root))
     }
 
     /// When the entry `index` was logged (rule 36.4): for each distinct witness, its earliest
@@ -986,11 +1039,11 @@ impl<'t> Registry<'t> {
             witnesses.len()
         };
         let mut timed = false;
-        let mut corroborated = true;
+        let mut agreeing = usize::MAX;
         for size in index.saturating_add(1)..=last {
             if let Some(kept) = self.kept(size)? {
                 timed |= kept.time.is_some();
-                corroborated &= kept.corroborated;
+                agreeing = agreeing.min(kept.agreeing);
                 cosigned.extend(kept.cosigned);
                 if distinct(cosigned.as_slice()) >= k {
                     break;
@@ -1005,7 +1058,7 @@ impl<'t> Registry<'t> {
                     from: index.saturating_add(1),
                     to: last,
                     places: self.transport.describe_all(),
-                    attributed: corroborated,
+                    places_agreeing: agreeing,
                 });
             }
             cosigned.extend(self.point.cosigned.iter().cloned());
@@ -1019,13 +1072,13 @@ impl<'t> Registry<'t> {
     fn first_timed(&mut self, from: u64) -> Result<(u64, u64), Refusal> {
         let point = self.point.checkpoint.size;
         let last = point.min(from.saturating_add(MAX_SCAN as u64));
-        let mut corroborated = true;
+        let mut agreeing = usize::MAX;
         for size in from..=last {
             match self.kept(size)? {
                 Some(Kept {
                     time: Some(time), ..
                 }) => return Ok((size, time)),
-                Some(kept) => corroborated &= kept.corroborated,
+                Some(kept) => agreeing = agreeing.min(kept.agreeing),
                 None => {}
             }
         }
@@ -1034,7 +1087,7 @@ impl<'t> Registry<'t> {
                 from,
                 to: last,
                 places: self.transport.describe_all(),
-                attributed: corroborated,
+                places_agreeing: agreeing,
             });
         }
         Ok((point, self.point.time))
@@ -1157,25 +1210,29 @@ impl<'t> Registry<'t> {
     }
 
     /// Records a missing deadline checkpoint for the request of `owner` at `index` when its
-    /// earliest and served timings differ, every place having been read: attributed to the
-    /// registry when at least two places served the same view of its start checkpoint and of
-    /// the checkpoint at its earliest position.
+    /// earliest and served timings differ, every place having been read, with the fewest
+    /// places agreeing on a checkpoint of its whole deadline range, from its start checkpoint
+    /// to its served effect, or the point.
     fn missing_deadline(&mut self, owner: &str, index: u64) -> Result<(), Refusal> {
         let earliest = self.earliest_effect(index)?;
-        if earliest == self.recovery_effect(index)? {
+        let served = self.recovery_effect(index)?;
+        if earliest == served {
             return Ok(());
         }
         let target = self.logged_at(index)?.saturating_add(owner::RECOVERY_DELAY);
-        let mut attributed = true;
-        for size in [Some(index.saturating_add(1)), earliest].into_iter().flatten() {
-            attributed &= self.kept(size)?.is_some_and(|kept| kept.corroborated);
+        let end = served.unwrap_or(self.point.checkpoint.size);
+        let mut agreeing = usize::MAX;
+        for size in index.saturating_add(1)..=end {
+            if let Some(kept) = self.kept(size)? {
+                agreeing = agreeing.min(kept.agreeing);
+            }
         }
         self.evidence(Misbehavior::MissingDeadline {
             owner: owner.to_owned(),
             index,
             target,
             places: self.transport.describe_all(),
-            attributed,
+            places_agreeing: agreeing,
         });
         Ok(())
     }
@@ -1400,15 +1457,78 @@ impl<'t> Registry<'t> {
         let releases = self.releases(name)?;
         let mut out = Vec::new();
         for release in releases.iter().filter(|r| r.statement.version.line() == line) {
+            let served = self.logged_at(release.index)?;
+            // The withheld-eligibility delay: cosignatures a place withholds can only make a
+            // release's logged time later. When it would be past the cooldown at the earliest
+            // time the merged cosignatures allow, and is not as served, the served time stands,
+            // and the delay is observed.
+            let now = self.point.time;
+            if !release.compromised
+                && served.saturating_add(resolve::COOLDOWN) > now
+                && let Some(earliest) = self.earliest_logged(release.index)?
+                && earliest.saturating_add(resolve::COOLDOWN) <= now
+            {
+                let observation = Observation::EligibilityDelay {
+                    name: name.to_owned(),
+                    version: release.statement.version.clone(),
+                    served,
+                    earliest,
+                };
+                if !self.observations.contains(&observation) {
+                    self.observations.push(observation);
+                }
+            }
             out.push(Release {
                 version: release.statement.version.clone(),
                 yanked: release.compromised,
                 advised: false,
                 threshold_fix: false,
-                logged_at: self.logged_at(release.index)?,
+                logged_at: served,
             });
         }
         Ok(out)
+    }
+
+    /// The earliest time the entry at `index` could have been logged, whatever cosignatures a
+    /// place withholds. Each witness's timestamps never decrease as the log grows, so a witness
+    /// that cosigned a kept checkpoint below the entry cosigned the entry's no earlier: of the
+    /// last kept checkpoint below it, at most [`MAX_SCAN`] sizes back, cosigned by `m` of the
+    /// `n` witnesses, with `k - (n - m)` at least 1, the earliest is that many-th earliest of
+    /// their timestamps there. `None` when no such checkpoint bounds it.
+    pub fn earliest_logged(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
+        let k = self.root.witnesses.threshold;
+        let mut witnesses: Vec<&[u8; 32]> =
+            self.root.witnesses.keys.iter().map(|key| &key.public).collect();
+        witnesses.sort_unstable();
+        witnesses.dedup();
+        let n = witnesses.len();
+        let first = index.saturating_sub(MAX_SCAN as u64).max(1);
+        for size in (first..=index).rev() {
+            let Some(kept) = self.kept(size)? else {
+                continue;
+            };
+            let mut earliest: BTreeMap<&str, u64> = BTreeMap::new();
+            for c in &kept.cosigned {
+                let slot = earliest.entry(c.witness.as_str()).or_insert(c.time);
+                *slot = (*slot).min(c.time);
+            }
+            let m = earliest.len();
+            let Some(rank) = k.checked_sub(n.saturating_sub(m)).filter(|rank| *rank >= 1) else {
+                continue;
+            };
+            let mut times: Vec<u64> = earliest.into_values().collect();
+            times.sort_unstable();
+            if let Some(time) = times.get(rank - 1) {
+                return Ok(Some(*time));
+            }
+        }
+        Ok(None)
+    }
+
+    /// What this client observed that changes no result, for `una ita audit` to report: each
+    /// release whose cooldown eligibility a place's withheld cosignatures delay.
+    pub fn observations(&self) -> &[Observation] {
+        &self.observations
     }
 
     /// The release `version` of `name`, verified.

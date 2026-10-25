@@ -2185,8 +2185,8 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
         vec![Omission::Cosignatures("acme".to_owned())]
     );
     // Its only place read, the request has no deadline checkpoint: evidence from an absence,
-    // with the request's index, its target witness time and the place read, not attributed to
-    // the registry, since one place may withhold.
+    // with the request's index, its target witness time and the place read, never the
+    // registry's fault, since a place may withhold.
     let target = client.logged_at(dispute).unwrap() + owner::RECOVERY_DELAY;
     assert_eq!(
         client.misbehavior(),
@@ -2195,7 +2195,7 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
             index: dispute,
             target,
             places: vec!["memory".to_owned()],
-            attributed: false,
+            places_agreeing: 1,
         }]
     );
 }
@@ -2225,10 +2225,10 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
             from: release + 1,
             to: release + 64,
             places: vec!["memory".to_owned()],
-            attributed: false,
+            places_agreeing: 1,
         }]
     );
-    // Two places serving the same view: attributed to the registry.
+    // Two places serving the same view: both agree, and it is still evidence from an absence.
     let first = Memory {
         files: registry.files.clone(),
     };
@@ -2244,7 +2244,7 @@ fn a_cadence_gap_is_recorded_as_misbehavior() {
             from: release + 1,
             to: release + 64,
             places: vec!["memory".to_owned(), "memory".to_owned()],
-            attributed: true,
+            places_agreeing: 2,
         }]
     );
 }
@@ -2305,4 +2305,227 @@ fn a_checkpoint_names_its_root_and_a_hidden_newer_root_is_unavailable() {
         let opened = Registry::open_with("acme", &place, &registry.pin(), &point, &floors);
         assert!(matches!(opened, Err(OpenError::Refused(_))), "{altered}");
     }
+}
+
+/// A checkpoint `text` signed again by the log, and cosigned at `time` by `witnesses`.
+fn resigned(
+    registry: &TestRegistry,
+    text: &str,
+    witnesses: &[(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
+    time: u64,
+) -> Vec<u8> {
+    let mut out = format!(
+        "{text}\n{}",
+        registry::sign_line(&registry.keys.log.0, &registry.keys.log.1, text)
+    );
+    for (pair, key) in witnesses {
+        out.push_str(&registry::cosign_line(pair, key, text, time));
+    }
+    out.into_bytes()
+}
+
+/// The signed text of the checkpoint document `bytes`.
+fn text_of(bytes: &[u8]) -> String {
+    let document = String::from_utf8(bytes.to_vec()).unwrap();
+    document.split_once("\n\n").unwrap().0.to_owned() + "\n"
+}
+
+/// After a rotation, a latest checkpoint that names the older root while the newer one is
+/// served stands for a newer checkpoint withheld: unavailable, never accepted.
+#[test]
+fn a_point_naming_an_older_root_is_unavailable() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - DAY);
+    registry.rotate_witness();
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let older = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    let text = text_of(&registry.files["checkpoint"]).replace(&registry.root_line(), &older);
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    let forged = resigned(&registry, &text, &registry.keys.witnesses, NOW);
+    place.files.insert("checkpoint".to_owned(), forged);
+    let point = Point::Latest { now: NOW + 60 };
+    let opened = Registry::open_with("acme", &place, &registry.pin(), &point, &Floors::default());
+    assert!(
+        matches!(opened, Err(OpenError::Unavailable(_))),
+        "{:?}",
+        opened.err()
+    );
+}
+
+/// The root version checkpoints name never decreases as the log grows: a kept checkpoint
+/// naming an older version than a smaller one is refused.
+#[test]
+fn a_root_version_that_decreases_is_refused() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.rotate_witness();
+    registry.checkpoint(NOW - 3 * DAY);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 2 * DAY);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let older = format!(
+        "ita-root 1 {}",
+        una_project::tlog::root::digest(&registry.roots[0])
+    );
+    let text = text_of(&registry.files["checkpoint/2"]).replace(&registry.root_line(), &older);
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    let forged = resigned(&registry, &text, &registry.keys.witnesses, NOW - 2 * DAY);
+    place.files.insert("checkpoint/2".to_owned(), forged);
+    let mut client = open(&place, &registry).unwrap();
+    // Size 1 names version 2; size 2, read after it, names version 1.
+    client.logged_at(0).unwrap();
+    assert!(client.logged_at(1).is_err());
+}
+
+/// Cosignatures are counted against the last root's witnesses: a rotated-out witness's
+/// back-dated cosignature on a kept checkpoint is ignored, and no time moves.
+#[test]
+fn an_old_witness_back_dating_is_ignored() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 10 * DAY);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    // The release's checkpoint, cosigned by two of the three witnesses.
+    registry.checkpoint_with(&[Some(NOW - 5 * DAY), Some(NOW - 5 * DAY), None]);
+    registry.rotate_witness();
+    registry.append("other", "filler");
+    registry.checkpoint(NOW);
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&honest, &registry).unwrap();
+    let logged = client.logged_at(1).unwrap();
+    let earliest = client.earliest_logged(2).unwrap();
+    // The rotated-out witness, seed 32, cosigns the release's checkpoint a month earlier.
+    let old = keypair(32, "witness.32");
+    let mut document = String::from_utf8(registry.files["checkpoint/2"].clone()).unwrap();
+    let text = text_of(document.as_bytes());
+    let back_dated = registry::cosign_line(&old.0, &old.1, &text, NOW - 40 * DAY);
+    document.push_str(&back_dated);
+    let mut place = Memory {
+        files: registry.files.clone(),
+    };
+    place
+        .files
+        .insert("checkpoint/2".to_owned(), document.into_bytes());
+    let mut client = open(&place, &registry).unwrap();
+    assert_eq!(client.logged_at(1).unwrap(), logged);
+    assert_eq!(client.earliest_logged(2).unwrap(), earliest);
+}
+
+/// A registry that keeps the rules and no more: witnesses cosign each request's start
+/// checkpoint, its deadline checkpoint and the one before it, and one checkpoint per 64 sizes,
+/// at times of their own. An honest owner stays available, both timings agree, and nothing is
+/// recorded.
+#[test]
+fn a_sparsely_cosigned_honest_registry_keeps_its_owner_available() {
+    let a = keypair(60, "acme.a");
+    let n = keypair(63, "acme.n");
+    let mut registry = TestRegistry::new("acme");
+    registry.sparse = true;
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 40 * DAY);
+    let dispute = registry.recover("acme", "dispute", &n.1, &[]);
+    for at in 0..150 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW - 20 * DAY);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&n]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&n]);
+    for at in 0..70 {
+        registry.append("other", &format!("later filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert!(history.took_effect.contains_key(&dispute));
+    assert_eq!(
+        client.earliest_effect(dispute).unwrap(),
+        client.recovery_effect(dispute).unwrap()
+    );
+    let releases = client.releases("acme/ledger").unwrap();
+    assert!(releases[0].compromised && !releases[1].compromised);
+    assert!(client.take_omitted().is_empty());
+    assert!(client.misbehavior().is_empty());
+}
+
+/// The withheld-eligibility delay: a mirror withholds the cosignatures of the checkpoint that
+/// makes a fix release past the cooldown. Resolution keeps the served time, so the older
+/// version is the newest eligible, and the delay is observed; with the honest copy merged, the
+/// fix is eligible.
+#[test]
+fn a_withheld_eligibility_delay_is_observed_and_merging_ends_it() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    registry.checkpoint(NOW - 30 * DAY);
+    let (fix, _) = registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    let eligible = registry.checkpoint(NOW - 4 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(NOW - 2 * DAY);
+    registry.append("other", "another filler");
+    registry.checkpoint(NOW);
+    let newest_eligible = |client: &mut Registry<'_>| {
+        let now = client.point.time;
+        client
+            .state("acme/ledger", Line::Zero(3))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.logged_at + una_project::resolve::COOLDOWN <= now)
+            .map(|r| r.version)
+            .max()
+            .unwrap()
+    };
+    let path = format!("checkpoint/{eligible}");
+    let mut withholding = Memory {
+        files: registry.files.clone(),
+    };
+    let text = text_of(&registry.files[&path]);
+    let stripped = resigned(&registry, &text, &[], 0);
+    withholding.files.insert(path.clone(), stripped);
+    let files = withholding.files.clone();
+    let mut client = open(&withholding, &registry).unwrap();
+    let older = Version::parse_full("0.3.1").unwrap();
+    let fixed = Version::parse_full("0.3.2").unwrap();
+    assert_eq!(newest_eligible(&mut client), older);
+    let observed = client.observations().to_vec();
+    assert!(
+        matches!(
+            observed.as_slice(),
+            [una_project::client::Observation::EligibilityDelay { version, served, .. }]
+                if *version == fixed && *served == NOW - 2 * DAY
+        ),
+        "{observed:?}"
+    );
+    assert!(client.take_omitted().is_empty());
+    // The honest copy behind it: merged, the fix is eligible, and nothing is observed.
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let both = una_project::transport::Fallback::new(
+        Box::new(Memory { files }),
+        vec![Box::new(honest)],
+    );
+    let mut client = open(&both, &registry).unwrap();
+    assert_eq!(client.logged_at(fix).unwrap(), NOW - 4 * DAY);
+    assert_eq!(newest_eligible(&mut client), fixed);
+    assert!(client.observations().is_empty());
 }
