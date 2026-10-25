@@ -287,7 +287,7 @@ fn placed(
     };
     let output = una_diag::safe_write::checked_output(&write_root, output)?;
     let object_path = output.with_extension("o");
-    una_diag::safe_write::write_atomically(&write_root, &object_path, object, true)?;
+    una_diag::safe_write::write_atomically(&write_root, &object_path, object, true, true)?;
     Ok((output, object_path))
 }
 

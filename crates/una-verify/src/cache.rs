@@ -93,12 +93,14 @@ pub(crate) fn put(cache: &ProofCache, key: &str, answer: &Answer) {
     let Ok(dir) = una_diag::safe_write::create_dir_inside(&cache.root, &cache.dir) else {
         return;
     };
-    // A failed store only means the query is solved again.
+    // A failed store only means the query is solved again. No fsync: the cache is best-effort,
+    // and an entry torn by a crash fails its tag and is solved again.
     let _ = una_diag::safe_write::write_atomically(
         &cache.root,
         &entry(&dir, key),
         text.as_bytes(),
         true,
+        false,
     );
 }
 

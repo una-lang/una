@@ -4,7 +4,8 @@
 //! so every such write goes through here.
 //!
 //! - A file is replaced through a fresh temporary file, created exclusively under a name unique
-//!   to the write, then synced and renamed onto its destination ([`write_atomically`]).
+//!   to the write, then synced (unless the caller opts out) and renamed onto its destination
+//!   ([`write_atomically`]).
 //! - A link at the destination is written through only when it resolves inside the package
 //!   root; the directory written in must resolve inside it too.
 //! - A directory chain is created one level at a time, and a link in it that leads outside the
@@ -21,6 +22,11 @@ use std::path::{Component, Path, PathBuf};
 /// interrupted write never leaves a truncated file. `create` allows a target that does not
 /// exist yet.
 ///
+/// `sync` flushes the temporary file to disk (`fsync`, a full flush on macOS) before the rename,
+/// so a crash never leaves a torn file under the destination's name. A best-effort write whose
+/// torn result is detected and redone may pass `false`: the proof cache does, since an entry
+/// torn by a crash fails its HMAC tag and the query is solved again.
+///
 /// The temporary file is created next to the destination with `create_new` (`O_CREAT|O_EXCL`,
 /// which never follows a symbolic link at its name), under a name unique to this process and
 /// write, with mode 0600 on Unix until it takes the destination's permissions (a new file is
@@ -34,7 +40,13 @@ use std::path::{Component, Path, PathBuf};
 /// # Errors
 ///
 /// Any error of the file system, or the refusal of a destination outside `root`.
-pub fn write_atomically(root: &Path, target: &Path, bytes: &[u8], create: bool) -> io::Result<()> {
+pub fn write_atomically(
+    root: &Path,
+    target: &Path,
+    bytes: &[u8],
+    create: bool,
+    sync: bool,
+) -> io::Result<()> {
     let root = canonical_root(root)?;
     let destination = match std::fs::symlink_metadata(target) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -58,7 +70,7 @@ pub fn write_atomically(root: &Path, target: &Path, bytes: &[u8], create: bool) 
         .ok()
         .map(|metadata| metadata.permissions());
     let (temporary, file) = fresh_temporary(&directory, &name, permissions.is_some())?;
-    let written = fill_and_rename(file, &temporary, &destination, permissions, bytes);
+    let written = fill_and_rename(file, &temporary, &destination, permissions, bytes, sync);
     if written.is_err() {
         // The name was created by this write alone, so removing it removes no one else's file.
         let _ = std::fs::remove_file(&temporary);
@@ -191,19 +203,22 @@ fn file_name(target: &Path, destination: &Path) -> io::Result<OsString> {
 }
 
 /// Writes `bytes` into the fresh `file`, gives it `permissions` (or those of a new file), syncs
-/// it and renames it from `temporary` onto `destination`.
+/// it when `sync` is set and renames it from `temporary` onto `destination`.
 fn fill_and_rename(
     mut file: File,
     temporary: &Path,
     destination: &Path,
     permissions: Option<Permissions>,
     bytes: &[u8],
+    sync: bool,
 ) -> io::Result<()> {
     file.write_all(bytes)?;
     if let Some(permissions) = permissions {
         file.set_permissions(permissions)?;
     }
-    file.sync_all()?;
+    if sync {
+        file.sync_all()?;
+    }
     drop(file);
     std::fs::rename(temporary, destination)
 }

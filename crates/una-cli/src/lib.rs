@@ -1271,7 +1271,7 @@ fn fmt_command(
 /// the write is refused, naming the link and where it leads: a cloned repository can choose a
 /// target link as easily as a temporary one.
 fn write_through_rename(root: &Path, target: &Path, text: &str) -> io::Result<()> {
-    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), false)
+    una_diag::safe_write::write_atomically(root, target, text.as_bytes(), false, true)
 }
 
 /// The package directory a command given `path` writes in: `path` itself, or the directory of a
