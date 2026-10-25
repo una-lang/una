@@ -17,8 +17,12 @@
 //! state of the service's own: the keys valid at each position, the recovery cosigners, the
 //! pending recoveries, disputes and co-signer changes, and the claims of compromise. An entry
 //! about to be logged is replayed with the chain, at the index it would have, and refused when
-//! the replay refuses it; a release or a yank is judged by the replayed history at its index
-//! (`History::judge`), as every client judges it.
+//! the replay refuses it, cannot settle it within its pass cap, or leaves it void there; a
+//! release or a yank is judged by the replayed history at its index (`History::judge`,
+//! `client::apply_yank`), as every client judges it, and refused unless it counts. Nothing that
+//! relies on a pending recovery or dispute is logged before the request's deadline: the replay
+//! takes a request as in effect only from its deadline checkpoint, once the service knows it, so
+//! an entry signed with the key it names is refused until then, as one that waits.
 //!
 //! Costs: a submission is O(log L) for the log's tree, O(32 · 8 k) for the map's path, and
 //! O(B) for an archive of B bytes; checks of names and keys are O(1) lookups by hash, but the
@@ -29,12 +33,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use una_project::client::owner_of;
+use una_project::client::{Marks, YankStanding, apply_yank, owner_of};
 use una_project::content::read_archive;
 use una_project::tlog::map::Head;
 use una_project::tlog::merkle::Hash;
 use una_project::tlog::note::{Key, Note, encode_base64, parse_checkpoint, parse_note};
-use una_project::tlog::owner::{self, Event, History, Logged, ReplayError, Standing};
+use una_project::tlog::owner::{self, Change, Event, History, Logged, ReplayError, Standing};
 use una_project::tlog::release::{Statement, within};
 use una_project::tlog::root::{Root, trust_first, walk};
 use una_project::tlog::{map, publish};
@@ -151,7 +155,8 @@ struct Recorded {
 #[derive(Clone, Debug, Default)]
 struct Package {
     releases: BTreeMap<Version, Statement>,
-    yanked: BTreeSet<Version>,
+    /// The versions yanked, with the log index of their yank.
+    yanked: BTreeMap<Version, u64>,
 }
 
 /// A release checked against its archive, before the registry's state is consulted.
@@ -496,9 +501,12 @@ impl Registry {
             Standing::Skipped(_) => Err(invalid(format!(
                 "the entry about `{name}` would be void at the log position {position}: its signatures reach its owner's threshold only with a key compromised before it or one that only void entries bring in, or its owner's chain is frozen"
             ))),
-            Standing::Unsigned => Err(invalid(format!(
-                "the entry about `{name}` is not signed by the threshold of its owner's keys valid at the log position {position}"
-            ))),
+            Standing::Unsigned => match relies_on_pending(&history, note) {
+                Some(request) => Err(waits(request)),
+                None => Err(invalid(format!(
+                    "the entry about `{name}` is not signed by the threshold of its owner's keys valid at the log position {position}"
+                ))),
+            },
         }
     }
 
@@ -709,7 +717,6 @@ impl Registry {
                 return Err(invalid("a release is published with its archive"));
             }
             Kind::Yank(yank) => {
-                self.signed_for(&entry.note, &yank.name)?;
                 let package = self
                     .packages
                     .get(&yank.name)
@@ -720,11 +727,35 @@ impl Registry {
                         yank.name, yank.version
                     )));
                 }
-                if package.yanked.contains(&yank.version) {
-                    return Err(invalid(format!(
-                        "{} {} is yanked already",
-                        yank.name, yank.version
-                    )));
+                // The client's own judgement of a yank (rule 41), against the replayed history
+                // of its owner at the index it would have: it must stand, never be void.
+                let history = self.replayed(owner_of(&yank.name), None)?;
+                let mut marks = Marks {
+                    yanked: package.yanked.clone(),
+                    ..Marks::default()
+                };
+                let position = self.tree.size();
+                match apply_yank(&mut marks, &history, &entry.note, position, &yank.version) {
+                    YankStanding::Stands => {}
+                    YankStanding::Void => {
+                        let why = marks
+                            .voided
+                            .last()
+                            .map_or_else(String::new, |void| void.why.clone());
+                        return Err(invalid(format!(
+                            "the yank of {} {} would be void at the log position {position}: {why}",
+                            yank.name, yank.version
+                        )));
+                    }
+                    YankStanding::Unsigned => {
+                        return Err(match relies_on_pending(&history, &entry.note) {
+                            Some(request) => waits(request),
+                            None => invalid(format!(
+                                "the yank of {} {} is not signed by the threshold of its owner's keys valid at the log position {position}",
+                                yank.name, yank.version
+                            )),
+                        });
+                    }
                 }
             }
             Kind::Advisory(advisory) => {
@@ -890,7 +921,27 @@ impl Registry {
                 }
             }
         }
-        self.replayed(owner_name, Some(entry)).map(|_| ())
+        // The client's replay of the chain with the entry at the index it would have: it MUST
+        // accept and settle, and the entry MUST NOT be void there (`spec/30 §14` rule 5). One
+        // signed by a key that a pending recovery or dispute names relies on that request,
+        // which governs only from its deadline: it waits.
+        let replayed = match self.replayed(owner_name, Some(entry)) {
+            Ok(replayed) => replayed,
+            Err(refusal) => {
+                if let Some(current) = &current
+                    && let Some(request) = relies_on_pending(current, &entry.note)
+                {
+                    return Err(waits(request));
+                }
+                return Err(refusal);
+            }
+        };
+        if replayed.voided.contains(&position) {
+            return Err(invalid(format!(
+                "the entry would be void at the log position {position}: it is signed as its kind requires only with a key compromised before it, or it depends on a void entry, and a registry never logs a void entry"
+            )));
+        }
+        Ok(())
     }
 
     /// Registers an owner (rules 38 and 44 to 45). The operator calls it after verifying the
@@ -1073,7 +1124,7 @@ impl Registry {
                     .entry(yank.name.clone())
                     .or_default()
                     .yanked
-                    .insert(yank.version.clone());
+                    .insert(yank.version.clone(), self.tree.size().saturating_sub(1));
             }
             Kind::Advisory(_) => {}
             Kind::Owner(read) => {
@@ -1164,6 +1215,27 @@ impl Registry {
             promise: note(&text, &[&self.log]),
         })
     }
+}
+
+/// The pending recovery or dispute of `history` whose new key signs `note`, by its index: an
+/// entry signed with that key relies on the request, which governs only from its deadline.
+fn relies_on_pending(history: &History, note: &Note) -> Option<u64> {
+    history
+        .pending
+        .iter()
+        .find_map(|pending| match &pending.change {
+            Change::Recovery(key) | Change::Dispute(key) if note.signed_by(key) => {
+                Some(pending.index)
+            }
+            _ => None,
+        })
+}
+
+/// The refusal of an entry that relies on the request logged at `request` before its deadline.
+fn waits(request: u64) -> Refusal {
+    Refusal::Unavailable(format!(
+        "the entry is signed by the key that the request at {request} names, which governs only from that request's deadline checkpoint: it can be logged once that checkpoint is signed and cosigned"
+    ))
 }
 
 /// The number of entries of a bundle's bytes.
