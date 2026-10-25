@@ -439,7 +439,7 @@ pub struct Registry {
     owners: HashMap<String, Vec<Recorded>>,
     /// Every owner key a chain names (registered, added, recovered or disputed), by public
     /// key, with its owner: a key is never two owners'.
-    held: HashMap<[u8; 32], String>,
+    owner_keys: HashMap<[u8; 32], String>,
     packages: HashMap<String, Package>,
     names: Names,
     witnesses: BTreeMap<String, (u64, u64)>,
@@ -546,7 +546,7 @@ impl Registry {
             map: NameMap::new(),
             heads: HashMap::new(),
             owners: HashMap::new(),
-            held: HashMap::new(),
+            owner_keys: HashMap::new(),
             packages: HashMap::new(),
             names: Names::new(),
             witnesses: BTreeMap::new(),
@@ -1817,7 +1817,7 @@ impl Registry {
     /// or when `owner_name` holds or held a key of its name or its public key.
     fn fresh_key(&self, owner_name: &str, key: &Key) -> Result<(), Refusal> {
         if self
-            .held
+            .owner_keys
             .get(&key.public)
             .is_some_and(|other| other != owner_name)
         {
@@ -2284,7 +2284,7 @@ impl Registry {
                     _ => Vec::new(),
                 };
                 for key in keys {
-                    self.held
+                    self.owner_keys
                         .entry(key.public)
                         .or_insert_with(|| owner_name.clone());
                 }
