@@ -299,14 +299,19 @@ fn a_client_publishes_and_verifies_every_proof() {
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
-    let service = Arc::new(Service::new(
-        Arc::clone(&store),
-        registry,
-        ServerConfig {
-            register_token: Some(TOKEN.to_owned()),
-            ..ServerConfig::default()
-        },
-    ));
+    let outbox = temp_dir("e2e-outbox");
+    let service = Arc::new(
+        Service::new(
+            Arc::clone(&store),
+            registry,
+            ServerConfig {
+                register_token: Some(TOKEN.to_owned()),
+                outbox: Some(outbox.clone()),
+                ..ServerConfig::default()
+            },
+        )
+        .unwrap(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -579,6 +584,7 @@ fn a_client_publishes_and_verifies_every_proof() {
     assert_eq!(request(addr, "GET", "state/size", &[], b"").0, 404);
     assert_eq!(request(addr, "GET", "tile/../state/size", &[], b"").0, 404);
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&outbox);
 }
 
 #[test]
@@ -593,8 +599,12 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
         pin: root_digest(&root_doc),
         log_seed: [20; 32],
     };
+    let registry = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
+    // A registry is never served without a notifier: no outbox named, no service.
+    let refused = Service::new(Arc::clone(&store), registry, ServerConfig::default()).unwrap_err();
+    assert!(refused.contains("ServerConfig::outbox"), "{refused}");
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    let service = Arc::new(Service::new(
+    let service = Arc::new(Service::unnotified_for_tests(
         Arc::clone(&store),
         registry,
         ServerConfig::default(),

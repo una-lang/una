@@ -61,6 +61,7 @@ use crate::authority::interface;
 use crate::entry::{Entry, Kind, parse_entry, previous_text};
 use crate::namemap::NameMap;
 use crate::names::{self, Names};
+use crate::notify::{Notice, Notifier, Recording};
 use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
@@ -212,6 +213,10 @@ pub struct Registry {
     /// The recoveries, disputes, co-signer changes and cancellations of recoveries, by index,
     /// with their starts and deadlines (`crate::timing`).
     requests: BTreeMap<u64, Timed>,
+    /// Where notices to owners go (`crate::notify`).
+    notifier: Arc<dyn Notifier>,
+    /// How many notices the notifier could not take.
+    notice_failures: u64,
 }
 
 impl std::fmt::Debug for Registry {
@@ -291,6 +296,8 @@ impl Registry {
             published: None,
             broken: None,
             requests: BTreeMap::new(),
+            notifier: Arc::new(Recording::new()),
+            notice_failures: 0,
         };
         registry.replay()?;
         Ok(registry)
@@ -546,6 +553,42 @@ impl Registry {
             "the log grows only once its checkpoint of size {size} carries the witness threshold of cosignatures, since {}; it keeps serving it at `{WITNESS_NEXT}` for its witnesses to cosign: try again shortly",
             blocking.describe()
         ))
+    }
+
+    /// Sends the notices of every `ita-key/1` entry logged from now on to `notifier`; until it
+    /// is called, they are recorded in memory ([`Recording`]). Serving requires an outbox
+    /// (`crate::http::ServerConfig::outbox`).
+    pub fn set_notifier(&mut self, notifier: Arc<dyn Notifier>) {
+        self.notifier = notifier;
+    }
+
+    /// How many notices the notifier could not take: each was logged all the same.
+    pub fn notice_failures(&self) -> u64 {
+        self.notice_failures
+    }
+
+    /// The notice of an entry logged at `index`, when it is an `ita-key/1` entry: every key
+    /// event, co-signer change, recovery or dispute logged against an owner's chain.
+    fn notice(&self, entry: &Entry, index: u64) -> Option<Notice> {
+        let read = entry.owner_entry()?;
+        let kind = match &read.event {
+            Event::Register { .. } => return None,
+            Event::Add(_) => "add",
+            Event::Revoke { .. } => "revoke",
+            Event::Cosigners(_) => "cosigners",
+            Event::Recover(_) => "recover",
+            Event::Cancel(_) => "cancel",
+            Event::Overrule(_) => "overrule",
+            Event::Dispute(_) => "dispute",
+        };
+        Some(Notice {
+            source: self.root.source.clone(),
+            owner: read.owner.clone(),
+            index,
+            kind: kind.to_owned(),
+            leaf: digest_string(&entry.leaf()),
+            link: entry_bundle_path(index / WIDTH, WIDTH),
+        })
     }
 
     /// The deadline checkpoint of the request logged at `index`, once fixed.
@@ -1544,6 +1587,13 @@ impl Registry {
             }
         }
         self.apply(&entry);
+        // The owner is notified at once, after the entry is logged: sending never delays or
+        // conditions logging, and a notice the notifier cannot take is only counted.
+        if let Some(notice) = self.notice(&entry, index)
+            && self.notifier.notify(&notice).is_err()
+        {
+            self.notice_failures = self.notice_failures.saturating_add(1);
+        }
         let text = format!(
             "ita-promise/1\nsource {}\nindex {index}\nleaf {}\nby {}\n",
             self.root.source,

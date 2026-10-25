@@ -32,9 +32,12 @@
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::notify::Outbox;
 
 use crate::registry::{Refusal, Registry};
 use crate::store::{Store, check_path};
@@ -67,6 +70,10 @@ pub struct ServerConfig {
     pub head_timeout: Duration,
     /// The longest wait for progress on a body.
     pub idle_timeout: Duration,
+    /// The outbox file where notices to owners are appended, for the operator's sender to
+    /// deliver to each owner's verified contact (`spec/30 §14` rule 5). It has no default: the
+    /// service refuses to serve unless the operator names it ([`Service::new`]).
+    pub outbox: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -76,6 +83,7 @@ impl Default for ServerConfig {
             max_connections: 256,
             head_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(60),
+            outbox: None,
         }
     }
 }
@@ -208,7 +216,29 @@ fn servable(path: &str) -> Option<bool> {
 
 impl Service {
     /// The endpoints of `registry`, serving the files of `store`, which is the registry's.
-    pub fn new(store: Arc<dyn Store>, registry: Registry, config: ServerConfig) -> Service {
+    /// A registry MUST notify owners of what is logged against their chains, so the service
+    /// refuses to start unless `config` names the outbox its notices go to, which the operator
+    /// delivers; the error says so.
+    pub fn new(
+        store: Arc<dyn Store>,
+        mut registry: Registry,
+        config: ServerConfig,
+    ) -> Result<Service, String> {
+        let Some(path) = &config.outbox else {
+            return Err("Itaty serves only with a notifier: name the outbox file of notices to owners in `ServerConfig::outbox`, which the operator's sender delivers to each owner's verified contact (spec/30 §14 rule 5)".to_owned());
+        };
+        registry.set_notifier(Arc::new(Outbox::open(path)?));
+        Ok(Service::unnotified_for_tests(store, registry, config))
+    }
+
+    /// FOR TESTS ONLY: the endpoints of `registry` with no outbox, its notices kept in memory
+    /// by whatever notifier it has. A registry served this way does not notify owners, which
+    /// `spec/30 §14` rule 5 requires: never serve a registry with it.
+    pub fn unnotified_for_tests(
+        store: Arc<dyn Store>,
+        registry: Registry,
+        config: ServerConfig,
+    ) -> Service {
         Service {
             store,
             registry: Arc::new(Mutex::new(registry)),
