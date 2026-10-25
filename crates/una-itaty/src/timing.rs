@@ -47,6 +47,19 @@ use una_project::client::CADENCE;
 use una_project::tlog::owner::RECOVERY_DELAY;
 use una_project::tlog::witness::Cosigned;
 
+/// What a timed request is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimedKind {
+    /// A recovery.
+    Recovery,
+    /// A dispute.
+    Dispute,
+    /// A co-signer change.
+    Cosigners,
+    /// A cancellation of a waiting request.
+    Cancel,
+}
+
 /// A request whose seven days are measured: a recovery, a dispute, a co-signer change, or a
 /// cancellation of a waiting request, whose own seven days bound an overruling.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +68,8 @@ pub struct Timed {
     pub index: u64,
     /// The owner whose chain it is on.
     pub owner: String,
+    /// What it is.
+    pub kind: TimedKind,
     /// Its start, in witness time: the k-th earliest cosignature on its start checkpoint, once
     /// that checkpoint carries the threshold.
     pub start: Option<u64>,
@@ -63,11 +78,12 @@ pub struct Timed {
 }
 
 impl Timed {
-    /// A request of `owner` logged at `index`, not yet started.
-    pub fn new(index: u64, owner: &str) -> Timed {
+    /// A request of `owner` of `kind` logged at `index`, not yet started.
+    pub fn new(index: u64, owner: &str, kind: TimedKind) -> Timed {
         Timed {
             index,
             owner: owner.to_owned(),
+            kind,
             start: None,
             deadline: None,
         }
@@ -303,14 +319,14 @@ mod tests {
     }
 
     fn started(index: u64, start: u64) -> Timed {
-        let mut request = Timed::new(index, "acme");
+        let mut request = Timed::new(index, "acme", TimedKind::Dispute);
         request.start = Some(start);
         request
     }
 
     #[test]
     fn obligations_follow_cadence_starts_and_deadlines() {
-        let mut request = Timed::new(9, "acme");
+        let mut request = Timed::new(9, "acme", TimedKind::Dispute);
         assert_eq!(obligation(0, 0, std::iter::empty()), Vec::new());
         assert_eq!(
             obligation(64, 0, std::iter::empty()),

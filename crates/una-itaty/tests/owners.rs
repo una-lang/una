@@ -1212,7 +1212,7 @@ fn no_owner_stalls_the_registry_and_the_bucket_spares_owners_own_requests() {
     let o = keypair(67, "orbit.o");
     let trustee = keypair(70, "trustee.x");
     let orbit = f.register("orbit", &[&o], &[]);
-    let owners: Vec<(String, Pair)> = (0..233)
+    let owners: Vec<(String, Pair)> = (0..209)
         .map(|n| {
             let name = owner_name(n);
             let key = keypair_n(n as u32, &format!("{name}.a"));
@@ -1225,9 +1225,9 @@ fn no_owner_stalls_the_registry_and_the_bucket_spares_owners_own_requests() {
     let change = format!("cosigners 1 {}", key_text(&trustee.1));
     let mut now = NOW;
     let mut changes: Vec<u64> = Vec::new();
-    // 200 owners each ask a co-signer change, 30 seconds apart, between a publisher's entries.
+    // 200 owners each ask a co-signer change, a minute apart, between a publisher's entries.
     for (name, key) in owners.iter().take(200) {
-        now += 30;
+        now += 60;
         f.set_time(now);
         let index = f.submit(name, &change, 1, &[key]).unwrap();
         changes.push(index);
@@ -1244,12 +1244,12 @@ fn no_owner_stalls_the_registry_and_the_bucket_spares_owners_own_requests() {
             .unwrap();
         f.cosign(&[0, 1], now);
     }
-    // At once, 32 more co-signer changes drain the bucket; the 33rd waits, its sender alone.
-    for (name, key) in owners.iter().skip(200).take(32) {
+    // At once, 8 more co-signer changes drain the bucket; the ninth waits, its sender alone.
+    for (name, key) in owners.iter().skip(200).take(8) {
         f.submit(name, &change, 1, &[key]).unwrap();
         f.cosign(&[0, 1], now);
     }
-    let (name, key) = &owners[232];
+    let (name, key) = &owners[208];
     assert_eq!(
         f.submit(name, &change, 1, &[key]).unwrap_err().cause(),
         Some(&Cause::RateLimited)
@@ -1661,4 +1661,56 @@ fn notices_a_crash_left_reach_the_outbox_once_served() {
         .collect();
     assert_eq!(indices, vec!["1", "2"], "{lines}");
     let _ = std::fs::remove_file(&outbox);
+}
+
+#[test]
+fn one_owner_asks_two_co_signer_changes_a_week_and_a_cancelled_recovery_never_waits() {
+    let mut f = Fixture::new("cap");
+    let a = keypair(60, "acme.a");
+    let c = keypair(61, "trustee.c");
+    let x = keypair(70, "trustee.x");
+    let r = keypair(63, "acme.r");
+    f.register("acme", &[&a], &[&c]);
+    let change = format!("cosigners 1 {}", key_text(&x.1));
+    // One owner loops a co-signer change and its cancellation: the third change is refused.
+    for _ in 0..2 {
+        let asked = f.submit("acme", &change, 1, &[&a]).unwrap();
+        f.cosign(&[0, 1], NOW);
+        f.submit("acme", &format!("cancel {asked}"), 1, &[&a])
+            .unwrap();
+        f.cosign(&[0, 1], NOW);
+    }
+    assert_eq!(
+        f.submit("acme", &change, 1, &[&a]).unwrap_err().cause(),
+        Some(&Cause::CosignerChangeCap)
+    );
+    // Others drain the bucket.
+    let mut drained = false;
+    for n in 0..16u32 {
+        let name = owner_name(300 + n as usize);
+        let key = keypair_n(6_000 + n, &format!("{name}.a"));
+        f.register_reviewed(&name, &key);
+        match f.submit(&name, &change, 1, &[&key]) {
+            Ok(_) => f.cosign(&[0, 1], NOW),
+            Err(refusal) => {
+                assert_eq!(refusal.cause(), Some(&Cause::RateLimited));
+                drained = true;
+                break;
+            }
+        }
+    }
+    assert!(drained);
+    // A thief's recovery of acme, by its cosigner's key, is cancelled by acme with the bucket
+    // drained.
+    let recover = f.event("acme", &format!("recover {}", key_text(&r.1)), 1);
+    let receipt = f
+        .registry
+        .request(signed(&recover, &[&c]).as_bytes(), false)
+        .unwrap();
+    let recovery = f.logged(&owner_chain("acme"), receipt);
+    f.cosign(&[0, 1], NOW);
+    let cancel = f
+        .submit("acme", &format!("cancel {recovery}"), 1, &[&a])
+        .unwrap();
+    assert!(f.registry.request_timing(cancel).is_some());
 }

@@ -66,7 +66,7 @@ use crate::sign::{Signer, note};
 use crate::store::Store;
 use crate::tiles::{WIDTH, entry_bundle_path, hash_tile_path, last_tiles, push_entry, read_bundle};
 use crate::timing::{
-    Crossing, Obligation, Timed, admits, holds, obligation, reaches, uncompletable,
+    Crossing, Obligation, Timed, TimedKind, admits, holds, obligation, reaches, uncompletable,
 };
 use crate::tree::{Tree, root as tree_root};
 use crate::{
@@ -101,10 +101,14 @@ pub const WITNESS_LATENCY: u64 = 3_600;
 /// fixed, its owner's entries wait. Two hours.
 pub const HOLD_WINDOW: u64 = MAX_WITNESS_AHEAD + WITNESS_LATENCY;
 /// The registry-wide rate of unprivileged timed requests (co-signer changes, and cancellations
-/// of waiting requests): one token every this many seconds.
-pub const TIMED_EVERY: u64 = 10;
+/// of them): one token every this many seconds. Each costs about three witness round trips of
+/// the log's time, so at a round trip of 2 seconds they stall the log for at most about a tenth
+/// of its time.
+pub const TIMED_EVERY: u64 = 60;
 /// The burst of unprivileged timed requests: at most this many tokens are kept.
-pub const TIMED_BURST: u64 = 32;
+pub const TIMED_BURST: u64 = 8;
+/// The most co-signer changes an owner asks in seven days, cancelled ones counted.
+pub const COSIGNER_CHANGES_PER_WEEK: usize = 2;
 /// The store path of the cosignature lines held back, one per line after its checkpoint's size.
 const STATE_HELD: &str = "state/held";
 /// The largest document of the registry read from its own store (rule 23: 16 MiB).
@@ -199,6 +203,8 @@ pub enum Cause {
     OwnerHold(u64),
     /// An unprivileged timed request past the registry's rate (`spec/30 §16` rule 10).
     RateLimited,
+    /// A co-signer change past the owner's two in seven days (`spec/30 §16` rule 10).
+    CosignerChangeCap,
     /// A rotation that lists as a witness a key a root version revoked.
     RevokedWitness,
     /// A rotation whose compromised key is not a current witness rotated out.
@@ -1810,7 +1816,17 @@ impl Registry {
                         });
                     // Co-signer changes and timed cancellations are the unprivileged timed
                     // requests: they draw on the registry-wide bucket.
-                    throttled = timed_cancel || matches!(read.event, Event::Cosigners(_));
+                    // A cancellation of a recovery or a dispute never is: an owner can always
+                    // cancel a thief's waiting recovery within its window.
+                    let cancels_change = match read.event {
+                        Event::Cancel(target) => self
+                            .requests
+                            .get(&target)
+                            .is_some_and(|request| request.kind == TimedKind::Cosigners),
+                        _ => false,
+                    };
+                    throttled = (timed_cancel && cancels_change)
+                        || matches!(read.event, Event::Cosigners(_));
                 }
             },
         }
@@ -1966,6 +1982,27 @@ impl Registry {
                         Cause::PendingCosignerChange,
                         format!(
                             "the co-signer change at {waiting} of `{owner_name}` still waits: one waits at a time"
+                        ),
+                    ));
+                }
+                // At most two co-signer changes per owner in seven days, cancelled ones counted.
+                let now = self.clock.now();
+                let recent = self
+                    .requests
+                    .values()
+                    .filter(|request| {
+                        request.owner == owner_name
+                            && request.kind == TimedKind::Cosigners
+                            && request.start.is_none_or(|start| {
+                                start.saturating_add(owner::RECOVERY_DELAY) > now
+                            })
+                    })
+                    .count();
+                if recent >= COSIGNER_CHANGES_PER_WEEK {
+                    return Err(wait(
+                        Cause::CosignerChangeCap,
+                        format!(
+                            "`{owner_name}` asked {recent} co-signer changes in the last seven days, the most an owner asks"
                         ),
                     ));
                 }
@@ -2337,7 +2374,14 @@ impl Registry {
                     _ => false,
                 };
                 if timed {
-                    self.requests.insert(index, Timed::new(index, &owner_name));
+                    let kind = match &read.event {
+                        Event::Recover(_) => TimedKind::Recovery,
+                        Event::Dispute(_) => TimedKind::Dispute,
+                        Event::Cosigners(_) => TimedKind::Cosigners,
+                        _ => TimedKind::Cancel,
+                    };
+                    self.requests
+                        .insert(index, Timed::new(index, &owner_name, kind));
                     self.active.insert(index);
                 }
                 self.owners.entry(owner_name).or_default().push(Recorded {
