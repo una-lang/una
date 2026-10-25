@@ -17,6 +17,7 @@ use serde_json::Value;
 fn una(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(dir)
         .output()
