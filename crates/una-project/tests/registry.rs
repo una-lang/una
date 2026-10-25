@@ -421,6 +421,7 @@ fn locked(name: &str, version: &str) -> Locked {
         digest: None,
         resolution: 100,
         accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
     }
 }
 
@@ -720,6 +721,7 @@ fn a_yank_signed_after_its_keys_compromise_is_void() {
             digest: None,
             resolution: 0,
             accepted: BTreeSet::new(),
+            effects: BTreeSet::new(),
         },
     )
     .unwrap();
@@ -733,6 +735,7 @@ fn a_yank_signed_after_its_keys_compromise_is_void() {
         digest: None,
         resolution: 0,
         accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
     };
     assert!(audit::facts(&mut client, &mismatch).is_err());
 }
@@ -1053,6 +1056,7 @@ fn the_audit_leaves_out_what_the_lock_accepted() {
         digest: Some(digest),
         resolution,
         accepted: BTreeSet::new(),
+        effects: BTreeSet::new(),
     };
     let facts = audit::facts(&mut client, &locked).unwrap();
     assert_eq!(facts.pending, [request]);
@@ -1565,6 +1569,7 @@ fn the_audit_honors_accepted_indices_as_the_lock_does() {
         digest: Some(digest),
         resolution,
         accepted: [request].into_iter().collect(),
+        effects: BTreeSet::new(),
     };
     let facts = audit::facts(&mut client, &locked).unwrap();
     assert_eq!(facts.accepted_effects, [request], "{facts:?}");
@@ -1576,4 +1581,83 @@ fn the_audit_honors_accepted_indices_as_the_lock_does() {
     let facts = audit::facts(&mut client, &locked).unwrap();
     assert!(facts.accepted_effects.is_empty());
     assert!(facts.key_changes.contains(&request), "{facts:?}");
+}
+
+/// A lock whose `effect` line records a recovery in effect at its resolution point passes the
+/// audit for that effect; an `effect` index that was only pending there is not honored, and the
+/// pending recovery is reported.
+#[test]
+fn an_effect_line_passes_the_audit_for_its_effect() {
+    let day = 24 * 3600;
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW - 20 * day);
+    let newcomer = keypair(64, "acme.new");
+    let request = test.recover("acme", "recover", &newcomer.1, &[]);
+    test.checkpoint(NOW - 19 * day);
+    test.append("other", "filler");
+    test.checkpoint(NOW - 10 * day);
+    // The lock's point: the recovery took effect before it.
+    let resolution = test.entries.len() as u64;
+    let other = keypair(65, "acme.other");
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let locked = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest.clone()),
+        resolution,
+        accepted: BTreeSet::new(),
+        effects: [request].into_iter().collect(),
+    };
+    let facts = audit::facts(&mut client, &locked).unwrap();
+    assert!(audit::findings(0, &facts).is_empty(), "{facts:?}");
+    // A second registry: the recovery still pending at the lock's point. An `effect` line for
+    // it is not honored, and the pending recovery is reported.
+    let mut pending = TestRegistry::new("acme");
+    pending.register("acme", &owner);
+    let (index, digest) = pending.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    pending.checkpoint(NOW - 100);
+    let request = pending.recover("acme", "recover", &other.1, &[]);
+    pending.checkpoint(NOW);
+    let resolution = pending.entries.len() as u64;
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: pending.files.clone(),
+    };
+    let mut client = Registry::open(
+        "acme",
+        &memory,
+        &pending.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap();
+    let forged = Locked {
+        source: "acme".to_owned(),
+        name: "acme/ledger".to_owned(),
+        version: v("0.3.1"),
+        logged: Some(index),
+        digest: Some(digest),
+        resolution,
+        accepted: BTreeSet::new(),
+        effects: [request].into_iter().collect(),
+    };
+    let facts = audit::facts(&mut client, &forged).unwrap();
+    assert_eq!(facts.pending, [request], "{facts:?}");
 }

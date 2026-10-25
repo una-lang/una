@@ -36,8 +36,12 @@ pub struct Locked {
     /// The entries of its owner's chain whose key change the lock records as consented to, the
     /// lock's `accepted` line for the owner (`spec/30 §4` rule 2, §14 rule 8). An index counts
     /// only as `una ita lock` counts it: below the lock's resolution point and an entry of the
-    /// owner's chain there, a recovery or a dispute then pending, or another key event.
+    /// owner's chain there, a recovery or a dispute then pending and not cancelled.
     pub accepted: BTreeSet<u64>,
+    /// The recoveries and disputes whose effect the lock records as consented to, the lock's
+    /// `effect` line for the owner: an index counts only below the lock's resolution point and
+    /// in effect there.
+    pub effects: BTreeSet<u64>,
 }
 
 /// What the verified state says of a locked release.
@@ -61,8 +65,8 @@ pub struct Facts {
     /// The log indexes of the yanks of it that are void: counted only with a compromised key,
     /// or repeating a yank.
     pub void_yanks: Vec<u64>,
-    /// The recoveries and disputes the lock accepted while pending, now in effect: their log
-    /// indexes. Their effect needs fresh consent, so each is reported.
+    /// The recoveries and disputes the lock accepted while pending, now in effect, whose effect
+    /// no `effect` line consents to: their log indexes. Each is reported (U7014).
     pub accepted_effects: Vec<u64>,
 }
 
@@ -108,27 +112,30 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
     // Recorded consent counts as `una ita lock --check` counts it
     // (`History::changed_after_except`): an accepted entry, and the effect it requested, are
     // not reported again; a new one is.
-    // Only the indices `una ita lock` would honor: below the resolution point, on the owner's
-    // chain, and, for a recovery or a dispute, not in effect at that point.
+    // The consent the lock records counts as `una ita lock --check` counts it (`spec/30 §14`
+    // rule 8): an index below the resolution point that is, there, a recovery or a dispute of
+    // the owner's chain; pending and not cancelled for an `accepted` line, in effect for an
+    // `effect` line. Any other index counts for nothing.
+    let resolution = locked.resolution;
+    let in_effect = |i: u64| history.requests.get(&i).copied().flatten();
+    let request = |i: u64| i < resolution && history.requests.contains_key(&i);
     let accepted: BTreeSet<u64> = locked
         .accepted
         .iter()
         .copied()
-        .filter(|index| {
-            *index < locked.resolution
-                && history.entries.contains(index)
-                && history
-                    .requests
-                    .get(index)
-                    .is_none_or(|effect| effect.is_none_or(|at| at > locked.resolution))
+        .filter(|i| {
+            let cancelled = history
+                .cancellations
+                .get(i)
+                .is_some_and(|cancels| cancels.iter().any(|c| *c < resolution));
+            request(*i) && !cancelled && in_effect(*i).is_none_or(|at| at > resolution)
         })
         .collect();
-    // A recovery or a dispute accepted while pending that has since taken effect: its effect
-    // is a key change of its own, which the consent to the request does not cover.
-    let accepted_effects: Vec<u64> = accepted
+    let effects: BTreeSet<u64> = locked
+        .effects
         .iter()
         .copied()
-        .filter(|index| matches!(history.requests.get(index), Some(Some(_))))
+        .filter(|i| request(*i) && in_effect(*i).is_some_and(|at| at <= resolution))
         .collect();
     let pending: Vec<u64> = history
         .pending
@@ -136,24 +143,30 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, Refu
         .map(|p| p.index)
         .filter(|index| !accepted.contains(index))
         .collect();
+    // An effect after the resolution point that no `effect` line consents to: a recovery or a
+    // dispute accepted while pending is reported as such, any other as a key change.
+    let mut accepted_effects: Vec<u64> = Vec::new();
     let mut changes: BTreeSet<u64> = history
         .entries
         .iter()
         .copied()
-        .filter(|index| *index >= locked.resolution)
+        .filter(|index| *index >= resolution && !accepted.contains(index))
         .collect();
-    changes.extend(
-        history
-            .snapshots
-            .iter()
-            .filter(|s| s.from > locked.resolution)
-            .map(|s| s.by),
-    );
+    for snapshot in history.snapshots.iter().filter(|s| s.from > resolution) {
+        if effects.contains(&snapshot.by) {
+            continue;
+        }
+        if accepted.contains(&snapshot.by) {
+            accepted_effects.push(snapshot.by);
+        } else {
+            changes.insert(snapshot.by);
+        }
+    }
+    accepted_effects.sort_unstable();
+    accepted_effects.dedup();
     let key_changes = changes
         .into_iter()
-        .filter(|index| {
-            !accepted.contains(index) && !pending.contains(index) && !accepted_effects.contains(index)
-        })
+        .filter(|index| !pending.contains(index))
         .collect();
     Ok(Facts {
         yanked: marks.yanked.contains_key(&locked.version),

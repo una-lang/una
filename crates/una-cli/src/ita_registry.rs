@@ -724,15 +724,17 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
             .find(|r| r.source.value == source);
         let resolution = registry.map_or(0, |r| r.checkpoint_size.value);
         let name = locked.name.value.to_string();
-        // The consent the lock records for the owner's chain (`accepted <owner> <index> …`).
-        let accepted: std::collections::BTreeSet<u64> = registry
-            .and_then(|r| {
-                r.accepted
-                    .iter()
-                    .find(|line| line.owner.value == owner_of(&name))
-            })
-            .map(|line| line.indices.iter().map(|index| index.value).collect())
-            .unwrap_or_default();
+        // The consent the lock records for the owner's chain, `accepted <owner> <index> …` and
+        // `effect <owner> <index> …`, counted by `audit::facts` as `una ita lock --check` does.
+        let indices_of = |lines: &[una_syntax::ita::LockAccepted]| -> std::collections::BTreeSet<u64> {
+            lines
+                .iter()
+                .find(|line| line.owner.value == owner_of(&name))
+                .map(|line| line.indices.iter().map(|index| index.value).collect())
+                .unwrap_or_default()
+        };
+        let accepted = registry.map(|r| indices_of(&r.accepted)).unwrap_or_default();
+        let effects = registry.map(|r| indices_of(&r.effects)).unwrap_or_default();
         packages.push(audit::Locked {
             source: source.to_owned(),
             name,
@@ -741,6 +743,7 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
             digest: locked.digest.as_ref().map(|d| d.value.clone()),
             resolution,
             accepted,
+            effects,
         });
         lines_of.push(locked);
     }
