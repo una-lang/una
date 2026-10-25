@@ -155,7 +155,7 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ] || [ "$translated" = 1 ]; then
     echo "skipped: under emulation the real clock is not the runtime's; run on a native host (macOS, --linux-arm64)"
 else
     step "Timing channels (security oracles)" \
-        cargo test --locked -p una-cli --test timing_channels -- --ignored --test-threads=1
+        cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1
 fi
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of

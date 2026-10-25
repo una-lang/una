@@ -66,6 +66,7 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
 sched::tests::placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers
 sched::tests::start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size
 sched::tests::start_all_starts_every_worker_and_both_pools_before_any_task

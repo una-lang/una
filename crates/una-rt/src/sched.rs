@@ -353,6 +353,9 @@ struct Shared {
     /// How many stacks [`Shared::take`] mapped because the pool had none, in tests.
     #[cfg(test)]
     mapped: AtomicUsize,
+    /// How many worker threads started, in tests.
+    #[cfg(test)]
+    spawned: AtomicUsize,
 }
 
 impl Shared {
@@ -466,6 +469,8 @@ impl Scheduler {
                 io: Arc::new(Helpers::new(settings.io_threads)),
                 #[cfg(test)]
                 mapped: AtomicUsize::new(0),
+                #[cfg(test)]
+                spawned: AtomicUsize::new(0),
             }),
         })
     }
@@ -524,6 +529,8 @@ impl Scheduler {
             .stack_size(WORKER_STACK)
             .spawn(move || serve(serving, shared, ready))
             .map_err(|_| NotStarted)?;
+        #[cfg(test)]
+        self.shared.spawned.fetch_add(1, Ordering::SeqCst);
         queue.started = true;
         Ok(())
     }
@@ -560,6 +567,14 @@ impl Scheduler {
             readied.recv().map_err(|_| NotStarted)?;
         }
         Ok(())
+    }
+
+    /// How many threads started, workers and helpers, in tests.
+    #[cfg(test)]
+    pub(crate) fn spawned(&self) -> usize {
+        self.shared.spawned.load(Ordering::SeqCst)
+            + self.shared.files.spawned.load(Ordering::SeqCst)
+            + self.shared.io.spawned.load(Ordering::SeqCst)
     }
 
     /// How many stacks the pool holds, and how many were mapped because it had none, in tests.
@@ -605,6 +620,9 @@ struct Helpers {
     queue: Mutex<HelperQueue>,
     ready: Condvar,
     most: usize,
+    /// How many helper threads started, in tests.
+    #[cfg(test)]
+    spawned: AtomicUsize,
 }
 
 struct HelperQueue {
@@ -625,6 +643,8 @@ impl Helpers {
             }),
             ready: Condvar::new(),
             most: most.max(1),
+            #[cfg(test)]
+            spawned: AtomicUsize::new(0),
         }
     }
 
@@ -649,6 +669,8 @@ impl Helpers {
                     helpers.serve();
                 })
                 .map_err(|_| NotStarted)?;
+            #[cfg(test)]
+            self.spawned.fetch_add(1, Ordering::SeqCst);
             queue.threads += 1;
             started += 1;
         }
@@ -673,6 +695,8 @@ impl Helpers {
                 .stack_size(HELPER_STACK)
                 .spawn(move || helpers.serve());
             if started.is_ok() {
+                #[cfg(test)]
+                self.spawned.fetch_add(1, Ordering::SeqCst);
                 queue.threads += 1;
             } else if queue.threads == 0 {
                 return queue.jobs.pop_back().map_or(Ok(()), Err);
@@ -1148,6 +1172,46 @@ mod tests {
         }
         // Only the 36 tasks past the pool's size mapped a stack, each once.
         assert_eq!(sched.stacks(), (POOL_STACKS, 36));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before() {
+        // #1145, the primary guard of P8 at this slice (ADR 0116 amendment): after
+        // `start_all`, a construct of width at most `POOL_STACKS`, whose tasks also wait on a
+        // helper of each pool, starts no thread and maps no stack, after histories of 0, 1, 63
+        // and 1,023 earlier tasks. On the old code, where a worker's thread started at its
+        // first job, a helper as operations queued up, and the pool filled only from ended
+        // tasks, the histories of 0, 1 and 63 tasks left workers unstarted, helpers missing and
+        // the pool short, so the same construct started threads and mapped stacks inside it,
+        // a number that the history decided: nonzero there, and 0 here for every history.
+        fn run(sched: &Scheduler, width: usize) {
+            let tasks: Vec<Receiver<()>> = (1..=width)
+                .map(|part| {
+                    start(sched, part, || {
+                        blocking(Pool::Files, || ());
+                        blocking(Pool::Io, || ());
+                    })
+                })
+                .collect();
+            for task in tasks {
+                assert_eq!(task.recv(), Some(()));
+            }
+        }
+        for history in [0, 1, 63, 1023] {
+            let sched = Scheduler::new(settings(8, 2, 2));
+            sched.start_all(256 * 1024).unwrap();
+            run(&sched, history);
+            let before = (sched.spawned(), sched.stacks().1);
+            run(&sched, POOL_STACKS);
+            let after = (sched.spawned(), sched.stacks().1);
+            assert_eq!(after, before, "after a history of {history} tasks");
+            assert_eq!(
+                sched.spawned(),
+                8 + 2 + 2,
+                "after a history of {history} tasks"
+            );
+        }
     }
 
     #[test]

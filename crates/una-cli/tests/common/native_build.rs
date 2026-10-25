@@ -18,12 +18,18 @@ pub fn root() -> PathBuf {
 }
 
 /// Builds the runtime library next to the `una` binary, once: `cargo test` builds `una-rt`'s
-/// static library only when asked.
+/// static library only when asked. Under `cargo test --release`, where the `una` binary is the
+/// release one, it builds the release runtime beside it, so the executables link it: the
+/// timing oracles run that way (#1145), since debug timings are not those of a release.
 pub fn runtime() {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
+        let mut args = vec!["build", "--quiet", "-p", "una-rt"];
+        if !cfg!(debug_assertions) {
+            args.push("--release");
+        }
         let status = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "una-rt"])
+            .args(&args)
             .current_dir(root())
             .status()
             .unwrap();

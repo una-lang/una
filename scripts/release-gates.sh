@@ -22,7 +22,7 @@
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
 #   timing-channels
-#                the security timing oracles (#1145): `cargo test --locked -p una-cli --test
+#                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
 #                timing_channels -- --ignored --test-threads=1`, the real-clock tests that a timing
 #                channel stays closed, which the ordinary test run ignores; it runs right after
 #                `native`, with no Docker gate running, so the machine is as quiet as the run gets
@@ -325,7 +325,7 @@ gate_timing-channels() {
     # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
     # ignored in the ordinary run and runs only here and in the step of the same name of
     # scripts/local-ci.sh, one at a time, on the real clock of a native host.
-    run timing-channels cargo test --locked -p una-cli --test timing_channels -- --ignored --test-threads=1
+    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1
 }
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
