@@ -55,6 +55,12 @@ const ALLOWED: &[(&str, &str)] = &[
         "crates/una-cli/src/proof_key.rs:read_or_make",
         "the user's key under ~/.una, outside any package",
     ),
+    // The probe of the effective user ID (#1164): a fresh 0600 file in the temporary
+    // directory, created exclusively and removed at once, outside any package.
+    (
+        "crates/una-cli/src/proof_key.rs:effective_uid",
+        "the effective user probe in the temporary directory",
+    ),
     // A program's own `File.write` under its granted FileSystem capability (ADR 0038 D9 rule
     // 3): created with `create_new`, which never follows a link, and checked by the runtime's
     // path rules, not a write the toolchain makes under the package.

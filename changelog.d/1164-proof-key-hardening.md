@@ -1,0 +1,1 @@
+- **The proof cache key is used only when it is a private regular file of the user** (#1164): a key file that is a symbolic link, belongs to another user, or that the group or others may read or write now turns the proof cache off (the report's `tcb.proof_cache_key` is `null`) instead of being used.
