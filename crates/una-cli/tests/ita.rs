@@ -76,6 +76,60 @@ fn lock_writes_the_default_solver_then_is_up_to_date() {
     assert_eq!(checked.diagnostics, []);
 }
 
+/// #1160: links planted at the temporary names `una ita lock` used to write are never written
+/// through, and a lock that is a link leading outside the package is refused.
+#[cfg(unix)]
+#[test]
+fn lock_never_writes_through_a_planted_link() {
+    let dir = package("planted-link", MANIFEST);
+    let victim = dir.parent().unwrap().join("planted-link-victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    for name in [".ita.lock.tmp", ".ita.lock.fmt-tmp"] {
+        std::os::unix::fs::symlink(&victim, dir.join(name)).unwrap();
+    }
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert!(
+        !std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    let outside = dir.parent().unwrap().join("planted-link-outside.lock");
+    std::fs::write(&outside, "outside\n").unwrap();
+    std::fs::remove_file(dir.join("ita.lock")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("ita.lock")).unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_ne!(code, 0);
+    assert!(err.contains("outside the package"), "{err}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside\n");
+    let _ = std::fs::remove_file(&victim);
+    let _ = std::fs::remove_file(&outside);
+}
+
+/// #1160: `una fmt ita.una` never writes through a link planted at its old temporary name.
+#[cfg(unix)]
+#[test]
+fn fmt_of_ita_una_never_writes_through_a_planted_link() {
+    let dir = package(
+        "fmt-planted-link",
+        "ita  demo\n  edition 0.4\n  version   0.1.0\n",
+    );
+    let victim = dir.parent().unwrap().join("fmt-planted-link-victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join(".ita.una.fmt-tmp")).unwrap();
+    let (code, _, err) = una(&["una", "fmt", path(&dir.join("ita.una"))]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo\n  version 0.1.0\n  edition 0.4\n"
+    );
+    let _ = std::fs::remove_file(&victim);
+}
+
 #[test]
 fn lock_keeps_the_solver_section_it_replaces() {
     let dir = package("keeps", MANIFEST);
