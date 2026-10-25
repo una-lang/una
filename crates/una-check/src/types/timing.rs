@@ -246,6 +246,29 @@ impl Checker<'_, '_, '_> {
             frame.seed.value_call = true;
         }
     }
+
+    /// The clause that names the residue label `L_res` (ADR 0116 P9) in a message about a
+    /// timing label above `bound`, when `L_res` alone is above it, and nothing otherwise: one
+    /// clause after a semicolon, so the message stays one sentence.
+    pub(crate) fn residue_clause(&self, bound: &Label) -> String {
+        match self.env.residue.culprit(bound) {
+            Some((label, source)) => format!(
+                "; {source} raise the timing label of every deadline and race to `{label}` at least"
+            ),
+            None => String::new(),
+        }
+    }
+
+    /// [`Self::residue_clause`] for a value labeled `value` that flows into `bound`: only when
+    /// `L_res` alone could have raised the value to its label, through a deadline's or a race's
+    /// outcome.
+    pub(crate) fn residue_clause_for(&self, value: &Label, bound: &Label) -> String {
+        let residue = &self.env.residue.label;
+        if residue.is_public() || !value.flows_to(residue) {
+            return String::new();
+        }
+        self.residue_clause(bound)
+    }
 }
 
 /// What raised a request's label, for the message of U4001 (ADR 0117 IF4, ADR 0116 P8).
@@ -257,6 +280,9 @@ pub(crate) enum Raiser {
     Ancestor(String, Label, bool),
     /// Tasks that can run beside the request (`τ_conc` of the preview, `⊤`).
     Beside,
+    /// The requests that cancelled tasks or the losers of a race can leave running (`L_res`,
+    /// ADR 0116 P9): how a message names the construct, and its label.
+    Residue(String, Label),
 }
 
 /// The label of one request for `L_lim`, and what raised it.
@@ -386,16 +412,9 @@ fn close<T: Clone>(succ: &[Vec<usize>], local: &[T], join: impl Fn(&T, &T) -> T)
         .collect()
 }
 
-/// `L_lim` of the package and the label of each request (ADR 0117 IF4, as ADR 0116 P8 states
-/// it, slice T1): the label of a request is the join of `τ⁰` of the body of every node of the
-/// call graph from which the function that makes it can be reached, that function included, and
-/// of `τ_conc` at it, the preview's: `⊤` for a request inside a lambda, a task or a handler's
-/// operation, or in a function that a part of a task construct can reach. The code that runs
-/// between two requests of one task lies in the body of an ancestor of the later one, or in
-/// what such a body calls, so the ancestors' `τ⁰` covers it.
-///
-/// **The graph** is that of ADR 0116 P1, built from the calls the checking recorded
-/// ([`Checker::graph_call`]), not from the call edges of functions alone:
+/// The call graph of ADR 0116 P1, built from the calls the checking recorded
+/// ([`Checker::graph_call`]), not from the call edges of functions alone, with what each node
+/// reaches:
 /// - a node per function, per handler, per capability and per operation, and one node `Λ` for
 ///   every lambda;
 /// - a function or a handler goes to what its code calls, to the operations of its `uses`, to
@@ -405,24 +424,85 @@ fn close<T: Clone>(succ: &[Vec<usize>], local: &[T], join: impl Fn(&T, &T) -> T)
 ///   lambdas call and to every function named as a value.
 ///
 /// So the operations of a handler, which a function reaches through an operation of the
-/// handler's capability, are ancestors of what they call, and so are the functions that call a
-/// value, of what a lambda calls.
-///
-/// **`τ⁰` of a body** is its parameters' labels joined with `down` of its node: the labels of
-/// everything it reaches, by the one rule of [`timing`]: the operations' `ρ`, the handlers'
-/// parameters, a call of a function value, and a prelude function with a function parameter
-/// (`⊤`). `Λ`'s body is `⊤` (IF5 item 4); an operation's is its `ρ`, a capability's `public`.
-///
-/// **Linear.** `down` is one pass over the strongly connected components of the graph, the join
-/// over the ancestors one pass over those of the reversed graph, and the nearest ancestor above
-/// `internal`, for the message, one breadth-first search from all such nodes at once:
-/// O(F + H + C + O + E) label joins and steps, for `F` functions, `H` handlers, `C`
-/// capabilities, `O` operations and `E` edges, with no search per request.
-pub(crate) fn limit_labels(
-    env: &Env<'_>,
-    findings: &Findings,
-    concurrent: &BTreeSet<usize>,
-) -> LimitLabels {
+/// handler's capability, are reached from it, and so is what a lambda calls, from every node
+/// that calls a function value.
+pub(crate) struct Graph {
+    /// The successors of each node.
+    succ: Vec<Vec<usize>>,
+    /// What each node adds to `down` itself: `⊤` for a function that calls a function value,
+    /// for a prelude function with a function parameter and for `Λ` (IF5 item 4), a handler's
+    /// parameters, an operation's `ρ`.
+    local: Vec<Label>,
+    /// The join of `local` over every node each node reaches, itself included: `τ⁰` of what
+    /// its code can run, without a function's parameters.
+    down: Vec<Label>,
+    /// Whether each node can reach an operation of the host's `Http` (ADR 0116 P9).
+    http: Vec<bool>,
+    /// The number of functions, which are the first nodes.
+    functions: usize,
+    /// The number of handlers, the nodes after the functions.
+    handlers: usize,
+    /// The number of capabilities, the nodes after the handlers.
+    capabilities: usize,
+    /// The node of each operation named by any `uses`, after the capabilities.
+    ops: BTreeMap<(CapId, String), usize>,
+    /// The node `Λ`, the last one.
+    lambda: usize,
+}
+
+impl Graph {
+    /// The node of a handler.
+    fn handler_node(&self, handler: usize) -> usize {
+        self.functions + handler
+    }
+
+    /// The node of a capability.
+    fn cap_node(&self, cap: usize) -> usize {
+        self.functions + self.handlers + cap
+    }
+
+    /// The node of a caller, when it is one of the graph.
+    fn node_of(&self, caller: Caller) -> Option<usize> {
+        match caller {
+            Caller::Function(f) => (f < self.functions).then_some(f),
+            Caller::Handler(h) => (h < self.handlers).then(|| self.handler_node(h)),
+            Caller::Lambda => Some(self.lambda),
+        }
+    }
+}
+
+/// `ρ` of the operation `op` of `cap` (IF5 item 3): `ℓ*` of its result, its `accepts` label and
+/// `ℓ*` of its failure kind; `None` for an operation the capability does not declare.
+fn rho(env: &Env<'_>, cap: CapId, op: &str) -> Option<Label> {
+    let kinds = env.kind_labels.as_ref();
+    let def = env
+        .capabilities
+        .get(cap)?
+        .ops
+        .iter()
+        .find(|d| d.name == op)?;
+    let mut rho = def.result.base.deep_label(kinds);
+    if let Some(accepts) = &def.accepts {
+        rho = rho.join(accepts);
+    }
+    if let Some(fails) = &def.fails {
+        rho = rho.join(&fails.deep_label(kinds));
+    }
+    Some(rho)
+}
+
+/// Whether `cap` is the host's `Http`, the capability whose interrupted requests can leave
+/// work on helpers (ADR 0116 P9).
+fn is_http(env: &Env<'_>, cap: CapId) -> bool {
+    env.capabilities
+        .get(cap)
+        .is_some_and(|c| c.module == env.prelude && c.name == "Http")
+}
+
+/// The graph of ADR 0116 P1 for the package, with `down` and the reach of `Http`, each closed in
+/// one pass over the strongly connected components: O(F + H + C + O + E) label joins and steps,
+/// for `F` functions, `H` handlers, `C` capabilities, `O` operations and `E` edges.
+pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
     fn add(succ: &mut [Vec<usize>], from: usize, to: usize) {
         if let Some(edges) = succ.get_mut(from) {
             edges.push(to);
@@ -439,23 +519,11 @@ pub(crate) fn limit_labels(
         }
         out
     }
-    if findings.http_sites.is_empty() {
-        return LimitLabels {
-            label: Label::public(),
-            sites: Vec::new(),
-        };
-    }
     let kinds = env.kind_labels.as_ref();
     let top = Label::top(&env.categories);
-    let internal = Label {
-        level: una_syntax::ast::Level::Internal,
-        ..Label::public()
-    };
     let functions = env.functions.len();
     let handlers = env.handlers.len();
     let capabilities = env.capabilities.len();
-    let handler_node = |h: usize| functions + h;
-    let cap_node = |c: usize| functions + handlers + c;
     // The operations named by any `uses`, each one node after the capabilities; `Λ` last.
     let mut ops: BTreeMap<(CapId, String), usize> = BTreeMap::new();
     let needs = env
@@ -473,19 +541,22 @@ pub(crate) fn limit_labels(
     }
     let lambda = functions + handlers + capabilities + ops.len();
     let nodes = lambda + 1;
-    let node_of = |caller: Caller| match caller {
-        Caller::Function(f) => (f < functions).then_some(f),
-        Caller::Handler(h) => (h < handlers).then(|| handler_node(h)),
-        Caller::Lambda => Some(lambda),
+    let mut graph = Graph {
+        succ: vec![Vec::new(); nodes],
+        local: vec![Label::public(); nodes],
+        down: Vec::new(),
+        http: Vec::new(),
+        functions,
+        handlers,
+        capabilities,
+        ops,
+        lambda,
     };
-    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); nodes];
-    // What each node adds to `down` itself, and what its body is, for the ancestors.
-    let mut local: Vec<Label> = vec![Label::public(); nodes];
     for (f, def) in env.functions.iter().enumerate() {
         // A call of a function value anywhere in the function, its lambdas' included (IF5 item
         // 4), as `timing` counts it.
         if findings.value_callers.contains(&f)
-            && let Some(slot) = local.get_mut(f)
+            && let Some(slot) = graph.local.get_mut(f)
         {
             *slot = top.clone();
         }
@@ -496,13 +567,13 @@ pub(crate) fn limit_labels(
                 .iter()
                 .any(|p| matches!(p.ty.base.unlabeled(), Ty::Fn(_)))
         {
-            if let Some(slot) = local.get_mut(f) {
+            if let Some(slot) = graph.local.get_mut(f) {
                 *slot = top.clone();
             }
-            add(&mut succ, f, lambda);
+            add(&mut graph.succ, f, lambda);
         }
-        for to in op_edges(&ops, &def.uses) {
-            add(&mut succ, f, to);
+        for to in op_edges(&graph.ops, &def.uses) {
+            add(&mut graph.succ, f, to);
         }
     }
     for (h, handler) in env.handlers.iter().enumerate() {
@@ -515,67 +586,353 @@ pub(crate) fn limit_labels(
             };
             own = own.join(&label);
         }
-        if let Some(slot) = local.get_mut(handler_node(h)) {
+        let node = graph.handler_node(h);
+        if let Some(slot) = graph.local.get_mut(node) {
             *slot = own;
         }
-        for to in op_edges(&ops, &handler.uses) {
-            add(&mut succ, handler_node(h), to);
+        for to in op_edges(&graph.ops, &handler.uses) {
+            add(&mut graph.succ, node, to);
         }
         // Every handler of a capability can serve its operations (IF5 item 3, all handlers).
         if let Some(cap) = handler.capability {
-            add(&mut succ, cap_node(cap), handler_node(h));
+            let from = graph.cap_node(cap);
+            add(&mut graph.succ, from, node);
         }
     }
     for &(from, callee) in &findings.calls {
-        if let Some(from) = node_of(from)
+        if let Some(from) = graph.node_of(from)
             && callee < functions
         {
-            add(&mut succ, from, callee);
+            add(&mut graph.succ, from, callee);
         }
     }
     for &from in &findings.value_calls {
-        if let Some(node) = node_of(from) {
-            if let Some(slot) = local.get_mut(node) {
+        if let Some(node) = graph.node_of(from) {
+            if let Some(slot) = graph.local.get_mut(node) {
                 *slot = top.clone();
             }
-            add(&mut succ, node, lambda);
+            add(&mut graph.succ, node, lambda);
         }
     }
     for &(from, h) in &findings.caller_installs {
-        if let Some(from) = node_of(from)
+        if let Some(from) = graph.node_of(from)
             && h < handlers
         {
-            add(&mut succ, from, handler_node(h));
+            let to = graph.handler_node(h);
+            add(&mut graph.succ, from, to);
         }
     }
     // A function named as a value may run wherever a value is called.
     for &f in &findings.function_values {
         if f < functions {
-            add(&mut succ, lambda, f);
+            add(&mut graph.succ, lambda, f);
         }
     }
-    if let Some(slot) = local.get_mut(lambda) {
+    if let Some(slot) = graph.local.get_mut(lambda) {
         *slot = top.clone();
     }
-    for (&(cap, ref op), &node) in &ops {
-        let Some(capability) = env.capabilities.get(cap) else {
-            continue;
-        };
-        if let Some(def) = capability.ops.iter().find(|d| d.name == *op) {
-            let mut rho = def.result.base.deep_label(kinds);
-            if let Some(accepts) = &def.accepts {
-                rho = rho.join(accepts);
-            }
-            if let Some(fails) = &def.fails {
-                rho = rho.join(&fails.deep_label(kinds));
-            }
-            if let Some(slot) = local.get_mut(node) {
-                *slot = rho;
+    let mut http_local = vec![false; nodes];
+    let op_nodes: Vec<((CapId, String), usize)> = graph
+        .ops
+        .iter()
+        .map(|(key, &node)| (key.clone(), node))
+        .collect();
+    for ((cap, op), node) in op_nodes {
+        if let Some(rho) = rho(env, cap, &op)
+            && let Some(slot) = graph.local.get_mut(node)
+        {
+            *slot = rho;
+        }
+        if is_http(env, cap)
+            && let Some(slot) = http_local.get_mut(node)
+        {
+            *slot = true;
+        }
+        let to = graph.cap_node(cap);
+        add(&mut graph.succ, node, to);
+    }
+    graph.down = close(&graph.succ, &graph.local, |a: &Label, b: &Label| a.join(b));
+    graph.http = close(&graph.succ, &http_local, |a: &bool, b: &bool| *a || *b);
+    graph
+}
+
+/// `τ⁰` of a site from its seed alone, over the graph (ADR 0116 IF5), and whether it can reach
+/// an operation of the host's `Http`: its own sources, `down` of every function it calls,
+/// handler it installs and operation it performs, and `⊤` with `Λ` for a call of a function
+/// value. O(size of the seed) lookups, so a pass over every seed is linear in what the checking
+/// recorded.
+fn seed_label(env: &Env<'_>, graph: &Graph, seed: &TimingSeed) -> (Label, bool) {
+    let top = Label::top(&env.categories);
+    let mut label = seed
+        .sources
+        .iter()
+        .fold(Label::public(), |tau, (label, _)| tau.join(label));
+    let mut http = false;
+    let reach = |node: usize, label: &mut Label, http: &mut bool| {
+        if let Some(down) = graph.down.get(node) {
+            *label = label.join(down);
+        }
+        *http |= graph.http.get(node).copied().unwrap_or(false);
+    };
+    for &callee in &seed.callees {
+        if callee < graph.functions {
+            reach(callee, &mut label, &mut http);
+        }
+    }
+    for &handler in &seed.handlers {
+        if handler < graph.handlers {
+            reach(graph.handler_node(handler), &mut label, &mut http);
+        }
+    }
+    for (cap, op) in &seed.ops {
+        match graph.ops.get(&(*cap, op.clone())) {
+            Some(&node) => reach(node, &mut label, &mut http),
+            // An operation no `uses` names: its `ρ`, and its capability's handlers.
+            None => {
+                if let Some(rho) = rho(env, *cap, op) {
+                    label = label.join(&rho);
+                }
+                http |= is_http(env, *cap);
+                if *cap < graph.capabilities {
+                    reach(graph.cap_node(*cap), &mut label, &mut http);
+                }
             }
         }
-        add(&mut succ, node, cap_node(cap));
     }
-    let down = close(&succ, &local, |a: &Label, b: &Label| a.join(b));
+    if seed.value_call {
+        label = label.join(&top);
+        reach(graph.lambda, &mut label, &mut http);
+    }
+    (label, http)
+}
+
+/// A `tasks` statement checked (ADR 0117 rule 7), for the residue label of ADR 0116 P9: where
+/// it is, the function whose body holds it, and the seed of `τ⁰` of the whole statement, its
+/// bound, its block and every `start` in it.
+#[derive(Clone, Debug)]
+pub(crate) struct TasksSite {
+    /// The statement.
+    pub(crate) span: una_syntax::Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of `κ(T)`, recorded while the statement was checked.
+    pub(crate) seed: TimingSeed,
+}
+
+/// The residue label `L_res` of ADR 0116 P9, with each construct that raises it, as a message
+/// names it. Until the reactor ends an interrupted request with its task (ADR 0117 step 6), a
+/// request whose task is cancelled before its own time-out keeps its helper, its slots and the
+/// cores its exchange spends until its next I/O step, beside whatever code runs later. So every
+/// timing site of the package (C), and `L_lim` (P10), joins it.
+#[derive(Clone, Debug)]
+pub(crate) struct Residue {
+    /// `L_res`: `public` when no construct can leave a request behind.
+    pub(crate) label: Label,
+    /// Each construct whose requests can be left behind, with its label, in source order.
+    pub(crate) sources: Vec<(Label, String)>,
+}
+
+impl Residue {
+    /// No residue: a package with no `tasks` statement and no `first of` that reaches `Http`.
+    pub(crate) fn none() -> Residue {
+        Residue {
+            label: Label::public(),
+            sources: Vec::new(),
+        }
+    }
+
+    /// The first source whose label does not flow to `bound`, for a message.
+    pub(crate) fn culprit(&self, bound: &Label) -> Option<&(Label, String)> {
+        self.sources
+            .iter()
+            .find(|(label, _)| !label.flows_to(bound))
+    }
+
+    /// `timing` with `L_res` joined in, each source after the site's own, so that a message
+    /// names the site's own source first when it is above the bound (ADR 0116 C).
+    pub(crate) fn join_into(&self, mut timing: Timing) -> Timing {
+        if self.label.is_public() {
+            return timing;
+        }
+        timing.label = timing.label.join(&self.label);
+        timing.sources.extend(self.sources.iter().cloned());
+        timing
+    }
+}
+
+/// `L_res` of the package (ADR 0116 P9), with the preview's `τ_conc`, as slice 4 of the
+/// amendment of 2026-10-25 lands it (issue #1148). It is the join of:
+/// - over every `tasks` statement `T` whose parts can reach an operation of `Http`,
+///   `κ(T) ⊔ τ_conc(T)`;
+/// - over every `first of` `F` whose branches can reach an operation of `Http`,
+///   `t(F) ⊔ τ_conc(F)`, which is at least `internal`, from `ρ` of `Http`.
+///
+/// **The preview's terms.** `κ` and `t` are `τ⁰` of the whole construct from its seed, closed
+/// over the graph of P1 ([`seed_label`]), so the reach of `Http` goes through handlers,
+/// capabilities and `Λ`. `τ_conc` is the preview's: `⊤` for a construct inside a lambda, a task,
+/// the block of a `tasks` statement or a handler's operation, or in a function that a part of a
+/// task construct can reach (`concurrent`), `public` otherwise. `L_res` contains neither itself
+/// nor any timing label that joins it, so it needs no fixpoint.
+///
+/// **Conservative.** It counts every such statement, not only one whose block can fail, since a
+/// cancellation from outside it cancels its tasks too, and every such race. A `within`'s cut
+/// leaves nothing: the helper ends the exchange at the covering deadline itself, and the task
+/// waits for it (P9).
+///
+/// **Linear.** O(V + E) for the graph, which the caller builds once, and O(size of the seeds)
+/// for the constructs, with one map of the sources' messages to merge a site checked twice.
+pub(crate) fn residue(
+    env: &Env<'_>,
+    findings: &Findings,
+    graph: &Graph,
+    concurrent: &BTreeSet<usize>,
+) -> Residue {
+    let top = Label::top(&env.categories);
+    let name = |function: Option<usize>| -> String {
+        function.and_then(|id| env.functions.get(id)).map_or_else(
+            || "a handler's operation".to_owned(),
+            |def| match env.modules.get(def.module).map(|m| m.path.as_str()) {
+                Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
+                _ => format!("`{}`", def.name),
+            },
+        )
+    };
+    let mut residue = Residue::none();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    let mut add = |label: Label, source: String, residue: &mut Residue| {
+        residue.label = residue.label.join(&label);
+        match index.get(&source) {
+            Some(&at) => {
+                if let Some((joined, _)) = residue.sources.get_mut(at) {
+                    *joined = joined.join(&label);
+                }
+            }
+            None => {
+                index.insert(source.clone(), residue.sources.len());
+                residue.sources.push((label, source));
+            }
+        }
+    };
+    let conc = |seed: &TimingSeed, function: Option<usize>| {
+        if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
+            top.clone()
+        } else {
+            Label::public()
+        }
+    };
+    let mut tasks: Vec<&TasksSite> = findings.tasks_sites.iter().collect();
+    tasks.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    for site in tasks {
+        let (kappa, http) = seed_label(env, graph, &site.seed);
+        if !http {
+            continue;
+        }
+        let label = kappa.join(&conc(&site.seed, site.function));
+        add(
+            label,
+            format!(
+                "the requests that the tasks of the `tasks` statement in {} can leave running when they are cancelled",
+                name(site.function)
+            ),
+            &mut residue,
+        );
+    }
+    let mut races: Vec<&super::within::WithinSite> = findings
+        .withins
+        .iter()
+        .filter(|site| site.construct == super::within::Construct::FirstOf)
+        .collect();
+    races.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    for site in races {
+        let (t, http) = seed_label(env, graph, &site.seed);
+        if !http {
+            continue;
+        }
+        let label = t.join(&conc(&site.seed, site.function));
+        add(
+            label,
+            format!(
+                "the requests that the losing branches of the `first of` in {} can leave running",
+                name(site.function)
+            ),
+            &mut residue,
+        );
+    }
+    residue
+}
+
+/// `L_res` of the package (ADR 0116 P9), with its graph built and `τ_conc` of the preview
+/// computed here: O(V + E + size of the seeds).
+pub(crate) fn residue_of(env: &Env<'_>, findings: &Findings) -> Residue {
+    if findings.tasks_sites.is_empty()
+        && !findings
+            .withins
+            .iter()
+            .any(|site| site.construct == super::within::Construct::FirstOf)
+    {
+        return Residue::none();
+    }
+    let graph = graph(env, findings);
+    let concurrent = concurrent_functions(findings);
+    residue(env, findings, &graph, &concurrent)
+}
+
+/// `L_lim` of the package and the label of each request (ADR 0117 IF4, as ADR 0116 P8 states
+/// it, slice T1): the label of a request is the join of `τ⁰` of the body of every node of the
+/// call graph from which the function that makes it can be reached, that function included, of
+/// `τ_conc` at it, the preview's: `⊤` for a request inside a lambda, a task or a handler's
+/// operation, or in a function that a part of a task construct can reach, and of `L_res`
+/// (ADR 0116 P9, P10), the work that cancelled requests can leave on the helpers. The code that
+/// runs between two requests of one task lies in the body of an ancestor of the later one, or in
+/// what such a body calls, so the ancestors' `τ⁰` covers it.
+///
+/// **The graph** is [`graph`]'s, that of ADR 0116 P1. So the operations of a handler, which a
+/// function reaches through an operation of the handler's capability, are ancestors of what they
+/// call, and so are the functions that call a value, of what a lambda calls.
+///
+/// **`τ⁰` of a body** is its parameters' labels joined with `down` of its node: the labels of
+/// everything it reaches, by the one rule of [`timing`]: the operations' `ρ`, the handlers'
+/// parameters, a call of a function value, and a prelude function with a function parameter
+/// (`⊤`). `Λ`'s body is `⊤` (IF5 item 4); an operation's is its `ρ`, a capability's `public`.
+///
+/// **Linear.** `down` is one pass over the strongly connected components of the graph, the join
+/// over the ancestors one pass over those of the reversed graph, and the nearest ancestor above
+/// `internal`, for the message, one breadth-first search from all such nodes at once:
+/// O(F + H + C + O + E) label joins and steps, for `F` functions, `H` handlers, `C`
+/// capabilities, `O` operations and `E` edges, with no search per request.
+pub(crate) fn limit_labels(
+    env: &Env<'_>,
+    findings: &Findings,
+    graph: &Graph,
+    concurrent: &BTreeSet<usize>,
+    residue: &Residue,
+) -> LimitLabels {
+    fn add(succ: &mut [Vec<usize>], from: usize, to: usize) {
+        if let Some(edges) = succ.get_mut(from) {
+            edges.push(to);
+        }
+    }
+    if findings.http_sites.is_empty() {
+        return LimitLabels {
+            label: Label::public(),
+            sites: Vec::new(),
+        };
+    }
+    let kinds = env.kind_labels.as_ref();
+    let top = Label::top(&env.categories);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let functions = graph.functions;
+    let handlers = graph.handlers;
+    let capabilities = graph.capabilities;
+    let lambda = graph.lambda;
+    let nodes = lambda + 1;
+    let succ = &graph.succ;
+    let local = &graph.local;
+    let down = &graph.down;
+    let ops = &graph.ops;
     // `τ⁰` of each node's body: a function's parameters and what it reaches; a handler's
     // parameters, in its `local`, and what it reaches; an operation's `ρ`; `Λ`'s `⊤`.
     let body: Vec<Label> = (0..nodes)
@@ -627,7 +984,7 @@ pub(crate) fn limit_labels(
     }
     // The operation of each operation node, to name it.
     let mut op_of: Vec<Option<(CapId, &str)>> = vec![None; ops.len()];
-    for ((cap, op), &node) in &ops {
+    for ((cap, op), &node) in ops {
         if let Some(slot) = op_of.get_mut(node - functions - handlers - capabilities) {
             *slot = Some((*cap, op.as_str()));
         }
@@ -671,6 +1028,10 @@ pub(crate) fn limit_labels(
             _ => "functions called as values".to_owned(),
         }
     };
+    // What `L_res` raises a request to, and the construct a message names (ADR 0116 P9, P10).
+    let residue_raiser = residue
+        .culprit(&internal)
+        .map(|(label, source)| Raiser::Residue(source.clone(), label.clone()));
     let mut sites = Vec::new();
     let mut label = Label::public();
     for site in &findings.http_sites {
@@ -700,6 +1061,8 @@ pub(crate) fn limit_labels(
         } else {
             (own, raiser)
         };
+        let site_label = site_label.join(&residue.label);
+        let raiser = raiser.or_else(|| residue_raiser.clone());
         label = label.join(&site_label);
         sites.push(LimitSite {
             span: site.span,
@@ -707,7 +1070,10 @@ pub(crate) fn limit_labels(
             raiser,
         });
     }
-    LimitLabels { label, sites }
+    LimitLabels {
+        label: label.join(&residue.label),
+        sites,
+    }
 }
 
 /// The callees of each function, from the package's call edges.

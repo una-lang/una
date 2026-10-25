@@ -634,11 +634,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     );
                 }
             }
-            let labels = if withins {
+            let (labels, residue) = if withins {
                 authority::within_labels(&env, &probe)
             } else {
-                std::collections::BTreeMap::new()
+                (std::collections::BTreeMap::new(), timing::Residue::none())
             };
+            // ADR 0116 P9: what the messages of pass 2 name when `L_res` raises a label.
+            env.residue = residue;
             let state = if env.files_written {
                 env.file_state.join(&file_state(&env).0)
             } else {
@@ -989,6 +991,9 @@ pub(crate) struct Findings {
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
+    /// the residue label `L_res` (ADR 0116 P9).
+    pub(crate) tasks_sites: Vec<timing::TasksSite>,
     /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
     /// operations or a lambda (`Λ`), to a function called or named.
     pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,

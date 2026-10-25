@@ -789,10 +789,17 @@ impl<'a> Checker<'_, 'a, '_> {
     /// an `Int` of at least 1, a `refinement` obligation, evaluated once; the block runs in the
     /// current task, and the `start` statements in it, outside any task within it, start its
     /// tasks.
+    ///
+    /// The whole statement is a site whose seed, `κ` of ADR 0116 P2, makes the residue label
+    /// `L_res` when its parts can reach `Http` (P9): its tasks' requests can be left running
+    /// when they are cancelled.
     fn tasks_stmt(&mut self, stmt: &TasksStmt) {
         if let Some(current) = self.current {
             self.findings.task_functions.insert(current);
         }
+        // Started before the block's frame, so that the seed's own `τ_conc` is that of the
+        // statement, not of its parts.
+        self.timing_start();
         if let Some(bound) = &stmt.bound {
             let found = self.expr(bound, None);
             let found = self.resolve(&found);
@@ -812,6 +819,12 @@ impl<'a> Checker<'_, 'a, '_> {
         self.tasks_frames.push((self.task_depth, self.lambda_depth));
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.tasks_frames.pop();
+        let seed = self.timing_end();
+        self.findings.tasks_sites.push(super::timing::TasksSite {
+            span: stmt.span,
+            function: self.current,
+            seed,
+        });
         self.discarded(value_span(&stmt.block), &ty);
     }
 

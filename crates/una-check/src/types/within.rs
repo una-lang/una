@@ -326,11 +326,12 @@ impl Checker<'_, '_, '_> {
         // declaration must name it (`docs/plan/0117-s2-design.md` §3).
         let shown = self.report.text(place.span).to_owned();
         let root = place_root(place).map(|(root, _)| self.name(root).to_owned());
+        let residue = self.residue_clause(&top);
         let mut diagnostic = self.report.make(
             Code::U4001,
             place.span,
             format!(
-                "`{shown}` has the label `{top}`, and whether this `within` lets its update happen depends on `{tau}` timing, which the update would reveal; the binding needs the label `{tau}` at least, written on its declaration"
+                "`{shown}` has the label `{top}`, and whether this `within` lets its update happen depends on `{tau}` timing, which the update would reveal; the binding needs the label `{tau}` at least, written on its declaration{residue}"
             ),
         );
         diagnostic
