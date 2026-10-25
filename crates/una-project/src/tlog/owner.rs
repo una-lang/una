@@ -811,15 +811,112 @@ type Claim = ([u8; 32], u64);
 /// signature by any key the chain names, or a registration not signed by each key it registers,
 /// refuses the chain, as evidence that the registry logged what it must not.
 ///
+/// **Stated thresholds, as known at logging.** The `threshold` an entry states, the current one
+/// or one within the keys after it, is checked against the state known when the entry was
+/// logged: the replay of the entries before it, with the claims they settle to, never a state
+/// that a claim logged later rewrote. A mismatch there refuses the chain; a later claim never
+/// does, and no pass that assumes a claim refuses an entry for its stated threshold. The
+/// entries up to the first claim are checked in one pass with no claim; the entries after each
+/// later revocation, against the claims the chain before that revocation settles to; those after
+/// the last one, against the chain's own.
+///
 /// O(P · E · K) for P passes, E entries and K keys held at once (at most 32), plus O(R²) per pass
 /// for R revocations; the keys the chain names are checked only when an entry is not signed as
-/// required after a void one.
+/// required after a void one. The stated thresholds add one settled replay of a prefix per
+/// revocation from the first claim on, O(S · P · E · K) for S such revocations, and nothing
+/// for a chain with no claim: a claim is retroactive, so the state known at each logging
+/// depends on the claims logged before it, and revocations are rare events of a chain.
 pub fn replay(
     owner: &str,
     source: &str,
     entries: &[Logged<'_>],
     log: &Key,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
+) -> Result<History, ReplayError> {
+    let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
+    let revocations: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, logged)| matches!(logged.entry.event, Event::Revoke { .. }))
+        .map(|(at, _)| at)
+        .collect();
+    let first_claim = entries
+        .iter()
+        .position(|logged| matches!(logged.entry.event, Event::Revoke { since: Some(_), .. }));
+    let Some(first_claim) = first_claim else {
+        // No claim: the state known at each entry's logging is the one this replay reaches.
+        return settle(
+            owner,
+            source,
+            entries,
+            log,
+            &mut effects,
+            effect,
+            0..entries.len(),
+        );
+    };
+    // Up to the first claim, no claim was known: one pass checks those entries.
+    let known = BTreeMap::new();
+    let through = entries.get(..=first_claim).unwrap_or(entries);
+    replay_once(
+        owner,
+        source,
+        through,
+        log,
+        &known,
+        &mut effects,
+        effect,
+        &(0..first_claim + 1),
+    )?;
+    // Between two revocations, the claims known at each entry's logging are those its prefix
+    // settles to: the revocations before it, each standing or not by the entries before it.
+    let mut from = first_claim + 1;
+    for &at in revocations.iter().filter(|at| **at > first_claim) {
+        let before = entries.get(..at).unwrap_or(entries);
+        let known = settle(owner, source, before, log, &mut effects, effect, 0..0)?;
+        let through = entries.get(..=at).unwrap_or(entries);
+        replay_once(
+            owner,
+            source,
+            through,
+            log,
+            &known.compromised,
+            &mut effects,
+            effect,
+            &(from..at + 1),
+        )?;
+        from = at + 1;
+    }
+    // After the last revocation, the claims known are the chain's own, settled.
+    let history = settle(owner, source, entries, log, &mut effects, effect, 0..0)?;
+    if from < entries.len() {
+        replay_once(
+            owner,
+            source,
+            entries,
+            log,
+            &history.compromised,
+            &mut effects,
+            effect,
+            &(from..entries.len()),
+        )?;
+    }
+    Ok(history)
+}
+
+/// The greatest fixpoint of the claims of `entries` ([`replay`]): each pass checks the stated
+/// `threshold` of the entries at the positions `checked` against the state it reaches, and of
+/// no other entry, so a claim assumed in a pass never refuses an entry for a state that only
+/// the claim rewrote.
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    owner: &str,
+    source: &str,
+    entries: &[Logged<'_>],
+    log: &Key,
+    effects: &mut BTreeMap<u64, Option<u64>>,
+    effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
+    checked: std::ops::Range<usize>,
 ) -> Result<History, ReplayError> {
     // The owner key each name brought in, and the index that brought it: registrations,
     // additions, recoveries and disputes, never cosigners.
@@ -862,7 +959,6 @@ pub fn replay(
             _ => None,
         })
         .collect();
-    let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
     // Each pass keeps the claims by the index of their revocation, drops some, or only
     // re-resolves their keys; a key a claim names changes at most once per claim dropped, so a
     // valid chain settles within twice the number of claims plus two passes. A chain that does
@@ -882,8 +978,9 @@ pub fn replay(
             entries,
             log,
             &compromised,
-            &mut effects,
+            effects,
             effect,
+            &checked,
         )?;
         checks += history.checks;
         history.checks = checks;
@@ -987,6 +1084,7 @@ fn replay_once(
     compromised: &BTreeMap<[u8; 32], u64>,
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
+    checked: &std::ops::Range<usize>,
 ) -> Result<Replayed, String> {
     let mut state = Owner {
         keys: Vec::new(),
@@ -1227,8 +1325,12 @@ fn replay_once(
             }
             continue;
         }
+        // The stated `threshold` is checked against the state known at the entry's logging,
+        // only at the positions `checked`: elsewhere a claim assumed or logged later may have
+        // rewritten the state, and the threshold stated then still holds ([`replay`]).
+        let check = checked.contains(&at);
         let unchanged = |given: usize, current: usize| -> Result<(), String> {
-            if given == current {
+            if !check || given == current {
                 Ok(())
             } else {
                 Err(format!(
@@ -1269,7 +1371,7 @@ fn replay_once(
                         "adds a key the owner holds or held, or one too many",
                     ));
                 }
-                if entry.threshold > state.keys.len() + 1 {
+                if check && entry.threshold > state.keys.len() + 1 {
                     return Err(refuse("sets a threshold above the owner's keys"));
                 }
                 state.names.insert(key.name.clone());
@@ -1305,7 +1407,7 @@ fn replay_once(
                     unchanged(entry.threshold, state.threshold)?;
                     revocations.push(record);
                 } else if let Some(position) = state.keys.iter().position(|k| k.name == *name) {
-                    if entry.threshold > state.keys.len() - 1 {
+                    if check && entry.threshold > state.keys.len() - 1 {
                         return Err(refuse("sets a threshold above the owner's keys"));
                     }
                     revocations.push(record);
@@ -1358,7 +1460,13 @@ fn replay_once(
             }
             Event::Recover(key) | Event::Dispute(key) => {
                 let dispute = matches!(entry.event, Event::Dispute(_));
-                unchanged(entry.threshold, 1)?;
+                // Always 1, whatever the state: checked in every pass.
+                if entry.threshold != 1 {
+                    return Err(format!(
+                        "the entry at {index} of `{owner}` gives the threshold {}, not 1",
+                        entry.threshold
+                    ));
+                }
                 if !fresh(&state, key) {
                     return Err(refuse("names a key the owner holds or held"));
                 }

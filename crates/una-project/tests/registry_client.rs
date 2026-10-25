@@ -2095,6 +2095,50 @@ fn an_overruling_after_the_seven_days_still_counts() {
     assert!(!releases[0].compromised);
 }
 
+/// A stated threshold is checked as it was known at the entry's logging (ADR 0122 Amendment 9).
+/// The owner of `{A, B}` at threshold two, below it once `A` is stolen, asks a recovery its
+/// co-signer `X` signs; the thief cancels it with `A` six days in; after the seven days `X`
+/// overrules the cancellation, stating the threshold two of its time; `R`, the recovered key,
+/// then claims `A` since 0. The claim voids the cancellation, so the recovery takes effect at its
+/// deadline, the overruling's own position, with threshold one: the overruling's stated two does
+/// not refuse the chain, and `A` signs nothing that counts.
+#[test]
+fn a_later_claim_never_refuses_an_earlier_stated_threshold() {
+    let a = keypair(60, "acme.a");
+    let b = keypair(61, "acme.b");
+    let r = keypair(63, "acme.r");
+    let x = keypair(70, "trustee.x");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &b], 2, &[&x], 1);
+    registry.checkpoint(NOW - 31 * DAY);
+    let recovery = registry.recover("acme", "recover", &r.1, &[&x]);
+    registry.checkpoint(NOW - 30 * DAY);
+    let cancel = registry.owner_event("acme", &format!("cancel {recovery}"), 2, &[&a]);
+    registry.checkpoint(NOW - 24 * DAY);
+    registry.append("other", "filler");
+    let deadline = registry.checkpoint(NOW - 22 * DAY);
+    let overrule = registry.owner_event("acme", &format!("overrule {cancel}"), 2, &[&x]);
+    assert_eq!(overrule, deadline);
+    registry.checkpoint(NOW - 21 * DAY);
+    let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[&r]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&r]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert!(history.voided.contains(&cancel), "{:?}", history.voided);
+    assert_eq!(history.took_effect.get(&recovery), Some(&deadline));
+    assert!(history.compromised.contains_key(&a.1.public));
+    assert!(!history.sound(&a.1, cancel));
+    assert!(!history.sound(&a.1, claim + 1));
+    assert_eq!(history.snapshots.last().unwrap().keys, vec![r.1.clone()]);
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 1);
+    assert!(!releases[0].compromised);
+}
+
 /// Once the cosigners overruled a cancellation of a recovery, a later cancellation by an owner
 /// key does not count, and the recovery takes effect at its seven days.
 #[test]
