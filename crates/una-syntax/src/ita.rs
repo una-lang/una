@@ -1579,6 +1579,21 @@ pub struct LockRegistry {
     pub checkpoint_size: At<u64>,
     /// The resolution point: the checkpoint's root hash.
     pub checkpoint_hash: At<String>,
+    /// `accepted <owner> <index> …`: per owner, the entries of its chain pending at the
+    /// resolution point whose key change the lock was written under (`spec/30 §14`).
+    pub accepted: Vec<LockAccepted>,
+}
+
+/// An `accepted` line of a `registry` section: an owner and the log indices of the entries of
+/// its chain whose key change is consented to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockAccepted {
+    /// The owner.
+    pub owner: At<String>,
+    /// The log indices, ascending, each once.
+    pub indices: Vec<At<u64>>,
+    /// Where the line is.
+    pub range: Range<usize>,
 }
 
 /// Where a locked package comes from (ADR 0122 rule 16, `lock_origin`).
@@ -1851,10 +1866,47 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
     };
     let mut root = None;
     let mut checkpoint = None;
+    let mut accepted: Vec<LockAccepted> = Vec::new();
     for child in &line.children {
         no_children(child, errors);
         let mut cursor = Cursor::new(child);
-        if cursor.eat_word("root") && root.is_none() && checkpoint.is_none() {
+        if checkpoint.is_some() && cursor.eat_word("accepted") {
+            let owner = match cursor.word("the owner whose key change is accepted") {
+                Ok(owner) => owner,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
+            let mut indices: Vec<At<u64>> = Vec::new();
+            while !cursor.done() {
+                match cursor.int("a log index") {
+                    Ok(index) => indices.push(index),
+                    Err(error) => {
+                        errors.push(error);
+                        break;
+                    }
+                }
+            }
+            let ascending = indices
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.value < b.value));
+            let ordered = accepted
+                .last()
+                .is_none_or(|previous| previous.owner.value < owner.value);
+            if indices.is_empty() || !ascending || !ordered {
+                errors.push(Error::new(
+                    child.range.clone(),
+                    "an `accepted` line names an owner after the previous one's, then its log indices in ascending order, each once",
+                ));
+                continue;
+            }
+            accepted.push(LockAccepted {
+                owner,
+                indices,
+                range: child.range.clone(),
+            });
+        } else if cursor.eat_word("root") && root.is_none() && checkpoint.is_none() {
             match cursor
                 .text("the digest of the root metadata")
                 .and_then(|value| cursor.end().map(|()| value))
@@ -1874,7 +1926,7 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
         } else {
             errors.push(Error::new(
                 child.range.clone(),
-                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each",
+                "a registry's lines are `root \"...\"` then `checkpoint <size> \"...\"`, once each, then its `accepted` lines",
             ));
         }
     }
@@ -1884,6 +1936,7 @@ fn registry(line: &Line, errors: &mut Vec<Error>) -> Option<LockRegistry> {
             root,
             checkpoint_size,
             checkpoint_hash,
+            accepted,
         }),
         _ => {
             errors.push(Error::new(

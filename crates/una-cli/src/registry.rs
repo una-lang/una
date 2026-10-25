@@ -16,8 +16,7 @@
 //! `itaty`, whose root metadata is to be built into `una`, is not served by this release: a need
 //! of it stays U7013. No program is started and no network connection is opened.
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use una_diag::Code;
 use una_project::ProjectError;
@@ -125,7 +124,7 @@ pub(crate) fn open_first<'t>(
             OpenError::Refused(why) => Attempt::Refused(why),
         })
     });
-    let notes: Vec<String> = fetched
+    let mut notes: Vec<String> = fetched
         .refused
         .iter()
         .map(|skipped| {
@@ -136,7 +135,10 @@ pub(crate) fn open_first<'t>(
         })
         .collect();
     match fetched.value {
-        Some((registry, _)) => Ok((registry, notes)),
+        Some(((registry, opened), _)) => {
+            notes.extend(opened);
+            Ok((registry, notes))
+        }
         None if !fetched.refused.is_empty() => Err((
             Code::U7010,
             format!(
@@ -178,24 +180,35 @@ pub(crate) fn declared<'m>(read: &'m ita::Manifest, name: &str) -> Option<&'m it
     read.sources.iter().find(|source| source.name.value == name)
 }
 
-/// Opens `source` through `transport` at `point`, with Itaoca's floors (rule 39): its stored
+/// Opens `source` through `transport` at `point`, with Itaoca's floors (rule 39), kept under
+/// the registry's identity ([`una_project::itaoca::registry_id`], from the pin): its stored
 /// checkpoint, which the point must extend and, for a resolution, not fall below, and its
 /// highest root version accepted. For a resolution, the point must also extend `lock_floor`,
 /// the resolution point of the lock it replaces, by its size and root hash. The floors are
-/// stored again as soon as the point is accepted, whatever the command then writes.
+/// stored as soon as the point is accepted, whatever the command then writes; a floor that
+/// cannot be stored is a note, never a failure. Returns the registry and its notes.
 pub(crate) fn open<'t>(
     source: &ita::Source,
     transport: &'t dyn Transport,
     point: &Point,
     itaoca: Option<&Itaoca>,
     lock_floor: Option<&(u64, String)>,
-) -> Result<Registry<'t>, OpenError> {
+) -> Result<(Registry<'t>, Vec<String>), OpenError> {
     let name = &source.name.value;
-    let local = |why: String| OpenError::Unavailable(format!("Itaoca: {why}"));
+    let pin = pin_of(source).map_err(OpenError::Refused)?;
+    let id = una_project::itaoca::registry_id(pin);
+    let mut notes = Vec::new();
+    // A floor that cannot be read is no floor; it is said, and the place is still verified.
     let (floor, root_version) = match itaoca {
         Some(itaoca) => (
-            itaoca.load_checkpoint(name).map_err(local)?,
-            itaoca.load_root_version(name).map_err(local)?,
+            itaoca.load_checkpoint(&id).unwrap_or_else(|why| {
+                notes.push(format!("note: the floor of `{name}` does not read: {why}"));
+                None
+            }),
+            itaoca.load_root_version(&id).unwrap_or_else(|why| {
+                notes.push(format!("note: the root floor of `{name}` does not read: {why}"));
+                None
+            }),
         ),
         None => (None, None),
     };
@@ -203,7 +216,6 @@ pub(crate) fn open<'t>(
         checkpoint: floor.as_deref(),
         root_version,
     };
-    let pin = pin_of(source).map_err(OpenError::Refused)?;
     let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
     if let Point::Latest { .. } = point {
         let size = registry.point.checkpoint.size;
@@ -219,41 +231,43 @@ pub(crate) fn open<'t>(
         }
     }
     if let Some(itaoca) = itaoca {
-        itaoca
-            .store_checkpoint(name, &registry.point.document)
-            .map_err(local)?;
-        itaoca
-            .store_root_version(name, registry.root.version)
-            .map_err(local)?;
+        let document = registry.point.document.clone();
+        let version = registry.root.version;
+        let mut consistent = |stored: &str| registry.consistent_with(stored);
+        if let Err(why) = itaoca.store_checkpoint(&id, &document, &mut consistent) {
+            notes.push(format!(
+                "note: the checkpoint of `{name}` was not stored as its floor: {why}"
+            ));
+        }
+        if let Err(why) = itaoca.store_root_version(&id, version) {
+            notes.push(format!(
+                "note: the root version of `{name}` was not stored as its floor: {why}"
+            ));
+        }
     }
-    Ok(registry)
-}
-
-/// Stores the checkpoint of each registry as its floor in Itaoca (rule 39), when it is larger
-/// than the one stored.
-pub(crate) fn store_floors(
-    registries: &BTreeMap<String, RefCell<Registry<'_>>>,
-    itaoca: Option<&Itaoca>,
-) -> Result<(), String> {
-    let Some(itaoca) = itaoca else {
-        return Ok(());
-    };
-    for (source, registry) in registries {
-        let registry = registry
-            .try_borrow()
-            .map_err(|_| "a registry is read twice at once".to_owned())?;
-        itaoca.store_checkpoint(source, &registry.point.document)?;
-    }
-    Ok(())
+    Ok((registry, notes))
 }
 
 /// The lines of `ita.lock` for a registry's resolution point (rule 16).
-pub(crate) fn registry_block(source: &str, pin: &str, registry: &Registry<'_>) -> String {
-    format!(
+/// With `accepted`, per owner, the log indices of the entries of its chain pending at the point
+/// whose key change the lock records as consented to: `accepted <owner> <index> …`, owners in
+/// order and indices ascending.
+pub(crate) fn registry_block(
+    source: &str,
+    pin: &str,
+    registry: &Registry<'_>,
+    accepted: &BTreeMap<String, BTreeSet<u64>>,
+) -> String {
+    let mut block = format!(
         "\nregistry {source}\n  root \"{pin}\"\n  checkpoint {} \"{}\"\n",
         registry.point.checkpoint.size,
         una_project::client::hash_text(&registry.point.checkpoint.root)
-    )
+    );
+    for (owner, indices) in accepted.iter().filter(|(_, indices)| !indices.is_empty()) {
+        let list: Vec<String> = indices.iter().map(u64::to_string).collect();
+        block.push_str(&format!("  accepted {owner} {}\n", list.join(" ")));
+    }
+    block
 }
 
 /// The `signed` form of the key the lock names for `release`: `ed25519:<owner>:<fingerprint>`
@@ -294,18 +308,20 @@ pub(crate) fn authority_of(release: &LoggedRelease) -> Vec<String> {
 }
 
 /// Whether the key of a locked release's owner changed between the lock it replaces and the new
-/// resolution (rule 25): another signing key, or a key event of the owner logged after the old
-/// resolution point, a recovery or a dispute that took effect included.
+/// resolution (rule 25): another signing key, or any entry of the owner's chain logged at or
+/// after the old resolution point, a recovery or a dispute that took effect included, except
+/// the entries `accepted`, whose consent the lock records.
 pub(crate) fn key_changed(
     registry: &mut Registry<'_>,
     name: &str,
     old_signed: Option<&str>,
     old_point: Option<u64>,
     new_signed: &str,
+    accepted: &BTreeSet<u64>,
 ) -> Result<bool, String> {
     if old_signed.is_some_and(|old| old != new_signed) {
         return Ok(true);
     }
     let history = registry.history(una_project::client::owner_of(name))?;
-    Ok(old_point.is_some_and(|point| history.changed_after(point)))
+    Ok(old_point.is_some_and(|point| history.changed_after_except(point, accepted)))
 }

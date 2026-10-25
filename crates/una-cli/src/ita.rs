@@ -826,6 +826,9 @@ fn resolve_and_lock(
     // and its key checked against the lock it replaces.
     let mut used: BTreeSet<String> = BTreeSet::new();
     let mut found: Vec<ProjectError> = Vec::new();
+    // Per source and owner, the pending entries whose key change the new lock records as
+    // consented to.
+    let mut accepted_out: BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> = BTreeMap::new();
     for (identity, version) in &resolution.list {
         let Some(cell) = online.registries.get(&identity.source) else {
             continue;
@@ -869,6 +872,18 @@ fn resolve_and_lock(
             continue;
         };
         let mut block = crate::registry::package_block(&release, &signed);
+        // The entries of the owner's chain whose key change the lock it replaces consented to.
+        let owner = una_project::client::owner_of(&identity.name).to_owned();
+        let recorded: BTreeSet<u64> = existing_lock
+            .and_then(|lock| {
+                lock.read
+                    .registries
+                    .iter()
+                    .find(|r| r.source.value == identity.source)
+            })
+            .and_then(|registry| registry.accepted.iter().find(|a| a.owner.value == owner))
+            .map(|accepted| accepted.indices.iter().map(|i| i.value).collect())
+            .unwrap_or_default();
         let ceiling = need.map(|need| canonical_ceiling(&need.may)).unwrap_or_default();
         if !ceiling.is_empty() {
             block.push_str(&format!("  granted by {root} may {ceiling}\n"));
@@ -927,6 +942,7 @@ fn resolve_and_lock(
                 old_signed,
                 old_point,
                 &signed,
+                &recorded,
             ) {
                 Ok(true) if !options.accept_key.contains(&identity.name) => {
                     found.push(problem(
@@ -946,14 +962,20 @@ fn resolve_and_lock(
             }
         }
         // A pending recovery or dispute of the owner (rule 38.1): reported, and consented to
-        // only with `--accept-key`, as a key change is.
+        // only with `--accept-key`, as a key change is; the consent is recorded in the lock, so
+        // a later lock, and `--check`, take it as given until a new entry is pending.
+        let flagged = options.accept_key.contains(&identity.name);
         match registry.history(una_project::client::owner_of(&identity.name)) {
-            Ok(history) if !history.pending.is_empty()
-                && !options.accept_key.contains(&identity.name) =>
+            Ok(history)
+                if history
+                    .pending
+                    .iter()
+                    .any(|p| !flagged && !recorded.contains(&p.index)) =>
             {
                 let pending: Vec<String> = history
                     .pending
                     .iter()
+                    .filter(|p| !recorded.contains(&p.index))
                     .map(|p| {
                         format!(
                             "{} logged at {} naming the key `{}`",
@@ -975,7 +997,16 @@ fn resolve_and_lock(
                 ));
                 continue;
             }
-            Ok(_) => {}
+            Ok(history) => {
+                if !history.pending.is_empty() {
+                    accepted_out
+                        .entry(identity.source.clone())
+                        .or_default()
+                        .entry(owner.clone())
+                        .or_default()
+                        .extend(history.pending.iter().map(|p| p.index));
+                }
+            }
             Err(message) => {
                 found.push(problem(Code::U7010, message));
                 continue;
@@ -1064,7 +1095,10 @@ fn resolve_and_lock(
         else {
             continue;
         };
-        text.push_str(&crate::registry::registry_block(source, pin, &registry));
+        let accepted = accepted_out.get(source).cloned().unwrap_or_default();
+        text.push_str(&crate::registry::registry_block(
+            source, pin, &registry, &accepted,
+        ));
     }
     for entry in &entries {
         text.push_str(&entry.block);
@@ -1129,10 +1163,6 @@ fn resolve_and_lock(
         }
         written.push("ita.lock");
         lines.push("wrote ita.lock".to_owned());
-    }
-    // Each registry's checkpoint becomes its floor (rule 39): a later read never goes below it.
-    if let Err(why) = crate::registry::store_floors(&online.registries, options.itaoca) {
-        lines.push(format!("note: the registries' checkpoints were not stored: {why}"));
     }
     finish_resolved(
         command,
@@ -2499,29 +2529,61 @@ fn archive_authority(
         })
         .collect::<Result<_, _>>()?;
     let package = crate::package::load_files(&files).map_err(|error| error.to_string())?;
-    let locals: Vec<String> = package
-        .manifest
-        .map(|id| una_syntax::ita::parse_manifest(package.sources.file(id).text()).0)
-        .map(|read| {
-            read.needs
-                .iter()
-                .map(|need| una_project::ita::local_name(need).value)
-                .collect()
-        })
-        .unwrap_or_default();
-    let analysis = crate::on_large_stack(|| crate::analyze(&package, None));
-    let allowed = |diagnostic: &Diagnostic| match diagnostic.code {
-        Code::U7009 => diagnostic.primary.file == "ita.una",
-        Code::U7008 => {
-            diagnostic.primary.file == "ita.una"
-                && (diagnostic.message.contains("cannot be needed")
-                    || diagnostic.message.contains("names no source"))
+    // The places where a diagnostic is expected, by position, never by its text: each need's
+    // line of `ita.una`, and the module path of each import of a module of a need.
+    let mut need_lines: Vec<una_diag::Location> = Vec::new();
+    let mut locals: Vec<String> = Vec::new();
+    if let Some(id) = package.manifest {
+        let (read, _) = una_syntax::ita::parse_manifest(package.sources.file(id).text());
+        for need in &read.needs {
+            need_lines.push(
+                package
+                    .sources
+                    .location(Span::new(id, need.range.start, need.range.end)),
+            );
+            locals.push(una_project::ita::local_name(need).value);
         }
-        Code::U1001 => locals.iter().any(|local| {
-            diagnostic
-                .message
-                .starts_with(&format!("module `{local}."))
-        }),
+    }
+    let mut import_paths: Vec<una_diag::Location> = Vec::new();
+    for id in &package.modules {
+        let text = package.sources.file(*id).text();
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            if let Some(rest) = line.strip_prefix("import ") {
+                let path: String = rest
+                    .chars()
+                    .take_while(|c| !c.is_whitespace() && *c != '(')
+                    .collect();
+                let first = path.split('.').next().unwrap_or_default();
+                if locals.iter().any(|local| local == first) {
+                    let start = offset + "import ".len();
+                    import_paths.push(
+                        package
+                            .sources
+                            .location(Span::new(*id, start, start + path.len())),
+                    );
+                }
+            }
+            offset += line.len();
+        }
+    }
+    let analysis = crate::on_large_stack(|| crate::analyze(&package, None));
+    let within = |inner: &una_diag::Location, outer: &una_diag::Location| {
+        inner.file == outer.file && inner.start >= outer.start && inner.end <= outer.end
+    };
+    let allowed = |diagnostic: &Diagnostic| match diagnostic.code {
+        // No lock: an archive never holds one; reported at the start of `ita.una`.
+        Code::U7009 => {
+            diagnostic.primary.file == "ita.una"
+                && diagnostic.primary.start.line == 1
+                && diagnostic.primary.start.col == 1
+        }
+        // A need it cannot load alone, at the need's own line.
+        Code::U7008 => need_lines
+            .iter()
+            .any(|line| within(&diagnostic.primary, line)),
+        // An import of a module of a need, at the import's own module path.
+        Code::U1001 => import_paths.contains(&diagnostic.primary),
         _ => false,
     };
     if let Some(diagnostic) = analysis.diagnostics.iter().find(|d| !allowed(d)) {

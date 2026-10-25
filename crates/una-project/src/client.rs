@@ -209,9 +209,41 @@ impl OpenError {
 /// The most characters of a message about a registry, which may quote what a registry served.
 pub const MAX_MESSAGE: usize = 400;
 
-/// `text` as a message may show it: every control character and every character that changes
-/// the direction of text written as `\u{…}`, and at most [`MAX_MESSAGE`] characters, so what a
-/// registry served can never disguise or flood a diagnostic.
+/// Whether `c` is invisible or changes how text around it reads: a control character, a format
+/// character (Unicode category Cf: the direction marks and isolates, zero-width characters,
+/// U+FEFF, the tag characters and the rest), or a line or paragraph separator.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061c}'
+                | '\u{06dd}'
+                | '\u{070f}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08e2}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206f}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0001}'
+                | '\u{e0020}'..='\u{e007f}'
+        )
+}
+
+/// `text`, part of a message, as it may be shown: every [`hidden`] character written as
+/// `\u{…}`, and at most [`MAX_MESSAGE`] characters of `text`, so what a registry served can
+/// never disguise or flood a diagnostic. Callers pass only the part that may quote what was
+/// served, so the reason before it always survives.
 pub fn shown(text: &str) -> String {
     let mut out = String::new();
     for (count, c) in text.chars().enumerate() {
@@ -219,15 +251,7 @@ pub fn shown(text: &str) -> String {
             out.push_str("...");
             break;
         }
-        let bidi = matches!(
-            c,
-            '\u{061c}'
-                | '\u{200e}'
-                | '\u{200f}'
-                | '\u{202a}'..='\u{202e}'
-                | '\u{2066}'..='\u{2069}'
-        );
-        if c.is_control() || bidi {
+        if hidden(c) {
             out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
         } else {
             out.push(c);
@@ -390,7 +414,9 @@ impl<'t> Registry<'t> {
         floors: &Floors<'_>,
     ) -> Result<Registry<'t>, OpenError> {
         let described = transport.describe();
-        let says = |why: String| shown(&format!("the registry `{source}` ({described}): {why}"));
+        let says = |why: String| {
+            format!("the registry `{source}` ({described}): {}", shown(&why))
+        };
         let refused = |why: String| OpenError::Refused(says(why));
         let unavailable = |why: String| OpenError::Unavailable(says(why));
         let read = |path: &str| -> Result<Option<String>, OpenError> {
@@ -498,7 +524,7 @@ impl<'t> Registry<'t> {
             releases: BTreeMap::new(),
         };
         if let Some(floor) = floors.checkpoint {
-            registry.check_floor(floor).map_err(refused)?;
+            registry.consistent_with(floor).map_err(refused)?;
         }
         Ok(registry)
     }
@@ -528,9 +554,10 @@ impl<'t> Registry<'t> {
     }
 
     /// Rule 39's floor: the checkpoint stored for the source, `stored`, and the one accepted are
-    /// one log, the smaller a prefix of the larger by a consistency proof; and a point below the
-    /// stored one is refused for a resolution. Every witness's timestamps never decrease.
-    fn check_floor(&mut self, stored: &str) -> Result<(), Refusal> {
+    /// one log, the smaller a prefix of the larger by a consistency proof. Every witness's
+    /// timestamps never decrease. Itaoca checks it again under its floor lock before it stores
+    /// the point ([`crate::itaoca::Itaoca::store_checkpoint`]).
+    pub fn consistent_with(&mut self, stored: &str) -> Result<(), Refusal> {
         let signed = note::parse_note(stored)?;
         let floor = note::parse_checkpoint(&signed.text)?;
         let size = self.point.checkpoint.size;
@@ -579,11 +606,12 @@ impl<'t> Registry<'t> {
     }
 
     fn refuse(&self, why: impl std::fmt::Display) -> Refusal {
-        shown(&format!(
-            "the registry `{}` ({}): {why}",
+        format!(
+            "the registry `{}` ({}): {}",
             self.source,
-            self.transport.describe()
-        ))
+            self.transport.describe(),
+            shown(&why.to_string())
+        )
     }
 
     /// The entry at `index`, verified by its inclusion proof at the point: its document and its
@@ -845,7 +873,7 @@ impl<'t> Registry<'t> {
             let source = self.source.clone();
             let mut effect = |index: u64| self.recovery_effect(index);
             owner::replay(owner_name, &source, &logged, &log, &mut effect)
-                .map_err(|why| format!("the registry `{source}`: {why}"))?
+                .map_err(|why| format!("the registry `{source}`: {}", shown(&why)))?
         };
         self.histories
             .insert(owner_name.to_owned(), history.clone());
@@ -891,26 +919,37 @@ impl<'t> Registry<'t> {
                 .filter(|key| history.sound(key, index))
                 .cloned()
                 .collect();
+            // Keys that only void entries of the owner's chain bring in: what they sign is
+            // skipped as a compromised key's is.
+            let tainted = history
+                .void_keys
+                .iter()
+                .filter(|key| entry.note.signed_by(key))
+                .count();
             let compromised = sound.len() < threshold;
-            if compromised && signers.len() < threshold {
+            if compromised && signers.len() + tainted < threshold {
                 return Err(self.refuse(format!(
                     "`{name} {}` is not signed by the threshold of its owner's keys valid at its log position {index}",
                     statement.version
                 )));
             }
-            // Rule 26, against the highest release of the identity logged before it.
+            // Rule 26, against the highest release of the identity logged before it. A release
+            // skipped as compromised is neither checked nor counted: what a thief signs cannot
+            // refuse the name.
             let line = statement.version.line();
-            if let Some(earlier) = highest.get(&line).and_then(|at| out.get(*at))
+            if !compromised
+                && let Some(earlier) = highest.get(&line).and_then(|at| out.get(*at))
                 && let Err(why) = release::within(&statement, &earlier.statement)
             {
                 return Err(self.refuse(format!(
                     "{why}: the log holds a release that breaks rule 26"
                 )));
             }
-            let replace = highest
-                .get(&line)
-                .and_then(|at| out.get(*at))
-                .is_none_or(|earlier| earlier.statement.version < statement.version);
+            let replace = !compromised
+                && highest
+                    .get(&line)
+                    .and_then(|at| out.get(*at))
+                    .is_none_or(|earlier| earlier.statement.version < statement.version);
             if replace {
                 highest.insert(line, out.len());
             }
