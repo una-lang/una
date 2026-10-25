@@ -1821,6 +1821,15 @@ impl<'t> Registry<'t> {
             let withheld = match (&replayed, &eager) {
                 (Err(ReplayError::Unsettled(_)), _) => false,
                 (Ok(_), Some(Err(_))) | (Err(_), Some(Ok(_))) => true,
+                // Both settle but differ: the owner's keys, its requests or the positions their
+                // effects govern from depend on cosignatures a place may withhold, and a lock's
+                // consent and its key changes (rule 8) read them, so no history is decided here.
+                // The count of signature checks is not part of the history's meaning.
+                (Ok(served), Some(Ok(earliest))) => {
+                    let mut earliest = earliest.clone();
+                    earliest.checks = served.checks;
+                    earliest != *served
+                }
                 _ => false,
             };
             if withheld {
