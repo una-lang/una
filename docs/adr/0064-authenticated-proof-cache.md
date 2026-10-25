@@ -52,3 +52,11 @@ Re-validating a cached `proven` would mean solving the query again, or checking 
 - **Caching only `refuted` and `unknown`.** This is sound with no key, but it gives up the cache for the answers that are worth caching. It would be the fallback if keys were unwanted.
 - **A key inside the package.** Rejected: whoever can write the cache can usually read the package too.
 - **`una.report/3` with a structured `tcb.proof_cache`.** Rejected to keep the schema that Gate 1's tooling reads, by adding a field rather than changing one.
+
+## Amendment of 2026-10-25: the key file's checks
+
+Accepted under the project's delegation, with advisory UNA-SA-018 (#1160) and the hardening of #1164. The rules above put the key file in the Trusted zone, but left how it is read to the implementation. A key file that someone else can write or swap is no secret. And a cache entry written through a link is a write the package chose. So:
+
+- **The key file.** `una` uses an existing key file only when it is a regular file, not a symbolic link, with exactly one link, owned by the process's effective user, whose mode grants nothing to group or others, and of 16 to 4096 bytes. It checks this on the name, and again on the file it opened (same device and inode). Otherwise the cache is off for the run, and `una` prints a note naming the key file and the reason, except under `--json`, where stderr stays empty (`spec/13 §5`) and the report's `tcb.proof_cache_key` is `null`. A key being installed briefly has two links, so a reader that finds a second link retries for a short time before turning the cache off.
+- **The cache entries.** An entry is read only when it is a regular file of at most 64 KiB, and anything else is a miss. An entry is written under the package's root through a fresh, exclusively created temporary file, renamed onto the entry's own name. A link at that name is replaced, never followed, so no write of the cache lands outside the entry it names.
+- **Library callers.** A proof cache can only be built with a key of at least 16 bytes.
