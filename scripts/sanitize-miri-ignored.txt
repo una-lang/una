@@ -1,7 +1,8 @@
 # The unit tests of una-rt that Miri does not run (#766), by the name the test harness prints,
 # sorted. scripts/sanitize.sh fails when the tests Miri ignores differ from this list, so a
 # skip is never added silently. Each is ignored in the code with its reason: a scenario run in
-# a process of its own, or a test that starts such a process.
+# a process of its own, a test that starts such a process, or a test that times the scheduler's
+# turns on the real clock, which Miri simulates (#1146).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -64,3 +65,5 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+sched::tests::a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn
+sched::tests::a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before

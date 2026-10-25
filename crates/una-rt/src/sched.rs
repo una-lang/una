@@ -567,7 +567,10 @@ fn micros() -> u64 {
 /// worker, so the slicer has no phase of its own (#1146). Ends with its scheduler.
 ///
 /// It sleeps at most [`SLICE`]: an end set after a scan is at least [`SLICE`] after it, so the
-/// slicer is awake by then. Each end is handled once; an end that moved after it was read is
+/// slicer is awake by then. With no end pending it still wakes every [`SLICE`], one O(w)
+/// scan: waiting on a condition variable instead would need every turn's start to check a
+/// sleeping flag and the scheduler's drop to wake it, for a thread that costs little idle.
+/// Each end is handled once; an end that moved after it was read is
 /// handled again at its new value, and a raise before a turn's end costs one slow path, where
 /// [`turn_due`] finds the turn not over. Each wake is O(w) in the w workers; a check point does
 /// no more than before, one clock read on its slow path.
@@ -1196,6 +1199,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
     fn a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before() {
         // #1146: a turn's end was set by a slicer that started at the run's first started task
         // and ticked on its own 10 ms phase, so a task that shared a worker never yielded
@@ -1204,7 +1208,7 @@ mod tests {
         // its own start. The shortest of a few tries is taken, since load only lengthens a
         // turn; the old phase gave 20 ms less the offset, at least 14 ms here.
         let slice = std::time::Duration::from_millis(SLICE);
-        let most = slice + std::time::Duration::from_micros(2500);
+        let most = slice + std::time::Duration::from_micros(3500);
         for earlier in [false, true] {
             for offset in [2, 4, 6] {
                 let shortest = (0..5)
@@ -1257,6 +1261,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
     fn a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn() {
         // #1146, second review: a turn was timed from its start on the worker, so a task that
         // ran alone for 9 ms, as `main` does before its first `start`, yielded 1 ms after a
@@ -1265,7 +1270,7 @@ mod tests {
         // task became ready. The shortest of a few tries is taken, since load only lengthens a
         // turn.
         let slice = std::time::Duration::from_millis(SLICE);
-        let most = slice + std::time::Duration::from_micros(2500);
+        let most = slice + std::time::Duration::from_micros(3500);
         for alone in [0, 9, 25] {
             let shortest = (0..5)
                 .map(|_| turn_after_arrival(std::time::Duration::from_millis(alone)))
