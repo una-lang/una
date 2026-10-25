@@ -74,6 +74,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
    - At most 10 `1xx` responses MAY precede the final one; one more, or a `101`, is `Protocol`.
    - Header names are kept as received, in order.
 4. **TLS** verifies the server's certificate chain against the Mozilla root store that the implementation compiles in, and the host name. There is no option to skip verification.
+   - **Settings up front** (ADR 0116 amendment, P8, #1148). In edition `0.4`, a run whose grants include `Http` builds its TLS client settings, the root store included, before `main` starts, in both engines, and a run without such a grant never builds them. Built at the first `https` request instead, they would be state left by earlier code: a request after earlier `secret` code that made one would save the time of building them, which a deadline could turn into a value.
 
 ## 4. Limits and time
 
