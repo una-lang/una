@@ -12,6 +12,10 @@ v0.1.12 with three security fixes: records and function values release what they
 - **`una fmt` never writes through a planted link** (#1160, advisory UNA-SA-018). It replaced a file by writing a temporary file at a fixed name next to it (`.<name>.fmt-tmp`) with a write that follows a symbolic link at that name, so a link that a repository commits there could have a run of `una fmt` overwrite a file outside the repository, in every release up to v0.1.12. The temporary file is now created exclusively, under a name unique to the write, with mode 0600 until it takes the destination's permissions. A source that is a symbolic link is still written through onto the file it resolves to only when that file is inside the package; a link that leads outside it is refused. The proof cache writes its entries the same way, and stores nothing when `.una`, `.una/cache` or `.una/cache/proofs` is a link that leads outside the package.
 - **The proof cache authenticates its entries** (#1164, advisory UNA-SA-019). The proof cache in `.una/cache/proofs/` accepted any entry that read as an answer, at a name anyone can compute from the repository, so a repository could commit an entry that made a false contract count as proved, in every release up to v0.1.12. Each entry now carries an HMAC-SHA-256 tag under a per-user key outside the package, `$HOME/.una/proof-cache.key` or the file `UNA_PROOF_KEY` names, made on first use and used only while it is a regular file owned by the user with mode 0600 or stricter; an entry without a valid tag is solved again. Without a usable key the cache is off. Entries written by earlier releases carry no tag, so each is solved again once. The build report's `tcb` adds `proof_cache_key`, the key file, beside `proof_cache`.
 
+### Changed
+
+- **`check` and `check_with` run with no proof cache** (#1164, advisory UNA-SA-019). The library functions `check` and `check_with` no longer read or write the proof cache, so a library caller always solves every obligation. The command line uses the authenticated cache.
+
 ## v0.1.12
 
 v0.1.11 with the #914 fix: `to_int` is `None` for a text of more than 4300 digits.
