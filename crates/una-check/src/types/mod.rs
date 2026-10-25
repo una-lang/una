@@ -1001,6 +1001,8 @@ pub(crate) struct Findings {
     pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
     /// The handlers each node of that graph installs.
     pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
+    /// The operations each node of that graph performs, those of lambdas included (#1148).
+    pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the

@@ -1,0 +1,21 @@
+-- test: a task construct outside the root package fails closed (ADR 0116 P9, until #1166): the dependency's `fetch_all`, which the root reaches, starts a task that makes a request, so `L_res` is `⊤`, and the outcome of the root's later `public` `within` over pure work is above what `Console.print` accepts (U4003), the message naming `util.fetch.fetch_all`
+-- spec: spec/26 §7
+-- expect: error U4003 at src/main.una:21:18
+module main
+
+import std.time (millisecond)
+import util.fetch (fetch_all)
+
+pub run(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  fetch_all(url) with @http = @http[get]
+
+step(n: Int) -> Int = n + 1
+
+pub show(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let v = step(n) within 10 * millisecond
+    if error use 0
+  @console.print("{v}")

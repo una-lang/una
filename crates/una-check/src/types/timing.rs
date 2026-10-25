@@ -154,6 +154,17 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// Records that the code being checked performs the operation `op` of `capability`, an edge
+    /// of the call graph of ADR 0116 P1 from its node, `Λ` for a lambda's body, to the
+    /// operation: without it, a request written directly in a lambda would reach nothing.
+    pub(crate) fn graph_op(&mut self, capability: CapId, op: &str) {
+        if let Some(from) = self.caller() {
+            self.findings
+                .caller_ops
+                .insert((from, capability, op.to_owned()));
+        }
+    }
+
     /// Records that the code being checked calls a function value, so it reaches `Λ`.
     pub(crate) fn graph_value_call(&mut self) {
         if let Some(from) = self.caller() {
@@ -539,6 +550,13 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
             }
         }
     }
+    // The operations performed where no `uses` names them, as in a lambda's body (#1148).
+    for (_, cap, op) in &findings.caller_ops {
+        if *cap < capabilities {
+            let at = functions + handlers + capabilities + ops.len();
+            ops.entry((*cap, op.clone())).or_insert(at);
+        }
+    }
     let lambda = functions + handlers + capabilities + ops.len();
     let nodes = lambda + 1;
     let mut graph = Graph {
@@ -612,6 +630,13 @@ pub(crate) fn graph(env: &Env<'_>, findings: &Findings) -> Graph {
                 *slot = top.clone();
             }
             add(&mut graph.succ, node, lambda);
+        }
+    }
+    // Each operation call, from the node that holds it (#1148): one edge per recorded call.
+    for (from, cap, op) in &findings.caller_ops {
+        if let (Some(from), Some(&to)) = (graph.node_of(*from), graph.ops.get(&(*cap, op.clone())))
+        {
+            add(&mut graph.succ, from, to);
         }
     }
     for &(from, h) in &findings.caller_installs {
@@ -799,6 +824,7 @@ pub(crate) fn residue(
     };
     let mut residue = Residue::none();
     let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    let outside = outside_constructs(env, graph);
     let mut add = |label: Label, source: String, residue: &mut Residue| {
         residue.label = residue.label.join(&label);
         match index.get(&source) {
@@ -813,6 +839,10 @@ pub(crate) fn residue(
             }
         }
     };
+    // First, so that a message names them first: they are `⊤`.
+    for (label, source) in outside {
+        add(label, source, &mut residue);
+    }
     let conc = |seed: &TimingSeed, function: Option<usize>| {
         if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
             top.clone()
@@ -861,17 +891,79 @@ pub(crate) fn residue(
     residue
 }
 
+/// The task constructs outside the root package that its code can reach, each `⊤` for `L_res`,
+/// with the message that names its function (#1148, failing closed until #1166 makes them
+/// precise). The `tasks` statements and races of the standard modules are not recorded in the
+/// package's findings, and those of a dependency are recorded with labels its own checking set,
+/// so until #1166 feeds them to `L_res` precisely, each function of a standard module or of a
+/// dependency whose body holds a `tasks` statement or a `first of`, and which a function or a
+/// handler of the root package can reach in the graph of P1, counts as `⊤`.
+///
+/// Linear: one search of the graph from the root package's nodes, O(V + E), and one scan of the
+/// body of each reachable function outside the root package, O(the size of those bodies).
+fn outside_constructs(env: &Env<'_>, graph: &Graph) -> Vec<(Label, String)> {
+    let top = Label::top(&env.categories);
+    let root = |module: usize| {
+        module < env.prelude && env.modules.get(module).is_some_and(|m| m.mount.is_none())
+    };
+    let mut seen = vec![false; graph.succ.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    let roots = env
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| root(def.module))
+        .map(|(f, _)| f)
+        .chain(
+            env.handlers
+                .iter()
+                .enumerate()
+                .filter(|(_, handler)| root(handler.module))
+                .map(|(h, _)| graph.handler_node(h)),
+        );
+    for node in roots {
+        if let Some(slot) = seen.get_mut(node) {
+            *slot = true;
+            stack.push(node);
+        }
+    }
+    while let Some(node) = stack.pop() {
+        for &to in graph.succ.get(node).map_or(&[][..], Vec::as_slice) {
+            if let Some(slot) = seen.get_mut(to)
+                && !*slot
+            {
+                *slot = true;
+                stack.push(to);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (f, def) in env.functions.iter().enumerate() {
+        if root(def.module) || !seen.get(f).copied().unwrap_or(false) {
+            continue;
+        }
+        let super::env::FnAst::Function(decl) = def.ast else {
+            continue;
+        };
+        let text = |ident: &una_syntax::ast::Ident| env.text(def.module, ident.name).to_owned();
+        if !super::effects::holds_task_construct(&decl.body, &text) {
+            continue;
+        }
+        let name = match env.modules.get(def.module).map(|m| m.path.as_str()) {
+            Some(path) if !path.is_empty() => format!("`{path}.{}`", def.name),
+            _ => format!("`{}`", def.name),
+        };
+        out.push((
+            top.clone(),
+            format!("the tasks that {name}, outside this package, may leave running"),
+        ));
+    }
+    out
+}
+
 /// `L_res` of the package (ADR 0116 P9), with its graph built and `τ_conc` of the preview
 /// computed here: O(V + E + size of the seeds).
 pub(crate) fn residue_of(env: &Env<'_>, findings: &Findings) -> Residue {
-    if findings.tasks_sites.is_empty()
-        && !findings
-            .withins
-            .iter()
-            .any(|site| site.construct == super::within::Construct::FirstOf)
-    {
-        return Residue::none();
-    }
     let graph = graph(env, findings);
     let concurrent = concurrent_functions(findings);
     residue(env, findings, &graph, &concurrent)
