@@ -317,7 +317,10 @@ impl Coroutine<'_> {
             self.shared().coroutine.get(),
         );
         #[cfg(una_asan)]
-        fiber::start(Some(&self.shared().asan.resumer_fake), self.shared().asan.coroutine);
+        fiber::start(
+            Some(&self.shared().asan.resumer_fake),
+            self.shared().asan.coroutine,
+        );
         // SAFETY: `load` is the stack pointer the coroutine saved at its last switch, or the
         // frame `prepare` wrote; its stack is alive, owned by `self`. `save` points into the
         // shared record, alive as long as `self`. The coroutine switches back to the pointer
@@ -386,7 +389,10 @@ pub fn suspend() -> bool {
     // in `resume`; the next resume switches back to the pointer saved in `coroutine`.
     unsafe { arch::switch(shared.coroutine.as_ptr(), shared.resumer.get()) };
     #[cfg(una_asan)]
-    shared.asan.resumer.set(fiber::finish(shared.asan.coroutine_fake.get()));
+    shared
+        .asan
+        .resumer
+        .set(fiber::finish(shared.asan.coroutine_fake.get()));
     true
 }
 
