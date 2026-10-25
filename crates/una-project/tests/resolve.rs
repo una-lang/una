@@ -171,9 +171,13 @@ fn a_raise_waits_the_cooldown_unless_now() {
             held: Some(v("2.1.1")),
         }
     );
-    // A raise past a yank or an advisory points to the audit, never to skipping the cooldown.
-    assert!(held.to_string().contains("`una ita audit`"));
-    assert!(!held.to_string().contains("--now"));
+    // A raise past a yank or an advisory points to the audit and to the need, never to a flag
+    // that skips the wait.
+    let message = held.to_string();
+    assert!(
+        !message.contains("--now") && message.contains("`una ita audit`"),
+        "{message}"
+    );
     let now = Policy {
         cooldown: 0,
         ..policy()
@@ -302,48 +306,332 @@ impl XorShift {
 }
 
 /// Random graphs of n releases, one package per release, five needs each: the work counted is
-/// within a constant factor of N + R at every size, and the time per edge stays within a
-/// constant factor across sizes (ADR 0122, Costs).
+/// within a constant factor of N + R at every size, and the time, the least of three runs, at
+/// most 3 times as long for each doubling of the graph, with a small allowance for a shared
+/// machine's noise: quadratic work would take four times as long (ADR 0122, Costs).
 #[test]
 fn resolution_is_linear_in_the_graph() {
-    let mut per_edge = Vec::new();
-    for n in [1_000usize, 10_000, 100_000] {
+    let sizes = [5_000usize, 10_000, 20_000, 40_000];
+    let mut times = Vec::new();
+    for n in sizes {
         let mut rng = XorShift(0x2545_f491_4f6c_dd1d);
         let mut r = Registry::default();
         let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
-        for i in 0..n {
+        for name in &names {
             let needs: Vec<(&str, &str)> = (0..5)
                 .map(|_| names[rng.below(n)].as_str())
-                .filter(|name| *name != names[i])
-                .map(|name| (name, "1.0"))
+                .filter(|other| *other != name.as_str())
+                .map(|other| (other, "1.0"))
                 .collect();
-            r.add(&names[i], "1.0.0", &needs);
+            r.add(name, "1.0.0", &needs);
         }
         let root: Vec<Need> = (0..n).step_by(97).map(|i| need(&names[i], "1.0")).collect();
-        let started = Instant::now();
         let unbounded = Bounds {
             visited: usize::MAX,
             packages: usize::MAX,
             needs: usize::MAX,
+            total: usize::MAX,
             ..Bounds::default()
         };
-        let resolution = resolve(&root, &r, &policy(), unbounded).unwrap();
-        let elapsed = started.elapsed().as_secs_f64();
-        let edges = 5 * n;
-        assert!(
-            resolution.work <= 2 * (n + edges),
-            "{n}: {} units of work for {} releases and edges",
-            resolution.work,
-            n + edges
-        );
-        per_edge.push(elapsed / (n + edges) as f64);
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let started = Instant::now();
+            let resolution = resolve(&root, &r, &policy(), unbounded).unwrap();
+            best = best.min(started.elapsed().as_secs_f64());
+            let edges = 5 * n;
+            assert!(
+                resolution.work <= 2 * (n + edges),
+                "{n}: {} units of work for {} releases and edges",
+                resolution.work,
+                n + edges
+            );
+        }
+        times.push(best);
     }
-    // Hash maps and the generous factor absorb a shared machine's noise; quadratic work
-    // would grow the time per edge a hundred times from the first size to the last.
-    assert!(
-        per_edge[2] < per_edge[0] * 10.0,
-        "time per edge grew: {per_edge:?}"
+    for (pair, sizes_pair) in times.windows(2).zip(sizes.windows(2)) {
+        assert!(
+            pair[1] <= 3.0 * pair[0] + 0.05,
+            "{} took {}s, {} took {}s",
+            sizes_pair[1],
+            pair[1],
+            sizes_pair[0],
+            pair[0]
+        );
+    }
+}
+
+/// Many releases per name, nearly all pre-releases that no need names, with a raise past a
+/// yanked release for every name and lookups that land before a run of pre-releases: the work
+/// does not grow with the pre-releases, so a scan of them per visit or per raise, which would
+/// make it grow with visits times pre-releases, fails here.
+#[test]
+fn pre_releases_and_raises_cost_nothing_per_skipped_release() {
+    let n = 200;
+    let work_with = |pre: usize| {
+        let mut r = Registry::default();
+        let names: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+        let versions: Vec<String> = (1..=5).map(|patch| format!("1.0.{patch}")).collect();
+        for (i, name) in names.iter().enumerate() {
+            let next = names[(i + 1) % n].as_str();
+            let at = versions[i % versions.len()].as_str();
+            r.add(name, "1.0.0", &[(next, at)]).yanked = true;
+            for k in 0..pre {
+                r.add(name, &format!("1.1.0-p.{k}"), &[]);
+            }
+            r.add(name, "1.1.0", &[(next, at)]);
+        }
+        let root: Vec<Need> = names.iter().map(|name| need(name, "1.0")).collect();
+        let resolution = resolve(&root, &r, &policy(), Bounds::default()).unwrap();
+        assert!(
+            resolution
+                .list
+                .values()
+                .all(|version| *version == v("1.1.0")),
+            "{:?}",
+            resolution.list
+        );
+        resolution.work
+    };
+    let few = work_with(4);
+    let many = work_with(2_000);
+    assert_eq!(few, many, "the work grew with the pre-releases skipped");
+    assert!(few <= 20 * n, "{few} units of work for {n} names");
+}
+
+/// The case of rule 22 whose answer depended on the order of the root's needs: `x 1.0.0` needs
+/// `a 1.1.0-beta`, so a pre-release of `a` is admitted, and `a 1.0` reaches `1.1.0-beta`
+/// whichever need is walked first.
+#[test]
+fn pre_release_admission_does_not_depend_on_the_order_of_needs() {
+    let mut r = Registry::default();
+    r.add("x", "1.0.0", &[("a", "1.1.0-beta")]);
+    r.add("a", "1.1.0-beta", &[]);
+    r.add("a", "1.2.0", &[]);
+    let expected = ["a 1.1.0-beta", "x 1.0.0"];
+    assert_eq!(
+        list(&[need("x", "1.0"), need("a", "1.0")], &r, &policy()),
+        expected
     );
+    assert_eq!(
+        list(&[need("a", "1.0"), need("x", "1.0")], &r, &policy()),
+        expected
+    );
+}
+
+/// A transitive need that names a pre-release reaches it when only pre-releases meet it:
+/// `x 1.0.0` needs `b 2.0.0-rc.1`, b's only release.
+#[test]
+fn a_transitive_pre_release_need_resolves() {
+    let mut r = Registry::default();
+    r.add("x", "1.0.0", &[("b", "2.0.0-rc.1")]);
+    r.add("b", "2.0.0-rc.1", &[]);
+    assert_eq!(
+        list(&[need("x", "1.0")], &r, &policy()),
+        ["b 2.0.0-rc.1", "x 1.0.0"]
+    );
+}
+
+/// The bound of releases visited counts each distinct release once, so the pass that rule 22
+/// runs again costs it nothing.
+#[test]
+fn a_pass_run_again_does_not_eat_the_bound() {
+    let mut r = Registry::default();
+    r.add("x", "1.0.0", &[("a", "1.1.0-beta")]);
+    r.add("a", "1.1.0-beta", &[]);
+    r.add("a", "1.2.0", &[]);
+    let root = [need("a", "1.0"), need("x", "1.0")];
+    let bounds = |visited| Bounds {
+        visited,
+        ..Bounds::default()
+    };
+    // Three distinct releases are visited, a 1.0, x 1.0 and a 1.1.0-beta, in each of the two
+    // passes: three is enough, two is not.
+    assert!(resolve(&root, &r, &policy(), bounds(3)).is_ok());
+    assert!(matches!(
+        resolve(&root, &r, &policy(), bounds(2)),
+        Err(Problem::Bound(_))
+    ));
+}
+
+/// A chain of pre-releases, each reached only once its identity admits pre-releases and naming
+/// the next identity's, forces a pass per link: the visits of every pass together are capped,
+/// and the chain is refused at the cap rather than walked quadratically, while it resolves
+/// under the default bounds and a two-pass graph stays well under a small cap.
+#[test]
+fn passes_forced_by_a_chain_of_pre_releases_are_capped() {
+    let links = 50;
+    let mut r = Registry::default();
+    let names: Vec<String> = (0..links).map(|i| format!("c{i}")).collect();
+    for (i, name) in names.iter().enumerate() {
+        r.add(name, "1.0.5-rc.1", &[]);
+        let next: Vec<(&str, &str)> = names
+            .get(i + 1)
+            .map(|next| vec![(next.as_str(), "1.0.5-rc.1")])
+            .unwrap_or_default();
+        r.add(name, "1.1.0-rc.1", &next);
+        r.add(name, "1.2.0", &[]);
+    }
+    // `c0 1.0.5-rc.1` admits c0, whose `1.0.6` need then reaches its `1.1.0-rc.1`, which names
+    // c1, admitted in the next pass, and so on.
+    let mut root = vec![need("c0", "1.0.5-rc.1")];
+    root.extend(names.iter().map(|name| need(name, "1.0.6")));
+    let resolution = resolve(&root, &r, &policy(), Bounds::default()).unwrap();
+    assert!(
+        resolution
+            .list
+            .values()
+            .all(|version| *version == v("1.1.0-rc.1")),
+        "{:?}",
+        resolution.list
+    );
+    let capped = Bounds {
+        total: 1_000,
+        ..Bounds::default()
+    };
+    let refused = resolve(&root, &r, &policy(), capped);
+    assert!(
+        matches!(
+            &refused,
+            Err(Problem::Bound(message)) if message.contains("more than 1000 visits")
+        ),
+        "{refused:?}"
+    );
+    // Two passes over three releases: six visits, under a cap of twelve.
+    let mut two = Registry::default();
+    two.add("x", "1.0.0", &[("a", "1.1.0-beta")]);
+    two.add("a", "1.1.0-beta", &[]);
+    two.add("a", "1.2.0", &[]);
+    let small = Bounds {
+        visited: 3,
+        total: 12,
+        ..Bounds::default()
+    };
+    let root = [need("a", "1.0"), need("x", "1.0")];
+    assert!(resolve(&root, &two, &policy(), small).is_ok());
+}
+
+/// A pass that fails reports its least failure, by identity and version, whatever the order of
+/// the needs.
+#[test]
+fn the_failure_reported_does_not_depend_on_the_order_of_needs() {
+    let r = Registry::default();
+    let expected = Problem::NoRelease {
+        identity: need("p", "1.0").identity(),
+        version: v("1.0"),
+    };
+    for root in [
+        [need("p", "1.0"), need("q", "1.0")],
+        [need("q", "1.0"), need("p", "1.0")],
+    ] {
+        assert_eq!(
+            resolve(&root, &r, &policy(), Bounds::default()),
+            Err(expected.clone())
+        );
+    }
+}
+
+/// A release of [`a_shuffled_graph_resolves_the_same`]: its version, whether it is yanked, and
+/// its needs, each the index of a name and a version.
+type Shuffled = (&'static str, bool, Vec<(usize, &'static str)>);
+
+/// A fixed random graph in two layers, resolved with its root's needs, each release's needs and
+/// the order of each name's releases shuffled by a fixed seed: every order resolves, to the
+/// same build list (rule 23). The upper layer has no pre-releases, yanked releases but its
+/// last, and needs on both layers, those on the lower layer naming pre-releases too; the lower
+/// layer has pre-releases, yanked releases but its last, no needs, and one name whose only
+/// releases are pre-releases, needed only by pre-release versions. So every need is met, every
+/// raise has somewhere to go, and the needs a pass reaches never depend on which pre-releases
+/// it admits.
+#[test]
+fn a_shuffled_graph_resolves_the_same() {
+    let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+    let upper = 20;
+    let lower = 20;
+    // The names: the upper layer, the lower layer, then the pre-release-only one.
+    let names: Vec<String> = (0..upper)
+        .map(|i| format!("u{i}"))
+        .chain((0..lower).map(|i| format!("l{i}")))
+        .chain(["pre".to_owned()])
+        .collect();
+    let only_pre = upper + lower;
+    let finals = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"];
+    let mixed = [
+        "1.0.0",
+        "1.1.0-beta.1",
+        "1.1.0",
+        "1.2.0-rc.1",
+        "1.2.0-rc.2",
+        "1.2.0",
+        "1.3.0",
+    ];
+    let pre_only = ["1.1.0-beta.1", "1.2.0-rc.1"];
+    let mut graph: Vec<Vec<Shuffled>> = Vec::new();
+    for i in 0..names.len() {
+        let mut releases = Vec::new();
+        if i < upper {
+            for (at, version) in finals.iter().enumerate() {
+                let yanked = at + 1 < finals.len() && rng.below(5) == 0;
+                let mut needs: Vec<(usize, &'static str)> = Vec::new();
+                for _ in 0..2 {
+                    let to = rng.below(upper);
+                    if to != i {
+                        needs.push((to, finals[rng.below(finals.len())]));
+                    }
+                }
+                needs.push((upper + rng.below(lower), mixed[rng.below(mixed.len())]));
+                if rng.below(3) == 0 {
+                    needs.push((only_pre, pre_only[rng.below(pre_only.len())]));
+                }
+                releases.push((*version, yanked, needs));
+            }
+        } else if i < only_pre {
+            for (at, version) in mixed.iter().enumerate() {
+                let yanked = at + 1 < mixed.len() && rng.below(5) == 0;
+                releases.push((*version, yanked, Vec::new()));
+            }
+        } else {
+            for version in pre_only {
+                releases.push((version, false, Vec::new()));
+            }
+        }
+        graph.push(releases);
+    }
+    let root: Vec<Need> = (0..upper)
+        .step_by(3)
+        .map(|i| need(&names[i], finals[rng.below(finals.len())]))
+        .collect();
+    let mut shuffle = |len: usize| -> Vec<usize> {
+        let mut order: Vec<usize> = (0..len).collect();
+        for at in (1..len).rev() {
+            order.swap(at, rng.below(at + 1));
+        }
+        order
+    };
+    let mut results = Vec::new();
+    for round in 0..12 {
+        let mut r = Registry::default();
+        for i in shuffle(names.len()) {
+            for at in shuffle(graph[i].len()) {
+                let (version, yanked, needs) = &graph[i][at];
+                let mut order: Vec<(&str, &str)> = needs
+                    .iter()
+                    .map(|(to, version)| (names[*to].as_str(), *version))
+                    .collect();
+                if round % 2 == 1 {
+                    order.reverse();
+                }
+                r.add(&names[i], version, &order).yanked = *yanked;
+            }
+        }
+        let order = shuffle(root.len());
+        let shuffled: Vec<Need> = order.iter().map(|at| root[*at].clone()).collect();
+        let result = resolve(&shuffled, &r, &policy(), Bounds::default()).map(|r| r.list);
+        assert!(result.is_ok(), "round {round}: {result:?}");
+        results.push(result);
+    }
+    for result in &results[1..] {
+        assert_eq!(result, &results[0]);
+    }
 }
 
 fn release(version: &str) -> Release {

@@ -29,6 +29,9 @@ pub struct Package {
     pub manifest: Option<FileId>,
     /// `verification.lock` or `ita.lock`, when the package has one.
     pub lock: Option<FileId>,
+    /// The lock's bytes exactly as they were read, which `una ita add` and `remove` put back
+    /// when `ita.una` cannot be written after the lock.
+    pub lock_bytes: Option<Vec<u8>>,
     /// The modules, in path order.
     pub modules: Vec<FileId>,
     /// Where each file is on disk, for `una fmt`.
@@ -67,6 +70,11 @@ pub struct Dependency {
     pub modules: Vec<FileId>,
     /// Why it could not be loaded.
     pub error: Option<String>,
+    /// Each of its files, by its path in the package, with its bytes exactly as they were read
+    /// once and loaded: its content digest is computed from these (ADR 0122 rule 28), so the
+    /// code checked and the content consented to are the same bytes, never a file read again
+    /// by its path.
+    pub files: Vec<una_project::content::File>,
     /// For a registry release, where it comes from; `None` for a path dependency.
     pub registry: Option<RegistryOrigin>,
 }
@@ -113,6 +121,7 @@ pub fn load_in(
         both_manifests: loaded.both_manifests,
         manifest: None,
         lock: None,
+        lock_bytes: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
         dependencies: Vec::new(),
@@ -123,7 +132,10 @@ pub fn load_in(
         package.disk_paths.insert(id, file.path);
         match file.role {
             Role::Manifest => package.manifest = Some(id),
-            Role::Lock => package.lock = Some(id),
+            Role::Lock => {
+                package.lock = Some(id);
+                package.lock_bytes = Some(file.bytes);
+            }
             Role::Module => package.modules.push(id),
         }
     }
@@ -235,6 +247,8 @@ fn mount_registry(
         manifest: None,
         modules: Vec::new(),
         error: None,
+        // The verified release's files, as read once: its content digest is the one verified.
+        files: loaded.tree.files().to_vec(),
         registry: Some(RegistryOrigin {
             source: source.to_owned(),
             lock: index,
@@ -266,6 +280,7 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
         both_manifests: false,
         manifest: None,
         lock: None,
+        lock_bytes: None,
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
         dependencies: Vec::new(),
@@ -315,6 +330,7 @@ fn load_dependencies(
             manifest: None,
             modules: Vec::new(),
             error: None,
+            files: Vec::new(),
             registry: None,
         };
         let refusal = (|| {
@@ -349,12 +365,23 @@ fn load_dependencies(
                     if let Some(text) = overlay.get(&file.path) {
                         file.bytes = text.as_bytes().to_vec();
                     }
+                    let relative = file
+                        .name
+                        .strip_prefix(&format!("{written}/"))
+                        .unwrap_or(&file.name)
+                        .to_owned();
                     let id = package.sources.add(file.name, &file.bytes);
                     package.disk_paths.insert(id, file.path);
                     match file.role {
                         Role::Manifest => dependency.manifest = Some(id),
                         Role::Module => dependency.modules.push(id),
                         Role::Lock => {}
+                    }
+                    if file.role != Role::Lock {
+                        dependency.files.push(una_project::content::File {
+                            path: relative,
+                            bytes: file.bytes,
+                        });
                     }
                 }
             }
@@ -545,7 +572,6 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             // identity and module path, and the lock's consent to the package's whole content.
             if !settings.trusted.is_empty() {
                 let problems = trust_dependency(
-                    package,
                     dependency,
                     need,
                     &settings,
@@ -762,32 +788,15 @@ pub(crate) fn dependency_problems(
     problems
 }
 
-/// The digest of a path dependency's content, from its files' bytes on disk (ADR 0122 rule 28):
-/// its `ita.una` and its modules.
-pub(crate) fn dependency_digest(
-    package: &Package,
-    dependency: &Dependency,
-) -> Result<String, String> {
-    let mut files = Vec::new();
-    for id in dependency
-        .manifest
-        .into_iter()
-        .chain(dependency.modules.iter().copied())
-    {
-        let name = package.sources.file(id).path();
-        let relative = name
-            .strip_prefix(&format!("{}/", dependency.dir))
-            .unwrap_or(name)
-            .to_owned();
-        let bytes = match package.disk_paths.get(&id).map(std::fs::read) {
-            Some(Ok(bytes)) => bytes,
-            _ => package.sources.file(id).text().as_bytes().to_vec(),
-        };
-        files.push(una_project::content::File {
-            path: relative,
-            bytes,
-        });
+/// The digest of a path dependency's content (ADR 0122 rule 28), its `ita.una` and its
+/// modules, computed only from the bytes loaded, the same ones checked: no file is read again,
+/// so content changed on disk after the load can never be what a consent is bound to, and
+/// nothing stands in for a file that was not loaded.
+pub(crate) fn dependency_digest(dependency: &Dependency) -> Result<String, String> {
+    if dependency.manifest.is_none() || dependency.files.is_empty() {
+        return Err(format!("`{}` was not loaded", dependency.dir));
     }
+    let mut files = dependency.files.clone();
     una_project::content::digest_of(&mut files)
 }
 
@@ -818,7 +827,6 @@ pub(crate) fn trust_line<'r>(
 /// the trust line's: never wider than either. Problems are U7012 at the need.
 #[allow(clippy::too_many_arguments)]
 fn trust_dependency(
-    package: &Package,
     dependency: &Dependency,
     need: &ita::Need,
     settings: &Manifest,
@@ -855,7 +863,7 @@ fn trust_dependency(
             uncovered.join("`, `")
         ));
     }
-    let digest = match dependency_digest(package, dependency) {
+    let digest = match dependency_digest(dependency) {
         Ok(digest) => digest,
         Err(reason) => {
             return refuse(format!(
@@ -882,7 +890,7 @@ fn trust_dependency(
     });
     if !consented_ok {
         return refuse(format!(
-            "the trust of `{}` is not consented for its content as it is now; review its trusted modules and the code they run, then run `una ita lock --accept-trust {}`",
+            "the trust of `{}` is not consented for its content as it is now, {digest}; review its trusted modules and the code they run, then run `una ita lock --accept-trust {}@{digest}`",
             need.name.value, need.name.value
         ));
     }
@@ -944,4 +952,82 @@ fn trust_dependency(
         manifest.dependency_trusted.push(path);
     }
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
+    use super::*;
+
+    /// A fresh package directory with the path dependency `deps/util`, whose module says `say`.
+    fn with_dependency(name: &str, say: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("una-cli-package-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("deps/util/src")).unwrap();
+        std::fs::write(
+            dir.join("ita.una"),
+            "ita demo\n  version 0.1.0\n  edition 0.4\n\nneeds\n  util from path \"deps/util\"\n    accept name\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("deps/util/ita.una"),
+            "ita util\n  version 0.2.0\n  edition 0.4\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("deps/util/src/say.una"), say).unwrap();
+        std::fs::write(
+            dir.join("src/demo.una"),
+            "module demo\n\npub one() -> Int = 1\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    /// The digest of a path dependency is computed from the bytes loaded, never from its files
+    /// read again: content B written after content A was loaded, as a swap between the load
+    /// and the digest would be, leaves the digest A's, the digest of the code checked; and a
+    /// dependency whose bytes were not kept has no digest at all.
+    #[test]
+    fn the_dependency_digest_is_of_the_bytes_loaded() {
+        let a = "module say\n\npub one() -> Int = 1\n";
+        let b = "module say\n\npub one() -> Int = 2\n";
+        let dir = with_dependency("digest", a);
+        let package = load(&dir).unwrap();
+        let dependency = &package.dependencies[0];
+        let digest_a = dependency_digest(dependency).unwrap();
+        std::fs::write(dir.join("deps/util/src/say.una"), b).unwrap();
+        assert_eq!(dependency_digest(dependency).unwrap(), digest_a);
+        let reloaded = load(&dir).unwrap();
+        let digest_b = dependency_digest(&reloaded.dependencies[0]).unwrap();
+        assert_ne!(digest_a, digest_b);
+        // The same as the digest of the bytes the module was checked from.
+        let mut files = vec![
+            una_project::content::File {
+                path: "ita.una".to_owned(),
+                bytes: b"ita util\n  version 0.2.0\n  edition 0.4\n".to_vec(),
+            },
+            una_project::content::File {
+                path: "src/say.una".to_owned(),
+                bytes: a.as_bytes().to_vec(),
+            },
+        ];
+        assert_eq!(
+            una_project::content::digest_of(&mut files).unwrap(),
+            digest_a
+        );
+        let unkept = Dependency {
+            need: dependency.need,
+            dir: dependency.dir.clone(),
+            manifest: dependency.manifest,
+            modules: dependency.modules.clone(),
+            error: None,
+            files: Vec::new(),
+            registry: None,
+        };
+        assert!(dependency_digest(&unkept).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

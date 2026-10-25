@@ -77,6 +77,13 @@ const FLAGS: Option<Flags> = Some(Flags {
 });
 
 /// Linux on x86-64: `O_NOFOLLOW` 0o400000, `O_DIRECTORY` 0o200000, `O_NONBLOCK` 0o4000.
+///
+/// Linux has no `O_NOFOLLOW_ANY`: a component above the last one is checked by
+/// `symlink_metadata` when the package is listed, and a swap of it for a link between that check
+/// and the open is not refused by the open itself; the file opened is still checked by device
+/// and inode against the entry listed, and every byte read against the digest. A sibling change
+/// to `una-sys` closes this gap with opens relative to a directory descriptor (`openat` with
+/// `O_NOFOLLOW` at each component).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const FLAGS: Option<Flags> = Some(Flags {
     no_follow: 0x2_0000,
@@ -311,6 +318,20 @@ pub fn make_dirs(base: &Path, relative: &[&str]) -> Result<PathBuf, Refusal> {
         real_directory(&path)?;
     }
     Ok(path)
+}
+
+/// Opens the lock file at `path` for an advisory lock, creating it when missing: read and
+/// write, never truncated, mode 0600 when created, and with no link followed at its name
+/// (`O_NOFOLLOW`), so a link swapped in after a check is refused rather than opened.
+pub fn open_lock_file(path: &Path) -> Result<fs::File, Refusal> {
+    let flags = flags()?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    with_private_mode(&mut options);
+    with_flags(&mut options, flags.no_follow);
+    options
+        .open(path)
+        .map_err(|e| cannot("open, without following a link,", path, &e))
 }
 
 fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
@@ -679,7 +700,9 @@ impl Walk {
             } else {
                 format!("{prefix}/{name}")
             };
-            content::check_path(&relative)?;
+            content::check_path(&relative).map_err(|reason| {
+                format!("the package holds `{relative}`, which a package may not hold: {reason}")
+            })?;
             let child = path.join(&name);
             if kind.is_symlink() {
                 return Err(format!(
@@ -734,7 +757,10 @@ impl Walk {
     }
 }
 
-/// The mode of a file written read-only, and of one written otherwise.
+/// The mode of a file written read-only, and of one written otherwise. Each mode is set through
+/// the file's or the directory's descriptor after it is created, so the process's umask, which
+/// applies only at creation, never changes it: files are created 0600 and directories 0700,
+/// and both are given these explicit modes before they are renamed into place.
 const READ_ONLY_MODE: u32 = 0o444;
 const WRITABLE_MODE: u32 = 0o644;
 /// The mode of a directory once it is complete, set through its descriptor before the rename.
@@ -908,6 +934,29 @@ impl Fresh {
         fs::remove_dir(&self.path).map_err(|e| cannot("remove", &self.path, &e))
     }
 
+    /// Links the one file `file` of the fresh directory as `name` in its parent, only when no
+    /// entry `name` is there: `link` fails on any entry, a link included, and never replaces
+    /// one. Then removes the fresh directory, so the file stored keeps one link.
+    fn link_file(self, file: &str, name: &str) -> Result<Stored, Refusal> {
+        let target = self.parent()?.join(name);
+        if let Err(error) = self.seal() {
+            return Err(self.discard(error));
+        }
+        let outcome = match fs::hard_link(self.path.join(file), &target) {
+            Ok(()) => Stored::Written,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Stored::Present,
+            Err(error) => {
+                let refusal = format!("cannot link `{}` into place: {error}", target.display());
+                return Err(self.discard(refusal));
+            }
+        };
+        if let Err(refusal) = self.still_ours() {
+            return Err(format!("{refusal}; it was left in place"));
+        }
+        fs::remove_dir_all(&self.path).map_err(|e| cannot("remove", &self.path, &e))?;
+        Ok(outcome)
+    }
+
     fn parent(&self) -> Result<&Path, Refusal> {
         self.path
             .parent()
@@ -998,6 +1047,98 @@ pub fn store_file(parent: &Path, name: &str, bytes: &[u8], read_only: bool) -> R
     fresh.commit_file(INSIDE, name)
 }
 
+/// What [`store_file_once`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// The file was written under its name.
+    Written,
+    /// An entry of that name was already there, and was left as it is.
+    Present,
+}
+
+/// Writes `bytes` as the file `name` in `parent`, which [`make_dirs`] made, only when `parent`
+/// holds no entry `name`: into a fresh private directory, read-only when `read_only`, then
+/// hard-linked to `name` and the fresh directory removed. A link fails on any entry already
+/// there, a symbolic link included, so nothing is ever replaced or followed: an entry there
+/// gives [`Stored::Present`], for the caller to read and compare.
+///
+/// The paths are resolved by name, as the rest of this module does; a sibling change to
+/// `una-sys` moves this onto calls relative to the parent's descriptor (`linkat`).
+pub fn store_file_once(
+    parent: &Path,
+    name: &str,
+    bytes: &[u8],
+    read_only: bool,
+) -> Result<Stored, Refusal> {
+    component(name)?;
+    let mut fresh = Fresh::create(parent, read_only)?;
+    // The file's name inside the fresh directory is fixed, and a path of rule 27.
+    const INSIDE: &str = "file";
+    if let Err(refusal) = fresh.write(INSIDE, bytes) {
+        return Err(fresh.discard(refusal));
+    }
+    fresh.link_file(INSIDE, name)
+}
+
+/// Removes the links to the file at `path` that an interrupted [`store_file_once`] left: when
+/// the file has more than one link, each `.una-fresh-*` directory beside it, not a link, whose
+/// one entry `file` is the same file by device and inode, loses that entry, and the fresh
+/// directory is removed when it is then empty. Only this module creates such directories, in a
+/// store of the user's own, and the same inode shows the entry is the stored file's own
+/// second link, so nothing else is touched. Then the file must have one link; otherwise the
+/// refusal says so. O(e) for the e entries of its directory, only when a stray is there.
+///
+/// Two limits, both failing closed. The calls go by path, so a process of the same user that
+/// swaps a `.una-fresh-*` directory between the check and the removal could have a link
+/// elsewhere removed; a sibling change to `una-sys` moves this onto calls relative to the
+/// directory's descriptor (`unlinkat`), which close that window. And a reader that runs while
+/// another process is storing the same file can clear the link that process is about to
+/// remove itself, which then fails its store: a false failure, never a wrong file.
+pub fn clear_stray_links(path: &Path) -> Result<(), Refusal> {
+    let meta = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
+    if !meta.is_file() || links(&meta) <= 1 {
+        return Ok(());
+    }
+    let ours = identity(&meta);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("`{}` has no parent", path.display()))?;
+    for entry in fs::read_dir(parent).map_err(|e| cannot("list", parent, &e))? {
+        let entry = entry.map_err(|e| cannot("list", parent, &e))?;
+        let is_fresh = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".una-fresh-"));
+        if !is_fresh {
+            continue;
+        }
+        let dir = entry.path();
+        let Ok(dir_meta) = fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+            continue;
+        }
+        let stray = dir.join("file");
+        let Ok(stray_meta) = fs::symlink_metadata(&stray) else {
+            continue;
+        };
+        if stray_meta.is_file() && identity(&stray_meta) == ours {
+            fs::remove_file(&stray).map_err(|e| cannot("remove", &stray, &e))?;
+            // Removed only when empty: anything else in it is left as it is.
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+    let now = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
+    if links(&now) != 1 {
+        return Err(format!(
+            "`{}` has more than one hard link, and none of the others is a link an interrupted store left",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,6 +1216,70 @@ mod tests {
                 .is_symlink()
         );
         assert!(away.join("ita.una").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file stored once is never replaced: a second store, a planted file and a planted link
+    /// at its name each leave what is there, and the link's target is untouched.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_stored_once_is_never_replaced() {
+        let dir = scratch("store-once");
+        assert_eq!(
+            store_file_once(&dir, "doc", b"first", true).unwrap(),
+            Stored::Written
+        );
+        assert_eq!(fs::read(dir.join("doc")).unwrap(), b"first");
+        assert_eq!(links(&fs::metadata(dir.join("doc")).unwrap()), 1);
+        assert_eq!(
+            store_file_once(&dir, "doc", b"second", true).unwrap(),
+            Stored::Present
+        );
+        assert_eq!(fs::read(dir.join("doc")).unwrap(), b"first");
+        let target = dir.join("target");
+        fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("planted")).unwrap();
+        assert_eq!(
+            store_file_once(&dir, "planted", b"evil", true).unwrap(),
+            Stored::Present
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        // No fresh directory is left behind.
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with(".una-fresh-"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An interrupted store, which left the file's second link in its fresh directory, is
+    /// repaired: that link and its directory are removed, and the file reads again. A link of
+    /// another file in a fresh directory, and another hard link elsewhere, are left alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_stray_link_of_an_interrupted_store_is_cleared() {
+        let dir = scratch("stray-link");
+        store_file_once(&dir, "doc", b"stored", true).unwrap();
+        let doc = dir.join("doc");
+        // What an interruption between the link and the removal leaves.
+        let stray = dir.join(".una-fresh-1-0-0");
+        fs::create_dir(&stray).unwrap();
+        fs::hard_link(&doc, stray.join("file")).unwrap();
+        // Another fresh directory, holding another file: not ours.
+        let other = dir.join(".una-fresh-2-0-0");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("file"), b"other").unwrap();
+        assert!(read_file(&doc, 100).is_err());
+        clear_stray_links(&doc).unwrap();
+        assert!(!stray.exists());
+        assert!(other.join("file").exists());
+        assert_eq!(read_file(&doc, 100).unwrap(), b"stored");
+        // A hard link that no interrupted store left is refused, and kept.
+        fs::hard_link(&doc, dir.join("elsewhere")).unwrap();
+        assert!(clear_stray_links(&doc).is_err());
+        assert!(dir.join("elsewhere").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

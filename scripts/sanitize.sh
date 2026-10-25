@@ -12,9 +12,11 @@
 #    runtime to what `una build` links, so `una` itself has no hook for it. Any report aborts the
 #    program and fails the test.
 # 3. libFuzzer: the fuzz targets of fuzz/ (the literals, the entry points on any words, the JSON
-#    parser) run a fixed number of inputs each, under AddressSanitizer, after a canary target
-#    whose planted crash must be found, kept and minimized. A crash prints where its input and
-#    the minimized input are kept, under target/fuzz.
+#    parser, the readers of a provenance, an archive and ita.lock, and the parsers and verifiers
+#    of the documents a package registry serves) run a fixed number of inputs each, under
+#    AddressSanitizer, after a canary target whose planted crash must be found, kept and
+#    minimized. A crash prints where its input and the minimized input are kept, under
+#    target/fuzz.
 #
 # It ends with PASS, or FAIL and the step that failed. A missing or different checking toolchain
 # is a FAIL, never a skip. macOS only for now: the Linux image has no checking toolchain yet.
@@ -194,6 +196,10 @@ fuzz_bin=$fuzz_out/build/$host/release
 # machine, about ten times below the ceiling.
 FUZZ_SEED=766
 FUZZ_TARGETS="literal:350000 words:350000 json:450000"
+# The counts of provenance, archive and ita_lock (#997) are placeholders, not yet measured on
+# the release machine; their floors below are placeholders too, of one counter, edge and
+# feature each, until a measured run replaces them (docs/release-gates.md).
+FUZZ_TARGETS="$FUZZ_TARGETS provenance:300000 archive:300000 ita_lock:300000"
 # The parsers and verifiers of the documents a package registry serves (ADR 0122). Their counts
 # and floors are placeholders until a run on the release machine measures them.
 FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000 registry_proofs:350000 registry_map_walk:350000 registry_owner_replay:350000 registry_location:350000 registry_archive_check:350000 registry_root_chain:350000 registry_yank:350000 registry_advisory:350000 registry_entry:350000 registry_keyfile:350000 registry_bundle:350000 registry_watch:350000 registry_promise:350000"
@@ -204,6 +210,7 @@ FUZZ_CEILING=600
 # (`ft`) its run ends with. Each floor is nine tenths of a measured run's value
 # (docs/release-gates.md).
 FUZZ_FLOORS="literal:244243:499:759 words:244798:4473:16955 json:244454:2124:7364"
+FUZZ_FLOORS="$FUZZ_FLOORS provenance:1:1:1 archive:1:1:1 ita_lock:1:1:1"
 FUZZ_FLOORS="$FUZZ_FLOORS registry_note:1:1:1 registry_root:1:1:1 registry_statement:1:1:1 registry_owner:1:1:1 registry_map_tile:1:1:1 registry_mirrors:1:1:1 registry_tile:1:1:1 registry_provenance:1:1:1 registry_archive:1:1:1 registry_proofs:1:1:1 registry_map_walk:1:1:1 registry_owner_replay:1:1:1 registry_location:1:1:1 registry_archive_check:1:1:1 registry_root_chain:1:1:1 registry_yank:1:1:1 registry_advisory:1:1:1 registry_entry:1:1:1 registry_keyfile:1:1:1 registry_bundle:1:1:1 registry_watch:1:1:1 registry_promise:1:1:1"
 
 # The fuzz targets are exactly the canary and FUZZ_TARGETS: a target added to fuzz/Cargo.toml

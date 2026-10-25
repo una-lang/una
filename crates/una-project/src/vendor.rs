@@ -215,8 +215,9 @@ pub fn vendored(root: &Path, expected: &Expected) -> Result<Option<Loaded>, Prob
     }))
 }
 
-/// The release from Itaoca, verified, or `None` when Itaoca lacks its files or its provenance
-/// at the lock's resolution point.
+/// The release from Itaoca, verified, or `None` when Itaoca lacks its files. Files held with no
+/// provenance at the lock's resolution point are refused: the store is inconsistent (U7010),
+/// which is not the absence of rule 17 (U7011).
 pub fn stored(itaoca: &Itaoca, expected: &Expected) -> Result<Option<Loaded>, Problem> {
     if !itaoca
         .contains(&expected.digest)
@@ -234,7 +235,10 @@ pub fn stored(itaoca: &Itaoca, expected: &Expected) -> Result<Option<Loaded>, Pr
         )
         .map_err(Problem::Refused)?
     else {
-        return Ok(None);
+        return Err(Problem::Refused(format!(
+            "Itaoca holds the files of `{} {}` but not its provenance at the checkpoint of size {}: the store is inconsistent; fetch it again",
+            expected.name, expected.version, expected.checkpoint_size
+        )));
     };
     check(&files, &bytes, expected)?;
     Ok(Some(Loaded {
@@ -264,7 +268,7 @@ pub fn load(root: &Path, itaoca: Option<&Itaoca>, expected: &Expected) -> Result
 
 /// Whether the registry package `package` of a lock is present, in the vendor directory of
 /// `root` or in Itaoca, before anything of it is verified (rule 17's presence).
-fn present(
+pub fn present(
     root: &Path,
     itaoca: Option<&Itaoca>,
     package: &ita::LockPackage,

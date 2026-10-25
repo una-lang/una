@@ -76,6 +76,99 @@ fn lock_writes_the_default_solver_then_is_up_to_date() {
     assert_eq!(checked.diagnostics, []);
 }
 
+/// #1160: links planted at the temporary names `una ita lock` used to write are never written
+/// through, and a lock that is a link leading outside the package is replaced, not followed.
+#[cfg(unix)]
+#[test]
+fn lock_never_writes_through_a_planted_link() {
+    let dir = package("planted-link", MANIFEST);
+    let victim = dir.parent().unwrap().join("planted-link-victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    for name in [".ita.lock.tmp", ".ita.lock.fmt-tmp"] {
+        std::os::unix::fs::symlink(&victim, dir.join(name)).unwrap();
+    }
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert!(
+        !std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    let outside = dir.parent().unwrap().join("planted-link-outside.lock");
+    // A valid lock that differs from the one the command writes, so the run reaches the write.
+    let pinned = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 7\n  seed 3\n";
+    std::fs::write(&outside, pinned).unwrap();
+    std::fs::remove_file(dir.join("ita.lock")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("ita.lock")).unwrap();
+    // `ita.lock` belongs to the toolchain: the link is replaced by a regular file, never
+    // followed, and the file outside keeps its bytes.
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), pinned);
+    assert!(
+        std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
+    let _ = std::fs::remove_file(&victim);
+    let _ = std::fs::remove_file(&outside);
+}
+
+/// An `ita.lock` that is a link to another file inside the package is replaced by a regular
+/// file, and the other file is untouched: the lock is the toolchain's, so a link at its name
+/// is never followed, wherever it leads.
+#[cfg(unix)]
+#[test]
+fn a_lock_that_is_a_link_inside_the_package_is_replaced() {
+    let dir = package("lock-link-inside", MANIFEST);
+    let pinned = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 7\n  seed 3\n";
+    std::fs::write(dir.join("other.lock"), pinned).unwrap();
+    std::os::unix::fs::symlink(dir.join("other.lock"), dir.join("ita.lock")).unwrap();
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert!(
+        std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
+    // The solver section was read through the link and kept; the other file is untouched.
+    assert!(
+        std::fs::read_to_string(dir.join("ita.lock"))
+            .unwrap()
+            .contains("  steps 7\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("other.lock")).unwrap(),
+        pinned
+    );
+}
+
+/// #1160: `una fmt ita.una` never writes through a link planted at its old temporary name.
+#[cfg(unix)]
+#[test]
+fn fmt_of_ita_una_never_writes_through_a_planted_link() {
+    let dir = package(
+        "fmt-planted-link",
+        "ita  demo\n  edition 0.4\n  version   0.1.0\n",
+    );
+    let victim = dir.parent().unwrap().join("fmt-planted-link-victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join(".ita.una.fmt-tmp")).unwrap();
+    let (code, _, err) = una(&["una", "fmt", path(&dir.join("ita.una"))]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo\n  version 0.1.0\n  edition 0.4\n"
+    );
+    let _ = std::fs::remove_file(&victim);
+}
+
 #[test]
 fn lock_keeps_the_solver_section_it_replaces() {
     let dir = package("keeps", MANIFEST);
@@ -316,11 +409,18 @@ fn lock_records_a_path_dependency_and_its_consented_ceiling() {
     let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
     assert_eq!(code, 1);
     assert!(
-        err.contains("U7009") && err.contains("--accept-authority"),
+        err.contains("U7009") && err.contains("--accept-authority util`"),
         "{err}"
     );
     assert!(!dir.join("ita.lock").exists());
-    let (code, out, err) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    let (code, out, err) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        path(&dir),
+    ]);
     assert_eq!(code, 0, "{err}");
     // The review comes first: the package, its digest, its ceiling and what its code uses.
     assert!(
@@ -356,7 +456,14 @@ fn lock_records_a_path_dependency_and_its_consented_ceiling() {
 #[test]
 fn a_wider_ceiling_needs_accept_authority() {
     let dir = with_dependency("path-widen", "    may Console[print]\n");
-    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    let (code, _, _) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        path(&dir),
+    ]);
     assert_eq!(code, 0);
     let manifest = std::fs::read_to_string(dir.join("ita.una"))
         .unwrap()
@@ -380,7 +487,14 @@ fn a_wider_ceiling_needs_accept_authority() {
         std::fs::read_to_string(dir.join("ita.lock")).unwrap(),
         before
     );
-    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    let (code, _, _) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        path(&dir),
+    ]);
     assert_eq!(code, 0);
     assert!(
         std::fs::read_to_string(dir.join("ita.lock"))
@@ -414,7 +528,14 @@ fn a_dependency_reached_through_a_link_is_refused() {
 #[test]
 fn tree_prints_each_dependency_with_its_ceiling_and_authority() {
     let dir = with_dependency("tree", "    may Console[print]\n");
-    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    let (code, _, _) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        path(&dir),
+    ]);
     assert_eq!(code, 0);
     let (code, out, err) = una(&["una", "ita", "tree", path(&dir)]);
     assert_eq!(code, 0, "{err}");
@@ -448,7 +569,10 @@ fn remove_takes_the_need_out_and_relocks() {
     let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
     assert_eq!(
         (code, out.as_str()),
-        (0, "drop util 0.2.0 (path deps/util)\nwrote ita.lock\n"),
+        (
+            0,
+            "drop util 0.2.0 (path deps/util)\nwrote ita.lock\nwrote ita.una\n"
+        ),
         "{err}"
     );
     assert_eq!(
@@ -463,6 +587,202 @@ fn remove_takes_the_need_out_and_relocks() {
     let (code, _, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
     assert_eq!(code, 2);
     assert!(err.contains("does not need `util`"), "{err}");
+}
+
+/// A package needing two path dependencies, `util` and `tool`, with `ita.una` written with
+/// `line_end` after every line.
+fn with_two_dependencies(name: &str, line_end: &str) -> PathBuf {
+    let manifest = [
+        "ita demo",
+        "  version 0.1.0",
+        "  edition 0.4",
+        "",
+        "needs",
+        "  util from path \"deps/util\"",
+        "    accept name",
+        "  tool from path \"deps/tool\"",
+        "    accept name",
+    ]
+    .iter()
+    .map(|line| format!("{line}{line_end}"))
+    .collect::<String>();
+    let dir = package(name, &manifest);
+    for (dep, version) in [("util", "0.2.0"), ("tool", "0.1.0")] {
+        std::fs::create_dir_all(dir.join(format!("deps/{dep}/src"))).unwrap();
+        std::fs::write(
+            dir.join(format!("deps/{dep}/ita.una")),
+            format!("ita {dep}\n  version {version}\n  edition 0.4\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("deps/{dep}/src/{dep}.una")),
+            format!("module {dep}\n\npub one() -> Int = 1\n"),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+#[test]
+fn remove_edits_an_ita_una_with_crlf_line_ends() {
+    let dir = with_two_dependencies("remove-crlf", "\r\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("drop util 0.2.0 (path deps/util)\n"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo\n  version 0.1.0\n  edition 0.4\n\nneeds\n  tool from path \"deps/tool\"\n    accept name\n"
+    );
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(
+        lock.contains("\npackage tool 0.1.0\n") && !lock.contains("package util"),
+        "{lock}"
+    );
+}
+
+/// A write that fails exits with code 1 and a message, never a usage error, and changes
+/// neither file.
+#[cfg(unix)]
+#[test]
+fn a_write_that_fails_exits_1_and_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = with_two_dependencies("write-fails", "\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // A user the permissions do not bind, such as root, can still write: nothing to test then.
+    let probe = dir.join("probe");
+    let bound = std::fs::write(&probe, b"x").is_err();
+    let _ = std::fs::remove_file(&probe);
+    let (code, out, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    let (json_code, json, _) = una(&["una", "--json", "ita", "remove", "util", path(&dir)]);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if bound {
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("cannot write"), "{err}");
+        assert!(!out.contains("wrote"), "{out}");
+        // With `--json`, one document with the error.
+        assert_eq!(json_code, 1);
+        let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(document["schema"], "una.ita/1");
+        assert_eq!(document["command"], "remove");
+        assert_eq!(document["written"], serde_json::json!([]));
+        assert!(
+            document["error"].as_str().unwrap().contains("cannot write"),
+            "{json}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+            manifest
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), lock);
+    }
+}
+
+/// When the lock is written and `ita.una` then cannot be, the lock is put back, byte for byte,
+/// and the command exits with code 1. `ita.una` is a link to a file in a directory of the
+/// package that cannot be written, so its write fails whether the writer follows a link inside
+/// the package (it cannot write beside the target) or refuses every link (it refuses this
+/// one), while the lock, in the package's own directory, is written. Only a user the
+/// permissions do not bind, such as root, with a writer that follows the link, writes it; the
+/// test then has nothing to check.
+#[cfg(unix)]
+#[test]
+fn the_lock_is_put_back_when_ita_una_cannot_be_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = with_two_dependencies("restore", "\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    // The lock with bytes `una ita lock` would not write, a comment, which must come back.
+    let lock = format!(
+        "-- kept as written\n{}",
+        std::fs::read_to_string(dir.join("ita.lock")).unwrap()
+    );
+    std::fs::write(dir.join("ita.lock"), &lock).unwrap();
+    let held = dir.join("held");
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::rename(dir.join("ita.una"), held.join("ita.una")).unwrap();
+    std::os::unix::fs::symlink(held.join("ita.una"), dir.join("ita.una")).unwrap();
+    let manifest = std::fs::read_to_string(held.join("ita.una")).unwrap();
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = held.join("probe");
+    let bound = std::fs::write(&probe, b"x").is_err();
+    let _ = std::fs::remove_file(&probe);
+    let (code, _, remove_err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if code == 0 {
+        // Only a user the permissions do not bind, such as root, writes through the link.
+        assert!(!bound, "{remove_err}");
+        return;
+    }
+    assert_eq!(code, 1, "{remove_err}");
+    assert!(
+        remove_err.contains("cannot write") && remove_err.contains("was put back as it was"),
+        "{remove_err}"
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), lock);
+    assert_eq!(
+        std::fs::read_to_string(held.join("ita.una")).unwrap(),
+        manifest
+    );
+}
+
+#[test]
+fn update_raises_only_the_named_needs() {
+    let dir = with_two_dependencies("update-named", "\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    for (dep, version) in [("util", "0.2.1"), ("tool", "0.1.1")] {
+        std::fs::write(
+            dir.join(format!("deps/{dep}/ita.una")),
+            format!("ita {dep}\n  version {version}\n  edition 0.4\n"),
+        )
+        .unwrap();
+    }
+    // `update util` locks util again and keeps tool as the lock records it.
+    let (code, out, err) = una_at(&dir, &["ita", "update", "util"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("change util 0.2.0 -> 0.2.1 (path deps/util)") && !out.contains("tool"),
+        "{out}"
+    );
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(
+        lock.contains("\npackage util 0.2.1\n") && lock.contains("\npackage tool 0.1.0\n"),
+        "{lock}"
+    );
+    // Every need: tool too.
+    let (code, out, err) = una_at(&dir, &["ita", "update"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("change tool 0.1.0 -> 0.1.1"), "{out}");
+    // Authority is accepted per package: a widened tool ceiling is not accepted by naming
+    // util, and `update util` does not touch tool's.
+    let manifest = std::fs::read_to_string(dir.join("ita.una"))
+        .unwrap()
+        .replace(
+            "  tool from path \"deps/tool\"\n",
+            "  tool from path \"deps/tool\"\n    may Console[print]\n",
+        );
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    let (code, _, err) = una_at(&dir, &["ita", "update", "--accept-authority", "util"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--accept-authority tool`"), "{err}");
+    let (code, out, _) = una_at(&dir, &["ita", "update", "util"]);
+    assert_eq!((code, out.as_str()), (0, "ita.lock is up to date\n"));
+    let (code, _, err) = una_at(&dir, &["ita", "update", "--accept-authority", "tool"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        std::fs::read_to_string(dir.join("ita.lock"))
+            .unwrap()
+            .contains("  granted by demo may Console[print]\n")
+    );
 }
 
 #[test]
@@ -484,36 +804,73 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
         "trusted module keys\n\npub policy reveal\n  from secret Text\n  to Text\n  via shown\n  purpose \"show a token\"\n  owner team\n\nshown(t: secret Text) -> Text = t\n",
     )
     .unwrap();
-    // No consent yet: refused, and nothing written.
-    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    // No consent yet: refused, and nothing written; the refusal names the flag to copy, with
+    // the digest of the content to consent to.
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
     assert_eq!(code, 1);
     assert!(
-        err.contains("U7012") && err.contains("--accept-trust util"),
+        err.contains("U7012") && err.contains("--accept-trust util@sha256:"),
         "{err}"
     );
+    assert!(
+        out.contains("to accept, after reviewing: una ita lock "),
+        "{out}"
+    );
     assert!(!dir.join("ita.lock").exists());
-    // Consent to another package accepts nothing.
-    let (code, _, _) = una(&[
+    let flag = trust_flag(&err);
+    // Consent to a package the root does not need is a usage error, and so is consent to two
+    // contents of one package.
+    let (code, _, err) = una(&[
         "una",
         "ita",
         "lock",
         "--accept-authority",
+        "util",
         "--accept-trust",
-        "other",
+        &format!("other@sha256:{}", "0".repeat(64)),
         path(&dir),
     ]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
+    assert!(err.contains("names no need"), "{err}");
+    let (code, _, err) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-trust",
+        &flag,
+        "--accept-trust",
+        &format!("util@sha256:{}", "0".repeat(64)),
+        path(&dir),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("names `util` twice"), "{err}");
+    assert!(!dir.join("ita.lock").exists());
+    // A flag that names no digest is a usage error.
+    let (code, _, err) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        "--accept-trust",
+        "util",
+        path(&dir),
+    ]);
+    assert_eq!(code, 2);
+    assert!(err.contains("<package>@sha256:<hex>"), "{err}");
     let (code, out, err) = una(&[
         "una",
         "ita",
         "lock",
         "--accept-authority",
-        "--accept-trust",
         "util",
+        "--accept-trust",
+        &flag,
         path(&dir),
     ]);
     assert_eq!(code, 0, "{err}");
     assert!(out.ends_with("\nwrote ita.lock\n"), "{out}");
+    assert!(out.contains("; trust keys; consented sha256:"), "{out}");
     let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
     assert!(
         lock.contains("  consented \"sha256:") && lock.contains("  trusted modules keys\n"),
@@ -539,7 +896,141 @@ fn trust_is_consented_with_accept_trust_and_pinned_to_the_content() {
     assert!(err.contains("U7012"), "{err}");
     let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
     assert_eq!(code, 1);
-    assert!(err.contains("--accept-trust util"), "{err}");
+    assert!(err.contains("--accept-trust util@sha256:"), "{err}");
+    // The consent to the old content is stale: refused, and said so.
+    let (code, _, err) = una(&["una", "ita", "lock", "--accept-trust", &flag, path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(err.contains("consents to other content"), "{err}");
+    let fresh = trust_flag(&err);
+    assert_ne!(fresh, flag);
+    let (code, _, err) = una(&["una", "ita", "lock", "--accept-trust", &fresh, path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    // A change of the consent alone is a change of the review: the lock's consent lines
+    // removed by hand are written again, and the review says so.
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let stripped: String = lock
+        .lines()
+        .filter(|line| !line.starts_with("  consented") && !line.starts_with("  trusted modules"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(dir.join("ita.lock"), stripped).unwrap();
+    let (code, out, err) = una(&["una", "ita", "lock", "--accept-trust", &fresh, path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("change util 0.2.0 (path deps/util): digest sha256:")
+            && out.contains("; trust none -> keys; consented none -> sha256:"),
+        "{out}"
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), lock);
+}
+
+/// `una ita tree` reports the effective ceiling of a package with trusted modules as its
+/// ceiling meets the trust line's, the package's own profile, and the digest of the bytes
+/// analysed, which is not the lock's once the files change.
+#[test]
+fn tree_reports_the_effective_ceiling_profile_and_digest_analysed() {
+    let dir = with_dependency("tree-trust", "    may Console[print], Clock[now]\n");
+    let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("{manifest}\ntrust\n  util modules keys\n    may Console[print]\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("deps/util/ita.una"),
+        "ita util\n  version 0.2.0\n  edition 0.4\n  profile app\n\ntrusted\n  keys\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("deps/util/src/keys.una"),
+        "trusted module keys\n\npub policy reveal\n  from secret Text\n  to Text\n  via shown\n  purpose \"show a token\"\n  owner team\n\nshown(t: secret Text) -> Text = t\n",
+    )
+    .unwrap();
+    let (_, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    let flag = trust_flag(&err);
+    let (code, _, err) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        "--accept-trust",
+        &flag,
+        path(&dir),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = una(&["una", "--json", "ita", "tree", path(&dir)]);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let util = &document["packages"][0];
+    assert_eq!(
+        util["effective_ceiling"],
+        serde_json::json!(["Console[print]"])
+    );
+    assert_eq!(
+        util["granted_by"][0]["may"],
+        serde_json::json!(["Console[print]", "Clock[now]"])
+    );
+    assert_eq!(util["profile"], "app");
+    let digest = flag.trim_start_matches("util@").to_owned();
+    assert_eq!(util["digest"], serde_json::json!(digest));
+    // A file changed after the lock: the digest is of what was analysed, not the lock's.
+    std::fs::write(
+        dir.join("deps/util/src/say.una"),
+        "module say\n\npub say(line: Text) -> Unit\n  uses @console: Console[print]\n=\n  @console.print(line)\n\npub two() -> Int = 2\n",
+    )
+    .unwrap();
+    let (_, out, _) = una(&["una", "--json", "ita", "tree", path(&dir)]);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let changed = document["packages"][0]["digest"].as_str().unwrap();
+    assert!(changed.starts_with("sha256:") && changed != digest, "{out}");
+}
+
+/// The `--accept-trust` flag a refusal names, `util@sha256:<hex>`.
+fn trust_flag(text: &str) -> String {
+    let at = text.rfind("--accept-trust util@sha256:").unwrap() + "--accept-trust ".len();
+    text[at..at + "util@sha256:".len() + 64].to_owned()
+}
+
+#[test]
+fn consent_is_reviewed_before_it_is_given_and_names_each_package() {
+    let dir = with_dependency("consent-review", "    may Console[print]\n");
+    // `--dry-run` without consent: the review is printed with the flag to copy, and the
+    // command refuses and writes nothing.
+    let (code, out, err) = una(&["una", "ita", "lock", "--dry-run", path(&dir)]);
+    assert_eq!(code, 1);
+    assert!(
+        out.starts_with("add util 0.2.0 (path deps/util): digest sha256:")
+            && out.contains("\nto accept, after reviewing: una ita lock --accept-authority util\n"),
+        "{out}"
+    );
+    assert!(err.contains("U7009"), "{err}");
+    assert!(!dir.join("ita.lock").exists());
+    // The JSON document holds the review too.
+    let (code, out, _) = una(&["una", "--json", "ita", "lock", "--dry-run", path(&dir)]);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["changes"][0]["package"], "util");
+    assert_eq!(document["written"], serde_json::json!([]));
+    // Accepting the authority of a package the root does not need is a usage error.
+    let (code, out, err) = una(&[
+        "una",
+        "--json",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "other",
+        path(&dir),
+    ]);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(
+        err.contains("`--accept-authority other` names no need"),
+        "{err}"
+    );
+    assert!(!dir.join("ita.lock").exists());
+    // A bare flag is refused: it must name the package.
+    let (code, _, err) = una(&["una", "ita", "lock", "--accept-authority"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("PACKAGE"), "{err}");
 }
 
 /// Runs `una` with `args` and Itaoca at `itaoca`: the exit code, stdout and stderr.
@@ -942,7 +1433,14 @@ fn una_at(dir: &Path, args: &[&str]) -> (u8, String, String) {
 #[test]
 fn a_changed_dependency_is_reviewed_and_dry_run_writes_nothing() {
     let dir = with_dependency("review", "    may Console[print]\n");
-    let (code, _, _) = una(&["una", "ita", "lock", "--accept-authority", path(&dir)]);
+    let (code, _, _) = una(&[
+        "una",
+        "ita",
+        "lock",
+        "--accept-authority",
+        "util",
+        path(&dir),
+    ]);
     assert_eq!(code, 0);
     std::fs::write(
         dir.join("deps/util/ita.una"),
@@ -1099,17 +1597,29 @@ fn add_writes_nothing_when_the_need_has_no_resolution() {
 #[test]
 fn verify_checks_each_registry_package_wherever_it_is() {
     let (dir, itaoca) = with_registry("verify", true);
+    // Every copy matches the lock, and still nothing is reported verified: the owner's key
+    // chain is not held, so the package is unavailable (U7013), exit code 1.
     let (code, out, err) = una_in(&["una", "ita", "verify", path(&dir)], &itaoca);
-    assert_eq!(
-        (code, out.as_str(), err.as_str()),
-        (0, "verified acme/ledger 0.3.1 in Itaoca\n", "")
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert!(
+        err.contains("U7013")
+            && err.contains("`acme/ledger 0.3.1` is not verified")
+            && err.contains("in Itaoca match the lock")
+            && err.contains("key chain"),
+        "{err}"
     );
     let (code, _, _) = una_in(&["una", "ita", "vendor", path(&dir)], &itaoca);
     assert_eq!(code, 0);
-    let (code, out, _) = una_in(&["una", "ita", "verify", path(&dir)], &itaoca);
-    assert_eq!(
-        (code, out.as_str()),
-        (0, "verified acme/ledger 0.3.1 in vendor/ita and Itaoca\n")
+    let (code, out, _) = una_in(&["una", "--json", "ita", "verify", path(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(document["diagnostics"][0]["code"], "U7013");
+    assert!(
+        document["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("in vendor/ita and Itaoca match the lock"),
+        "{out}"
     );
     // A vendored file changed: U7010, though Itaoca's copy verifies.
     std::fs::write(

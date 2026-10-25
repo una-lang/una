@@ -14,7 +14,7 @@
 //! connection or starts a program.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use una_diag::{Code, Diagnostic};
@@ -1384,27 +1384,15 @@ fn expected_packages(project: &Project) -> (Vec<(Expected, &ita::LockPackage)>, 
     (expected, problems)
 }
 
-/// Writes `bytes` to `file` through a fresh file beside it and a rename, so a reader never sees
-/// part of it.
+/// Writes `bytes` to `file` through a fresh exclusive file beside it and a rename, so a reader
+/// never sees part of it, with `una_diag::safe_write`: a link at the name is replaced, never
+/// followed.
 fn write_file(file: &Path, bytes: &[u8]) -> io::Result<()> {
-    let name = file
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("bundle");
-    let temporary = file.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    let result = (|| {
-        let mut handle = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        handle.write_all(bytes)?;
-        handle.sync_all()?;
-        std::fs::rename(&temporary, file)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
+    let directory = match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    una_diag::safe_write::write_new_name(directory, file, bytes, true)
 }
 
 /// `una ita bundle <file> [path]` (ADR 0122 rule 33): reads each source of the lock's registry

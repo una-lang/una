@@ -108,6 +108,7 @@ fn core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter() {
     for case in corpus() {
         let output = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["--json", "core"])
             .arg(&case)
             .current_dir(root())

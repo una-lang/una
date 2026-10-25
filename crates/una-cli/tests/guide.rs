@@ -257,6 +257,7 @@ fn scratch(line: usize) -> PathBuf {
 fn check(target: &Path) -> (Output, Vec<String>) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", target.to_str().unwrap()])
         .output()
         .unwrap();
@@ -355,6 +356,7 @@ fn complete(dir: &Path, edition: &str) {
 fn canonical(dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["fmt", "--check", dir.to_str().unwrap()])
         .output()
         .unwrap()
@@ -421,6 +423,7 @@ fn run_commands(block: &Block, scratch_base: usize) {
         };
         let output = Command::new(&program)
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(parts)
             .current_dir(&dir)
             .output()
@@ -949,6 +952,7 @@ fn every_example_has_a_readme_whose_commands_run() {
         let una = |args: &[&str]| {
             Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(args)
                 .current_dir(&copy)
                 .output()
@@ -969,6 +973,7 @@ fn every_example_has_a_readme_whose_commands_run() {
         );
         let output = Command::new(copy.join("target/una").join(key("name")))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .current_dir(&copy)
             .output()
             .unwrap();
@@ -1102,6 +1107,7 @@ fn every_example_has_a_readme_whose_commands_run() {
             }
             let output = Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .args(["--color", "never", "check", "."])
                 .current_dir(&dir)
                 .output()
