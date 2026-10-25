@@ -2878,7 +2878,7 @@ fn rotated_with_older_point(k: usize) -> (TestRegistry, Point) {
 fn an_unserved_prefix_proof_makes_the_point_unavailable() {
     let (registry, at) = rotated_with_older_point(2);
     let Point::At { size, .. } = at else {
-        unreachable!()
+        panic!("the rotated registry's point is at a size")
     };
     let mut no_latest = Memory {
         files: registry.files.clone(),
@@ -2914,7 +2914,7 @@ fn an_unserved_prefix_proof_makes_the_point_unavailable() {
 fn an_unserved_prefix_proof_makes_kept_checkpoints_with_retired_witnesses_unavailable() {
     let (registry, at) = rotated_with_older_point(1);
     let Point::At { size, .. } = at else {
-        unreachable!()
+        panic!("the rotated registry's point is at a size")
     };
     let path = format!("checkpoint/{size}");
     let log = registry.keys.log.1.name.clone();
