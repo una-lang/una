@@ -20,6 +20,7 @@ fn repository() -> PathBuf {
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(repository())
         .output()
@@ -296,6 +297,7 @@ pub first() -> Int = book(4321)
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -320,6 +322,7 @@ pub first() -> Int = book(4321)
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["check", "--tier", "0", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -452,6 +455,7 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let _ = std::fs::remove_dir_all(root.join(".una"));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &bin)
         .output()
@@ -1737,6 +1741,7 @@ fn a_query_the_solver_rejects_is_an_internal_error_11() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", scratch.join("home"))
+        .env_remove("UNA_PROOF_KEY")
         .env("PATH", path)
         .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check"])

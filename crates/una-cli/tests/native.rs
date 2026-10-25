@@ -49,6 +49,7 @@ fn una(dir: &Path, args: &[&str]) -> Output {
     runtime();
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(dir)
         .env("NO_COLOR", "1")
@@ -578,6 +579,7 @@ fn una_build_finds_the_runtime_through_a_symlinked_una() {
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_una"), &link).unwrap();
     let output = Command::new(&link)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .env_remove("UNA_RT_LIB")
         .args(["build"])
         .current_dir(&dir)
@@ -621,6 +623,7 @@ fn an_executable_does_not_depend_on_where_una_and_its_runtime_are_installed() {
         let out = dir.join(install).join("out");
         let output = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .env("UNA_RT_LIB", lib.join("libuna_rt.a"))
             .args(["build", "--out"])
             .arg(out.join("hello"))
@@ -1647,6 +1650,7 @@ fn a_closed_output_pipe_is_a_failed_write_not_a_signal() {
     let (_, interpreted) = first_line(
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["run", "."]),
     );
     assert_eq!(interpreted.status.code(), native.status.code());
@@ -1687,6 +1691,7 @@ fn a_failed_write_to_stderr_exits_as_una_run_does() {
         let interpreted = closed(
             Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .arg("run")
                 .arg(".")
                 .args(args),
@@ -1726,6 +1731,7 @@ fn a_closed_stdout_is_reported_on_stderr_by_both_engines() {
     let interpreted = closed(
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["run", "."]),
     );
     let native = closed(&mut Command::new(dir.join("target/una/closed")));

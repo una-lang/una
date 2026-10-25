@@ -62,6 +62,7 @@ fn check_json(path: &Path) -> Vec<Value> {
     };
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", "check", "--tier", "0", &target])
         .current_dir(dir)
         .output()

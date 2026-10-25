@@ -3,6 +3,8 @@
 //! of the proof cache. A cloned repository can commit a link at any name the toolchain writes,
 //! so every such write goes through here.
 //!
+//! - A file the toolchain owns, such as a proof cache entry, is written at its name without
+//!   ever following a link there ([`write_new_name`]).
 //! - A file is replaced through a fresh temporary file, created exclusively under a name unique
 //!   to the write, then synced (unless the caller opts out) and renamed onto its destination
 //!   ([`write_atomically`]).
@@ -56,6 +58,32 @@ pub fn write_atomically(
         .map(|metadata| metadata.permissions());
     let (temporary, file) = fresh_temporary(&directory, &name, permissions.is_some())?;
     let written = fill_and_rename(file, &temporary, &destination, permissions, bytes, sync);
+    if written.is_err() {
+        // The name was created by this write alone, so removing it removes no one else's file.
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// Replaces whatever is at the name `target` with a new file holding `bytes`, through a fresh
+/// temporary file and a rename, and never follows a symbolic link at that name: a link there,
+/// even one that resolves inside `root`, is itself replaced, and the file it leads to is left
+/// as it was. The directory written in must resolve inside `root`. The new file is created under
+/// the umask; `sync` is as for [`write_atomically`].
+///
+/// # Errors
+///
+/// Any error of the file system, or the refusal of a directory outside `root`.
+pub fn write_new_name(root: &Path, target: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
+    let root = canonical_root(root)?;
+    let directory = std::fs::canonicalize(directory_of(target))?;
+    if !directory.starts_with(&root) {
+        return Err(outside(target, &directory));
+    }
+    let name = file_name(target, target)?;
+    let destination = directory.join(&name);
+    let (temporary, file) = fresh_temporary(&directory, &name, false)?;
+    let written = fill_and_rename(file, &temporary, &destination, None, bytes, sync);
     if written.is_err() {
         // The name was created by this write alone, so removing it removes no one else's file.
         let _ = std::fs::remove_file(&temporary);
@@ -526,6 +554,30 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(std::fs::read_dir(&made).unwrap().count(), 1);
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_name_replaces_a_link_and_keeps_its_target() {
+        let (dir, package, outside) = scratch("new-name");
+        let inside = package.join("kept.txt");
+        std::fs::write(&inside, b"inside").unwrap();
+        let victim = outside.join("victim");
+        std::fs::write(&victim, b"outside").unwrap();
+        for (name, to) in [("a.json", &inside), ("b.json", &victim)] {
+            let target = package.join(name);
+            std::os::unix::fs::symlink(to, &target).unwrap();
+            write_new_name(&package, &target, b"entry", false).unwrap();
+            assert!(std::fs::symlink_metadata(&target).unwrap().is_file());
+            assert_eq!(std::fs::read(&target).unwrap(), b"entry");
+        }
+        assert_eq!(std::fs::read(&inside).unwrap(), b"inside");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"outside");
+        // A directory outside the root is refused.
+        std::os::unix::fs::symlink(&outside, package.join("out")).unwrap();
+        let error = write_new_name(&package, &package.join("out/x"), b"x", false).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
