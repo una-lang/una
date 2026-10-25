@@ -1,7 +1,8 @@
 # The unit tests of una-rt that Miri does not run (#766), by the name the test harness prints,
 # sorted. scripts/sanitize.sh fails when the tests Miri ignores differ from this list, so a
 # skip is never added silently. Each is ignored in the code with its reason: a scenario run in
-# a process of its own, or a test that starts such a process.
+# a process of its own, a test that starts such a process, or a test of the scheduler that
+# starts its threads and maps its stacks (#1145).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -55,6 +56,7 @@ ffi::tests::i8_first_batch_failure_scenario
 ffi::tests::words_in_a_run_scenario
 runtime::tests::a_cancellation_from_another_thread_scenario
 runtime::tests::a_cancellation_from_another_thread_stops_the_next_check
+runtime::tests::a_program_with_tasks_starts_every_thread_before_main
 runtime::tests::the_checks_scaling_scenario
 runtime::tests::the_checks_take_the_fast_path_at_every_size_and_depth
 runtime::tests::the_depth_limit_fires_at_its_exact_call
@@ -64,3 +66,6 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+sched::tests::placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers
+sched::tests::start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size
+sched::tests::start_all_starts_every_worker_and_both_pools_before_any_task

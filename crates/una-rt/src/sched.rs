@@ -336,13 +336,27 @@ fn serve_in(
 struct Shared {
     stacks: Mutex<BTreeMap<usize, Vec<Stack>>>,
     pooled: AtomicUsize,
+    /// The size every stack is mapped at once [`Scheduler::start_all`] filled the pool, 0
+    /// before: a request for less takes a stack of this size (#1145).
+    full: AtomicUsize,
     files: Arc<Helpers>,
     io: Arc<Helpers>,
+    /// How many stacks [`Shared::take`] mapped because the pool had none, in tests.
+    #[cfg(test)]
+    mapped: AtomicUsize,
 }
 
 impl Shared {
     /// A stack of `bytes` from the pool, or a new one; `None` when none can be mapped.
+    ///
+    /// Once [`Scheduler::start_all`] filled the pool, every stack has its one size, so a take
+    /// maps a fresh stack only when the pool is empty: when more than [`POOL_STACKS`] tasks are
+    /// live at once. That depends only on the width and nesting of the constructs that run
+    /// then, which is the program's structure, never on how many tasks earlier code started,
+    /// since every task that ends gives its stack back and the pool is full again once at most
+    /// [`POOL_STACKS`] are live (#1145).
     fn take(&self, bytes: usize) -> Option<Stack> {
+        let bytes = bytes.max(self.full.load(Ordering::SeqCst));
         let reused = {
             let mut stacks = lock(&self.stacks);
             // The smallest pooled stack that is large enough.
@@ -361,8 +375,30 @@ impl Shared {
                 self.pooled.fetch_sub(1, Ordering::SeqCst);
                 Some(stack)
             }
-            None => Stack::new(bytes).ok(),
+            None => {
+                #[cfg(test)]
+                self.mapped.fetch_add(1, Ordering::SeqCst);
+                Stack::new(bytes).ok()
+            }
         }
+    }
+
+    /// Fills the pool with fresh stacks of `bytes` usable bytes, up to [`POOL_STACKS`], and makes
+    /// that the size of every later stack. A fresh stack is reserved address space with its
+    /// guard: no page of it is in use, and nothing charges it to `--max-memory`, which counts a
+    /// task's stack only as the task uses it (`runtime::charge_stack`). `Err` when one cannot be
+    /// mapped.
+    fn fill_stacks(&self, bytes: usize) -> Result<(), NotStarted> {
+        self.full.store(bytes, Ordering::SeqCst);
+        while self.pooled.load(Ordering::SeqCst) < POOL_STACKS {
+            let stack = Stack::new(bytes).map_err(|_| NotStarted)?;
+            self.pooled.fetch_add(1, Ordering::SeqCst);
+            lock(&self.stacks)
+                .entry(stack.usable())
+                .or_default()
+                .push(stack);
+        }
+        Ok(())
     }
 
     /// Keeps `stack` for reuse, its pages discarded, or unmaps it when the pool is full. The pool is keyed by the
@@ -415,8 +451,11 @@ impl Scheduler {
             shared: Arc::new(Shared {
                 stacks: Mutex::new(BTreeMap::new()),
                 pooled: AtomicUsize::new(0),
+                full: AtomicUsize::new(0),
                 files: Arc::new(Helpers::new(settings.file_threads)),
                 io: Arc::new(Helpers::new(settings.io_threads)),
+                #[cfg(test)]
+                mapped: AtomicUsize::new(0),
             }),
         })
     }
@@ -484,10 +523,15 @@ impl Scheduler {
     /// whether a thread exists, and so whether a construct pays its start, would depend on what
     /// earlier code forked or waited on, possibly on `secret` data. O(N + H) thread starts, for
     /// `N` workers and `H` helpers, once per run; their stacks are reserved, not committed.
+    /// It also fills the stack pool with [`POOL_STACKS`] stacks of `stack` usable bytes, the
+    /// size every later task's stack has, so a later construct never maps a stack because
+    /// earlier code started fewer tasks than the pool holds: 64 reserved stacks, their pages
+    /// never touched, and no charge to `--max-memory` ([`Shared::fill_stacks`]).
     /// It returns once every thread runs and each worker has set up its thread-locals, so
-    /// `main` starts after all of it. `Err` when one could not start: the run then stops
-    /// before `main`.
-    pub(crate) fn start_all(&self) -> Result<(), NotStarted> {
+    /// `main` starts after all of it. `Err` when a thread could not start or a stack could not
+    /// be mapped: the run then stops before `main`.
+    pub(crate) fn start_all(&self, stack: usize) -> Result<(), NotStarted> {
+        self.shared.fill_stacks(stack)?;
         let (ready, readied) = mpsc::channel();
         let mut started = 0usize;
         for worker in &self.workers {
@@ -506,6 +550,15 @@ impl Scheduler {
             readied.recv().map_err(|_| NotStarted)?;
         }
         Ok(())
+    }
+
+    /// How many stacks the pool holds, and how many were mapped because it had none, in tests.
+    #[cfg(test)]
+    pub(crate) fn stacks(&self) -> (usize, usize) {
+        (
+            self.shared.pooled.load(Ordering::SeqCst),
+            self.shared.mapped.load(Ordering::SeqCst),
+        )
     }
 
     /// How many worker threads, file helpers and I/O helpers have started, in tests.
@@ -931,17 +984,24 @@ mod tests {
     }
 
     #[test]
-    fn placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers() {
+    fn placement_is_the_parent_s_worker_plus_the_part_modulo_the_workers() {
         // #1145, `spec/27 §1` rule 2: part `i` of a construct runs on worker `(w + i) mod N`,
-        // `w` being its parent's worker, 0 for the root. A run-wide round-robin counter made a
-        // construct's workers depend on how many parts earlier code had forked, so a `secret`
-        // number of earlier parts moved a later `public` construct, and its timing. Here the
-        // same constructs run after 0 to 7 earlier parts, top-level and nested, and must land
-        // on the same workers every time.
+        // `w` being its parent's worker, 0 for the root: a function of these three only.
         assert_eq!(placement(0, 0, 0), 0);
+        assert_eq!(placement(0, 4, 3), 1);
         assert_eq!(placement(2, 2, 3), 1);
         // 2^64 - 1 is a multiple of 3: the sum is reduced without overflow.
         assert_eq!(placement(usize::MAX, usize::MAX, 3), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
+    fn placement_depends_only_on_the_parent_s_worker_the_part_and_the_workers() {
+        // #1145, `spec/27 §1` rule 2. A run-wide round-robin counter made a construct's workers
+        // depend on how many parts earlier code had forked, so a `secret` number of earlier
+        // parts moved a later `public` construct, and its timing. Here the same constructs run
+        // after 0 to 7 earlier parts, top-level and nested, and must land on the same workers
+        // every time.
         let sched = Scheduler::new(settings(3, 1, 1));
         let expected: Vec<(usize, Vec<usize>)> = (0..4)
             .map(|part| {
@@ -959,12 +1019,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
     fn start_all_starts_every_worker_and_both_pools_before_any_task() {
         // #1145, ADR 0116 amendment P8: before `main`, a program with a task construct has every
         // worker's thread and both helper pools at full size, so no construct starts a thread.
         let sched = Scheduler::new(settings(3, 5, 2));
         assert_eq!(sched.started(), (0, 0, 0));
-        sched.start_all().unwrap();
+        sched.start_all(256 * 1024).unwrap();
         assert_eq!(sched.started(), (3, 2, 5));
         // The helpers are running threads: each reaches its idle wait.
         let idle = || {
@@ -981,12 +1042,51 @@ mod tests {
         }
         assert_eq!(idle(), (2, 5));
         // A second call starts nothing more, and tasks then start no thread.
-        sched.start_all().unwrap();
+        sched.start_all(256 * 1024).unwrap();
         let tasks: Vec<Receiver<()>> = (0..7).map(|part| start(&sched, part, || {})).collect();
         for task in tasks {
             assert_eq!(task.recv(), Some(()));
         }
         assert_eq!(sched.started(), (3, 2, 5));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
+    fn start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size() {
+        // #1145: before `main` the pool holds `POOL_STACKS` stacks of one size, so a block maps
+        // a stack only while more than `POOL_STACKS` tasks are live at once, which its own
+        // width decides, and the pool is full again once they end.
+        let sched = Scheduler::new(settings(2, 1, 1));
+        sched.start_all(256 * 1024).unwrap();
+        assert_eq!(sched.stacks(), (POOL_STACKS, 0));
+        // A smaller request takes a pooled stack of the one size.
+        let small = sched.shared.take(16 * 1024).unwrap();
+        assert!(small.usable() >= 256 * 1024);
+        sched.shared.give(small);
+        assert_eq!(sched.stacks(), (POOL_STACKS, 0));
+        for live in [10, POOL_STACKS, POOL_STACKS + 36] {
+            // Every task takes its stack when it is forked and parks until all are forked, so
+            // `live` tasks hold a stack at once.
+            let mut waiters = Vec::new();
+            let mut tasks = Vec::new();
+            for part in 0..live {
+                let (waiter, wait) = channel::<()>();
+                waiters.push(waiter);
+                tasks.push(start(&sched, part, move || {
+                    assert_eq!(wait.recv(), Some(()));
+                }));
+            }
+            for waiter in waiters {
+                waiter.send(());
+            }
+            for task in tasks {
+                assert_eq!(task.recv(), Some(()));
+            }
+            // A stack goes back before its task's end is sent.
+            assert_eq!(sched.stacks().0, POOL_STACKS, "after {live} tasks");
+        }
+        // Only the 36 tasks past the pool's size mapped a stack, each once.
+        assert_eq!(sched.stacks(), (POOL_STACKS, 36));
     }
 
     #[test]

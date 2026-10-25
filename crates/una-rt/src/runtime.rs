@@ -1548,17 +1548,19 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         FLOATS.store(true, Ordering::SeqCst);
     }
     // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever` starts
-    // its scheduler, every worker and both helper pools at full size, here, before `main`.
-    // Whether a thread already exists is then never state that earlier code left, and no
-    // construct pays a thread's start. A thread that cannot start stops the run here, with
-    // U6003 and no position, rather than leave a lazy start for later. A program without
-    // these constructs starts no thread (`spec/27 §1` rule 4).
+    // its scheduler, every worker and both helper pools at full size, and fills the stack pool
+    // with stacks of the size a block at the top asks for, the largest any task asks for, here,
+    // before `main`. Whether a thread exists, or how many stacks are pooled, is then never
+    // state that earlier code left, and no construct pays a thread's start or a stack's
+    // mapping because of it. A thread that cannot start, or a stack that cannot be mapped,
+    // stops the run here, with U6003 and no position, rather than leave a lazy start for
+    // later. A program without these constructs starts no thread (`spec/27 §1` rule 4).
     if threads {
         let sched = crate::sched::Scheduler::new(state.concurrency);
-        if sched.start_all().is_err() {
+        if sched.start_all(stack).is_err() {
             let written = writeln!(
                 stderr,
-                "[{}] Error: the threads of this run's tasks could not start",
+                "[{}] Error: the threads and stacks of this run's tasks could not be made",
                 Code::U6003
             );
             return if written.is_ok() { 1 } else { USAGE };
@@ -2419,10 +2421,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "maps stacks and switches coroutines in assembly, which Miri cannot")]
     fn a_program_with_tasks_starts_every_thread_before_main() {
         // #1145, ADR 0116 amendment P8: when the description says the program holds a task
         // construct or a `for ever`, the scheduler exists before `main` runs, with every worker
-        // and both helper pools started at full size; otherwise no thread starts.
+        // and both helper pools started at full size and the stack pool full; otherwise no thread
+        // starts.
         let args: Vec<String> = "--workers 3 --io-threads 5 --file-threads 2"
             .split(' ')
             .map(str::to_owned)
@@ -2434,14 +2438,18 @@ mod tests {
         ] {
             let record = Arc::clone(&seen);
             let status = start(&args, meta, move || {
-                let observed =
-                    with_state(|state| state.sched.as_ref().map(|sched| sched.started()));
+                let observed = with_state(|state| {
+                    state
+                        .sched
+                        .as_ref()
+                        .map(|sched| (sched.started(), sched.stacks()))
+                });
                 record.lock().unwrap().push(observed);
                 0
             });
             assert_eq!(status, 0);
         }
-        assert_eq!(*seen.lock().unwrap(), [Some(Some((3, 2, 5))), Some(None)]);
+        assert_eq!(*seen.lock().unwrap(), [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]);
     }
 
     #[test]
