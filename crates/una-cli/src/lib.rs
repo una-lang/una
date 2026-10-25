@@ -561,7 +561,8 @@ fn fmt_command(
 ///
 /// The temporary file is created next to the destination with `create_new` (`O_CREAT|O_EXCL`,
 /// which never follows a symbolic link at its name), under a name unique to this process and
-/// write, with mode 0600 on Unix until it takes the destination's permissions. Anything already
+/// write, with mode 0600 on Unix until it takes the destination's permissions (a new file is
+/// created under the umask, as before). Anything already
 /// at that name, a planted link included, is never written through (#1160).
 ///
 /// A symbolic link at `target` is written through onto the file it resolves to (review finding
@@ -595,15 +596,17 @@ fn write_atomically(root: &Path, target: &Path, text: &str, create: bool) -> io:
     if !directory.starts_with(&root) {
         return Err(outside(target, &directory));
     }
-    let name = destination
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let Some(name) = destination.file_name().map(std::ffi::OsStr::to_os_string) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("`{}` names no file", target.display()),
+        ));
+    };
     let destination = directory.join(&name);
     let permissions = std::fs::metadata(&destination)
         .ok()
         .map(|metadata| metadata.permissions());
-    let (temporary, mut file) = fresh_temporary(&directory, &name)?;
+    let (temporary, file) = fresh_temporary(&directory, &name, permissions.is_some())?;
     let written = fill_and_rename(file, &temporary, &destination, permissions, text);
     if written.is_err() {
         // The name was created by this write alone, so removing it removes no one else's file.
@@ -622,9 +625,8 @@ fn fill_and_rename(
     text: &str,
 ) -> io::Result<()> {
     file.write_all(text.as_bytes())?;
-    match permissions {
-        Some(permissions) => file.set_permissions(permissions)?,
-        None => fresh_permissions(&file)?,
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
     }
     file.sync_all()?;
     drop(file);
@@ -656,21 +658,31 @@ fn outside(target: &Path, resolved: &Path) -> io::Error {
 }
 
 /// Creates a new temporary file in `directory` for a write of `name`: exclusively, so nothing
-/// already at the chosen name is opened, retrying a few unique names before giving up.
-fn fresh_temporary(directory: &Path, name: &str) -> io::Result<(PathBuf, std::fs::File)> {
+/// already at the chosen name is opened, retrying a few unique names before giving up. A
+/// `private` one, for a replacement, is created with mode 0600 on Unix.
+fn fresh_temporary(
+    directory: &Path,
+    name: &std::ffi::OsStr,
+    private: bool,
+) -> io::Result<(PathBuf, std::fs::File)> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let process = std::process::id();
     let mut last = None;
     for _ in 0..16 {
         let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".{name}.{process}.{serial}.una-tmp"));
+        let mut file_name = std::ffi::OsString::from(".");
+        file_name.push(name);
+        file_name.push(format!(".{process}.{serial}.una-tmp"));
+        let temporary = directory.join(file_name);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+            // A replacement starts private and then takes the destination's permissions; a new
+            // file is created as `std::fs::write` would create it, under the umask.
+            options.mode(if private { 0o600 } else { 0o666 });
         }
         match options.open(&temporary) {
             Ok(file) => return Ok((temporary, file)),
@@ -679,19 +691,6 @@ fn fresh_temporary(directory: &Path, name: &str) -> io::Result<(PathBuf, std::fs
         }
     }
     Err(last.unwrap_or_else(|| io::Error::other("no fresh temporary name")))
-}
-
-/// The permissions of a file the write creates: 0644 on Unix, readable by all and writable by
-/// its owner, as the file would have under the usual umask.
-fn fresh_permissions(file: &std::fs::File) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
-    }
-    #[cfg(not(unix))]
-    let _ = file;
-    Ok(())
 }
 
 /// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current
