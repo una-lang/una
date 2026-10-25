@@ -88,16 +88,21 @@ pub struct Keys {
 
 impl Keys {
     pub fn new(source: &str) -> Keys {
+        Keys::offset(source, 0)
+    }
+
+    /// Other keys, every seed moved by `offset`: another registry under the same source name.
+    pub fn offset(source: &str, offset: u8) -> Keys {
         Keys {
             roots: (10..13)
-                .map(|seed| keypair(seed, &format!("{source}.root.{seed}")))
+                .map(|seed| keypair(seed + offset, &format!("{source}.root.{seed}")))
                 .collect(),
-            log: keypair(20, &format!("{source}.example/log")),
+            log: keypair(20 + offset, &format!("{source}.example/log")),
             witnesses: (30..33)
-                .map(|seed| keypair(seed, &format!("witness.{seed}")))
+                .map(|seed| keypair(seed + offset, &format!("witness.{seed}")))
                 .collect(),
-            security: keypair(40, &format!("{source}.security")),
-            itauna: keypair(50, &format!("{source}.itauna")),
+            security: keypair(40 + offset, &format!("{source}.security")),
+            itauna: keypair(50 + offset, &format!("{source}.itauna")),
         }
     }
 }
@@ -138,7 +143,11 @@ pub struct TestRegistry {
 impl TestRegistry {
     /// A registry of `source` with its first root metadata.
     pub fn new(source: &str) -> TestRegistry {
-        let keys = Keys::new(source);
+        TestRegistry::with_keys(source, Keys::new(source))
+    }
+
+    /// A registry of `source` with its first root metadata under `keys`.
+    pub fn with_keys(source: &str, keys: Keys) -> TestRegistry {
         let roots: Vec<&Key> = keys.roots.iter().map(|(_, key)| key).collect();
         let text = root_text(source, 1, EXPIRES, &keys, &roots);
         let document = signed(&text, &[&keys.roots[0], &keys.roots[1]]);
@@ -298,6 +307,39 @@ impl TestRegistry {
         let module = name.rsplit('/').next().unwrap();
         let module_text = format!("module {module}\n\npub answer() -> Int = 42\n");
         self.release_with(name, version, authority, trust, &module_text, signers)
+    }
+
+    /// A release whose archive holds `manifest_text` as its ita.una and `module_text` as its
+    /// one module, and whose statement gives `needs` lines as written. Returns its index and its
+    /// content digest.
+    #[allow(clippy::too_many_arguments)]
+    pub fn release_custom(
+        &mut self,
+        name: &str,
+        version: &str,
+        manifest_text: &str,
+        needs: &[&str],
+        authority: &str,
+        module_text: &str,
+        signers: &[&(SigningKey, Key)],
+    ) -> (u64, String) {
+        let module = name.rsplit('/').next().unwrap();
+        let source_path = format!("src/{module}.una");
+        let (content, manifest) = self.blob(&[
+            ("ita.una", manifest_text),
+            (source_path.as_str(), module_text),
+        ]);
+        let mut text = format!(
+            "ita-release/1\nsource {}\nname {name}\nversion {version}\n{}\ndigest {content}\nmanifest {manifest}\nedition 0.4",
+            self.source,
+            self.previous(name),
+        );
+        for need in needs {
+            text.push_str(&format!("\nneeds {need}"));
+        }
+        text.push_str(&format!("\nauthority {authority}\ntrust none"));
+        let document = signed(&text, signers);
+        (self.append(name, &document), content)
     }
 
     /// [`TestRegistry::release`] whose one module is `module_text`.

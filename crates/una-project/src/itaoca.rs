@@ -8,8 +8,10 @@
 //! - `registry/<source>/releases/<release>/checkpoint-<size>.provenance`: the provenance of a
 //!   release at the resolution point of size `size` ([`crate::provenance`]), where `<release>`
 //!   is the release's directory name ([`crate::vendor::release_dir`]);
-//! - `registry/<source>/checkpoint`: the largest checkpoint of the source the client accepted,
-//!   the floor of ADR 0122 rule 39, replaced only by a larger one ([`Itaoca::store_checkpoint`]).
+//! - `registry/<id>/checkpoint` and `registry/<id>/root-version`: the floors of rule 39 of the
+//!   registry whose identity is `id` ([`registry_id`]), the largest checkpoint and the highest
+//!   root version the client accepted, each replaced only by a larger one under the kernel-held
+//!   lock of `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`]).
 //!
 //! The root itself must not be a symbolic link; what lies above it is the user's choice. A
 //! package is verified on every load, not once: its files are read again as [`crate::tree`]
@@ -196,72 +198,80 @@ impl Itaoca {
         }
     }
 
-    /// The checkpoint stored for `source`, the floor of rule 39, read once with no link
-    /// followed, or `None` when there is none. The caller verifies what it uses of it.
-    pub fn load_checkpoint(&self, source: &str) -> Result<Option<String>, Refusal> {
-        vendor::check_source(source)?;
+    /// The checkpoint stored for the registry `id` ([`registry_id`]), the floor of rule 39,
+    /// read once with no link followed, or `None` when there is none. Reading never takes the
+    /// floor lock and never waits. The caller verifies what it uses of it.
+    pub fn load_checkpoint(&self, id: &str) -> Result<Option<String>, Refusal> {
+        check_id(id)?;
         tree::not_a_link(&self.root)?;
-        match tree::locate(&self.root, &["registry", source, "checkpoint"])? {
+        match tree::locate(&self.root, &["registry", id, "checkpoint"])? {
             Some(path) => {
                 let bytes = tree::read_file(&path, crate::tlog::note::MAX_NOTE as u64)?;
                 String::from_utf8(bytes)
                     .map(Some)
-                    .map_err(|_| format!("the checkpoint stored for `{source}` is not UTF-8"))
+                    .map_err(|_| "a stored checkpoint is not UTF-8".to_owned())
             }
             None => Ok(None),
         }
     }
 
-    /// Runs `work` holding the floor lock of `source`, `registry/<source>/floor.lock`, a file
-    /// created exclusively, so two runs never interleave a read, a compare and a write of a
-    /// floor. A lock another run holds is waited for, about a second at most; past that the
-    /// floor is not touched, and the refusal names the file to remove if no run holds it.
+    /// Runs `work` holding the floor lock of the registry `id`: an exclusive advisory lock the
+    /// kernel holds on the file `registry/<id>/floor.lock`, which it releases when the handle is
+    /// dropped or the process ends. So two runs never interleave a read, a compare and a write
+    /// of a floor, and a file left by a run that ended blocks nothing: the file's existence means
+    /// nothing, and it is never removed to unlock. The lock is tried for about five seconds;
+    /// past that, the floor is not touched.
     fn locked<T>(
         &self,
-        source: &str,
+        id: &str,
         work: impl FnOnce() -> Result<T, Refusal>,
     ) -> Result<T, Refusal> {
-        vendor::check_source(source)?;
+        check_id(id)?;
         tree::not_a_link(&self.root)?;
-        let dir = tree::make_dirs(&self.root, &["registry", source])?;
-        let lock = dir.join("floor.lock");
+        let dir = tree::make_dirs(&self.root, &["registry", id])?;
+        let path = dir.join("floor.lock");
+        tree::not_a_link(&path)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| format!("cannot open the floor lock: {error}"))?;
         let mut tries = 0;
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock)
-            {
-                Ok(_) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && tries < 50 => {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if tries < 100 => {
                     tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                Err(error) => {
-                    return Err(format!(
-                        "cannot lock the floor of `{source}` ({error}); remove `{}` if no run of `una ita` holds it",
-                        lock.display()
-                    ));
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err("another run held the floor lock for five seconds".to_owned());
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(format!("cannot take the floor lock: {error}"));
                 }
             }
         }
         let result = work();
-        let removed = std::fs::remove_file(&lock);
-        match (result, removed) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Ok(_), Err(error)) => Err(format!(
-                "cannot remove the floor lock `{}`: {error}",
-                lock.display()
-            )),
-            (Err(refusal), _) => Err(refusal),
-        }
+        // Dropping the handle releases the lock.
+        drop(file);
+        result
     }
 
-    /// Stores `document`, a checkpoint the client accepted for `source`, as its floor: only when
-    /// it is larger than the one stored, under the floor lock, so the floor never moves
-    /// backwards, even with runs at once (rule 39). The caller verified it, and its consistency
-    /// with the one stored.
-    pub fn store_checkpoint(&self, source: &str, document: &str) -> Result<(), Refusal> {
+    /// Stores `document`, a checkpoint the client accepted for the registry `id`, as its floor,
+    /// under the floor lock: the floor stored is read again under the lock, and `document` is
+    /// written, through a fresh file and a rename, only when it is larger and `consistent`
+    /// accepts the stored one against it (a consistency proof between the two). So the floor
+    /// never moves backwards, nor to another log, even with runs at once (rule 39). A refusal
+    /// says why it was not stored; it never makes the checkpoint less valid.
+    pub fn store_checkpoint(
+        &self,
+        id: &str,
+        document: &str,
+        consistent: &mut dyn FnMut(&str) -> Result<(), String>,
+    ) -> Result<(), Refusal> {
         use crate::tlog::note;
 
         let size = |text: &str| -> Result<u64, Refusal> {
@@ -269,24 +279,25 @@ impl Itaoca {
             Ok(note::parse_checkpoint(&signed.text)?.size)
         };
         let new = size(document)?;
-        self.locked(source, || {
-            if let Some(stored) = self.load_checkpoint(source)?
-                && size(&stored).is_ok_and(|old| old >= new)
-            {
-                return Ok(());
+        self.locked(id, || {
+            if let Some(stored) = self.load_checkpoint(id)? {
+                if size(&stored).is_ok_and(|old| old >= new) {
+                    return Ok(());
+                }
+                consistent(&stored)?;
             }
-            let parent = tree::make_dirs(&self.root, &["registry", source])?;
+            let parent = tree::make_dirs(&self.root, &["registry", id])?;
             tree::store_file(&parent, "checkpoint", document.as_bytes(), true)
-                .map_err(|refusal| format!("cannot store the checkpoint of `{source}`: {refusal}"))
+                .map_err(|refusal| format!("cannot store the checkpoint: {refusal}"))
         })
     }
 
-    /// The highest root version of `source` accepted, the floor of its root chain (rule 39), or
-    /// `None` when none is stored.
-    pub fn load_root_version(&self, source: &str) -> Result<Option<u64>, Refusal> {
-        vendor::check_source(source)?;
+    /// The highest root version of the registry `id` accepted, the floor of its root chain
+    /// (rule 39), or `None` when none is stored. Reading never takes the floor lock.
+    pub fn load_root_version(&self, id: &str) -> Result<Option<u64>, Refusal> {
+        check_id(id)?;
         tree::not_a_link(&self.root)?;
-        let Some(path) = tree::locate(&self.root, &["registry", source, "root-version"])? else {
+        let Some(path) = tree::locate(&self.root, &["registry", id, "root-version"])? else {
             return Ok(None);
         };
         let bytes = tree::read_file(&path, 32)?;
@@ -301,24 +312,48 @@ impl Itaoca {
             .ok()
             .filter(|_| valid)
             .map(Some)
-            .ok_or_else(|| format!("the root version stored for `{source}` is not a version"))
+            .ok_or_else(|| "a stored root version is not a version".to_owned())
     }
 
-    /// Stores `version`, a root version the client accepted for `source`, as the floor of its
-    /// root chain: only when it is higher than the one stored, under the floor lock.
-    pub fn store_root_version(&self, source: &str, version: u64) -> Result<(), Refusal> {
-        self.locked(source, || {
+    /// Stores `version`, a root version the client accepted for the registry `id`, as the floor
+    /// of its root chain: under the floor lock, only when it is higher than the one stored.
+    pub fn store_root_version(&self, id: &str, version: u64) -> Result<(), Refusal> {
+        self.locked(id, || {
             if self
-                .load_root_version(source)?
+                .load_root_version(id)?
                 .is_some_and(|stored| stored >= version)
             {
                 return Ok(());
             }
-            let parent = tree::make_dirs(&self.root, &["registry", source])?;
+            let parent = tree::make_dirs(&self.root, &["registry", id])?;
             tree::store_file(&parent, "root-version", format!("{version}\n").as_bytes(), true)
-                .map_err(|refusal| {
-                    format!("cannot store the root version of `{source}`: {refusal}")
-                })
+                .map_err(|refusal| format!("cannot store the root version: {refusal}"))
         })
+    }
+}
+
+/// The identity of a registry, under which Itaoca keeps its floors: the hex SHA-256 of its pin,
+/// the digest of its first root metadata as `sources` writes it (`sha256:` and hex). That root
+/// metadata names the registry's source, so two names `sources` gives one registry share its
+/// floors, and one name given to two registries never mixes theirs.
+pub fn registry_id(pin: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    Sha256::digest(pin.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// A registry's identity as a directory: 64 lowercase hexadecimal digits.
+fn check_id(id: &str) -> Result<(), Refusal> {
+    let valid = id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("`{id}` is not a registry's identity"))
     }
 }

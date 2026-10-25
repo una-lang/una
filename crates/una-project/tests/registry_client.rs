@@ -1004,7 +1004,17 @@ fn compromise_cascades_to_the_entries_it_signed() {
     let mut client = open(&memory, &registry).unwrap();
     let history = client.history("acme").unwrap();
     assert_eq!(history.voided, vec![added]);
-    assert!(client.releases("acme/ledger").is_err(), "B was never the owner's key");
+    assert_eq!(history.void_keys, vec![b.1.clone()]);
+    // What B signed is skipped as compromised; the honest 0.3.2 stands.
+    let releases = client.releases("acme/ledger").unwrap();
+    let marks: Vec<(String, bool)> = releases
+        .iter()
+        .map(|r| (r.statement.version.to_string(), r.compromised))
+        .collect();
+    assert_eq!(
+        marks,
+        vec![("0.3.1".to_owned(), true), ("0.3.2".to_owned(), false)]
+    );
     // Without the compromise, B signs.
     let mut registry = TestRegistry::new("acme");
     registry.register_keys("acme", &[&a, &d], 1, &[], 0);
@@ -1133,43 +1143,201 @@ fn sizes_at_the_top_of_the_range_end() {
 
 #[test]
 fn messages_escape_and_bound_what_a_place_served() {
-    let served = format!("abc\u{202e}def\u{7}{}", "x".repeat(1000));
+    let served = format!(
+        "abc\u{202e}def\u{7}\u{200b}\u{feff}\u{e0041}\u{2028}{}",
+        "x".repeat(1000)
+    );
     let message = shown(&served);
-    assert!(message.starts_with("abc\\u{202e}def\\u{7}"), "{message}");
-    assert!(message.chars().count() < 420);
+    assert!(
+        message.starts_with("abc\\u{202e}def\\u{7}\\u{200b}\\u{feff}\\u{e0041}\\u{2028}"),
+        "{message}"
+    );
+    assert!(message.chars().count() < 450);
     assert!(!message.chars().any(char::is_control));
+    // The reason before what was served always survives: a long served root is cut, not the
+    // sentence that says what failed.
+    let mut registry = TestRegistry::new("acme");
+    let key = acme(&mut registry);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
+    registry.checkpoint(NOW);
+    let mut files = registry.files.clone();
+    files.insert("root/2".to_owned(), "y".repeat(5000).into_bytes());
+    let memory = Memory { files };
+    let refusal = open(&memory, &registry).err().unwrap();
+    assert!(refusal.starts_with("the registry `acme` (memory): "), "{refusal}");
+    assert!(refusal.len() < 600, "{refusal}");
 }
 
-/// Two runs storing floors at once never leave a smaller one.
+/// Two writers at once, each through its own handle of the floor lock, storing different
+/// sizes many times: the floor ends at the larger, and a reader never sees it decrease. A lock
+/// file left by a holder that ended blocks nothing.
 #[test]
 fn floors_never_move_backwards() {
-    use una_project::itaoca::Itaoca;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use una_project::itaoca::{Itaoca, registry_id};
+    use una_project::tlog::note::{parse_checkpoint, parse_note};
     let dir = scratch("floors");
     let itaoca = Itaoca { root: dir.clone() };
+    let id = registry_id("sha256:0101010101010101010101010101010101010101010101010101010101010101");
+    // A lock file a holder that ended left behind: it exists, and nobody holds its lock.
+    std::fs::create_dir_all(dir.join("registry").join(&id)).unwrap();
+    std::fs::write(dir.join("registry").join(&id).join("floor.lock"), b"").unwrap();
     let checkpoint = |size: u64| {
         format!(
             "log\n{size}\n47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n\n{dash} log AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
             dash = '\u{2014}'
         )
     };
+    let size_of = |text: &str| parse_checkpoint(&parse_note(text).unwrap().text).unwrap().size;
+    itaoca
+        .store_checkpoint(&id, &checkpoint(1), &mut |_| Ok(()))
+        .unwrap();
+    let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
-        for start in 0..4u64 {
-            let itaoca = &itaoca;
-            let checkpoint = &checkpoint;
-            scope.spawn(move || {
-                for step in 0..10u64 {
-                    let size = 1 + (start * 7 + step * 3) % 40;
-                    itaoca.store_checkpoint("acme", &checkpoint(size)).unwrap();
+        let writers: Vec<_> = [(1u64, 40u64), (2, 39)]
+            .into_iter()
+            .map(|(low, high)| {
+                let itaoca = &itaoca;
+                let id = &id;
+                let checkpoint = &checkpoint;
+                scope.spawn(move || {
+                    for round in 0..30u64 {
+                        let size = if round % 2 == 0 { low + round } else { high - round };
+                        itaoca
+                            .store_checkpoint(id, &checkpoint(size.max(1)), &mut |_| Ok(()))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        let itaoca = &itaoca;
+        let id = &id;
+        let done = &done;
+        let size_of = &size_of;
+        let reader = scope.spawn(move || {
+            let mut last = 0;
+            while !done.load(Ordering::Relaxed) {
+                if let Some(text) = itaoca.load_checkpoint(id).unwrap() {
+                    let size = size_of(&text);
+                    assert!(size >= last, "the floor went from {last} to {size}");
+                    last = size;
                 }
-            });
+            }
+        });
+        for writer in writers {
+            writer.join().unwrap();
         }
+        done.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
     });
-    itaoca.store_checkpoint("acme", &checkpoint(40)).unwrap();
-    itaoca.store_checkpoint("acme", &checkpoint(3)).unwrap();
-    assert_eq!(itaoca.load_checkpoint("acme").unwrap(), Some(checkpoint(40)));
-    itaoca.store_root_version("acme", 3).unwrap();
-    itaoca.store_root_version("acme", 2).unwrap();
-    assert_eq!(itaoca.load_root_version("acme").unwrap(), Some(3));
-    assert!(!dir.join("registry/acme/floor.lock").exists());
+    // The largest any writer stored: 40 - 1, at the first writer's second round.
+    let stored = itaoca.load_checkpoint(&id).unwrap().unwrap();
+    assert_eq!(size_of(&stored), 39);
+    // A smaller one, or one the consistency check refuses, is never stored.
+    itaoca
+        .store_checkpoint(&id, &checkpoint(3), &mut |_| Ok(()))
+        .unwrap();
+    assert!(
+        itaoca
+            .store_checkpoint(&id, &checkpoint(50), &mut |_| Err("another log".to_owned()))
+            .is_err()
+    );
+    assert_eq!(size_of(&itaoca.load_checkpoint(&id).unwrap().unwrap()), 39);
+    itaoca.store_root_version(&id, 3).unwrap();
+    itaoca.store_root_version(&id, 2).unwrap();
+    assert_eq!(itaoca.load_root_version(&id).unwrap(), Some(3));
+    // The lock file stays; its existence means nothing.
+    assert!(dir.join("registry").join(&id).join("floor.lock").exists());
+    // A registry's floors are its own: another pin is another identity, and the identity is
+    // the pin's alone, whatever name `sources` gives it.
+    let other = registry_id("sha256:0202020202020202020202020202020202020202020202020202020202020202");
+    assert_ne!(id, other);
+    assert_eq!(itaoca.load_checkpoint(&other).unwrap(), None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A key revoked as compromised since before it was registered is compromised since its
+/// registration only: the owner keeps its other keys, and their releases stand.
+#[test]
+fn a_compromise_never_undoes_a_registration() {
+    let x = keypair(60, "acme.x");
+    let y = keypair(61, "acme.y");
+    let mut registry = TestRegistry::new("acme");
+    registry.append("other", "one");
+    registry.append("other", "two");
+    registry.register_keys("acme", &[&x, &y], 1, &[], 0);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&y]);
+    registry.owner_event("acme", "revoke acme.x since 0", 1, &[&y]);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&y]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.compromised.get(&x.1.public), Some(&2), "clamped to the registration");
+    assert_eq!(history.at(10).unwrap().keys, vec![y.1.clone()]);
+    let releases = client.releases("acme/ledger").unwrap();
+    assert_eq!(releases.len(), 2);
+    assert!(releases.iter().all(|r| !r.compromised));
+}
+
+/// A thief holding key A revokes the owner's other key D; the owner, with D, revokes A as
+/// compromised since before that. The owner wins: the thief's revocation is void.
+#[test]
+fn the_thiefs_revocation_does_not_stand() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+    let thief = registry.owner_event("acme", "revoke acme.d", 1, &[&a]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    let history = client.history("acme").unwrap();
+    assert_eq!(history.voided, vec![thief]);
+    assert_eq!(history.at(10).unwrap().keys, vec![d.1.clone()]);
+    assert_eq!(client.releases("acme/ledger").unwrap().len(), 1);
+}
+
+/// Two keys each revoke the other as compromised since before the other's revocation: the
+/// claims cancel each other, and the name is refused, its remedy a recovery.
+#[test]
+fn revocations_that_cancel_each_other_refuse_the_chain() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+    registry.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert!(client.history("acme").is_err());
+}
+
+/// After a void entry, an entry signed by no key the chain names still refuses the chain.
+#[test]
+fn an_entry_signed_by_no_known_key_refuses_even_after_a_void_one() {
+    let a = keypair(60, "acme.a");
+    let d = keypair(61, "acme.d");
+    let b = keypair(62, "acme.b");
+    let stranger = keypair(69, "acme.stranger");
+    let mut registry = TestRegistry::new("acme");
+    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
+    registry.owner_event("acme", &format!("add {}", key_text(&b.1)), 1, &[&a, &b]);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    registry.owner_event("acme", "cosigners none", 1, &[&stranger]);
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    assert!(client.history("acme").is_err());
 }

@@ -123,6 +123,13 @@ fn list_mirrors(itaoca: &Path, mirrors: &[&Path]) {
     std::fs::write(itaoca.join("mirrors.una"), text).unwrap();
 }
 
+/// Where Itaoca keeps the floors of `registry`: under its identity, from its pin.
+fn floor_dir(itaoca: &Path, registry: &TestRegistry) -> PathBuf {
+    itaoca
+        .join("registry")
+        .join(una_project::itaoca::registry_id(&registry.pin()))
+}
+
 fn arg(path: &Path) -> &str {
     path.to_str().unwrap()
 }
@@ -159,7 +166,7 @@ fn a_registry_need_is_locked_fetched_and_mounted() {
     assert!(lock.contains("  signed \"ed25519:acme:"), "{lock}");
     assert!(lock.contains("  logged 1\n"), "{lock}");
     // The checkpoint read is stored as the registry's floor.
-    assert!(itaoca.join("registry/acme/checkpoint").is_file());
+    assert!(floor_dir(&itaoca, &registry).join("checkpoint").is_file());
     // Locked but not fetched: U7011, and nothing is mounted, so the import fails too.
     assert!(codes(&dir, &itaoca).contains(&"U7011".to_owned()));
     // Fetched at the lock's resolution point, verified, into Itaoca.
@@ -499,8 +506,8 @@ fn floors_are_stored_on_every_read_and_a_fork_of_the_lock_is_refused() {
     let (code, _, err) = una_in(&["una", "ita", "lock", "--dry-run", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     assert!(!dir.join("ita.lock").exists());
-    assert!(itaoca.join("registry/acme/checkpoint").is_file());
-    assert!(itaoca.join("registry/acme/root-version").is_file());
+    assert!(floor_dir(&itaoca, &registry).join("checkpoint").is_file());
+    assert!(floor_dir(&itaoca, &registry).join("root-version").is_file());
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     // Another log, larger than the lock's point, from the same keys.
@@ -518,4 +525,121 @@ fn floors_are_stored_on_every_read_and_a_fork_of_the_lock_is_refused() {
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
     assert_eq!(code, 1);
     assert!(err.contains("U7010") && err.contains("forked"), "{err}");
+}
+
+/// Consent to a pending dispute is recorded in the lock, which `--check` and later locks honor;
+/// a new pending entry still needs consent. A dispute logged six days ago is pending.
+#[test]
+fn consent_to_a_pending_dispute_is_recorded_in_the_lock() {
+    let mut registry = TestRegistry::new("acme");
+    let key = keypair(60, "acme.laptop");
+    registry.register("acme", &key);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
+    registry.checkpoint(now() - 20 * DAY);
+    let dispute = registry.recover("acme", "dispute", &keypair(64, "acme.disputed").1, &[]);
+    registry.checkpoint(now() - 6 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(now() - 60);
+    let (dir, mirror, itaoca) = project("accepted", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7014") && err.contains("a dispute logged at"), "{err}");
+    let (code, _, err) = una_in(
+        &["una", "ita", "lock", "--accept-key", "acme/ledger", arg(&dir)],
+        &itaoca,
+    );
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    assert!(
+        lock.contains(&format!("\n  accepted acme {dispute}\n")),
+        "{lock}"
+    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let (code, out, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!((code, out.as_str()), (0, "ita.lock is up to date\n"), "{err}");
+    // Another dispute: not recorded, so it needs consent again.
+    registry.recover("acme", "dispute", &keypair(65, "acme.second").1, &[]);
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7014"), "{err}");
+}
+
+/// One name of `sources` given to two registries in turn: each keeps its own floors, so the
+/// second is neither blocked by the first's larger floor nor stores into it.
+#[test]
+fn floors_belong_to_a_registry_not_to_its_name() {
+    let (first, _) = acme();
+    let (dir, mirror, itaoca) = project("one-name", &first);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    // Another registry, other keys, under the same name, with a smaller log.
+    let mut second = TestRegistry::with_keys("acme", support::Keys::offset("acme", 100));
+    let key = keypair(60, "acme.laptop");
+    second.register("acme", &key);
+    second.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
+    second.checkpoint(now() - 60);
+    assert_ne!(first.pin(), second.pin());
+    let _ = std::fs::remove_dir_all(&mirror);
+    second.write(&mirror);
+    std::fs::remove_file(dir.join("ita.lock")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita demo\n  version 0.1.0\n  edition 0.4\n\nsources\n  acme \"https://ita.acme.example\"\n    root \"{}\"\n    owners acme\n\nneeds\n  acme/ledger 0.3 from acme\n",
+            second.pin()
+        ),
+    )
+    .unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let size = |registry: &TestRegistry| {
+        let text = std::fs::read_to_string(floor_dir(&itaoca, registry).join("checkpoint")).unwrap();
+        text.lines().nth(1).unwrap().parse::<u64>().unwrap()
+    };
+    assert_eq!(size(&first), first.entries.len() as u64);
+    assert_eq!(size(&second), second.entries.len() as u64);
+}
+
+/// An archive whose public function declares `Http[get]` and calls a module of its need, while
+/// its statement gives no authority: fetch refuses it. A public function's `uses` are declared
+/// and checked, so code that uses a capability always says so in its header.
+#[test]
+fn an_archive_that_understates_its_authority_is_not_fetched() {
+    use una_project::tlog::merkle::{leaf_hash, root as tree_root};
+    let mut registry = TestRegistry::new("acme");
+    let key = keypair(60, "acme.laptop");
+    registry.register("acme", &key);
+    let (index, digest) = registry.release_custom(
+        "acme/ledger",
+        "0.3.1",
+        "ita acme/ledger\n  version 0.3.1\n  edition 0.4\n\nneeds\n  acme/http 1.4\n",
+        &["acme acme/http 1.4.0"],
+        "none",
+        "module ledger\n\nimport http.client (get_text)\n\npub page(url: Text) -> Text\n  uses @net: Http[get]\n=\n  get_text(url) with @http = @net[get]\n",
+        &[&key],
+    );
+    registry.checkpoint(now() - 60);
+    let (dir, _, itaoca) = project("understates", &registry);
+    let leaves: Vec<_> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
+    let hex: String = tree_root(&leaves)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let signed = una_project::provenance::signed_name("acme/ledger", &key.1.public);
+    std::fs::write(
+        dir.join("ita.lock"),
+        format!(
+            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {} \"sha256:{hex}\"\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
+            registry.pin(),
+            leaves.len()
+        ),
+    )
+    .unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(code, 1);
+    assert!(err.contains("U7010"), "{err}");
+    assert!(!itaoca.join("packages").exists());
 }
