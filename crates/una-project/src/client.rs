@@ -473,7 +473,7 @@ pub enum Observation {
     },
 }
 
-/// The kind of the last failure a [`Registry`] met ([`Registry::last_failure`]): the code a
+/// The kind of the last failure a [`Registry`] met ([`Registry::take_failure`]): the code a
 /// caller reports comes from it, never from the omissions recorded earlier, which a later
 /// failure to verify does not undo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -755,8 +755,10 @@ pub struct Registry<'t> {
     /// The most sizes past a request its deadline search reads: [`MAX_DEADLINE_SPAN`], or
     /// lower ([`Registry::lower_scan_cap`]).
     scan_cap: u64,
-    /// The kind of the last failure met ([`Registry::last_failure`]).
+    /// The kind of the failure of the current operation ([`Registry::take_failure`]).
     failure: Cell<Option<Failure>>,
+    /// The omissions recorded and the tiles missing when the current operation began.
+    began: Cell<(usize, usize)>,
     /// The threshold that counts the point's cosignatures: the larger of the version it names
     /// and the last root's.
     point_k: usize,
@@ -974,6 +976,7 @@ impl<'t> Registry<'t> {
             deadlines: BTreeMap::new(),
             scan_cap: MAX_DEADLINE_SPAN,
             failure: Cell::new(None),
+            began: Cell::new((0, 0)),
             point_k,
             chain,
             tiles: Tiles::new(transport, accepted.checkpoint.size),
@@ -1003,6 +1006,7 @@ impl<'t> Registry<'t> {
     /// hex), a lock's resolution point: the same log, by a consistency proof from the tiles, and
     /// not smaller (rule 39). O(log L).
     pub fn extends(&mut self, size: u64, hash: &str) -> Result<(), Refusal> {
+        self.begin();
         let root = parse_hash_text(hash)
             .ok_or_else(|| self.refuse("the lock's checkpoint hash is not a digest"))?;
         let point = self.point.checkpoint.size;
@@ -1029,8 +1033,9 @@ impl<'t> Registry<'t> {
     /// timestamps never decrease. Itaoca checks it again under its floor lock before it stores
     /// the point ([`crate::itaoca::Itaoca::store_checkpoint`]).
     pub fn consistent_with(&mut self, stored: &str) -> Result<(), Refusal> {
-        let signed = note::parse_note(stored)?;
-        let floor = note::parse_checkpoint(&signed.text)?;
+        self.begin();
+        let signed = note::parse_note(stored).map_err(|why| self.refused_kind(why))?;
+        let floor = note::parse_checkpoint(&signed.text).map_err(|why| self.refused_kind(why))?;
         let size = self.point.checkpoint.size;
         if floor.size <= size {
             let before = self.tiles.missing_count();
@@ -1045,10 +1050,10 @@ impl<'t> Registry<'t> {
                 &self.point.checkpoint.root,
                 &proof,
             ) {
-                return Err(format!(
+                return Err(self.refused_kind(format!(
                     "its checkpoint of size {size} does not extend the one of size {} stored, so the log forked",
                     floor.size
-                ));
+                )));
             }
         } else {
             let mut larger = Tiles::new(self.transport, floor.size);
@@ -1070,15 +1075,16 @@ impl<'t> Registry<'t> {
                 &floor.root,
                 &proof,
             ) {
-                return Err(format!(
+                return Err(self.refused_kind(format!(
                     "the checkpoint of size {} stored does not extend its checkpoint of size {size}, so the log forked",
                     floor.size
-                ));
+                )));
             }
         }
         let (lines, _) = counted(&signed, floor.size, &self.root, &self.chain, Retired::Count);
         self.seen.extend(lines);
-        witness::monotonic(&self.seen).map_err(|problem| witness_problem(&problem))
+        witness::monotonic(&self.seen)
+            .map_err(|problem| self.refused_kind(witness_problem(&problem)))
     }
 
     /// Whether the point is below `stored`'s size: a resolution never moves a client backwards
@@ -1120,16 +1126,37 @@ impl<'t> Registry<'t> {
         }
     }
 
-    /// The kind of the last failure this registry met, if any (`spec/30 §14` rule 1): a
-    /// caller reports U7013 for [`Failure::Unserved`] and U7010 for [`Failure::Refused`],
-    /// whatever omissions an earlier failure recorded.
-    pub fn last_failure(&self) -> Option<Failure> {
-        self.failure.get()
+    /// A failure built elsewhere, of what was served not verifying, recorded as refused.
+    fn refused_kind(&self, why: Refusal) -> Refusal {
+        self.failure.set(Some(Failure::Refused));
+        why
+    }
+
+    /// Begins a public operation: no failure of an earlier one, and the omissions recorded so
+    /// far belong to earlier ones.
+    fn begin(&self) {
+        self.failure.set(None);
+        self.began
+            .set((self.omitted.len(), self.tiles.missing_count()));
+    }
+
+    /// The kind of the failure of the last operation, taken, so it never decides the code of a
+    /// later one (`spec/30 §14` rule 1): a caller reports U7013 for [`Failure::Unserved`] and
+    /// U7010 for [`Failure::Refused`]. Every failure records its kind where it arises; with
+    /// none recorded, an omission recorded during that operation makes it unserved, and
+    /// otherwise it is `None`.
+    pub fn take_failure(&mut self) -> Option<Failure> {
+        let (omitted, missing) = self.began.get();
+        self.failure.take().or_else(|| {
+            let met = self.omitted.len() > omitted || self.tiles.missing_count() > missing;
+            met.then_some(Failure::Unserved)
+        })
     }
 
     /// The entry at `index`, verified by its inclusion proof at the point: its document and its
     /// leaf hash. O(log L).
     pub fn entry(&mut self, index: u64) -> Result<(String, Hash), Refusal> {
+        self.begin();
         let before = self.tiles.missing_count();
         let bytes = self
             .tiles
@@ -1156,6 +1183,7 @@ impl<'t> Registry<'t> {
     /// The inclusion proof of the entry `index` at the point, from the tiles. It is verified by
     /// whoever uses it.
     pub fn inclusion(&mut self, index: u64) -> Result<Vec<Hash>, Refusal> {
+        self.begin();
         let before = self.tiles.missing_count();
         self.tiles
             .inclusion(index)
@@ -1167,6 +1195,7 @@ impl<'t> Registry<'t> {
     /// that names it, and the proof built from them verified against that root
     /// ([`map::prove_from_tiles`]); `None` when the map proves the name has no entry.
     pub fn head(&mut self, name: &str) -> Result<Option<Head>, Refusal> {
+        self.begin();
         let Some(root) = self.point.map else {
             return Err(self.refuse("its checkpoint carries no name map"));
         };
@@ -1205,12 +1234,13 @@ impl<'t> Registry<'t> {
     /// back to the first, each verified in the log, linked to the next one's `previous`, and as
     /// many as the map counts (rule 36.1). O(E log L).
     pub fn chain(&mut self, name: &str) -> Result<Vec<ChainEntry>, Refusal> {
+        self.begin();
         let Some(head) = self.head(name)? else {
             return Ok(Vec::new());
         };
         let mut read: BTreeMap<u64, ChainEntry> = BTreeMap::new();
         // The walk's failure keeps the kind of the read that caused it.
-        let earlier = self.failure.replace(None);
+        self.failure.set(None);
         let walked = {
             let mut fetch = |index: u64| -> Result<Link, String> {
                 let (document, leaf) = self.entry(index)?;
@@ -1241,7 +1271,6 @@ impl<'t> Registry<'t> {
                 self.refuse(why)
             });
         }
-        self.failure.set(earlier);
         Ok(read.into_values().collect())
     }
 
@@ -1448,6 +1477,7 @@ impl<'t> Registry<'t> {
     /// cosigns a checkpoint every 64 sizes, and the point's time is never taken instead, since
     /// that would delay a release's eligibility without bound.
     pub fn logged_at(&mut self, index: u64) -> Result<u64, Refusal> {
+        self.begin();
         let point = self.point.checkpoint.size;
         let last = point.min(index.saturating_add(MAX_SCAN as u64));
         let mut k: Option<usize> = None;
@@ -1579,6 +1609,7 @@ impl<'t> Registry<'t> {
     /// effect otherwise. O(W/64 + 64) kept checkpoints, W the sizes from the request to its
     /// deadline.
     pub fn earliest_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
+        self.begin();
         let effect = self.recovery_effect(index)?;
         let point = self.point.checkpoint.size;
         if index >= point {
@@ -1647,6 +1678,7 @@ impl<'t> Registry<'t> {
     /// 64) kept checkpoints, W the sizes from the request to its deadline; past
     /// [`MAX_DEADLINE_SPAN`] sizes, unavailable ([`Omission::ScanCap`]).
     pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
+        self.begin();
         let point = self.point.checkpoint.size;
         if index >= point {
             return Ok(None);
@@ -1661,7 +1693,7 @@ impl<'t> Registry<'t> {
 
     /// The documents no place served since the last call: each one made the result that
     /// needed it unavailable, never a different result (`spec/30 §14` rule 1). A caller that
-    /// meets an error reports it by its own kind ([`Registry::last_failure`]): unserved
+    /// meets an error reports it by its own kind ([`Registry::take_failure`]): unserved
     /// (U7013) or a copy that does not verify (U7010), whatever omissions an earlier failure
     /// left here.
     pub fn take_omitted(&mut self) -> Vec<Omission> {
@@ -1731,6 +1763,7 @@ impl<'t> Registry<'t> {
     /// The keys of `owner` over the log up to the point, replayed from its chain; Itaúna's are
     /// the root's (rule 38.1).
     pub fn history(&mut self, owner_name: &str) -> Result<History, Refusal> {
+        self.begin();
         if let Some(history) = self.histories.get(owner_name) {
             return Ok(history.clone());
         }
@@ -1759,8 +1792,15 @@ impl<'t> Registry<'t> {
                 .collect();
             let log = self.root.log.clone();
             let source = self.source.clone();
+            // The kind of an effect's failure, which ends the replay with it.
+            let mut effect_failure: Option<Failure> = None;
             let replayed = {
-                let mut effect = |index: u64| self.recovery_effect(index);
+                let mut effect = |index: u64| {
+                    self.recovery_effect(index).map_err(|why| {
+                        effect_failure = self.failure.get();
+                        why
+                    })
+                };
                 owner::replay(owner_name, &source, &logged, &log, &mut effect)
             };
             // The timing no place can withhold: each recovery, dispute and co-signer change at
@@ -1804,6 +1844,7 @@ impl<'t> Registry<'t> {
                 }
                 self.omitted
                     .push(Omission::Cosignatures(owner_name.to_owned()));
+                self.failure.set(Some(Failure::Unserved));
                 return Err(format!(
                     "the registry `{source}`: the keys of the owner `{}` cannot be decided at this point, since whether a recovery, a dispute or a co-signer change is in effect depends on witnesses' cosignatures that no place served, which a place may withhold; its names are unavailable here: try another place or a later checkpoint",
                     shown(owner_name)
@@ -1815,6 +1856,8 @@ impl<'t> Registry<'t> {
             match replayed {
                 Ok(history) => history,
                 Err(ReplayError::Refused(why)) => {
+                    self.failure
+                        .set(Some(effect_failure.unwrap_or(Failure::Refused)));
                     return Err(format!("the registry `{source}`: {}", shown(&why)));
                 }
                 Err(ReplayError::Unsettled(unsettled)) => {
@@ -1824,6 +1867,7 @@ impl<'t> Registry<'t> {
                         unsettled.index
                     );
                     self.evidence(Misbehavior::Unsettled(unsettled));
+                    self.failure.set(Some(Failure::Refused));
                     return Err(message);
                 }
             }
@@ -1838,6 +1882,7 @@ impl<'t> Registry<'t> {
     /// valid at its position, and within the authority and trust of the highest release of its
     /// identity logged before it (rule 26).
     pub fn releases(&mut self, name: &str) -> Result<Vec<LoggedRelease>, Refusal> {
+        self.begin();
         if let Some(releases) = self.releases.get(name) {
             return Ok(releases.clone());
         }
@@ -1930,6 +1975,7 @@ impl<'t> Registry<'t> {
     /// advisories are entries this client does not read yet, and refuse the name
     /// ([`read_entry`]).
     pub fn state(&mut self, name: &str, line: Line) -> Result<Vec<Release>, Refusal> {
+        self.begin();
         // A chain frozen by competing recoveries or disputes resolves to no one (rule 38.1).
         let history = self.history(owner_of(name))?;
         if let Some(from) = history.frozen {
@@ -1980,6 +2026,7 @@ impl<'t> Registry<'t> {
     /// `n` witnesses, with `k - (n - m)` at least 1, the earliest is that many-th earliest of
     /// their timestamps there. `None` when no such checkpoint bounds it.
     pub fn earliest_logged(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
+        self.begin();
         let mut witnesses: Vec<&[u8; 32]> =
             self.root.witnesses.keys.iter().map(|key| &key.public).collect();
         witnesses.sort_unstable();
@@ -2017,6 +2064,7 @@ impl<'t> Registry<'t> {
 
     /// The release `version` of `name`, verified.
     pub fn release(&mut self, name: &str, version: &Version) -> Result<LoggedRelease, Refusal> {
+        self.begin();
         self.releases(name)?
             .into_iter()
             .find(|r| r.statement.version == *version)
@@ -2026,6 +2074,7 @@ impl<'t> Registry<'t> {
     /// The archive of `digest`, `sha256:<hex>`, at `blobs/sha256/<hex>`, as served: it is
     /// verified by whoever reads it ([`crate::tree::VerifiedTree::from_archive`]).
     pub fn archive(&mut self, digest: &str) -> Result<Vec<u8>, Refusal> {
+        self.begin();
         let hex = digest
             .strip_prefix("sha256:")
             .filter(|_| crate::ita::is_digest(digest))

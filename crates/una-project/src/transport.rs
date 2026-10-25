@@ -106,7 +106,9 @@ impl Location {
 /// A transport over a directory on the local file system: a mirror, or a copy of a registry's
 /// store directory (rule 40), the latest checkpoint at `checkpoint/latest`. Each file is found with no symbolic link followed below the directory, and
 /// read once through a descriptor opened with no link followed. What it gives is verified as
-/// what any transport gives: a local directory is trusted for nothing.
+/// what any transport gives: a local directory is trusted for nothing. A file it cannot read,
+/// a symbolic link or one it may not open, is one it does not serve; a file larger than the
+/// limit is refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Directory {
     /// The directory.
@@ -153,10 +155,23 @@ impl Transport for Directory {
         if parts == ["checkpoint"] {
             parts = vec!["checkpoint", "latest"];
         }
-        tree::not_a_link(&self.root)?;
-        match tree::locate(&self.root, &parts)? {
-            Some(found) => tree::read_file(&found, limit).map(Some),
-            None => Ok(None),
+        // A file this place cannot read, the directory or a file below it a symbolic link,
+        // or one it may not open, is a local failure to serve: none served, an omission
+        // (U7013), never evidence against the registry. Only a file larger than the limit is
+        // served and refused.
+        if tree::not_a_link(&self.root).is_err() {
+            return Ok(None);
+        }
+        let Ok(Some(found)) = tree::locate(&self.root, &parts) else {
+            return Ok(None);
+        };
+        match tree::read_file(&found, limit) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(why) => {
+                let larger = std::fs::symlink_metadata(&found)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > limit);
+                if larger { Err(why) } else { Ok(None) }
+            }
         }
     }
 

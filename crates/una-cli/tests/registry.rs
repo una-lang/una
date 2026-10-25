@@ -924,3 +924,63 @@ fn check_fails_on_a_served_checkpoint_that_forks_from_the_lock() {
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("U7010") && err.contains("forked"), "{err}");
 }
+
+/// Two packages fetched from one registry, the first archive served by no place and the second
+/// served but another package's, then the reverse: each failure has its own code, U7013 for
+/// the archive unserved and U7010 for the one that does not verify, never one carried over
+/// from the other.
+#[test]
+fn each_package_of_a_fetch_has_the_code_of_its_own_failure() {
+    let key = keypair(60, "acme.laptop");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &key);
+    let (_, alpha) = registry.release("acme/alpha", "0.1.0", "none", "none", &[&key]);
+    let (_, beta) = registry.release("acme/beta", "0.1.0", "none", "none", &[&key]);
+    registry.checkpoint(now() - 20 * DAY);
+    registry.append("other", "filler");
+    registry.checkpoint(now() - 60);
+    let orders = [
+        ("alpha-first", &alpha, &beta),
+        ("beta-first", &beta, &alpha),
+    ];
+    for (name, unserved, mismatched) in orders {
+        let base = scratch(&format!("two-packages-{name}"));
+        let dir = base.join("demo");
+        let mirror = base.join("mirror");
+        let itaoca = base.join("itaoca");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(&itaoca).unwrap();
+        std::fs::write(
+            dir.join("ita.una"),
+            format!(
+                "ita demo\n  version 0.1.0\n  edition 0.4\n\nsources\n  acme \"https://ita.acme.example\"\n    root \"{}\"\n    owners acme\n\nneeds\n  acme/alpha 0.1 from acme\n  acme/beta 0.1 from acme\n",
+                registry.pin()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/demo.una"),
+            "module demo\n\npub forty_two() -> Int = 42\n",
+        )
+        .unwrap();
+        registry.write(&mirror);
+        list_mirrors(&itaoca, &[&mirror]);
+        let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+        assert_eq!(code, 0, "{err}");
+        let blob = |digest: &str| mirror.join(format!("blobs/sha256/{}", &digest[7..]));
+        // One archive no place serves; the other replaced by the first's bytes.
+        let other = std::fs::read(blob(unserved)).unwrap();
+        std::fs::remove_file(blob(unserved)).unwrap();
+        std::fs::write(blob(mismatched), other).unwrap();
+        let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+        assert_eq!(code, 1);
+        let at_unserved = err.find("U7013").unwrap_or_else(|| panic!("{err}"));
+        let at_refused = err.find("U7010").unwrap_or_else(|| panic!("{err}"));
+        // The lock lists acme/alpha before acme/beta.
+        if name == "alpha-first" {
+            assert!(at_unserved < at_refused, "{err}");
+        } else {
+            assert!(at_refused < at_unserved, "{err}");
+        }
+    }
+}
