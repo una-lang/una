@@ -21,10 +21,13 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
-#   owner-replay the exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5):
-#                `cargo test --release --locked -p una-project --lib -- --ignored --exact
+#   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
+#                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
+#                --release --locked -p una-project --lib -- --ignored --exact
 #                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
-#                every chain of the model to depth 5, which the ordinary test run checks to depth 4
+#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
+#                the ordinary test run checks the first to depth 4 and the second to depth 3, and
+#                the gate passes only when both pass
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -321,12 +324,16 @@ gate_site() {
 gate_formal() { run formal scripts/formal.sh; }
 
 gate_owner-replay() {
-    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5): ignored in
-    # the ordinary run, which checks it to depth 4, and run here to depth 5. It is a unit test of
-    # una-project, since the model of signatures it stands in for Ed25519 exists only in that
-    # crate's test build; `--release`, for its millions of replays; `--nocapture`, so the log
-    # holds its counts.
-    run owner-replay cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture
+    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), ignored in
+    # the ordinary run, which checks it to depth 4, then the model of yanks against it (spec/30
+    # §15 rule 6), which the ordinary run checks to depth 3: both run here to depth 5, and the
+    # gate passes only when both pass. They are unit tests of una-project, since the model of
+    # signatures that stands in for Ed25519 exists only in that crate's test build;
+    # `--release`, for their millions of replays; `--nocapture`, so the log holds their counts.
+    run owner-replay sh -c '
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
+    '
 }
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime
