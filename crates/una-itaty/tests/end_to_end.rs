@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use una_itaty::entry::owner_chain;
 use una_itaty::http::{ServerConfig, Service, serve};
 use una_itaty::namemap::prove_from_tiles;
-use una_itaty::registry::{Clock, Config, Registry, map_root_of};
+use una_itaty::registry::{Cause, Clock, Config, Registry, map_root_of};
 use una_itaty::sign::{Signer, note};
 use una_itaty::store::{FileStore, Store};
 use una_itaty::tiles::{TileReader, WIDTH, entry_bundle_path, read_bundle};
@@ -652,4 +652,63 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
     };
     assert!(Registry::open(store, &wrong, clock).is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rule_26_is_checked_against_the_highest_release_logged_before_as_the_client_does() {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let store: Arc<dyn Store> = Arc::new(una_itaty::store::MemoryStore::new());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let mut registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let acme = signer("acme.a", 60);
+    let registration = format!(
+        "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\n{}\n",
+        key_line(&acme)
+    );
+    registry
+        .register(note(&registration, &[&acme]).as_bytes(), false)
+        .unwrap();
+    let with_http = "pub fetch(url: Text) -> Text\n  uses @h: Http[get]\n=\n  url\n";
+    let without = "pub answer() -> Int = 42\n";
+    let http = authority(&[("Http", &["get"])]);
+    let none = authority(&[]);
+    let publish = |registry: &mut Registry,
+                   version: &str,
+                   body: &str,
+                   previous: Option<(u64, &str)>,
+                   authority: &BTreeMap<String, BTreeSet<String>>| {
+        let release = package(version, "", body);
+        let (document, _) = publication(&release, previous, authority, &[&acme]);
+        let prepared = Registry::prepare(document.as_bytes(), release.archive.clone()).unwrap();
+        registry.publish(prepared)
+    };
+    // 1.0.0 needs Http; 1.2.0 needs nothing.
+    let first = publish(&mut registry, "1.0.0", with_http, None, &http).unwrap();
+    let first_leaf = digest_string(&first.leaf);
+    let second = publish(
+        &mut registry,
+        "1.2.0",
+        without,
+        Some((first.index, &first_leaf)),
+        &none,
+    )
+    .unwrap();
+    // 1.1.0 needs Http again: within 1.0.0, but not within 1.2.0, the highest release of
+    // its line logged before it, which is what every client checks it against.
+    let second_leaf = digest_string(&second.leaf);
+    let refused = publish(
+        &mut registry,
+        "1.1.0",
+        with_http,
+        Some((second.index, &second_leaf)),
+        &http,
+    )
+    .unwrap_err();
+    assert_eq!(refused.cause(), Some(&Cause::Rule26), "{refused:?}");
 }

@@ -54,7 +54,7 @@ use una_project::tlog::release::{Statement, within};
 use una_project::tlog::root::{self as roots, Root, trust_first, walk_all};
 use una_project::tlog::witness::{Cosigned, logged_at};
 use una_project::tlog::{map, publish};
-use una_project::version::Version;
+use una_project::version::{Line, Version};
 use una_syntax::ita::parse_manifest;
 
 use crate::authority::interface;
@@ -261,6 +261,8 @@ struct Recorded {
 #[derive(Clone, Debug, Default)]
 struct Package {
     releases: BTreeMap<Version, Statement>,
+    /// Every release statement, in log order: its index, its note and its version.
+    logged: Vec<(u64, Note, Version)>,
     /// The versions yanked, with the log index of their yank.
     yanked: BTreeMap<Version, u64>,
 }
@@ -1117,16 +1119,31 @@ impl Registry {
                     statement.name
                 )));
             }
-            let line = statement.version.line();
-            if let Some(earlier) = package
-                .releases
-                .range(..statement.version.clone())
-                .rev()
-                .map(|(_, s)| s)
-                .find(|s| s.version.line() == line)
+            // Rule 26 as the client checks it (`client::Registry::releases`): the releases in
+            // log order, each judged by its owner's replayed history, a skipped one neither
+            // checked nor counted; the new one against the highest release of its line logged
+            // before it, by version.
+            let history = self.replayed(owner_of(&statement.name), None)?;
+            let mut highest: BTreeMap<Line, &Version> = BTreeMap::new();
+            for (index, note, version) in &package.logged {
+                if !matches!(history.judge(note, *index), Standing::Counts(_)) {
+                    continue;
+                }
+                let slot = highest.entry(version.line()).or_insert(version);
+                if *slot < version {
+                    *slot = version;
+                }
+            }
+            if let Some(earlier) = highest
+                .get(&statement.version.line())
+                .and_then(|version| package.releases.get(*version))
             {
-                within(&statement, earlier)
-                    .map_err(|e| invalid(format!("{e}: publish it as the next major version")))?;
+                within(&statement, earlier).map_err(|e| {
+                    rule(
+                        Cause::Rule26,
+                        format!("{e}: publish it as the next major version"),
+                    )
+                })?;
             }
         }
         for (_, name, version) in &statement.needs {
@@ -1633,11 +1650,14 @@ impl Registry {
                         self.names.add_dependent(owner);
                     }
                 }
-                self.packages
-                    .entry(statement.name.clone())
-                    .or_default()
+                let index = self.tree.size().saturating_sub(1);
+                let package = self.packages.entry(statement.name.clone()).or_default();
+                package
                     .releases
                     .insert(statement.version.clone(), statement.as_ref().clone());
+                package
+                    .logged
+                    .push((index, entry.note.clone(), statement.version.clone()));
             }
             Kind::Yank(yank) => {
                 self.packages
