@@ -197,6 +197,34 @@ pub struct Floors<'f> {
     pub root_version: Option<u64>,
 }
 
+/// Evidence against a registry that its logs and checkpoints break a rule a registry MUST
+/// keep (`spec/30 §14`), as every place of its source serves them: for `una ita audit` to
+/// report to its witnesses and to other places.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Misbehavior {
+    /// An owner chain that does not settle within the pass cap.
+    Unsettled(Unsettled),
+    /// A request whose deadline checkpoint no place serves: the first checkpoint at or after
+    /// its seven-day target with the witness threshold of cosignatures, which a registry
+    /// MUST keep, so the request's effect cannot be decided.
+    MissingDeadline {
+        /// The owner whose chain holds the request.
+        owner: String,
+        /// The request's log index.
+        index: u64,
+        /// Its target witness time: seven days after it was logged, in seconds.
+        target: u64,
+    },
+    /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
+    /// the 64 a registry MAY leave between two such checkpoints.
+    CadenceGap {
+        /// The first size of the range.
+        from: u64,
+        /// The last size of the range.
+        to: u64,
+    },
+}
+
 /// What a place left out that made a result unavailable (`spec/30 §14` rule 1): never a reason
 /// to change a result, only to give none.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -509,7 +537,7 @@ pub struct Registry<'t> {
     /// its history with each at the earliest position its seven days allow.
     eager: BTreeMap<String, History>,
     /// The owner chains seen not to settle, evidence against the registry, in the order seen.
-    misbehavior: Vec<Unsettled>,
+    misbehavior: Vec<Misbehavior>,
     /// The omissions met since [`Registry::take_omitted`] was last called.
     omitted: Vec<Omission>,
     releases: BTreeMap<String, Vec<LoggedRelease>>,
@@ -997,8 +1025,10 @@ impl<'t> Registry<'t> {
             witnesses.dedup();
             witnesses.len()
         };
+        let mut timed = false;
         for size in index.saturating_add(1)..=last {
             if let Some(kept) = self.kept(size)? {
+                timed |= kept.time.is_some();
                 cosigned.extend(kept.cosigned);
                 if distinct(cosigned.as_slice()) >= k {
                     break;
@@ -1006,6 +1036,14 @@ impl<'t> Registry<'t> {
             }
         }
         if distinct(cosigned.as_slice()) < k {
+            // Every place's copy was read: a scan of MAX_SCAN sizes short of the point with no
+            // checkpoint of the witness threshold is a gap a registry must not leave.
+            if !timed && last < self.point.checkpoint.size {
+                self.evidence(Misbehavior::CadenceGap {
+                    from: index.saturating_add(1),
+                    to: last,
+                });
+            }
             cosigned.extend(self.point.cosigned.iter().cloned());
         }
         witness::logged_at(index, &cosigned, k)
@@ -1024,6 +1062,9 @@ impl<'t> Registry<'t> {
             {
                 return Ok((size, time));
             }
+        }
+        if last < point {
+            self.evidence(Misbehavior::CadenceGap { from, to: last });
         }
         Ok((point, self.point.time))
     }
@@ -1130,11 +1171,19 @@ impl<'t> Registry<'t> {
         omitted
     }
 
-    /// The registry misbehavior this client has seen: each owner chain the registry logged that
-    /// does not settle ([`owner::Unsettled`]), whose names it refused (U7010), for `una ita
-    /// audit` to report as evidence against the registry.
-    pub fn misbehavior(&self) -> &[Unsettled] {
+    /// The registry misbehavior this client has seen, every place of the source read
+    /// ([`Misbehavior`]): an owner chain that does not settle, whose names it refused (U7010);
+    /// a request with no deadline checkpoint; a gap of more than 64 sizes with no checkpoint of
+    /// the witness threshold. For `una ita audit` to report as evidence against the registry.
+    pub fn misbehavior(&self) -> &[Misbehavior] {
         &self.misbehavior
+    }
+
+    /// Records evidence against the registry, once.
+    fn evidence(&mut self, misbehavior: Misbehavior) {
+        if !self.misbehavior.contains(&misbehavior) {
+            self.misbehavior.push(misbehavior);
+        }
     }
 
     /// The keys of `owner` over the log up to the point, replayed from its chain; Itaúna's are
@@ -1198,6 +1247,24 @@ impl<'t> Registry<'t> {
                 _ => false,
             };
             if withheld {
+                // Every place's copy of each kept checkpoint was read: a request whose timings
+                // differ has no deadline checkpoint any place serves.
+                for (index, _, entry) in &entries {
+                    let request = matches!(
+                        entry.event,
+                        owner::Event::Recover(_)
+                            | owner::Event::Dispute(_)
+                            | owner::Event::Cosigners(_)
+                    );
+                    if request && self.earliest_effect(*index)? != self.recovery_effect(*index)? {
+                        let target = self.logged_at(*index)?.saturating_add(owner::RECOVERY_DELAY);
+                        self.evidence(Misbehavior::MissingDeadline {
+                            owner: owner_name.to_owned(),
+                            index: *index,
+                            target,
+                        });
+                    }
+                }
                 self.omitted
                     .push(Omission::Cosignatures(owner_name.to_owned()));
                 return Err(format!(
@@ -1219,9 +1286,7 @@ impl<'t> Registry<'t> {
                         shown(&unsettled.owner),
                         unsettled.index
                     );
-                    if !self.misbehavior.contains(&unsettled) {
-                        self.misbehavior.push(unsettled);
-                    }
+                    self.evidence(Misbehavior::Unsettled(unsettled));
                     return Err(message);
                 }
             }
@@ -1274,6 +1339,17 @@ impl<'t> Registry<'t> {
             if let Some(eager) = self.eager.get(owner_of(name))
                 && eager.judge(&entry.note, index) != standing
             {
+                let requests: Vec<u64> = eager.requests.keys().copied().collect();
+                for request in requests {
+                    if self.earliest_effect(request)? != self.recovery_effect(request)? {
+                        let target = self.logged_at(request)?.saturating_add(owner::RECOVERY_DELAY);
+                        self.evidence(Misbehavior::MissingDeadline {
+                            owner: owner_of(name).to_owned(),
+                            index: request,
+                            target,
+                        });
+                    }
+                }
                 self.omitted.push(Omission::Cosignatures(name.to_owned()));
                 return Err(self.refuse(format!(
                     "`{name} {}` counts or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint",

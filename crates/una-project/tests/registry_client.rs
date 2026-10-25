@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use registry::{NOW, TestRegistry, hash_hex, keypair, key_text};
 use una_project::client::{
-    Floors, LoggedRelease, Omission, OpenError, Point, Registry, owner_of, shown,
+    Floors, LoggedRelease, Misbehavior, Omission, OpenError, Point, Registry, owner_of, shown,
 };
 use una_project::provenance::{Expected, signed_name, verify};
 use una_project::tlog::merkle::{
@@ -1908,11 +1908,11 @@ fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
     assert!(client.releases("acme/ledger").is_err());
     assert_eq!(
         client.misbehavior(),
-        &[owner::Unsettled {
+        &[Misbehavior::Unsettled(owner::Unsettled {
             owner: "acme".to_owned(),
             index: claim,
             passes: 4,
-        }]
+        })]
     );
     assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
 }
@@ -2170,6 +2170,7 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
     let mut client = open(&both, &registry).unwrap();
     assert_eq!(client.history("acme").unwrap(), full);
     assert!(!client.releases("acme/ledger").unwrap()[0].compromised);
+    assert!(client.misbehavior().is_empty());
     // Alone: unavailable, by an omission of cosignatures.
     let alone = Memory {
         files: stripping_files,
@@ -2180,5 +2181,42 @@ fn withheld_cosignatures_are_merged_or_unavailable_never_refused() {
         client.take_omitted(),
         vec![Omission::Cosignatures("acme".to_owned())]
     );
-    assert!(client.misbehavior().is_empty());
+    // Its only place read, the request has no deadline checkpoint: evidence against the
+    // registry, with the request's index and its target witness time.
+    let target = client.logged_at(dispute).unwrap() + owner::RECOVERY_DELAY;
+    assert_eq!(
+        client.misbehavior(),
+        &[Misbehavior::MissingDeadline {
+            owner: "acme".to_owned(),
+            index: dispute,
+            target,
+        }]
+    );
+}
+
+/// More than 64 sizes with no checkpoint of the witness threshold, every place read: a cadence
+/// gap, evidence against the registry, with its range.
+#[test]
+fn a_cadence_gap_is_recorded_as_misbehavior() {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.checkpoint(NOW - 30 * DAY);
+    let release = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    for at in 0..70 {
+        registry.append("other", &format!("filler {at}"));
+    }
+    registry.checkpoint(NOW);
+    let memory = Memory {
+        files: registry.files.clone(),
+    };
+    let mut client = open(&memory, &registry).unwrap();
+    client.logged_at(release).unwrap();
+    assert_eq!(
+        client.misbehavior(),
+        &[Misbehavior::CadenceGap {
+            from: release + 1,
+            to: release + 64,
+        }]
+    );
 }
