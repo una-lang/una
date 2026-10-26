@@ -77,7 +77,9 @@ kinds(xs: List[Int]) -> Text
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let orders = [Order(amount: 10, cancelled: false), Order(amount: 99, cancelled: true), Order(amount: 30, cancelled: false), Order(amount: 5, cancelled: false)]
+  let orders = [Order(amount: 10, cancelled: false), Order(amount: 99, cancelled: true),
+    Order(amount: 30, cancelled: false), Order(amount: 5, cancelled: false)
+  ]
   @console.print("total {total(orders: orders, limit: 35)}")
   @console.print("first square over 20: {first_square()}")
   @console.print("pairs {pairs()}")
