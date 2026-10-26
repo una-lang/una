@@ -579,7 +579,7 @@ impl Dumper<'_> {
     }
 
     fn handled(&self, handled: &Handled) -> Node {
-        if handled.with.is_empty() && handled.handlings.is_empty() {
+        if handled.with.is_empty() && handled.within.is_none() && handled.handlings.is_empty() {
             return self.expr(&handled.expr);
         }
         let mut items = vec![atom("handled"), self.expr(&handled.expr)];
@@ -588,6 +588,9 @@ impl Dumper<'_> {
                 "with",
                 handled.with.iter().map(|binding| self.cap_binding(binding)),
             ));
+        }
+        if let Some(within) = &handled.within {
+            items.push(list("within", [self.expr(within)]));
         }
         for handling in &handled.handlings {
             items.push(match &handling.kind {
@@ -760,7 +763,17 @@ impl Dumper<'_> {
                     list("fail", [self.variant(failure)]),
                 ],
             ),
-            ExprKind::Attempt(operand) => list("attempt", [self.expr(operand)]),
+            ExprKind::Attempt {
+                operand,
+                within: None,
+            } => list("attempt", [self.expr(operand)]),
+            ExprKind::Attempt {
+                operand,
+                within: Some(within),
+            } => list(
+                "attempt",
+                [self.expr(operand), list("within", [self.expr(within)])],
+            ),
             ExprKind::Fail(variant) => list("fail", [self.variant(variant)]),
             ExprKind::Binary { op, left, right } => {
                 list(binary_text(*op), [self.expr(left), self.expr(right)])

@@ -235,7 +235,9 @@ impl<'e> Facts<'e> {
                 self.expr(body, owned);
                 self.expr(handler, owned);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } => self.expr(body, owned),
+            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+                self.expr(body, owned);
+            }
         }
     }
 }

@@ -1129,9 +1129,10 @@ fn stops(expr: &Expr) -> bool {
         Expr::Let { value, body, .. } => {
             matches!(value.as_ref(), Bound::Expr(inner) if stops(inner)) || stops(body)
         }
-        Expr::LetTuple { body, .. } | Expr::With { body, .. } | Expr::Attempt { body, .. } => {
-            stops(body)
-        }
+        Expr::LetTuple { body, .. }
+        | Expr::With { body, .. }
+        | Expr::Attempt { body, .. }
+        | Expr::Within { body, .. } => stops(body),
         Expr::If {
             then, otherwise, ..
         } => stops(then) || stops(otherwise),
@@ -2311,6 +2312,29 @@ impl<'p, 'i> Walker<'p, 'i> {
                 } => {
                     self.walk(body, &ctx, leaves);
                     expr = handler;
+                }
+                // `e within d` (`spec/27 §5`, ADR 0117 rule 5): `d >= 1`, a `refinement`
+                // obligation at `d`; on success the facts of `e` hold as without the deadline,
+                // and a time-out carries none, as any failure.
+                Expr::Within {
+                    deadline,
+                    deadline_span,
+                    body,
+                    ..
+                } => {
+                    let value = self.atom(deadline, &ctx);
+                    let goal = (value.f.sort() == "Int")
+                        .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                    let text = format!("{} >= 1", self.text(*deadline_span));
+                    self.site(
+                        ObligationKind::Refinement,
+                        &ctx,
+                        goal,
+                        text,
+                        *deadline_span,
+                        None,
+                    );
+                    expr = body;
                 }
                 Expr::Attempt { body, span } => {
                     let mut returns = Vec::new();

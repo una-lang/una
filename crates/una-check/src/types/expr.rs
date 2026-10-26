@@ -178,7 +178,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 predicate,
                 failure,
             } => self.checked(value, predicate, failure, span),
-            ExprKind::Attempt(operand) => self.attempt(operand, span, site),
+            ExprKind::Attempt { operand, within } => {
+                self.attempt(operand, within.as_deref(), span, site)
+            }
             ExprKind::Fail(variant) => {
                 self.outside_rl(span, || "`fail`".to_owned());
                 self.impure(span, || "`fail`".to_owned());
@@ -2100,8 +2102,10 @@ impl<'a> Checker<'_, 'a, '_> {
         ty
     }
 
-    /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`).
-    fn attempt(&mut self, operand: &Expr, span: Span, site: Site) -> Ty {
+    /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`); `attempt e within
+    /// d` gives `Result[T, Timed[E]]`, or `Result[T, Deadline]` when `e` cannot fail (`spec/27
+    /// §5`, ADR 0117 rule 5).
+    fn attempt(&mut self, operand: &Expr, within: Option<&Expr>, span: Span, site: Site) -> Ty {
         self.outside_rl(span, || "`attempt`".to_owned());
         if self.ctx.in_do {
             self.absorbed.push(operand.span);
@@ -2124,6 +2128,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.expr(operand, None);
             return Ty::error();
         }
+        let open = within.map(|deadline| self.within_open(deadline, span));
         self.pass_site(Site {
             top: site.top,
             handled: true,
@@ -2133,18 +2138,32 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.pass == super::authority::Pass::Check {
             // The failure of this call stops here (ADR 0100 rule 3).
             self.findings.contained.insert(inner.span);
-            // Edition 0.3: `attempt` of a call that cannot fail (ADR 0100, U3026).
-            if self.env.edition >= Edition::V0_3 && !self.call_fails.contains_key(&inner.span) {
+            // Edition 0.3: `attempt` of a call that cannot fail (ADR 0100, U3026); with a
+            // deadline it can always fail.
+            if self.env.edition >= Edition::V0_3
+                && open.is_none()
+                && !self.call_fails.contains_key(&inner.span)
+            {
                 let site = self.dead_site(operand, super::dead::Dead::Attempt { span }, Vec::new());
                 self.findings.dead.push(site);
             }
         }
-        let error = self
-            .call_fails
-            .get(&inner.span)
-            .cloned()
-            .unwrap_or(Ty::error());
-        let decided = self.decided_failures.get(&inner.span).cloned();
+        let inner_fails = self.call_fails.get(&inner.span).cloned();
+        let mut decided = self.decided_failures.get(&inner.span).cloned();
+        let error = match &open {
+            Some(open) => {
+                self.within_places(operand, open);
+                let failure = self.within_close(open, inner_fails.as_ref());
+                // Whether `e` met its deadline is labeled with `τ(e)` (IF2).
+                if !open.tau().is_public() {
+                    decided = Some(
+                        decided.map_or_else(|| open.tau().clone(), |label| label.join(open.tau())),
+                    );
+                }
+                failure
+            }
+            None => inner_fails.unwrap_or(Ty::error()),
+        };
         match self.env.prelude_kind("Result") {
             // Whether the call failed, and how, is labeled like what decided it.
             Some(result) => match decided {

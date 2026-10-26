@@ -527,6 +527,21 @@ pub extern "C" fn una_rt_deadline_leave() {
     crate::deadline::leave();
 }
 
+/// Enters `e within d`, whose deadline is the borrowed integer `ms`, and returns the frame's id
+/// ([`crate::deadline::within_enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_within_enter(ms: i64) -> i64 {
+    crate::deadline::within_enter(ms)
+}
+
+/// Ends the `within` of the frame `id`, after `e` returned or failed (`stopped` 0) or after its
+/// task stopped inside it (`stopped` 1): 0 when `e`'s outcome stands, 1 when it timed out, 2 when
+/// the task stops on ([`crate::deadline::within_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_within_end(id: i64, stopped: i64) -> i64 {
+    crate::deadline::within_end(id, stopped)
+}
+
 /// The next tick of a driven program's loop, or 0 when it stops ([`runtime::drive_tick`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_drive_tick() -> i64 {

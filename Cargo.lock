@@ -1342,6 +1342,7 @@ version = "0.3.16"
 dependencies = [
  "cap",
  "clap",
+ "ed25519-dalek",
  "insta",
  "pretty_assertions",
  "serde",

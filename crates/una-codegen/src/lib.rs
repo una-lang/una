@@ -442,6 +442,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_deadline_enter", 1, false),
     ("una_rt_deadline_iteration", 0, false),
     ("una_rt_deadline_leave", 0, false),
+    ("una_rt_within_enter", 1, true),
+    ("una_rt_within_end", 2, true),
     ("una_rt_poll", 0, true),
     ("una_rt_stopped", 0, true),
     ("una_rt_generic_compare", 3, true),
