@@ -1286,3 +1286,9 @@ A recovery, a dispute or a `cancel` logged while a resetting request waits is ne
 **Consequences.**
 - A package names its private source in its own `ita.una`; the declaration of that source, its URL and its root's pin, lives in the workspace, where the publisher's other packages find it too.
 - `spec/30 §2` rule 4 states this as normative text.
+
+## Amendment 12, correction (2026-10-26): when the source is looked up
+
+- Status: Accepted, recorded under the project's delegation.
+
+Amendment 12, decision 2, says the source is looked up "before anything is built or sent". `spec/30 §15` rule 3 orders publishing: the refusals of `spec/30 §11` rule 12, then a package in a git repository, then `una check` at tier 1, and only then the archive and the source. The lookup keeps that order: `una ita publish` looks the source up after the package's own refusals and its check, and before its archive is built or anything is sent. `una ita yank`, which checks no code, looks it up before it reads the registry. A package that does not check is refused for that, whatever source it names.

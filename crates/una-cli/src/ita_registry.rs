@@ -87,7 +87,8 @@ struct Prepared {
 /// The declaration of `source`, the one the head's `publish to` names, for the package at
 /// `path` (`spec/30 §2` rule 4, §15 rule 1), and the location of its own URL: `itaty`, or a
 /// source that the workspace listing the package declares, refused by its kind (U7013), and an
-/// `https://` URL, which has no transport yet (U7013), each before anything is built or sent.
+/// `https://` URL, which has no transport yet (U7013), each before an archive is built or
+/// anything is sent.
 /// Reads only the workspace files above `path`.
 fn declaration(
     path: &Path,
@@ -283,10 +284,10 @@ fn authority(analysis: &crate::Analysis) -> BTreeMap<String, std::collections::B
 }
 
 /// `una ita publish [path]` (ADR 0122 rule 43): refuses what rule 43 names, and a package in a
-/// git repository while the check for uncommitted changes is not available; resolves the source
-/// the head's `publish to` names in the package's workspace, and its location; checks the
-/// package at tier 1 and refuses any diagnostic; builds its archive (rule 27); opens the
-/// source's transport; writes the release statement against the
+/// git repository while the check for uncommitted changes is not available; checks the package
+/// at tier 1 and refuses any diagnostic; resolves the source the head's `publish to` names in
+/// the package's workspace, and its location; builds its archive (rule 27); opens the source's
+/// transport; writes the release statement against the
 /// verified state of its name (rule 26 against the highest earlier release of its line); signs
 /// it with the owner's keys of `~/.una/keys/`; and sends the archive and the statement. The
 /// submission is recorded in Itaoca, so `una ita watch` can check the registry's promise for
@@ -353,20 +354,6 @@ pub(crate) fn publish_command(
         ));
         return finish("publish", &[], &[], &diagnostics, sources, out);
     }
-    // The source `publish to` names is `itaty` or one the package's workspace declares,
-    // checked before anything is built (`spec/30 §2` rule 4).
-    let source = read
-        .publish_to
-        .as_ref()
-        .map(|t| t.value.clone())
-        .unwrap_or_default();
-    let declared = match declaration(path, &source, head.clone()) {
-        Ok(declared) => declared,
-        Err(refusal) => {
-            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
-            return finish("publish", &[], &[], &diagnostics, sources, out);
-        }
-    };
     // `una check` at tier 1: any diagnostic, an obligation not proven included, refuses.
     let analysis = crate::on_large_stack(|| crate::analyze(&package, None));
     let mut checked = analysis.diagnostics.clone();
@@ -390,6 +377,21 @@ pub(crate) fn publish_command(
         ));
         return finish("publish", &[], &[], &diagnostics, sources, out);
     }
+    // The source `publish to` names is `itaty` or one the package's workspace declares, looked
+    // up once the package checks and before its archive is built (`spec/30 §2` rule 4, §15
+    // rule 3).
+    let source = read
+        .publish_to
+        .as_ref()
+        .map(|t| t.value.clone())
+        .unwrap_or_default();
+    let declared = match declaration(path, &source, head.clone()) {
+        Ok(declared) => declared,
+        Err(refusal) => {
+            diagnostics.extend(located(sources, manifest_id, vec![refusal]));
+            return finish("publish", &[], &[], &diagnostics, sources, out);
+        }
+    };
     let files = match package_files(path, &package) {
         Ok(files) => files,
         Err(message) => {
