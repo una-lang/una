@@ -1,7 +1,8 @@
 //! `una migrate [path]` (ADR 0122 rule 64): moves a package from `una.toml` and
-//! `verification.lock` to `ita.una` and `ita.lock`, edition `0.4`.
+//! `verification.lock` to `ita.una` and `ita.lock`, edition `0.4`, and rewrites its modules in
+//! the canonical form of edition `0.4` (ADR 0125, amendment of 2026-10-25).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -9,7 +10,7 @@ use serde::Serialize;
 use una_diag::{Diagnostic, render_human};
 use una_project::Format;
 use una_project::migrate::migrate;
-use una_syntax::SourceDb;
+use una_syntax::{FileId, Interner, KeywordSet, SourceDb};
 
 use crate::ExitStatus;
 use crate::package::{Package, load};
@@ -58,11 +59,12 @@ pub(crate) struct MigrateOptions<'a> {
 
 /// `una migrate [path] [--dry-run] [--name <name>]`.
 ///
-/// Writes `ita.una` and `ita.lock` through temporary files and renames, then removes
-/// `una.toml` and `verification.lock`. Then checks the package at tier 0 in edition `0.4`, and
-/// prints the diagnostics the change of edition causes: those it has in edition `0.4` and not
-/// in its own. It applies none of their repairs, which `una fix` does. With `--dry-run` it
-/// writes nothing. Edition-gated: a package that already has `ita.una`, or that is not a
+/// Writes `ita.una` and `ita.lock` through temporary files and renames, rewrites each module
+/// that parses in edition `0.4` in its canonical form there, which wraps long lines (ADR 0125,
+/// amendment of 2026-10-25), then removes `una.toml` and `verification.lock`. Then checks the
+/// package, so rewritten, at tier 0 in edition `0.4`, and prints the diagnostics the change of
+/// edition causes: those it has in edition `0.4` and not in its own. It applies none of their
+/// repairs, which `una fix` does. With `--dry-run` it writes nothing. Edition-gated: a package that already has `ita.una`, or that is not a
 /// package directory, is a usage error.
 pub(crate) fn migrate_command(
     path: &Path,
@@ -109,8 +111,11 @@ pub(crate) fn migrate_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    // The package as it will be, in memory, for the check of edition 0.4.
-    let new = migrated(&old, &migration.manifest, &migration.lock);
+    // The package as it will be, in memory, for the check of edition 0.4: its modules in the
+    // canonical form of edition 0.4 (ADR 0125, amendment of 2026-10-25).
+    let draft = migrated(&old, &migration.manifest, &migration.lock, &BTreeMap::new());
+    let canonical = canonical_0_4(&old, &draft);
+    let new = migrated(&old, &migration.manifest, &migration.lock, &canonical);
     let before: BTreeSet<String> = crate::on_large_stack(|| crate::analyze(&old, None))
         .diagnostics
         .iter()
@@ -142,6 +147,20 @@ pub(crate) fn migrate_command(
                 return Ok(ExitStatus::Usage);
             }
             written.push(name);
+        }
+        for (id, text) in &canonical {
+            let Some(target) = old.disk_paths.get(id) else {
+                continue;
+            };
+            if let Err(error) = crate::write_through_rename(path, target, text) {
+                writeln!(
+                    stderr,
+                    "error: cannot write `{}`: {error}",
+                    target.display()
+                )?;
+                return Ok(ExitStatus::Usage);
+            }
+            written.push(old.sources.file(*id).path());
         }
         for (name, file) in [("una.toml", &toml_path), ("verification.lock", &lock_path)] {
             if !file.exists() {
@@ -246,8 +265,48 @@ fn is_project_file(file: &str) -> bool {
     matches!(file, "una.toml" | "verification.lock")
 }
 
-/// `old` with `ita.una` and `ita.lock` of the given texts in place of its project files.
-fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
+/// The modules of `old` whose text differs from their canonical form in edition `0.4`, by their
+/// ids in `old`, with that form, read from `draft`, the package migrated as it is. A module with
+/// a syntax error in edition `0.4` has no canonical form and is left as it is. One check of the
+/// package, as `una fmt` does: linear in its size.
+fn canonical_0_4(old: &Package, draft: &Package) -> BTreeMap<FileId, String> {
+    let checks = crate::on_large_stack(|| {
+        let mut interner = Interner::new();
+        crate::check_files(
+            &draft.sources,
+            &draft.modules,
+            &mut interner,
+            KeywordSet::V0_4,
+        )
+    });
+    // `migrated` adds the modules of `old` in order, so the ids correspond by position.
+    let ids: BTreeMap<FileId, FileId> = draft
+        .modules
+        .iter()
+        .copied()
+        .zip(old.modules.iter().copied())
+        .collect();
+    checks
+        .into_iter()
+        .filter_map(|checked| {
+            let canonical = checked.canonical?;
+            let file = draft.sources.file(checked.id);
+            if file.text() == canonical && file.first_crlf().is_none() {
+                return None;
+            }
+            ids.get(&checked.id).map(|id| (*id, canonical))
+        })
+        .collect()
+}
+
+/// `old` with `ita.una` and `ita.lock` of the given texts in place of its project files, and
+/// each module of `texts`, by its id in `old`, with that text.
+fn migrated(
+    old: &Package,
+    manifest: &str,
+    lock: &str,
+    texts: &BTreeMap<FileId, String>,
+) -> Package {
     let mut sources = SourceDb::new();
     let manifest_id = sources.add("ita.una", manifest.as_bytes());
     let lock_id = sources.add("ita.lock", lock.as_bytes());
@@ -255,7 +314,8 @@ fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
     let mut modules = Vec::new();
     for id in &old.modules {
         let file = old.sources.file(*id);
-        let new_id = sources.add(file.path().to_owned(), file.text().as_bytes());
+        let text = texts.get(id).map_or(file.text(), String::as_str);
+        let new_id = sources.add(file.path().to_owned(), text.as_bytes());
         if let Some(path) = old.disk_paths.get(id) {
             disk_paths.insert(new_id, path.clone());
         }
@@ -271,6 +331,7 @@ fn migrated(old: &Package, manifest: &str, lock: &str) -> Package {
         lock_bytes: Some(lock.as_bytes().to_vec()),
         modules,
         disk_paths,
+        enclosing_edition: None,
         dependencies: Vec::new(),
         registry: Vec::new(),
     }

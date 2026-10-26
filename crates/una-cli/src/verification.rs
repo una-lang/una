@@ -12,7 +12,7 @@ use serde::Serialize;
 use una_diag::{Code, Diagnostic, Location, ObligationKind, ObligationStatus, Position};
 use una_project::parse_lock;
 use una_syntax::{SourceDb, Span};
-use una_verify::{Obligation, Outcome, Problem, Settings};
+use una_verify::{Obligation, Outcome, Problem, Settings, SourceLayout};
 
 use crate::{ExitStatus, Package, analyze, on_large_stack, report};
 
@@ -72,15 +72,17 @@ pub(crate) fn tier_one_cancellable(
     solving: &Solving,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> TierOne {
-    let obligations = match on_large_stack(|| una_verify::obligations(program, &package.sources)) {
-        Ok(obligations) => obligations,
-        Err(problem) => {
-            return TierOne {
-                diagnostics: vec![problem_diagnostic(package, problem)],
-                verification: None,
-            };
-        }
-    };
+    let layout = source_layout(package);
+    let obligations =
+        match on_large_stack(|| una_verify::obligations(program, &package.sources, layout)) {
+            Ok(obligations) => obligations,
+            Err(problem) => {
+                return TierOne {
+                    diagnostics: vec![problem_diagnostic(package, problem)],
+                    verification: None,
+                };
+            }
+        };
     if obligations.is_empty() {
         return TierOne {
             diagnostics: Vec::new(),
@@ -163,6 +165,18 @@ pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
                 una_verify::ProofCache::new(root, dir, key.secret.clone())
             }),
         cancel: None,
+    }
+}
+
+/// How the verifier and `una contract` normalize the source text they show, by the package's
+/// edition: edition 0.4, whose canonical form wraps long lines, erases that layout; earlier
+/// editions keep the text as before (`spec/12 §8`, ADR 0125, amendment of 2026-10-25).
+pub(crate) fn source_layout(package: &Package) -> SourceLayout {
+    let (manifest, _) = crate::package::project(package);
+    if manifest.edition >= una_project::Edition::V0_4 {
+        SourceLayout::Wrapped
+    } else {
+        SourceLayout::Joined
     }
 }
 
