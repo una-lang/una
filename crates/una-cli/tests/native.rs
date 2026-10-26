@@ -489,6 +489,88 @@ fn una_build_writes_the_executable_and_prints_una_build_1() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn una_build_never_writes_through_a_link_leading_outside_the_package_1160() {
+    // #1160: a repository can commit `target/una/<name>.o`, `target/una/<name>` or `target`
+    // itself as a link to somewhere outside it. `una build` refuses each before it writes,
+    // and before the linker starts, and the file the link leads to stays as it was.
+    let dir = package(
+        "planted",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let outside = dir.with_extension("outside");
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("victim");
+    std::fs::write(&victim, "untouched").unwrap();
+    let refused = |expected: &str| {
+        let output = una(&dir, &["build"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+    };
+    // The object's name: build outputs are not sources, so any link there is refused.
+    std::fs::create_dir_all(dir.join("target/una")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted.o")).unwrap();
+    refused("is a symbolic link");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted")).is_err());
+    // The executable's name, which the linker would write.
+    std::fs::remove_file(dir.join("target/una/planted.o")).unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join("target/una/planted")).unwrap();
+    refused("is a symbolic link");
+    assert!(std::fs::symlink_metadata(dir.join("target/una/planted.o")).is_err());
+    // `target` itself: nothing is created outside.
+    std::fs::remove_dir_all(dir.join("target")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("target")).unwrap();
+    refused("outside the package");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    // A relative `--out` through that link is refused too: it is rooted at the current
+    // directory, here the package.
+    let output = una(&dir, &["build", "--out", "target/una/planted"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("outside the package"), "{stderr}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    // A relative `--out` with `..` is the user's own typed path, created as given.
+    let typed = format!(
+        "../{}/typed/planted",
+        outside.file_name().unwrap().to_string_lossy()
+    );
+    let output = una(&dir, &["build", "--out", &typed]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(outside.join("typed/planted").is_file());
+    std::fs::remove_dir_all(outside.join("typed")).unwrap();
+    // Without links, the build succeeds and leaves only the executable: the linker wrote in a
+    // private directory, which is gone.
+    std::fs::remove_file(dir.join("target")).unwrap();
+    let output = una(&dir, &["build"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let left: Vec<String> = std::fs::read_dir(dir.join("target/una"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, ["planted"]);
+    let run = Command::new(dir.join("target/una/planted"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn una_build_finds_the_runtime_through_a_symlinked_una() {
     // HOST-5 (#185): `una` installed as a symlink, as a package manager links it into `bin/`,
@@ -506,6 +588,7 @@ fn una_build_finds_the_runtime_through_a_symlinked_una() {
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_una"), &link).unwrap();
     let output = Command::new(&link)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .env_remove("UNA_RT_LIB")
         .args(["build"])
         .current_dir(&dir)
@@ -549,6 +632,7 @@ fn an_executable_does_not_depend_on_where_una_and_its_runtime_are_installed() {
         let out = dir.join(install).join("out");
         let output = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .env("UNA_RT_LIB", lib.join("libuna_rt.a"))
             .args(["build", "--out"])
             .arg(out.join("hello"))
@@ -1575,6 +1659,7 @@ fn a_closed_output_pipe_is_a_failed_write_not_a_signal() {
     let (_, interpreted) = first_line(
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["run", "."]),
     );
     assert_eq!(interpreted.status.code(), native.status.code());
@@ -1615,6 +1700,7 @@ fn a_failed_write_to_stderr_exits_as_una_run_does() {
         let interpreted = closed(
             Command::new(env!("CARGO_BIN_EXE_una"))
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
                 .arg("run")
                 .arg(".")
                 .args(args),
@@ -1654,6 +1740,7 @@ fn a_closed_stdout_is_reported_on_stderr_by_both_engines() {
     let interpreted = closed(
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(["run", "."]),
     );
     let native = closed(&mut Command::new(dir.join("target/una/closed")));

@@ -77,6 +77,7 @@ fn una(dir: &Path, args: &[&str], value: Option<&[u8]>) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
     command
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .env("NO_COLOR", "1")
         .env_remove("UNA_TEST_TEXT")
         .args(args)
@@ -94,6 +95,7 @@ fn native(dir: &Path, name: &str, value: Option<&[u8]>) -> Output {
         .arg("--trace")
         .arg(dir.join("trace.json"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .env("NO_COLOR", "1")
         .env_remove("UNA_TEST_TEXT")
         .current_dir(dir);
