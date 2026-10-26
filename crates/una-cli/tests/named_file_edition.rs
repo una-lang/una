@@ -18,7 +18,7 @@ const JOINED_HEADER: &str = "-> Pair[List[U], Int] = Pair(";
 
 /// A module in edition 0.1's own syntax whose long call is wrapped, which is not edition 0.1's
 /// canonical form: edition 0.1 keeps a call on one line.
-const WRAPPED_0_1: &str = "module s\n\npub add_three(first_number: Int, second_number: Int, third_number: Int) -> Int =\n  first_number + second_number + third_number\n\npub total() -> Int = add_three(100000000000000000,\n  200000000000000000,\n  300000000000000000\n)\n";
+const WRAPPED_0_1: &str = "module s\n\npub add_three(first: Int, second: Int, third: Int) -> Int = first + second + third\n\npub total() -> Int = add_three(100000000000000000,\n  200000000000000000,\n  300000000000000000\n)\n";
 
 /// The call of `WRAPPED_0_1` as edition 0.1 writes it, on one line.
 const JOINED_CALL_0_1: &str =
