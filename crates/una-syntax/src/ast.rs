@@ -837,13 +837,16 @@ pub enum LetValue {
     BlockExpr(BlockExpr),
 }
 
-/// `line_expr [ with_clause ]` and its handling clauses.
+/// `line_expr [ with_clause ] [ "within" add_expr ]` and its handling clauses; the deadline
+/// from edition 0.4 (`spec/27 §5`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Handled {
     /// The expression.
     pub expr: Expr,
     /// The `with` bindings.
     pub with: Vec<CapBinding>,
+    /// The deadline after `within`, when there is one (ADR 0117 rule 5).
+    pub within: Option<Expr>,
     /// The handling clauses (`if error ...`, `if none ...`).
     pub handlings: Vec<Handling>,
     /// The whole statement.
@@ -1046,8 +1049,13 @@ pub enum ExprKind {
         /// The variant raised when the check fails.
         failure: VariantExpr,
     },
-    /// `attempt postfix`.
-    Attempt(Box<Expr>),
+    /// `attempt postfix [ "within" add_expr ]`; the deadline from edition 0.4 (`spec/27 §5`).
+    Attempt {
+        /// The expression attempted.
+        operand: Box<Expr>,
+        /// The deadline after `within`, when there is one.
+        within: Option<Box<Expr>>,
+    },
     /// `fail V`.
     Fail(VariantExpr),
     /// A binary operation.

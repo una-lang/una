@@ -1,0 +1,10 @@
+trusted module seal
+
+pub policy close
+  from secret Text
+  to Text
+  via sealed
+  purpose "seal a token"
+  owner team
+
+sealed(t: secret Text) -> Text = t
