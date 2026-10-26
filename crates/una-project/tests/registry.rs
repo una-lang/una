@@ -1224,10 +1224,12 @@ fn the_audit_leaves_out_what_the_lock_accepted() {
     let owner = keypair(60, "acme.laptop");
     test.register("acme", &owner);
     let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    test.checkpoint(NOW - 100);
-    let resolution = test.entries.len() as u64;
     let newcomer = keypair(64, "acme.new");
     let request = test.recover("acme", "recover", &newcomer.1, &[]);
+    // The lock's resolution point holds the request: a recorded consent counts only for an
+    // index below it that is pending there (`spec/30 §14` rule 8).
+    test.checkpoint(NOW - 100);
+    let resolution = test.entries.len() as u64;
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
@@ -2083,23 +2085,28 @@ fn a_frozen_owner_chain_is_refused_by_the_audit() {
 }
 
 /// A chain the registry logged that does not settle: the audit refuses the package (U7010) and
-/// reports the registry's misbehavior as evidence, from the client's typed record.
+/// reports the registry's misbehavior as evidence, from the client's typed record. The chain is
+/// the replay's own example: `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and
+/// `C` claim `B` since 0, two claims whose own-word floors alternate.
 #[test]
 fn the_audit_reports_an_unsettled_chain_as_evidence() {
     let mut test = TestRegistry::new("acme");
     let a = keypair(60, "acme.a");
-    let t = keypair(66, "acme.t");
-    test.register("acme", &a);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let b = keypair(61, "acme.b");
+    let c = keypair(62, "acme.c");
+    let d = keypair(64, "acme.d");
+    test.register_keys("acme", &[&a, &b, &d], 1, &[], 0);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
     test.checkpoint(NOW - 100);
     let resolution = test.entries.len() as u64;
     test.owner_event(
         "acme",
-        &format!("add {}", support::key_text(&t.1)),
+        &format!("add {}", support::key_text(&c.1)),
         1,
-        &[&a, &t],
+        &[&a, &c],
     );
-    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&t]);
+    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
+    test.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
@@ -2128,7 +2135,7 @@ fn the_audit_reports_an_unsettled_chain_as_evidence() {
     let unsettled = Unsettled {
         owner: "acme".to_owned(),
         index: claim,
-        passes: 4,
+        passes: 6,
     };
     assert_eq!(
         audit::evidence(&client),
@@ -2321,7 +2328,9 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         None,
     )
     .unwrap();
-    client.logged_at(release).unwrap();
+    // Never the point's time: the logged time is unavailable, an omission of the cadence, and
+    // the gap is recorded as evidence.
+    assert!(client.logged_at(release).is_err());
     // One place read: evidence from an absence, a note.
     let place = memory.describe();
     let gap = audit::Evidence::CadenceGap {
@@ -2350,7 +2359,7 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         None,
     )
     .unwrap();
-    client.logged_at(release).unwrap();
+    assert!(client.logged_at(release).is_err());
     let evidence = audit::evidence(&client);
     assert_eq!(evidence.len(), 1, "{evidence:?}");
     assert!(!evidence[0].attributed(), "{evidence:?}");
