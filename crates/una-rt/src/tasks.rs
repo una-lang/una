@@ -1905,6 +1905,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_race_gives_its_winner_and_fails_only_when_every_branch_fails() {
         // `spec/27 §6`: the branch that returns wins, and a failure cancels nothing; when every
         // branch fails, the race fails with the lowest-indexed failure; an abort decides the
@@ -1919,6 +1920,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_race_cancels_its_losers_once_a_branch_wins() {
         // `spec/27 §6`, ADR 0117 rule 6: the winner lowers the race's count to 0, so a loser
         // that runs sees its cancellation at its next check, and the race gives the winner's

@@ -1059,6 +1059,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_yield_lets_the_jobs_queued_before_it_run_first() {
         // A parked task is woken, wakes a second one, whose resume is queued, then yields:
         // the second runs before the first goes on, on one worker, first in, first out.
@@ -1090,6 +1091,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once() {
         // ADR 0117 rule 4: a race that decides wakes a loser parked on a request at once,
         // while the request's helper still waits; its result is dropped there later.
