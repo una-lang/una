@@ -35,7 +35,8 @@ pub main() -> Unit
   @console.print("special {zero / zero} {1.0 / zero} {1.0 / nz} {(zero / zero).to_bits()} {nz < zero} {nz == zero} {nan32 == zero / zero}")
   let xs: List[F32] = [nan32, 1.0, zero, -inf, nz, inf, -1.0]
   @console.print("sorted {show(sort(xs))}")
-  let m = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg").with(key: nan32, value: "nan").with(key: zero / zero, value: "nan again")
+  let m0 = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg")
+  let m = m0.with(key: nan32, value: "nan").with(key: zero / zero, value: "nan again")
   @console.print("map {m.len} {m.keys()}")
   let p = attempt parse_f32("0.1")
   let q = attempt parse_f32("1e39")
