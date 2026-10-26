@@ -411,6 +411,13 @@ pub fn from_json_number(text: &str, scale: u8) -> Option<BigInt> {
     }
 }
 
+/// 10^s for s from 0 to 22: each an exact binary64 value, since 10^s = 2^s × 5^s with
+/// 5^22 < 2^53 (#1090).
+const POW10: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+];
+
 /// `x.to_f64()` for the coefficient `c` at scale `s` (rule 15): the nearest binary64 value to
 /// the exact value, ties to even, an infinity beyond the range; never `-0.0`.
 ///
@@ -422,10 +429,14 @@ pub fn to_f64(c: &BigInt, s: u8) -> f64 {
         return 0.0;
     }
     let fast = c.magnitude().bits() <= 53 && s <= 22;
-    if fast && let Ok(n) = i64::try_from(c) {
-        // Both are exact: n below 2^53, and 10^s for s ≤ 22.
+    if fast
+        && let Ok(n) = i64::try_from(c)
+        && let Some(&d) = POW10.get(usize::from(s))
+    {
+        // Both are exact: n below 2^53, and 10^s for s ≤ 22, read from a table rather than
+        // computed, so the bits never depend on the target (`powi`'s precision does).
         #[allow(clippy::cast_precision_loss)]
-        let (n, d) = (n as f64, 10f64.powi(i32::from(s)));
+        let n = n as f64;
         return n / d;
     }
     to_f64_exact(c, s)
