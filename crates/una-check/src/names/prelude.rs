@@ -104,6 +104,18 @@ pub(crate) fn std_host_names(edition: Edition) -> &'static [&'static str] {
 /// The public functions of `std.testing`.
 pub(crate) const STD_TESTING_NAMES: [&str; 1] = ["fake_hash"];
 
+/// The public functions of `std.testing` in edition 0.4: also `elapse` (ADR 0116 rule 19).
+pub(crate) const STD_TESTING_NAMES_0_4: [&str; 2] = ["fake_hash", "elapse"];
+
+/// What `std.testing` exports to an import in `edition`.
+pub(crate) fn std_testing_names(edition: Edition) -> &'static [&'static str] {
+    if edition >= Edition::V0_4 {
+        &STD_TESTING_NAMES_0_4
+    } else {
+        &STD_TESTING_NAMES
+    }
+}
+
 /// The path of the standard module of time units, edition 0.4 (ADR 0116 rule 0).
 pub(crate) const STD_TIME: &str = "std.time";
 
@@ -220,6 +232,11 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardPositive",
     "TowardNegative",
 ];
+
+/// The variant that edition 0.4 adds to `HttpError`: an operation that a host stop
+/// interrupts (ADR 0116 rule 12). Earlier editions keep the kind's eight variants, since a new
+/// variant changes which `when` arms are exhaustive.
+pub(crate) const HTTP_0_4: [&str; 1] = ["Interrupted"];
 
 #[cfg(test)]
 mod tests {

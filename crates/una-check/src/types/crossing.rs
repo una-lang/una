@@ -372,6 +372,7 @@ impl Checker<'_, '_, '_> {
     /// known here (rule 8, fail closed). A local bound inside the lambda takes its value from
     /// what the lambda receives or computes, which is checked where it is written.
     pub(crate) fn captured_value(&mut self, name: &str, span: Span) {
+        self.timing_read(name);
         if self.pass != Pass::Check {
             return;
         }
