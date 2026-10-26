@@ -28,7 +28,9 @@ pub tolerant(url: Text) -> internal Bool
 pub leaky(url: Text, key: secret Int) -> Unit
   uses @http: Http[get]
 =
-  let outcome = attempt @http.get(pick(url, key: key), headers: [], key_name: None) within 2 * second
+  let outcome = attempt @http.get(pick(url, key: key), headers: [],
+    key_name: None
+  ) within 2 * second
   unit
 
 pick(url: Text, key: secret Int) -> Text = url
