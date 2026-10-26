@@ -57,7 +57,7 @@ use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Checkpoint, Key, Note};
-use crate::tlog::owner::{self, History, ReplayError, Standing, TooManyClaims, Unsettled};
+use crate::tlog::owner::{self, History, ReplayError, Standing, Unsettled};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
 use crate::tlog::tile::Tiles;
@@ -408,9 +408,6 @@ pub enum Misbehavior {
     /// An owner chain, or a prefix of it, that does not settle within the pass cap: the
     /// registry's misbehavior.
     Unsettled(Unsettled),
-    /// An owner chain that holds more claims of compromise than [`owner::MAX_CLAIMS`]: the
-    /// registry's misbehavior.
-    TooManyClaims(TooManyClaims),
     /// A request whose deadline checkpoint no place serves: the first checkpoint at or after
     /// its seven-day target with the witness threshold of cosignatures, which a registry
     /// MUST keep, so the request's effect cannot be decided. Evidence from an absence.
@@ -1889,17 +1886,17 @@ impl<'t> Registry<'t> {
                         .set(Some(effect_failure.unwrap_or(Failure::Unserved)));
                     return Err(format!("the registry `{source}`: {}", shown(&why)));
                 }
+                // Not replayed: no release of the owner counts, the thief's included. A registry
+                // logs every claim, so this is no misbehavior.
                 Err(ReplayError::TooManyClaims(too)) => {
-                    let message = format!(
-                        "the registry `{source}` logged more claims of compromise in the chain of `{}` than the {} a registry may log, which is registry misbehavior: {} of them, the first past the cap at the log index {}",
-                        shown(&too.owner),
-                        owner::MAX_CLAIMS,
-                        too.claims,
-                        too.index
-                    );
-                    self.evidence(Misbehavior::TooManyClaims(too));
                     self.failure.set(Some(Failure::Refused));
-                    return Err(message);
+                    return Err(format!(
+                        "the registry `{source}`: the chain of the owner `{}` holds {} claims of compromise, more than the {} a client replays, the first past them at the log index {}, so its names are unavailable and no release of it counts; the owner recovers by a registry dispute or registers under a new owner name",
+                        shown(&too.owner),
+                        too.claims,
+                        owner::MAX_CLAIMS,
+                        too.index
+                    ));
                 }
                 Err(ReplayError::Unsettled(unsettled)) => {
                     let message = format!(

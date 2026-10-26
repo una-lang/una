@@ -700,16 +700,18 @@ pub struct Unsettled {
     pub passes: usize,
 }
 
-/// Evidence that a registry logged more claims of compromise in an owner's chain than
-/// [`MAX_CLAIMS`] (`spec/30 §14` rule 5): a registry that follows the rules never logs them, and
-/// a client refuses the owner's names (U7010) and reports this against the registry.
+/// An owner's chain that holds more claims of compromise than [`MAX_CLAIMS`] (`spec/30 §14`
+/// rule 5): a registry logs every claim, the owner's included, and a client does not replay
+/// such a chain, so no release of the owner counts and its names are refused (U7010). Not the
+/// registry's misbehavior.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TooManyClaims {
     /// The owner whose chain holds them.
     pub owner: String,
     /// The log index of the first claim past the cap.
     pub index: u64,
-    /// The claims the chain holds.
+    /// The claims between the two reset points, or after the last one, that hold more than
+    /// the cap.
     pub claims: usize,
 }
 
@@ -720,7 +722,8 @@ pub enum ReplayError {
     Refused(String),
     /// The chain does not settle within the pass cap: registry misbehavior.
     Unsettled(Unsettled),
-    /// The chain holds more than [`MAX_CLAIMS`] claims: registry misbehavior.
+    /// The chain holds more than [`MAX_CLAIMS`] claims: it is not replayed, and nothing of
+    /// the owner counts.
     TooManyClaims(TooManyClaims),
     /// The effect of a request could not be read, as the caller's `effect` said: the history
     /// is unavailable, never a verdict on the chain.
@@ -733,7 +736,7 @@ impl std::fmt::Display for ReplayError {
             ReplayError::Refused(why) | ReplayError::Effect(why) => f.write_str(why),
             ReplayError::TooManyClaims(too) => write!(
                 f,
-                "the chain of `{}` holds {} claims of compromise, more than the {MAX_CLAIMS} a registry may log, the first past them at the log index {}",
+                "the chain of `{}` holds {} claims of compromise, more than the {MAX_CLAIMS} a client replays, the first past them at the log index {}",
                 too.owner, too.claims, too.index
             ),
             ReplayError::Unsettled(unsettled) => write!(
@@ -749,10 +752,13 @@ impl std::fmt::Display for ReplayError {
 /// cosigners, applied or void: a bound on what each entry's signatures are checked against.
 pub const MAX_KNOWN: usize = 1024;
 
-/// The most claims of compromise, `revoke <key> since <p>` entries, an owner's chain may hold
-/// (`spec/30 §14` rule 5): twice the most keys an owner holds at once, so an owner can claim
-/// every key it holds and claim each again from an earlier position. A claim is retroactive, so
-/// each one makes the client settle the chain before it once more: the cap bounds that work.
+/// The most claims of compromise, `revoke <key> since <p>` entries, a client replays in an
+/// owner's chain (`spec/30 §14` rule 5): twice the most keys an owner holds at once, so an owner
+/// can claim every key it holds and claim each again from an earlier position. A claim is
+/// retroactive, so each one makes the client settle the chain before it once more: the cap
+/// bounds that work. A registry logs claims past it; a chain that holds them is not replayed, and
+/// nothing of its owner counts, so a thief that logs claims gains nothing but the owner's
+/// names becoming unavailable.
 pub const MAX_CLAIMS: usize = 64;
 
 /// Signature results of an owner's chain, each entry's signature by a key verified once across
@@ -906,10 +912,16 @@ type Claim = ([u8; 32], u64);
 /// ([`History::unsettled_prefixes`]). An effect that cannot be read is
 /// [`ReplayError::Effect`], never a refusal.
 ///
-/// **The cap of claims.** A chain of more than [`MAX_CLAIMS`] claims is refused as
-/// [`ReplayError::TooManyClaims`], registry misbehavior.
+/// **The cap of claims.** A chain that holds more than [`MAX_CLAIMS`] claims between two reset
+/// points, or after the last one, counted in O(E) before any replay, is not replayed:
+/// [`ReplayError::TooManyClaims`], and no release of its owner counts. A reset point is the
+/// effect position of a dispute, or of a recovery that no cancellation entry names, whose
+/// effect point the witness time reached: read from the entries and `effect` only, never from
+/// the claims. Every claim still counts in the replay. A key-only thief cannot make a reset,
+/// which needs co-signers or the registry's dispute, so the claims replayed are at most
+/// [`MAX_CLAIMS`] times one more than the resets.
 ///
-/// O(C · P · E · K) for C claims (at most [`MAX_CLAIMS`]), P passes of a settled replay (at
+/// O(C · P · E · K) for C claims (at most [`MAX_CLAIMS`] times one more than the resets), P passes of a settled replay (at
 /// most 2 C + 2), E entries and K keys held at once (at most 32): one settled replay of the
 /// chain and one up to each claim, and one forward pass per group, linear in E. Each
 /// signature of an entry by a key is verified once across all of them ([`History::checks`]
@@ -929,14 +941,51 @@ pub fn replay(
         .filter(|(_, logged)| matches!(logged.entry.event, Event::Revoke { since: Some(_), .. }))
         .map(|(at, _)| at)
         .collect();
-    if let Some(past) = claims.get(MAX_CLAIMS).and_then(|at| entries.get(*at)) {
+    let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
+    // The count restarts where a recovery or a dispute took effect, read syntactically and by
+    // witness time only, never by the claims: a dispute whose effect point is reached, and a
+    // recovery that no cancellation entry names whose effect point is reached.
+    let cancelled: BTreeSet<u64> = entries
+        .iter()
+        .filter_map(|logged| match logged.entry.event {
+            Event::Cancel(target) => Some(target),
+            _ => None,
+        })
+        .collect();
+    let mut resets: Vec<u64> = Vec::new();
+    for logged in entries {
+        let request = match logged.entry.event {
+            Event::Dispute(_) => true,
+            Event::Recover(_) => !cancelled.contains(&logged.index),
+            _ => false,
+        };
+        if request
+            && let Some(position) =
+                effect_at(logged.index, &mut effects, effect).map_err(ReplayError::Effect)?
+        {
+            resets.push(position);
+        }
+    }
+    resets.sort_unstable();
+    let mut counted: BTreeMap<usize, (usize, u64)> = BTreeMap::new();
+    for &at in &claims {
+        let Some(logged) = entries.get(at) else {
+            continue;
+        };
+        let segment = resets.partition_point(|reset| *reset <= logged.index);
+        let slot = counted.entry(segment).or_insert((0, logged.index));
+        slot.0 += 1;
+        if slot.0 == MAX_CLAIMS + 1 {
+            slot.1 = logged.index;
+        }
+    }
+    if let Some((count, index)) = counted.values().find(|(count, _)| *count > MAX_CLAIMS) {
         return Err(ReplayError::TooManyClaims(TooManyClaims {
             owner: owner.to_owned(),
-            index: past.index,
-            claims: claims.len(),
+            index: *index,
+            claims: *count,
         }));
     }
-    let mut effects: BTreeMap<u64, Option<u64>> = BTreeMap::new();
     let mut verifier = Verifier::default();
     let Some(&first_claim) = claims.first() else {
         // No claim: the state known at each entry's logging is the one this replay reaches.

@@ -2158,8 +2158,8 @@ fn claims_chain(keys: &Keys, claims: usize, fillers: usize) -> Result<History, R
 }
 
 /// The work of a replay, every check of every pass of every prefix counted, grows linearly with
-/// the chain at the cap of claims, and the claims are bounded: a chain past [`MAX_CLAIMS`] is
-/// refused as the registry's misbehavior.
+/// the chain at the cap of claims, and the claims are bounded: a chain past [`MAX_CLAIMS`] with
+/// no reset point is not replayed.
 #[test]
 fn replay_work_is_bounded_by_the_cap_of_claims() {
     use super::{MAX_CLAIMS, TooManyClaims};
