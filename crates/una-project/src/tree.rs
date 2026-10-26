@@ -504,7 +504,7 @@ pub struct UserFile {
 /// from the same descriptor.
 pub fn read_user_file(path: &Path, limit: u64) -> Result<UserFile, Refusal> {
     let flags = flags()?;
-    let (handle, size) = open_regular(path, flags, flags.no_follow, false)?;
+    let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
     if size > limit {
         return Err(format!(
