@@ -216,7 +216,8 @@ fn many(n: usize) -> String {
 fn timed(n: usize) -> Duration {
     let path = scratch(&format!("many-{n}.una"));
     let text = many(n);
-    (0..3)
+    // The shortest of five runs: robust to preemption under load, still linear (#1180).
+    (0..5)
         .map(|_| {
             let start = Instant::now();
             let diagnostics = check(&path, &text);
