@@ -5,17 +5,17 @@ module walk
 
 import std.collections (BitSet, Queue, empty_bit_set, empty_queue)
 
--- Marks and queues each unseen node among neighbors[from..], and keeps the measure from rising.
-visit(edit seen: BitSet, edit waiting: Queue[Int], neighbors: List[Int], from: Int) -> Unit
+-- Marks and queues each unseen node among neighbors[start..], and keeps the measure from rising.
+visit(edit seen: BitSet, edit waiting: Queue[Int], neighbors: List[Int], start: Int) -> Unit
   ensures seen.size == old(seen).size and 2 * (seen.size - seen.len) + waiting.len <= 2 * (old(seen).size - old(seen).len) + old(waiting).len
 =
-  if from >= 0 and from < neighbors.len
-    let n = neighbors.at(index: from)
+  if start >= 0 and start < neighbors.len
+    let n = neighbors.at(index: start)
       if none use -1
     if n >= 0 and n < seen.size and not seen.has(item: n)
       edit seen.add(item: n)
       edit waiting.push(item: n)
-    visit(edit seen, edit waiting, neighbors: neighbors, from: from + 1)
+    visit(edit seen, edit waiting, neighbors: neighbors, start: start + 1)
 
 -- One round of the walk: the body of rule 20's loop, with its measure's two obligations.
 round(edit seen: BitSet, edit waiting: Queue[Int], graph: List[List[Int]]) -> Unit
@@ -29,7 +29,7 @@ round(edit seen: BitSet, edit waiting: Queue[Int], graph: List[List[Int]]) -> Un
     is Some(node) ->
       let neighbors = graph.at(index: node)
         if none use []
-      visit(edit seen, edit waiting, neighbors: neighbors, from: 0)
+      visit(edit seen, edit waiting, neighbors: neighbors, start: 0)
     is None -> unit
 
 -- The start of the walk, and its first round.
