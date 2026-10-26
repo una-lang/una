@@ -118,6 +118,9 @@ pub struct Described<'a> {
     /// keyed hashing before `main` (ADR 0119 rule 9). The code compiled is the code `main`
     /// reaches, the standard library's included.
     pub hashing: bool,
+    /// Whether the compiled code holds a task construct or a `for ever`, so the runtime starts
+    /// its workers and helper pools before `main` (ADR 0116 amendment, P8; #1145).
+    pub threads: bool,
 }
 
 /// The object file of the program: `main` of module `entry` and the functions it reaches,
@@ -210,6 +213,7 @@ fn compile_start(
         ops: &emitter.ops,
         failure,
         hashing: emitter.hashing,
+        threads: emitter.threads,
     });
     match loop_functions {
         None => emitter.entry(main_id.id, main, &meta)?,
@@ -426,6 +430,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_or_else", 2, true),
     ("una_rt_main_failed", 1, false),
     ("una_rt_drive_tick", 0, true),
+    ("una_rt_ever_start", 0, true),
+    ("una_rt_ever_end", 0, false),
     ("una_rt_op_code", 2, true),
     ("una_rt_fixed", 4, true),
     ("una_rt_decimal", 5, true),
@@ -433,6 +439,9 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_parse_decimal", 2, true),
     ("una_rt_as_decimal", 2, true),
     ("una_rt_budget", 1, true),
+    ("una_rt_deadline_enter", 1, false),
+    ("una_rt_deadline_iteration", 0, false),
+    ("una_rt_deadline_leave", 0, false),
     ("una_rt_poll", 0, true),
     ("una_rt_stopped", 0, true),
     ("una_rt_generic_compare", 3, true),
@@ -525,6 +534,8 @@ struct Emitter<'p> {
     ops: Vec<serde_json::Value>,
     /// Whether a compiled function makes a hash table (ADR 0119 rule 9).
     hashing: bool,
+    /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
+    threads: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -558,6 +569,7 @@ impl<'p> Emitter<'p> {
             types: describe::Types::new(program),
             ops: Vec::new(),
             hashing: false,
+            threads: false,
         })
     }
 

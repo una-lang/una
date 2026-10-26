@@ -1,0 +1,45 @@
+-- test: `for until c decreases m` ends at the first iteration start where `c` holds, with `stop` and `skip` in its body, in both engines (spec/26 §4, ADR 0116 rule 7)
+-- spec: spec/26 §4
+-- grant: console
+-- expect: run-output "found 3"
+-- expect: run-output "missing -1"
+-- expect: run-output "halves 7"
+module search
+
+--- The index of `key` in the sorted `xs`, or -1.
+find(xs: List[Int], key: Int) -> Int
+=
+  let edit lo = 0
+  let edit hi = xs.len
+  let edit found = -1
+  for until lo >= hi decreases hi - lo
+    let mid = lo + (hi - lo) / 2
+    let value = xs.at(index: mid)
+      if none use key
+    if value == key
+      found = mid
+      stop
+    if value < key
+      lo = mid + 1
+    if value > key
+      hi = mid
+  found
+
+--- How many times `n` halves before it reaches 0.
+halves(n: Int) -> Int
+  requires n >= 0
+=
+  let edit left: Nat = n
+  let edit count = 0
+  for until left == 0 decreases left
+    left = left / 2
+    count = count + 1
+  count
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [1, 3, 5, 7, 9, 11]
+  @console.print("found {find(xs: xs, key: 7)}")
+  @console.print("missing {find(xs: xs, key: 4)}")
+  @console.print("halves {halves(n: 100)}")

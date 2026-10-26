@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_core::{Atom, Bound, Decl, Expr, MapOp, PRELUDE_MODULE, Prim, Program, Rhs};
+use una_core::{Atom, Bound, Decl, Expr, LoopSource, MapOp, PRELUDE_MODULE, Prim, Program, Rhs};
 
 /// The owned parameters of each function of the package, by qualified name, in parameter
 /// order (the type descriptors that follow them are borrowed).
@@ -190,13 +190,28 @@ impl<'e> Facts<'e> {
             }
             Expr::LetTuple { body, .. } => self.expr(body, owned),
             Expr::Loop {
-                state, init, body, ..
+                source,
+                state,
+                init,
+                body,
+                on_stop,
+                ..
             } => {
                 // A state's initial value is consumed when the state is: `state` aliases it.
                 for ((name, _), atom) in state.iter().zip(init) {
                     self.alias(name, Some(atom));
                 }
+                if let LoopSource::Until { cond, .. } = source.as_ref() {
+                    self.expr(cond, owned);
+                }
                 self.expr(body, owned);
+                // `on stop` binds the state afresh, from the same values.
+                if let Some(on_stop) = on_stop {
+                    for ((name, _), atom) in on_stop.state.iter().zip(init) {
+                        self.alias(name, Some(atom));
+                    }
+                    self.expr(&on_stop.body, owned);
+                }
             }
             Expr::Together { tasks, .. } => tasks.iter().for_each(|task| self.expr(task, owned)),
             Expr::TogetherFor { task, .. } => self.expr(task, owned),
