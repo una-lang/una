@@ -424,6 +424,8 @@ pub enum ClauseKind {
     FailsOf(Ident),
     /// `derived from upper_ident { "," upper_ident }`.
     DerivedFrom(Vec<Ident>),
+    /// `diverges`, in edition 0.4: the function may run forever (`spec/26 §5`).
+    Diverges,
 }
 
 /// A body: a single line, or an indented block.
@@ -575,6 +577,18 @@ pub struct ExampleDecl {
     pub action: Expr,
     /// The `expect` lines.
     pub expectations: Vec<Expectation>,
+    /// The final `stop after N` line, in edition 0.4 (ADR 0116 rule 19, `spec/26 §8`).
+    pub stop_after: Option<StopAfter>,
+}
+
+/// `"stop" "after" integer_literal`: the stop schedule of an example, whose `do` line may then
+/// run a `for ever` loop (ADR 0116 rule 19, `spec/26 §8`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopAfter {
+    /// `N`: a host stop arrives once `N` iterations of `for ever` loops have started, from 1.
+    pub iterations: u64,
+    /// The whole line.
+    pub span: Span,
 }
 
 /// `"given" cap_ref "=" handler_call`.
@@ -657,6 +671,54 @@ pub enum Stmt {
     Stop(Box<StopStmt>),
     /// `skip`, in edition 0.4: ends the iteration (`spec/26 §3`). The span of the word.
     Skip(Span),
+    /// `for until c decreases m` with a block, in edition 0.4 (`spec/26 §4`).
+    Until(Box<UntilStmt>),
+    /// `for ever` with a block and an optional `on stop`, in edition 0.4 (`spec/26 §5`).
+    Ever(Box<EverStmt>),
+    /// `on stop` with a block that follows a loop other than `for ever`, which U2034 reports
+    /// (`spec/26 §5`).
+    OnStop(Box<OnStop>),
+}
+
+/// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ on_stop ]` (`spec/26 §5`,
+/// §7, ADR 0116 rules 10 and 11).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EverStmt {
+    /// The deadline of each iteration, after `within`, when there is one (`spec/26 §7`).
+    pub within: Option<Expr>,
+    /// The body.
+    pub block: Block,
+    /// The `on stop` block, when there is one.
+    pub on_stop: Option<OnStop>,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"on" "stop" NEWLINE INDENT block DEDENT` (`spec/26 §5`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnStop {
+    /// The block.
+    pub block: Block,
+    /// The words `on stop`.
+    pub keyword: Span,
+    /// The whole `on stop` and its block.
+    pub span: Span,
+}
+
+/// `"for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT` (`spec/26 §4`,
+/// ADR 0116 rule 7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UntilStmt {
+    /// `c`: the loop ends at the start of an iteration where it holds.
+    pub condition: Expr,
+    /// The word `decreases`, where the measure's obligations are reported.
+    pub decreases: Span,
+    /// `m`: the measure, for the verifier only.
+    pub measure: Expr,
+    /// The body.
+    pub block: Block,
+    /// The whole statement.
+    pub span: Span,
 }
 
 /// `"stop" [ "when" line_expr ]` (`spec/26 §3`, ADR 0116 rule 6).
