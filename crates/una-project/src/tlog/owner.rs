@@ -1039,42 +1039,35 @@ pub fn replay(
             claims: *count,
         });
     }
+    // The entries of the sealed segments, void but still entries of the chain, replayed for
+    // their structure: never the registration, nor the request that made a reset.
     let requests: BTreeSet<u64> = resets.iter().map(|(_, request)| *request).collect();
-    let in_sealed = |index: u64| {
-        !requests.contains(&index)
-            && sealed
-                .iter()
-                .any(|segment| segment.first <= index && index <= segment.last)
-    };
-    let kept: Vec<Logged<'_>> = entries
+    let voided_by_seal: BTreeSet<u64> = entries
         .iter()
-        .filter(|logged| !in_sealed(logged.index))
-        .map(|logged| Logged {
-            index: logged.index,
-            note: logged.note,
-            entry: logged.entry,
+        .filter(|logged| {
+            !requests.contains(&logged.index)
+                && !matches!(logged.entry.event, Event::Register { .. })
+                && sealed
+                    .iter()
+                    .any(|segment| segment.first <= logged.index && logged.index <= segment.last)
         })
+        .map(|logged| logged.index)
         .collect();
-    let mut history = replay_unsealed(owner, source, &kept, log, effect, &mut effects)?;
-    if !sealed.is_empty() {
-        // The sealed entries are void and change nothing; the keys they bring in sign nothing
-        // that counts, and they are entries of the chain all the same.
-        for logged in entries.iter().filter(|logged| in_sealed(logged.index)) {
-            history.voided.push(logged.index);
-            history.entries.push(logged.index);
-            if let Event::Add(key) | Event::Recover(key) | Event::Dispute(key) = &logged.entry.event
-            {
-                history.void_keys.push(key.clone());
-            }
-        }
-        history.voided.sort_unstable();
-        history.entries.sort_unstable();
-        history.sealed = sealed;
-    }
+    let mut history = replay_unsealed(
+        owner,
+        source,
+        entries,
+        log,
+        effect,
+        &mut effects,
+        &voided_by_seal,
+    )?;
+    history.sealed = sealed;
     Ok(history)
 }
 
-/// [`replay`] of the entries no sealed segment holds, each segment's claims within the cap.
+/// [`replay`] with the entries of sealed segments, `sealed`, void: each segment's claims
+/// that are not sealed within the cap.
 fn replay_unsealed(
     owner: &str,
     source: &str,
@@ -1082,11 +1075,15 @@ fn replay_unsealed(
     log: &Key,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     effects: &mut BTreeMap<u64, Option<u64>>,
+    sealed: &BTreeSet<u64>,
 ) -> Result<History, ReplayError> {
     let claims: Vec<usize> = entries
         .iter()
         .enumerate()
-        .filter(|(_, logged)| matches!(logged.entry.event, Event::Revoke { since: Some(_), .. }))
+        .filter(|(_, logged)| {
+            !sealed.contains(&logged.index)
+                && matches!(logged.entry.event, Event::Revoke { since: Some(_), .. })
+        })
         .map(|(at, _)| at)
         .collect();
     let mut verifier = Verifier::default();
@@ -1100,6 +1097,7 @@ fn replay_unsealed(
             effects,
             effect,
             &mut verifier,
+            sealed,
             0..entries.len(),
         )?;
         history.checks = verifier.asked;
@@ -1114,6 +1112,7 @@ fn replay_unsealed(
         effects,
         effect,
         &mut verifier,
+        sealed,
         0..0,
     )?;
     // The entries before the first claim were logged with no claim known; from each later
@@ -1140,6 +1139,7 @@ fn replay_unsealed(
                 effects,
                 effect,
                 &mut verifier,
+                sealed,
                 0..0,
             ) {
                 Ok(settled) => Some(settled.compromised),
@@ -1166,6 +1166,7 @@ fn replay_unsealed(
                 effects,
                 effect,
                 &mut verifier,
+                sealed,
                 &checked,
             ) {
                 Ok(_) => fallback = to,
@@ -1190,6 +1191,7 @@ fn replay_unsealed(
                 effects,
                 effect,
                 &mut verifier,
+                sealed,
                 &checked,
             )?;
         }
@@ -1212,12 +1214,16 @@ fn settle(
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     verifier: &mut Verifier,
+    sealed: &BTreeSet<u64>,
     checked: std::ops::Range<usize>,
 ) -> Result<History, ReplayError> {
     // The owner key each name brought in, and the index that brought it: registrations,
     // additions, recoveries and disputes, never cosigners.
     let mut introduced: BTreeMap<&str, Claim> = BTreeMap::new();
-    for logged in entries {
+    for logged in entries
+        .iter()
+        .filter(|logged| !sealed.contains(&logged.index))
+    {
         let brought: Vec<&Key> = match &logged.entry.event {
             Event::Register { keys, .. } => keys.iter().collect(),
             Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => vec![key],
@@ -1241,6 +1247,7 @@ fn settle(
         .collect();
     let mut claims: BTreeMap<u64, Claim> = entries
         .iter()
+        .filter(|logged| !sealed.contains(&logged.index))
         .filter_map(|logged| match &logged.entry.event {
             Event::Revoke {
                 name,
@@ -1276,6 +1283,7 @@ fn settle(
             effects,
             effect,
             verifier,
+            sealed,
             &checked,
         )?;
         history.checks = verifier.asked;
@@ -1380,6 +1388,7 @@ fn replay_once(
     effects: &mut BTreeMap<u64, Option<u64>>,
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     verifier: &mut Verifier,
+    sealed: &BTreeSet<u64>,
     checked: &std::ops::Range<usize>,
 ) -> Result<Replayed, PassError> {
     let mut state = Owner {
@@ -1429,6 +1438,28 @@ fn replay_once(
                     "the entry at {index} of the chain of `{owner}` is about another owner or source"
                 ),
             ));
+        }
+        // An entry of a sealed segment is void and changes nothing, but it is still an entry of
+        // the chain: in log order, about this owner, and never its first (`replay`).
+        if at != 0 && sealed.contains(&index) {
+            voided.push(index);
+            match &entry.event {
+                Event::Register { .. } => {
+                    return Err(rule(
+                        at,
+                        format!(
+                            "the entry at {index} of `{owner}` registers the owner, which only its first entry does"
+                        ),
+                    ));
+                }
+                Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => {
+                    void_keys.push(key.clone());
+                    state.know([key]);
+                }
+                Event::Cosigners(Some((_, list))) => state.know(list.iter()),
+                _ => {}
+            }
+            continue;
         }
         let note = logged.note;
         let refuse = |what: &str| format!("the entry at {index} of `{owner}` {what}");
