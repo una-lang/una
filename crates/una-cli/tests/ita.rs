@@ -76,6 +76,62 @@ fn lock_writes_the_default_solver_then_is_up_to_date() {
     assert_eq!(checked.diagnostics, []);
 }
 
+/// #1160: links planted at the temporary names `una ita lock` used to write are never written
+/// through, and a lock that is a link leading outside the package is refused.
+#[cfg(unix)]
+#[test]
+fn lock_never_writes_through_a_planted_link() {
+    let dir = package("planted-link", MANIFEST);
+    let victim = dir.parent().unwrap().join("planted-link-victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    for name in [".ita.lock.tmp", ".ita.lock.fmt-tmp"] {
+        std::os::unix::fs::symlink(&victim, dir.join(name)).unwrap();
+    }
+    let (code, out, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!((code, out.as_str()), (0, "wrote ita.lock\n"), "{err}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert!(
+        !std::fs::symlink_metadata(dir.join("ita.lock"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    let outside = dir.parent().unwrap().join("planted-link-outside.lock");
+    // A valid lock that differs from the one the command writes, so the run reaches the write.
+    let pinned = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 7\n  seed 3\n";
+    std::fs::write(&outside, pinned).unwrap();
+    std::fs::remove_file(dir.join("ita.lock")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("ita.lock")).unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_ne!(code, 0);
+    assert!(err.contains("outside the package"), "{err}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), pinned);
+    let _ = std::fs::remove_file(&victim);
+    let _ = std::fs::remove_file(&outside);
+}
+
+/// #1160: `una fmt ita.una` never writes through a link planted at its old temporary name.
+#[cfg(unix)]
+#[test]
+fn fmt_of_ita_una_never_writes_through_a_planted_link() {
+    let dir = package(
+        "fmt-planted-link",
+        "ita  demo\n  edition 0.4\n  version   0.1.0\n",
+    );
+    let victim = dir.parent().unwrap().join("fmt-planted-link-victim.txt");
+    std::fs::write(&victim, "untouched\n").unwrap();
+    std::os::unix::fs::symlink(&victim, dir.join(".ita.una.fmt-tmp")).unwrap();
+    let (code, _, err) = una(&["una", "fmt", path(&dir.join("ita.una"))]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo\n  version 0.1.0\n  edition 0.4\n"
+    );
+    let _ = std::fs::remove_file(&victim);
+}
+
 #[test]
 fn lock_keeps_the_solver_section_it_replaces() {
     let dir = package("keeps", MANIFEST);
@@ -222,6 +278,46 @@ fn migrate_moves_the_project_files_and_the_package_checks() {
     let (code, _, err) = una(&["una", "migrate", path(&dir)]);
     assert_eq!(code, 2);
     assert!(err.contains("already has ita.una"), "{err}");
+}
+
+#[test]
+fn migrate_rewrites_the_modules_in_the_canonical_form_of_edition_0_4() {
+    // ADR 0125, amendment of 2026-10-25: soft wrapping is the canonical form of edition 0.4,
+    // and `una migrate` applies it. The long call is canonical in edition 0.3, on one line, and
+    // wraps after the migration, which leaves nothing for U7001.
+    let declarations = "module demo\n\npub add(first: Int, second: Int, third: Int, fourth: Int) -> Int = first + second + third + fourth\n\n";
+    let long = "pub total(quantity: Int) -> Int = add(quantity, second: quantity + 1000, third: quantity + 2000, fourth: quantity + 3000)\n";
+    let wrapped = "pub total(quantity: Int) -> Int = add(quantity, second: quantity + 1000, third: quantity + 2000,\n  fourth: quantity + 3000\n)\n";
+    let dir = toml_package("migrate-wrap", "0.3", &format!("{declarations}{long}"));
+    let before = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(before.diagnostics, []);
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "wrote ita.una, ita.lock, src/demo.una; removed una.toml, verification.lock\nname: demo-pkg -> demo_pkg\nedition 0.3 -> 0.4: 0 diagnostics\n"
+    );
+    let migrated = format!("{declarations}{wrapped}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        migrated
+    );
+    let after = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(after.diagnostics, []);
+    let (code, _, err) = una(&["una", "fmt", "--check", path(&dir)]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    // Migrating twice changes nothing: the package is already of edition 0.4.
+    let (code, _, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("already has ita.una"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        migrated
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo_pkg\n  version 0.1.0\n  edition 0.4\n"
+    );
 }
 
 #[test]

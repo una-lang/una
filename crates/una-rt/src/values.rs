@@ -3597,14 +3597,23 @@ mod tests {
         } else {
             [100_000, 1_000_000]
         };
+        // The shortest of several runs per size, so a preemption of the test thread (the
+        // library's tests run in parallel) inflates no measurement; the claim stays linear.
+        // Five runs on the full sizes; one on Miri's small ones (it is slow, and times nothing).
+        let runs = if sizes[0] >= 100_000 { 5 } else { 1 };
         let times: Vec<std::time::Duration> = sizes
             .iter()
             .map(|&size| {
                 let digits = "7".repeat(size);
-                let started = std::time::Instant::now();
-                assert_eq!(parse_failure(text_word(digits.clone())), too_long);
-                assert_eq!(to_int(text_word(digits)), NONE);
-                started.elapsed()
+                (0..runs)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                        assert_eq!(to_int(text_word(digits.clone())), NONE);
+                        started.elapsed()
+                    })
+                    .min()
+                    .unwrap_or_default()
             })
             .collect();
         if !cfg!(miri) {
