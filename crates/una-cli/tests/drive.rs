@@ -99,11 +99,13 @@ fn drive(
                     "counter",
                     &mut lines,
                     &host,
-                    Limits::depth(10_000),
+                    Limits {
+                        stop_after: Some(iterations),
+                        ..Limits::depth(10_000)
+                    },
                     Drive {
                         ticks: 1,
                         budget: None,
-                        stop_after: Some(iterations),
                     },
                 );
                 (run, lines.0)

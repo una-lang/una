@@ -809,9 +809,18 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         self.builder.ins().jump(head, &initial);
 
-        // An iteration: its budget, then the body, which owns the state, with its exits.
+        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
+        // budget, then the body, which owns the state, with its exits.
         self.builder.switch_to_block(head);
         let current = self.builder.block_params(head).to_vec();
+        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let started = self.builder.create_block();
+        let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        self.builder
+            .ins()
+            .brif(host_stop, exit, &current_arguments, started, &[]);
+        self.builder.switch_to_block(started);
         let stopping = self.call("una_rt_budget", &[site])?;
         self.stop_if(stopping);
         let mut inner = env.clone();
@@ -827,19 +836,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
             outer: Scope::new(),
             base: 0,
         };
-        // With `on stop`, a failure of the body goes to it first.
-        let nested = match on_stop {
-            Some(_) => Catch {
-                block: failing,
-                outer: Scope::new(),
-                base: 0,
-                exit: Some(exits),
-            },
-            None => {
-                let mut nested = catch.nested(scope);
-                nested.exit = Some(exits);
-                nested
-            }
+        // A failure of the body leaves the body (ADR 0116 rule 14), then goes to `on stop`
+        // first, when there is one.
+        let nested = Catch {
+            block: failing,
+            outer: Scope::new(),
+            base: 0,
+            exit: Some(exits),
         };
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
         if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
@@ -863,20 +866,27 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .collect();
         self.builder.ins().jump(head, &next);
 
-        // After a failure: `on stop` on the saved state, then the failure goes on.
-        if let Some(on_stop) = on_stop {
-            self.builder.switch_to_block(failing);
-            let failure = self.param(failing)?;
-            let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
-            if let Some(result) = result {
-                self.release(result, Kind::Tuple);
-                self.fail(failure, scope, catch);
+        // After a failure: out of the body, `on stop` on the saved state, then the failure goes
+        // on.
+        self.builder.switch_to_block(failing);
+        let failure = self.param(failing)?;
+        self.runtime("una_rt_ever_end", &[]);
+        match on_stop {
+            Some(on_stop) => {
+                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.fail(failure, scope, catch);
+                }
             }
+            None => self.fail(failure, scope, catch),
         }
 
-        // The loop's value: the final state, through `on stop` when there is one.
+        // The loop's value: the final state, through `on stop` when there is one, out of the
+        // body.
         self.builder.switch_to_block(exit);
         let finals = self.builder.block_params(exit).to_vec();
+        self.runtime("una_rt_ever_end", &[]);
         let tuple = match on_stop {
             Some(on_stop) => {
                 for (&value, &kind) in saved.iter().zip(&kinds) {

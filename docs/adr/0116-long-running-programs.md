@@ -674,3 +674,7 @@ Rule 18 puts the installation of the handlers of SIGINT and SIGTERM in `una-sys`
 ## Amendment (2026-10-19): statements after `stop` or `skip`
 
 Rule 6 does not say what a statement after an unconditional `stop` or `skip` in the same block means. Such a statement never runs, and code that never runs is almost always a mistake. It is an error: U2040, "a statement after `stop` or `skip` in the same block, which never runs", at the first such statement, with a repair that removes the statements after the exit. `stop when c` is conditional, so the statements after it stay legal, and so do the statements after the block that holds the exit, which run on the paths that do not take it.
+
+## Amendment (2026-10-19): the reason of the hard stop in U6007
+
+Rule 16 shows U6007 with a `note:` line that says why the hard stop came. A diagnostic of `spec/13 §1` has no free note, and adding one would change the shape `una.diagnostic/1` of every diagnostic. The reason is part of the message instead, the same in both engines: "the host stopped the run before it finished, after the grace period of 10 seconds" (with "1 second" for a grace period of one second), or "the host stopped the run before it finished, at a second host stop request". The code's meaning, and its row in `spec/13 §4`, stay "The host stopped the run before it finished".

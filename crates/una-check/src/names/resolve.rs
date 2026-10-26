@@ -209,7 +209,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || (self.checker.package.settings.edition >= Edition::V0_3 && name == "F64")
                     // Edition 0.4: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
                     || (self.checker.package.settings.edition >= Edition::V0_4
-                        && prelude::ROUNDING_0_4.contains(&name))
+                        && (prelude::ROUNDING_0_4.contains(&name)
+                            || prelude::HTTP_0_4.contains(&name)))
                     // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
                     || (self.checker.package.settings.edition >= Edition::V0_4
                         && matches!(name, "Array" | "Matrix"))
@@ -317,6 +318,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::ROUNDING_0_4);
+                    names.extend(prelude::HTTP_0_4);
                     names.push("Matrix");
                 }
             }
