@@ -153,6 +153,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "starts the timer thread, which serves until the process ends, and Miri rejects a thread alive at exit"
+    )]
     fn a_timer_sets_its_entry_once_its_deadline_passes_and_a_cancelled_one_never_does() {
         let clock = crate::runtime::clock();
         // The process's clock is the real one in these tests; a virtual one never moves here.
