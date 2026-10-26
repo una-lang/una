@@ -212,7 +212,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || (self.checker.package.settings.edition >= Edition::V0_3 && name == "F64")
                     // Edition 0.4: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
                     || (self.checker.package.settings.edition >= Edition::V0_4
-                        && prelude::ROUNDING_0_4.contains(&name))
+                        && (prelude::ROUNDING_0_4.contains(&name)
+                            || prelude::HTTP_0_4.contains(&name)))
                     // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
                     || (self.checker.package.settings.edition >= Edition::V0_4
                         && matches!(name, "Array" | "Matrix"))
@@ -326,6 +327,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
                 if self.checker.package.settings.edition >= Edition::V0_4 {
                     names.extend(prelude::ROUNDING_0_4);
+                    names.extend(prelude::HTTP_0_4);
                     names.push("Matrix");
                     names.extend(prelude::UPPER_0_4);
                 }
@@ -482,7 +484,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                         ClauseKind::Uses(uses) => self.cap_type(&uses.cap_type),
                         ClauseKind::Fails(kind) => self.lookup(kind, Space::Upper, "error kind"),
                         // A parameter, which the type checker resolves (ADR 0062).
-                        ClauseKind::UsesOf(_) | ClauseKind::FailsOf(_) => {}
+                        ClauseKind::UsesOf(_) | ClauseKind::FailsOf(_) | ClauseKind::Diverges => {}
                         ClauseKind::DerivedFrom(requirements) => {
                             for requirement in requirements {
                                 self.requirement(requirement);
@@ -679,6 +681,22 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
             }
             Stmt::Skip(_) => {}
+            Stmt::Until(stmt) => {
+                self.expr(&stmt.condition);
+                self.expr(&stmt.measure);
+                self.block(&stmt.block);
+            }
+            Stmt::Ever(stmt) => {
+                // The deadline is evaluated once, before the first iteration (`spec/26 §7`).
+                if let Some(within) = &stmt.within {
+                    self.expr(within);
+                }
+                self.block(&stmt.block);
+                if let Some(on_stop) = &stmt.on_stop {
+                    self.block(&on_stop.block);
+                }
+            }
+            Stmt::OnStop(on_stop) => self.block(&on_stop.block),
         }
     }
 
