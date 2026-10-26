@@ -48,7 +48,9 @@ pub main() -> Unit
   edit fields.add(item: Wide(value: top).value)
   @console.print("wide: {wide.len} {generic.len} {fields.len} {fields}")
   let half = 4611686018427387904
-  let promoted = fill(s: empty_hash_set(), xs: [half, half * 2, 9223372036854775808, 2305843009213693952 * 2])
+  let promoted = fill(s: empty_hash_set(),
+    xs: [half, half * 2, 9223372036854775808, 2305843009213693952 * 2]
+  )
   @console.print("promoted: {promoted.len}")
   let one: U8 = 1
   let two: U8 = 2
