@@ -1673,6 +1673,38 @@ pub enum LoopSource {
         /// Whether `high` is visited (`..`), or excluded (`..<`).
         inclusive: bool,
     },
+    /// `until(c)`: no element; before each iteration, `cond` is evaluated with the current
+    /// state bound, and the loop ends when it is `true` (`spec/26 §4`, ADR 0116 rule 20). Only
+    /// in a loop, never in `together_for`.
+    Until {
+        /// The condition, an expression over the loop's state and the bindings before it.
+        cond: Box<Expr>,
+        /// The condition as a formula, when it is in the refinement language: false in the
+        /// body, and true after a loop with no `stop` (ADR 0116 V1, V3).
+        holds: Option<Box<Clause>>,
+        /// The measure, over the loop's state, which is never evaluated (ADR 0116 V1).
+        measure: Box<Clause>,
+        /// The word `decreases`, where the measure's obligations are reported.
+        decreases: Span,
+    },
+    /// `ever`: no element and no end but `stop`, a host stop at the start of an iteration, a
+    /// failure of the body or a cancellation (`spec/26 §5`). Only in a loop.
+    Ever {
+        /// `within d`: the deadline of each iteration, in milliseconds, evaluated once before
+        /// the first iteration, and the span of `d`, where its obligation `d >= 1` is reported
+        /// (`spec/26 §7`, ADR 0116 rule 11).
+        within: Option<(Atom, Span)>,
+    },
+}
+
+/// The `on stop` block of a loop (`spec/26 §5`, ADR 0116 rule 20): its binders of the state,
+/// and its body, whose value is the tuple of the state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnStop {
+    /// The binders of the state in the block.
+    pub state: Vec<(Name, Type)>,
+    /// The block.
+    pub body: Expr,
 }
 
 /// How an iteration of a loop ends (`spec/26 §3`, ADR 0116 rule 20).
@@ -1746,6 +1778,10 @@ pub enum Expr {
         init: Vec<Atom>,
         /// The body, whose value is the tuple of the new state.
         body: Box<Expr>,
+        /// The `on stop` block of a `for ever` (ADR 0116 rule 20), run once the loop has ended,
+        /// with its final state, or after a failure of the body with the state from before the
+        /// loop, which then propagates. Its value, the tuple of the state, is the loop's.
+        on_stop: Option<Box<OnStop>>,
         /// The loop in the source.
         span: Span,
     },
@@ -2091,6 +2127,9 @@ pub struct Example {
     pub body: Expr,
     /// The expectations, in order.
     pub expectations: Vec<Expectation>,
+    /// The `N` of its `stop after N` line, in edition 0.4: a host stop arrives once `N`
+    /// iterations of `for ever` loops have started (ADR 0116 rule 19, `spec/26 §8`).
+    pub stop_after: Option<u64>,
 }
 
 /// The Core IR of a module.

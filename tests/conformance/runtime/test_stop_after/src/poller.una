@@ -1,0 +1,65 @@
+-- test: a test's `stop after N` line stops the `for ever` loop of its `do` line at the start of iteration N + 1, `on stop` runs, and `elapse` moves the test's virtual clock at once, so hours of handler time cost none (spec/26 §8, ADR 0116 rule 19)
+-- spec: spec/26 §8
+-- expect: test-pass
+module poller
+
+import std.testing (elapse)
+import std.time (Millisecond, millisecond, minute)
+
+pub capability Store
+  op get(key: Text) -> Text
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+--- A duration that moves time forward.
+pub kind Delay = Int of Millisecond where it >= 0
+
+pub handler slow_store(delay: Delay) for Store
+  op get(key) =
+    elapse(delay)
+    "v"
+
+pub handler memory_log() for Log
+  op write(line) = unit
+
+pub poll(key: Text) -> Int
+  uses @store: Store[get]
+  uses @log: Log[write]
+  diverges
+=
+  let edit reads = 0
+  for ever
+    let value = @store.get(key)
+    @log.write(value)
+    reads = reads + 1
+  on stop
+    @log.write("stopped after {reads}")
+  reads
+
+example "the loop reads the store twice, then stops"
+  given @store = slow_store(delay: 150 * millisecond)
+  given @log = memory_log()
+  do poll("k")
+  expect result == 2
+  expect performed @log.write
+  stop after 2
+
+example "a thousand hours of virtual time pass at once"
+  given @store = slow_store(delay: 60 * minute)
+  given @log = memory_log()
+  do poll("k")
+  expect result == 1000
+  stop after 1000
+
+example "a stop schedule with no loop changes nothing"
+  given @log = memory_log()
+  do once("k")
+  expect result == 1
+  stop after 1
+
+pub once(key: Text) -> Int
+  uses @log: Log[write]
+=
+  @log.write(key)
+  1

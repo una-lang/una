@@ -238,7 +238,11 @@ fn refinement_goals(name: &str, source: &str) -> Vec<String> {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn_scoped(scope, || {
-                una_verify::obligations(&checked.program, &checked.sources)
+                una_verify::obligations(
+                    &checked.program,
+                    &checked.sources,
+                    una_verify::SourceLayout::Joined,
+                )
             })
             .unwrap()
             .join()
