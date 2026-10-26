@@ -1,0 +1,35 @@
+-- test: `elapse` moves time forward only: its duration must be at least 0, an obligation of its call (U5001, spec/26 §8, ADR 0116 rule 19)
+-- spec: spec/26 §8
+-- expect: error U5001 at src/back.una:14:5
+module back
+
+import std.testing (elapse)
+import std.time (millisecond)
+
+pub capability Store
+  op get(key: Text) -> Text
+
+pub handler rewinding() for Store
+  op get(key) =
+    elapse(0 - 5 * millisecond)
+    "v"
+
+pub handler waiting() for Store
+  op get(key) =
+    elapse(0 * millisecond)
+    "v"
+
+pub read() -> Text
+  uses @store: Store[get]
+=
+  @store.get("k")
+
+example "a rewinding store"
+  given @store = rewinding()
+  do read()
+  expect result == "v"
+
+example "a waiting store"
+  given @store = waiting()
+  do read()
+  expect result == "v"

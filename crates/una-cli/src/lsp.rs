@@ -59,6 +59,7 @@ impl Workspace for CliWorkspace {
             &package.sources,
             &analysis,
             verification.as_ref(),
+            verification::source_layout(&package),
             &mut checked,
         );
         checked
@@ -102,6 +103,7 @@ fn index(
     sources: &una_syntax::SourceDb,
     analysis: &crate::Analysis,
     verification: Option<&verification::Verification>,
+    layout: una_verify::SourceLayout,
     checked: &mut Checked,
 ) {
     use una_syntax::ast::DeclKind;
@@ -140,7 +142,8 @@ fn index(
                     .headers
                     .iter()
                     .find(|h| h.module == module && h.name == name.as_str());
-                let contract = crate::contract::contract(&modules, &module, decl, function, header);
+                let contract =
+                    crate::contract::contract(&modules, &module, decl, function, header, layout);
                 Some(format!("```una\n{}\n```", contract.lines().join("\n")))
             })
             .clone();

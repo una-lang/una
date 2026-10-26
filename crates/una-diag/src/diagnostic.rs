@@ -90,6 +90,12 @@ pub enum ObligationKind {
     /// A locked function's header is at least as strong as its lock: the header's condition on
     /// a locked operation implies the lock's (ADR 0092 rule 8).
     ContractLock,
+    /// The measure of a `for until` loop is at least 0 where the loop continues (ADR 0116
+    /// V1).
+    DecreasesBound,
+    /// The measure of a `for until` loop decreases in every iteration that goes on (ADR 0116
+    /// V1).
+    DecreasesStep,
 }
 
 impl ObligationKind {
@@ -104,6 +110,8 @@ impl ObligationKind {
             ObligationKind::Overflow => "overflow",
             ObligationKind::EffectCondition => "effect_condition",
             ObligationKind::ContractLock => "contract_lock",
+            ObligationKind::DecreasesBound => "decreases_bound",
+            ObligationKind::DecreasesStep => "decreases_step",
         }
     }
 }
