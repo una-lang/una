@@ -12,6 +12,7 @@ rustls.workspace = true
 webpki-roots.workspace = true
 
 [dev-dependencies]
+una-sys.workspace = true
 rcgen.workspace = true
 
 [lints]

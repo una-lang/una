@@ -17,6 +17,7 @@ una-diag.workspace = true
 una-hash.workspace = true
 una-http.workspace = true
 una-syntax.workspace = true
+una-sys.workspace = true
 
 [lints]
 workspace = true

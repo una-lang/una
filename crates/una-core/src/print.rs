@@ -282,6 +282,11 @@ fn print_source(source: &LoopSource) -> String {
             if *inclusive { ".." } else { "..<" },
             print_atom(high)
         ),
+        LoopSource::Until { measure, .. } => format!("until decreases {}", measure.text),
+        LoopSource::Ever { within: None } => "ever".to_owned(),
+        LoopSource::Ever {
+            within: Some((deadline, _)),
+        } => format!("ever within {}", print_atom(deadline)),
     }
 }
 
@@ -632,8 +637,10 @@ impl Printer {
                 state,
                 init,
                 body,
+                on_stop,
                 ..
             } => {
+                let source_ref = source.as_ref();
                 let source = print_source(source);
                 let state: Vec<String> = state
                     .iter()
@@ -651,7 +658,22 @@ impl Printer {
                         state.join(", ")
                     ),
                 );
+                // The condition of `until`, evaluated before each iteration.
+                if let LoopSource::Until { cond, .. } = source_ref {
+                    self.line(indent + 1, "until");
+                    self.expr(indent + 2, cond);
+                    self.line(indent + 1, "do");
+                }
                 self.expr(indent + 1, body);
+                if let Some(on_stop) = on_stop {
+                    let names: Vec<&str> = on_stop
+                        .state
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    self.line(indent, &format!("on stop with ({}) do", names.join(", ")));
+                    self.expr(indent + 1, &on_stop.body);
+                }
             }
             Expr::Together { tasks, .. } => {
                 self.line(indent, "together");

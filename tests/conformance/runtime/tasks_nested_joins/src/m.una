@@ -1,0 +1,46 @@
+-- test: blocks of `together` nested three levels deep, whose tasks print, end with their results in branch order: each join parks its task, so no join holds a worker that the tasks under it need, whatever the number of workers
+-- spec: spec/27 §2
+-- grant: console
+-- expect: run-output "a.1.1"
+-- expect: run-output "a.1.2"
+-- expect: run-output "a.2.1"
+-- expect: run-output "a.2.2"
+-- expect: run-output "b.1.1"
+-- expect: run-output "b.1.2"
+-- expect: run-output "b.2.1"
+-- expect: run-output "b.2.2"
+-- expect: run-output "26 422"
+module m
+
+--- Prints `label` and returns `n`.
+leaf(label: Text, n: Int) -> Int
+  uses @console: Console[print]
+=
+  @console.print(label)
+  n
+
+--- Two leaves at once.
+middle(label: Text, n: Int) -> Int
+  uses @console: Console[print]
+=
+  together
+    let x = leaf("{label}.1", n: n)
+    let y = leaf("{label}.2", n: n + 1)
+  x + y
+
+--- Two middles at once.
+top(label: Text, n: Int) -> Int
+  uses @console: Console[print]
+=
+  together
+    let x = middle("{label}.1", n: n)
+    let y = middle("{label}.2", n: n + 10)
+  x + y
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  together
+    let a = top("a", n: 1)
+    let b = top("b", n: 100)
+  @console.print("{a} {b}")

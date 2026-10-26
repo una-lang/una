@@ -47,6 +47,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
    - `TooLarge`: the response passed a limit of §4 rule 1;
    - `Tls`: the TLS handshake or the certificate failed;
    - `Protocol`: the response is not valid HTTP/1.1 as §3 reads it, or its body is not UTF-8.
+   - (Edition 0.4 preview, ADR 0116 rule 12.) `Interrupted`, a ninth variant after `Protocol`, in edition `0.4` only: a host stop request came while the operation waited, or before it started, in the body of a `for ever` (`spec/26 §6`). The request may or may not have reached its server.
 
    A header value with a control character other than a tab is no failure: the run aborts with U6004 at the operation, before anything is sent. A header's value is `internal` (§5), so a failure the program could handle would reveal whether it holds one; an abort is outside the noninterference model (`spec/07 §1`).
 
