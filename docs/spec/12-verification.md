@@ -52,6 +52,8 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 
 (v0.3, ADR 0092 rule 8.) The kind `contract_lock` joins this table. It is generated for each operation that a function's lock in `una.toml` conditions by `C_lock` and that the header grants (`spec/05 §3` rule 5), at the operation in the header: its goal is `C_src ⇒ C_lock` over the parameters on entry, with `C_src` the header's condition, `true` when it writes none. Refuted, it is U3023; unknown, U5002. The type checker rejects a `C_lock` outside the refinement language as U7002 at the lock's entry, before any obligation. Should one reach the verifier outside the encoding (§2), it is no goal, so the obligation is never proven by it: a refutation then makes it unknown, U5002 at the lock's entry in `una.toml`, naming the condition, with the header's operation as the related location. A `C_src` outside the encoding is dropped, which only strengthens the goal.
 
+(Edition 0.4, ADR 0116 V1.) The kinds `decreases_bound` and `decreases_step` join this table, for each `for until c decreases m` (`spec/26 §4`). `decreases_bound` is generated at the start of an iteration, with `not c` assumed when `c` is in the refinement language: its goal is `m >= 0`. `decreases_step` is generated at the end of each path from the start of an iteration to the end of the body or a `skip`: its goal is that `m` there is less than `m` at the start. A path that ends at `stop` carries neither. Both are reported at the word `decreases`, as "the measure `m` may be negative where the loop continues" and "the measure `m` may not decrease in this iteration": refuted, U5001; unknown, U5002.
+
 Each obligation is `Π ⊢ goal`, sent to the solver as the satisfiability check of `Π ∧ ¬goal`. An `ensures` clause, and the refinement of a declared result type, give one obligation over every normal return path, `Π ∧ (path₁ ∨ … ∨ pathₙ) ∧ ¬goal`, whose diagnostic points at the returned expression of the path the model takes; every other obligation belongs to one site.
 
 Besides the hypotheses above, a query holds ground facts for every term in it: `len ≥ 0`; `0 ≤ tag < n`; and the refinement of a record field applied to the field's term, under the tag of its variant for a sum. Constructors add their tag and field equations, list literals their length, and text literals their length (ADR 0033).
@@ -165,6 +167,11 @@ The bindings cover the parameters, `result`, named `let`s, pattern variables and
 ## 8. Obligation identity
 
 Each obligation has a stable id: `ob-` followed by the first 12 hex digits of SHA-256 over the module path, enclosing declaration, kind and normalized goal text. Ids survive edits that do not change the obligation, and two obligations of the same kind and goal in one declaration share one. Goals print in the surface syntax, with `it` replaced by the source text of the value; the normalized goal collapses white space (ADR 0033).
+
+The normalized goal depends on the package's edition (ADR 0125, amendment of 2026-10-25):
+
+- In editions 0.1 to 0.3, it collapses white space, as above and unchanged, so the ids of their sources stay what they were. The hypotheses an obligation lists show their source text as written.
+- In edition 0.4, whose canonical form wraps long lines (`spec/15 §2`), white space that holds a line break right before a `)` or `]` token is erased first, and then white space collapses. A `)` or `]` inside a text literal is no token and is left alone. A wrapped line therefore gives the same goal and id as the same line on one line. The hypotheses an obligation lists, and the header and clauses that `una contract` shows, are normalized the same way. The normalization lexes the text once and reads each closer once: linear time and space.
 
 ## 9. Lock file and cache
 

@@ -5,16 +5,16 @@
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
-    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind,
-    ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal,
-    PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, WhenExpr,
+    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, EverStmt, Expr,
+    ExprKind, ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue,
+    Literal, PatternKind, Stmt, StopStmt, TextPart, TogetherFor, TogetherStmt, UntilStmt, WhenExpr,
 };
 
 use super::Report;
-use super::authority::{Bound, Frame};
+use super::authority::{Base, Bound, Frame};
 use super::check::{Checker, Ctx, LoopFrame, Rl, Role};
 use super::closest;
-use super::env::KindDef;
+use super::env::{Entity, KindDef};
 use super::label::Label;
 use super::locals::TakenState;
 use super::records::Res;
@@ -145,6 +145,29 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
                 }
+                Stmt::Until(stmt) => {
+                    self.outside_rl(stmt.span, || "`for until`".to_owned());
+                    self.until_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::Ever(stmt) => {
+                    self.outside_rl(stmt.span, || "`for ever`".to_owned());
+                    self.ever_stmt(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::OnStop(on_stop) => {
+                    self.report.error(
+                        Code::U2034,
+                        on_stop.keyword,
+                        "`on stop` follows only a `for ever` loop, which is the only one a host stop can end; run the statements after the loop instead".to_owned(),
+                    );
+                    let ty = self.block(&on_stop.block, None, Role::Plain, false);
+                    self.discarded(value_span(&on_stop.block), &ty);
+                }
                 Stmt::Skip(span) => {
                     self.outside_rl(*span, || "`skip`".to_owned());
                     self.skip_stmt(*span);
@@ -158,6 +181,156 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         self.unreachable_after_exit(block);
         ty
+    }
+
+    /// Whether code here may run forever: in a function that says `diverges`, or in the `do`
+    /// line of a test with a `stop after` line, outside lambdas, `together` tasks, `on stop`
+    /// blocks and the bodies of `for ever` loops (ADR 0116 rules 8 to 10 and 19). Otherwise,
+    /// the reason, for U3027.
+    pub(crate) fn divergence_refused(&self) -> Option<&'static str> {
+        let diverges = self
+            .current
+            .and_then(|id| self.env.functions.get(id))
+            .is_some_and(|def| def.diverges);
+        if self.lambda_depth > 0 {
+            Some(
+                "a lambda may not run forever: it is an ordinary value that can be called later from code that does not say `diverges`",
+            )
+        } else if self.task_depth > 0 {
+            Some(
+                "a `together` task may not run forever, since the tasks of a block run one after another in the interpreter; start it with `start` instead",
+            )
+        } else if self.in_on_stop {
+            Some("an `on stop` block runs once its loop has ended, and must end itself")
+        } else if self.in_ever {
+            Some(
+                "each iteration of a `for ever` loop must end, so its body runs no `for ever` and calls no function that says `diverges`",
+            )
+        } else if self.base == Base::Example {
+            // A test (ADR 0116 rule 19): only its `do` line, under its `stop after` line.
+            (!(self.ctx.in_do && self.do_stops)).then_some(
+                "a test runs forever only in its `do` line, under a stop schedule; end the test with a `stop after N` line",
+            )
+        } else if !diverges {
+            Some(
+                "its function does not say `diverges`; add `diverges` to the header of a function that may run forever",
+            )
+        } else {
+            None
+        }
+    }
+
+    /// `for ever` with its body and `on stop` (`spec/26 §5`, ADR 0116 rules 8 to 10): legal only
+    /// where code may run forever (U3027); the body runs under the enclosing program counter
+    /// (IF4); `on stop` runs once the loop has ended, must not fail (U3029), and may not end
+    /// the loop with `stop` or `skip` (U2034).
+    fn ever_stmt(&mut self, stmt: &EverStmt) {
+        if let Some(reason) = self.divergence_refused() {
+            self.report.error(
+                Code::U3027,
+                stmt.span,
+                format!("`for ever` may run forever here: {reason}"),
+            );
+        }
+        // `within d` (`spec/26 §7`, ADR 0116 rule 11): evaluated once, before the loop.
+        let deadline = stmt.within.as_ref().map(|within| self.deadline(within));
+        let before = self.taken_state();
+        let before_len = self.locals.len();
+        let mark = self.locals.len();
+        self.loops.push(LoopFrame {
+            pc: self.ctx.pc.clone(),
+            depth: (self.task_depth, self.lambda_depth),
+            skipped: None,
+            on_stop: false,
+        });
+        let in_ever = std::mem::replace(&mut self.in_ever, true);
+        // IF8: the timing label of the body, for the failures the deadline causes.
+        if let Some(label) = &deadline {
+            self.timing_start();
+            self.timing_source(label.clone(), "the deadline".to_owned());
+        }
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        if deadline.is_some() {
+            let seed = self.timing_end();
+            if self.pass == super::authority::Pass::Check {
+                self.findings.deadline_loops.push(super::DeadlineLoop {
+                    span: stmt.span,
+                    function: self.current,
+                    seed,
+                });
+            }
+        }
+        self.in_ever = in_ever;
+        self.loops.pop();
+        self.locals.truncate(mark);
+        self.discarded(value_span(&stmt.block), &ty);
+        self.taken_in_loop(&before, before_len);
+        if let Some(on_stop) = &stmt.on_stop {
+            self.loops.push(LoopFrame {
+                pc: self.ctx.pc.clone(),
+                depth: (self.task_depth, self.lambda_depth),
+                skipped: None,
+                on_stop: true,
+            });
+            let in_on_stop = std::mem::replace(&mut self.in_on_stop, true);
+            let ty = self.block(&on_stop.block, None, Role::Plain, false);
+            self.in_on_stop = in_on_stop;
+            self.loops.pop();
+            self.locals.truncate(mark);
+            self.discarded(value_span(&on_stop.block), &ty);
+        }
+        self.join_skipped(&before);
+    }
+
+    /// The deadline `d` of `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): an `Int of
+    /// Millisecond` (U2028 for another unit or none, U2001 for a type that is not an integer)
+    /// of at least 1, a `refinement` obligation (U5001 for `within 0`). Returns its label,
+    /// which the timing label of the body joins (IF5 item 5).
+    fn deadline(&mut self, within: &Expr) -> Label {
+        let found = self.expr(within, None);
+        let found = self.resolve(&found);
+        let label = self.deep(&found);
+        if matches!(found.unlabeled(), Ty::Error(_)) {
+            return label;
+        }
+        let shown = self.show(&found);
+        if !matches!(found.magnitude(), Ty::Int) {
+            self.report.error(
+                Code::U2001,
+                within.span,
+                format!(
+                    "the deadline of `for ever within` is an `Int of Millisecond`, found `{shown}`"
+                ),
+            );
+            return label;
+        }
+        let millisecond = self
+            .env
+            .modules
+            .iter()
+            .find(|module| module.path == crate::names::prelude::STD_TIME)
+            .and_then(|module| match module.upper.get("Millisecond") {
+                Some(&Entity::Unit(id)) => self.env.units.get(id).and_then(|u| u.norm.clone()),
+                _ => None,
+            });
+        let is_millisecond = match (found.unit(), &millisecond) {
+            (Some(unit), Some(expected)) => unit == expected.as_ref(),
+            _ => false,
+        };
+        if !is_millisecond {
+            let mut diagnostic = self.report.make(
+                Code::U2028,
+                within.span,
+                format!("the deadline of `for ever within` is an `Int of Millisecond` from `std.time`, found `{shown}`"),
+            );
+            diagnostic.repairs.push(Report::advice(
+                "write the deadline in milliseconds, as `100 * millisecond` with `import std.time (millisecond)`",
+            ));
+            self.report.push(diagnostic);
+            return label;
+        }
+        self.obligation(ObligationKind::Refinement, within.span, None);
+        label
     }
 
     /// U2040: statements after an unconditional `stop` or `skip` in the same block never run
@@ -381,6 +554,7 @@ impl<'a> Checker<'_, 'a, '_> {
             pc: self.ctx.pc.clone(),
             depth: (self.task_depth, self.lambda_depth),
             skipped: None,
+            on_stop: false,
         });
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.loops.pop();
@@ -421,10 +595,15 @@ impl<'a> Checker<'_, 'a, '_> {
     /// U2034 for `word` at `span` when no loop body encloses it at its own task and lambda
     /// depth (`spec/26 §3`, ADR 0116 rule 6); whether it has a loop.
     fn exit_in_loop(&mut self, word: &str, span: Span) -> bool {
-        if self.innermost_loop().is_some() {
+        let frame = self.innermost_loop().map(|frame| frame.on_stop);
+        if frame == Some(false) {
             return true;
         }
-        let message = if self.loops.is_empty() {
+        let message = if frame == Some(true) {
+            format!(
+                "`{word}` cannot end the loop from its `on stop` block, which runs once the loop has ended"
+            )
+        } else if self.loops.is_empty() {
             format!("`{word}` is outside a loop body; it belongs to the body of a `for` loop")
         } else {
             format!(
@@ -488,6 +667,81 @@ impl<'a> Checker<'_, 'a, '_> {
                 Some((label, at)) => (label.join(&pc), at.or(from)),
                 None => (pc, from),
             });
+        }
+    }
+
+    /// `for until c decreases m` with its block (`spec/26 §4`, ADR 0116 rule 7, V1, IF1): `c`
+    /// is a `Bool`, `m` an integer in the refinement language that is never run, and the body
+    /// runs under the label of `c`, since how many iterations run depends on it. The measure
+    /// carries the `decreases_bound` and `decreases_step` obligations, at `decreases`.
+    fn until_stmt(&mut self, stmt: &UntilStmt) {
+        // Whether `c` is in the refinement language decides what the verifier may assume.
+        let saved = std::mem::replace(&mut self.probe_failed, false);
+        self.ctx.rl = Rl::Probe;
+        let label = self.condition_label(&stmt.condition, "the condition of `for until`");
+        self.ctx.rl = Rl::Off;
+        if !std::mem::replace(&mut self.probe_failed, saved) {
+            self.findings.refinable_conditions.push(stmt.condition.span);
+        }
+        let ctx = Ctx {
+            rl: Rl::Clause,
+            labels: false,
+            ..self.ctx.clone()
+        };
+        let measure = self.within(ctx, |checker| checker.expr(&stmt.measure, None));
+        let measure = self.resolve(&measure);
+        if !matches!(measure.unlabeled(), Ty::Error(_))
+            && !super::fixed::is_integer(measure.magnitude())
+        {
+            self.report.error(
+                Code::U2001,
+                stmt.measure.span,
+                format!(
+                    "the measure of `decreases` must be an integer, found `{}`",
+                    self.show(&measure)
+                ),
+            );
+        }
+        self.obligation(ObligationKind::DecreasesBound, stmt.decreases, None);
+        self.obligation(ObligationKind::DecreasesStep, stmt.decreases, None);
+        let before = self.taken_state();
+        let before_len = self.locals.len();
+        let saved = self.raise_pc(&label, stmt.condition.span);
+        let mark = self.locals.len();
+        self.loops.push(LoopFrame {
+            pc: self.ctx.pc.clone(),
+            depth: (self.task_depth, self.lambda_depth),
+            skipped: None,
+            on_stop: false,
+        });
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.loops.pop();
+        self.locals.truncate(mark);
+        self.restore_pc(saved);
+        self.discarded(value_span(&stmt.block), &ty);
+        self.taken_in_loop(&before, before_len);
+        self.join_skipped(&before);
+    }
+
+    /// U2017: the outer bindings that the body of a loop takes, and that it does not give a
+    /// new value before its end, are taken in every iteration (`spec/17 §3` rule 3).
+    fn taken_in_loop(&mut self, before: &TakenState, before_len: usize) {
+        let newly: Vec<(usize, Span)> = self
+            .locals
+            .taken_now()
+            .filter(|&(index, _)| index < before_len && before.get(index).is_none())
+            .collect();
+        for (index, at) in newly {
+            if let Some(local) = self.locals.get(index) {
+                let name = local.name;
+                self.report.error(
+                    Code::U2017,
+                    at,
+                    format!(
+                        "`{name}` is taken in every iteration of this loop; give it a new value before the end of the body, or declare it inside the loop"
+                    ),
+                );
+            }
         }
     }
 
@@ -1509,6 +1763,9 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::BlockExpr(expr) => block_expr_span(expr),
         Stmt::Stop(stmt) => stmt.span,
         Stmt::Skip(span) => *span,
+        Stmt::Until(stmt) => stmt.span,
+        Stmt::Ever(stmt) => stmt.span,
+        Stmt::OnStop(on_stop) => on_stop.span,
     }
 }
 

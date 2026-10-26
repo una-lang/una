@@ -111,12 +111,12 @@ These rules extend `spec/11 §5`.
 ## 8. Runtimes
 
 1. **The interpreter** runs the tasks of a block sequentially, in index order (§6 rule 6). It stays single-threaded and is the deterministic reference of `spec/11 §1`.
-2. **The native backend** runs each task on its own operating-system thread, with a stack sized from `--max-depth` (`spec/16 §3` rule 3).
+2. **The native backend** runs each task on a coroutine, with a stack sized from `--max-depth` (`spec/16 §3` rule 3), run by one of `--workers` operating-system threads that it never leaves (`spec/27 §1`, ADR 0117).
    - Each task has its own heap. At the fork, the values a task captures are copied into its heap, and at the join its result is copied back into the heap of the task that runs the block. Reference counts stay non-atomic (`spec/16 §4` rule 1).
    - The grants and keys of the run are read-only, and each task's state holds them.
    - Each task records its events in its own buffer. The join appends the buffers in task order, then numbers `seq` and the installation ids (§7 rule 2).
    - Each task carries a cancellation entry for its own block and for each block above it, checked at each call, operation and loop iteration: each block keeps the lowest index of a task of it that failed or aborted, and a task after that index is cancelled; after a task of the block stops with U8001, every other task of the block is cancelled, the lower-indexed ones included (ADR 0113 rule 1). Inside an operation in progress, including the body of a Una handler's operation, only the entries of tasks the operation itself starts are checked: the operation completes and keeps its outcome (§6 rule 4, §7 rule 3), and the cancellation takes effect at the next check after it. The limits of rule 3 still apply inside it.
-   - The host capabilities of `una-rt` are safe to call from several tasks at once. A host operation blocks only its own task's thread.
+   - The host capabilities of `una-rt` are safe to call from several tasks at once. A host operation that may block parks only its own task, while a helper thread performs it (`spec/27 §2`).
 3. **Limits.** `--max-depth` bounds each task's call depth, counted from the depth of the block that started it. `--max-memory` bounds the heaps of all tasks together (`spec/11 §7`).
 4. **Equivalence** (`spec/16 §5`). For a run that starts tasks:
    - the exit status and the failure MUST equal the interpreter's;

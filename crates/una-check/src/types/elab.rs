@@ -12,10 +12,10 @@ use una_core::{
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
-    DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource, ForStmt,
-    FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
+    DeclKind, ElseBranch, EverStmt, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource,
+    ForStmt, FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
     OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, UnaryOp, UsesClause, VariantExpr, WhenExpr,
+    TogetherStmt, UnaryOp, UntilStmt, UsesClause, VariantExpr, WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -1243,6 +1243,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 | ClauseKind::Fails(_)
                 | ClauseKind::UsesOf(_)
                 | ClauseKind::FailsOf(_)
+                | ClauseKind::Diverges
                 | ClauseKind::DerivedFrom(_) => {}
             }
         }
@@ -1965,6 +1966,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             name,
             body,
             expectations,
+            stop_after: example.stop_after.as_ref().map(|line| line.iterations),
         })
     }
 
@@ -2037,6 +2039,28 @@ impl<'e, 'a> Fx<'e, 'a> {
                     tail = self.exit(ExitTag::Next, *span);
                     wrapped = true;
                     break;
+                }
+                Stmt::Ever(stmt) => {
+                    self.ever_loop(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                // U2034, already reported.
+                Stmt::OnStop(_) => self.broken.set(true),
+                Stmt::Until(stmt) => {
+                    self.until_loop(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
                 }
                 // `stop when c` is `if c` around `stop`.
                 Stmt::Stop(stmt) => {
@@ -2822,6 +2846,175 @@ impl<'e, 'a> Fx<'e, 'a> {
             state,
             init,
             body: Box::new(body),
+            on_stop: None,
+            span: stmt.span,
+        };
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            looped,
+            stmt.span,
+            false,
+        );
+        if names.is_empty() {
+            return;
+        }
+        let mut after = Vec::new();
+        for (name, ty) in names.iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
+    }
+
+    /// `for until c decreases m` (`spec/26 §4`): a Core loop from `until(c)` over the bindings
+    /// its body updates, `c` evaluated before each iteration with the state bound, and `m` a
+    /// clause over the state for the verifier only (ADR 0116 rules 7 and 20).
+    fn until_loop(&mut self, lets: &mut Vec<Let>, stmt: &UntilStmt) {
+        let mut names = Vec::new();
+        self.scan_block(&stmt.block, &[], &mut names);
+        names.retain(|name| self.local(name).is_some());
+        let mut init = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let binder = self.local(name).unwrap_or_default();
+            types.push(self.binding_type(&binder, stmt.span));
+            init.push(Atom::Var(binder));
+        }
+        let mark = self.scope.len();
+        let var = (self.temp(), unit());
+        let mut state = Vec::new();
+        for (name, ty) in names.iter().zip(&types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            state.push((binder, ty.clone()));
+        }
+        // The condition and the measure read the state of the iteration about to start.
+        let mut cond_lets = Vec::new();
+        let cond_atom = self.atom(&mut cond_lets, &stmt.condition);
+        let cond = close(
+            cond_lets,
+            CoreExpr::Atom {
+                atom: cond_atom,
+                span: stmt.condition.span,
+            },
+        );
+        let holds = self
+            .findings
+            .refinable_conditions
+            .contains(&stmt.condition.span)
+            .then(|| Box::new(self.clause(&stmt.condition)));
+        let measure = Box::new(self.clause(&stmt.measure));
+        let source = LoopSource::Until {
+            cond: Box::new(cond),
+            holds,
+            measure,
+            decreases: stmt.decreases,
+        };
+        self.tail_wrap = Some(Wrap::State {
+            names: names.clone(),
+        });
+        let outer = self.loop_names.replace(names.clone());
+        let body = self.block(&stmt.block);
+        self.loop_names = outer;
+        self.scope.truncate(mark);
+        let looped = CoreExpr::Loop {
+            source: Box::new(source),
+            var: Box::new(var),
+            state,
+            init,
+            body: Box::new(body),
+            on_stop: None,
+            span: stmt.span,
+        };
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            looped,
+            stmt.span,
+            false,
+        );
+        if names.is_empty() {
+            return;
+        }
+        let mut after = Vec::new();
+        for (name, ty) in names.iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
+    }
+
+    /// `for ever` with its `on stop` (`spec/26 §5`): a Core loop from `ever` over the bindings
+    /// its body and its `on stop` update, whose `on stop` block binds the state afresh and
+    /// returns it (ADR 0116 rules 10 and 20).
+    fn ever_loop(&mut self, lets: &mut Vec<Let>, stmt: &EverStmt) {
+        // `within d`: evaluated once, before the first iteration (`spec/26 §7`).
+        let within = stmt
+            .within
+            .as_ref()
+            .map(|deadline| (self.atom(lets, deadline), deadline.span));
+        let mut names = Vec::new();
+        self.scan_block(&stmt.block, &[], &mut names);
+        if let Some(on_stop) = &stmt.on_stop {
+            self.scan_block(&on_stop.block, &[], &mut names);
+        }
+        names.retain(|name| self.local(name).is_some());
+        let mut init = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let binder = self.local(name).unwrap_or_default();
+            types.push(self.binding_type(&binder, stmt.span));
+            init.push(Atom::Var(binder));
+        }
+        let mark = self.scope.len();
+        let var = (self.temp(), unit());
+        let mut state = Vec::new();
+        for (name, ty) in names.iter().zip(&types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            state.push((binder, ty.clone()));
+        }
+        self.tail_wrap = Some(Wrap::State {
+            names: names.clone(),
+        });
+        let outer = self.loop_names.replace(names.clone());
+        let body = self.block(&stmt.block);
+        self.loop_names = outer;
+        self.scope.truncate(mark);
+        let on_stop = stmt.on_stop.as_ref().map(|on_stop| {
+            let mut binders = Vec::new();
+            for (name, ty) in names.iter().zip(&types) {
+                let binder = self.bind(name);
+                self.types.insert(binder.clone(), ty.clone());
+                binders.push((binder, ty.clone()));
+            }
+            self.tail_wrap = Some(Wrap::State {
+                names: names.clone(),
+            });
+            // No `stop` or `skip` of this loop in its `on stop` (U2034).
+            let outer = self.loop_names.take();
+            let body = self.block(&on_stop.block);
+            self.loop_names = outer;
+            self.scope.truncate(mark);
+            Box::new(una_core::OnStop {
+                state: binders,
+                body,
+            })
+        });
+        let looped = CoreExpr::Loop {
+            source: Box::new(LoopSource::Ever { within }),
+            var: Box::new(var),
+            state,
+            init,
+            body: Box::new(body),
+            on_stop,
             span: stmt.span,
         };
         let t = self.temp();
@@ -3259,6 +3452,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 Stmt::BlockExpr(expr) => self.scan_block_expr(expr, &local, found),
                 Stmt::Stop(_) | Stmt::Skip(_) => {}
+                Stmt::Until(stmt) => self.scan_block(&stmt.block, &local, found),
+                Stmt::Ever(stmt) => {
+                    self.scan_block(&stmt.block, &local, found);
+                    if let Some(on_stop) = &stmt.on_stop {
+                        self.scan_block(&on_stop.block, &local, found);
+                    }
+                }
+                Stmt::OnStop(on_stop) => self.scan_block(&on_stop.block, &local, found),
             }
         }
     }
