@@ -724,6 +724,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.handler_call(call);
             }
         }
+        if let Some(within) = &handled.within {
+            self.expr(within);
+        }
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorFail(variant) | HandlingKind::NoneFail(variant) => {
@@ -846,10 +849,15 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.expr(predicate);
                 self.variant(failure);
             }
-            ExprKind::Attempt(operand)
-            | ExprKind::Unary { operand, .. }
-            | ExprKind::Old(operand)
-            | ExprKind::Paren(operand) => self.expr(operand),
+            ExprKind::Attempt { operand, within } => {
+                self.expr(operand);
+                if let Some(within) = within {
+                    self.expr(within);
+                }
+            }
+            ExprKind::Unary { operand, .. } | ExprKind::Old(operand) | ExprKind::Paren(operand) => {
+                self.expr(operand)
+            }
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {
                 self.expr(left);

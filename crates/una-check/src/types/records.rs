@@ -101,6 +101,12 @@ pub(crate) struct Records {
     /// obligations that ADR 0103 adds: where tier 1 generates one, as
     /// `una_core::flow::Kinds::pending` decides over Core IR (#615).
     pub(crate) refined_flows: Vec<RefinedFlow>,
+    /// The failure of each `e within d`, `Timed[E]` or `Deadline` of `std.time`, by the span of
+    /// `d` (ADR 0117 rule 5).
+    pub(crate) withins: BTreeMap<Span, Ty>,
+    /// The function's own error kind of each `e within d` whose `if error pass` passes the
+    /// time-out as its `TimedOut`, by the span of `d` (ADR 0117 rule 5).
+    pub(crate) within_passes: BTreeMap<Span, Ty>,
 }
 
 /// A flow of a value at `span` into `target`, in the module `module` and the function
@@ -131,6 +137,12 @@ impl Records {
             self.res.insert(span, res);
         }
         self.args.extend(other.args);
+        for (span, ty) in other.withins {
+            self.withins.insert(span, resolve(&ty));
+        }
+        for (span, ty) in other.within_passes {
+            self.within_passes.insert(span, resolve(&ty));
+        }
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
         // A lambda's own type takes the refinements of the type arguments its call settles

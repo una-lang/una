@@ -121,6 +121,11 @@ fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
             message: "an exit outside a loop".to_owned(),
             span: None,
         }),
+        // Every cut is caught by the `within` it is for.
+        Err(Stop::Cut(_)) => Completion::Aborted(Abort::Fault {
+            message: "a deadline outside its `within`".to_owned(),
+            span: None,
+        }),
     }
 }
 
@@ -282,7 +287,7 @@ where
                 Err(Stop::Fail(failure)) => {
                     format!("it failed with `{}`", index.shown(&failure, form))
                 }
-                Err(Stop::Abort(_) | Stop::Exit(..)) => "it aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => "it aborted".to_owned(),
             };
             Some((*line, text, reason))
         }
@@ -300,7 +305,9 @@ where
                     "the `do` line completed with `{}`",
                     index.shown(value, form)
                 ),
-                Err(Stop::Abort(_) | Stop::Exit(..)) => "the `do` line aborted".to_owned(),
+                Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
+                    "the `do` line aborted".to_owned()
+                }
             };
             Some((*line, text, reason))
         }
@@ -387,6 +394,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Exit { state, .. } => state.iter().any(atom),
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
         Expr::Attempt { body, .. } => mentions(body, name),
+        Expr::Within { deadline, body, .. } => atom(deadline) || mentions(body, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,

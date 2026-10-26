@@ -206,7 +206,7 @@ pub struct Read {
 /// Reads an archive (ADR 0122 rule 29) from its bytes, read once into memory: the listing is
 /// parsed and every file hashed from those same bytes. Refused: another first line; a length
 /// with a leading zero, above the bounds, or past the end; a listing that does not end with a
-/// line feed, whose paths are not in strictly ascending byte order or that rule 27 refuses; a
+/// line feed or holds a carriage return, whose paths are not in strictly ascending byte order or that rule 27 refuses; a
 /// file whose hash differs from the listing's; trailing bytes. O(size).
 pub fn read_archive(bytes: &[u8]) -> Result<Read, Refusal> {
     let mut at = 0;
@@ -229,6 +229,11 @@ pub fn read_archive(bytes: &[u8]) -> Result<Read, Refusal> {
         .map_err(|_| "the listing is not UTF-8".to_owned())?;
     if !listing.is_empty() && !listing.ends_with('\n') {
         return Err("the listing does not end with a line feed".to_owned());
+    }
+    // A listing has one encoding, so the digest is only ever taken over a canonical one: a
+    // carriage return, which `lines` would drop before `\n`, is refused.
+    if listing.contains('\r') {
+        return Err("the listing holds a carriage return, which no listing has".to_owned());
     }
     let mut entries: Vec<(&str, u64, &str)> = Vec::new();
     for entry in listing.lines() {

@@ -16,7 +16,7 @@ use una_syntax::ast::{ClauseKind, DeclKind, TextPart};
 
 use crate::contract::Modules;
 use crate::verification::{lock_of, problem_diagnostic, report_unverified, settings, tier_one};
-use crate::{Analysis, ExitStatus, Package, analyze, load, on_large_stack, report};
+use crate::{Analysis, ExitStatus, Package, analyze, on_large_stack, report};
 
 /// The JSON schema of `una report --json` (`spec/13 §6`).
 const REPORT_SCHEMA: &str = "una.report/2";
@@ -57,6 +57,8 @@ struct Report {
     obligations: Counts,
     authority: Vec<AuthorityDoc>,
     handler_authority: Vec<HandlerAuthorityDoc>,
+    /// Every package of the program but the root, in name order (ADR 0122 rule 58).
+    dependencies: Vec<DependencyDoc>,
     information: InformationDoc,
     escapes: EscapesDoc,
     assumptions: Vec<AssumptionDoc>,
@@ -135,6 +137,48 @@ struct AuthorityDoc {
     inferred: bool,
 }
 
+/// A dependency of the program (ADR 0122 rule 58): where it comes from, what each dependent
+/// grants it, what it can ever exercise, what it uses, and the trust it adds.
+#[derive(Serialize)]
+pub(crate) struct DependencyDoc {
+    package: String,
+    version: String,
+    local: String,
+    source: &'static str,
+    path: Option<String>,
+    digest: Option<String>,
+    signed: Option<String>,
+    replaced: bool,
+    edition: &'static str,
+    profile: String,
+    granted_by: Vec<GrantedByDoc>,
+    effective_ceiling: Vec<String>,
+    authority: Vec<String>,
+    trust: DependencyTrustDoc,
+}
+
+impl DependencyDoc {
+    /// Its name, its directory when it is a path package, and what its code uses: the union of
+    /// the `uses` of its functions and handlers, as `Cap[op, op]` entries.
+    pub(crate) fn uses(&self) -> (&str, Option<&str>, &[String]) {
+        (&self.package, self.path.as_deref(), &self.authority)
+    }
+}
+
+/// The ceiling one dependent writes for a dependency; `source` is `null` for the root.
+#[derive(Serialize)]
+struct GrantedByDoc {
+    package: String,
+    source: Option<String>,
+    may: Vec<String>,
+}
+
+/// The trusted modules of a dependency that the root consented to.
+#[derive(Serialize)]
+struct DependencyTrustDoc {
+    modules: Vec<String>,
+}
+
 /// A handler with `uses` clauses (ADR 0081, #14): additive under ADR 0076.
 #[derive(Serialize)]
 struct HandlerAuthorityDoc {
@@ -205,6 +249,26 @@ struct TcbDoc {
     /// The key file that authenticates the cache's entries, part of the Trusted zone, or `null`
     /// when the run used no cache (ADR 0064).
     proof_cache_key: Option<String>,
+    /// Each registry source of the program, with the digest of its root metadata (ADR 0122
+    /// rule 58): none while only path dependencies load.
+    registries: Vec<RegistryDoc>,
+    /// The trusted modules of dependencies that the root consented to, with their line counts,
+    /// by package: none while trust lines do not load.
+    dependency_trust: Vec<DependencyTrustedDoc>,
+}
+
+/// A registry source and the digest of its root metadata.
+#[derive(Serialize)]
+struct RegistryDoc {
+    source: String,
+    root: String,
+}
+
+/// A dependency's trusted modules, by package.
+#[derive(Serialize)]
+struct DependencyTrustedDoc {
+    package: String,
+    modules: Vec<TrustedDoc>,
 }
 
 #[derive(Serialize)]
@@ -245,7 +309,11 @@ pub(crate) fn report_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let package = match load(path) {
+    let package = match crate::package::load_in(
+        path,
+        &std::collections::BTreeMap::new(),
+        options.solving.itaoca.as_ref(),
+    ) {
         Ok(package) => package,
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
@@ -554,15 +622,46 @@ fn build(
         }
     }
     assumptions.sort_by(|a, b| a.capability.cmp(&b.capability));
+    // The root's own trusted modules; those of dependencies are under `dependency_trust`.
     let mut trusted_modules: Vec<TrustedDoc> = manifest
         .trusted
         .iter()
+        .filter(|trusted| !manifest.dependency_trusted.contains(&trusted.value))
         .map(|trusted| TrustedDoc {
             module: trusted.value.clone(),
             lines: module_lines(&modules, &trusted.value),
         })
         .collect();
     trusted_modules.sort_by(|a, b| a.module.cmp(&b.module));
+    // The trusted modules of dependencies the root consented to, by package (ADR 0122 rule 58).
+    let mut dependency_trust: Vec<DependencyTrustedDoc> = Vec::new();
+    for mount in &manifest.mounts {
+        let prefix = format!("{}.", mount.local);
+        let mut trusted: Vec<TrustedDoc> = manifest
+            .dependency_trusted
+            .iter()
+            .filter(|path| path.starts_with(&prefix))
+            .map(|path| TrustedDoc {
+                module: path.clone(),
+                lines: module_lines(&modules, path),
+            })
+            .collect();
+        if trusted.is_empty() {
+            continue;
+        }
+        trusted.sort_by(|a, b| a.module.cmp(&b.module));
+        let name = package
+            .dependencies
+            .iter()
+            .find(|d| mount.src == format!("{}/src/", d.dir))
+            .and_then(|d| manifest.ita.as_deref()?.needs.get(d.need))
+            .map_or_else(|| mount.local.clone(), |need| need.name.value.to_string());
+        dependency_trust.push(DependencyTrustedDoc {
+            package: name,
+            modules: trusted,
+        });
+    }
+    dependency_trust.sort_by(|a, b| a.package.cmp(&b.package));
     let (requirements, derived_functions) = requirements(&modules);
     let public_functions: Vec<(&String, &una_core::Fun)> = program
         .modules
@@ -607,6 +706,7 @@ fn build(
             authority: "by typing",
         },
         obligations: counts,
+        dependencies: dependencies(package, &manifest, analysis),
         authority,
         handler_authority,
         information: InformationDoc {
@@ -633,6 +733,8 @@ fn build(
             solver: format!("z3 {}", lock.solver_version),
             proof_cache: PROOF_CACHE,
             proof_cache_key,
+            registries: Vec::new(),
+            dependency_trust,
         },
         requirements,
         coverage: CoverageDoc {
@@ -741,7 +843,9 @@ impl Sites {
                 self.expr(body);
                 self.expr(handler);
             }
-            Expr::Attempt { body, .. } | Expr::With { body, .. } => self.expr(body),
+            Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::Within { body, .. } => {
+                self.expr(body);
+            }
             Expr::Atom { .. }
             | Expr::Fail { .. }
             | Expr::Exit { .. }
@@ -917,6 +1021,12 @@ fn human(report: &Report) -> String {
             entry.uses.join(", ")
         ));
     }
+    if !report.dependencies.is_empty() {
+        line("dependencies:".to_owned());
+        for dependency in &report.dependencies {
+            line(format!("  {}", dependency_line(dependency)));
+        }
+    }
     line("information:".to_owned());
     for call in &report.information.policy_calls {
         line(format!(
@@ -1026,4 +1136,206 @@ fn human(report: &Report) -> String {
     }
     line(format!("out of model: {}", report.out_of_model.join(", ")));
     out
+}
+
+/// The `dependencies` of the report (ADR 0122 rule 58): each mounted path dependency, its
+/// ceiling as the root writes it, its effective ceiling (rule 51), and the union of the `uses`
+/// of its functions and handlers. O(H + P log P) for H headers and P dependencies.
+pub(crate) fn dependencies(
+    package: &Package,
+    manifest: &una_project::Manifest,
+    analysis: &crate::Analysis,
+) -> Vec<DependencyDoc> {
+    let Some(read) = manifest.ita.as_deref() else {
+        return Vec::new();
+    };
+    let root = read
+        .name
+        .as_ref()
+        .map(|name| name.value.to_string())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for mount in &manifest.mounts {
+        let Some(dependency) = package
+            .dependencies
+            .iter()
+            .find(|d| mount.src == format!("{}/src/", d.dir))
+        else {
+            continue;
+        };
+        let Some(need) = read.needs.get(dependency.need) else {
+            continue;
+        };
+        let settings = dependency
+            .manifest
+            .map(|id| una_project::ita::parse_ita_manifest(package.sources.file(id).text()).0);
+        let version = settings
+            .as_ref()
+            .and_then(|s| s.version.as_ref())
+            .map(|v| v.value.clone())
+            .unwrap_or_default();
+        let edition = settings
+            .as_ref()
+            .map_or(una_project::Edition::V0_4, |s| s.edition)
+            .name();
+        // The package's own profile, `app` when its `ita.una` names none.
+        let profile = settings
+            .as_ref()
+            .and_then(|s| s.ita.as_deref())
+            .and_then(|read| read.profile.as_ref())
+            .map_or_else(|| "app".to_owned(), |profile| profile.value.clone());
+        let ceiling: Vec<String> = need
+            .may
+            .iter()
+            .map(|cap| {
+                let ops: Vec<&str> = cap.ops.iter().map(|op| op.value.as_str()).collect();
+                format!("{}[{}]", cap.capability, ops.join(", "))
+            })
+            .collect();
+        // One level of needs: the root can grant anything, so a direct dependency's effective
+        // ceiling is the ceiling its package extent has (rule 51): the one the root writes, or,
+        // for a package with trusted modules, its intersection with the trust line's (spec/30
+        // §13 rule 4).
+        let extent = manifest
+            .boundaries
+            .iter()
+            .find(|b| b.package && b.module.value == mount.local);
+        let granted: una_project::authority::Authority = match extent {
+            Some(extent) => extent
+                .ceiling
+                .iter()
+                .flat_map(|cap| {
+                    cap.ops
+                        .iter()
+                        .map(|op| (cap.capability.clone(), op.clone()))
+                })
+                .collect(),
+            None => need
+                .may
+                .iter()
+                .flat_map(|cap| {
+                    cap.ops
+                        .iter()
+                        .map(|op| (cap.capability.clone(), op.value.clone()))
+                })
+                .collect(),
+        };
+        let edges = [una_project::authority::Edge {
+            from: 0,
+            to: 1,
+            ceiling: granted.clone(),
+        }];
+        let effective = una_project::authority::effective(2, 0, &granted, &edges);
+        let effective_ceiling = render_authority(effective.get(1).cloned().unwrap_or_default());
+        // What its code uses: the `uses` of its functions and handlers.
+        let prefix = format!("{}.", mount.local);
+        let mut used = una_project::authority::Authority::new();
+        for header in analysis
+            .headers
+            .iter()
+            .filter(|h| h.module.starts_with(&prefix))
+        {
+            for u in &header.uses {
+                for op in &u.ops {
+                    used.insert((u.capability.clone(), op.clone()));
+                }
+            }
+        }
+        for module in analysis
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path.starts_with(&prefix))
+        {
+            for decl in &module.decls {
+                if let Decl::Handler { uses, .. } = decl {
+                    for u in uses {
+                        for op in &u.ops {
+                            used.insert((u.capability.clone(), op.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        // The digest of the code analysed: the bytes loaded, which the checks read.
+        let digest = crate::package::dependency_digest(dependency).ok();
+        out.push(DependencyDoc {
+            package: need.name.value.to_string(),
+            version,
+            local: mount.local.clone(),
+            source: "path",
+            path: Some(dependency.dir.clone()),
+            digest,
+            signed: None,
+            replaced: false,
+            edition,
+            profile,
+            granted_by: vec![GrantedByDoc {
+                package: root.clone(),
+                source: None,
+                may: ceiling,
+            }],
+            effective_ceiling,
+            authority: render_authority(used),
+            trust: DependencyTrustDoc {
+                modules: manifest
+                    .dependency_trusted
+                    .iter()
+                    .filter(|path| path.starts_with(&prefix))
+                    .cloned()
+                    .collect(),
+            },
+        });
+    }
+    out.sort_by(|a, b| (&a.package, &a.version).cmp(&(&b.package, &b.version)));
+    out
+}
+
+/// A set of operations as `Cap[op, op]` entries, by capability.
+fn render_authority(set: una_project::authority::Authority) -> Vec<String> {
+    let mut by_capability: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (capability, op) in set {
+        by_capability.entry(capability).or_default().push(op);
+    }
+    by_capability
+        .into_iter()
+        .map(|(capability, ops)| format!("{capability}[{}]", ops.join(", ")))
+        .collect()
+}
+
+/// The human line of a dependency (ADR 0122 rule 58): `http 1.4.2 (itaty): may Http[get] (by
+/// store); uses Http[get]; trust none`.
+pub(crate) fn dependency_line(dependency: &DependencyDoc) -> String {
+    let origin = match &dependency.path {
+        Some(path) => format!("path {path}"),
+        None => dependency.source.to_owned(),
+    };
+    let granted: Vec<String> = dependency
+        .granted_by
+        .iter()
+        .map(|g| {
+            let may = if g.may.is_empty() {
+                "nothing".to_owned()
+            } else {
+                g.may.join(", ")
+            };
+            format!("may {may} (by {})", g.package)
+        })
+        .collect();
+    let uses = if dependency.authority.is_empty() {
+        "nothing".to_owned()
+    } else {
+        dependency.authority.join(", ")
+    };
+    let trust = if dependency.trust.modules.is_empty() {
+        "none".to_owned()
+    } else {
+        dependency.trust.modules.join(", ")
+    };
+    format!(
+        "{} {} ({origin}): {}; uses {uses}; trust {trust}",
+        dependency.package,
+        dependency.version,
+        granted.join("; ")
+    )
 }
