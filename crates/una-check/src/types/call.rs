@@ -212,6 +212,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
+                self.timing_value_call();
             }
             return ty;
         }
@@ -448,6 +449,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
+        self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
         let mut decided = Label::public();
@@ -775,6 +777,19 @@ impl<'a> Checker<'_, 'a, '_> {
         // the bindings its `uses` resolve to here.
         self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
         self.reach(Node::Function(id));
+        // ADR 0116 rule 8: a call of a function that says `diverges` may run forever.
+        if def.diverges
+            && let Some(reason) = self.divergence_refused()
+        {
+            self.report.error(
+                Code::U3027,
+                span,
+                format!(
+                    "`{}` says `diverges`, so this call may run forever: {reason}",
+                    def.name
+                ),
+            );
+        }
         self.call_fact(id, span);
         self.via_site(id, span);
         self.call_under_pc(
@@ -1404,8 +1419,11 @@ impl<'a> Checker<'_, 'a, '_> {
         let op_name = self.name(op);
         self.outside_rl(span, || format!("operation `@{cap_name}.{op_name}`"));
         self.impure(span, || format!("operation `@{cap_name}.{op_name}`"));
-        let capability = self
-            .op_site(cap, op)
+        let resolved = self.op_site(cap, op);
+        if let Some(id) = resolved {
+            self.timing_op(id, op_name);
+        }
+        let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))
             .cloned();
         let Some(capability) = capability else {

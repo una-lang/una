@@ -604,6 +604,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-syntax",
+ "una-sys",
 ]
 
 [[package]]
@@ -629,6 +630,7 @@ dependencies = [
  "una-diag",
  "una-http",
  "una-interp",
+ "una-sys",
 ]
 
 [[package]]
@@ -648,6 +650,13 @@ version = "0.3.16"
 dependencies = [
  "indexmap",
  "una-diag",
+]
+
+[[package]]
+name = "una-sys"
+version = "0.3.16"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

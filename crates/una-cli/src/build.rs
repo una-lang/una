@@ -13,7 +13,7 @@ use una_diag::{Diagnostic, render_human};
 use una_syntax::ast::ClauseKind;
 
 use crate::contract::Modules;
-use crate::runtime::{driven_init, entry_main, rejected_status};
+use crate::runtime::{driven_init, entry_main, rejected_status, takes_stops};
 use crate::verification::tier_one;
 use crate::{ExitStatus, analyze, on_large_stack};
 
@@ -190,6 +190,12 @@ pub(crate) fn build_command(
     // that exceeds the maximum depth, the types the runtime renders, the operations a trace
     // records, and where `main`, or `init`, is named, for U6001.
     let main_location = package.sources.location(main.span);
+    let stops = takes_stops(
+        &analysis,
+        &package.sources,
+        &entry,
+        manifest.drive.is_some(),
+    );
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -201,6 +207,7 @@ pub(crate) fn build_command(
                 section if section.starts_with('`') => section,
                 section => format!("`{section}`"),
             },
+            "stops": stops,
             "grants": grants,
             "uses": uses,
             "sites": sites,
@@ -213,6 +220,14 @@ pub(crate) fn build_command(
             && let Some(object) = meta.as_object_mut()
         {
             object.insert("float_environment".to_owned(), json!(true));
+        }
+        // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever`
+        // starts its workers and helper pools before `main`, so no thread starts inside a
+        // construct, at a moment that earlier code could have decided.
+        if described.threads
+            && let Some(object) = meta.as_object_mut()
+        {
+            object.insert("threads".to_owned(), json!(true));
         }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(

@@ -1,0 +1,24 @@
+-- test: `for ever within d` takes the deadline of each iteration after `within`, an `add_expr`, with or without `on stop` (spec/26 §7, ADR 0116 rules 5 and 11)
+-- spec: spec/26 §7
+-- expect: ok
+module forms
+
+import std.time (millisecond, second)
+
+pub tick(limit: Int) -> Int
+  diverges
+=
+  let edit n = 0
+  for ever within 100 * millisecond
+    stop when n >= limit
+    n = n + 1
+  n
+
+pub slow() -> Unit
+  diverges
+=
+  for ever within 2 * second + 500 * millisecond
+    stop
+  on stop
+    unit
+  unit

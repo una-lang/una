@@ -92,13 +92,16 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # Their full sizes run in the ordinary tests. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
+# Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
+# and the traced blocks) take no effect: those tests fork tasks onto coroutines, whose stacks and
+# switch Miri cannot run, so they are ignored under Miri with the scheduler's own tests (#1145).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
 [ "$reduced" = 16 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 16"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
 step "una-rt with AddressSanitizer" \
-    env RUSTFLAGS="-Zsanitizer=address" cargo +"$channel" build -p una-rt \
+    env RUSTFLAGS="-Zsanitizer=address --cfg una_asan" cargo +"$channel" build -p una-rt \
     --target "$host" --target-dir target/sanitize
 
 # Cargo's own links (build scripts, procedural macros, the test binaries) name the system `cc`,
@@ -111,7 +114,7 @@ linker_var=CARGO_TARGET_$(echo "$host" | tr '[:lower:]-' '[:upper:]_')_LINKER
 # The test binary is the one artifact whose profile is a test's (`"profile":{…"test":true`),
 # never the last one cargo happens to print, and there must be exactly one. It must call
 # AddressSanitizer's checks, or this step proves nothing.
-asan_tests_binaries=$(env RUSTFLAGS="-Zsanitizer=address" "$linker_var=/usr/bin/cc" CC=/usr/bin/cc \
+asan_tests_binaries=$(env RUSTFLAGS="-Zsanitizer=address --cfg una_asan" "$linker_var=/usr/bin/cc" CC=/usr/bin/cc \
     cargo +"$channel" test -p una-rt --lib --target "$host" --target-dir target/sanitize \
     --no-run --message-format=json 2>/dev/null \
     | grep '"profile":{[^}]*"test":true' | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')
@@ -183,7 +186,7 @@ fuzz_flags="--cfg una_fuzz -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverag
 fuzz_flags="$fuzz_flags -Cllvm-args=-sanitizer-coverage-inline-8bit-counters"
 fuzz_flags="$fuzz_flags -Cllvm-args=-sanitizer-coverage-pc-table"
 fuzz_flags="$fuzz_flags -Cllvm-args=-sanitizer-coverage-trace-compares"
-fuzz_flags="$fuzz_flags -Zsanitizer=address -Cdebug-assertions -Coverflow-checks"
+fuzz_flags="$fuzz_flags -Zsanitizer=address --cfg una_asan -Cdebug-assertions -Coverflow-checks"
 fuzz_out=$root/target/fuzz
 step "The fuzz targets, with libFuzzer and AddressSanitizer" \
     env RUSTFLAGS="$fuzz_flags" cargo +"$channel" build --locked --release \

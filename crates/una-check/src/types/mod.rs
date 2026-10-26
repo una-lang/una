@@ -47,6 +47,7 @@ mod shared;
 mod sharing_tests;
 mod stmt;
 mod summary;
+mod timing;
 mod ty;
 mod unify;
 mod units;
@@ -75,6 +76,11 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// `Decimal` (`spec/29 §16`), then the constructors of dense values and the functions their
 /// methods resolve to (`spec/29 §17`, ADR 0120), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
+
+/// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
+/// which adds `Interrupted` last, so the earlier variants keep their indices (ADR 0116 rule 12).
+/// The text occurs exactly once in `PRELUDE_0_2` (a test checks it).
+const HTTP_ERROR_0_4: (&str, &str) = ("| Tls | Protocol\n", "| Tls | Protocol | Interrupted\n");
 
 /// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
 /// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
@@ -126,6 +132,27 @@ fn of_prelude() -> String {
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
 
+/// What edition 0.4 adds to `std.testing`: `elapse` (ADR 0116 rule 19), whose duration is in
+/// `Millisecond` of `std.time`.
+const TESTING_0_4: &str = include_str!("../std/testing_0_4.una");
+
+/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time`.
+const TESTING_MODULE_LINE: &str = "module std.testing\n";
+
+/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and adds `elapse`.
+fn testing_source(edition: Edition) -> String {
+    if edition >= Edition::V0_4 {
+        let imported = TESTING.replacen(
+            TESTING_MODULE_LINE,
+            "module std.testing\n\nimport std.time (Millisecond)\n",
+            1,
+        );
+        format!("{imported}{TESTING_0_4}")
+    } else {
+        TESTING.to_owned()
+    }
+}
+
 /// `std.time` (`spec/26 §2`), edition 0.4, as Una source.
 const TIME: &str = include_str!("../std/time.una");
 
@@ -148,9 +175,9 @@ const MAP_0_4: &str = include_str!("../std/map_0_4.una");
 pub struct StandardSource {
     /// The prelude's source in this edition.
     pub prelude: String,
-    /// `std.testing`'s source, the same in every edition.
-    pub testing: &'static str,
-    /// The keywords the prelude is lexed with; `std.testing` is lexed with those of 0.1.
+    /// `std.testing`'s source in this edition: edition 0.4 adds `elapse` (ADR 0116 rule 19).
+    pub testing: String,
+    /// The keywords the prelude and `std.testing` are lexed with.
     pub keywords: KeywordSet,
     /// The standard modules of edition 0.4 after `std.testing`, as `(path, source)`:
     /// `std.time`, then `std.drive`, which imports it (ADR 0116). Empty before 0.4.
@@ -209,7 +236,11 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
 pub fn standard_source(edition: Edition) -> StandardSource {
     let (prelude, keywords) = if edition >= Edition::V0_4 {
         (
-            format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+            format!(
+                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}",
+                of_prelude(),
+                PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
+            ),
             KeywordSet::V0_4,
         )
     } else if edition >= Edition::V0_3 {
@@ -229,7 +260,7 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     };
     StandardSource {
         prelude,
-        testing: TESTING,
+        testing: testing_source(edition),
         keywords,
         later,
     }
@@ -318,6 +349,22 @@ pub struct TypeCheck {
     pub program: una_core::Program,
     /// What the checker resolved, by span, for the language server (ADR 0063).
     pub index: Index,
+    /// The sites whose deadlines turn timing into values, in source order, with their timing
+    /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
+    pub timing: Vec<TimingSite>,
+}
+
+/// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingSite {
+    /// The construct, as `for ever within`.
+    pub construct: &'static str,
+    /// The qualified name of the function that holds it, or empty outside a function.
+    pub function: String,
+    /// Where it is.
+    pub location: Location,
+    /// Its timing label.
+    pub label: una_core::Label,
 }
 
 impl Default for TypeCheck {
@@ -332,6 +379,7 @@ impl Default for TypeCheck {
             headers: Vec::new(),
             program: una_core::Program::default(),
             index: Index::default(),
+            timing: Vec::new(),
         }
     }
 }
@@ -636,6 +684,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
     authority::drive_timing(&env, &findings, package.settings, &mut report);
+    let timing_sites = authority::deadline_timing(&env, &findings, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -723,6 +772,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         Vec::new()
     };
     let check = TypeCheck {
+        timing: timing_sites
+            .into_iter()
+            .map(|(construct, function, span, label)| TimingSite {
+                construct,
+                function,
+                location: report.location(span),
+                label,
+            })
+            .collect(),
         index,
         headers,
         program,
@@ -860,8 +918,23 @@ pub(crate) struct Findings {
     /// The functions whose bodies hold a task construct, `together` or `together for` (ADR 0116
     /// IF6).
     pub(crate) task_functions: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a part of a task construct, lambdas written there
+    /// included (ADR 0116 IF6).
+    pub(crate) task_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a lambda, which may run wherever the lambda is
+    /// called (ADR 0116 IF6).
+    pub(crate) lambda_edges: std::collections::BTreeSet<usize>,
+    /// The functions called or named inside a handler's operations, which run wherever the
+    /// handler serves an operation (ADR 0116 IF6).
+    pub(crate) handler_edges: std::collections::BTreeSet<usize>,
+    /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
+    /// function, and the seed of its body's timing label.
+    pub(crate) deadline_loops: Vec<DeadlineLoop>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
+    /// The conditions of `for until` loops that are in the refinement language, which the
+    /// verifier assumes false in the body and true after the loop (ADR 0116 V1, V3).
+    pub(crate) refinable_conditions: Vec<Span>,
     /// Calls of, and references to, functions and predicates, from the body of a function or
     /// predicate: caller, callee, and where.
     pub(crate) edges: Vec<(usize, usize, Span)>,
@@ -955,7 +1028,7 @@ impl Standard {
         let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
         let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
-        let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
+        let testing = parse_standard(&sources, testing, &mut interner, keywords);
         // The modules of edition 0.4 declare measures, a construct of edition 0.3.
         let later = later
             .into_iter()
@@ -1381,6 +1454,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interrupted_is_a_variant_of_http_error_in_edition_0_4_only() {
+        // ADR 0116 rule 12: added last, so the eight variants keep their indices.
+        assert_eq!(PRELUDE_0_2.matches(HTTP_ERROR_0_4.0).count(), 1);
+        let line = |edition| {
+            standard_source(edition)
+                .prelude
+                .lines()
+                .find(|line| line.starts_with("pub kind HttpError ="))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            line(Edition::V0_4).as_deref(),
+            Some(
+                "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted"
+            )
+        );
+        for edition in [Edition::V0_2, Edition::V0_3] {
+            assert!(line(edition).is_some_and(|line| !line.contains("Interrupted")));
+        }
+    }
+
+    #[test]
     fn every_rewrite_of_the_prelude_applies_exactly_once() {
         // `str::replace` does nothing when its text is missing, so an edit of the prelude could
         // turn a rewrite of edition 0.2 off without a word (#648).
@@ -1407,8 +1502,10 @@ mod tests {
         for edition in &Edition::ALL {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
+                // `HttpError` gains `Interrupted` (ADR 0116 rule 12).
+                let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
-                    format!("{}\n{PRELUDE_0_2}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
                     KeywordSet::V0_4,
                 )
             } else if *edition >= Edition::V0_3 {
@@ -1422,13 +1519,19 @@ mod tests {
                 (PRELUDE.to_owned(), KeywordSet::V0_1)
             };
             assert_eq!(source.prelude, prelude, "{edition:?}");
-            assert_eq!(source.testing, TESTING, "{edition:?}");
+            let testing = testing_source(*edition);
+            assert_eq!(source.testing, testing, "{edition:?}");
+            assert_eq!(
+                source.testing.contains("pub elapse("),
+                *edition >= Edition::V0_4,
+                "{edition:?}"
+            );
             assert_eq!(source.keywords, keywords, "{edition:?}");
             let texts = Standard::load(*edition).sources.texts();
             assert_eq!(texts.get("std/prelude.una"), Some(&prelude), "{edition:?}");
             assert_eq!(
                 texts.get("std/testing.una").map(String::as_str),
-                Some(TESTING),
+                Some(testing.as_str()),
                 "{edition:?}"
             );
         }
@@ -1441,12 +1544,15 @@ mod tests {
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
         let v0_4 = format!("{v0_3}{PRELUDE_0_4}");
+        let testing_0_4 = testing_source(Edition::V0_4);
+        assert!(testing_0_4.contains("import std.time (Millisecond)"));
         for (name, text, keywords) in [
             ("prelude", PRELUDE, KeywordSet::V0_1),
             ("prelude 0.2", v0_2.as_str(), KeywordSet::V0_2),
             ("prelude 0.3", v0_3.as_str(), KeywordSet::V0_3),
             ("prelude 0.4", v0_4.as_str(), KeywordSet::V0_4),
             ("testing", TESTING, KeywordSet::V0_1),
+            ("testing 0.4", testing_0_4.as_str(), KeywordSet::V0_4),
         ] {
             let mut sources = SourceDb::new();
             let mut interner = Interner::new();
@@ -2017,4 +2123,16 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
             assert_eq!(codes, Vec::new(), "{edition:?}");
         }
     }
+}
+
+/// A `for ever within d` loop, for IF8 and the report's `timing` list (ADR 0116 rules 11 and
+/// 21).
+#[derive(Clone, Debug)]
+pub(crate) struct DeadlineLoop {
+    /// The loop.
+    pub(crate) span: Span,
+    /// The function whose body holds it.
+    pub(crate) function: Option<usize>,
+    /// The seed of the timing label of its body, the deadline's label included.
+    pub(crate) seed: timing::TimingSeed,
 }

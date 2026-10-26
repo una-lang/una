@@ -180,6 +180,34 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
             _ => base,
         };
     }
+    // ADR 0116 V1: the measure's obligations name the measure.
+    if matches!(
+        obligation.kind,
+        ObligationKind::DecreasesBound | ObligationKind::DecreasesStep
+    ) {
+        let base = if obligation.kind == ObligationKind::DecreasesBound {
+            format!(
+                "the measure `{}` may be negative where the loop continues",
+                obligation.goal
+            )
+        } else {
+            format!(
+                "the measure `{}` may not decrease in this iteration",
+                obligation.goal
+            )
+        };
+        return match outcome.status {
+            ObligationStatus::Unknown => {
+                let reason = outcome
+                    .reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .trim_matches(|c| c == '(' || c == ')');
+                format!("{base} ({reason})")
+            }
+            _ => base,
+        };
+    }
     let subject = match obligation.kind {
         ObligationKind::Postcondition => format!("postcondition of `{name}`"),
         ObligationKind::Precondition => match &obligation.site.function_value {
@@ -197,6 +225,9 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
             format!("effect condition `{}`", obligation.goal)
         }
         ObligationKind::ContractLock => format!("locked condition `{}`", obligation.goal),
+        ObligationKind::DecreasesBound | ObligationKind::DecreasesStep => {
+            format!("the measure `{}`", obligation.goal)
+        }
         ObligationKind::Exhaustive => {
             format!("exhaustiveness of this `when`, `{}`,", obligation.goal)
         }
@@ -292,6 +323,28 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             candidates.push((None, "adjust the `ensures` clause".to_owned()));
         }
         ObligationKind::EffectCondition | ObligationKind::ContractLock => {}
+        ObligationKind::DecreasesBound => {
+            candidates.push((
+                None,
+                format!("choose a measure that is at least 0 wherever the loop's condition is false, such as one that `{goal}` bounds"),
+            ));
+            candidates.push((
+                None,
+                "strengthen the loop's condition so that the loop ends before the measure is negative".to_owned(),
+            ));
+        }
+        ObligationKind::DecreasesStep => {
+            candidates.push((
+                None,
+                format!(
+                    "make every iteration that goes on decrease `{goal}`, or end it with `stop`"
+                ),
+            ));
+            candidates.push((
+                None,
+                "choose a measure that each iteration decreases".to_owned(),
+            ));
+        }
         // `spec/13 §3`: a `division` proposes a guard.
         ObligationKind::Division => {
             candidates.push((None, format!("guard the division with `if {goal}`")));
