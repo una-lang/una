@@ -31,7 +31,9 @@
 //! removal of the co-signers, or its own key `T` added; the week passes; the co-signers
 //! overrule each cancellation that stands; the thief may cancel once more, or claim a key the
 //! owner held before; then a week passes and the new key claims `A` since the theft. Each claim is also made over-cautiously,
-//! `since 0`, for which only the releases signed without `A` must stand.
+//! since the owner's last entry signed with `A` when that is before the theft, for which only
+//! the releases signed without `A` must stand: an earlier `since` would void the owner's own
+//! entries that `A` signed, and a claim that voids the key that signs it is dropped.
 //!
 //! **The invariants** (`spec/30 §14` rule 5), checked on every chain and every response. With
 //! the key-only thief: (1) once the owner responded, no release counts that needs a key the
@@ -496,7 +498,8 @@ pub(crate) struct Stats {
     pub(crate) owner_cancels: u64,
     /// Responses where the thief moved inside the week.
     pub(crate) adaptive: u64,
-    /// Over-cautious responses, claiming `since 0` after a later theft.
+    /// Over-cautious responses, claiming since the owner's last entry signed with `A`, before
+    /// the theft.
     pub(crate) cautious: u64,
     pub(crate) frozen: u64,
     /// Key-and-account chains frozen with the owner below its threshold and no co-signers in
@@ -559,7 +562,7 @@ pub(crate) struct Options<'e> {
 struct Response {
     chain: Vec<Step>,
     refused: Vec<String>,
-    /// The claim is `since 0` though the theft was later.
+    /// The claim starts before the theft, at the owner's last entry signed with `A`.
     cautious: bool,
     /// The response every chain has, with no extra variation: the one replayed with its
     /// requests delayed.
@@ -826,7 +829,24 @@ impl Search<'_, '_> {
             .map(|(index, _)| *index)
             .collect();
         let threshold = v.threshold;
-        let sinces: Vec<u64> = if theft > 0 { vec![theft, 0] } else { vec![0] };
+        // The over-cautious claim starts at the owner's last entry signed with `A` before the
+        // theft, not before it: a claim from earlier would make the owner's own entries that
+        // `A` signed void, the addition of the very key that signs the claim among them, and a
+        // claim that voids its own signers is dropped (`spec/30 §14` rule 5, a greatest
+        // fixpoint). The owner knows its own entries, not when the theft happened.
+        let cautious = steps
+            .iter()
+            .enumerate()
+            .take(theft as usize + 1)
+            .filter(|(_, s)| !s.thief && s.signers.contains(&K::A))
+            .map(|(index, _)| index as u64)
+            .max()
+            .unwrap_or(0);
+        let sinces: Vec<u64> = if cautious < theft {
+            vec![theft, cautious]
+        } else {
+            vec![theft]
+        };
         let mut out = Vec::new();
         if honest.len() >= threshold {
             let a_held = v.keys.contains(&K::A);
@@ -1013,11 +1033,18 @@ impl Search<'_, '_> {
                 }
                 if adaptive {
                     // The week passes, past the request's seven days, and the co-signers
-                    // overrule each cancellation of it that stands.
+                    // overrule each cancellation of it that stands; a recovery logged with no
+                    // co-signers in effect has none to overrule it, and its cancellation is
+                    // final.
+                    let guarded = recovery
+                        && start.get(..=request as usize).is_some_and(|logged| {
+                            self.at_end(logged).is_ok_and(|h| h.cosigners.is_some())
+                        });
                     let cancels: Vec<u64> = self
                         .at_end(&chain)
                         .ok()
                         .and_then(|h| h.cancellations.get(&request).cloned())
+                        .filter(|_| guarded)
                         .map(|c| c.into_iter().collect())
                         .unwrap_or_default();
                     let mut wait = DAY;
@@ -2028,24 +2055,27 @@ fn the_extension_point_sees_every_final_chain() {
     assert!(offered > 0);
 }
 
-/// The model finds the last-moment cancellation when the rules that end it are off: an owner
-/// of `{A}` with the co-signer `X` asks a recovery, the thief cancels it with `A` six and a half
-/// days in, the seven days pass, and the co-signers' overruling comes too late.
+/// The model finds the last-moment cancellation when the rules that end it are off. With a
+/// thief's lone cancellation, the owner's claim on `A` voids it and the recovery takes effect at
+/// its seven days, rules or not, so the race shows from depth 3: an owner of `{A, B}` at
+/// threshold two with the co-signers `X` and `Y` designates `X` alone and drops `B`; once below
+/// its threshold, it asks a recovery, the thief cancels it with `A` six and a half days in, the
+/// seven days pass, and without the rules the co-signers' overruling comes too late.
 #[test]
 fn the_model_finds_the_last_moment_cancellation_without_its_rules() {
     let registration = Step::owner(
         Act::Register {
-            keys: vec![K::A],
-            threshold: 1,
-            cosigners: Some((1, vec![K::X])),
+            keys: vec![K::A, K::B],
+            threshold: 2,
+            cosigners: Some((2, vec![K::X, K::Y])),
         },
-        vec![K::A],
+        vec![K::A, K::B],
         0,
     );
     let run_with = |fixed: bool| {
         set_race_fixed(fixed);
         let outcome = explore(Options {
-            depth: 1,
+            depth: 3,
             stride: 1_000_000,
             sample_cap: 0,
             adversarial_cap: 0,
@@ -2098,4 +2128,65 @@ fn owner_replay_holds_its_contract_to_depth_five() {
         "mutual claims {}, refused under some timing {}",
         stats.mutual_claims, stats.delay_refusals
     );
+}
+
+/// A chain of `claims` claims of compromise and `fillers` other entries: `A` and `B` registered,
+/// `B` claims `A` since 0, then claims it again, a former key, among cancellations of nothing.
+fn claims_chain(keys: &Keys, claims: usize, fillers: usize) -> Result<History, ReplayError> {
+    let mut steps = vec![Step::owner(
+        Act::Register {
+            keys: vec![K::A, K::B],
+            threshold: 1,
+            cosigners: None,
+        },
+        vec![K::A, K::B],
+        0,
+    )];
+    let every = fillers / claims.max(1) + 1;
+    let (mut made, mut filled) = (0, 0);
+    while made < claims || filled < fillers {
+        if made < claims && (filled >= fillers || filled % every == 0) {
+            steps.push(Step::owner(Act::Revoke(K::A, 1, Some(0)), vec![K::B], 0));
+            made += 1;
+        }
+        if filled < fillers {
+            steps.push(Step::owner(Act::Cancel(1 << 40, 1), vec![K::B], 0));
+            filled += 1;
+        }
+    }
+    run(keys, &build(keys, &steps, false, false, false))
+}
+
+/// The work of a replay, every check of every pass of every prefix counted, grows linearly with
+/// the chain at the cap of claims, and the claims are bounded: a chain past [`MAX_CLAIMS`] with
+/// no reset point is not replayed.
+#[test]
+fn replay_work_is_bounded_by_the_cap_of_claims() {
+    use super::{MAX_CLAIMS, TooManyClaims};
+    let keys = Keys::new();
+    set_modeled(true);
+    let checks = |claims: usize, fillers: usize| -> u64 {
+        claims_chain(&keys, claims, fillers)
+            .expect("a chain within the cap")
+            .checks
+    };
+    // At the cap, the chain's length grows fourfold twice: the work at most about fourfold.
+    let sizes = [200usize, 800, 3200];
+    let work: Vec<u64> = sizes.iter().map(|n| checks(MAX_CLAIMS, *n)).collect();
+    println!("checks at {MAX_CLAIMS} claims for {sizes:?} other entries: {work:?}");
+    for pair in work.windows(2) {
+        assert!(pair[1] <= pair[0] * 5, "{work:?}");
+    }
+    // At a fixed length, fourfold the claims: the work at most about fourfold.
+    let by_claims: Vec<u64> = [16usize, 64].iter().map(|c| checks(*c, 800)).collect();
+    println!("checks at 800 other entries for 16 and 64 claims: {by_claims:?}");
+    assert!(by_claims[1] <= by_claims[0] * 6, "{by_claims:?}");
+    // One claim more than the cap: refused, naming the first past it.
+    match claims_chain(&keys, MAX_CLAIMS + 1, 10) {
+        Err(ReplayError::TooManyClaims(TooManyClaims { claims, .. })) => {
+            assert_eq!(claims, MAX_CLAIMS + 1);
+        }
+        other => panic!("{:?}", other.map(|h| h.checks)),
+    }
+    set_modeled(false);
 }
