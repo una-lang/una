@@ -172,18 +172,26 @@ impl<T> Receiver<T> {
     /// The value, once sent; `None` when the sender was dropped without sending. Parks until
     /// one or the other.
     pub(crate) fn recv(&self) -> Option<T> {
+        self.recv_parked().0
+    }
+
+    /// As [`Receiver::recv`], and whether the receiver parked before the value or the close
+    /// came.
+    pub(crate) fn recv_parked(&self) -> (Option<T>, bool) {
+        let mut parked = false;
         loop {
             {
                 let mut mailbox = lock(&self.0);
                 if let Some(value) = mailbox.value.take() {
-                    return Some(value);
+                    return (Some(value), parked);
                 }
                 if mailbox.closed {
-                    return None;
+                    return (None, parked);
                 }
                 mailbox.waiter = Some(Waker::current());
             }
             park();
+            parked = true;
         }
     }
 }
