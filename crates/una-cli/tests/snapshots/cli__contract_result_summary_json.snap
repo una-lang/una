@@ -1,6 +1,6 @@
 ---
 source: crates/una-cli/tests/cli.rs
-assertion_line: 838
+assertion_line: 837
 expression: json
 ---
-{"schema":"una.contract/1","function":"s.tagged","public":true,"docs":[],"header":"pub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U], Int]","constraints":[{"param":"T","constraint":"Eq","inferred":false}],"result_labels":[{"position":"arg 1","from":["T"]}],"of_raises":[],"requires":[],"ensures":[],"uses":[],"fails":null,"derived_from":[]}
+{"schema":"una.contract/1","function":"s.tagged","public":true,"docs":[],"header":"pub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U], Int]","constraints":[{"param":"T","constraint":"Eq","inferred":false}],"result_labels":[{"position":"arg 1","from":["T"]}],"of_raises":[],"requires":[],"ensures":[],"uses":[],"fails":null,"diverges":false,"derived_from":[]}

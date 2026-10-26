@@ -6,14 +6,15 @@ use una_diag::Code;
 
 use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
-    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch,
+    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch, EverStmt,
     ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
     ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
-    OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
-    RequirementDecl, RequirementSource, SignedInt, Stmt, StopStmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UsesClause, Variant, VariantExpr, WhenExpr,
+    OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
+    Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopAfter, StopStmt, TextLit,
+    TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
+    Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::{Interner, Symbol};
@@ -167,9 +168,10 @@ const FUNCTION_CLAUSES: Order = Order {
         "uses",
         "fails",
         "fails of",
+        "diverges",
         "derived from",
     ],
-    unique: &[3, 4, 5],
+    unique: &[3, 4, 5, 6],
     description: "clauses go in the order requires, ensures, uses, fails, derived from",
 };
 
@@ -1711,7 +1713,8 @@ impl<'a> Parser<'a> {
                         ClauseKind::Fails(_) => 3,
                         // A header has at most one `fails` clause of each form (ADR 0062).
                         ClauseKind::FailsOf(_) => 4,
-                        ClauseKind::DerivedFrom(_) => 5,
+                        ClauseKind::Diverges => 5,
+                        ClauseKind::DerivedFrom(_) => 6,
                     };
                     (rank, clause.keyword)
                 })
@@ -1760,6 +1763,13 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Fails) => {
                 self.advance();
                 ClauseKind::Fails(self.upper_name("an error kind")?)
+            }
+            // Edition 0.4: `diverges` (`spec/26 §5`), a reserved word elsewhere.
+            TokenKind::LowerIdent(word)
+                if self.v0_4 && self.interner.resolve(*word) == "diverges" =>
+            {
+                self.advance();
+                ClauseKind::Diverges
             }
             TokenKind::Keyword(Keyword::Derived) => {
                 self.advance();
@@ -2087,8 +2097,18 @@ impl<'a> Parser<'a> {
         let action = self.line_expr()?;
         self.expect_line_end()?;
         let mut expectations = vec![self.expectation()?];
+        let mut stop_after = None;
         while !self.eat(&TokenKind::Dedent) {
             if self.at(&TokenKind::Eof) {
+                break;
+            }
+            // Edition 0.4: the last line MAY be `stop after N` (ADR 0116 rule 19).
+            if self.v0_4 && self.at_word("stop") && self.next_is_word("after") {
+                stop_after = Some(self.stop_after()?);
+                if !self.eat(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
+                    let span = self.span();
+                    return self.fail(span, "`stop after` must be the last line of its example");
+                }
                 break;
             }
             expectations.push(self.expectation()?);
@@ -2098,7 +2118,34 @@ impl<'a> Parser<'a> {
             givens,
             action,
             expectations,
+            stop_after,
         }))
+    }
+
+    /// `"stop" "after" integer_literal NEWLINE`, `N` from 1 to 2^63 - 1 (ADR 0116 rule 19).
+    fn stop_after(&mut self) -> Parse<StopAfter> {
+        let start = self.advance();
+        self.advance();
+        let TokenKind::Int(digits) = self.peek() else {
+            let span = self.span();
+            return self.fail(span, "`stop after` needs an integer literal of at least 1");
+        };
+        let iterations = digits
+            .replace('_', "")
+            .parse::<u64>()
+            .ok()
+            .filter(|n| (1..=i64::MAX.unsigned_abs()).contains(n));
+        let literal = self.span();
+        let Some(iterations) = iterations else {
+            return self.fail(
+                literal,
+                "`stop after` needs an integer literal from 1 to 9223372036854775807",
+            );
+        };
+        self.advance();
+        let span = self.since(start);
+        self.expect_line_end()?;
+        Ok(StopAfter { iterations, span })
     }
 
     /// After `expect`, `fails`, `performed` and `not performed` are tried before a line
@@ -2200,6 +2247,19 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::When) => {
                 Ok(Stmt::BlockExpr(BlockExpr::When(self.when_expr()?)))
             }
+            // Edition 0.4: `for until c decreases m` (`spec/26 §4`); `for until in xs` is a loop
+            // over `xs` with the variable `until`.
+            TokenKind::Keyword(Keyword::For) if self.v0_4 && self.for_word("until") => {
+                self.until_stmt()
+            }
+            // Edition 0.4: `for ever` (`spec/26 §5`); `for ever in xs` is a loop over `xs`.
+            TokenKind::Keyword(Keyword::For) if self.v0_4 && self.for_word("ever") => {
+                self.ever_stmt()
+            }
+            // `on stop` after a loop that is not `for ever`, for U2034.
+            TokenKind::LowerIdent(_) if self.v0_4 && self.at_on_stop() => {
+                Ok(Stmt::OnStop(Box::new(self.on_stop()?)))
+            }
             // Edition 0.2: `for x in source` (`spec/17 §1`).
             TokenKind::Keyword(Keyword::For) if self.v0_2 => {
                 Ok(Stmt::For(Box::new(self.for_stmt()?)))
@@ -2240,6 +2300,89 @@ impl<'a> Parser<'a> {
                 Ok(Stmt::Handled(self.handled_rest(expr)?))
             }
         }
+    }
+
+    /// Whether the `for` at the cursor is followed by `word` used as a keyword: not followed
+    /// by `in`, which makes it the loop variable (ADR 0116 rule 5).
+    fn for_word(&self, word: &str) -> bool {
+        matches!(self.peek_at(1), TokenKind::LowerIdent(next) if self.interner.resolve(*next) == word)
+            && !matches!(self.peek_at(2), TokenKind::Keyword(Keyword::In))
+    }
+
+    /// Whether the cursor is at `on stop` alone on its line.
+    fn at_on_stop(&self) -> bool {
+        matches!(self.peek(), TokenKind::LowerIdent(on) if self.interner.resolve(*on) == "on")
+            && matches!(self.peek_at(1), TokenKind::LowerIdent(stop) if self.interner.resolve(*stop) == "stop")
+            && matches!(self.peek_at(2), TokenKind::Newline)
+    }
+
+    /// `"on" "stop" NEWLINE INDENT block DEDENT` (`spec/26 §5`).
+    fn on_stop(&mut self) -> Parse<OnStop> {
+        let start = self.advance();
+        let stop = self.advance();
+        let keyword = start.to(stop);
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        Ok(OnStop {
+            block,
+            keyword,
+            span: self.since(start),
+        })
+    }
+
+    /// `"for" "ever" [ "within" add_expr ] NEWLINE INDENT block DEDENT [ "on" "stop" NEWLINE
+    /// INDENT block DEDENT ]` (`spec/26 §5`, §7, ADR 0116 rules 5, 10 and 11).
+    fn ever_stmt(&mut self) -> Parse<Stmt> {
+        let start = self.advance();
+        self.advance();
+        // Edition 0.4: `within d`, the deadline of each iteration (`spec/26 §7`).
+        let within = match self.peek() {
+            TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "within" => {
+                self.advance();
+                Some(self.add_expr()?)
+            }
+            _ => None,
+        };
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        let on_stop = if self.at_on_stop() {
+            Some(self.on_stop()?)
+        } else {
+            None
+        };
+        Ok(Stmt::Ever(Box::new(EverStmt {
+            within,
+            block,
+            on_stop,
+            span: self.since(start),
+        })))
+    }
+
+    /// `"for" "until" line_expr "decreases" add_expr NEWLINE INDENT block DEDENT` (`spec/26
+    /// §4`, ADR 0116 rule 7). Without `decreases` it is U0101.
+    fn until_stmt(&mut self) -> Parse<Stmt> {
+        let start = self.advance();
+        self.advance();
+        let condition = self.line_expr()?;
+        let decreases = match self.peek() {
+            TokenKind::LowerIdent(word) if self.interner.resolve(*word) == "decreases" => {
+                self.advance()
+            }
+            _ => {
+                let span = self.span();
+                return self.fail(span, "`for until` needs a `decreases` measure");
+            }
+        };
+        let measure = self.add_expr()?;
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        Ok(Stmt::Until(Box::new(UntilStmt {
+            condition,
+            decreases,
+            measure,
+            block,
+            span: self.since(start),
+        })))
     }
 
     /// Whether `word`, the first word of a statement, starts `stop` (`Some(true)`) or `skip`
