@@ -16,6 +16,14 @@ const WRAPPED: &str = "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\
 /// The part of the same declaration that editions 0.1 to 0.3 write on one line.
 const JOINED_HEADER: &str = "-> Pair[List[U], Int] = Pair(";
 
+/// A module in edition 0.1's own syntax whose long call is wrapped, which is not edition 0.1's
+/// canonical form: edition 0.1 keeps a call on one line.
+const WRAPPED_0_1: &str = "module s\n\npub add_three(first_number: Int, second_number: Int, third_number: Int) -> Int =\n  first_number + second_number + third_number\n\npub total() -> Int = add_three(100000000000000000,\n  200000000000000000,\n  300000000000000000\n)\n";
+
+/// The call of `WRAPPED_0_1` as edition 0.1 writes it, on one line.
+const JOINED_CALL_0_1: &str =
+    "add_three(100000000000000000, 200000000000000000, 300000000000000000)";
+
 fn una(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -26,9 +34,10 @@ fn una(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// A fresh directory under the test's temporary directory.
+/// A fresh directory in the system's temporary directory, outside the repository, so that no
+/// manifest of the repository or its worktrees lies above it.
 fn scratch(name: &str) -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let root = std::env::temp_dir().join(format!("una-named-file-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     root
@@ -105,7 +114,7 @@ fn a_file_named_inside_an_edition_0_3_package_still_uses_edition_0_3() {
 fn a_loose_file_with_no_manifest_above_it_stays_in_edition_0_1() {
     let root = scratch("named-file-loose");
     let file = root.join("s.una");
-    std::fs::write(&file, WRAPPED).unwrap();
+    std::fs::write(&file, WRAPPED_0_1).unwrap();
     let file_arg = file.to_str().unwrap();
 
     let check = una(&root, &["fmt", "--check", "--json", file_arg]);
@@ -113,6 +122,10 @@ fn a_loose_file_with_no_manifest_above_it_stays_in_edition_0_1() {
     assert_eq!(codes(&check), ["U7001"]);
     let fmt = una(&root, &["fmt", file_arg]);
     assert_eq!(fmt.status.code(), Some(0));
-    assert!(text_of(&file).contains(JOINED_HEADER), "{}", text_of(&file));
+    assert!(
+        text_of(&file).contains(JOINED_CALL_0_1),
+        "{}",
+        text_of(&file)
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }
