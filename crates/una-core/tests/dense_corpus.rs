@@ -8,8 +8,13 @@
 //! of most cases are named generators, which this test implements too; each case carries the
 //! digest of its inputs, so a generator that drifts fails as such, before any kernel runs.
 
-// Tests may unwrap freely (compiler/conventions.md §1).
-#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+// Tests may unwrap and panic freely (compiler/conventions.md §1).
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use std::collections::BTreeMap;
 

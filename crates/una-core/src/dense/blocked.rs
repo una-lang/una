@@ -609,7 +609,7 @@ mod tests {
                 state ^= state >> 7;
                 state ^= state << 17;
                 let uniform = (state >> 11) as f64 * float::two_pow(-52) - 1.0;
-                if special && state % 7 == 0 {
+                if special && state.is_multiple_of(7) {
                     specials[(state >> 3) as usize % specials.len()]
                 } else {
                     uniform

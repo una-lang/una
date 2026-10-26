@@ -204,8 +204,11 @@ mod tests {
         // The hardware's fused multiply-add agrees too, where it is the instruction itself:
         // elsewhere `mul_add` may call the platform's C library, which no part of Una uses.
         #[cfg(target_arch = "aarch64")]
-        #[allow(clippy::disallowed_methods)]
-        assert_eq!(b(x.mul_add(y, z)), b(want), "{x:e} {y:e} {z:e}");
+        {
+            #[allow(clippy::disallowed_methods)]
+            let fused = x.mul_add(y, z);
+            assert_eq!(b(fused), b(want), "{x:e} {y:e} {z:e}");
+        }
     }
 
     #[test]
