@@ -462,7 +462,7 @@ impl Checker<'_, '_, '_> {
         };
         let units: Vec<Option<Unit>> = ["by", "with", "x", "of", "and"]
             .iter()
-            .map(|name| arg(*name).and_then(|ty| self.element_unit(ty)))
+            .map(|name| arg(name).and_then(|ty| self.element_unit(ty)))
             .collect();
         let [by, with, x, of, and] = units.as_slice() else {
             return ty;
