@@ -783,12 +783,18 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
     for finding in &result.findings {
         if let Some(package) = packages.get(finding.package) {
             if finding.is_note() {
-                let note = format!(
-                    "note: `{}` ({}): {}",
-                    package.name,
-                    package.source,
-                    finding.text(package)
-                );
+                // A fact of the owner's chain names the owner and the source itself, so it is
+                // said once for all the owner's packages.
+                let note = if finding.of_owner() {
+                    format!("note: {}", finding.text(package))
+                } else {
+                    format!(
+                        "note: `{}` ({}): {}",
+                        package.name,
+                        package.source,
+                        finding.text(package)
+                    )
+                };
                 if !said.contains(&note) {
                     said.push(note);
                 }
