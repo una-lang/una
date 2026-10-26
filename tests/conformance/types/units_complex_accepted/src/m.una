@@ -17,7 +17,9 @@ pub sum(a: Complex[F64] of Volt, b: Complex[F64] of Volt) -> Complex[F64] of Vol
 
 pub impedance(v: Complex[F64] of Volt, i: Complex[F64] of Ampere) -> Complex[F64] of Ohm = v / i
 
-pub power(v: Complex[F64] of Volt, i: Complex[F64] of Ampere) -> Complex[F64] of Volt * Ampere = v * i.conj()
+pub power(v: Complex[F64] of Volt,
+  i: Complex[F64] of Ampere
+) -> Complex[F64] of Volt * Ampere = v * i.conj()
 
 pub scaled(i: Complex[F32] of Ampere, r: F32 of Ohm) -> Complex[F32] of Volt = i.scale(by: r)
 

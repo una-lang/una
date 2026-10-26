@@ -45,7 +45,9 @@ pub applied(m: Matrix[F64 of Newton], v: Array[F64 of Meter]) -> Array[F64 of Ne
 =
   m.multiply_array(by: v)
 
-pub accumulated(c: Matrix[F64 of Meter * Second], a: Matrix[F64 of Meter], b: Matrix[F64 of Second]) -> Matrix[F64 of Meter * Second]
+pub accumulated(c: Matrix[F64 of Meter * Second], a: Matrix[F64 of Meter],
+  b: Matrix[F64 of Second]
+) -> Matrix[F64 of Meter * Second]
   requires c.rows == a.rows and a.columns == b.rows and b.columns == c.columns
 =
   let edit d = c

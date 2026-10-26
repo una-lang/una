@@ -33,7 +33,9 @@ pub counted(n: Int of Meter) -> F32 of Meter = n.to_f32()
 
 pub ordered(a: F32 of Meter, b: F32 of Meter) -> Bool = a < b or 0.5 <= a or a.ieee_ge(other: b)
 
-pub methods(a: F32 of Meter, b: F32 of Meter) -> F32 of Meter = a.abs() + a.rem(by: b) + a.clamp(lo: b, hi: 2.5)
+pub methods(a: F32 of Meter,
+  b: F32 of Meter
+) -> F32 of Meter = a.abs() + a.rem(by: b) + a.clamp(lo: b, hi: 2.5)
 
 pub raw(a: F32 of Meter) -> F32 = a.magnitude()
 
