@@ -192,7 +192,9 @@ pub(crate) fn fix_command(
             if module.invalid || original.get(name) == Some(&module.text) && !module.crlf {
                 continue;
             }
-            if let Err(error) = crate::write_through_rename(&module.disk, &module.text) {
+            if let Err(error) =
+                crate::write_through_rename(&crate::write_root(path), &module.disk, &module.text)
+            {
                 writeln!(
                     stderr,
                     "error: cannot write `{}`: {error}",

@@ -5,12 +5,13 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
-use una_interp::{Event, EventOutcome, Grant};
+use una_interp::stopping::{HardStop, RunStop};
+use una_interp::{Clock, Event, EventOutcome, Grant};
 
 use crate::host::OpSite;
 use crate::render::{Failure, Types};
@@ -321,6 +322,9 @@ pub struct Meta {
     /// Whether the program is of edition 0.4, whose runs may take `serve:` grants
     /// (`spec/31 §2` rule 4).
     pub serve: bool,
+    /// Whether the program has a `for ever`, so the run takes host stops: the executable then
+    /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
+    pub stops: bool,
 }
 
 /// The `drive` section of a driven program, as `una build` embeds it (ADR 0116 rule 1).
@@ -425,7 +429,9 @@ impl Meta {
             None => "`[run] grants`".to_owned(),
         };
         let serve = value.get("serve").and_then(Value::as_bool).unwrap_or(false);
+        let stops = value.get("stops").and_then(Value::as_bool).unwrap_or(false);
         Some(Meta {
+            stops,
             grants,
             uses,
             sites,
@@ -470,6 +476,13 @@ pub struct Options {
     /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
     /// 0116 rule 19).
     pub stop_after: Option<u64>,
+    /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §8`).
+    pub virtual_time: bool,
+    /// `--deadline <seconds>`: a host stop request after this many seconds (ADR 0116 rule 14).
+    pub deadline: Option<u64>,
+    /// `--stop-grace <seconds>`: the grace period before the hard stop, 10 when not given
+    /// (rule 16).
+    pub stop_grace: Option<u64>,
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -544,9 +557,37 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 options.stop_after = Some(n);
             }
+            // A switch: it takes no value.
+            "--virtual-time" => {
+                if inline.is_some() {
+                    return Err(format!("`{flag}` takes no value"));
+                }
+                options.virtual_time = true;
+            }
+            "--deadline" | "--stop-grace" => {
+                let text = value()?;
+                let n: u64 = text
+                    .parse()
+                    .map_err(|_| format!("`{flag} {text}` is not a number"))?;
+                let most = if flag == "--deadline" {
+                    una_interp::stopping::MAX_DEADLINE_SECS
+                } else {
+                    una_interp::stopping::MAX_GRACE_SECS
+                };
+                if n == 0 || n > most {
+                    return Err(format!(
+                        "`{flag} {n}` is out of range; give from 1 to {most}"
+                    ));
+                }
+                if flag == "--deadline" {
+                    options.deadline = Some(n);
+                } else {
+                    options.stop_grace = Some(n);
+                }
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds> and --stop-after-iterations <n>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds> and --virtual-time"
                 ));
             }
         }
@@ -595,6 +636,9 @@ pub(crate) struct State {
     operations: Vec<usize>,
     /// In a task, the abort that stopped it, U6003, U6004 or U6005, which its block reports.
     pub(crate) stopped: Option<(Code, Location, String)>,
+    /// Whether the thread's task runs the body of a `for ever`, callees included: its `Http`
+    /// operations are interruptible there (ADR 0116 rule 14). A task starts outside one.
+    pub(crate) in_ever: bool,
 }
 
 /// Makes an abort say, on stderr, the debug high-water mark of the heap and the run's ceiling, in
@@ -639,6 +683,8 @@ pub(crate) struct TaskTemplate {
     pub(crate) stack: usize,
     /// Where the block is written.
     pub(crate) location: Location,
+    /// The deadline of the `for ever within` iteration that starts the block (`spec/26 §7`).
+    deadline: Option<crate::deadline::Deadline>,
 }
 
 impl TaskTemplate {
@@ -694,6 +740,7 @@ impl State {
             shielded: self.shielded,
             stack: una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2),
             location: site_location(self, site),
+            deadline: crate::deadline::current(),
         }
     }
 
@@ -827,6 +874,65 @@ impl State {
     }
 }
 
+/// The run's host stop state, set once at start (ADR 0116 rules 14 and 16).
+static RUN_STOP: OnceLock<Arc<RunStop>> = OnceLock::new();
+
+/// `--stop-after-iterations`, 0 when it is not given, and the iterations of `for ever` loops
+/// and of the host's loop started so far (rule 19).
+static STOP_AFTER: AtomicU64 = AtomicU64::new(0);
+static ITERATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The hard stop, once it has come (rule 16).
+fn hard_stop() -> Option<HardStop> {
+    RUN_STOP.get().and_then(|stop| stop.hard())
+}
+
+/// Whether the loop of the host, or a `for ever`, stops at the iteration that starts now
+/// (rules 13, 14 and 19): a host stop request has reached the run, which is sticky; or
+/// `--stop-after-iterations` iterations have started, which makes the run's own request now.
+/// Otherwise the iteration counts as started.
+fn iteration_stops() -> bool {
+    let Some(stop) = RUN_STOP.get() else {
+        return false;
+    };
+    if stop.stopped() {
+        return true;
+    }
+    if claim_iteration(&ITERATIONS, STOP_AFTER.load(Ordering::SeqCst)) {
+        return false;
+    }
+    stop.request_local();
+    true
+}
+
+/// Claims the start of one iteration on `count`, in one atomic step: true when it starts.
+/// With no limit (0), one `fetch_add`. With a limit, a compare-exchange loop that increments
+/// only while the count is below it, so threads that start iterations at once never start more
+/// than `limit` of them together.
+fn claim_iteration(count: &AtomicU64, limit: u64) -> bool {
+    if limit == 0 {
+        count.fetch_add(1, Ordering::SeqCst);
+        return true;
+    }
+    count
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |started| {
+            (started < limit).then(|| started + 1)
+        })
+        .is_ok()
+}
+
+/// Marks whether the thread's task runs the body of a `for ever` ([`State::in_ever`]).
+fn set_in_ever(inside: bool) {
+    with_state(|state| state.in_ever = inside);
+}
+
+/// The interruption of an `Http` operation of the thread's task, when it runs in the body of
+/// a `for ever` (rule 12).
+pub(crate) fn op_interrupt() -> Option<&'static RunStop> {
+    let inside = with_state(|state| state.in_ever).unwrap_or(false);
+    RUN_STOP.get().filter(|_| inside).map(AsRef::as_ref)
+}
+
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static HOT: Hot = const { Hot::inactive() };
@@ -834,42 +940,81 @@ thread_local! {
 }
 
 /// The host's loop of a driven program (ADR 0116 rule 3), on the thread that runs it: its
-/// settings, when it started, the next tick due and the iterations started.
+/// settings, when its first tick was due on the run's clock, the next tick due and the
+/// iterations started.
 struct Driver {
     ticks: u64,
-    stop_after: Option<u64>,
-    start: Option<std::time::Instant>,
+    origin: Option<u64>,
     next: u64,
-    iterations: u64,
+}
+
+/// The clock of the run in this process (ADR 0116 rule 19): set once when the executable
+/// starts, real, or virtual under `--virtual-time`, and shared by every thread of the run.
+///
+/// A `OnceLock`, never a lock: after it is set, reading it is a plain load, and a virtual
+/// clock's reading one more atomic load. It is read on hot paths, each iteration of a
+/// `for ever within`, each `Http` call and each `Clock.now`, so a mutex there would cost
+/// every task a contended lock, against the performance parity of native code. An executable
+/// runs one run, so one setting suffices; a later virtual run in the same process, as in
+/// tests, restarts the virtual clock at 0 in `start`.
+static CLOCK: OnceLock<Clock> = OnceLock::new();
+
+/// Makes the run's clock the virtual one when `virtual_time` holds, the real one otherwise.
+/// False when the process already has a clock of the other kind: a second run in one
+/// process, which only tests make.
+fn set_clock(virtual_time: bool) -> bool {
+    CLOCK
+        .get_or_init(|| Clock::for_run(virtual_time))
+        .is_virtual()
+        == virtual_time
+}
+
+/// The run's clock: the one the executable set, or the real clock before any run started.
+pub fn clock() -> &'static Clock {
+    CLOCK.get_or_init(Clock::real)
 }
 
 /// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
 /// `std.drive` after waiting for the next one due, delivering the latest one due with the
-/// count of those skipped; or 0 when the loop stops at this iteration start, once
-/// `--stop-after-iterations` iterations have started, with its `stop` event traced. The first
-/// tick is due at the first call, when `init` has returned.
+/// count of those skipped; or 0 when the loop stops at this iteration start, after a host stop
+/// request (rule 3), with its `stop` event traced. A host stop interrupts the wait, and the
+/// loop then stops, as at the next iteration start. The step that a tick starts is the body
+/// of the host's `for ever`. The first tick is due at the first call, when `init` has
+/// returned.
 pub fn drive_tick() -> i64 {
+    set_in_ever(false);
     let tick = DRIVER.with(|cell| {
         let mut driver = cell.borrow_mut();
         let driver = driver.as_mut()?;
-        if driver
-            .stop_after
-            .is_some_and(|limit| driver.iterations >= limit)
-        {
+        if iteration_stops() {
             return None;
         }
-        driver.iterations += 1;
-        let start = *driver.start.get_or_insert_with(std::time::Instant::now);
-        let period = std::time::Duration::from_millis(driver.ticks);
-        let due = start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
-        let now = std::time::Instant::now();
-        if now < due {
-            std::thread::sleep(due - now);
+        // On the run's clock, real or virtual: under virtual time the wait moves the clock to
+        // the tick at once (ADR 0116 rule 19); on the real clock a host stop interrupts it.
+        let clock = clock();
+        let origin = *driver.origin.get_or_insert_with(|| clock.now());
+        let period = driver.ticks.max(1);
+        let due = origin.saturating_add(driver.next.saturating_mul(period));
+        if clock.is_virtual() {
+            clock.wait_until(due);
+        } else {
+            let now = clock.now();
+            if now < due {
+                let left = std::time::Duration::from_millis(due - now);
+                let waited = match RUN_STOP.get() {
+                    Some(stop) => una_interp::stopping::wait_tick(stop, left),
+                    None => {
+                        clock.wait_until(due);
+                        true
+                    }
+                };
+                if !waited {
+                    return None;
+                }
+            }
         }
-        let elapsed = start.elapsed().as_millis();
-        let latest = u64::try_from(elapsed / u128::from(driver.ticks.max(1)))
-            .unwrap_or(u64::MAX)
-            .max(driver.next);
+        let elapsed = clock.now().saturating_sub(origin);
+        let latest = (elapsed / period).max(driver.next);
         let missed = latest - driver.next;
         let at = latest.saturating_mul(driver.ticks);
         driver.next = latest + 1;
@@ -877,6 +1022,7 @@ pub fn drive_tick() -> i64 {
     });
     match tick {
         Some((at, missed)) => {
+            set_in_ever(true);
             let word = |n: u64| {
                 values::int_word(&num_bigint::BigInt::from(
                     i64::try_from(n).unwrap_or(i64::MAX),
@@ -925,6 +1071,10 @@ struct Hot {
     /// `shielded >= flags`.
     shielded: Cell<usize>,
     flags: Cell<usize>,
+    /// The thread's attention word, and its value at the last check point (ADR 0116 rule 18,
+    /// ADR 0102 amendment of 2026-10-18).
+    word: Cell<Option<una_sys::attention::Word>>,
+    seen: Cell<u64>,
 }
 
 impl Hot {
@@ -939,6 +1089,24 @@ impl Hot {
             mem_ceiling: Cell::new(usize::MAX),
             shielded: Cell::new(0),
             flags: Cell::new(0),
+            word: Cell::new(None),
+            seen: Cell::new(u64::MAX),
+        }
+    }
+
+    /// Whether the thread's attention word changed since the last check point: one relaxed
+    /// load on the fast path. A change takes the slow path once, which looks for the hard stop.
+    fn attention(&self) -> bool {
+        match self
+            .word
+            .get()
+            .map(|word| word.changed_since(self.seen.get()))
+        {
+            Some(Some(now)) => {
+                self.seen.set(now);
+                hard_stop().is_some()
+            }
+            _ => false,
         }
     }
 
@@ -970,6 +1138,17 @@ fn install(state: State, depth: usize) {
             .set(mem_ceiling(state.baseline, state.max_memory));
         hot.shielded.set(state.shielded);
         hot.flags.set(state.cancel.len());
+        let word = hot.word.get().unwrap_or_else(una_sys::attention::register);
+        hot.word.set(Some(word));
+        // The word as it stands, read before the hard stop is: a hard stop that comes after
+        // the read raises the word, and one that came before it is seen here, with a value no
+        // word holds, so the first check point takes the slow path.
+        let seen = word.load();
+        hot.seen.set(if hard_stop().is_some() {
+            u64::MAX
+        } else {
+            seen
+        });
         hot.active.set(true);
     });
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
@@ -996,6 +1175,27 @@ pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|cell| cell.borrow_mut().as_mut().map(f))
 }
 
+/// Whether a `for ever` stops at the iteration that starts now (ADR 0116 rules 13 and 14): a
+/// host stop request has come, which is sticky; its `stop` event is then traced. 1 to stop.
+pub fn ever_start() -> i64 {
+    if iteration_stops() {
+        with_state(|state| {
+            state.in_ever = false;
+            state.stop_event();
+        });
+        1
+    } else {
+        set_in_ever(true);
+        0
+    }
+}
+
+/// Leaves the body of a `for ever`: the loop ended, by `stop`, a host stop or a failure, and
+/// its `on stop` and the code after it are outside the body (rule 14).
+pub fn ever_end() {
+    set_in_ever(false);
+}
+
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
 /// grants, calls `entry`, the compiled `main`, on a thread with the stack that `--max-depth`
 /// needs, and writes the trace. Returns the exit code.
@@ -1016,6 +1216,36 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
+    // The run's host stop state is made first, so a signal that comes while the handlers are
+    // installed counts for the run.
+    let stop = RunStop::new(
+        options
+            .stop_grace
+            .unwrap_or(una_interp::stopping::DEFAULT_GRACE_SECS),
+    );
+    // ADR 0116 rule 18: only a run that can reach a `for ever` or runs a driver changes what
+    // SIGINT and SIGTERM do; any other keeps their default actions.
+    if meta.stops
+        && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install()
+    {
+        let _ = writeln!(stderr, "error: {message}");
+        return 3;
+    }
+    // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
+    // Its guard ends the watch on every way out, a panic's included.
+    let watching = if meta.stops || options.deadline.is_some() {
+        match stop.watch(options.deadline.map(std::time::Duration::from_secs)) {
+            Ok(watching) => Some(watching),
+            Err(_) => {
+                let _ = writeln!(stderr, "error: cannot start the watcher of host stops");
+                return 3;
+            }
+        }
+    } else {
+        None
+    };
+    let _ = RUN_STOP.set(Arc::clone(&stop));
+    STOP_AFTER.store(options.stop_after.unwrap_or(0), Ordering::SeqCst);
     let grants = match grants(&meta, &options) {
         Ok(grants) => grants,
         Err(message) => {
@@ -1061,11 +1291,21 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
-        stop_after: options.stop_after,
-        start: None,
+        origin: None,
         next: 0,
-        iterations: 0,
     });
+    if !set_clock(options.virtual_time) {
+        let _ = writeln!(
+            stderr,
+            "error: this process already ran a run on a clock of the other kind"
+        );
+        return 3;
+    }
+    // Each run's virtual clock starts at 0 (`spec/26 §8`), also in a process that ran one
+    // before, as tests do: one atomic store, before any of the run's code reads it.
+    if let Clock::Virtual(virtual_clock) = clock() {
+        virtual_clock.restart();
+    }
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
@@ -1089,6 +1329,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         shielded: 0,
         operations: Vec::new(),
         stopped: None,
+        in_ever: false,
     };
     // ADR 0114 rule 6.4: write the default floating-point environment, then test it, before
     // any code of the program runs; each thread the program runs on writes it too.
@@ -1163,6 +1404,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                 return USAGE;
             }
         };
+    drop(watching);
     let mut code = if status == 0 { 0 } else { 1 };
     if let Some(state) = state {
         code = code.max(finish(state));
@@ -1372,7 +1614,8 @@ pub fn enter(site: usize) -> i64 {
         let clear = depth < hot.max_depth.get()
             && hot.stack_base.get().abs_diff(position) <= hot.stack_budget.get()
             && held <= hot.mem_ceiling.get()
-            && !hot.cancelled();
+            && !hot.cancelled()
+            && !hot.attention();
         if clear {
             // No borrow of the state runs compiled code (ADR 0102 rule 2).
             debug_assert!(STATE.with(|cell| cell.try_borrow_mut().is_ok()));
@@ -1389,6 +1632,12 @@ pub fn enter(site: usize) -> i64 {
         let state = cell.as_mut()?;
         if state.cancelled() {
             return Some(None);
+        }
+        // ADR 0116 rule 16: the hard stop cancels the run, or the task, at this call.
+        if let Some(hard) = hard_stop() {
+            let location = site_location(state, site);
+            let message = una_interp::stopping::hard_stop_message(hard);
+            return Some(stop_or_abort(&mut cell, Code::U6007, location, message));
         }
         let depth = HOT.with(|hot| hot.depth.get());
         let used = state.stack_base.abs_diff(position);
@@ -1423,8 +1672,9 @@ pub fn enter(site: usize) -> i64 {
 pub fn budget(site: usize) -> i64 {
     let held = crate::held();
     // ADR 0102: the negated abort conditions, on `Hot`.
-    let proceed =
-        HOT.with(|hot| !hot.active.get() || (held <= hot.mem_ceiling.get() && !hot.cancelled()));
+    let proceed = HOT.with(|hot| {
+        !hot.active.get() || (held <= hot.mem_ceiling.get() && !hot.cancelled() && !hot.attention())
+    });
     if proceed {
         return 0;
     }
@@ -1434,6 +1684,12 @@ pub fn budget(site: usize) -> i64 {
         let state = cell.as_mut()?;
         if state.cancelled() {
             return Some(None);
+        }
+        // ADR 0116 rule 16: the hard stop cancels the run, or the task, at this iteration.
+        if let Some(hard) = hard_stop() {
+            let location = site_location(state, site);
+            let message = una_interp::stopping::hard_stop_message(hard);
+            return Some(stop_or_abort(&mut cell, Code::U6007, location, message));
         }
         let message = over_budget(state, held)?;
         let location = site_location(state, site);
@@ -1603,9 +1859,11 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         shielded: template.shielded,
         operations: Vec::new(),
         stopped: None,
+        in_ever: false,
     };
     state.stack_base = stack_position(&state);
     install(state, template.depth);
+    crate::deadline::adopt(template.deadline.clone());
 }
 
 /// What a task reports to its block when its code has ended (ADR 0113 rule 3): its events, the
@@ -1679,6 +1937,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         shielded: 0,
         operations: Vec::new(),
         stopped: None,
+        in_ever: false,
     };
     state.stack_base = stack_position(&state);
     install(state, 0);
@@ -1833,6 +2092,31 @@ pub fn leave() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn threads_racing_on_a_stop_count_start_exactly_that_many_iterations() {
+        // ADR 0116 rule 19: the claim is one atomic step, so eight threads that try 1,000
+        // claims each start exactly 1,000 iterations under a limit of 1,000.
+        let count = AtomicU64::new(0);
+        let started = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..1_000 {
+                        if claim_iteration(&count, 1_000) {
+                            started.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(started.load(Ordering::SeqCst), 1_000);
+        assert_eq!(count.load(Ordering::SeqCst), 1_000);
+        // Without a limit, every claim starts an iteration.
+        let free = AtomicU64::new(0);
+        assert!((0..10).all(|_| claim_iteration(&free, 0)));
+        assert_eq!(free.load(Ordering::SeqCst), 10);
+    }
+
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_owned()).collect()
     }
@@ -1859,6 +2143,20 @@ mod tests {
         assert!(parse_args(&strings(&["--json"])).is_err());
         assert!(parse_args(&strings(&["--grant"])).is_err());
         assert!(parse_args(&strings(&["--max-depth", "many"])).is_err());
+    }
+
+    #[test]
+    fn the_command_line_takes_virtual_time_as_a_switch() {
+        assert!(!parse_args(&[]).unwrap().virtual_time);
+        let options = parse_args(&strings(&[
+            "--virtual-time",
+            "--stop-after-iterations",
+            "3",
+        ]))
+        .unwrap();
+        assert!(options.virtual_time);
+        assert_eq!(options.stop_after, Some(3));
+        assert!(parse_args(&strings(&["--virtual-time=yes"])).is_err());
     }
 
     #[test]
