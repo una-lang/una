@@ -20,6 +20,7 @@ fn every_demo_script_finds_its_expected_outcomes() {
     for script in scripts {
         let output = Command::new("sh")
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .arg(&script)
             .arg(env!("CARGO_BIN_EXE_una"))
             .current_dir(&root)

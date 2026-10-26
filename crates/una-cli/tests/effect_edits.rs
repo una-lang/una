@@ -56,6 +56,7 @@ fn module(name: &str, rest: &str) -> PathBuf {
 fn una(root: &Path, args: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(args)
         .current_dir(root)
         .output()

@@ -217,6 +217,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/m.una:6:22")],
     },
+    // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4.
+    Difference04 {
+        case: "names/http_interrupted_0_3",
+        added: &[],
+        removed: &[("U1001", "src/poll.una:18:8")],
+    },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
     Difference04 {
         case: "names/map_update_function_in_0_3",
@@ -239,6 +245,18 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         case: "syntax/loop_exits_before_0_4",
         added: &[],
         removed: &[("U0101", "src/before.una:10:10")],
+    },
+    // ADR 0116 rule 19: an example's `stop after` line exists from edition 0.4.
+    Difference04 {
+        case: "syntax/stop_after_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:11:3")],
+    },
+    // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
+    Difference04 {
+        case: "syntax/until_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:9:13")],
     },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
     // package that declares them is refused there.
@@ -337,6 +355,7 @@ fn run_as(
     std::fs::write(&manifest, replaced).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
         .args(["--json", command, "."])
         .current_dir(work)
         .output()
@@ -567,6 +586,7 @@ fn compare_migrated(
     let una = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
             .args(args)
             .current_dir(work)
             .output()

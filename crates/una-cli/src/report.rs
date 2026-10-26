@@ -28,8 +28,9 @@ const PROOF_CACHE: &str = ".una/cache/";
 /// What the verification model does not cover: the one list of `spec/07 §1` and `spec/13 §6`,
 /// in their order (R-041; the last entry is ADR 0038 D9 rule 4). `una.report/2` says "stack
 /// exhaustion", since native executables exhaust their stack too (ADR 0055), and ends with the
-/// order of effects across `together` tasks (ADR 0065, `spec/19 §3`).
-const OUT_OF_MODEL: [&str; 8] = [
+/// order of effects across `together` tasks (ADR 0065, `spec/19 §3`), then the three entries of
+/// long-running programs (ADR 0116 rule 21).
+const OUT_OF_MODEL: [&str; 11] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
@@ -38,6 +39,9 @@ const OUT_OF_MODEL: [&str; 8] = [
     "races between the check and the use of a file path",
     "hard links",
     "order of effects across concurrent tasks",
+    "the time of a host stop",
+    "interference of the host's load with the timing of an expression",
+    "uncatchable termination",
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
@@ -61,7 +65,7 @@ struct Report {
     coverage: CoverageDoc,
     native: NativeDoc,
     generic_results: Vec<GenericResultDoc>,
-    out_of_model: [&'static str; 8],
+    out_of_model: [&'static str; 11],
 }
 
 /// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
@@ -143,6 +147,19 @@ struct HandlerAuthorityDoc {
 #[derive(Serialize)]
 struct InformationDoc {
     policy_calls: Vec<PolicyCallDoc>,
+    /// Each site whose deadline turns timing into values, with its timing label (ADR 0116
+    /// rule 21); absent when there is none, as in every package before edition 0.4.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    timing: Vec<TimingDoc>,
+}
+
+/// A site with a deadline and its timing label (ADR 0116 rule 21).
+#[derive(Serialize)]
+struct TimingDoc {
+    construct: &'static str,
+    function: String,
+    label: String,
+    site: SiteDoc,
 }
 
 #[derive(Serialize)]
@@ -591,7 +608,22 @@ fn build(
         obligations: counts,
         authority,
         handler_authority,
-        information: InformationDoc { policy_calls },
+        information: InformationDoc {
+            policy_calls,
+            timing: analysis
+                .timing
+                .iter()
+                .map(|site| TimingDoc {
+                    construct: site.construct,
+                    function: site.function.clone(),
+                    label: site.label.to_string(),
+                    site: SiteDoc {
+                        file: site.location.file.clone(),
+                        start: site.location.start,
+                    },
+                })
+                .collect(),
+        },
         escapes,
         assumptions,
         tcb: TcbDoc {
@@ -894,6 +926,17 @@ fn human(report: &Report) -> String {
             call.site.start.col,
             una_core::quote(&call.purpose),
             call.owner
+        ));
+    }
+    for site in &report.information.timing {
+        line(format!(
+            "  timing of {} in {} at {}:{}:{}: {}",
+            site.construct,
+            site.function,
+            site.site.file,
+            site.site.start.line,
+            site.site.start.col,
+            site.label
         ));
     }
     line("escapes:".to_owned());

@@ -1063,6 +1063,42 @@ struct Tv {
     ty: Type,
 }
 
+/// The measure of a `for until` loop whose body is walked (ADR 0116 V1): the clause, its value
+/// at the start of the iteration, the loop's state binders, and where `decreases` is written.
+#[derive(Clone)]
+struct Measure {
+    clause: una_core::Clause,
+    start: F,
+    state: Vec<Name>,
+    decreases: Span,
+}
+
+/// Whether `expr`, a loop's body, holds a `stop` of that loop: one outside the loops in it.
+fn stops(expr: &Expr) -> bool {
+    match expr {
+        Expr::Exit { tag, .. } => *tag == una_core::ExitTag::Stop,
+        Expr::Let { value, body, .. } => {
+            matches!(value.as_ref(), Bound::Expr(inner) if stops(inner)) || stops(body)
+        }
+        Expr::LetTuple { body, .. } | Expr::With { body, .. } | Expr::Attempt { body, .. } => {
+            stops(body)
+        }
+        Expr::If {
+            then, otherwise, ..
+        } => stops(then) || stops(otherwise),
+        Expr::Case {
+            arms, otherwise, ..
+        } => arms.iter().any(|arm| stops(&arm.body)) || otherwise.as_deref().is_some_and(stops),
+        Expr::Handle { body, handler, .. } => stops(body) || stops(handler),
+        Expr::Atom { .. }
+        | Expr::Fail { .. }
+        | Expr::Unreachable { .. }
+        | Expr::Loop { .. }
+        | Expr::Together { .. }
+        | Expr::TogetherFor { .. } => false,
+    }
+}
+
 /// A hypothesis of the path context; a hidden one defines a temporary and is not listed.
 #[derive(Clone, Debug)]
 struct Hyp {
@@ -1217,6 +1253,9 @@ struct Walker<'p, 'i> {
     frames: BTreeMap<Span, Vec<bool>>,
     /// The values that loops make fresh, by binder, with their source names (ADR 0071 D3).
     loop_fresh: BTreeMap<String, BTreeSet<String>>,
+    /// For each loop whose body is walked, innermost last, its measure when it is a `for
+    /// until`: what each `skip` must decrease (ADR 0116 V1).
+    measures: Vec<Option<Measure>>,
     /// What each source name of [`Walker::loop_fresh`] holds (#404).
     loop_collections: BTreeMap<String, Collection>,
     /// The binders of loops' final values, with the source names of their components.
@@ -1272,6 +1311,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assigned: None,
             frames: BTreeMap::new(),
             loop_fresh: BTreeMap::new(),
+            measures: Vec::new(),
             loop_collections: BTreeMap::new(),
             loop_results: BTreeMap::new(),
             returned_forgotten: Vec::new(),
@@ -1641,8 +1681,38 @@ impl<'p, 'i> Walker<'p, 'i> {
                     state,
                     init,
                     body,
+                    on_stop,
                     span,
                 } => {
+                    // `on stop` runs with the state fresh at its declared types (ADR 0116 V3):
+                    // its leaves give no fact, as the loop's value gives none.
+                    if let Some(on_stop) = on_stop {
+                        let mut stop_ctx = ctx.clone();
+                        for (name, ty) in &on_stop.state {
+                            self.bind(&mut stop_ctx, name, ty);
+                        }
+                        let mut stop_leaves = Vec::new();
+                        self.walk(&on_stop.body, &stop_ctx, &mut stop_leaves);
+                    }
+                    // `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): `d >= 1`, a
+                    // `refinement` obligation at `d`, in the context before the loop.
+                    if let LoopSource::Ever {
+                        within: Some((deadline, deadline_span)),
+                    } = source.as_ref()
+                    {
+                        let value = self.atom(deadline, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*deadline_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *deadline_span,
+                            None,
+                        );
+                    }
                     let mut body_ctx = ctx.clone();
                     self.bind(&mut body_ctx, &var.0, &var.1);
                     if let LoopSource::Range {
@@ -1707,8 +1777,73 @@ impl<'p, 'i> Walker<'p, 'i> {
                             }
                         }
                     }
+                    // `for until c decreases m` (ADR 0116 V1): `c` is false in the body when it
+                    // is in the refinement language, and `m` is at least 0 there.
+                    let measure = match source.as_ref() {
+                        LoopSource::Until {
+                            holds,
+                            measure,
+                            decreases,
+                            ..
+                        } => {
+                            let lookup = |name: &str| {
+                                body_ctx
+                                    .types
+                                    .contains_key(name)
+                                    .then(|| own(&body_ctx, name))
+                            };
+                            let env = Env {
+                                vars: &lookup,
+                                it: None,
+                                result: None,
+                            };
+                            let holds = holds
+                                .as_ref()
+                                .and_then(|holds| self.term(&holds.term, &env));
+                            let start = self.term(&measure.term, &env);
+                            if let Some(holds) = holds {
+                                body_ctx.assume(F::not(holds.f));
+                            }
+                            let goal = start
+                                .as_ref()
+                                .map(|m| F::op(">=", vec![m.f.clone(), F::Int("0".to_owned())]));
+                            self.site(
+                                ObligationKind::DecreasesBound,
+                                &body_ctx,
+                                goal,
+                                measure.text.clone(),
+                                *decreases,
+                                None,
+                            );
+                            start.map(|start| Measure {
+                                clause: measure.as_ref().clone(),
+                                start: start.f,
+                                state: state.iter().map(|(name, _)| name.clone()).collect(),
+                                decreases: *decreases,
+                            })
+                        }
+                        _ => None,
+                    };
+                    self.measures.push(measure.clone());
                     let mut body_leaves = Vec::new();
                     self.walk(body, &body_ctx, &mut body_leaves);
+                    self.measures.pop();
+                    // Each path that ends the body goes on to the next iteration: `m` is less
+                    // there than at the start (`decreases_step`).
+                    if let Some(measure) = &measure {
+                        for leaf in &body_leaves {
+                            let Some(tuple) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = body_ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            leaf_ctx.divisions = leaf.divisions.clone();
+                            let components: Vec<Option<Tv>> = (0..measure.state.len())
+                                .map(|index| projection(tuple, index))
+                                .collect();
+                            self.decreases_step(measure, &leaf_ctx, &components);
+                        }
+                    }
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
                         divisions: ctx.divisions.clone(),
@@ -1923,6 +2058,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                             // ADR 0071 D2: after a loop, a length-preserving binding has its
                             // length at entry; the others are fresh (D3).
                             if let Expr::Loop {
+                                source,
                                 state,
                                 init,
                                 body,
@@ -1930,6 +2066,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 ..
                             } = inner
                             {
+                                // ADR 0116 V3: after a `for until` with no `stop`, `c` holds.
+                                if let LoopSource::Until {
+                                    holds: Some(holds), ..
+                                } = source.as_ref()
+                                    && !stops(body)
+                                {
+                                    let lookup = |name: &str| match state
+                                        .iter()
+                                        .position(|(state, _)| state == name)
+                                    {
+                                        Some(index) => projection(&x, index),
+                                        None => {
+                                            ctx.types.contains_key(name).then(|| own(&ctx, name))
+                                        }
+                                    };
+                                    let env = Env {
+                                        vars: &lookup,
+                                        it: None,
+                                        result: None,
+                                    };
+                                    if let Some(holds) = self.term(&holds.term, &env) {
+                                        ctx.assume(holds.f);
+                                    }
+                                }
                                 let preserved = self.preserved(*loop_span, state, body);
                                 let sources = state.iter().map(|(name, _)| source_name(name));
                                 self.loop_results.insert(name.clone(), sources.collect());
@@ -2075,7 +2235,18 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // `skip` or `stop`: the path leaves the body with the state, whose refinements
                 // its rebinds already proved (ADR 0116 V2); the loop's value says nothing but
                 // their types.
-                Expr::Exit { .. } => return,
+                Expr::Exit { tag, state, .. } => {
+                    if *tag == una_core::ExitTag::Next
+                        && let Some(Some(measure)) = self.measures.last().cloned()
+                    {
+                        let components: Vec<Option<Tv>> = state
+                            .iter()
+                            .map(|atom| Some(self.atom(atom, &ctx)))
+                            .collect();
+                        self.decreases_step(&measure, &ctx, &components);
+                    }
+                    return;
+                }
                 Expr::Handle {
                     body,
                     error: _,
@@ -3917,6 +4088,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// number of integers of its range, zero when it is empty.
     fn task_count(&mut self, source: &LoopSource, ctx: &Ctx) -> Option<F> {
         match source {
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => None,
             LoopSource::List(list) => {
                 let list = self.atom(list, ctx);
                 self.len(&list)
@@ -4745,6 +4917,31 @@ impl<'p, 'i> Walker<'p, 'i> {
     // ----- obligations -----
 
     /// An obligation at one site: `Π ⊢ goal`.
+    /// `decreases_step` at the end of a path of an iteration of a `for until` loop whose state
+    /// is then `components` (ADR 0116 V1): the measure there is less than at the start.
+    fn decreases_step(&mut self, measure: &Measure, ctx: &Ctx, components: &[Option<Tv>]) {
+        let lookup = |name: &str| match measure.state.iter().position(|state| state == name) {
+            Some(index) => components.get(index).cloned().flatten(),
+            None => ctx.types.contains_key(name).then(|| own(ctx, name)),
+        };
+        let env = Env {
+            vars: &lookup,
+            it: None,
+            result: None,
+        };
+        let goal = self
+            .term(&measure.clause.term, &env)
+            .map(|end| F::op("<", vec![end.f, measure.start.clone()]));
+        self.site(
+            ObligationKind::DecreasesStep,
+            ctx,
+            goal,
+            measure.clause.text.clone(),
+            measure.decreases,
+            None,
+        );
+    }
+
     fn site(
         &mut self,
         kind: ObligationKind,

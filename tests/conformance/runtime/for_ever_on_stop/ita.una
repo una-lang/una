@@ -1,0 +1,8 @@
+ita for_ever_on_stop
+  version 0.1.0
+  edition 0.4
+
+run
+  entry alive
+  grants
+    console
