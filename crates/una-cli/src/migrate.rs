@@ -331,6 +331,7 @@ fn migrated(
         lock_bytes: Some(lock.as_bytes().to_vec()),
         modules,
         disk_paths,
+        enclosing_edition: None,
         dependencies: Vec::new(),
         registry: Vec::new(),
     }
