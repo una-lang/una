@@ -1283,22 +1283,39 @@ fn settle(
             _ => None,
         })
         .collect();
-    let mut claims: BTreeMap<u64, Claim> = entries
+    // Every claim is first assumed to hold, a key's own word from the first assumption: a claim
+    // that the key it names signs starts no earlier than its own index, whatever it states, so
+    // a thief's self-claim never reaches back before it. A later pass gives it back its stated
+    // `since` only when its other sound signers, or the cosigners, meet the requirement without
+    // the named key.
+    let mut claims: BTreeMap<u64, Claim> = BTreeMap::new();
+    for logged in entries
         .iter()
         .filter(|logged| !sealed.contains(&logged.index))
-        .filter_map(|logged| match &logged.entry.event {
-            Event::Revoke {
-                name,
-                since: Some(_),
-            } => {
-                let since = sinces.get(&logged.index)?;
-                introduced
-                    .get(name.as_str())
-                    .map(|(public, at)| (logged.index, (*public, (*since).max(*at))))
-            }
-            _ => None,
-        })
-        .collect();
+    {
+        let Event::Revoke {
+            name,
+            since: Some(_),
+        } = &logged.entry.event
+        else {
+            continue;
+        };
+        let (Some(since), Some((public, at))) =
+            (sinces.get(&logged.index), introduced.get(name.as_str()))
+        else {
+            continue;
+        };
+        let named = Key {
+            name: name.clone(),
+            public: *public,
+        };
+        let floor = if verifier.signs(logged.index, logged.note, &named) {
+            logged.index
+        } else {
+            0
+        };
+        claims.insert(logged.index, (*public, (*since).max(*at).max(floor)));
+    }
     // Each pass keeps the claims by the index of their revocation, drops some, or only
     // re-resolves their keys; a key a claim names changes at most once per claim dropped, so a
     // valid chain settles within twice the number of claims plus two passes. A chain that does

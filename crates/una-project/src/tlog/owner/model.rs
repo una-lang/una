@@ -1576,6 +1576,17 @@ impl Search<'_, '_> {
                 .into_iter()
                 .filter(|k| oracle.compromised(*k, p))
                 .collect();
+            // The thief's keys alone, at every position the thief held them: no subset counts,
+            // even where the owner's keys alone would count too.
+            for set in subsets(&bad) {
+                if counts(self.keys, history, &set, p, false) {
+                    self.fail(
+                        "(1) the thief's keys alone sign a release that counts",
+                        chain,
+                        &format!("at {p}, with {set:?}"),
+                    );
+                }
+            }
             let good: Vec<K> = OWNER.into_iter().filter(|k| !bad.contains(k)).collect();
             let alone = counts(self.keys, history, &good, p, false);
             let mut all = good.clone();
