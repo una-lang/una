@@ -705,7 +705,9 @@ pub main() -> Unit
   uses @console: Console[print]
   uses @http: Http[get]
 =
-  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None) within 50 * millisecond
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [],
+    key_name: None
+  ) within 50 * millisecond
   @console.print("done")
 "#
     );
