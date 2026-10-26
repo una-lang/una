@@ -13,7 +13,13 @@ use una_diag::{Diagnostic, Location, Repair, Severity, in_output_order};
 use crate::position::{Encoding, field, from_lsp, to_lsp};
 use crate::uri::{path_of, uri_of};
 
-/// The visible cost marker shared by diagnostics and code actions (ADR 0095/0097).
+/// The visible cost marker shared by diagnostics and code actions (ADR 0095/0097), or `None`
+/// for a repair with neither an escape nor a widening.
+///
+/// The server lists repairs in output order (`Diagnostic::repairs_in_order`): by escape cost,
+/// then whether they widen, then rank, and repairs with an equal key keep their reporting
+/// order. A repair that is both an escape and a widening shows both costs here, which differs
+/// from `human.rs`: it shows only the escape.
 fn repair_marker(repair: &Repair) -> Option<String> {
     let mut costs = Vec::new();
     if let Some(escape) = repair.escape {
@@ -33,6 +39,10 @@ fn repair_marker(repair: &Repair) -> Option<String> {
     (!costs.is_empty()).then(|| format!("[{}]", costs.join("; ")))
 }
 
+/// The title of a quick fix: the marker of [`repair_marker`], when there is one, then the
+/// description. Quick fixes come in the same order as the `help` lines of the message (escape
+/// cost, then widening, then rank; ties keep reporting order). Showing both the escape and the
+/// widening differs from `human.rs`, which shows only the escape.
 fn repair_title(repair: &Repair) -> String {
     match repair_marker(repair) {
         Some(marker) => format!("{marker} {}", repair.description),
@@ -536,7 +546,12 @@ impl<W: Workspace> Server<W> {
                 message.push_str(&format!("\ncounterexample: {}", bindings.join(", ")));
             }
         }
-        for repair in diagnostic.repairs.iter().filter(|r| r.edit.is_none()) {
+        // In output order, as `una check` and the code actions list them (ADR 0095 rule 3).
+        for ranked in diagnostic.repairs_in_order() {
+            let repair = ranked.repair;
+            if repair.edit.is_some() {
+                continue;
+            }
             let marker =
                 repair_marker(repair).map_or_else(String::new, |value| format!(" {value}"));
             message.push_str(&format!("\nhelp{marker}: {}", repair.description));
