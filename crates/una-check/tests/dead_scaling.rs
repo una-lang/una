@@ -73,7 +73,8 @@ fn judging_dead_handling_scales_linearly() {
     let times: Vec<Duration> = sizes
         .iter()
         .map(|&n| {
-            (0..3)
+            // The shortest of five runs per size: robust to preemption, still linear.
+            (0..5)
                 .map(|_| {
                     let (codes, took) = checked(n);
                     let count = |code: &str| codes.iter().filter(|c| *c == code).count();
