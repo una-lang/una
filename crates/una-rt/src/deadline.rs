@@ -12,7 +12,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use una_interp::{Event, EventOutcome};
 
@@ -24,8 +24,9 @@ use crate::values;
 pub(crate) struct Deadline {
     /// The deadline of each iteration, in milliseconds.
     period: u64,
-    /// When the iteration's deadline passes; `None` when it is beyond what the clock holds.
-    at: Option<Instant>,
+    /// When the iteration's deadline passes, in milliseconds of the run's clock, real or
+    /// virtual (ADR 0116 rule 19); `None` when it is beyond what the clock holds.
+    at: Option<u64>,
     /// The iteration, from 1.
     iteration: u64,
     /// The path of the task that runs the loop.
@@ -72,7 +73,7 @@ pub fn iteration() {
     DEADLINE.with(|cell| {
         if let Some(deadline) = cell.borrow_mut().as_mut() {
             deadline.iteration += 1;
-            deadline.at = Instant::now().checked_add(Duration::from_millis(deadline.period));
+            deadline.at = crate::runtime::clock().now().checked_add(deadline.period);
         }
     });
 }
@@ -101,8 +102,8 @@ pub(crate) fn adopt(deadline: Option<Deadline>) {
     DEADLINE.with(|cell| *cell.borrow_mut() = deadline);
 }
 
-/// The time left before the deadline of the iteration in progress, zero once it has passed;
-/// `None` without a deadline, or with one that never passes.
+/// The time left before the deadline of the iteration in progress on the run's clock, zero
+/// once it has passed; `None` without a deadline, or with one that never passes.
 pub(crate) fn left() -> Option<Duration> {
     if !USED.with(Cell::get) {
         return None;
@@ -111,7 +112,7 @@ pub(crate) fn left() -> Option<Duration> {
         cell.borrow()
             .as_ref()
             .and_then(|deadline| deadline.at)
-            .map(|at| at.saturating_duration_since(Instant::now()))
+            .map(|at| Duration::from_millis(at.saturating_sub(crate::runtime::clock().now())))
     })
 }
 

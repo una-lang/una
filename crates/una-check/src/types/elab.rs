@@ -1847,6 +1847,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             name,
             body,
             expectations,
+            stop_after: example.stop_after.as_ref().map(|line| line.iterations),
         })
     }
 

@@ -1065,6 +1065,7 @@ fn run_command(
                 http_timeout,
                 solver_wallclock,
                 stop_after_iterations,
+                virtual_time,
                 deadline,
                 stop_grace,
             } => {
@@ -1079,6 +1080,7 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock, json, stderr),
                     stop_after: stop_after_iterations,
+                    virtual_time,
                     deadline,
                     stop_grace,
                 };
@@ -1115,6 +1117,8 @@ fn run_command(
                     environment,
                     solving: solving(solver_wallclock, json, stderr),
                     stop_after: None,
+                    // Time in a test is always virtual (ADR 0116 rule 19).
+                    virtual_time: true,
                     deadline: None,
                     stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
                 };

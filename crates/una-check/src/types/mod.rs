@@ -132,6 +132,27 @@ fn of_prelude() -> String {
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
 
+/// What edition 0.4 adds to `std.testing`: `elapse` (ADR 0116 rule 19), whose duration is in
+/// `Millisecond` of `std.time`.
+const TESTING_0_4: &str = include_str!("../std/testing_0_4.una");
+
+/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time`.
+const TESTING_MODULE_LINE: &str = "module std.testing\n";
+
+/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and adds `elapse`.
+fn testing_source(edition: Edition) -> String {
+    if edition >= Edition::V0_4 {
+        let imported = TESTING.replacen(
+            TESTING_MODULE_LINE,
+            "module std.testing\n\nimport std.time (Millisecond)\n",
+            1,
+        );
+        format!("{imported}{TESTING_0_4}")
+    } else {
+        TESTING.to_owned()
+    }
+}
+
 /// `std.time` (`spec/26 §2`), edition 0.4, as Una source.
 const TIME: &str = include_str!("../std/time.una");
 
@@ -154,9 +175,9 @@ const MAP_0_4: &str = include_str!("../std/map_0_4.una");
 pub struct StandardSource {
     /// The prelude's source in this edition.
     pub prelude: String,
-    /// `std.testing`'s source, the same in every edition.
-    pub testing: &'static str,
-    /// The keywords the prelude is lexed with; `std.testing` is lexed with those of 0.1.
+    /// `std.testing`'s source in this edition: edition 0.4 adds `elapse` (ADR 0116 rule 19).
+    pub testing: String,
+    /// The keywords the prelude and `std.testing` are lexed with.
     pub keywords: KeywordSet,
     /// The standard modules of edition 0.4 after `std.testing`, as `(path, source)`:
     /// `std.time`, then `std.drive`, which imports it (ADR 0116). Empty before 0.4.
@@ -239,7 +260,7 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     };
     StandardSource {
         prelude,
-        testing: TESTING,
+        testing: testing_source(edition),
         keywords,
         later,
     }
@@ -999,7 +1020,7 @@ impl Standard {
         let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
         let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
-        let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
+        let testing = parse_standard(&sources, testing, &mut interner, keywords);
         // The modules of edition 0.4 declare measures, a construct of edition 0.3.
         let later = later
             .into_iter()
@@ -1490,13 +1511,19 @@ mod tests {
                 (PRELUDE.to_owned(), KeywordSet::V0_1)
             };
             assert_eq!(source.prelude, prelude, "{edition:?}");
-            assert_eq!(source.testing, TESTING, "{edition:?}");
+            let testing = testing_source(*edition);
+            assert_eq!(source.testing, testing, "{edition:?}");
+            assert_eq!(
+                source.testing.contains("pub elapse("),
+                *edition >= Edition::V0_4,
+                "{edition:?}"
+            );
             assert_eq!(source.keywords, keywords, "{edition:?}");
             let texts = Standard::load(*edition).sources.texts();
             assert_eq!(texts.get("std/prelude.una"), Some(&prelude), "{edition:?}");
             assert_eq!(
                 texts.get("std/testing.una").map(String::as_str),
-                Some(TESTING),
+                Some(testing.as_str()),
                 "{edition:?}"
             );
         }
@@ -1509,12 +1536,15 @@ mod tests {
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
         let v0_4 = format!("{v0_3}{PRELUDE_0_4}");
+        let testing_0_4 = testing_source(Edition::V0_4);
+        assert!(testing_0_4.contains("import std.time (Millisecond)"));
         for (name, text, keywords) in [
             ("prelude", PRELUDE, KeywordSet::V0_1),
             ("prelude 0.2", v0_2.as_str(), KeywordSet::V0_2),
             ("prelude 0.3", v0_3.as_str(), KeywordSet::V0_3),
             ("prelude 0.4", v0_4.as_str(), KeywordSet::V0_4),
             ("testing", TESTING, KeywordSet::V0_1),
+            ("testing 0.4", testing_0_4.as_str(), KeywordSet::V0_4),
         ] {
             let mut sources = SourceDb::new();
             let mut interner = Interner::new();

@@ -223,6 +223,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// Inside the body of a `for ever`, which runs no `for ever` and calls no `diverges`
     /// function (U3027, `spec/26 §5`).
     pub(crate) in_ever: bool,
+    /// In the `do` line of an example with a `stop after` line, which may run a `for ever`
+    /// loop until the stop (U3027, ADR 0116 rule 19).
+    pub(crate) do_stops: bool,
     /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
     pub(crate) timing: Vec<super::timing::TimingFrame>,
     /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
@@ -501,6 +504,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             misplaced_exits: Vec::new(),
             in_on_stop: false,
             in_ever: false,
+            do_stops: false,
             timing: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
@@ -1758,9 +1762,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             }
         }
         self.ctx.in_do = true;
+        self.do_stops = example.stop_after.is_some();
         self.absorbed.clear();
         let ty = self.expr(&example.action, None);
         self.ctx.in_do = false;
+        self.do_stops = false;
         // The error kind of the `do` expression: the failures of its calls, except those that
         // `attempt` absorbs or that belong to a lambda (D-170).
         let action = example.action.span;

@@ -31,7 +31,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    - **Shapes.** A module without `init` or `step` of these shapes, or with an `on_stop` of another shape, is a usage error of `una run` and `una build`, exit code 2, as an entry without `main` is (`spec/13 §5`).
 3. **The driver.** `una run` and the executable that `una build` writes run the driver instead of `main`:
    - It calls `init` once. Its result is the state.
-   - Tick `k` is due `k × ticks` milliseconds after `init` returns, on the monotonic clock. Before each step, the driver waits for the next tick that is due, or, when some are already due, delivers the latest one with `missed` set to the number it skipped. A slow step therefore never makes the state fall further and further behind.
+   - Tick `k` is due `k × ticks` milliseconds after `init` returns, on the run's clock: the monotonic one, or the virtual one of §8 under `--virtual-time`. Before each step, the driver waits for the next tick that is due, or, when some are already due, delivers the latest one with `missed` set to the number it skipped. A slow step therefore never makes the state fall further and further behind.
    - It calls `step(edit state, input: tick)` with each tick, and the state `step` leaves is the state of the next one.
    - When the loop stops, it calls `on_stop(state)` when the module declares it, and the run ends with exit code 0.
    - Both engines run the same driver, and their outputs and traces compare under `spec/16 §5`.
@@ -136,13 +136,14 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 
 5. **Verification** (ADR 0116 V3, V4). After a `for ever`, the bindings it updates are fresh at their declared types, and `on stop` is verified with them fresh. A function that says `diverges` keeps partial correctness: its `ensures` holds whenever it returns.
 6. **Core** (ADR 0116 rule 20). The loop is a Core `loop` whose source is `ever`, with its `on stop` block, which binds the state afresh and returns it as the loop's value.
-7. **Host stops.** A `for ever` without `stop` ends by a failure of its body, or at the first iteration start after a host stop request (§6).
+7. **Host stops.** A `for ever` without `stop` ends by a failure of its body, or at the first iteration start after a host stop request (§6), a test's `stop after` line included (§8).
 
 ## 6. Host stops
 
 1. **Requests** (ADR 0116 rule 14). These are host stop requests of a run of `una run` or of an executable:
    - SIGINT or SIGTERM, delivered to the process;
    - the end of `--deadline <seconds>`, counted from the start of the run, and local to the run;
+   - in a test, its `stop after N` line (§8 rule 1);
    - the run's own stop, once `--stop-after-iterations <n>` iterations of `for ever` loops, the driver's included, have started, counted in the order the run starts them (ADR 0116 rule 19). It arrives at the start of iteration `n + 1`, and it is local to the run.
 
    A request is **sticky**: once one has arrived, it stays for the rest of the run. Each of the run's own requests, the deadline's and the stop of `--stop-after-iterations`, counts once, however many tasks reach it together.
@@ -217,3 +218,48 @@ A program that runs until it is told to stop, such as a game loop, a server or a
 6. **Report** (ADR 0116 rule 21). The report's `information` section (`spec/13 §6`) lists each `for ever within` in `timing`, with its function and its timing label.
 7. **Core** (ADR 0116 rule 20). The loop's source is `ever(d)`, with `d` an atom bound before the loop, and the span of `d`, where its obligation is reported.
 8. **Costs.** One clock reading per iteration to arm the deadline, and one per interruptible operation to bound its wait, each O(1).
+
+## 8. Tests and virtual time
+
+1. **`stop after N`** (ADR 0116 rule 19). In edition `0.4`, an example (`spec/08 §2`) MAY end with the line `stop after N`:
+
+   ```ebnf
+   stop_after = "stop" "after" integer_literal NEWLINE ;      (* the last line of an example *)
+   ```
+
+   - `N` is an integer literal from 1 to 2^63 − 1. Another value is U0101, and so is a line after it. `stop` and `after` are words, not keywords. Before edition `0.4` the line does not parse (U0101).
+   - **The stop schedule.** A host stop request (§6) arrives once `N` iterations of `for ever` loops have started in the example's run, counted across all of its loops in the order the interpreter starts them, as `--stop-after-iterations <n>` does for a run. The request is sticky, and §6 rule 4 applies: from then on, every `for ever` that reaches the start of an iteration ends there, a loop entered later included. Each such loop appends the event `{"seq": n, "outcome": {"kind": "stop"}}`, with the `task` field of its task, and then its `on stop` runs (§5 rule 4). With `stop after 2`, the stop comes at the start of the third iteration.
+   - **Divergence.** Only under this line may the `do` line call a function that says `diverges` (U3027 otherwise, §5 rule 2). The `expect` lines never may (U3027).
+
+   ```una
+   import std.testing (elapse)
+   import std.time (Millisecond, millisecond)
+
+   pub handler slow_store(delay: Int of Millisecond) for Store
+     op get(key) =
+       elapse(delay)
+       "v"
+
+   example "the loop reads the store twice, then stops"
+     given @store = slow_store(delay: 150 * millisecond)
+     given @log = memory_log()
+     do poll("k")                -- a `diverges` function whose `for ever` reads and logs
+     expect result == 2
+     expect performed @log.write
+     stop after 2
+   ```
+
+   Each read takes 150 virtual milliseconds, so the test is instant in real time. The stop arrives at the start of the third iteration, `on stop` runs, and `poll` returns the count of its reads.
+2. **Virtual time.** Time in a test is virtual. The run's clock counts milliseconds from 0, at the start of the run:
+   - It moves only forward, and it never waits on the wall clock.
+   - `std.testing.elapse(d)` moves it forward by `d` at once (`spec/14 §4`). `d` is an `Int of Millisecond` of at least 0, an obligation of each call (`requires d >= 0`, U5001 when refuted), and the move saturates at 2^64 − 1 milliseconds.
+   - It also moves when the run waits on time and nothing else can run: it then jumps to the earliest moment waited for, so a test never hangs on a wait that only time could end. In this preview, the one such wait is the driver's wait for its next tick (§2 rule 3). The waits of ADR 0117 jump it the same way once they land.
+   - **Deadlines.** The deadline of a `for ever within` iteration (§7) is on this clock: `d` after the clock's reading at the iteration's start, and it has passed once the clock has reached it. Under virtual time, waiting on the network takes no virtual time, so an operation fails with its time-out failure only when the virtual clock has already reached the deadline, as after an `elapse` that passed it; an operation that starts before that waits on the network as it would without a deadline.
+   - Nothing else moves it: computation, host operations and their waits on the network take no virtual time.
+   - A host operation of a test is served by a handler of its `given` lines (`spec/08 §2` rule 1), so a test never reads the wall clock.
+3. **`--virtual-time`.** `una run` and executables take `--virtual-time` (`spec/13 §5`, `spec/16 §3`), which gives the run the clock of rule 2:
+   - `Clock.now` reads it, in milliseconds from the start of the run, instead of the wall clock.
+   - The driver's tick `k` is due `k × ticks` milliseconds after `init` returns, and the wait for it moves the clock there at once. A step takes no virtual time, so each tick is delivered when it is due: `at` is `k × ticks`, and `missed` is 0.
+   - Under it, both engines MUST give the same output, exit status, failure and trace, the readings of `Clock.now` included (`spec/16 §5`).
+   - The flag is a property of the host, not a construct, so it is accepted for a package of any edition.
+4. **One clock per run.** A run has exactly one clock, made when it starts and shared by all of its tasks. A virtual one moves only at the run's waits on time, never back. Reading it, moving it and jumping it to a moment are O(1) each.

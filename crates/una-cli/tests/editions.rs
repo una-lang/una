@@ -246,6 +246,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:10:10")],
     },
+    // ADR 0116 rule 19: an example's `stop after` line exists from edition 0.4.
+    Difference04 {
+        case: "syntax/stop_after_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/before.una:11:3")],
+    },
     // ADR 0116 rule 7: `for until` is a loop form from edition 0.4.
     Difference04 {
         case: "syntax/until_before_0_4",

@@ -189,6 +189,9 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = iterations)]
         stop_after_iterations: Option<u64>,
 
+        /// Run on a virtual clock that starts at 0 and never waits (ADR 0116)
+        #[arg(long)]
+        virtual_time: bool,
         /// Request a host stop after this many seconds, from 1 to 31536000 (ADR 0116)
         #[arg(long, value_name = "SECONDS", value_parser = deadline)]
         deadline: Option<u64>,

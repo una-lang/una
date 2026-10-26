@@ -577,6 +577,18 @@ pub struct ExampleDecl {
     pub action: Expr,
     /// The `expect` lines.
     pub expectations: Vec<Expectation>,
+    /// The final `stop after N` line, in edition 0.4 (ADR 0116 rule 19, `spec/26 §8`).
+    pub stop_after: Option<StopAfter>,
+}
+
+/// `"stop" "after" integer_literal`: the stop schedule of an example, whose `do` line may then
+/// run a `for ever` loop (ADR 0116 rule 19, `spec/26 §8`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopAfter {
+    /// `N`: a host stop arrives once `N` iterations of `for ever` loops have started, from 1.
+    pub iterations: u64,
+    /// The whole line.
+    pub span: Span,
 }
 
 /// `"given" cap_ref "=" handler_call`.

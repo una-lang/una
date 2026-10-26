@@ -2020,6 +2020,9 @@ pub struct Example {
     pub body: Expr,
     /// The expectations, in order.
     pub expectations: Vec<Expectation>,
+    /// The `N` of its `stop after N` line, in edition 0.4: a host stop arrives once `N`
+    /// iterations of `for ever` loops have started (ADR 0116 rule 19, `spec/26 §8`).
+    pub stop_after: Option<u64>,
 }
 
 /// The Core IR of a module.

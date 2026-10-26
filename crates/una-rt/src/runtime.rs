@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
 use una_interp::stopping::{HardStop, RunStop};
-use una_interp::{Event, EventOutcome, Grant};
+use una_interp::{Clock, Event, EventOutcome, Grant};
 
 use crate::host::OpSite;
 use crate::render::{Failure, Types};
@@ -471,6 +471,8 @@ pub struct Options {
     /// `--stop-after-iterations <n>`: the host's stop once `n` iterations have started (ADR
     /// 0116 rule 19).
     pub stop_after: Option<u64>,
+    /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §8`).
+    pub virtual_time: bool,
     /// `--deadline <seconds>`: a host stop request after this many seconds (ADR 0116 rule 14).
     pub deadline: Option<u64>,
     /// `--stop-grace <seconds>`: the grace period before the hard stop, 10 when not given
@@ -550,6 +552,13 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 }
                 options.stop_after = Some(n);
             }
+            // A switch: it takes no value.
+            "--virtual-time" => {
+                if inline.is_some() {
+                    return Err(format!("`{flag}` takes no value"));
+                }
+                options.virtual_time = true;
+            }
             "--deadline" | "--stop-grace" => {
                 let text = value()?;
                 let n: u64 = text
@@ -573,7 +582,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds> and --stop-grace <seconds>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds> and --virtual-time"
                 ));
             }
         }
@@ -926,11 +935,38 @@ thread_local! {
 }
 
 /// The host's loop of a driven program (ADR 0116 rule 3), on the thread that runs it: its
-/// settings, when it started, the next tick due and the iterations started.
+/// settings, when its first tick was due on the run's clock, the next tick due and the
+/// iterations started.
 struct Driver {
     ticks: u64,
-    start: Option<std::time::Instant>,
+    origin: Option<u64>,
     next: u64,
+}
+
+/// The clock of the run in this process (ADR 0116 rule 19): set once when the executable
+/// starts, real, or virtual under `--virtual-time`, and shared by every thread of the run.
+///
+/// A `OnceLock`, never a lock: after it is set, reading it is a plain load, and a virtual
+/// clock's reading one more atomic load. It is read on hot paths, each iteration of a
+/// `for ever within`, each `Http` call and each `Clock.now`, so a mutex there would cost
+/// every task a contended lock, against the performance parity of native code. An executable
+/// runs one run, so one setting suffices; a later virtual run in the same process, as in
+/// tests, restarts the virtual clock at 0 in `start`.
+static CLOCK: OnceLock<Clock> = OnceLock::new();
+
+/// Makes the run's clock the virtual one when `virtual_time` holds, the real one otherwise.
+/// False when the process already has a clock of the other kind: a second run in one
+/// process, which only tests make.
+fn set_clock(virtual_time: bool) -> bool {
+    CLOCK
+        .get_or_init(|| Clock::for_run(virtual_time))
+        .is_virtual()
+        == virtual_time
+}
+
+/// The run's clock: the one the executable set, or the real clock before any run started.
+pub fn clock() -> &'static Clock {
+    CLOCK.get_or_init(Clock::real)
 }
 
 /// The next tick of the host's loop, as the interpreter's driver gives it: an owned `Tick` of
@@ -948,26 +984,32 @@ pub fn drive_tick() -> i64 {
         if iteration_stops() {
             return None;
         }
-        let start = *driver.start.get_or_insert_with(std::time::Instant::now);
-        let period = std::time::Duration::from_millis(driver.ticks);
-        let due = start + period.saturating_mul(u32::try_from(driver.next).unwrap_or(u32::MAX));
-        let now = std::time::Instant::now();
-        if now < due {
-            let waited = match RUN_STOP.get() {
-                Some(stop) => una_interp::stopping::wait_tick(stop, due - now),
-                None => {
-                    std::thread::sleep(due - now);
-                    true
+        // On the run's clock, real or virtual: under virtual time the wait moves the clock to
+        // the tick at once (ADR 0116 rule 19); on the real clock a host stop interrupts it.
+        let clock = clock();
+        let origin = *driver.origin.get_or_insert_with(|| clock.now());
+        let period = driver.ticks.max(1);
+        let due = origin.saturating_add(driver.next.saturating_mul(period));
+        if clock.is_virtual() {
+            clock.wait_until(due);
+        } else {
+            let now = clock.now();
+            if now < due {
+                let left = std::time::Duration::from_millis(due - now);
+                let waited = match RUN_STOP.get() {
+                    Some(stop) => una_interp::stopping::wait_tick(stop, left),
+                    None => {
+                        clock.wait_until(due);
+                        true
+                    }
+                };
+                if !waited {
+                    return None;
                 }
-            };
-            if !waited {
-                return None;
             }
         }
-        let elapsed = start.elapsed().as_millis();
-        let latest = u64::try_from(elapsed / u128::from(driver.ticks.max(1)))
-            .unwrap_or(u64::MAX)
-            .max(driver.next);
+        let elapsed = clock.now().saturating_sub(origin);
+        let latest = (elapsed / period).max(driver.next);
         let missed = latest - driver.next;
         let at = latest.saturating_mul(driver.ticks);
         driver.next = latest + 1;
@@ -1235,9 +1277,21 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     let drive = meta.drive.map(|drive| Driver {
         ticks: drive.ticks,
-        start: None,
+        origin: None,
         next: 0,
     });
+    if !set_clock(options.virtual_time) {
+        let _ = writeln!(
+            stderr,
+            "error: this process already ran a run on a clock of the other kind"
+        );
+        return 3;
+    }
+    // Each run's virtual clock starts at 0 (`spec/26 §8`), also in a process that ran one
+    // before, as tests do: one atomic store, before any of the run's code reads it.
+    if let Clock::Virtual(virtual_clock) = clock() {
+        virtual_clock.restart();
+    }
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
@@ -2051,6 +2105,20 @@ mod tests {
         assert!(parse_args(&strings(&["--json"])).is_err());
         assert!(parse_args(&strings(&["--grant"])).is_err());
         assert!(parse_args(&strings(&["--max-depth", "many"])).is_err());
+    }
+
+    #[test]
+    fn the_command_line_takes_virtual_time_as_a_switch() {
+        assert!(!parse_args(&[]).unwrap().virtual_time);
+        let options = parse_args(&strings(&[
+            "--virtual-time",
+            "--stop-after-iterations",
+            "3",
+        ]))
+        .unwrap();
+        assert!(options.virtual_time);
+        assert_eq!(options.stop_after, Some(3));
+        assert!(parse_args(&strings(&["--virtual-time=yes"])).is_err());
     }
 
     #[test]

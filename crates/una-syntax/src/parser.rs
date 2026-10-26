@@ -12,9 +12,9 @@ use crate::ast::{
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
     OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
-    Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopStmt, TextLit, TextPart,
-    TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause, Variant,
-    VariantExpr, WhenExpr,
+    Range, RequirementDecl, RequirementSource, SignedInt, Stmt, StopAfter, StopStmt, TextLit,
+    TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr, UntilStmt, UsesClause,
+    Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::{Interner, Symbol};
@@ -2097,8 +2097,18 @@ impl<'a> Parser<'a> {
         let action = self.line_expr()?;
         self.expect_line_end()?;
         let mut expectations = vec![self.expectation()?];
+        let mut stop_after = None;
         while !self.eat(&TokenKind::Dedent) {
             if self.at(&TokenKind::Eof) {
+                break;
+            }
+            // Edition 0.4: the last line MAY be `stop after N` (ADR 0116 rule 19).
+            if self.v0_4 && self.at_word("stop") && self.next_is_word("after") {
+                stop_after = Some(self.stop_after()?);
+                if !self.eat(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
+                    let span = self.span();
+                    return self.fail(span, "`stop after` must be the last line of its example");
+                }
                 break;
             }
             expectations.push(self.expectation()?);
@@ -2108,7 +2118,34 @@ impl<'a> Parser<'a> {
             givens,
             action,
             expectations,
+            stop_after,
         }))
+    }
+
+    /// `"stop" "after" integer_literal NEWLINE`, `N` from 1 to 2^63 - 1 (ADR 0116 rule 19).
+    fn stop_after(&mut self) -> Parse<StopAfter> {
+        let start = self.advance();
+        self.advance();
+        let TokenKind::Int(digits) = self.peek() else {
+            let span = self.span();
+            return self.fail(span, "`stop after` needs an integer literal of at least 1");
+        };
+        let iterations = digits
+            .replace('_', "")
+            .parse::<u64>()
+            .ok()
+            .filter(|n| (1..=i64::MAX.unsigned_abs()).contains(n));
+        let literal = self.span();
+        let Some(iterations) = iterations else {
+            return self.fail(
+                literal,
+                "`stop after` needs an integer literal from 1 to 9223372036854775807",
+            );
+        };
+        self.advance();
+        let span = self.since(start);
+        self.expect_line_end()?;
+        Ok(StopAfter { iterations, span })
     }
 
     /// After `expect`, `fails`, `performed` and `not performed` are tried before a line

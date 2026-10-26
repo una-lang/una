@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs, Source};
 
+use crate::clock::Clock;
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
     Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
@@ -18,6 +19,9 @@ pub struct Host {
     pub grants: Vec<Grant>,
     /// The keys of `keys:` grants, by name.
     pub keys: BTreeMap<String, Vec<u8>>,
+    /// `--virtual-time`: the run's clock is virtual, from 0 at its start, and only the run's
+    /// own waits move it (ADR 0116 rule 19, `spec/26 §8`).
+    pub virtual_time: bool,
 }
 
 /// How `main`, or the `do` line of an example, ended.
@@ -59,6 +63,7 @@ pub fn run_main(
     let index = Index::new(program);
     let main = index.function(module, "main")?;
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.clock = Clock::for_run(host.virtual_time);
     let result = machine.run_main(main);
     let completion = completion(&index, result, Form::Redacted);
     Some(Run {
@@ -93,6 +98,7 @@ pub fn run_drive(
     let step = index.function(module, "step").ok_or(DriveShape::NoStep)?;
     let on_stop = index.function(module, "on_stop");
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
+    machine.clock = Clock::for_run(host.virtual_time);
     let result = machine.drive(init, step, on_stop, &drive);
     let completion = completion(&index, result, Form::Redacted);
     Ok(Run {
@@ -175,6 +181,10 @@ fn run_example<'p>(
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
     let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
+    // Time in a test is virtual, and its `stop after N` line is its stop schedule (ADR 0116
+    // rule 19, `spec/26 §8`).
+    machine.clock = Clock::virtual_time();
+    machine.stop_after = example.stop_after;
     let result = machine.eval_closed(&mut Env::new(), &example.body);
     let failure = match &result {
         Err(Stop::Abort(_) | Stop::Exit(..)) => Some(ExampleFailure {
