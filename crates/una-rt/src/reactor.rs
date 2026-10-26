@@ -870,6 +870,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_parked_task_is_woken_by_readiness_by_its_time_and_by_a_cancellation() {
         let reactor = get().unwrap();
         let sched = sched::Scheduler::new(settings(1));
@@ -932,6 +933,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_wait_of_a_run_that_stops_is_woken_without_its_descriptor() {
         // A run whose stop comes while its request waits, with no pipe event (the handlers are
         // not installed in unit tests): the reactor's look at the listed waits wakes it.
@@ -965,6 +967,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn a_run_s_own_stop_wakes_its_parked_waits_with_the_handlers_installed() {
         // Review R7-11: with the handlers installed the pipe is watched, and the reactor does
         // not look at the runs of listed waits; the run's own stop, as at
@@ -1023,6 +1026,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_parked_task_leaves_its_worker_to_the_others() {
         // ADR 0117 rule 3: with one worker, a task parked on a socket that never becomes ready
         // does not delay a task beside it, which ends first.
@@ -1053,6 +1057,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
     fn a_wait_without_a_descriptor_ends_when_its_party_wakes_it() {
         // The shape of a wait for a place among the sockets, or for a connection job.
         let reactor = get().unwrap();
