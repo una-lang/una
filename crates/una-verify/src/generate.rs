@@ -12,13 +12,29 @@ use una_core::{
     SetOp, ShapeFun, Source, Term, Type, Use, print_term_with,
 };
 use una_diag::ObligationKind;
-use una_syntax::{SourceDb, Span};
+use una_syntax::{Interner, KeywordSet, SourceDb, Span, TokenKind, lex_in};
 
 use crate::run::Problem;
 use crate::smt::{
     ARRAY, Const, ConstRole, Definition, F, FLOAT64, Fun as SmtFun, FunRole, HASHED, LIST, LU, MAP,
     MATRIX, Query, Sort, TENSOR, TEXT, UNIT, kind_sort, path_selector,
 };
+
+/// How the source text of an obligation's goal and hypotheses is normalized: by the edition of
+/// the package, whose canonical form decides the layout of that text (`spec/12 §8`, ADR 0125,
+/// amendment of 2026-10-25).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceLayout {
+    /// Editions 0.1 to 0.3, whose canonical form keeps each logical line without comments on
+    /// one line: the goal's white space collapses to single spaces, and the hypotheses are
+    /// shown as written, exactly as before soft wrapping.
+    #[default]
+    Joined,
+    /// Edition 0.4, whose canonical form wraps long lines: [`unwrap_layout`] normalizes the
+    /// goal and each hypothesis, so wrapping a line changes neither an obligation's id nor its
+    /// shown text.
+    Wrapped,
+}
 
 /// A proof obligation of `spec/12 §3`, with its query.
 #[derive(Clone, Debug)]
@@ -200,18 +216,23 @@ pub(crate) enum Show {
     Opaque(String),
 }
 
-/// The obligations of `program`, in the order of `spec/12 §5`: file, start offset, kind.
+/// The obligations of `program`, in the order of `spec/12 §5`: file, start offset, kind, with
+/// the source text of their goals and hypotheses normalized by `layout`, the edition's.
 ///
 /// # Errors
 ///
 /// [`Problem::UnresolvedKind`] when Core IR names a kind that no declaration has: a lookup
 /// that finds nothing would drop a fact or skip a check, so generation fails closed (#407).
-pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligation>, Problem> {
+pub fn obligations(
+    program: &Program,
+    sources: &SourceDb,
+    layout: SourceLayout,
+) -> Result<Vec<Obligation>, Problem> {
     let index = Index::new(program);
     let mut all = Vec::new();
     for module in &program.modules {
         for decl in &module.decls {
-            let mut walker = Walker::new(&index, sources, &module.path);
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
             match decl {
                 Decl::Fun(fun) => walker.function(fun),
                 Decl::Handler {
@@ -246,7 +267,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
             all.extend(walker.obligations);
         }
         for example in &module.examples {
-            let mut walker = Walker::new(&index, sources, &module.path);
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
             walker.declaration =
                 format!("{}.example {}", module.path, una_core::quote(&example.name));
             walker.within = Within::Example;
@@ -280,8 +301,12 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
 
 /// For each `ensures` clause of a public function, a query without any hypothesis, its
 /// parameters and `result` unconstrained: a clause the solver proves this way is trivial, a
-/// missing contract (`spec/13 §6`).
-pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
+/// missing contract (`spec/13 §6`). Their text is normalized by `layout`, the edition's.
+pub fn trivial_ensures(
+    program: &Program,
+    sources: &SourceDb,
+    layout: SourceLayout,
+) -> Vec<Obligation> {
     let index = Index::new(program);
     let mut all = Vec::new();
     for module in &program.modules {
@@ -292,7 +317,7 @@ pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation>
             if !fun.public || fun.ensures.is_empty() {
                 continue;
             }
-            let mut walker = Walker::new(&index, sources, &module.path);
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
             walker.declaration = format!("{}.{}", module.path, fun.name);
             walker.lambdas.clear();
             let mut ctx = Ctx::default();
@@ -1063,6 +1088,42 @@ struct Tv {
     ty: Type,
 }
 
+/// The measure of a `for until` loop whose body is walked (ADR 0116 V1): the clause, its value
+/// at the start of the iteration, the loop's state binders, and where `decreases` is written.
+#[derive(Clone)]
+struct Measure {
+    clause: una_core::Clause,
+    start: F,
+    state: Vec<Name>,
+    decreases: Span,
+}
+
+/// Whether `expr`, a loop's body, holds a `stop` of that loop: one outside the loops in it.
+fn stops(expr: &Expr) -> bool {
+    match expr {
+        Expr::Exit { tag, .. } => *tag == una_core::ExitTag::Stop,
+        Expr::Let { value, body, .. } => {
+            matches!(value.as_ref(), Bound::Expr(inner) if stops(inner)) || stops(body)
+        }
+        Expr::LetTuple { body, .. } | Expr::With { body, .. } | Expr::Attempt { body, .. } => {
+            stops(body)
+        }
+        Expr::If {
+            then, otherwise, ..
+        } => stops(then) || stops(otherwise),
+        Expr::Case {
+            arms, otherwise, ..
+        } => arms.iter().any(|arm| stops(&arm.body)) || otherwise.as_deref().is_some_and(stops),
+        Expr::Handle { body, handler, .. } => stops(body) || stops(handler),
+        Expr::Atom { .. }
+        | Expr::Fail { .. }
+        | Expr::Unreachable { .. }
+        | Expr::Loop { .. }
+        | Expr::Together { .. }
+        | Expr::TogetherFor { .. } => false,
+    }
+}
+
 /// A hypothesis of the path context; a hidden one defines a temporary and is not listed.
 #[derive(Clone, Debug)]
 struct Hyp {
@@ -1183,6 +1244,8 @@ struct Walker<'p, 'i> {
     index: &'i Index<'p>,
     sources: &'i SourceDb,
     module: &'p str,
+    /// How the text of goals and hypotheses is normalized, by the package's edition.
+    layout: SourceLayout,
     declaration: String,
     obligations: Vec<Obligation>,
     /// The definitions of the reflect predicates met so far.
@@ -1217,6 +1280,9 @@ struct Walker<'p, 'i> {
     frames: BTreeMap<Span, Vec<bool>>,
     /// The values that loops make fresh, by binder, with their source names (ADR 0071 D3).
     loop_fresh: BTreeMap<String, BTreeSet<String>>,
+    /// For each loop whose body is walked, innermost last, its measure when it is a `for
+    /// until`: what each `skip` must decrease (ADR 0116 V1).
+    measures: Vec<Option<Measure>>,
     /// What each source name of [`Walker::loop_fresh`] holds (#404).
     loop_collections: BTreeMap<String, Collection>,
     /// The binders of loops' final values, with the source names of their components.
@@ -1252,11 +1318,17 @@ struct Who {
 }
 
 impl<'p, 'i> Walker<'p, 'i> {
-    fn new(index: &'i Index<'p>, sources: &'i SourceDb, module: &'p str) -> Self {
+    fn new(
+        index: &'i Index<'p>,
+        sources: &'i SourceDb,
+        module: &'p str,
+        layout: SourceLayout,
+    ) -> Self {
         Walker {
             index,
             sources,
             module,
+            layout,
             declaration: String::new(),
             obligations: Vec::new(),
             definitions: float_order_definitions(),
@@ -1272,6 +1344,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assigned: None,
             frames: BTreeMap::new(),
             loop_fresh: BTreeMap::new(),
+            measures: Vec::new(),
             loop_collections: BTreeMap::new(),
             loop_results: BTreeMap::new(),
             returned_forgotten: Vec::new(),
@@ -1641,8 +1714,38 @@ impl<'p, 'i> Walker<'p, 'i> {
                     state,
                     init,
                     body,
+                    on_stop,
                     span,
                 } => {
+                    // `on stop` runs with the state fresh at its declared types (ADR 0116 V3):
+                    // its leaves give no fact, as the loop's value gives none.
+                    if let Some(on_stop) = on_stop {
+                        let mut stop_ctx = ctx.clone();
+                        for (name, ty) in &on_stop.state {
+                            self.bind(&mut stop_ctx, name, ty);
+                        }
+                        let mut stop_leaves = Vec::new();
+                        self.walk(&on_stop.body, &stop_ctx, &mut stop_leaves);
+                    }
+                    // `for ever within d` (`spec/26 §7`, ADR 0116 rule 11): `d >= 1`, a
+                    // `refinement` obligation at `d`, in the context before the loop.
+                    if let LoopSource::Ever {
+                        within: Some((deadline, deadline_span)),
+                    } = source.as_ref()
+                    {
+                        let value = self.atom(deadline, &ctx);
+                        let goal = (value.f.sort() == "Int")
+                            .then(|| F::op(">=", vec![value.f, F::Int("1".to_owned())]));
+                        let text = format!("{} >= 1", self.text(*deadline_span));
+                        self.site(
+                            ObligationKind::Refinement,
+                            &ctx,
+                            goal,
+                            text,
+                            *deadline_span,
+                            None,
+                        );
+                    }
                     let mut body_ctx = ctx.clone();
                     self.bind(&mut body_ctx, &var.0, &var.1);
                     if let LoopSource::Range {
@@ -1707,8 +1810,73 @@ impl<'p, 'i> Walker<'p, 'i> {
                             }
                         }
                     }
+                    // `for until c decreases m` (ADR 0116 V1): `c` is false in the body when it
+                    // is in the refinement language, and `m` is at least 0 there.
+                    let measure = match source.as_ref() {
+                        LoopSource::Until {
+                            holds,
+                            measure,
+                            decreases,
+                            ..
+                        } => {
+                            let lookup = |name: &str| {
+                                body_ctx
+                                    .types
+                                    .contains_key(name)
+                                    .then(|| own(&body_ctx, name))
+                            };
+                            let env = Env {
+                                vars: &lookup,
+                                it: None,
+                                result: None,
+                            };
+                            let holds = holds
+                                .as_ref()
+                                .and_then(|holds| self.term(&holds.term, &env));
+                            let start = self.term(&measure.term, &env);
+                            if let Some(holds) = holds {
+                                body_ctx.assume(F::not(holds.f));
+                            }
+                            let goal = start
+                                .as_ref()
+                                .map(|m| F::op(">=", vec![m.f.clone(), F::Int("0".to_owned())]));
+                            self.site(
+                                ObligationKind::DecreasesBound,
+                                &body_ctx,
+                                goal,
+                                measure.text.clone(),
+                                *decreases,
+                                None,
+                            );
+                            start.map(|start| Measure {
+                                clause: measure.as_ref().clone(),
+                                start: start.f,
+                                state: state.iter().map(|(name, _)| name.clone()).collect(),
+                                decreases: *decreases,
+                            })
+                        }
+                        _ => None,
+                    };
+                    self.measures.push(measure.clone());
                     let mut body_leaves = Vec::new();
                     self.walk(body, &body_ctx, &mut body_leaves);
+                    self.measures.pop();
+                    // Each path that ends the body goes on to the next iteration: `m` is less
+                    // there than at the start (`decreases_step`).
+                    if let Some(measure) = &measure {
+                        for leaf in &body_leaves {
+                            let Some(tuple) = &leaf.value else {
+                                continue;
+                            };
+                            let mut leaf_ctx = body_ctx.clone();
+                            leaf_ctx.hyps = leaf.hyps.clone();
+                            leaf_ctx.divisions = leaf.divisions.clone();
+                            let components: Vec<Option<Tv>> = (0..measure.state.len())
+                                .map(|index| projection(tuple, index))
+                                .collect();
+                            self.decreases_step(measure, &leaf_ctx, &components);
+                        }
+                    }
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
                         divisions: ctx.divisions.clone(),
@@ -1923,6 +2091,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                             // ADR 0071 D2: after a loop, a length-preserving binding has its
                             // length at entry; the others are fresh (D3).
                             if let Expr::Loop {
+                                source,
                                 state,
                                 init,
                                 body,
@@ -1930,6 +2099,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 ..
                             } = inner
                             {
+                                // ADR 0116 V3: after a `for until` with no `stop`, `c` holds.
+                                if let LoopSource::Until {
+                                    holds: Some(holds), ..
+                                } = source.as_ref()
+                                    && !stops(body)
+                                {
+                                    let lookup = |name: &str| match state
+                                        .iter()
+                                        .position(|(state, _)| state == name)
+                                    {
+                                        Some(index) => projection(&x, index),
+                                        None => {
+                                            ctx.types.contains_key(name).then(|| own(&ctx, name))
+                                        }
+                                    };
+                                    let env = Env {
+                                        vars: &lookup,
+                                        it: None,
+                                        result: None,
+                                    };
+                                    if let Some(holds) = self.term(&holds.term, &env) {
+                                        ctx.assume(holds.f);
+                                    }
+                                }
                                 let preserved = self.preserved(*loop_span, state, body);
                                 let sources = state.iter().map(|(name, _)| source_name(name));
                                 self.loop_results.insert(name.clone(), sources.collect());
@@ -2075,7 +2268,18 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // `skip` or `stop`: the path leaves the body with the state, whose refinements
                 // its rebinds already proved (ADR 0116 V2); the loop's value says nothing but
                 // their types.
-                Expr::Exit { .. } => return,
+                Expr::Exit { tag, state, .. } => {
+                    if *tag == una_core::ExitTag::Next
+                        && let Some(Some(measure)) = self.measures.last().cloned()
+                    {
+                        let components: Vec<Option<Tv>> = state
+                            .iter()
+                            .map(|atom| Some(self.atom(atom, &ctx)))
+                            .collect();
+                        self.decreases_step(&measure, &ctx, &components);
+                    }
+                    return;
+                }
                 Expr::Handle {
                     body,
                     error: _,
@@ -3987,6 +4191,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// number of integers of its range, zero when it is empty.
     fn task_count(&mut self, source: &LoopSource, ctx: &Ctx) -> Option<F> {
         match source {
+            LoopSource::Until { .. } | LoopSource::Ever { .. } => None,
             LoopSource::List(list) => {
                 let list = self.atom(list, ctx);
                 self.len(&list)
@@ -4831,6 +5036,31 @@ impl<'p, 'i> Walker<'p, 'i> {
     // ----- obligations -----
 
     /// An obligation at one site: `Π ⊢ goal`.
+    /// `decreases_step` at the end of a path of an iteration of a `for until` loop whose state
+    /// is then `components` (ADR 0116 V1): the measure there is less than at the start.
+    fn decreases_step(&mut self, measure: &Measure, ctx: &Ctx, components: &[Option<Tv>]) {
+        let lookup = |name: &str| match measure.state.iter().position(|state| state == name) {
+            Some(index) => components.get(index).cloned().flatten(),
+            None => ctx.types.contains_key(name).then(|| own(ctx, name)),
+        };
+        let env = Env {
+            vars: &lookup,
+            it: None,
+            result: None,
+        };
+        let goal = self
+            .term(&measure.clause.term, &env)
+            .map(|end| F::op("<", vec![end.f, measure.start.clone()]));
+        self.site(
+            ObligationKind::DecreasesStep,
+            ctx,
+            goal,
+            measure.clause.text.clone(),
+            measure.decreases,
+            None,
+        );
+    }
+
     fn site(
         &mut self,
         kind: ObligationKind,
@@ -5271,7 +5501,13 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         shown_facts.append(&mut hypotheses);
-        let hypotheses = shown_facts;
+        // Edition 0.4: a hypothesis shows its source text without the layout of a wrapped line,
+        // as the goal does (ADR 0125, amendment of 2026-10-25). Earlier editions show it as
+        // written, as before.
+        let hypotheses = match self.layout {
+            SourceLayout::Joined => shown_facts,
+            SourceLayout::Wrapped => shown_facts.iter().map(|text| unwrap_layout(text)).collect(),
+        };
         self.add_definitions(&mut query);
         let shown = self.shown(&query, ctx);
         // A shown value of a sum is read through its tag. When no assertion uses that tag, the
@@ -5324,7 +5560,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 forgotten.push(name);
             }
         }
-        let normalized: String = goal.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized = normalized_goal(&goal, self.layout);
         let id = obligation_id(self.module, &self.declaration, kind, &normalized);
         self.obligations.push(Obligation {
             id,
@@ -6768,6 +7004,58 @@ fn prim_text(prim: Prim, args: &[String], whole: &str) -> String {
     }
 }
 
+/// The normalized goal of `spec/12 §8`, from which an obligation's id is computed. Editions 0.1
+/// to 0.3 ([`SourceLayout::Joined`]) collapse its white space, exactly as before soft wrapping,
+/// so their ids are unchanged by construction; edition 0.4 also erases the layout of a wrapped
+/// line ([`unwrap_layout`]).
+fn normalized_goal(goal: &str, layout: SourceLayout) -> String {
+    match layout {
+        SourceLayout::Joined => goal.split_whitespace().collect::<Vec<_>>().join(" "),
+        SourceLayout::Wrapped => unwrap_layout(goal),
+    }
+}
+
+/// Edition 0.4's normalization of source text in an obligation (`spec/12 §8`, ADR 0125,
+/// amendment of 2026-10-25): white space that holds a line break right before a closing `)` or
+/// `]` token is erased, which is where the canonical form puts the closer of a wrapped group,
+/// and then every run of white space collapses to one space. Text literals hold no line break,
+/// and a closer inside one is no token, so their text is kept but for the collapse, which also joins runs of spaces inside a text literal
+/// shown in a hypothesis or contract: the text is for display and comparison, never evaluated
+/// (#1175, kept as it is). One lexing
+/// pass and one pass over the closers: O(n) time and space.
+pub fn unwrap_layout(text: &str) -> String {
+    let mut sources = SourceDb::new();
+    let file = sources.add("<obligation-text>", text.as_bytes());
+    let source = sources.file(file);
+    let mut interner = Interner::new();
+    let lexed = lex_in(source, file, &mut interner, KeywordSet::V0_4);
+    let closers = lexed
+        .tokens
+        .iter()
+        .filter(|token| matches!(token.kind, TokenKind::RParen | TokenKind::RBracket))
+        .map(|token| token.span.start);
+    let text = source.text();
+    let mut unwrapped = String::with_capacity(text.len());
+    let mut previous = 0;
+    for closer in closers {
+        // INVARIANT: token starts ascend and fall on character boundaries of `text`, so `get`
+        // never refuses; were it to, `previous` stays and the text is copied with a later range.
+        let Some(prefix) = text.get(previous..closer) else {
+            continue;
+        };
+        let kept = prefix.trim_end_matches(char::is_whitespace);
+        let trailing = prefix.get(kept.len()..).unwrap_or_default();
+        unwrapped.push_str(if trailing.contains('\n') {
+            kept
+        } else {
+            prefix
+        });
+        previous = closer;
+    }
+    unwrapped.push_str(text.get(previous..).unwrap_or_default());
+    unwrapped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// `ob-` and the first 12 hex digits of SHA-256 over the module path, the declaration, the
 /// kind and the normalized goal (`spec/12 §8`).
 fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &str) -> String {
@@ -7227,7 +7515,7 @@ mod tests {
         let span = Span::new(file, 0, 6);
         let first = namespace_program(&[], span);
         let mut internal: BTreeSet<String> = BTreeSet::new();
-        let obligations = super::obligations(&first, &sources).unwrap();
+        let obligations = super::obligations(&first, &sources, SourceLayout::Joined).unwrap();
         assert!(obligations.len() >= 2, "{}", obligations.len());
         for obligation in &obligations {
             for symbol in declared(&obligation.query.text()) {
@@ -7256,7 +7544,7 @@ mod tests {
         }
         let names: Vec<String> = internal.iter().cloned().collect();
         let second = namespace_program(&names, span);
-        let obligations = super::obligations(&second, &sources).unwrap();
+        let obligations = super::obligations(&second, &sources, SourceLayout::Joined).unwrap();
         let mut users = 0;
         for obligation in &obligations {
             // No symbol stands for two things: a declaration is emitted once per symbol, so two
@@ -7474,7 +7762,7 @@ mod tests {
         let program = Program::default();
         let index = Index::new(&program);
         let sources = SourceDb::new();
-        let mut walker = Walker::new(&index, &sources, "m");
+        let mut walker = Walker::new(&index, &sources, "m", SourceLayout::Joined);
         let (a, b, c) = (var("a", "Int"), var("b", "Int"), var("c", "Int"));
         let low = F::op("<=", vec![int("0"), a.clone()]);
         let high = F::op("<", vec![a.clone(), int("20")]);
@@ -7558,6 +7846,117 @@ mod tests {
         for (formula, shown) in cases {
             assert_eq!(walker.show_formula(&formula), shown);
         }
+    }
+
+    /// The goal of the toolshelf example's obligation on one line, and the same goal as the
+    /// canonical form of edition 0.4 wraps it.
+    const INLINE_GOAL: &str = "Checkout(tool: Tool(name: \"saw\", deposit: 15), member: Member(name: \"Bo\", holding: 3), due: 10).member.holding > 0";
+    const WRAPPED_GOAL: &str = "Checkout(tool: Tool(name: \"saw\", deposit: 15), member: Member(name: \"Bo\", holding: 3\n  ), due: 10).member.holding > 0";
+
+    fn toolshelf_id(goal: &str) -> String {
+        obligation_id(
+            "toolshelf.tools",
+            "toolshelf.tools.example \"bringing a tool back frees a place\"",
+            ObligationKind::Precondition,
+            goal,
+        )
+    }
+
+    #[test]
+    fn editions_0_1_to_0_3_keep_their_goal_normalization_and_ids() {
+        // `spec/12 §8`, ADR 0125 amendment of 2026-10-25: the goal of editions 0.1 to 0.3
+        // collapses white space, exactly as before soft wrapping, so the ids of the same
+        // sources are the ids they had: these are the ids of the rule before it.
+        for goal in [
+            INLINE_GOAL,
+            WRAPPED_GOAL,
+            "f(\"a  b\")",
+            "f(value )",
+            "f(value,\n  1\n)",
+            "f(value) -- a  comment",
+        ] {
+            assert_eq!(
+                normalized_goal(goal, SourceLayout::Joined),
+                goal.split_whitespace().collect::<Vec<_>>().join(" "),
+                "{goal}"
+            );
+        }
+        assert_eq!(
+            toolshelf_id(&normalized_goal(INLINE_GOAL, SourceLayout::Joined)),
+            "ob-436d76f3dbf7"
+        );
+        // A line break before a closer, which a comment inside a line may keep in these
+        // editions, still counts as a space there, as it always did.
+        assert_eq!(
+            toolshelf_id(&normalized_goal(WRAPPED_GOAL, SourceLayout::Joined)),
+            "ob-4b9498c40ba5"
+        );
+    }
+
+    #[test]
+    fn edition_0_4_erases_the_layout_of_a_wrapped_line() {
+        // The closer of a wrapped group changes neither the goal nor the id in edition 0.4.
+        assert_eq!(
+            normalized_goal(WRAPPED_GOAL, SourceLayout::Wrapped),
+            normalized_goal(INLINE_GOAL, SourceLayout::Joined)
+        );
+        assert_eq!(
+            toolshelf_id(&normalized_goal(WRAPPED_GOAL, SourceLayout::Wrapped)),
+            "ob-436d76f3dbf7"
+        );
+        // A closer inside a text literal is no token: its space stays.
+        assert_ne!(unwrap_layout("f(\"x )\")"), unwrap_layout("f(\"x)\")"));
+        assert_ne!(unwrap_layout("f(\"x ]\")"), unwrap_layout("f(\"x]\")"));
+        for unchanged in [
+            "f(\"a  b\")",
+            "f(\"a \\\"b\")",
+            "f(\"{value}  )\")",
+            r#"f("outer {g("inner ) ]")}  )")"#,
+            "f(value )",
+            "f(value) -- a  comment",
+        ] {
+            assert_eq!(
+                unwrap_layout(unchanged),
+                unchanged.split_whitespace().collect::<Vec<_>>().join(" "),
+                "{unchanged}"
+            );
+        }
+        for size in [16, 256, 4096] {
+            let wrapped = (0..size)
+                .map(|index| format!("f(value,\n  {index}\n)"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let inline = (0..size)
+                .map(|index| format!("f(value, {index})"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            assert_eq!(unwrap_layout(&wrapped), inline);
+        }
+    }
+
+    #[test]
+    fn goal_normalization_scales_linearly_with_wrapped_delimiters() {
+        use std::time::Instant;
+
+        let per_byte = |size: usize| {
+            let unit = "f(value,\n  1\n) + ";
+            let goal = unit.repeat(size / unit.len());
+            let started = Instant::now();
+            let normalized = unwrap_layout(std::hint::black_box(&goal));
+            std::hint::black_box(normalized);
+            started.elapsed().as_secs_f64() / goal.len() as f64
+        };
+        per_byte(1 << 15);
+        let small = (0..3)
+            .map(|_| per_byte(1 << 15))
+            .fold(f64::INFINITY, f64::min);
+        let large = (0..3)
+            .map(|_| per_byte(1 << 19))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            large <= small * 4.0,
+            "per-byte time grew from {small:e} to {large:e}"
+        );
     }
 
     #[test]

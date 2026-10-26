@@ -756,6 +756,329 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.param(join).map(Some)
     }
 
+    /// A `for ever` loop with its `on stop` (`spec/26 §5`): as [`Self::lower_until`], without
+    /// a condition. `on stop` runs on the final state, its value the loop's; after a failure of
+    /// the body it runs on a copy of the state from before the loop, which the loop keeps for
+    /// it, and the failure then goes on to `catch` (ADR 0116 rule 10).
+    fn lower_ever(
+        &mut self,
+        expr: &'p Expr,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
+        let Expr::Loop {
+            source,
+            var,
+            state,
+            init,
+            body,
+            on_stop,
+            span,
+        } = expr
+        else {
+            return Err(internal("a loop that is not one"));
+        };
+        // `within d` (`spec/26 §7`): evaluated once, before the first iteration; the runtime
+        // arms the deadline at each iteration and drops it when the loop ends.
+        let within = match source.as_ref() {
+            LoopSource::Ever { within } => within.as_ref(),
+            _ => None,
+        };
+        if let Some((deadline, _)) = within {
+            let (word, _) = self.atom(deadline, env)?;
+            self.runtime("una_rt_deadline_enter", &[word]);
+        }
+        let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
+        let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
+        let mut initial: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+        let mut saved: Vec<Value> = Vec::new();
+        for (atom, &kind) in init.iter().zip(&kinds) {
+            let (value, _) = self.atom(atom, env)?;
+            match self.moving(atom, env, scope, catch, body) {
+                Some(position) => {
+                    scope.remove(position);
+                }
+                None => self.retain(value, kind),
+            }
+            // The copy that `on stop` runs on after a failure.
+            if on_stop.is_some() {
+                self.retain(value, kind);
+                saved.push(value);
+            }
+            initial.push(value.into());
+        }
+        let site = self.site(*span);
+        let head = self.builder.create_block();
+        let following = self.builder.create_block();
+        let exit = self.builder.create_block();
+        let failing = self.join();
+        for _ in &kinds {
+            self.builder.append_block_param(head, types::I64);
+            self.builder.append_block_param(following, types::I64);
+            self.builder.append_block_param(exit, types::I64);
+        }
+        self.builder.ins().jump(head, &initial);
+
+        // An iteration starts: a host stop ends the loop there (ADR 0116 rule 14), then its
+        // budget, then the body, which owns the state, with its exits.
+        self.builder.switch_to_block(head);
+        let current = self.builder.block_params(head).to_vec();
+        let host_stop = self.call("una_rt_ever_start", &[])?;
+        let started = self.builder.create_block();
+        let current_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        self.builder
+            .ins()
+            .brif(host_stop, exit, &current_arguments, started, &[]);
+        self.builder.switch_to_block(started);
+        let stopping = self.call("una_rt_budget", &[site])?;
+        self.stop_if(stopping);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_iteration", &[]);
+        }
+        let mut inner = env.clone();
+        for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
+            inner.insert(name.clone(), (value, ty.clone()));
+        }
+        let unit_value = self.builder.ins().iconst(types::I64, 0);
+        inner.insert(var.0.clone(), (unit_value, range::unrefined(&var.1)));
+        let exits = Exit {
+            next: following,
+            stop: exit,
+            kinds: kinds.clone(),
+            outer: Scope::new(),
+            base: 0,
+        };
+        // A failure of the body leaves the body (ADR 0116 rule 14), then goes to `on stop`
+        // first, when there is one.
+        let nested = Catch {
+            block: failing,
+            outer: Scope::new(),
+            base: 0,
+            exit: Some(exits),
+        };
+        let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
+            let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+            for (index, &kind) in kinds.iter().enumerate() {
+                let value = self.field(tuple, index)?;
+                self.retain(value, kind);
+                next.push(value.into());
+            }
+            self.release(tuple, Kind::Tuple);
+            self.builder.ins().jump(following, &next);
+        }
+
+        // The next iteration, from the end of the body or a `skip`.
+        self.builder.switch_to_block(following);
+        let next: Vec<cranelift_codegen::ir::BlockArg> = self
+            .builder
+            .block_params(following)
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+        self.builder.ins().jump(head, &next);
+
+        // After a failure: out of the body, `on stop` on the saved state, then the failure goes
+        // on.
+        self.builder.switch_to_block(failing);
+        let failure = self.param(failing)?;
+        self.runtime("una_rt_ever_end", &[]);
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
+        match on_stop {
+            Some(on_stop) => {
+                let result = self.lower_on_stop(on_stop, env, &saved, &kinds, catch, scope)?;
+                if let Some(result) = result {
+                    self.release(result, Kind::Tuple);
+                    self.fail(failure, scope, catch);
+                }
+            }
+            None => self.fail(failure, scope, catch),
+        }
+
+        // The loop's value: the final state, through `on stop` when there is one, out of the
+        // body.
+        self.builder.switch_to_block(exit);
+        let finals = self.builder.block_params(exit).to_vec();
+        if within.is_some() {
+            self.runtime("una_rt_deadline_leave", &[]);
+        }
+        self.runtime("una_rt_ever_end", &[]);
+        let tuple = match on_stop {
+            Some(on_stop) => {
+                for (&value, &kind) in saved.iter().zip(&kinds) {
+                    self.release(value, kind);
+                }
+                match self.lower_on_stop(on_stop, env, &finals, &kinds, catch, scope)? {
+                    Some(tuple) => tuple,
+                    None => return Ok(None),
+                }
+            }
+            None => {
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let tuple = self.call("una_rt_data", &[zero])?;
+                for (&value, &kind) in finals.iter().zip(&kinds) {
+                    self.runtime("una_rt_push", &[tuple, value]);
+                    self.release(value, kind);
+                }
+                tuple
+            }
+        };
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        Ok(Some(tuple))
+    }
+
+    /// The `on stop` block on the owned state `values`: its tuple, owned, or `None` when it
+    /// never ends normally. A failure in it goes to `catch` with the words of `scope`.
+    fn lower_on_stop(
+        &mut self,
+        on_stop: &'p una_core::OnStop,
+        env: &Env,
+        values: &[Value],
+        kinds: &[Kind],
+        catch: &Catch,
+        scope: &Scope,
+    ) -> Result<Option<Value>, CodegenError> {
+        let mut inner = env.clone();
+        for ((name, ty), &value) in on_stop.state.iter().zip(values) {
+            inner.insert(name.clone(), (value, range::unrefined(ty)));
+        }
+        let mut owned: Scope = values.iter().copied().zip(kinds.iter().copied()).collect();
+        let mut nested = catch.nested(scope);
+        nested.exit = None;
+        self.expr(&on_stop.body, &mut inner, &mut owned, &nested)
+    }
+
+    /// A `for until` loop (`spec/26 §4`): as [`Self::lower_loop`], without an item, and with
+    /// its condition evaluated before each iteration, with the state it owns borrowed.
+    fn lower_until(
+        &mut self,
+        expr: &'p Expr,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let Expr::Loop {
+            source,
+            var,
+            state,
+            init,
+            body,
+            span,
+            ..
+        } = expr
+        else {
+            return Err(internal("a loop that is not one"));
+        };
+        let LoopSource::Until { cond, .. } = source.as_ref() else {
+            return Err(internal("an `until` loop without its condition"));
+        };
+        let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
+        let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
+        // The loop owns its initial state: a binding at its last use moves in, any other word
+        // is retained (#30).
+        let mut initial: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+        for (atom, &kind) in init.iter().zip(&kinds) {
+            let (value, _) = self.atom(atom, env)?;
+            match self.moving(atom, env, scope, catch, body) {
+                Some(position) => {
+                    scope.remove(position);
+                }
+                None => self.retain(value, kind),
+            }
+            initial.push(value.into());
+        }
+        let site = self.site(*span);
+        let head = self.builder.create_block();
+        let iteration = self.builder.create_block();
+        let following = self.builder.create_block();
+        let exit = self.builder.create_block();
+        for _ in &kinds {
+            self.builder.append_block_param(head, types::I64);
+            self.builder.append_block_param(following, types::I64);
+            self.builder.append_block_param(exit, types::I64);
+        }
+        self.builder.ins().jump(head, &initial);
+
+        // The head: the condition, with the state borrowed; a failure releases the state.
+        self.builder.switch_to_block(head);
+        let current = self.builder.block_params(head).to_vec();
+        let mut inner = env.clone();
+        for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
+            inner.insert(name.clone(), (value, ty.clone()));
+        }
+        let owned_state: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        let mut guarded = catch.nested(scope);
+        guarded.outer.extend(owned_state.iter().copied());
+        guarded.exit = None;
+        let mut cond_env = inner.clone();
+        let holds = self.expr(cond, &mut cond_env, &mut Scope::new(), &guarded)?;
+        let state_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        if let Some(holds) = holds {
+            self.builder
+                .ins()
+                .brif(holds, exit, &state_arguments, iteration, &[]);
+        }
+
+        // An iteration: its budget, then the body, which owns the state, with its exits.
+        self.builder.switch_to_block(iteration);
+        let stopping = self.call("una_rt_budget", &[site])?;
+        self.stop_if(stopping);
+        let unit_value = self.builder.ins().iconst(types::I64, 0);
+        inner.insert(var.0.clone(), (unit_value, range::unrefined(&var.1)));
+        let mut nested = catch.nested(scope);
+        nested.exit = Some(Exit {
+            next: following,
+            stop: exit,
+            kinds: kinds.clone(),
+            outer: Scope::new(),
+            base: 0,
+        });
+        let mut owned = owned_state;
+        if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
+            let mut next: Vec<cranelift_codegen::ir::BlockArg> = Vec::new();
+            for (index, &kind) in kinds.iter().enumerate() {
+                let value = self.field(tuple, index)?;
+                self.retain(value, kind);
+                next.push(value.into());
+            }
+            self.release(tuple, Kind::Tuple);
+            self.builder.ins().jump(following, &next);
+        }
+
+        // The next iteration, from the end of the body or a `skip`.
+        self.builder.switch_to_block(following);
+        let next: Vec<cranelift_codegen::ir::BlockArg> = self
+            .builder
+            .block_params(following)
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+        self.builder.ins().jump(head, &next);
+
+        // The loop's value, which owns the final state, and the end of the scope.
+        self.builder.switch_to_block(exit);
+        let finals = self.builder.block_params(exit).to_vec();
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let tuple = self.call("una_rt_data", &[zero])?;
+        for (&value, &kind) in finals.iter().zip(&kinds) {
+            self.runtime("una_rt_push", &[tuple, value]);
+            self.release(value, kind);
+        }
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        Ok(Some(tuple))
+    }
+
     /// A `for` loop (`spec/17 §4`): the loop owns the current values of its state, passes them
     /// to each iteration with the item, and takes the new values from the tuple the body
     /// returns. Iterations are not calls, so each checks the memory budget at the loop instead
@@ -775,6 +1098,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             init,
             body,
             span,
+            ..
         } = expr
         else {
             return Err(internal("a loop that is not one"));
@@ -813,6 +1137,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(high, Kind::Int);
                 (None, high, low)
             }
+            LoopSource::Until { .. } => return self.lower_until(expr, env, scope, catch),
+            LoopSource::Ever { .. } => return self.lower_ever(expr, env, scope, catch),
         };
         let inclusive = matches!(
             source.as_ref(),
@@ -1162,6 +1488,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
+        // The runtime starts its threads before `main` (#1145).
+        self.emitter.threads = true;
         let value = match expr {
             Expr::Together { tasks, span } => {
                 let site = self.site(*span);
@@ -1198,6 +1526,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
                             self.call("una_rt_range", &[site, low, high, inclusive])?,
                             true,
                         )
+                    }
+                    LoopSource::Until { .. } | LoopSource::Ever { .. } => {
+                        return Err(internal(
+                            "a `together for` with an `until` or `ever` source",
+                        ));
                     }
                 };
                 let closure = self.closure(std::slice::from_ref(var.as_ref()), task, env)?;
@@ -3052,11 +3385,21 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             add(value, out);
             borrowed_from(body, out);
         }
-        Expr::Loop { source, body, .. } => {
-            if let LoopSource::List(list) = source.as_ref() {
-                add(list, out);
+        Expr::Loop {
+            source,
+            body,
+            on_stop,
+            ..
+        } => {
+            match source.as_ref() {
+                LoopSource::List(list) => add(list, out),
+                LoopSource::Until { cond, .. } => borrowed_from(cond, out),
+                LoopSource::Range { .. } | LoopSource::Ever { .. } => {}
             }
             borrowed_from(body, out);
+            if let Some(on_stop) = on_stop {
+                borrowed_from(&on_stop.body, out);
+            }
         }
         Expr::Let { value, body, .. } => {
             if let Bound::Expr(inner) = value.as_ref() {

@@ -1,0 +1,36 @@
+-- test: in edition 0.4, `HttpError` has a ninth variant, `Interrupted`, after `Protocol`, which an operation of `Http` in the body of a `for ever` fails with after a host stop request; a `when` that names every variant is exhaustive (spec/26 §6 rule 5, ADR 0116 rule 12)
+-- spec: spec/26 §6
+-- expect: ok
+module poll
+
+--- What a failure of a request says.
+pub describe(failure: internal HttpError) -> internal Text
+=
+  when failure
+    is Denied -> "denied"
+    is BadUrl -> "bad url"
+    is BadRequest -> "bad request"
+    is Unreachable -> "unreachable"
+    is TimedOut -> "timed out"
+    is TooLarge -> "too large"
+    is Tls -> "tls"
+    is Protocol -> "protocol"
+    is Interrupted -> "interrupted"
+
+--- Polls a server until the host stops the run, keeping the count of answers and the last
+--- failure, which are `internal`, as every request's failure is (spec/24 §5).
+pub serve() -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  let edit polls: internal Int = 0
+  let edit last: internal Text = ""
+  for ever
+    let reply = attempt @http.get("http://127.0.0.1:9/", headers: [], key_name: None)
+    when reply
+      is Ok(response) ->
+        polls = polls + 1
+      is Err(failure) ->
+        last = describe(failure)
+  on stop
+    last = "stopped after {polls} polls: {last}"

@@ -19,8 +19,9 @@ impl World for Lines {
     fn print(&mut self, line: &str) {
         self.0.push(line.to_owned());
     }
+    /// A wall clock that reads one fixed moment, apart from any virtual one.
     fn now(&mut self) -> i64 {
-        0
+        1234
     }
     fn env_var(&mut self, _name: &str) -> Result<Option<String>, NotText> {
         Ok(None)
@@ -79,14 +80,27 @@ fn checked(name: &str, source: &str) -> una_core::Program {
     checked.program
 }
 
-/// Drives `counter` of `program` with a tick of 1 ms, stopping after `iterations`.
+/// Drives `counter` of `program` with a tick of 1 ms on the real clock, stopping after
+/// `iterations`.
 fn drive(
     program: &una_core::Program,
     iterations: u64,
 ) -> (Result<una_interp::Run, DriveShape>, Vec<String>) {
+    drive_on(program, iterations, 1, false)
+}
+
+/// Drives `counter` of `program` with a tick of `ticks` ms, on a virtual clock when
+/// `virtual_time` holds, stopping after `iterations`.
+fn drive_on(
+    program: &una_core::Program,
+    iterations: u64,
+    ticks: u64,
+    virtual_time: bool,
+) -> (Result<una_interp::Run, DriveShape>, Vec<String>) {
     let host = Host {
-        grants: vec![Grant::Console],
+        grants: vec![Grant::Console, Grant::Clock],
         keys: BTreeMap::new(),
+        virtual_time,
     };
     let stack = una_interp::stack_bytes(10_000).unwrap();
     std::thread::scope(|scope| {
@@ -99,11 +113,13 @@ fn drive(
                     "counter",
                     &mut lines,
                     &host,
-                    Limits::depth(10_000),
-                    Drive {
-                        ticks: 1,
-                        budget: None,
+                    Limits {
                         stop_after: Some(iterations),
+                        ..Limits::depth(10_000)
+                    },
+                    Drive {
+                        ticks,
+                        budget: None,
                     },
                 );
                 (run, lines.0)
@@ -148,4 +164,61 @@ fn a_module_without_step_is_a_shape_error() {
     let (run, lines) = drive(&program, 1);
     assert_eq!(run.unwrap_err(), DriveShape::NoStep);
     assert!(lines.is_empty());
+}
+
+/// A step that prints its tick and the clock's reading.
+const CLOCKED: &str = "module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  count = count + 1
+  let now = @clock.now()
+  @console.print(\"step {count} at {input.at} missed {input.missed} now {now}\")
+";
+
+#[test]
+fn under_virtual_time_the_ticks_and_the_clock_are_exact_and_never_wait() {
+    let program = checked("clocked", CLOCKED);
+    let started = std::time::Instant::now();
+    // A tick a day: on the real clock, three steps would take two days.
+    let (run, lines) = drive_on(&program, 3, 86_400_000, true);
+    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    let run = run.unwrap();
+    assert!(
+        matches!(run.completion, Completion::Ok(_)),
+        "{:?}",
+        run.completion
+    );
+    assert_eq!(
+        lines,
+        [
+            "step 1 at 0 missed 0 now 0",
+            "step 2 at 86400000 missed 0 now 86400000",
+            "step 3 at 172800000 missed 0 now 172800000",
+        ]
+        .map(str::to_owned)
+    );
+    // The same run gives the same trace: the clock's readings are in it.
+    let (again, _) = drive_on(&program, 3, 86_400_000, true);
+    assert_eq!(
+        una_interp::trace_json(&run.trace),
+        una_interp::trace_json(&again.unwrap().trace)
+    );
+}
+
+#[test]
+fn on_the_real_clock_the_clock_reads_the_wall_clock() {
+    let program = checked("wall", CLOCKED);
+    // A tick an hour: the one step is due at once, at tick 0, and no slow machine can make a
+    // whole tick pass before it starts, so `at` and `missed` are 0 on any scheduler.
+    let (run, lines) = drive_on(&program, 1, 3_600_000, false);
+    assert!(matches!(run.unwrap().completion, Completion::Ok(_)));
+    // `Clock.now` reads the world's wall clock, and the first tick is at 0.
+    assert_eq!(lines, ["step 1 at 0 missed 0 now 1234"].map(str::to_owned));
 }

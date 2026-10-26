@@ -61,6 +61,7 @@
   "prelude parse_f64",
   "prelude tensor",
   "prelude tensor_filled",
+  "std.testing elapse",
   "std.testing fake_hash"
  ],
  "entries": [

@@ -1,0 +1,1 @@
+- **A file named to `una fmt`, `una check` and the other commands uses the edition of the package that holds it** (#1175). Before, `una fmt src/x.una` in an edition 0.4 package joined its wrapped lines and `una check` reported U7001 on it. Only the edition is taken from the nearest `ita.una` or `una.toml`; a file with no manifest above it keeps edition 0.1.

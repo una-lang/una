@@ -218,6 +218,31 @@ thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
 }
 
+/// A task's heap, and its test counters, while it is parked (`sched`, ADR 0117 rule 2).
+#[derive(Default)]
+pub(crate) struct Slots {
+    heap: Heap,
+    #[cfg(test)]
+    counters: [usize; 3],
+}
+
+/// Exchanges the thread's heap and test counters with `slots`. A heap is never borrowed when a
+/// task parks or ends: a borrow here is a defect, which ends the process rather than mix two
+/// tasks' heaps.
+pub(crate) fn swap_slots(slots: &mut Slots) {
+    HEAP.with(|heap| match heap.try_borrow_mut() {
+        Ok(mut heap) => std::mem::swap(&mut *heap, &mut slots.heap),
+        Err(_) => std::process::abort(),
+    });
+    #[cfg(test)]
+    {
+        let [equality, objects, growth] = &mut slots.counters;
+        *equality = EQUALITY_STEPS.with(|cell| cell.replace(*equality));
+        *objects = OBJECT_STEPS.with(|cell| cell.replace(*objects));
+        *growth = MOST_GROWTH.with(|cell| cell.replace(*growth));
+    }
+}
+
 /// Whether `word` is a handle.
 fn is_handle(word: i64) -> bool {
     word & 1 == 0 && word != 0
@@ -3597,14 +3622,23 @@ mod tests {
         } else {
             [100_000, 1_000_000]
         };
+        // The shortest of several runs per size, so a preemption of the test thread (the
+        // library's tests run in parallel) inflates no measurement; the claim stays linear.
+        // Five runs on the full sizes; one on Miri's small ones (it is slow, and times nothing).
+        let runs = if sizes[0] >= 100_000 { 5 } else { 1 };
         let times: Vec<std::time::Duration> = sizes
             .iter()
             .map(|&size| {
                 let digits = "7".repeat(size);
-                let started = std::time::Instant::now();
-                assert_eq!(parse_failure(text_word(digits.clone())), too_long);
-                assert_eq!(to_int(text_word(digits)), NONE);
-                started.elapsed()
+                (0..runs)
+                    .map(|_| {
+                        let started = std::time::Instant::now();
+                        assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                        assert_eq!(to_int(text_word(digits.clone())), NONE);
+                        started.elapsed()
+                    })
+                    .min()
+                    .unwrap_or_default()
             })
             .collect();
         if !cfg!(miri) {
